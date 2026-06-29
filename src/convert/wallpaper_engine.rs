@@ -1100,6 +1100,9 @@ fn write_scene_document_to(
         ..SceneDocumentBuildContext::default()
     };
     let mut resources = Vec::new();
+    if let Some(scene) = source_scene {
+        scene_collect_puppet_attachment_maps_from_value(project, scene, &mut context);
+    }
     let mut nodes = source_scene
         .map(|scene| {
             collect_scene_nodes_from_value(
@@ -1123,6 +1126,7 @@ fn write_scene_document_to(
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
     nodes = scene_rebuild_parent_graph(nodes);
+    scene_lower_we_attachment_child_image_mesh_uvs(&mut nodes, &mut context);
     scene_lower_pending_controllers(&mut nodes, &mut context);
     scene_lower_pending_audio_controllers(&mut nodes, &mut context);
     if context.all_detected_scripts_native_lowered() {
@@ -1411,6 +1415,11 @@ struct SceneDocumentBuildContext {
     property_bindings: Vec<Value>,
     converted_features: Vec<String>,
     unsupported_features: Vec<Value>,
+    puppet_attachments_by_source_id: BTreeMap<String, ScenePuppetAttachmentMap>,
+    puppet_attachments_by_model_path: BTreeMap<String, ScenePuppetAttachmentMap>,
+    puppet_resource_ids: BTreeMap<String, String>,
+    decoded_tex_resources: BTreeMap<SceneDecodedTexResourceKey, SceneDecodedTexResource>,
+    builtin_particle_texture_resources: BTreeMap<String, String>,
 }
 
 impl SceneDocumentBuildContext {
@@ -1445,7 +1454,119 @@ struct SceneSourceModelConversion {
     render_resource: Option<String>,
     render_properties: Option<Value>,
     render_size: Option<SceneWeModelFrameSize>,
+    render_bounds: Option<ScenePuppetMeshBounds>,
+    render_mesh: Option<Value>,
     original_path: String,
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetAttachmentMap {
+    attachments: BTreeMap<String, ScenePuppetAttachment>,
+    mesh_bounds: Option<ScenePuppetMeshBounds>,
+    mesh: Option<ScenePuppetMesh>,
+}
+
+impl ScenePuppetAttachmentMap {
+    fn to_value(&self) -> Value {
+        let mut attachments = Map::new();
+        for (name, attachment) in &self.attachments {
+            let mut value = Map::new();
+            value.insert("bone_index".to_owned(), json!(attachment.bone_index));
+            value.insert("x".to_owned(), json!(attachment.x));
+            value.insert("y".to_owned(), json!(attachment.y));
+            value.insert("z".to_owned(), json!(attachment.z));
+            value.insert(
+                "placement_source".to_owned(),
+                json!(attachment.placement_source),
+            );
+            if let Some((x, y, z)) = attachment.target_position {
+                value.insert("target_x".to_owned(), json!(x));
+                value.insert("target_y".to_owned(), json!(y));
+                value.insert("target_z".to_owned(), json!(z));
+            }
+            attachments.insert(name.clone(), Value::Object(value));
+        }
+        Value::Object(attachments)
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetMeshBounds {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+    anchor_x: f64,
+    anchor_y: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetMesh {
+    bounds: ScenePuppetMeshBounds,
+    vertices: Vec<ScenePuppetMeshVertex>,
+    indices: Vec<u32>,
+}
+
+impl ScenePuppetMesh {
+    fn to_scene_mesh_value(&self) -> Value {
+        json!({
+            "vertices": self
+                .vertices
+                .iter()
+                .map(ScenePuppetMeshVertex::to_value)
+                .collect::<Vec<_>>(),
+            "indices": self.indices
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetMeshVertex {
+    x: f64,
+    y: f64,
+    u: f64,
+    v: f64,
+}
+
+impl ScenePuppetMeshVertex {
+    fn to_value(&self) -> Value {
+        json!({
+            "x": self.x,
+            "y": self.y,
+            "u": self.u,
+            "v": self.v
+        })
+    }
+}
+
+impl ScenePuppetMeshBounds {
+    fn to_value(self) -> Value {
+        json!({
+            "left": self.left,
+            "top": self.top,
+            "width": self.width,
+            "height": self.height,
+            "anchor_x": self.anchor_x,
+            "anchor_y": self.anchor_y
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetAttachment {
+    bone_index: usize,
+    x: f64,
+    y: f64,
+    z: f64,
+    placement_source: &'static str,
+    target_position: Option<(f64, f64, f64)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetBone {
+    parent: Option<usize>,
+    translation: (f64, f64, f64),
+    target_position: Option<(f64, f64, f64)>,
 }
 
 #[derive(Debug, Clone)]
@@ -1460,6 +1581,29 @@ struct SceneDecodedTexResource {
     resource_id: String,
     render_kind: &'static str,
     spritesheet: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SceneDecodedTexResourceKey {
+    source_path: String,
+    frame_width: Option<u32>,
+    frame_height: Option<u32>,
+    spritesheet_enabled: bool,
+}
+
+impl SceneDecodedTexResourceKey {
+    fn new(
+        source_path: &Path,
+        frame_size: Option<SceneWeModelFrameSize>,
+        spritesheet_enabled: bool,
+    ) -> Self {
+        Self {
+            source_path: path_to_package_string(source_path),
+            frame_width: frame_size.map(|frame| frame.width),
+            frame_height: frame_size.map(|frame| frame.height),
+            spritesheet_enabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1510,6 +1654,51 @@ fn collect_scene_nodes_from_value(
             .collect(),
         Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => Vec::new(),
     }
+}
+
+fn scene_collect_puppet_attachment_maps_from_value(
+    project: &WallpaperEngineProject,
+    value: &Value,
+    context: &mut SceneDocumentBuildContext,
+) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                scene_collect_puppet_attachment_maps_from_value(project, value, context);
+            }
+        }
+        Value::Object(object) => {
+            scene_collect_puppet_attachment_map_from_object(project, object, context);
+            for (_, value) in object.iter().filter(|(key, _)| scene_container_key(key)) {
+                scene_collect_puppet_attachment_maps_from_value(project, value, context);
+            }
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn scene_collect_puppet_attachment_map_from_object(
+    project: &WallpaperEngineProject,
+    object: &Map<String, Value>,
+    context: &mut SceneDocumentBuildContext,
+) {
+    let Some(source_id) = object.get("id").and_then(value_to_string) else {
+        return;
+    };
+    let Some(model_path) = scene_model_path_from_object(object) else {
+        return;
+    };
+    let Some(frame_size) = scene_frame_size_from_object_size(object) else {
+        return;
+    };
+    let Some(attachments) =
+        scene_puppet_attachment_map_for_model_path(project, &model_path, frame_size, context)
+    else {
+        return;
+    };
+    context
+        .puppet_attachments_by_source_id
+        .insert(source_id, attachments);
 }
 
 fn scene_rebuild_parent_graph(nodes: Vec<Value>) -> Vec<Value> {
@@ -1573,6 +1762,84 @@ fn scene_attach_parented_children(
         }
     }
     node
+}
+
+fn scene_lower_we_attachment_child_image_mesh_uvs(
+    nodes: &mut [Value],
+    context: &mut SceneDocumentBuildContext,
+) {
+    for node in nodes {
+        scene_lower_we_attachment_child_image_mesh_uv(node, false, context);
+    }
+}
+
+fn scene_lower_we_attachment_child_image_mesh_uv(
+    node: &mut Value,
+    parent_is_attachment_group: bool,
+    context: &mut SceneDocumentBuildContext,
+) {
+    let Some(object) = node.as_object_mut() else {
+        return;
+    };
+    if parent_is_attachment_group && scene_insert_we_attachment_child_quad_mesh(object) {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-attachment-child-image-uv-y-flip-lowering",
+        );
+    }
+    let is_attachment_group = scene_node_is_empty_attachment_group(object);
+    if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut) {
+        for child in children {
+            scene_lower_we_attachment_child_image_mesh_uv(child, is_attachment_group, context);
+        }
+    }
+}
+
+fn scene_node_is_empty_attachment_group(object: &Map<String, Value>) -> bool {
+    object.get("type").and_then(Value::as_str) == Some("group")
+        && object
+            .get("provenance")
+            .and_then(Value::as_object)
+            .and_then(|provenance| provenance.get("attachment"))
+            .and_then(Value::as_str)
+            .is_some()
+        && object
+            .get("provenance")
+            .and_then(Value::as_object)
+            .is_none_or(|provenance| !provenance.contains_key("model"))
+}
+
+fn scene_insert_we_attachment_child_quad_mesh(object: &mut Map<String, Value>) -> bool {
+    if object.get("type").and_then(Value::as_str) != Some("image")
+        || object.get("mesh").is_some()
+        || object.get("resource").is_none()
+    {
+        return false;
+    }
+    let Some(width) = object.get("width").and_then(Value::as_f64) else {
+        return false;
+    };
+    let Some(height) = object.get("height").and_then(Value::as_f64) else {
+        return false;
+    };
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return false;
+    }
+    let half_width = width * 0.5;
+    let half_height = height * 0.5;
+    object.insert(
+        "mesh".to_owned(),
+        json!({
+            "vertices": [
+                { "x": -half_width, "y": -half_height, "u": 0.0, "v": 0.0 },
+                { "x": half_width, "y": -half_height, "u": 1.0, "v": 0.0 },
+                { "x": -half_width, "y": half_height, "u": 0.0, "v": 1.0 },
+                { "x": half_width, "y": half_height, "u": 1.0, "v": 1.0 }
+            ],
+            "indices": [0, 1, 2, 2, 1, 3]
+        }),
+    );
+    true
 }
 
 fn scene_node_source_id(node: &Value) -> Option<String> {
@@ -1937,6 +2204,119 @@ fn scene_push_numeric_property_binding(
         .push(binding.property_binding_value(node_id, target, scale, offset));
 }
 
+fn scene_push_vector_component_script_property_bindings(
+    value: Option<&Value>,
+    components: &[(&str, &str)],
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return;
+    };
+    let Some(script) = string_field(object, &["script"]) else {
+        return;
+    };
+    let Some(script_properties) = object
+        .get("scriptproperties")
+        .or_else(|| object.get("scriptProperties"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+
+    let mut lowered = false;
+    for (component, target) in components {
+        let Some(property) =
+            scene_vector_component_script_user_property(&script, script_properties, component)
+        else {
+            continue;
+        };
+        context.property_bindings.push(json!({
+            "property": property,
+            "target_node": node_id,
+            "target": target,
+            "scale": 1.0,
+            "offset": 0.0
+        }));
+        lowered = true;
+    }
+    if lowered {
+        scene_record_native_script_lowering(context);
+        push_unique(
+            &mut context.converted_features,
+            "scene-deterministic-scenescript-expression",
+        );
+    }
+}
+
+fn scene_vector_component_script_user_property(
+    script: &str,
+    script_properties: &Map<String, Value>,
+    component: &str,
+) -> Option<String> {
+    let local_property =
+        scene_vector_component_script_local_property(script, component)?.to_owned();
+    script_properties
+        .get(&local_property)
+        .and_then(Value::as_object)
+        .and_then(|property| string_field(property, &["user", "property"]))
+}
+
+fn scene_vector_component_script_local_property<'a>(
+    script: &'a str,
+    component: &str,
+) -> Option<&'a str> {
+    let needle = format!("value.{component}");
+    let mut offset = 0usize;
+    while let Some(index) = script[offset..].find(&needle) {
+        let absolute = offset + index;
+        let before = script[..absolute].chars().next_back();
+        if before.is_some_and(scene_script_identifier_character) {
+            offset = absolute + needle.len();
+            continue;
+        }
+        let after_component = &script[absolute + needle.len()..];
+        let after_component = after_component.trim_start();
+        let Some(after_assignment) = after_component.strip_prefix('=') else {
+            offset = absolute + needle.len();
+            continue;
+        };
+        if after_assignment.starts_with('=') {
+            offset = absolute + needle.len();
+            continue;
+        }
+        let expression = after_assignment.trim_start();
+        let expression_end = expression
+            .find(|character: char| matches!(character, ';' | '\n' | '\r'))
+            .unwrap_or(expression.len());
+        if let Some(property) =
+            scene_script_properties_access_identifier(&expression[..expression_end])
+        {
+            return Some(property);
+        }
+        offset = absolute + needle.len();
+    }
+    None
+}
+
+fn scene_script_properties_access_identifier(expression: &str) -> Option<&str> {
+    let expression = expression.trim();
+    let property = expression
+        .strip_prefix("scriptProperties.")
+        .or_else(|| expression.strip_prefix("this.scriptProperties."))?;
+    let end = property
+        .char_indices()
+        .find_map(|(index, character)| {
+            (!scene_script_identifier_character(character)).then_some(index)
+        })
+        .unwrap_or(property.len());
+    (end > 0).then_some(&property[..end])
+}
+
+fn scene_script_identifier_character(character: char) -> bool {
+    character == '_' || character.is_ascii_alphanumeric()
+}
+
 fn scene_numeric_property_binding(
     value: &Value,
     context: &mut SceneDocumentBuildContext,
@@ -2143,6 +2523,17 @@ fn scene_node_from_object(
         node.entry("height".to_owned())
             .or_insert_with(|| json!(f64::from(size.height)));
     }
+    let source_model_mesh = source_model
+        .as_ref()
+        .and_then(|model| model.render_mesh.as_ref());
+    if string_field(object, &["attachment"]).is_some()
+        && source_model_mesh.is_none()
+        && let Some(bounds) = source_model.as_ref().and_then(|model| model.render_bounds)
+    {
+        node.insert("width".to_owned(), json!(bounds.width));
+        node.insert("height".to_owned(), json!(bounds.height));
+        scene_apply_render_bounds_anchor_to_node(&mut node, bounds);
+    }
     if scene_builtin_util_uses_viewport(source_model.as_ref())
         && let (Some(width), Some(height)) = (context.viewport_width, context.viewport_height)
     {
@@ -2182,6 +2573,13 @@ fn scene_node_from_object(
         && let Some(properties) = &source_model.render_properties
     {
         scene_merge_node_properties(&mut node, properties.clone());
+    }
+    if let Some(mesh) = source_model_mesh {
+        node.insert("mesh".to_owned(), mesh.clone());
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-puppet-mesh-lowering",
+        );
     }
     if let Some((controller, pending_controller)) =
         scene_controller_from_object(object, &node_id, source_model.as_ref())
@@ -2278,6 +2676,22 @@ fn scene_node_from_object(
         );
     }
     Value::Object(node)
+}
+
+fn scene_apply_render_bounds_anchor_to_node(
+    node: &mut Map<String, Value>,
+    bounds: ScenePuppetMeshBounds,
+) {
+    let entry = node
+        .entry("transform".to_owned())
+        .or_insert_with(|| Value::Object(Map::new()));
+    if !entry.is_object() {
+        *entry = Value::Object(Map::new());
+    }
+    if let Some(transform) = entry.as_object_mut() {
+        transform.insert("anchor_x".to_owned(), json!(bounds.anchor_x));
+        transform.insert("anchor_y".to_owned(), json!(bounds.anchor_y));
+    }
 }
 
 fn scene_builtin_util_script_native_ready(
@@ -2615,6 +3029,8 @@ fn scene_object_has_node_signal(object: &Map<String, Value>) -> bool {
             .is_some_and(|effects| !effects.is_empty())
         || !scene_sound_sources_from_object(object).is_empty()
         || object.get("particle").is_some()
+        || scene_object_is_transform_container(object)
+        || scene_controller_target_layer_from_script_properties(object).is_some()
 }
 
 fn scene_container_key(key: &str) -> bool {
@@ -2672,6 +3088,9 @@ fn scene_node_kind_from_object(
         }
         return "audio-response";
     }
+    if scene_controller_target_layer_from_script_properties(object).is_some() {
+        return "script";
+    }
     if type_hint.contains("script") {
         return "script";
     }
@@ -2694,6 +3113,9 @@ fn scene_node_kind_from_object(
         return "color";
     }
     if scene_child_nodes_from_keys(object) {
+        return "group";
+    }
+    if scene_object_is_transform_container(object) {
         return "group";
     }
     "unknown"
@@ -2778,7 +3200,9 @@ fn scene_object_is_audio_cue_only(
 }
 
 fn scene_shape_kind_from_object(object: &Map<String, Value>) -> Option<&'static str> {
-    if scene_bool_value_field(object, &["solid", "issolid", "isSolid"]).unwrap_or(false) {
+    if scene_bool_value_field(object, &["solid", "issolid", "isSolid"]).unwrap_or(false)
+        && scene_shape_object_has_draw_payload(object)
+    {
         return Some("rectangle");
     }
 
@@ -2798,6 +3222,26 @@ fn scene_shape_kind_from_object(object: &Map<String, Value>) -> Option<&'static 
     None
 }
 
+fn scene_shape_object_has_draw_payload(object: &Map<String, Value>) -> bool {
+    scene_color_from_object(object).is_some()
+        || scene_stroke_color_from_object(object).is_some()
+        || scene_text_from_object(object).is_some()
+        || scene_vector_path_from_object(object).is_some()
+        || number_value_field(object, &["width", "w"]).is_some()
+        || number_value_field(object, &["height", "h"]).is_some()
+        || scene_size_component_from_object(object, 0).is_some()
+        || scene_size_component_from_object(object, 1).is_some()
+}
+
+fn scene_object_is_transform_container(object: &Map<String, Value>) -> bool {
+    object.get("origin").is_some()
+        || object.get("scale").is_some()
+        || object.get("angles").is_some()
+        || object.get("parent").is_some()
+        || object.get("parallaxDepth").is_some()
+        || object.get("parallax_depth").is_some()
+}
+
 fn scene_child_nodes_from_keys(object: &Map<String, Value>) -> bool {
     object.keys().any(|key| scene_container_key(key))
 }
@@ -2811,6 +3255,7 @@ fn scene_source_model_from_object(
     resources: &mut Vec<Value>,
 ) -> Option<SceneSourceModelConversion> {
     let model_path = scene_model_path_from_object(object)?;
+    let object_frame_size = scene_frame_size_from_object_size(object);
     if let Some(model) = scene_builtin_util_model(&model_path) {
         push_unique(
             &mut context.converted_features,
@@ -2848,10 +3293,14 @@ fn scene_source_model_from_object(
             render_resource: None,
             render_properties: None,
             render_size: None,
+            render_bounds: None,
+            render_mesh: None,
             original_path: model_path,
         });
     };
 
+    let mut render_bounds = None;
+    let mut render_mesh = None;
     if let Some(model_object) = model_json.as_object() {
         if let Some(material) = string_field(model_object, &["material"]) {
             let material_path = scene_material_path(&material);
@@ -2875,7 +3324,7 @@ fn scene_source_model_from_object(
                 report,
                 context,
             ) {
-                let frame_size = scene_model_frame_size(model_object);
+                let frame_size = scene_model_frame_size(model_object).or(object_frame_size);
                 let (textures, texture_resources, render_resource, render_properties, render_kind) =
                     scene_material_textures(
                         project,
@@ -2907,7 +3356,20 @@ fn scene_source_model_from_object(
                     );
                 }
                 if let Some(puppet) = string_field(model_object, &["puppet"]) {
-                    model.insert("puppet".to_owned(), Value::String(puppet));
+                    if let Some(mesh) = scene_insert_puppet_model_conversion(
+                        project,
+                        output_dir,
+                        &model_path,
+                        &puppet,
+                        frame_size,
+                        &mut model,
+                        report,
+                        context,
+                        resources,
+                    ) {
+                        render_bounds = Some(mesh.bounds);
+                        render_mesh = Some(mesh.to_scene_mesh_value());
+                    }
                 }
                 insert_optional_bool(model_object, "solidlayer", "solid_layer", &mut model);
                 insert_optional_bool(model_object, "passthrough", "passthrough", &mut model);
@@ -2917,12 +3379,27 @@ fn scene_source_model_from_object(
                     render_resource,
                     render_properties,
                     render_size: frame_size,
+                    render_bounds,
+                    render_mesh,
                     original_path: model_path,
                 });
             }
         }
         if let Some(puppet) = string_field(model_object, &["puppet"]) {
-            model.insert("puppet".to_owned(), Value::String(puppet));
+            if let Some(mesh) = scene_insert_puppet_model_conversion(
+                project,
+                output_dir,
+                &model_path,
+                &puppet,
+                scene_model_frame_size(model_object).or(object_frame_size),
+                &mut model,
+                report,
+                context,
+                resources,
+            ) {
+                render_bounds = Some(mesh.bounds);
+                render_mesh = Some(mesh.to_scene_mesh_value());
+            }
         }
         insert_optional_bool(model_object, "solidlayer", "solid_layer", &mut model);
         insert_optional_bool(model_object, "passthrough", "passthrough", &mut model);
@@ -2939,9 +3416,593 @@ fn scene_source_model_from_object(
         render_kind: None,
         render_resource: None,
         render_properties: None,
-        render_size: model_json.as_object().and_then(scene_model_frame_size),
+        render_size: model_json
+            .as_object()
+            .and_then(scene_model_frame_size)
+            .or(object_frame_size),
+        render_bounds,
+        render_mesh,
         original_path: model_path,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scene_insert_puppet_model_conversion(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    model_path: &str,
+    puppet: &str,
+    frame_size: Option<SceneWeModelFrameSize>,
+    model: &mut Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<ScenePuppetMesh> {
+    model.insert("puppet".to_owned(), Value::String(puppet.to_owned()));
+    if let Some(resource) =
+        scene_copy_puppet_resource(project, output_dir, puppet, report, context, resources)
+    {
+        model.insert("puppet_resource".to_owned(), Value::String(resource));
+    }
+    if let Some(frame_size) = frame_size
+        && let Some(attachments) =
+            scene_puppet_attachment_map_for_model_path(project, model_path, frame_size, context)
+    {
+        if !attachments.attachments.is_empty() {
+            model.insert("puppet_attachments".to_owned(), attachments.to_value());
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-puppet-attachment-lowering",
+            );
+        }
+        if let Some(mesh) = attachments.mesh.clone() {
+            model.insert("puppet_mesh_bounds".to_owned(), mesh.bounds.to_value());
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-puppet-mesh-lowering",
+            );
+            return Some(mesh);
+        } else if let Some(mesh_bounds) = attachments.mesh_bounds {
+            model.insert("puppet_mesh_bounds".to_owned(), mesh_bounds.to_value());
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-puppet-mesh-bounds-lowering",
+            );
+        }
+    }
+    None
+}
+
+fn scene_puppet_attachment_map_for_model_path(
+    project: &WallpaperEngineProject,
+    model_path: &str,
+    frame_size: SceneWeModelFrameSize,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<ScenePuppetAttachmentMap> {
+    let cache_key = format!("{}#{}x{}", model_path, frame_size.width, frame_size.height);
+    if let Some(attachments) = context.puppet_attachments_by_model_path.get(&cache_key) {
+        return Some(attachments.clone());
+    }
+    let relative = normalize_relative_path(model_path).ok()?;
+    let model_json = fs::read_to_string(project.root.join(relative)).ok()?;
+    let model_json = serde_json::from_str::<Value>(&model_json).ok()?;
+    let model_object = model_json.as_object()?;
+    let puppet = string_field(model_object, &["puppet"])?;
+    let attachments = scene_puppet_attachment_map_for_puppet_path(project, &puppet, frame_size)?;
+    context
+        .puppet_attachments_by_model_path
+        .insert(cache_key, attachments.clone());
+    Some(attachments)
+}
+
+fn scene_puppet_attachment_map_for_puppet_path(
+    project: &WallpaperEngineProject,
+    puppet: &str,
+    frame_size: SceneWeModelFrameSize,
+) -> Option<ScenePuppetAttachmentMap> {
+    let relative = normalize_relative_path(puppet).ok()?;
+    let bytes = fs::read(project.root.join(relative)).ok()?;
+    scene_parse_puppet_attachment_map(&bytes, frame_size).ok()
+}
+
+fn scene_copy_puppet_resource(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    puppet: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<String> {
+    if let Some(resource_id) = context.puppet_resource_ids.get(puppet) {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-puppet-resource-dedup",
+        );
+        return Some(resource_id.clone());
+    }
+    let resource_id = scene_copy_resource_as(
+        project,
+        output_dir,
+        puppet,
+        "model",
+        Some("we-puppet-mdl"),
+        report,
+        context,
+        resources,
+    )?;
+    context
+        .puppet_resource_ids
+        .insert(puppet.to_owned(), resource_id.clone());
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-puppet-mdl",
+    );
+    Some(resource_id)
+}
+
+fn scene_parse_puppet_attachment_map(
+    bytes: &[u8],
+    frame_size: SceneWeModelFrameSize,
+) -> Result<ScenePuppetAttachmentMap, String> {
+    let mdls_offset = scene_find_mdl_section(bytes, b"MDLS")
+        .ok_or_else(|| "Wallpaper Engine puppet MDL does not contain MDLS.".to_owned())?;
+    let mesh = scene_puppet_mesh(bytes, mdls_offset);
+    let mesh_bounds = mesh.as_ref().map(|mesh| mesh.bounds);
+    let (mdls_end, bone_count, mut position) =
+        scene_mdl_section_end_count_start(bytes, mdls_offset, "MDLS")?;
+    let mut bones = Vec::with_capacity(bone_count);
+    for bone_index in 0..bone_count {
+        let bone_start = position;
+        let _index = scene_take_u32_le(bytes, &mut position, mdls_end, "MDLS bone index")?;
+        scene_skip_bytes(bytes, &mut position, mdls_end, 1, "MDLS bone flags")?;
+        let parent = scene_take_i32_le(bytes, &mut position, mdls_end, "MDLS bone parent")?;
+        let entry_bytes =
+            scene_take_u32_le(bytes, &mut position, mdls_end, "MDLS bone matrix size")?;
+        if entry_bytes < 64 || entry_bytes % 4 != 0 || entry_bytes > 1024 {
+            return Err(format!(
+                "Wallpaper Engine puppet MDLS bone {bone_index} has invalid matrix byte length {entry_bytes}."
+            ));
+        }
+        let matrix = scene_take_mdl_matrix(bytes, &mut position, mdls_end)?;
+        let skip = usize::try_from(entry_bytes - 64)
+            .map_err(|_| "Wallpaper Engine puppet MDLS matrix skip overflowed.".to_owned())?;
+        scene_skip_bytes(
+            bytes,
+            &mut position,
+            mdls_end,
+            skip,
+            "MDLS bone matrix tail",
+        )?;
+        let info = scene_take_mdl_c_string(bytes, &mut position, mdls_end, "MDLS bone info")?;
+        bones.push(ScenePuppetBone {
+            parent: usize::try_from(parent)
+                .ok()
+                .filter(|parent| *parent < bone_count),
+            translation: (matrix[12], matrix[13], matrix[14]),
+            target_position: scene_puppet_bone_target_position(&info, frame_size),
+        });
+        if position <= bone_start {
+            return Err("Wallpaper Engine puppet MDLS parser did not advance.".to_owned());
+        }
+    }
+
+    let Some(mdat_offset) = scene_find_mdl_section_after(bytes, b"MDAT", mdls_end) else {
+        return Ok(ScenePuppetAttachmentMap {
+            attachments: BTreeMap::new(),
+            mesh_bounds,
+            mesh,
+        });
+    };
+    let (mdat_end, attachment_count, mut position) =
+        scene_mdat_section_end_count_start(bytes, mdat_offset)?;
+    let mut attachments = BTreeMap::new();
+    for _ in 0..attachment_count {
+        let bone_index = usize::from(scene_take_u16_le(
+            bytes,
+            &mut position,
+            mdat_end,
+            "MDAT attachment bone index",
+        )?);
+        let name = scene_take_mdl_c_string(bytes, &mut position, mdat_end, "MDAT attachment name")?;
+        let attachment_matrix = scene_take_mdl_matrix(bytes, &mut position, mdat_end)?;
+        let Some(chain_position) = scene_puppet_attachment_chain_position(bone_index, &bones)
+        else {
+            continue;
+        };
+        let target_position = scene_puppet_attachment_target_position(bone_index, &bones).map(
+            |(_target_bone_index, target_position)| {
+                (
+                    target_position.0 + f64::from(attachment_matrix[12]),
+                    target_position.1 + f64::from(attachment_matrix[13]),
+                    target_position.2 + f64::from(attachment_matrix[14]),
+                )
+            },
+        );
+        attachments.insert(
+            name,
+            ScenePuppetAttachment {
+                bone_index,
+                x: chain_position.0 + f64::from(attachment_matrix[12]),
+                y: chain_position.1 + f64::from(attachment_matrix[13]),
+                z: chain_position.2 + f64::from(attachment_matrix[14]),
+                placement_source: "mdls-bone-matrix-chain",
+                target_position,
+            },
+        );
+    }
+    let mesh_bounds = mesh.as_ref().map(|mesh| mesh.bounds).or(mesh_bounds);
+    Ok(ScenePuppetAttachmentMap {
+        attachments,
+        mesh_bounds,
+        mesh,
+    })
+}
+
+fn scene_puppet_mesh(bytes: &[u8], mdls_offset: usize) -> Option<ScenePuppetMesh> {
+    const MARKER_SIZE: usize = 9;
+    const MESH_HEADER_SIZE: usize = 8;
+    const VERTEX_STRIDE: usize = 80;
+    const POSITION_OFFSET: usize = 0;
+    const UV_OFFSET: usize = 72;
+    const TRIANGLE_INDEX_BYTES: usize = 6;
+
+    if mdls_offset <= MARKER_SIZE + MESH_HEADER_SIZE + 4 {
+        return None;
+    }
+    for offset in MARKER_SIZE..mdls_offset.saturating_sub(MESH_HEADER_SIZE + 4) {
+        let vertex_bytes = usize::try_from(scene_read_u32_le_at(bytes, offset + 4)?).ok()?;
+        let vertices_offset = offset.checked_add(MESH_HEADER_SIZE)?;
+        let index_length_offset = vertices_offset.checked_add(vertex_bytes)?;
+        if vertex_bytes == 0
+            || vertex_bytes % VERTEX_STRIDE != 0
+            || index_length_offset.checked_add(4)? > mdls_offset
+        {
+            continue;
+        }
+        let index_bytes =
+            usize::try_from(scene_read_u32_le_at(bytes, index_length_offset)?).ok()?;
+        let indices_offset = index_length_offset.checked_add(4)?;
+        if index_bytes == 0
+            || index_bytes % TRIANGLE_INDEX_BYTES != 0
+            || indices_offset.checked_add(index_bytes)? > mdls_offset
+        {
+            continue;
+        }
+        return scene_puppet_mesh_from_block(
+            bytes,
+            vertices_offset,
+            vertex_bytes / VERTEX_STRIDE,
+            VERTEX_STRIDE,
+            POSITION_OFFSET,
+            UV_OFFSET,
+            indices_offset,
+            index_bytes / 2,
+        );
+    }
+    None
+}
+
+fn scene_puppet_mesh_from_block(
+    bytes: &[u8],
+    vertices_offset: usize,
+    vertex_count: usize,
+    vertex_stride: usize,
+    position_offset: usize,
+    uv_offset: usize,
+    indices_offset: usize,
+    index_count: usize,
+) -> Option<ScenePuppetMesh> {
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut vertices = Vec::with_capacity(vertex_count);
+
+    for index in 0..vertex_count {
+        let vertex_base = vertices_offset.checked_add(index.checked_mul(vertex_stride)?)?;
+        let position_base = vertex_base.checked_add(position_offset)?;
+        let uv_base = vertex_base.checked_add(uv_offset)?;
+        let raw_x = scene_read_f32_le_at(bytes, position_base)?;
+        let raw_y = scene_read_f32_le_at(bytes, position_base + 4)?;
+        let u = scene_read_f32_le_at(bytes, uv_base)?;
+        let raw_v = scene_read_f32_le_at(bytes, uv_base + 4)?;
+        let v = 1.0 - raw_v;
+        if !raw_x.is_finite() || !raw_y.is_finite() || !u.is_finite() || !raw_v.is_finite() {
+            return None;
+        }
+        let x = raw_x;
+        let y = raw_y;
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+        vertices.push(ScenePuppetMeshVertex { x, y, u, v });
+    }
+
+    if vertices.len() < 3 {
+        return None;
+    }
+    let width = max_x - min_x;
+    let height = max_y - min_y;
+    if !width.is_finite() || !height.is_finite() || width <= f64::EPSILON || height <= f64::EPSILON
+    {
+        return None;
+    }
+    let mut indices = Vec::with_capacity(index_count);
+    for index in 0..index_count {
+        let offset = indices_offset.checked_add(index.checked_mul(2)?)?;
+        let value = u32::from(scene_read_u16_le_at(bytes, offset)?);
+        if usize::try_from(value)
+            .ok()
+            .is_none_or(|value| value >= vertices.len())
+        {
+            return None;
+        }
+        indices.push(value);
+    }
+    if indices.len() < 3 || indices.len() % 3 != 0 {
+        return None;
+    }
+    Some(ScenePuppetMesh {
+        bounds: ScenePuppetMeshBounds {
+            left: min_x,
+            top: min_y,
+            width,
+            height,
+            anchor_x: (-min_x / width).clamp(0.0, 1.0),
+            anchor_y: (-min_y / height).clamp(0.0, 1.0),
+        },
+        vertices,
+        indices,
+    })
+}
+
+fn scene_puppet_attachment_chain_position(
+    bone_index: usize,
+    bones: &[ScenePuppetBone],
+) -> Option<(f64, f64, f64)> {
+    let mut current = Some(bone_index);
+    let mut visited = BTreeSet::new();
+    let mut accumulated = (0.0, 0.0, 0.0);
+    while let Some(index) = current {
+        if !visited.insert(index) {
+            return None;
+        }
+        let bone = bones.get(index)?;
+        accumulated.0 += bone.translation.0;
+        accumulated.1 += bone.translation.1;
+        accumulated.2 += bone.translation.2;
+        current = bone.parent.filter(|parent| *parent != index);
+    }
+    Some(accumulated)
+}
+
+fn scene_puppet_attachment_target_position(
+    bone_index: usize,
+    bones: &[ScenePuppetBone],
+) -> Option<(usize, (f64, f64, f64))> {
+    let mut current = Some(bone_index);
+    let mut visited = BTreeSet::new();
+    let mut accumulated = (0.0, 0.0, 0.0);
+    while let Some(index) = current {
+        if !visited.insert(index) {
+            return None;
+        }
+        let bone = bones.get(index)?;
+        if let Some(target_position) = bone.target_position {
+            return Some((
+                index,
+                (
+                    target_position.0 + accumulated.0,
+                    target_position.1 + accumulated.1,
+                    target_position.2 + accumulated.2,
+                ),
+            ));
+        }
+        accumulated.0 += bone.translation.0;
+        accumulated.1 += bone.translation.1;
+        accumulated.2 += bone.translation.2;
+        current = bone.parent.filter(|parent| *parent != index);
+    }
+    None
+}
+
+fn scene_puppet_bone_target_position(
+    info: &str,
+    frame_size: SceneWeModelFrameSize,
+) -> Option<(f64, f64, f64)> {
+    let object = serde_json::from_str::<Value>(info).ok()?;
+    let tp = object.get("tp").and_then(Value::as_str)?;
+    let (x, y, z) = vector3_components_from_value(&Value::String(tp.to_owned()))?;
+    Some((
+        x - f64::from(frame_size.width) * 0.5,
+        y - f64::from(frame_size.height) * 0.5,
+        z,
+    ))
+}
+
+fn scene_find_mdl_section(bytes: &[u8], section: &[u8; 4]) -> Option<usize> {
+    bytes
+        .windows(section.len())
+        .position(|window| window == section)
+}
+
+fn scene_find_mdl_section_after(bytes: &[u8], section: &[u8; 4], offset: usize) -> Option<usize> {
+    let haystack = bytes.get(offset..)?;
+    haystack
+        .windows(section.len())
+        .position(|window| window == section)
+        .map(|relative| offset + relative)
+}
+
+fn scene_mdl_section_end_count_start(
+    bytes: &[u8],
+    section_offset: usize,
+    section_name: &str,
+) -> Result<(usize, usize, usize), String> {
+    for metadata_offset in [section_offset + 9, section_offset + 8] {
+        let Some(end) = scene_read_u32_le_at(bytes, metadata_offset)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        let Some(count) = scene_read_u32_le_at(bytes, metadata_offset + 4)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        let start = metadata_offset + 8;
+        if start < end && end <= bytes.len() && count <= 4096 {
+            return Ok((end, count, start));
+        }
+    }
+    Err(format!(
+        "Wallpaper Engine puppet {section_name} header is malformed."
+    ))
+}
+
+fn scene_mdat_section_end_count_start(
+    bytes: &[u8],
+    section_offset: usize,
+) -> Result<(usize, usize, usize), String> {
+    for metadata_offset in [section_offset + 9, section_offset + 8] {
+        let Some(end) = scene_read_u32_le_at(bytes, metadata_offset)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        let Some(count) = scene_read_u16_le_at(bytes, metadata_offset + 4).map(usize::from) else {
+            continue;
+        };
+        let start = metadata_offset + 6;
+        if start <= end && end <= bytes.len() && count <= 4096 {
+            return Ok((end, count, start));
+        }
+    }
+    Err("Wallpaper Engine puppet MDAT header is malformed.".to_owned())
+}
+
+fn scene_take_i32_le(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<i32, String> {
+    let value = scene_take_u32_le(bytes, position, end, field)?;
+    Ok(i32::from_le_bytes(value.to_le_bytes()))
+}
+
+fn scene_take_u32_le(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<u32, String> {
+    let start = *position;
+    let value = scene_read_u32_le_at(bytes, start)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is truncated."))?;
+    *position = start + 4;
+    if *position > end {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} extends outside its section."
+        ));
+    }
+    Ok(value)
+}
+
+fn scene_take_u16_le(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<u16, String> {
+    let start = *position;
+    let value = scene_read_u16_le_at(bytes, start)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is truncated."))?;
+    *position = start + 2;
+    if *position > end {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} extends outside its section."
+        ));
+    }
+    Ok(value)
+}
+
+fn scene_take_mdl_matrix(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+) -> Result<[f64; 16], String> {
+    let start = *position;
+    let matrix_end = start
+        .checked_add(64)
+        .ok_or_else(|| "Wallpaper Engine puppet matrix offset overflowed.".to_owned())?;
+    if matrix_end > end || matrix_end > bytes.len() {
+        return Err("Wallpaper Engine puppet matrix is truncated.".to_owned());
+    }
+    let mut matrix = [0.0; 16];
+    for (index, value) in matrix.iter_mut().enumerate() {
+        let offset = start + index * 4;
+        let bytes = bytes[offset..offset + 4]
+            .try_into()
+            .expect("matrix float slice length checked");
+        *value = f32::from_le_bytes(bytes) as f64;
+    }
+    *position = matrix_end;
+    Ok(matrix)
+}
+
+fn scene_skip_bytes(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    count: usize,
+    field: &str,
+) -> Result<(), String> {
+    let next = position
+        .checked_add(count)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} offset overflowed."))?;
+    if next > end || next > bytes.len() {
+        return Err(format!("Wallpaper Engine puppet {field} is truncated."));
+    }
+    *position = next;
+    Ok(())
+}
+
+fn scene_take_mdl_c_string(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<String, String> {
+    let section = bytes
+        .get(*position..end)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} section is truncated."))?;
+    let nul = section
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is not NUL terminated."))?;
+    let value = std::str::from_utf8(&section[..nul])
+        .map_err(|err| format!("Wallpaper Engine puppet {field} is not UTF-8: {err}."))?
+        .to_owned();
+    *position += nul + 1;
+    Ok(value)
+}
+
+fn scene_read_u32_le_at(bytes: &[u8], offset: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn scene_read_u16_le_at(bytes: &[u8], offset: usize) -> Option<u16> {
+    Some(u16::from_le_bytes(
+        bytes.get(offset..offset + 2)?.try_into().ok()?,
+    ))
+}
+
+fn scene_read_f32_le_at(bytes: &[u8], offset: usize) -> Option<f64> {
+    Some(f32::from_le_bytes(bytes.get(offset..offset + 4)?.try_into().ok()?) as f64)
 }
 
 fn scene_model_solid_layer(source_model: Option<&SceneSourceModelConversion>) -> bool {
@@ -2978,6 +4039,8 @@ fn scene_builtin_util_model(model_path: &str) -> Option<SceneSourceModelConversi
         render_resource: None,
         render_properties: None,
         render_size: None,
+        render_bounds: None,
+        render_mesh: None,
         original_path: model_path.to_owned(),
     })
 }
@@ -3128,6 +4191,22 @@ fn scene_model_frame_size(model_object: &Map<String, Value>) -> Option<SceneWeMo
     }
 }
 
+fn scene_frame_size_from_object_size(object: &Map<String, Value>) -> Option<SceneWeModelFrameSize> {
+    let (width, height, _) = object.get("size").and_then(vector3_components_from_value)?;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let width = width.round();
+    let height = height.round();
+    if width > f64::from(u32::MAX) || height > f64::from(u32::MAX) {
+        return None;
+    }
+    Some(SceneWeModelFrameSize {
+        width: width as u32,
+        height: height as u32,
+    })
+}
+
 fn scene_node_provenance_from_object(
     object: &Map<String, Value>,
     original_type: Option<&str>,
@@ -3144,6 +4223,9 @@ fn scene_node_provenance_from_object(
     }
     if let Some(parent_id) = object.get("parent").and_then(value_to_string) {
         provenance.insert("parent_id".to_owned(), Value::String(parent_id));
+    }
+    if let Some(attachment) = string_field(object, &["attachment"]) {
+        provenance.insert("attachment".to_owned(), Value::String(attachment));
     }
     if let Some(dependencies) = scene_dependencies_from_object(object) {
         provenance.insert("dependencies".to_owned(), dependencies);
@@ -3298,6 +4380,16 @@ fn scene_material_textures(
             );
             continue;
         }
+        if let Some(resource) = scene_generate_builtin_particle_texture_resource(
+            output_dir, texture, report, context, resources,
+        ) {
+            if render_resource.is_none() {
+                render_resource = Some(resource.clone());
+                render_kind = Some("image");
+            }
+            texture_resources.push(resource);
+            continue;
+        }
         if texture.ends_with(".tex") {
             if let Some(decoded) = scene_copy_decoded_tex_resource_as(
                 project,
@@ -3327,16 +4419,6 @@ fn scene_material_textures(
                     Some(texture),
                 );
             }
-            continue;
-        }
-        if let Some(resource) = scene_generate_builtin_particle_texture_resource(
-            output_dir, texture, report, context, resources,
-        ) {
-            if render_resource.is_none() {
-                render_resource = Some(resource.clone());
-                render_kind = Some("image");
-            }
-            texture_resources.push(resource);
             continue;
         }
         let resource_kind = if is_image_path(texture) {
@@ -3659,8 +4741,18 @@ fn scene_generate_builtin_particle_texture_resource(
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
 ) -> Option<String> {
-    let stem = scene_builtin_particle_texture_stem(source_path)?;
-    let resource_id = scene_next_resource_id(context, "image", &stem);
+    let builtin = scene_builtin_particle_texture(source_path)?;
+    if let Some(resource_id) = context
+        .builtin_particle_texture_resources
+        .get(&builtin.stem)
+    {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-builtin-particle-texture-dedup",
+        );
+        return Some(resource_id.clone());
+    }
+    let resource_id = scene_next_resource_id(context, "image", &builtin.stem);
     let dest_dir = output_dir
         .join("assets/scene-resources")
         .join(&context.resource_scope);
@@ -3671,7 +4763,7 @@ fn scene_generate_builtin_particle_texture_resource(
         return None;
     }
     let dest = dest_dir.join(format!("{resource_id}.gtex"));
-    let image = scene_builtin_particle_bubble_image();
+    let image = scene_builtin_particle_texture_image(builtin.kind);
     if let Err(err) = gtex::write_bc7_gtex(&dest, &image) {
         report.errors.push(format!(
             "Failed to write built-in Wallpaper Engine particle texture {source_path:?} to {}: {err}.",
@@ -3696,24 +4788,75 @@ fn scene_generate_builtin_particle_texture_resource(
         &mut report.converted_features,
         "wallpaper-engine-builtin-particle-texture",
     );
+    context
+        .builtin_particle_texture_resources
+        .insert(builtin.stem, resource_id.clone());
     Some(resource_id)
 }
 
 fn scene_builtin_particle_texture_stem(source_path: &str) -> Option<String> {
+    scene_builtin_particle_texture(source_path).map(|texture| texture.stem)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneBuiltinParticleTexture {
+    stem: String,
+    kind: SceneBuiltinParticleTextureKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneBuiltinParticleTextureKind {
+    Bubble,
+    ChromaticDot,
+    Flare,
+    Halo,
+    Splash,
+}
+
+fn scene_builtin_particle_texture(source_path: &str) -> Option<SceneBuiltinParticleTexture> {
     let normalized = source_path.replace('\\', "/").to_ascii_lowercase();
     let path = normalized
         .rsplit_once('.')
         .map(|(path, _)| path)
         .unwrap_or(&normalized);
-    if !path.starts_with("particle/bubbles/bubble") {
-        return None;
-    }
     let stem = path
         .rsplit('/')
         .next()
         .filter(|stem| !stem.is_empty())
-        .unwrap_or("bubble");
-    Some(format!("we-builtin-{stem}"))
+        .unwrap_or("particle");
+    let kind = if path.starts_with("particle/bubbles/bubble") {
+        SceneBuiltinParticleTextureKind::Bubble
+    } else if path == "particle/chromaticdot" || path == "materials/particle/chromaticdot" {
+        SceneBuiltinParticleTextureKind::ChromaticDot
+    } else if path.starts_with("particle/light/flare_")
+        || path.starts_with("materials/particle/light/flare_")
+    {
+        SceneBuiltinParticleTextureKind::Flare
+    } else if path.starts_with("particle/halo_") || path.starts_with("materials/particle/halo_") {
+        SceneBuiltinParticleTextureKind::Halo
+    } else if path.starts_with("particle/water/splash_")
+        || path.starts_with("materials/particle/water/splash_")
+    {
+        SceneBuiltinParticleTextureKind::Splash
+    } else {
+        return None;
+    };
+    Some(SceneBuiltinParticleTexture {
+        stem: format!("we-builtin-{stem}"),
+        kind,
+    })
+}
+
+fn scene_builtin_particle_texture_image(kind: SceneBuiltinParticleTextureKind) -> SceneWeTexImage {
+    match kind {
+        SceneBuiltinParticleTextureKind::Bubble => scene_builtin_particle_bubble_image(),
+        SceneBuiltinParticleTextureKind::ChromaticDot => {
+            scene_builtin_particle_chromatic_dot_image()
+        }
+        SceneBuiltinParticleTextureKind::Flare => scene_builtin_particle_flare_image(),
+        SceneBuiltinParticleTextureKind::Halo => scene_builtin_particle_halo_image(),
+        SceneBuiltinParticleTextureKind::Splash => scene_builtin_particle_splash_image(),
+    }
 }
 
 fn scene_builtin_particle_bubble_image() -> SceneWeTexImage {
@@ -3752,6 +4895,96 @@ fn scene_builtin_particle_bubble_image() -> SceneWeTexImage {
     }
 }
 
+fn scene_builtin_particle_halo_image() -> SceneWeTexImage {
+    scene_builtin_particle_radial_image(|distance, dx, dy| {
+        let ring = (1.0 - ((distance - 0.52).abs() / 0.20)).clamp(0.0, 1.0);
+        let core = (1.0 - distance / 0.72).clamp(0.0, 1.0).powf(2.8) * 0.28;
+        let alpha = (ring.powf(1.8) * 0.72 + core).clamp(0.0, 1.0);
+        let tint = (1.0 - (dx * 0.25 + dy * 0.18).abs()).clamp(0.0, 1.0);
+        [
+            (210.0 + 45.0 * tint) as u8,
+            (228.0 + 27.0 * tint) as u8,
+            255,
+            (alpha * 255.0).round() as u8,
+        ]
+    })
+}
+
+fn scene_builtin_particle_flare_image() -> SceneWeTexImage {
+    scene_builtin_particle_radial_image(|distance, dx, dy| {
+        let horizontal = (1.0 - dy.abs() / 0.12).clamp(0.0, 1.0)
+            * (1.0 - dx.abs() / 1.0).clamp(0.0, 1.0).powf(0.55);
+        let vertical = (1.0 - dx.abs() / 0.18).clamp(0.0, 1.0)
+            * (1.0 - dy.abs() / 0.78).clamp(0.0, 1.0).powf(1.2)
+            * 0.4;
+        let core = (1.0 - distance / 0.34).clamp(0.0, 1.0).powf(1.6);
+        let alpha = (horizontal * 0.72 + vertical + core * 0.85).clamp(0.0, 1.0);
+        [
+            255,
+            (214.0 + core * 41.0) as u8,
+            (150.0 + core * 105.0) as u8,
+            (alpha * 255.0).round() as u8,
+        ]
+    })
+}
+
+fn scene_builtin_particle_splash_image() -> SceneWeTexImage {
+    scene_builtin_particle_radial_image(|distance, dx, dy| {
+        let droplet = (1.0 - distance / 0.62).clamp(0.0, 1.0).powf(1.5);
+        let crown = (1.0 - ((distance - 0.46).abs() / 0.12)).clamp(0.0, 1.0)
+            * (1.0 - (dy + 0.22).abs() / 0.72).clamp(0.0, 1.0);
+        let streak = (1.0 - dx.abs() / 0.18).clamp(0.0, 1.0)
+            * (1.0 - (dy + 0.18).abs() / 0.92).clamp(0.0, 1.0)
+            * 0.42;
+        let alpha = (droplet * 0.58 + crown * 0.38 + streak).clamp(0.0, 1.0);
+        [
+            (160.0 + droplet * 55.0) as u8,
+            (214.0 + droplet * 32.0) as u8,
+            255,
+            (alpha * 255.0).round() as u8,
+        ]
+    })
+}
+
+fn scene_builtin_particle_chromatic_dot_image() -> SceneWeTexImage {
+    scene_builtin_particle_radial_image(|distance, dx, dy| {
+        let core = (1.0 - distance / 0.58).clamp(0.0, 1.0).powf(1.9);
+        let fringe_r = (1.0 - ((dx - 0.10).hypot(dy) / 0.68)).clamp(0.0, 1.0);
+        let fringe_b = (1.0 - ((dx + 0.10).hypot(dy) / 0.68)).clamp(0.0, 1.0);
+        let alpha = (core * 0.78 + (fringe_r + fringe_b) * 0.08).clamp(0.0, 1.0);
+        [
+            (120.0 + fringe_r * 135.0) as u8,
+            (140.0 + core * 90.0) as u8,
+            (160.0 + fringe_b * 95.0) as u8,
+            (alpha * 255.0).round() as u8,
+        ]
+    })
+}
+
+fn scene_builtin_particle_radial_image(
+    mut shade: impl FnMut(f64, f64, f64) -> [u8; 4],
+) -> SceneWeTexImage {
+    const SIZE: u32 = 64;
+    let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];
+    let center = (SIZE as f64 - 1.0) * 0.5;
+    let radius = center;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let dx = (x as f64 - center) / radius;
+            let dy = (y as f64 - center) / radius;
+            let distance = (dx * dx + dy * dy).sqrt();
+            let pixel = shade(distance, dx, dy);
+            let offset = ((y * SIZE + x) * 4) as usize;
+            rgba[offset..offset + 4].copy_from_slice(&pixel);
+        }
+    }
+    SceneWeTexImage {
+        width: SIZE,
+        height: SIZE,
+        rgba,
+    }
+}
+
 fn scene_copy_decoded_tex_resource_as(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -3774,6 +5007,14 @@ fn scene_copy_decoded_tex_resource_as(
             return None;
         }
     };
+    let cache_key = SceneDecodedTexResourceKey::new(&relative, frame_size, spritesheet_enabled);
+    if let Some(resource) = context.decoded_tex_resources.get(&cache_key) {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-tex-resource-dedup",
+        );
+        return Some(resource.clone());
+    }
     let source = project.root.join(&relative);
     let bytes = match fs::read(&source) {
         Ok(bytes) => bytes,
@@ -3797,7 +5038,7 @@ fn scene_copy_decoded_tex_resource_as(
     let decoded = match decoded {
         SceneWeTexPayload::Image(decoded) => decoded,
         SceneWeTexPayload::BlockCompressedImage(decoded) => {
-            return scene_copy_block_compressed_tex_resource(
+            let resource = scene_copy_block_compressed_tex_resource(
                 output_dir,
                 source_path,
                 &source,
@@ -3806,9 +5047,15 @@ fn scene_copy_decoded_tex_resource_as(
                 context,
                 resources,
             );
+            if let Some(resource) = &resource {
+                context
+                    .decoded_tex_resources
+                    .insert(cache_key, resource.clone());
+            }
+            return resource;
         }
         video @ SceneWeTexPayload::Video(_) => {
-            return scene_copy_decoded_tex_video_resource(
+            let resource = scene_copy_decoded_tex_video_resource(
                 output_dir,
                 source_path,
                 &source,
@@ -3817,6 +5064,12 @@ fn scene_copy_decoded_tex_resource_as(
                 context,
                 resources,
             );
+            if let Some(resource) = &resource {
+                context
+                    .decoded_tex_resources
+                    .insert(cache_key, resource.clone());
+            }
+            return resource;
         }
     };
     let atlas_width = decoded.width;
@@ -3905,11 +5158,15 @@ fn scene_copy_decoded_tex_resource_as(
         &mut context.converted_features,
         "scene-we-tex-bc7-gpu-texture",
     );
-    Some(SceneDecodedTexResource {
+    let resource = SceneDecodedTexResource {
         resource_id,
         render_kind: "image",
         spritesheet,
-    })
+    };
+    context
+        .decoded_tex_resources
+        .insert(cache_key, resource.clone());
+    Some(resource)
 }
 
 fn scene_copy_block_compressed_tex_resource(
@@ -4200,6 +5457,13 @@ fn scene_transform_from_object(
         transform.insert("x".to_owned(), json!(origin.0));
         transform.insert("y".to_owned(), json!(origin.1));
     }
+    scene_apply_attachment_transform_from_object(object, &mut transform, context);
+    scene_push_vector_component_script_property_bindings(
+        object.get("origin"),
+        &[("x", "x"), ("y", "y")],
+        node_id,
+        context,
+    );
     scene_push_numeric_property_binding(object, &["x", "left"], node_id, "x", context, 1.0, 0.0);
     scene_push_numeric_property_binding(object, &["y", "top"], node_id, "y", context, 1.0, 0.0);
     scene_push_numeric_property_binding(
@@ -4263,6 +5527,52 @@ fn scene_transform_from_object(
     } else {
         Some(Value::Object(transform))
     }
+}
+
+fn scene_apply_attachment_transform_from_object(
+    object: &Map<String, Value>,
+    transform: &mut Map<String, Value>,
+    context: &mut SceneDocumentBuildContext,
+) {
+    if transform.contains_key("x")
+        || transform.contains_key("y")
+        || number_value_field(object, &["x", "left"]).is_some()
+        || number_value_field(object, &["y", "top"]).is_some()
+    {
+        return;
+    }
+    let Some(attachment_name) = string_field(object, &["attachment"]) else {
+        return;
+    };
+    let Some(parent_id) = object.get("parent").and_then(value_to_string) else {
+        scene_push_unsupported(
+            context,
+            "wallpaper-engine-puppet-attachment",
+            "Wallpaper Engine scene object uses an attachment but has no parent model to resolve it.",
+            Some(&attachment_name),
+        );
+        return;
+    };
+    let attachment = context
+        .puppet_attachments_by_source_id
+        .get(&parent_id)
+        .and_then(|attachments| attachments.attachments.get(&attachment_name))
+        .copied();
+    let Some(attachment) = attachment else {
+        scene_push_unsupported(
+            context,
+            "wallpaper-engine-puppet-attachment",
+            "Wallpaper Engine scene object uses an attachment that was not found in the parent puppet model.",
+            Some(&attachment_name),
+        );
+        return;
+    };
+    transform.insert("x".to_owned(), json!(attachment.x));
+    transform.insert("y".to_owned(), json!(attachment.y));
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-puppet-attachment-lowering",
+    );
 }
 
 fn scene_anchor_from_object(object: &Map<String, Value>) -> Option<(f64, f64)> {
@@ -9286,6 +10596,85 @@ void main() {}
     }
 
     #[test]
+    fn lowers_wallpaper_engine_builtin_particle_tex_path_before_file_decode() {
+        let source = TestDir::new("we-scene-builtin-particle-tex-path-source");
+        let output = TestDir::new("we-scene-builtin-particle-tex-path-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 79,
+                  "type": "particle",
+                  "particle": "particles/splash.json"
+                }
+              ]
+            }"##,
+        );
+        source.write_file(
+            "particles/splash.json",
+            r##"{
+              "maxcount": 8,
+              "material": "materials/splash.json",
+              "renderer": [{ "name": "sprite", "fadealpha": true }]
+            }"##,
+        );
+        source.write_file(
+            "materials/splash.json",
+            r#"{ "passes": [{ "textures": ["materials/particle/water/splash_1.tex"] }] }"#,
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Builtin Particle Tex Path Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let particle = &scene["nodes"][0]["properties"]["particle"];
+        assert_eq!(
+            particle["textures"][0],
+            "materials/particle/water/splash_1.tex"
+        );
+        assert_eq!(
+            particle["render_resource"],
+            "resource-2-we-builtin-splash-1"
+        );
+        assert_eq!(
+            scene["nodes"][0]["resource"],
+            "resource-2-we-builtin-splash-1"
+        );
+        assert_eq!(scene["resources"][1]["type"], "image");
+        assert_eq!(
+            scene["resources"][1]["source"],
+            "assets/scene-resources/scene/resource-2-we-builtin-splash-1.gtex"
+        );
+        assert!(
+            output
+                .path()
+                .join("assets/scene-resources/scene/resource-2-we-builtin-splash-1.gtex")
+                .is_file()
+        );
+        assert!(
+            !scene["unsupported_features"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|feature| matches!(
+                    feature["feature"].as_str(),
+                    Some("we-tex-decode" | "we-particle-material-texture-runtime")
+                ))
+        );
+    }
+
+    #[test]
     fn converts_recordable_audio_response_to_native_scene_runtime() {
         let source = TestDir::new("we-scene-audio-response-source");
         let output = TestDir::new("we-scene-audio-response-output");
@@ -10701,6 +12090,133 @@ void main() {}
         );
     }
 
+    #[test]
+    fn deduplicates_repeated_wallpaper_engine_scene_tex_resources() {
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
+        let tex = test_we_tex_rgba(2, 2, &rgba);
+        let source = TestDir::new("we-scene-tex-resource-dedup-source");
+        let output = TestDir::new("we-scene-tex-resource-dedup-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                { "id": 1, "name": "Shared Tex A", "image": "models/shared.json" },
+                { "id": 2, "name": "Shared Tex B", "image": "models/shared.json" }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/shared.json",
+            r#"{ "material": "materials/shared.json", "width": 2, "height": 2 }"#,
+        );
+        source.write_file(
+            "materials/shared.json",
+            r#"{ "passes": [{ "textures": ["albedo"] }] }"#,
+        );
+        source.write_bytes("materials/albedo.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Deduplicated Tex Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let nodes = scene["nodes"].as_array().unwrap();
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["type"], "image");
+        assert_eq!(nodes[1]["type"], "image");
+        assert_eq!(nodes[0]["resource"], nodes[1]["resource"]);
+
+        let albedo_resources = scene["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|resource| {
+                resource["type"] == "image" && resource["original_source"] == "materials/albedo.tex"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(albedo_resources.len(), 1);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-we-tex-resource-dedup".to_owned())
+        );
+    }
+
+    #[test]
+    fn keeps_distinct_wallpaper_engine_scene_tex_frame_outputs() {
+        let rgba = vec![
+            255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255,
+            0, 255, 3, 3, 3, 255, 4, 4, 4, 255,
+        ];
+        let tex = test_we_tex_rgba(4, 2, &rgba);
+        let source = TestDir::new("we-scene-tex-resource-frame-distinct-source");
+        let output = TestDir::new("we-scene-tex-resource-frame-distinct-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                { "id": 1, "name": "Frame Tex", "image": "models/frame.json" },
+                { "id": 2, "name": "Atlas Tex", "image": "models/full.json" }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/frame.json",
+            r#"{ "material": "materials/shared.json", "width": 2, "height": 2 }"#,
+        );
+        source.write_file(
+            "models/full.json",
+            r#"{ "material": "materials/shared.json", "width": 4, "height": 2 }"#,
+        );
+        source.write_file(
+            "materials/shared.json",
+            r#"{ "passes": [{ "textures": ["albedo"] }] }"#,
+        );
+        source.write_bytes("materials/albedo.tex", &tex);
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Distinct Tex Frame Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let nodes = scene["nodes"].as_array().unwrap();
+        assert_ne!(nodes[0]["resource"], nodes[1]["resource"]);
+        let albedo_resources = scene["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|resource| {
+                resource["type"] == "image" && resource["original_source"] == "materials/albedo.tex"
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(albedo_resources.len(), 2);
+    }
+
     fn assert_we_block_compressed_tex_conversion(
         we_format: u32,
         expected_gtex_format: u32,
@@ -11325,6 +12841,336 @@ void main() {}
     }
 
     #[test]
+    fn lowers_wallpaper_engine_puppet_attachments_to_child_transforms() {
+        let source = TestDir::new("we-scene-puppet-attachment-source");
+        let output = TestDir::new("we-scene-puppet-attachment-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Body",
+                  "image": "models/body.json",
+                  "origin": [100, 200, 0],
+                  "size": [400, 300, 0]
+                },
+                {
+                  "id": 20,
+                  "parent": 10,
+                  "name": "Eye",
+                  "image": "models/eye.json",
+                  "attachment": "eye",
+                  "size": [40, 20, 0]
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/body.json",
+            r#"{
+              "width": 400,
+              "height": 300,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+        );
+        source.write_file(
+            "models/eye.json",
+            r#"{
+              "width": 40,
+              "height": 20
+            }"#,
+        );
+        source.write_bytes(
+            "models/body_puppet.mdl",
+            &test_we_mdl_with_attachment("eye", 1, (210.0, 130.0), (5.0, -7.0)),
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Puppet Attachment Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let parent = &scene["nodes"][0];
+        let child = &parent["children"][0];
+        assert_eq!(child["provenance"]["attachment"], "eye");
+        assert_eq!(child["transform"]["x"], 5.0);
+        assert_eq!(child["transform"]["y"], -7.0);
+        assert_eq!(
+            parent["provenance"]["model"]["puppet_attachments"]["eye"]["bone_index"],
+            1
+        );
+        assert_eq!(
+            parent["provenance"]["model"]["puppet_attachments"]["eye"]["placement_source"],
+            "mdls-bone-matrix-chain"
+        );
+        assert_eq!(
+            parent["provenance"]["model"]["puppet_attachments"]["eye"]["target_x"],
+            15.0
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers.len(), 2);
+        assert_eq!(snapshot.layers[0].transform.x, 100.0);
+        assert_eq!(snapshot.layers[0].transform.y, 200.0);
+        assert_eq!(snapshot.layers[1].transform.x, 105.0);
+        assert_eq!(snapshot.layers[1].transform.y, 193.0);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_puppet_attachment_child_bone_translation_chain() {
+        let source = TestDir::new("we-scene-puppet-child-bone-attachment-source");
+        let output = TestDir::new("we-scene-puppet-child-bone-attachment-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Body",
+                  "image": "models/body.json",
+                  "origin": [100, 200, 0],
+                  "size": [400, 300, 0]
+                },
+                {
+                  "id": 20,
+                  "parent": 10,
+                  "name": "Hair",
+                  "image": "models/hair.json",
+                  "attachment": "hair",
+                  "size": [40, 20, 0]
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/body.json",
+            r#"{
+              "width": 400,
+              "height": 300,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+        );
+        source.write_file(
+            "models/hair.json",
+            r#"{
+              "width": 40,
+              "height": 20
+            }"#,
+        );
+        source.write_bytes(
+            "models/body_puppet.mdl",
+            &test_we_mdl_with_attachment_and_child_translation(
+                "hair",
+                1,
+                (210.0, 130.0),
+                (8.0, 9.0),
+                (5.0, -7.0),
+            ),
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Puppet Child Bone Attachment Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let child = &scene["nodes"][0]["children"][0];
+        assert_eq!(child["provenance"]["attachment"], "hair");
+        assert_eq!(child["transform"]["x"], 13.0);
+        assert_eq!(child["transform"]["y"], 2.0);
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers[1].transform.x, 113.0);
+        assert_eq!(snapshot.layers[1].transform.y, 202.0);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_attachment_child_images_to_explicit_we_uv_meshes() {
+        let source = TestDir::new("we-scene-puppet-attachment-group-child-uv-source");
+        let output = TestDir::new("we-scene-puppet-attachment-group-child-uv-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Body",
+                  "image": "models/body.json",
+                  "origin": [100, 200, 0],
+                  "size": [400, 300, 0]
+                },
+                {
+                  "id": 20,
+                  "parent": 10,
+                  "name": "Hair Group",
+                  "attachment": "hair"
+                },
+                {
+                  "id": 30,
+                  "parent": 20,
+                  "name": "Hair Strand",
+                  "type": "image",
+                  "path": "hair.png",
+                  "size": [40, 20, 0]
+                }
+              ]
+            }"#,
+        );
+        source.write_file(
+            "models/body.json",
+            r#"{
+              "width": 400,
+              "height": 300,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+        );
+        source.write_file("hair.png", "not real png");
+        source.write_bytes(
+            "models/body_puppet.mdl",
+            &test_we_mdl_with_attachment("hair", 1, (210.0, 130.0), (5.0, -7.0)),
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Puppet Attachment Group Child UV Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let group = &scene["nodes"][0]["children"][0];
+        let child = &group["children"][0];
+
+        assert_eq!(group["type"], "group");
+        assert_eq!(group["provenance"]["attachment"], "hair");
+        assert_eq!(child["type"], "image");
+        assert_eq!(child["mesh"]["vertices"][0]["v"], 0.0);
+        assert_eq!(child["mesh"]["vertices"][1]["v"], 0.0);
+        assert_eq!(child["mesh"]["vertices"][2]["v"], 1.0);
+        assert_eq!(child["mesh"]["vertices"][3]["v"], 1.0);
+        assert_eq!(child["mesh"]["vertices"][0]["x"], -20.0);
+        assert_eq!(child["mesh"]["vertices"][2]["y"], 10.0);
+        assert_eq!(child["mesh"]["indices"], json!([0, 1, 2, 2, 1, 3]));
+        let child_id = child["id"].as_str().unwrap().to_owned();
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        let layer = snapshot
+            .layers
+            .iter()
+            .find(|layer| layer.id == child_id)
+            .expect("hair strand layer");
+        let mesh = layer.mesh.as_ref().expect("attachment child uv mesh");
+        assert_eq!(mesh.vertices[0].v, 0.0);
+        assert_eq!(mesh.vertices[2].v, 1.0);
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_puppet_mesh_to_scene_mesh_geometry() {
+        let source = TestDir::new("we-scene-puppet-mesh-bounds-source");
+        let output = TestDir::new("we-scene-puppet-mesh-bounds-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r#"{
+              "objects": [{
+                "id": 10,
+                "name": "Puppet Part",
+                "image": "models/part.json",
+                "attachment": "part",
+                "origin": [100, 200, 0],
+                "size": [200, 100, 0]
+              }]
+            }"#,
+        );
+        source.write_file(
+            "models/part.json",
+            r#"{
+              "width": 200,
+              "height": 100,
+              "puppet": "models/part_puppet.mdl"
+            }"#,
+        );
+        source.write_bytes(
+            "models/part_puppet.mdl",
+            &test_we_mdl_with_mesh_bounds(&[
+                (-20.0, 40.0, 0.0, 0.0),
+                (80.0, -60.0, 1.0, 0.0),
+                (10.0, 0.0, 0.5, 1.0),
+            ]),
+        );
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Puppet Mesh Bounds Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let node = &scene["nodes"][0];
+        assert_eq!(node["width"], 200.0);
+        assert_eq!(node["height"], 100.0);
+        assert_eq!(node["mesh"]["vertices"][0]["x"], -20.0);
+        assert_eq!(node["mesh"]["vertices"][0]["y"], 40.0);
+        assert_eq!(node["mesh"]["vertices"][0]["v"], 1.0);
+        assert_eq!(node["mesh"]["vertices"][1]["u"], 1.0);
+        assert_eq!(node["mesh"]["vertices"][2]["v"], 0.0);
+        assert_eq!(node["mesh"]["indices"], json!([0, 1, 2]));
+        assert_eq!(
+            node["provenance"]["model"]["puppet_mesh_bounds"]["left"],
+            -20.0
+        );
+        assert_eq!(
+            node["provenance"]["model"]["puppet_mesh_bounds"]["top"],
+            -60.0
+        );
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers[0].width, Some(200.0));
+        assert_eq!(snapshot.layers[0].height, Some(100.0));
+        let mesh = snapshot.layers[0].mesh.as_ref().expect("puppet mesh");
+        assert_eq!(mesh.vertices.len(), 3);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+    }
+
+    #[test]
     fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
         let source = TestDir::new("we-scene-text-binding-source");
         let output = TestDir::new("we-scene-text-binding-output");
@@ -11795,6 +13641,92 @@ void main() {}
         assert_eq!(snapshot.layers[0].width, Some(140.0));
         assert_eq!(snapshot.layers[0].height, Some(60.0));
         assert_eq!(snapshot.layers[0].opacity, 0.6);
+
+        let report: ConversionReport = serde_json::from_str(
+            &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            report
+                .converted_features
+                .contains(&"scene-deterministic-scenescript-expression".to_owned())
+        );
+    }
+
+    #[test]
+    fn lowers_wallpaper_engine_origin_component_scenescript_bindings() {
+        let source = TestDir::new("we-scene-origin-component-script-binding-source");
+        let output = TestDir::new("we-scene-origin-component-script-binding-output");
+        output.remove();
+        source.write_file(
+            "scene.json",
+            r##"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Character Root",
+                  "solid": true,
+                  "origin": {
+                    "value": "1910 1366 0",
+                    "script": "export var scriptProperties = createScriptProperties().addSlider({ name: 'newSlider', value: 50 }).finish();\nexport function update(value) {\n  value.x = scriptProperties.newSlider;\n  return value;\n}",
+                    "scriptproperties": {
+                      "newSlider": {
+                        "user": "character_x",
+                        "value": 50
+                      }
+                    }
+                  }
+                },
+                {
+                  "id": 20,
+                  "parent": 10,
+                  "name": "Character Body",
+                  "type": "image",
+                  "image": "body.png",
+                  "origin": "12 -20 0",
+                  "size": "100 200 0"
+                }
+              ]
+            }"##,
+        );
+        source.write_file("body.png", "not real png");
+        source.write_file(
+            PROJECT_FILE,
+            r#"{
+              "type": "scene",
+              "title": "Origin Component Script Binding Scene",
+              "file": "scene.json"
+            }"#,
+        );
+
+        convert_project(source.path(), output.path()).unwrap();
+        let scene: Value = serde_json::from_str(
+            &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+        )
+        .unwrap();
+        let root = &scene["nodes"][0];
+        assert_eq!(root["type"], "group");
+        assert_eq!(root["children"][0]["type"], "image");
+        let child_id = root["children"][0]["id"].clone();
+        let binding = scene["property_bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|binding| binding["property"] == "character_x" && binding["target"] == "x")
+            .expect("origin x binding");
+        assert_eq!(binding["target_node"], root["id"]);
+        assert_eq!(binding["scale"], 1.0);
+        assert_eq!(binding["offset"], 0.0);
+
+        let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |property| {
+            (property == "character_x").then_some(2000.0)
+        });
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, child_id);
+        assert_eq!(snapshot.layers[0].transform.x, 2012.0);
+        assert_eq!(snapshot.layers[0].transform.y, 1346.0);
 
         let report: ConversionReport = serde_json::from_str(
             &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
@@ -12674,6 +14606,131 @@ void main() {}
         test_write_u32_le(&mut bytes, 87, u32::try_from(payload.len()).unwrap());
         bytes.extend_from_slice(payload);
         bytes
+    }
+
+    fn test_we_mdl_with_attachment(
+        attachment_name: &str,
+        attachment_bone: u16,
+        root_tp: (f32, f32),
+        attachment_offset: (f32, f32),
+    ) -> Vec<u8> {
+        test_we_mdl_with_attachment_and_child_translation(
+            attachment_name,
+            attachment_bone,
+            root_tp,
+            (0.0, 0.0),
+            attachment_offset,
+        )
+    }
+
+    fn test_we_mdl_with_attachment_and_child_translation(
+        attachment_name: &str,
+        attachment_bone: u16,
+        root_tp: (f32, f32),
+        child_translation: (f32, f32),
+        attachment_offset: (f32, f32),
+    ) -> Vec<u8> {
+        let mut bytes = b"MDLV0023\0".to_vec();
+        let mdls_offset = bytes.len();
+        bytes.extend_from_slice(b"MDLS0004");
+        bytes.push(0);
+        let mdls_end_offset = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        test_push_mdl_bone(&mut bytes, 0, -1, Some(root_tp));
+        test_push_mdl_bone_with_translation(&mut bytes, 1, 0, None, child_translation);
+        let mdls_end = u32::try_from(bytes.len()).unwrap();
+        bytes[mdls_end_offset..mdls_end_offset + 4].copy_from_slice(&mdls_end.to_le_bytes());
+
+        let mdat_offset = bytes.len();
+        bytes.extend_from_slice(b"MDAT0001");
+        bytes.push(0);
+        let mdat_end_offset = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&attachment_bone.to_le_bytes());
+        bytes.extend_from_slice(attachment_name.as_bytes());
+        bytes.push(0);
+        let mut attachment_matrix = test_mdl_identity_matrix();
+        attachment_matrix[12] = attachment_offset.0;
+        attachment_matrix[13] = attachment_offset.1;
+        test_push_mdl_matrix(&mut bytes, attachment_matrix);
+        let mdat_end = u32::try_from(bytes.len()).unwrap();
+        bytes[mdat_end_offset..mdat_end_offset + 4].copy_from_slice(&mdat_end.to_le_bytes());
+        assert!(bytes[mdls_offset..].starts_with(b"MDLS"));
+        assert!(bytes[mdat_offset..].starts_with(b"MDAT"));
+        bytes
+    }
+
+    fn test_we_mdl_with_mesh_bounds(vertices: &[(f32, f32, f32, f32)]) -> Vec<u8> {
+        let mut bytes = b"MDLV0023\0".to_vec();
+        test_push_mdl_mesh_block(&mut bytes, vertices);
+        let mdls_offset = bytes.len();
+        bytes.extend_from_slice(b"MDLS0004");
+        bytes.push(0);
+        let mdls_end_offset = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        test_push_mdl_bone(&mut bytes, 0, -1, Some((100.0, 50.0)));
+        let mdls_end = u32::try_from(bytes.len()).unwrap();
+        bytes[mdls_end_offset..mdls_end_offset + 4].copy_from_slice(&mdls_end.to_le_bytes());
+        assert!(bytes[mdls_offset..].starts_with(b"MDLS"));
+        bytes
+    }
+
+    fn test_push_mdl_mesh_block(bytes: &mut Vec<u8>, vertices: &[(f32, f32, f32, f32)]) {
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&u32::try_from(vertices.len() * 80).unwrap().to_le_bytes());
+        for (x, y, u, v) in vertices {
+            let mut vertex = [0u8; 80];
+            vertex[0..4].copy_from_slice(&x.to_le_bytes());
+            vertex[4..8].copy_from_slice(&y.to_le_bytes());
+            vertex[8..12].copy_from_slice(&0.0f32.to_le_bytes());
+            vertex[72..76].copy_from_slice(&u.to_le_bytes());
+            vertex[76..80].copy_from_slice(&v.to_le_bytes());
+            bytes.extend_from_slice(&vertex);
+        }
+        bytes.extend_from_slice(&6u32.to_le_bytes());
+        for index in [0u16, 1, 2] {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+    }
+
+    fn test_push_mdl_bone(bytes: &mut Vec<u8>, index: u32, parent: i32, tp: Option<(f32, f32)>) {
+        test_push_mdl_bone_with_translation(bytes, index, parent, tp, (0.0, 0.0));
+    }
+
+    fn test_push_mdl_bone_with_translation(
+        bytes: &mut Vec<u8>,
+        index: u32,
+        parent: i32,
+        tp: Option<(f32, f32)>,
+        translation: (f32, f32),
+    ) {
+        bytes.extend_from_slice(&index.to_le_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&parent.to_le_bytes());
+        bytes.extend_from_slice(&64u32.to_le_bytes());
+        let mut matrix = test_mdl_identity_matrix();
+        matrix[12] = translation.0;
+        matrix[13] = translation.1;
+        test_push_mdl_matrix(bytes, matrix);
+        if let Some((x, y)) = tp {
+            bytes.extend_from_slice(format!(r#"{{"tp":"{x:.5} {y:.5} 0.00000"}}"#).as_bytes());
+        }
+        bytes.push(0);
+    }
+
+    fn test_mdl_identity_matrix() -> [f32; 16] {
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ]
+    }
+
+    fn test_push_mdl_matrix(bytes: &mut Vec<u8>, matrix: [f32; 16]) {
+        for value in matrix {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
     }
 
     fn test_scene_pkg(entries: &[(&str, &[u8])]) -> Vec<u8> {

@@ -1,6 +1,8 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use crate::core::scene::SceneSnapshotLayer;
 use crate::core::{
     FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystemStatus, SceneTextAlign,
     SceneTextureRegion, SceneTransform,
@@ -25,8 +27,10 @@ use super::super::vulkan::{
     native_vulkan_vulkanalia_scene_sampled_image_plan,
 };
 use super::draw_pass::{
+    NativeVulkanSceneSampledImageVertex,
+    native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
+    native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_draw_pass_plan, native_vulkan_scene_render_layer_is_clear,
-    native_vulkan_scene_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_solid_geometry_from_render_layer,
 };
 
@@ -448,14 +452,30 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     scene_fit: FitMode,
     layers: &[SceneRenderLayer],
 ) -> Result<NativeVulkanSceneSampledGeometryInputs, String> {
+    native_vulkan_scene_sampled_geometry_inputs_from_layers_with_source_indices(
+        snapshot_time_ms,
+        scene_size,
+        scene_fit,
+        layers,
+        None,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_inputs_from_layers_with_source_indices(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers: &[SceneRenderLayer],
+    sampled_source_indices: Option<&BTreeMap<PathBuf, u32>>,
+) -> Result<NativeVulkanSceneSampledGeometryInputs, String> {
     let _ = (snapshot_time_ms, scene_size, scene_fit);
     let mut solid_vertices = Vec::new();
     let mut solid_indices = Vec::new();
     let mut solid_draw_steps = Vec::new();
-    let mut sampled_vertices = Vec::new();
-    let mut sampled_indices = Vec::new();
+    let mut sampled_scene_vertices = Vec::with_capacity(layers.len().saturating_mul(4));
+    let mut sampled_indices = Vec::with_capacity(layers.len().saturating_mul(6));
     let mut sampled_sources = Vec::new();
-    let mut sampled_draw_steps = Vec::new();
+    let mut sampled_draw_steps = Vec::with_capacity(layers.len());
 
     for (layer_index, layer) in layers.iter().enumerate() {
         if native_vulkan_scene_render_layer_has_no_visual_geometry(layer) {
@@ -465,41 +485,43 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             continue;
         }
         if layer.kind == crate::core::SceneNodeKind::Image {
-            let Some((source, fit, texture_region, vertices)) =
-                native_vulkan_scene_sampled_image_geometry_from_render_layer(layer_index, layer)
-                    .map_err(|reason| {
-                        format!("dynamic scene is not sampled-image recordable: {reason}")
-                    })?
+            let Some((fit, texture_region, range)) =
+                native_vulkan_scene_append_sampled_image_geometry_from_render_layer(
+                    layer_index,
+                    layer,
+                    &mut sampled_scene_vertices,
+                    &mut sampled_indices,
+                )
+                .map_err(|reason| {
+                    format!("dynamic scene is not sampled-image recordable: {reason}")
+                })?
             else {
                 continue;
             };
-            let resource_index =
-                native_vulkan_scene_sampled_source_index(&mut sampled_sources, source);
-            let first_vertex = sampled_vertices.len().min(u32::MAX as usize) as u32;
-            let first_index = sampled_indices.len().min(u32::MAX as usize) as u32;
+            let Some(source) = layer.source.as_ref() else {
+                return Err(
+                    "dynamic scene is not sampled-image recordable: image-layer-missing-source"
+                        .to_owned(),
+                );
+            };
+            let resource_index = if let Some(source_indices) = sampled_source_indices {
+                *source_indices.get(source).ok_or_else(|| {
+                    format!(
+                        "dynamic scene sampled source {} is absent from retained sampled image topology",
+                        source.display()
+                    )
+                })?
+            } else {
+                native_vulkan_scene_sampled_source_index(&mut sampled_sources, source.clone())
+            };
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
                 resource_index,
-                first_index,
-                index_count: 6,
+                first_index: range.first_index,
+                index_count: range.index_count,
                 fit: Some(fit),
                 texture_region,
             });
-            sampled_vertices.extend(vertices.into_iter().map(|vertex| {
-                NativeVulkanVulkanaliaSceneSampledImageVertex::new(
-                    vertex.position,
-                    vertex.uv,
-                    vertex.opacity,
-                )
-            }));
-            sampled_indices.extend_from_slice(&[
-                first_vertex,
-                first_vertex + 1,
-                first_vertex + 2,
-                first_vertex + 2,
-                first_vertex + 1,
-                first_vertex + 3,
-            ]);
         } else {
             let Some((vertices, indices)) = native_vulkan_scene_solid_geometry_from_render_layer(
                 layer_index,
@@ -530,9 +552,25 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
         }
     }
 
-    if sampled_draw_steps.is_empty() || sampled_vertices.is_empty() || sampled_indices.is_empty() {
+    if sampled_source_indices.is_some() {
+        sampled_sources.clear();
+    }
+    if sampled_draw_steps.is_empty()
+        || sampled_scene_vertices.is_empty()
+        || sampled_indices.is_empty()
+    {
         return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
     }
+    let sampled_vertices = sampled_scene_vertices
+        .into_iter()
+        .map(|vertex: NativeVulkanSceneSampledImageVertex| {
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                vertex.position,
+                vertex.uv,
+                vertex.opacity,
+            )
+        })
+        .collect();
     let sampled_geometry = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
         sampled_vertices,
         sampled_indices,
@@ -559,6 +597,84 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     })
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_input_from_snapshot_layers_with_package_source_indices(
+    layers: &[SceneSnapshotLayer],
+    sampled_source_indices: &BTreeMap<String, u32>,
+) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+    let mut sampled_scene_vertices = Vec::with_capacity(layers.len().saturating_mul(4));
+    let mut sampled_indices = Vec::with_capacity(layers.len().saturating_mul(6));
+    let mut sampled_draw_steps = Vec::with_capacity(layers.len());
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        if native_vulkan_scene_snapshot_layer_has_no_visual_geometry(layer) {
+            continue;
+        }
+        if layer.kind == crate::core::SceneNodeKind::Video {
+            continue;
+        }
+        if layer.kind != crate::core::SceneNodeKind::Image {
+            continue;
+        }
+        let Some((fit, texture_region, range)) =
+            native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer(
+                layer_index,
+                layer,
+                &mut sampled_scene_vertices,
+                &mut sampled_indices,
+            )
+            .map_err(|reason| format!("dynamic scene is not sampled-image recordable: {reason}"))?
+        else {
+            continue;
+        };
+        let Some(source) = layer.source.as_ref() else {
+            return Err(
+                "dynamic scene is not sampled-image recordable: image-layer-missing-source"
+                    .to_owned(),
+            );
+        };
+        let resource_index = *sampled_source_indices.get(source.as_str()).ok_or_else(|| {
+            format!(
+                "dynamic scene sampled package source {} is absent from retained sampled image topology",
+                source.as_str()
+            )
+        })?;
+        sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index,
+            resource_index,
+            first_index: range.first_index,
+            index_count: range.index_count,
+            fit: Some(fit),
+            texture_region,
+        });
+    }
+
+    if sampled_draw_steps.is_empty()
+        || sampled_scene_vertices.is_empty()
+        || sampled_indices.is_empty()
+    {
+        return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
+    }
+    let sampled_vertices = sampled_scene_vertices
+        .into_iter()
+        .map(|vertex: NativeVulkanSceneSampledImageVertex| {
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                vertex.position,
+                vertex.uv,
+                vertex.opacity,
+            )
+        })
+        .collect();
+    Ok(
+        NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
+            sampled_vertices,
+            sampled_indices,
+            Vec::new(),
+            sampled_draw_steps,
+            "scene-runtime-direct-snapshot-sampled-image-draw-plan",
+        ),
+    )
+}
+
 fn native_vulkan_scene_sampled_source_index(sources: &mut Vec<PathBuf>, source: PathBuf) -> u32 {
     if let Some(index) = sources.iter().position(|existing| existing == &source) {
         return index.min(u32::MAX as usize) as u32;
@@ -570,6 +686,25 @@ fn native_vulkan_scene_sampled_source_index(sources: &mut Vec<PathBuf>, source: 
 
 fn native_vulkan_scene_render_layer_has_no_visual_geometry(layer: &SceneRenderLayer) -> bool {
     if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+        return true;
+    }
+    match layer.kind {
+        SceneNodeKind::Audio | SceneNodeKind::Script => true,
+        SceneNodeKind::Color => layer.color.as_deref().is_none_or(|color| color.is_empty()),
+        SceneNodeKind::Rectangle | SceneNodeKind::Ellipse => {
+            layer.color.as_deref().is_none_or(|color| color.is_empty())
+                && (layer
+                    .stroke_color
+                    .as_deref()
+                    .is_none_or(|color| color.is_empty())
+                    || layer.stroke_width.unwrap_or(1.0) <= 0.0)
+        }
+        _ => false,
+    }
+}
+
+fn native_vulkan_scene_snapshot_layer_has_no_visual_geometry(layer: &SceneSnapshotLayer) -> bool {
+    if layer.opacity <= 0.0 {
         return true;
     }
     match layer.kind {
@@ -1273,7 +1408,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         scene_particle_system_ready_from_metadata || particle_runtime_layer_count > 0;
     let solid_geometry_layer_count = pass_plan.quad_recording_steps.len();
     let sampled_image_native_layer_count = if pass_plan.sampled_image_recording_ready {
-        pass_plan.sampled_image_recording_steps.len()
+        pass_plan.sampled_image_op_count
     } else if pass_plan.sampled_image_implicit_full_extent_ready {
         pass_plan.sampled_image_op_count
     } else {
@@ -1573,9 +1708,10 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::scene::SceneSnapshotLayer;
     use crate::core::{
-        FitMode, SceneNodeKind, ScenePathFillRule, SceneSystemStatus, SceneSystems, SceneTextAlign,
-        SceneTransform,
+        FitMode, PackagePath, SceneNodeKind, ScenePathFillRule, SceneSystemStatus, SceneSystems,
+        SceneTextAlign, SceneTransform,
     };
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
     use crate::renderer::{SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer};
@@ -1594,6 +1730,36 @@ mod tests {
             corner_radius: None,
             width: None,
             height: None,
+            mesh: None,
+            text: None,
+            font_size: None,
+            font_family: None,
+            font_source: None,
+            font_weight: None,
+            text_align: None,
+            path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            transform: SceneTransform::default(),
+        }
+    }
+
+    fn scene_test_snapshot_layer(id: &str, kind: SceneNodeKind) -> SceneSnapshotLayer {
+        SceneSnapshotLayer {
+            id: id.to_owned(),
+            kind,
+            source: None,
+            texture_region: None,
+            audio: Vec::new(),
+            color: None,
+            stroke_color: None,
+            stroke_width: None,
+            corner_radius: None,
+            width: None,
+            height: None,
+            mesh: None,
+            parallax_depth: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -1656,6 +1822,7 @@ mod tests {
             timeline_animated_layer_count,
             property_binding_count,
             cursor_parallax_input_ready: false,
+            dynamic_topology_required: false,
             scene_scenescript_binding_count: 0,
             scene_material_graph_count: 0,
             scene_material_graph_resource_count: 0,
@@ -2706,8 +2873,8 @@ mod tests {
             snapshot.draw_pass_sampled_image_vertices[3].position,
             [110.0, 50.0]
         );
-        assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 0.0]);
-        assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 1.0]);
+        assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 1.0]);
+        assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 0.0]);
         let (source, sampled_geometry) = snapshot
             .take_vulkanalia_sampled_image_geometry_input()
             .expect("recordable sampled image geometry");
@@ -2719,7 +2886,7 @@ mod tests {
         assert_eq!(sampled_geometry.vertices.len(), 4);
         assert_eq!(sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
         assert_eq!(sampled_geometry.vertices[0].position, [-90.0, -50.0]);
-        assert_eq!(sampled_geometry.vertices[3].uv, [1.0, 1.0]);
+        assert_eq!(sampled_geometry.vertices[3].uv, [1.0, 0.0]);
         assert_eq!(sampled_geometry.vertices[0].opacity, 0.5);
         assert!(snapshot.vulkanalia_draw_pass.backend_ready);
         assert_eq!(
@@ -3263,6 +3430,36 @@ mod tests {
         );
         assert_eq!(geometry.sampled_geometry.vertices.len(), 4);
         assert_eq!(geometry.sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn dynamic_sampled_geometry_builds_directly_from_snapshot_layers() {
+        let mut sprite = scene_test_snapshot_layer("sprite::particle-0", SceneNodeKind::Image);
+        sprite.source = Some(PackagePath::new("assets/spark.gtex").unwrap());
+        sprite.width = Some(32.0);
+        sprite.height = Some(16.0);
+        sprite.transform.x = 24.0;
+        let mut indices = BTreeMap::new();
+        indices.insert("assets/spark.gtex".to_owned(), 7);
+
+        let geometry =
+            native_vulkan_scene_sampled_geometry_input_from_snapshot_layers_with_package_source_indices(
+                &[sprite],
+                &indices,
+            )
+            .expect("snapshot sampled geometry");
+
+        assert_eq!(
+            geometry.source_label,
+            "scene-runtime-direct-snapshot-sampled-image-draw-plan"
+        );
+        assert!(geometry.sources.is_empty());
+        assert_eq!(geometry.draw_steps.len(), 1);
+        assert_eq!(geometry.draw_steps[0].resource_index, 7);
+        assert_eq!(geometry.draw_steps[0].first_index, 0);
+        assert_eq!(geometry.draw_steps[0].index_count, 6);
+        assert_eq!(geometry.vertices.len(), 4);
+        assert_eq!(geometry.indices, vec![0, 1, 2, 2, 1, 3]);
     }
 
     #[test]

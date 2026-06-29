@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::config::VideoDecoderPolicy;
-use crate::core::{FitMode, SceneNodeKind, SceneSize, SceneSystems, SceneTransform, Transition};
+use crate::core::{
+    FitMode, SceneNodeKind, SceneSize, SceneSystems, SceneTextureRegion, SceneTransform, Transition,
+};
 use crate::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -58,6 +60,7 @@ pub enum NativeVulkanRenderItem {
         timeline_animated_layer_count: usize,
         property_binding_count: usize,
         cursor_parallax_input_ready: bool,
+        dynamic_topology_required: bool,
         scene_scenescript_binding_count: usize,
         scene_material_graph_count: usize,
         scene_material_graph_resource_count: usize,
@@ -124,6 +127,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             corner_radius: None,
             width: None,
             height: None,
+            mesh: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -143,6 +147,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         timeline_animated_layer_count: 0,
         property_binding_count: 0,
         cursor_parallax_input_ready: false,
+        dynamic_topology_required: false,
         scene_scenescript_binding_count: 0,
         scene_material_graph_count: 0,
         scene_material_graph_resource_count: 0,
@@ -262,6 +267,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         timeline_animated_layer_count: plan.timeline_animated_layer_count,
         property_binding_count: plan.property_binding_count,
         cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
+        dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
         scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
         scene_material_graph_count: plan.scene_material_graph_count,
         scene_material_graph_resource_count: plan.scene_material_graph_resource_count,
@@ -274,4 +280,24 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         target_max_fps: plan.target_max_fps,
         renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
     }
+}
+
+fn native_vulkan_scene_plan_requires_dynamic_topology(plan: &SceneWallpaperPlan) -> bool {
+    let particle_runtime_active = matches!(
+        plan.scene_systems.particles,
+        crate::core::scene::SceneSystemStatus::Detected
+            | crate::core::scene::SceneSystemStatus::Ready
+    );
+    plan.timeline_animation_count > 0
+        || plan.timeline_animated_layer_count > 0
+        || particle_runtime_active
+        || plan.layers.iter().any(|layer| {
+            layer
+                .texture_region
+                .is_some_and(native_vulkan_scene_texture_region_is_animated)
+        })
+}
+
+fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) -> bool {
+    region.frame_count > 1 && region.fps.is_some_and(|fps| fps.is_finite() && fps > 0.0)
 }

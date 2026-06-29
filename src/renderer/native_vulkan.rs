@@ -152,7 +152,8 @@ use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 pub use scene_present_runtime::{
     NativeVulkanSceneAudioCueRuntimeSnapshot, NativeVulkanScenePresentSnapshot,
-    NativeVulkanSceneVideoBridgeOptions, NativeVulkanSceneVideoBridgeSourceOptions, run_scene,
+    NativeVulkanSceneVideoBridgeOptions, NativeVulkanSceneVideoBridgeSourceOptions,
+    native_vulkan_scene_runtime_snapshot_from_plan, run_scene,
 };
 pub use scene_runtime::{
     NativeVulkanSceneDrawOpSnapshot, NativeVulkanSceneQuadRecordingStepSnapshot,
@@ -12324,6 +12325,7 @@ mod tests {
                     corner_radius: Some(8.0),
                     width: Some(320.0),
                     height: Some(180.0),
+                    mesh: None,
                     text: None,
                     font_size: None,
                     font_family: None,

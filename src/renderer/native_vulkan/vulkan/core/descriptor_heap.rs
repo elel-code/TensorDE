@@ -414,6 +414,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
         .build()
 }
 
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
+    resources: &VulkanaliaDescriptorHeapImageSamplerResources,
+    image_index: usize,
+) -> Result<vk::BindHeapInfoEXT, String> {
+    let descriptor_offset = *resources
+        .plan
+        .image_descriptor_offsets
+        .get(image_index)
+        .ok_or_else(|| format!("descriptor heap image index {image_index} has no image offset"))?;
+    descriptor_heap_indexed_bind_info(
+        &resources.resource_heap,
+        resources.plan.resource_heap_reserved_range_offset,
+        resources.plan.resource_heap_reserved_range_size,
+        descriptor_offset,
+        "resource",
+    )
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
 ) -> vk::BindHeapInfoEXT {
@@ -427,6 +445,59 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
         .reserved_range_offset(resources.plan.sampler_heap_reserved_range_offset)
         .reserved_range_size(resources.plan.sampler_heap_reserved_range_size)
         .build()
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image(
+    resources: &VulkanaliaDescriptorHeapImageSamplerResources,
+    image_index: usize,
+) -> Result<vk::BindHeapInfoEXT, String> {
+    let descriptor_offset = *resources
+        .plan
+        .sampler_descriptor_offsets
+        .get(image_index)
+        .ok_or_else(|| {
+            format!("descriptor heap image index {image_index} has no sampler offset")
+        })?;
+    descriptor_heap_indexed_bind_info(
+        &resources.sampler_heap,
+        resources.plan.sampler_heap_reserved_range_offset,
+        resources.plan.sampler_heap_reserved_range_size,
+        descriptor_offset,
+        "sampler",
+    )
+}
+
+fn descriptor_heap_indexed_bind_info(
+    heap: &VulkanaliaDescriptorHeapBuffer,
+    reserved_range_offset: u64,
+    reserved_range_size: u64,
+    descriptor_offset: u64,
+    role: &'static str,
+) -> Result<vk::BindHeapInfoEXT, String> {
+    if descriptor_offset > reserved_range_offset {
+        return Err(format!(
+            "{role} descriptor offset {descriptor_offset} exceeds reserved range offset {reserved_range_offset}"
+        ));
+    }
+    let heap_size = heap
+        .snapshot
+        .requested_bytes
+        .checked_sub(descriptor_offset)
+        .ok_or_else(|| format!("{role} descriptor offset exceeds heap size"))?;
+    let address = heap
+        .device_address
+        .checked_add(descriptor_offset)
+        .ok_or_else(|| format!("{role} descriptor heap device address overflows"))?;
+    Ok(vk::BindHeapInfoEXT::builder()
+        .heap_range(
+            vk::DeviceAddressRangeEXT::builder()
+                .address(address)
+                .size(heap_size)
+                .build(),
+        )
+        .reserved_range_offset(reserved_range_offset - descriptor_offset)
+        .reserved_range_size(reserved_range_size)
+        .build())
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(

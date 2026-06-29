@@ -4573,13 +4573,17 @@ fn update_scene_sampled_image_geometry_input_for_time(
     if input.indices != geometry.indices {
         return Err("scene dynamic sampled-image geometry changed index topology".to_owned());
     }
-    if input.sources != geometry.sources {
+    if !input.sources.is_empty() && input.sources != geometry.sources {
         return Err("scene dynamic sampled-image geometry changed sampled sources".to_owned());
     }
     if !scene_sampled_image_draw_step_topology_matches(&input.draw_steps, &geometry.draw_steps) {
         return Err("scene dynamic sampled-image geometry changed draw step topology".to_owned());
     }
-    let source_count = input.sources.len().max(1);
+    let source_count = if input.sources.is_empty() {
+        geometry.sources.len().max(1)
+    } else {
+        input.sources.len().max(1)
+    };
     for (step_index, step) in input.draw_steps.iter().enumerate() {
         if step.resource_index as usize >= source_count {
             return Err(format!(
@@ -5264,26 +5268,58 @@ fn scene_sampled_image_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     sampled_images: &[VulkanaliaSceneSampledImageResources],
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
+    scene_sampled_image_draw_commands_for_count(draw_steps, sampled_images.len())
+}
+
+fn scene_sampled_image_draw_commands_for_count(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    sampled_image_count: usize,
+) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
     for (step_index, step) in draw_steps.iter().enumerate() {
-        sampled_images.get(step.resource_index as usize).ok_or_else(|| {
-            format!(
+        if step.resource_index as usize >= sampled_image_count {
+            return Err(format!(
                 "scene sampled-image draw step {step_index} resource index {} exceeds sampled image count {}",
-                step.resource_index,
-                sampled_images.len()
-            )
-        })?;
+                step.resource_index, sampled_image_count
+            ));
+        }
+        if step.index_count == 0 {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} requires at least one index"
+            ));
+        }
         let descriptor_binding = VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
             resource_index: step.resource_index,
         };
-        draw_commands.push(VulkanaliaSceneSampledImageDrawCommand {
+        let command = VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
+            last_layer_index: step.layer_index,
             descriptor_binding,
             first_index: step.first_index,
             index_count: step.index_count,
-        });
+        };
+        if let Some(previous) = draw_commands.last_mut()
+            && scene_sampled_image_draw_commands_can_merge(previous, &command)
+        {
+            previous.index_count = previous.index_count.saturating_add(command.index_count);
+            previous.last_layer_index = command.last_layer_index;
+            continue;
+        }
+        draw_commands.push(command);
     }
     Ok(draw_commands)
+}
+
+fn scene_sampled_image_draw_commands_can_merge(
+    previous: &VulkanaliaSceneSampledImageDrawCommand,
+    next: &VulkanaliaSceneSampledImageDrawCommand,
+) -> bool {
+    previous.last_layer_index.saturating_add(1) == next.layer_index
+        && previous.descriptor_binding == next.descriptor_binding
+        && previous
+            .first_index
+            .checked_add(previous.index_count)
+            .is_some_and(|next_first_index| next_first_index == next.first_index)
 }
 
 fn scene_video_layer_draw_commands(
@@ -5322,13 +5358,33 @@ fn scene_solid_quad_draw_commands(
                 "scene solid draw step {step_index} requires at least one index"
             ));
         }
-        draw_commands.push(VulkanaliaSceneSolidQuadDrawCommand {
+        let command = VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: step.layer_index,
+            last_layer_index: step.layer_index,
             first_index: step.first_index,
             index_count: step.index_count,
-        });
+        };
+        if let Some(previous) = draw_commands.last_mut()
+            && scene_solid_quad_draw_commands_can_merge(previous, &command)
+        {
+            previous.index_count = previous.index_count.saturating_add(command.index_count);
+            previous.last_layer_index = command.last_layer_index;
+            continue;
+        }
+        draw_commands.push(command);
     }
     Ok(draw_commands)
+}
+
+fn scene_solid_quad_draw_commands_can_merge(
+    previous: &VulkanaliaSceneSolidQuadDrawCommand,
+    next: &VulkanaliaSceneSolidQuadDrawCommand,
+) -> bool {
+    previous.last_layer_index.saturating_add(1) == next.layer_index
+        && previous
+            .first_index
+            .checked_add(previous.index_count)
+            .is_some_and(|next_first_index| next_first_index == next.first_index)
 }
 
 fn scene_sampled_image_sampler_mode(
@@ -5827,6 +5883,159 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(indices, vec![0, 1, 2, 2, 3, 0]);
+    }
+
+    #[test]
+    fn solid_quad_draw_commands_merge_contiguous_layer_ranges() {
+        let commands = scene_solid_quad_draw_commands(&[
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 4,
+                first_index: 0,
+                index_count: 6,
+            },
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 5,
+                first_index: 6,
+                index_count: 6,
+            },
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 6,
+                first_index: 12,
+                index_count: 12,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            commands,
+            vec![VulkanaliaSceneSolidQuadDrawCommand {
+                layer_index: 4,
+                last_layer_index: 6,
+                first_index: 0,
+                index_count: 24,
+            }]
+        );
+    }
+
+    #[test]
+    fn solid_quad_draw_commands_keep_non_contiguous_layer_ranges_separate() {
+        let commands = scene_solid_quad_draw_commands(&[
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 4,
+                first_index: 0,
+                index_count: 6,
+            },
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 6,
+                first_index: 6,
+                index_count: 6,
+            },
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 7,
+                first_index: 24,
+                index_count: 6,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(
+            commands,
+            vec![
+                VulkanaliaSceneSolidQuadDrawCommand {
+                    layer_index: 4,
+                    last_layer_index: 4,
+                    first_index: 0,
+                    index_count: 6,
+                },
+                VulkanaliaSceneSolidQuadDrawCommand {
+                    layer_index: 6,
+                    last_layer_index: 6,
+                    first_index: 6,
+                    index_count: 6,
+                },
+                VulkanaliaSceneSolidQuadDrawCommand {
+                    layer_index: 7,
+                    last_layer_index: 7,
+                    first_index: 24,
+                    index_count: 6,
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn sampled_image_draw_commands_merge_same_resource_contiguous_ranges() {
+        let commands = scene_sampled_image_draw_commands_for_count(
+            &[
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 10,
+                    resource_index: 0,
+                    first_index: 0,
+                    index_count: 6,
+                    fit: None,
+                    texture_region: None,
+                },
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 11,
+                    resource_index: 0,
+                    first_index: 6,
+                    index_count: 12,
+                    fit: None,
+                    texture_region: None,
+                },
+            ],
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            commands,
+            vec![VulkanaliaSceneSampledImageDrawCommand {
+                layer_index: 10,
+                last_layer_index: 11,
+                descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                    resource_index: 0,
+                },
+                first_index: 0,
+                index_count: 18,
+            }]
+        );
+    }
+
+    #[test]
+    fn sampled_image_draw_commands_keep_different_resources_separate() {
+        let commands = scene_sampled_image_draw_commands_for_count(
+            &[
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 10,
+                    resource_index: 0,
+                    first_index: 0,
+                    index_count: 6,
+                    fit: None,
+                    texture_region: None,
+                },
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 11,
+                    resource_index: 1,
+                    first_index: 6,
+                    index_count: 6,
+                    fit: None,
+                    texture_region: None,
+                },
+            ],
+            2,
+        )
+        .unwrap();
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0].descriptor_binding,
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index: 0 }
+        );
+        assert_eq!(
+            commands[1].descriptor_binding,
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index: 1 }
+        );
     }
 
     #[test]

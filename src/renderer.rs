@@ -13,14 +13,16 @@ use self::scene_display::{
 };
 #[cfg(test)]
 use self::scene_runtime::scene_audio_response_property_value;
-pub use self::scene_runtime::{SceneWallpaperRuntimeFrame, SceneWallpaperRuntimeSampler};
+pub use self::scene_runtime::{
+    SceneWallpaperRuntimeFrame, SceneWallpaperRuntimeSampler, SceneWallpaperRuntimeSnapshotFrame,
+};
 use self::scene_runtime::{
     scene_input_properties_from_sources, scene_property_value, scene_render_property_value,
     scene_runtime_property_value_with_inputs,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
-use crate::core::scene::{SceneAudioCueCondition, SceneEffect, SceneSnapshotLayer};
+use crate::core::scene::{SceneAudioCueCondition, SceneEffect, SceneMesh, SceneSnapshotLayer};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
     SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
@@ -148,6 +150,7 @@ pub struct SceneRenderLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub mesh: Option<SceneMesh>,
     pub text: Option<String>,
     pub font_size: Option<f64>,
     pub font_family: Option<String>,
@@ -244,20 +247,31 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
     cursor_parallax_input_ready: bool,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let document = load_scene_document(&source_path)?;
+    let manifest = load_optional_scene_package_manifest(package_root)?;
+    let manifest_properties = manifest.as_ref().map(|manifest| &manifest.properties);
     let scene_input_properties =
-        scene_input_properties_from_sources(&document, render_properties, None);
+        scene_input_properties_from_sources(&document, render_properties, manifest_properties);
     let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |property| {
-        scene_render_property_value(property, render_properties).or_else(|| {
-            scene_runtime_property_value_with_inputs(
-                &document,
-                snapshot_time_ms,
-                property,
-                &scene_input_properties,
-            )
-        })
+        manifest_properties
+            .and_then(|properties| scene_property_value(property, render_properties, properties))
+            .or_else(|| scene_render_property_value(property, render_properties))
+            .or_else(|| {
+                scene_runtime_property_value_with_inputs(
+                    &document,
+                    snapshot_time_ms,
+                    property,
+                    &scene_input_properties,
+                )
+            })
     });
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
+    let manifest_max_fps = manifest
+        .as_ref()
+        .and_then(|manifest| match &manifest.entry {
+            WallpaperEntry::Scene { max_fps, .. } => *max_fps,
+            _ => None,
+        });
     let display = scene_display_plan(
         Some(source_path.as_path()),
         &document,
@@ -270,7 +284,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
     Ok(SceneWallpaperPlan {
         output_name,
         source: Some(source_path),
-        manifest_max_fps: None,
+        manifest_max_fps,
         target_max_fps,
         snapshot_time_ms: snapshot.time_ms,
         scene_size: document.size,
@@ -292,6 +306,57 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         display,
         layers,
     })
+}
+
+fn load_optional_scene_package_manifest(
+    package_root: &Path,
+) -> Result<Option<Manifest>, RendererPlanError> {
+    let json_path = package_root.join(crate::core::MANIFEST_FILE);
+    if json_path.exists() {
+        return load_scene_package_manifest_file(&json_path, ScenePackageManifestSyntax::Json)
+            .map(Some);
+    }
+
+    let toml_path = package_root.join(crate::core::MANIFEST_TOML_FILE);
+    if toml_path.exists() {
+        return load_scene_package_manifest_file(&toml_path, ScenePackageManifestSyntax::Toml)
+            .map(Some);
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScenePackageManifestSyntax {
+    Json,
+    Toml,
+}
+
+fn load_scene_package_manifest_file(
+    path: &Path,
+    syntax: ScenePackageManifestSyntax,
+) -> Result<Manifest, RendererPlanError> {
+    let contents = fs::read_to_string(path).map_err(|err| {
+        RendererPlanError::PackageLoad(format!("failed to read manifest {}: {err}", path.display()))
+    })?;
+    let manifest: Manifest = match syntax {
+        ScenePackageManifestSyntax::Json => serde_json::from_str(&contents).map_err(|err| {
+            RendererPlanError::PackageLoad(format!(
+                "failed to parse manifest {}: {err}",
+                path.display()
+            ))
+        })?,
+        ScenePackageManifestSyntax::Toml => toml::from_str(&contents).map_err(|err| {
+            RendererPlanError::PackageLoad(format!(
+                "failed to parse manifest {}: {err}",
+                path.display()
+            ))
+        })?,
+    };
+    manifest.validate().map_err(|err| {
+        RendererPlanError::PackageLoad(format!("invalid manifest {}: {err}", path.display()))
+    })?;
+    Ok(manifest)
 }
 
 fn scene_default_gscene_package_root(path: &Path) -> PathBuf {
@@ -1859,6 +1924,7 @@ fn scene_render_layers_from_snapshot_into(
             corner_radius: layer.corner_radius,
             width: layer.width,
             height: layer.height,
+            mesh: layer.mesh,
             text: layer.text,
             font_size: layer.font_size,
             font_family: layer.font_family,

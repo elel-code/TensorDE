@@ -245,14 +245,11 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
     input: NativeVulkanVulkanaliaSceneSampledImagePlanInput,
 ) -> NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot {
     let sampled_image_count = input.sampled_image_sources.len();
-    let expected_vertex_count =
-        sampled_image_count.saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
-    let expected_index_count =
-        sampled_image_count.saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
     let backend_ready = sampled_image_count > 0
-        && input.recording_step_count == sampled_image_count
-        && input.vertex_count == expected_vertex_count
-        && input.index_count == expected_index_count
+        && input.recording_step_count > 0
+        && input.vertex_count >= input.recording_step_count.saturating_mul(3)
+        && input.index_count >= input.recording_step_count.saturating_mul(3)
+        && input.index_count % 3 == 0
         && input.vertex_buffer_bytes > 0
         && input.index_buffer_bytes > 0;
     let (backend_status, blocking_reason) = if backend_ready {
@@ -1614,15 +1611,56 @@ mod tests {
     }
 
     #[test]
+    fn sampled_image_plan_accepts_variable_mesh_geometry() {
+        let snapshot = native_vulkan_vulkanalia_scene_sampled_image_plan(
+            NativeVulkanVulkanaliaSceneSampledImagePlanInput {
+                sampled_image_sources: vec![PathBuf::from("/tmp/puppet.gtex")],
+                recording_step_count: 1,
+                vertex_count: 3,
+                index_count: 3,
+                vertex_buffer_bytes: 60,
+                index_buffer_bytes: 12,
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(
+            snapshot.backend_status,
+            "sampled-image-dynamic-rendering-recording-ready"
+        );
+        assert_eq!(snapshot.blocking_reason, None);
+    }
+
+    #[test]
+    fn sampled_image_plan_accepts_reused_resource_recording_steps() {
+        let snapshot = native_vulkan_vulkanalia_scene_sampled_image_plan(
+            NativeVulkanVulkanaliaSceneSampledImagePlanInput {
+                sampled_image_sources: vec![PathBuf::from("/tmp/reused.gtex")],
+                recording_step_count: 2,
+                vertex_count: 8,
+                index_count: 12,
+                vertex_buffer_bytes: 160,
+                index_buffer_bytes: 48,
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(
+            snapshot.backend_status,
+            "sampled-image-dynamic-rendering-recording-ready"
+        );
+    }
+
+    #[test]
     fn sampled_image_plan_rejects_incomplete_geometry() {
         let snapshot = native_vulkan_vulkanalia_scene_sampled_image_plan(
             NativeVulkanVulkanaliaSceneSampledImagePlanInput {
                 sampled_image_sources: vec![PathBuf::from("/tmp/hero.png")],
                 recording_step_count: 1,
-                vertex_count: 3,
-                index_count: 6,
-                vertex_buffer_bytes: 60,
-                index_buffer_bytes: 24,
+                vertex_count: 0,
+                index_count: 0,
+                vertex_buffer_bytes: 0,
+                index_buffer_bytes: 0,
             },
         );
 

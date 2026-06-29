@@ -18,7 +18,7 @@ use crate::renderer::{
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
 pub struct SceneWallpaperRuntimeSampler {
@@ -40,6 +40,14 @@ pub struct SceneWallpaperRuntimeFrame {
     pub scene_size: Option<SceneSize>,
     pub scene_fit: FitMode,
     pub layers: Vec<SceneRenderLayer>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneWallpaperRuntimeSnapshotFrame {
+    pub snapshot_time_ms: u64,
+    pub scene_size: Option<SceneSize>,
+    pub scene_fit: FitMode,
+    pub layers: Vec<SceneSnapshotLayer>,
 }
 
 impl SceneWallpaperRuntimeSampler {
@@ -126,6 +134,42 @@ impl SceneWallpaperRuntimeSampler {
     pub fn recycle_frame(&mut self, mut frame: SceneWallpaperRuntimeFrame) {
         frame.layers.clear();
         self.render_layers_scratch = frame.layers;
+    }
+
+    pub fn package_root(&self) -> &Path {
+        &self.package_root
+    }
+
+    pub fn sample_snapshot_frame_reusing(
+        &mut self,
+        time_ms: u64,
+    ) -> Result<SceneWallpaperRuntimeSnapshotFrame, RendererPlanError> {
+        self.document.snapshot_layers_at_with_resolvers(
+            time_ms,
+            |property| {
+                scene_runtime_property_value_with_inputs(
+                    &self.document,
+                    time_ms,
+                    property,
+                    &self.input_properties,
+                )
+            },
+            |property| {
+                scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
+            },
+            &mut self.snapshot_layers_scratch,
+        );
+        Ok(SceneWallpaperRuntimeSnapshotFrame {
+            snapshot_time_ms: time_ms,
+            scene_size: self.document.size,
+            scene_fit: self.scene_fit,
+            layers: std::mem::take(&mut self.snapshot_layers_scratch),
+        })
+    }
+
+    pub fn recycle_snapshot_frame(&mut self, mut frame: SceneWallpaperRuntimeSnapshotFrame) {
+        frame.layers.clear();
+        self.snapshot_layers_scratch = frame.layers;
     }
 
     pub fn sample_plan(&self, time_ms: u64) -> Result<SceneWallpaperPlan, RendererPlanError> {

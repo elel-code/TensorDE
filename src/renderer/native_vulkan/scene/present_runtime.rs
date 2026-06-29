@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "native-vulkan-video")]
 use std::thread::{self, JoinHandle};
@@ -8,7 +10,7 @@ use serde::Serialize;
 use crate::core::{SceneSystemStatus, SceneTextureRegion};
 use crate::renderer::{
     SceneRenderAudioCue, SceneWallpaperPlan, SceneWallpaperRuntimeFrame,
-    SceneWallpaperRuntimeSampler,
+    SceneWallpaperRuntimeSampler, SceneWallpaperRuntimeSnapshotFrame,
 };
 
 #[cfg(feature = "native-vulkan-video")]
@@ -46,7 +48,9 @@ use super::super::{
 };
 use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot, NativeVulkanSceneSampledGeometryInputs,
-    native_vulkan_scene_runtime_snapshot, native_vulkan_scene_sampled_geometry_inputs_from_layers,
+    native_vulkan_scene_runtime_snapshot,
+    native_vulkan_scene_sampled_geometry_input_from_snapshot_layers_with_package_source_indices,
+    native_vulkan_scene_sampled_geometry_inputs_from_layers_with_source_indices,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
 };
 
@@ -100,6 +104,14 @@ pub type NativeVulkanSceneVideoPresentRuntimeSnapshot =
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum NativeVulkanSceneVideoPresentRuntimeSnapshot {}
 
+pub fn native_vulkan_scene_runtime_snapshot_from_plan(
+    plan: &SceneWallpaperPlan,
+) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
+    let render_item = native_vulkan_scene_item(plan);
+    native_vulkan_scene_runtime_snapshot(&render_item)
+        .ok_or_else(|| NativeVulkanError::Scene("scene runtime snapshot is unavailable".to_owned()))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanScenePresentRouteKind {
     Clear,
@@ -118,14 +130,26 @@ struct NativeVulkanSceneDynamicGeometryFrame {
 struct NativeVulkanSceneDynamicGeometryCache {
     sampler: SceneWallpaperRuntimeSampler,
     base_time_ms: u64,
+    sampled_package_source_indices: BTreeMap<String, u32>,
+    sampled_source_indices: BTreeMap<PathBuf, u32>,
+    include_solid_geometry: bool,
     cached: Option<NativeVulkanSceneDynamicGeometryFrame>,
 }
 
 impl NativeVulkanSceneDynamicGeometryCache {
-    fn new(sampler: SceneWallpaperRuntimeSampler, base_time_ms: u64) -> Self {
+    fn new(
+        sampler: SceneWallpaperRuntimeSampler,
+        base_time_ms: u64,
+        sampled_package_source_indices: BTreeMap<String, u32>,
+        sampled_source_indices: BTreeMap<PathBuf, u32>,
+        include_solid_geometry: bool,
+    ) -> Self {
         Self {
             sampler,
             base_time_ms,
+            sampled_package_source_indices,
+            sampled_source_indices,
+            include_solid_geometry,
             cached: None,
         }
     }
@@ -179,12 +203,33 @@ impl NativeVulkanSceneDynamicGeometryCache {
 
     fn refresh_frame(&mut self, elapsed_ms: u64) -> Result<(), String> {
         let sample_time_ms = self.base_time_ms.saturating_add(elapsed_ms);
-        let frame = self
-            .sampler
-            .sample_frame_reusing(sample_time_ms)
-            .map_err(|err| format!("sample dynamic scene frame: {err}"))?;
-        let geometry = native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(&frame);
-        self.sampler.recycle_frame(frame);
+        let geometry = if self.include_solid_geometry {
+            let frame = self
+                .sampler
+                .sample_frame_reusing(sample_time_ms)
+                .map_err(|err| format!("sample dynamic scene frame: {err}"))?;
+            let geometry = native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(
+                &frame,
+                Some(&self.sampled_source_indices),
+            );
+            self.sampler.recycle_frame(frame);
+            geometry
+        } else {
+            let frame = self
+                .sampler
+                .sample_snapshot_frame_reusing(sample_time_ms)
+                .map_err(|err| format!("sample dynamic scene snapshot frame: {err}"))?;
+            let geometry = native_vulkan_scene_sampled_geometry_input_from_runtime_snapshot_frame(
+                &frame,
+                &self.sampled_package_source_indices,
+            )
+            .map(|sampled_geometry| NativeVulkanSceneSampledGeometryInputs {
+                solid_geometry: None,
+                sampled_geometry,
+            });
+            self.sampler.recycle_snapshot_frame(frame);
+            geometry
+        };
         let geometry = geometry?;
         self.cached = Some(NativeVulkanSceneDynamicGeometryFrame {
             elapsed_ms,
@@ -209,12 +254,24 @@ impl NativeVulkanSceneDynamicGeometryCache {
 
 fn native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(
     frame: &SceneWallpaperRuntimeFrame,
+    sampled_source_indices: Option<&BTreeMap<PathBuf, u32>>,
 ) -> Result<NativeVulkanSceneSampledGeometryInputs, String> {
-    native_vulkan_scene_sampled_geometry_inputs_from_layers(
+    native_vulkan_scene_sampled_geometry_inputs_from_layers_with_source_indices(
         frame.snapshot_time_ms,
         frame.scene_size,
         frame.scene_fit,
         &frame.layers,
+        sampled_source_indices,
+    )
+}
+
+fn native_vulkan_scene_sampled_geometry_input_from_runtime_snapshot_frame(
+    frame: &SceneWallpaperRuntimeSnapshotFrame,
+    sampled_package_source_indices: &BTreeMap<String, u32>,
+) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+    native_vulkan_scene_sampled_geometry_input_from_snapshot_layers_with_package_source_indices(
+        &frame.layers,
+        sampled_package_source_indices,
     )
 }
 
@@ -339,9 +396,17 @@ fn native_vulkan_scene_dynamic_sampled_geometry_pair(
         return Ok((None, None));
     };
     let base_time_ms = plan.snapshot_time_ms;
+    let sampled_source_indices = native_vulkan_scene_sampled_source_indices(plan);
+    let sampled_package_source_indices = native_vulkan_scene_sampled_package_source_indices(
+        &sampled_source_indices,
+        sampler.package_root(),
+    )?;
     let cache = Arc::new(Mutex::new(NativeVulkanSceneDynamicGeometryCache::new(
         sampler,
         base_time_ms,
+        sampled_package_source_indices,
+        sampled_source_indices,
+        include_solid_geometry,
     )));
     Ok((
         include_solid_geometry.then(|| {
@@ -351,6 +416,55 @@ fn native_vulkan_scene_dynamic_sampled_geometry_pair(
             cache,
         )),
     ))
+}
+
+fn native_vulkan_scene_sampled_source_indices(plan: &SceneWallpaperPlan) -> BTreeMap<PathBuf, u32> {
+    let mut sources = Vec::new();
+    for source in plan.layers.iter().filter_map(|layer| {
+        (layer.kind == crate::core::SceneNodeKind::Image
+            && layer.opacity > 0.0
+            && !(layer.mesh.is_none()
+                && layer.opacity == 1.0
+                && layer.width.is_none()
+                && layer.height.is_none()
+                && layer.transform == crate::core::SceneTransform::default()))
+        .then(|| layer.source.as_ref())
+        .flatten()
+    }) {
+        if !sources.iter().any(|existing| existing == source) {
+            sources.push(source.clone());
+        }
+    }
+    sources
+        .into_iter()
+        .enumerate()
+        .map(|(index, source)| (source, index.min(u32::MAX as usize) as u32))
+        .collect()
+}
+
+fn native_vulkan_scene_sampled_package_source_indices(
+    sampled_source_indices: &BTreeMap<PathBuf, u32>,
+    package_root: &Path,
+) -> Result<BTreeMap<String, u32>, NativeVulkanError> {
+    sampled_source_indices
+        .iter()
+        .map(|(source, index)| {
+            let package_path = source.strip_prefix(package_root).map_err(|_| {
+                NativeVulkanError::Scene(format!(
+                    "scene sampled image source {} is outside scene package root {}",
+                    source.display(),
+                    package_root.display()
+                ))
+            })?;
+            let package_path = package_path.to_str().ok_or_else(|| {
+                NativeVulkanError::Scene(format!(
+                    "scene sampled image source {} is not utf-8 package path",
+                    source.display()
+                ))
+            })?;
+            Ok((package_path.to_owned(), *index))
+        })
+        .collect()
 }
 
 pub fn run_scene(
@@ -368,7 +482,8 @@ pub fn run_scene(
     if options.host.output_name.is_none() {
         options.host.output_name = Some(plan.output_name.clone());
     }
-    let target_max_fps = options.target_max_fps.or(plan.target_max_fps);
+    let target_max_fps =
+        native_vulkan_scene_effective_target_max_fps(options.target_max_fps, plan.target_max_fps);
     options.target_max_fps = target_max_fps;
     let render_item = native_vulkan_scene_item(&plan);
     options.clear_color = native_vulkan_render_item_clear_color(&render_item, options.clear_color);
@@ -586,6 +701,16 @@ pub fn run_scene(
             })
         }
     }
+}
+
+fn native_vulkan_scene_effective_target_max_fps(
+    options_target_max_fps: Option<u32>,
+    plan_target_max_fps: Option<u32>,
+) -> Option<u32> {
+    const NATIVE_VULKAN_OPTIONS_DEFAULT_TARGET_FPS: u32 = 240;
+    plan_target_max_fps.or_else(|| {
+        options_target_max_fps.filter(|fps| *fps != NATIVE_VULKAN_OPTIONS_DEFAULT_TARGET_FPS)
+    })
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -871,6 +996,7 @@ mod tests {
             corner_radius: None,
             width: None,
             height: None,
+            mesh: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -883,6 +1009,22 @@ mod tests {
             opacity: 1.0,
             transform: SceneTransform::default(),
         }
+    }
+
+    #[test]
+    fn scene_default_options_target_fps_does_not_cap_runtime() {
+        assert_eq!(
+            native_vulkan_scene_effective_target_max_fps(Some(240), None),
+            None
+        );
+        assert_eq!(
+            native_vulkan_scene_effective_target_max_fps(Some(120), None),
+            Some(120)
+        );
+        assert_eq!(
+            native_vulkan_scene_effective_target_max_fps(Some(240), Some(240)),
+            Some(240)
+        );
     }
 
     fn plan(layers: Vec<SceneRenderLayer>) -> SceneWallpaperPlan {

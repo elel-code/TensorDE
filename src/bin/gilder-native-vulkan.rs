@@ -218,9 +218,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
-        backend_contract, capabilities, native_vulkan_video_duration_playback_frames,
-        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
-        run_scene, run_static_image, wallpaper_type_support_matrix,
+        backend_contract, capabilities, native_vulkan_scene_runtime_snapshot_from_plan,
+        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
+        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene, run_static_image,
+        wallpaper_type_support_matrix,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
@@ -239,6 +240,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut mode = NativeVulkanCliMode::All;
     let mut options = NativeVulkanOptions::default();
+    let mut target_fps_set = false;
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
@@ -332,6 +334,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_video_images = true;
             }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
+            "--scene-runtime-snapshot" => mode = NativeVulkanCliMode::SceneRuntimeSnapshot,
             "--run-scene" => mode = NativeVulkanCliMode::RunScene,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
@@ -364,8 +367,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--target-fps" => {
                 options.target_max_fps =
                     args.next().map(|value| value.parse::<u32>()).transpose()?;
+                target_fps_set = true;
             }
-            "--no-fps-limit" => options.target_max_fps = None,
+            "--no-fps-limit" => {
+                options.target_max_fps = None;
+                target_fps_set = true;
+            }
             "--color" => {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
                 options.clear_color = parse_color(&value)?;
@@ -552,6 +559,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .into());
     }
 
+    if matches!(
+        mode,
+        NativeVulkanCliMode::RunScene | NativeVulkanCliMode::SceneRuntimeSnapshot
+    ) && !target_fps_set
+    {
+        options.target_max_fps = None;
+    }
+
     let duration_playback_frames = if duration_set {
         native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
     } else {
@@ -687,6 +702,38 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
+        NativeVulkanCliMode::SceneRuntimeSnapshot => {
+            if let Some(source) = source.as_ref() {
+                if !source.is_file() {
+                    return Err(format!("scene source does not exist: {}", source.display()).into());
+                }
+            }
+            let output_name = options
+                .host
+                .output_name
+                .clone()
+                .unwrap_or_else(|| "native-vulkan".to_owned());
+            let target_max_fps = options.target_max_fps;
+            let plan = scene_cli_plan(
+                output_name,
+                source,
+                scene_video_layer,
+                scene_root,
+                fit,
+                background,
+                scene_color,
+                scene_path_data,
+                scene_path_fill_rule,
+                scene_stroke_color,
+                scene_stroke_width,
+                scene_text,
+                scene_text_color,
+                scene_text_font_size,
+                scene_snapshot_time_ms,
+                target_max_fps,
+            )?;
+            json!(native_vulkan_scene_runtime_snapshot_from_plan(&plan)?)
+        }
         NativeVulkanCliMode::RunScene => {
             if let Some(source) = source.as_ref() {
                 if !source.is_file() {
@@ -1221,6 +1268,7 @@ fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         corner_radius: None,
         width: None,
         height: None,
+        mesh: None,
         text: None,
         font_size: None,
         font_family: None,
@@ -1390,11 +1438,46 @@ mod tests {
                   "id": "background",
                   "type": "image",
                   "resource": "background-resource",
+                  "transform": { "x": 0, "y": 0 },
                   "audio": [
                     { "resource": "theme-audio", "playback_mode": "loop" }
                   ]
                 }
+              ],
+              "property_bindings": [
+                {
+                  "property": "scene_x",
+                  "target_node": "background",
+                  "target": "x",
+                  "scale": 1,
+                  "offset": 0
+                }
               ]
+            }"##,
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(gilder::core::MANIFEST_FILE),
+            br##"{
+              "format": "gilder.wallpaper",
+              "format_version": 1,
+              "id": "cli-gscene-test",
+              "version": "1.0.0",
+              "title": "CLI GScene Test",
+              "kind": "scene",
+              "entry": {
+                "type": "scene",
+                "source": "assets/scene.gscene.json",
+                "max_fps": 48
+              },
+              "properties": {
+                "scene_x": {
+                  "type": "range",
+                  "min": 0,
+                  "max": 100,
+                  "default": 42
+                }
+              }
             }"##,
         )
         .unwrap();
@@ -1421,9 +1504,15 @@ mod tests {
         .expect("gscene scene plan");
 
         assert_eq!(plan.source, Some(source));
+        assert_eq!(plan.manifest_max_fps, Some(48));
         assert_eq!(plan.snapshot_time_ms, 2468);
         assert!(!plan.cursor_parallax_input_ready);
+        assert_eq!(
+            plan.scene_input_properties["scene_x"],
+            serde_json::json!(42.0)
+        );
         assert_eq!(plan.audio_cue_count, 1);
+        assert_eq!(plan.layers[0].transform.x, 42.0);
         assert!(
             plan.layers[0]
                 .source
@@ -1606,6 +1695,7 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresent,
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
+    SceneRuntimeSnapshot,
     RunClear,
     RunScene,
     RunStatic,
@@ -1616,7 +1706,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-scene|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--scene-runtime-snapshot|--run-clear|--run-scene|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1635,6 +1725,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
 --playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
+--scene-runtime-snapshot builds the same native scene runtime snapshot as --run-scene and exits before presenting, preserving CPU geometry evidence in JSON.\n\
 --run-scene builds a scene plan from --source, --scene-root, --scene-video, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\

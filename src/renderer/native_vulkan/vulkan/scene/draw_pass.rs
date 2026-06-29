@@ -8,8 +8,8 @@ use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
-    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
-    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image,
+    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image,
 };
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
@@ -207,6 +207,7 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageD
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImageDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) descriptor_binding:
         VulkanaliaSceneSampledImageDescriptorBinding,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
@@ -216,6 +217,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
 }
@@ -309,7 +311,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
     let sampled_image_pending = input.plan_ready
         && input.native_draw_ready
         && input.sampled_image_recording_ready
-        && input.sampled_image_recording_step_count == input.sampled_image_op_count
+        && input.sampled_image_recording_step_count <= input.sampled_image_op_count
         && input
             .sampled_image_op_count
             .saturating_add(input.clear_background_op_count)
@@ -335,10 +337,10 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
         && input.native_draw_ready
         && input.quad_recording_step_count > 0
         && input.sampled_image_recording_ready
-        && input.sampled_image_recording_step_count == input.sampled_image_op_count
+        && input.sampled_image_recording_step_count <= input.sampled_image_op_count
         && input
             .quad_recording_step_count
-            .saturating_add(input.sampled_image_recording_step_count)
+            .saturating_add(input.sampled_image_op_count)
             .saturating_add(input.clear_background_op_count)
             == input.draw_op_count;
 
@@ -1326,7 +1328,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize,
         );
         let mut bound_pipeline: Option<u8> = None;
-        let mut descriptor_heap_bound = false;
+        let mut bound_descriptor_heap_resource: Option<u32> = None;
         for draw in &ordered_draws {
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
@@ -1401,27 +1403,22 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             0,
                             sampled_push_constant_bytes,
                         );
-                        if let Some(descriptor_heap_draw) = descriptor_heap_draw {
-                            if !descriptor_heap_bound {
-                                let resource_bind =
-                                    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
-                                        descriptor_heap_draw.resources,
-                                    );
-                                let sampler_bind =
-                                    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
-                                        descriptor_heap_draw.resources,
-                                    );
-                                device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
-                                device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
-                                descriptor_heap_bound = true;
-                            }
-                        }
                         bound_pipeline = Some(draw.pipeline.sort_rank());
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                        resource_index: _,
+                        resource_index,
                     } = sampled_draw.descriptor_binding;
-                    let _ = descriptor_heap_draw.expect("descriptor heap draw resources present");
+                    if bound_descriptor_heap_resource != Some(resource_index) {
+                        let descriptor_heap_draw =
+                            descriptor_heap_draw.expect("descriptor heap draw resources present");
+                        bind_scene_sampled_image_descriptor_heap_for_resource(
+                            device,
+                            command_buffer,
+                            descriptor_heap_draw,
+                            resource_index,
+                        )?;
+                        bound_descriptor_heap_resource = Some(resource_index);
+                    }
                     device.cmd_draw_indexed(
                         command_buffer,
                         sampled_draw.index_count,
@@ -1444,6 +1441,30 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count))
     });
     Ok(solid_quad_index_count.saturating_add(sampled_image_index_count))
+}
+
+fn bind_scene_sampled_image_descriptor_heap_for_resource(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    descriptor_heap_draw: VulkanaliaSceneDescriptorHeapDrawResources<'_>,
+    resource_index: u32,
+) -> Result<(), String> {
+    let image_index = usize::try_from(resource_index).map_err(|_| {
+        format!("scene sampled-image resource index {resource_index} exceeds usize")
+    })?;
+    let resource_bind = native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
+        descriptor_heap_draw.resources,
+        image_index,
+    )?;
+    let sampler_bind = native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image(
+        descriptor_heap_draw.resources,
+        image_index,
+    )?;
+    unsafe {
+        device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
+        device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+    }
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1574,7 +1595,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize,
         );
         let mut bound_pipeline: Option<u8> = None;
-        let mut descriptor_heap_bound = false;
+        let mut bound_descriptor_heap_resource: Option<u32> = None;
         for draw in &ordered_draws {
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
@@ -1649,27 +1670,22 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             0,
                             sampled_push_constant_bytes,
                         );
-                        if let Some(descriptor_heap_draw) = descriptor_heap_draw {
-                            if !descriptor_heap_bound {
-                                let resource_bind =
-                                    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
-                                        descriptor_heap_draw.resources,
-                                    );
-                                let sampler_bind =
-                                    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
-                                        descriptor_heap_draw.resources,
-                                    );
-                                device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
-                                device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
-                                descriptor_heap_bound = true;
-                            }
-                        }
                         bound_pipeline = Some(draw.pipeline.sort_rank());
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                        resource_index: _,
+                        resource_index,
                     } = sampled_draw.descriptor_binding;
-                    let _ = descriptor_heap_draw.expect("descriptor heap draw resources present");
+                    if bound_descriptor_heap_resource != Some(resource_index) {
+                        let descriptor_heap_draw =
+                            descriptor_heap_draw.expect("descriptor heap draw resources present");
+                        bind_scene_sampled_image_descriptor_heap_for_resource(
+                            device,
+                            command_buffer,
+                            descriptor_heap_draw,
+                            resource_index,
+                        )?;
+                        bound_descriptor_heap_resource = Some(resource_index);
+                    }
                     device.cmd_draw_indexed(
                         command_buffer,
                         sampled_draw.index_count,
@@ -2233,12 +2249,14 @@ mod tests {
     fn mixed_ordered_draw_steps_follow_scene_layer_order() {
         let solid_commands = [VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: 2,
+            last_layer_index: 2,
             first_index: 0,
             index_count: 6,
         }];
         let sampled_commands = [
             VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 1,
+                last_layer_index: 1,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     resource_index: 0,
                 },
@@ -2247,6 +2265,7 @@ mod tests {
             },
             VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 3,
+                last_layer_index: 3,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     resource_index: 1,
                 },

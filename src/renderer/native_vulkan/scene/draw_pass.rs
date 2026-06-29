@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
+use crate::core::scene::{SceneMesh, SceneSnapshotLayer};
 use crate::core::{
-    FitMode, SceneNodeKind, ScenePathFillRule, SceneTextAlign, SceneTextureRegion, SceneTransform,
+    FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign, SceneTextureRegion,
+    SceneTransform,
 };
 use crate::renderer::SceneRenderLayer;
 
@@ -79,6 +81,7 @@ pub(super) struct NativeVulkanSceneSampledImageQuad {
     pub(super) opacity: f64,
     pub(super) width: f64,
     pub(super) height: f64,
+    pub(super) mesh: Option<SceneMesh>,
     pub(super) texture_region: Option<SceneTextureRegion>,
     pub(super) transform: SceneTransform,
 }
@@ -145,6 +148,14 @@ pub(super) struct NativeVulkanSceneSampledImageVertex {
     pub(super) opacity: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct NativeVulkanSceneSampledImageGeometryRange {
+    pub(super) first_vertex: u32,
+    pub(super) vertex_count: u32,
+    pub(super) first_index: u32,
+    pub(super) index_count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct NativeVulkanSceneDrawPassPlan {
     pub(super) plan_ready: bool,
@@ -209,18 +220,13 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
             NativeVulkanSceneDrawOpKind::Image => {
                 sampled_image_op_count = sampled_image_op_count.saturating_add(1);
                 if let Some(source) = &op.source {
-                    required_image_resources.push(source.clone());
+                    native_vulkan_scene_push_unique_path(&mut required_image_resources, source);
                 }
             }
             NativeVulkanSceneDrawOpKind::Video => {
                 video_op_count = video_op_count.saturating_add(1);
                 if let Some(source) = &op.source {
-                    if !required_video_resources
-                        .iter()
-                        .any(|existing| existing == source)
-                    {
-                        required_video_resources.push(source.clone());
-                    }
+                    native_vulkan_scene_push_unique_path(&mut required_video_resources, source);
                 }
             }
             NativeVulkanSceneDrawOpKind::ColorQuad => {
@@ -271,10 +277,16 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
         .iter()
         .filter_map(native_vulkan_scene_sampled_image_quad)
         .collect::<Vec<_>>();
-    let sampled_image_recording_payload =
-        native_vulkan_scene_sampled_image_recording_payload(&sampled_image_quads);
+    let sampled_image_recording_payload = native_vulkan_scene_sampled_image_recording_payload(
+        &sampled_image_quads,
+        (!draw_plan.dynamic_topology_required)
+            .then_some(draw_plan.scene_size)
+            .flatten(),
+    );
     let sampled_image_recording_ready = sampled_image_op_count > 0
-        && sampled_image_recording_payload.steps.len() == sampled_image_op_count;
+        && sampled_image_recording_payload.recordable_quad_count == sampled_image_op_count;
+    let sampled_image_visible_recording_ready =
+        sampled_image_recording_ready && !sampled_image_recording_payload.steps.is_empty();
     let video_quads = draw_plan
         .draw_ops
         .iter()
@@ -288,11 +300,11 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
     let sampled_image_implicit_full_extent_ready =
         full_extent_sampled_image_op_count == 1 && sampled_image_op_count == 1;
     let mixed_quad_sampled_image_recording_ready = !quad_recording_payload.steps.is_empty()
-        && sampled_image_recording_ready
+        && sampled_image_visible_recording_ready
         && quad_recording_payload
             .steps
             .len()
-            .saturating_add(sampled_image_recording_payload.steps.len())
+            .saturating_add(sampled_image_recording_payload.recordable_quad_count)
             .saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
     let mixed_quad_sampled_image_implicit_full_extent_ready =
@@ -311,15 +323,16 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
     let quad_index_buffer_bytes =
         native_vulkan_scene_solid_index_buffer_bytes(quad_recording_payload.indices.len());
     let sampled_image_vertex_buffer_bytes = native_vulkan_scene_sampled_image_vertex_buffer_bytes(
-        sampled_image_recording_payload.steps.len(),
+        sampled_image_recording_payload.vertices.len(),
     );
     let sampled_image_index_buffer_bytes = native_vulkan_scene_sampled_image_index_buffer_bytes(
-        sampled_image_recording_payload.steps.len(),
+        sampled_image_recording_payload.indices.len(),
     );
-    let video_vertex_buffer_bytes =
-        native_vulkan_scene_sampled_image_vertex_buffer_bytes(video_recording_payload.steps.len());
+    let video_vertex_buffer_bytes = native_vulkan_scene_sampled_image_vertex_buffer_bytes(
+        video_recording_payload.vertices.len(),
+    );
     let video_index_buffer_bytes =
-        native_vulkan_scene_sampled_image_index_buffer_bytes(video_recording_payload.steps.len());
+        native_vulkan_scene_sampled_image_index_buffer_bytes(video_recording_payload.indices.len());
     let plan_ready = draw_plan.native_draw_ready();
     let video_resource_ready = video_op_count > 0 && !required_video_resources.is_empty();
     let video_scene_layer_count = if video_op_count <= 1 {
@@ -337,7 +350,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
         && video_resource_ready
         && clear_background_op_count == 1
         && draw_plan.draw_ops.len() == 2;
-    let sampled_image_recording_complete = sampled_image_recording_ready
+    let sampled_image_recording_complete = sampled_image_visible_recording_ready
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
     let sampled_image_implicit_full_extent_backend_ready = sampled_image_implicit_full_extent_ready
@@ -349,7 +362,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
         && video_scene_layer_count
             .saturating_add(clear_background_op_count)
             .saturating_add(quad_recording_payload.steps.len())
-            .saturating_add(sampled_image_recording_payload.steps.len())
+            .saturating_add(sampled_image_recording_payload.recordable_quad_count)
             == draw_plan.draw_ops.len();
     let backend_ready = plan_ready
         && (fast_clear_color.is_some()
@@ -633,7 +646,31 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_from_render_layer(
         PathBuf,
         FitMode,
         Option<SceneTextureRegion>,
-        [NativeVulkanSceneSampledImageVertex; 4],
+        Vec<NativeVulkanSceneSampledImageVertex>,
+        Vec<u32>,
+    )>,
+    &'static str,
+> {
+    let Some((fit, texture_region, vertices, indices)) =
+        native_vulkan_scene_sampled_image_geometry_payload_from_render_layer(layer_index, layer)?
+    else {
+        return Ok(None);
+    };
+    let Some(source) = layer.source.clone() else {
+        return Err("image-layer-missing-source");
+    };
+    Ok(Some((source, fit, texture_region, vertices, indices)))
+}
+
+pub(super) fn native_vulkan_scene_sampled_image_geometry_payload_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+) -> Result<
+    Option<(
+        FitMode,
+        Option<SceneTextureRegion>,
+        Vec<NativeVulkanSceneSampledImageVertex>,
+        Vec<u32>,
     )>,
     &'static str,
 > {
@@ -646,32 +683,153 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_from_render_layer(
     if layer.kind != SceneNodeKind::Image {
         return Err("non-image-layer-needs-non-sampled-runtime");
     }
-    let Some(source) = layer.source.clone() else {
+    if layer.source.is_none() {
         return Err("image-layer-missing-source");
-    };
-    let Some(width) = layer.width else {
-        return Err("image-layer-missing-width");
-    };
-    let Some(height) = layer.height else {
-        return Err("image-layer-missing-height");
+    }
+    let mesh = layer.mesh.clone();
+    let (width, height) = if mesh.is_some() {
+        (layer.width.unwrap_or(0.0), layer.height.unwrap_or(0.0))
+    } else {
+        (
+            layer.width.ok_or("image-layer-missing-width")?,
+            layer.height.ok_or("image-layer-missing-height")?,
+        )
     };
     let quad = NativeVulkanSceneSampledImageQuad {
         layer_index,
         layer_id: layer.id.clone(),
-        source: source.clone(),
+        source: PathBuf::new(),
         fit: layer.fit,
         opacity: layer.opacity,
         width,
         height,
+        mesh,
         texture_region: layer.texture_region,
         transform: layer.transform,
     };
     if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(&quad) {
         return Err("image-layer-missing-recordable-geometry");
     }
-    let vertices = native_vulkan_scene_sampled_image_vertices(&quad)
+    let (vertices, indices) = native_vulkan_scene_sampled_image_geometry(&quad)
         .ok_or("image-layer-missing-recordable-geometry")?;
-    Ok(Some((source, layer.fit, layer.texture_region, vertices)))
+    Ok(Some((layer.fit, layer.texture_region, vertices, indices)))
+}
+
+pub(super) fn native_vulkan_scene_append_sampled_image_geometry_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Result<
+    Option<(
+        FitMode,
+        Option<SceneTextureRegion>,
+        NativeVulkanSceneSampledImageGeometryRange,
+    )>,
+    &'static str,
+> {
+    native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
+        layer_index,
+        &layer.id,
+        layer.kind,
+        layer.source.is_some(),
+        layer.fit,
+        layer.opacity,
+        layer.width,
+        layer.height,
+        layer.mesh.clone(),
+        layer.texture_region,
+        layer.transform,
+        vertices,
+        indices,
+    )
+}
+
+pub(super) fn native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer(
+    layer_index: usize,
+    layer: &SceneSnapshotLayer,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Result<
+    Option<(
+        FitMode,
+        Option<SceneTextureRegion>,
+        NativeVulkanSceneSampledImageGeometryRange,
+    )>,
+    &'static str,
+> {
+    native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
+        layer_index,
+        &layer.id,
+        layer.kind,
+        layer.source.is_some(),
+        layer.fit,
+        layer.opacity,
+        layer.width,
+        layer.height,
+        layer.mesh.clone(),
+        layer.texture_region,
+        layer.transform,
+        vertices,
+        indices,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
+    layer_index: usize,
+    _layer_id: &str,
+    kind: SceneNodeKind,
+    has_source: bool,
+    fit: FitMode,
+    opacity: f64,
+    width: Option<f64>,
+    height: Option<f64>,
+    mesh: Option<SceneMesh>,
+    texture_region: Option<SceneTextureRegion>,
+    transform: SceneTransform,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Result<
+    Option<(
+        FitMode,
+        Option<SceneTextureRegion>,
+        NativeVulkanSceneSampledImageGeometryRange,
+    )>,
+    &'static str,
+> {
+    if opacity <= 0.0 {
+        return Ok(None);
+    }
+    if kind != SceneNodeKind::Image {
+        return Err("non-image-layer-needs-non-sampled-runtime");
+    }
+    if !has_source {
+        return Err("image-layer-missing-source");
+    }
+    let (width, height) = if mesh.is_some() {
+        (width.unwrap_or(0.0), height.unwrap_or(0.0))
+    } else {
+        (
+            width.ok_or("image-layer-missing-width")?,
+            height.ok_or("image-layer-missing-height")?,
+        )
+    };
+    let quad = NativeVulkanSceneSampledImageQuad {
+        layer_index,
+        layer_id: String::new(),
+        source: PathBuf::new(),
+        fit,
+        opacity,
+        width,
+        height,
+        mesh,
+        texture_region,
+        transform,
+    };
+    let range = native_vulkan_scene_append_sampled_image_geometry(&quad, None, vertices, indices)
+        .ok_or("image-layer-missing-recordable-geometry")?;
+    Ok(Some((fit, texture_region, range)))
 }
 
 fn native_vulkan_scene_render_layer_has_shape_paint(layer: &SceneRenderLayer) -> bool {
@@ -761,6 +919,7 @@ struct NativeVulkanSceneSampledImageRecordingPayload {
     steps: Vec<NativeVulkanSceneSampledImageRecordingStep>,
     vertices: Vec<NativeVulkanSceneSampledImageVertex>,
     indices: Vec<u32>,
+    recordable_quad_count: usize,
 }
 
 struct NativeVulkanSceneVideoRecordingPayload {
@@ -822,21 +981,26 @@ fn native_vulkan_scene_quad_recording_payload(
 
 fn native_vulkan_scene_sampled_image_recording_payload(
     quads: &[NativeVulkanSceneSampledImageQuad],
+    scene_size: Option<SceneSize>,
 ) -> NativeVulkanSceneSampledImageRecordingPayload {
     let mut sources = Vec::new();
-    let mut steps = Vec::new();
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
+    let mut steps = Vec::with_capacity(quads.len());
+    let mut vertices = Vec::with_capacity(quads.len().saturating_mul(4));
+    let mut indices = Vec::with_capacity(quads.len().saturating_mul(6));
+    let mut recordable_quad_count = 0usize;
     for quad in quads
         .iter()
         .filter(|quad| native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad))
     {
-        if let Some(quad_vertices) = native_vulkan_scene_sampled_image_vertices(quad) {
-            let index = steps.len();
+        recordable_quad_count = recordable_quad_count.saturating_add(1);
+        if let Some(range) = native_vulkan_scene_append_sampled_image_geometry(
+            quad,
+            scene_size,
+            &mut vertices,
+            &mut indices,
+        ) {
             let resource_index =
                 native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
-            let first_vertex = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
-            let first_index = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
             steps.push(NativeVulkanSceneSampledImageRecordingStep {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
@@ -845,28 +1009,19 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 texture_region: quad.texture_region,
                 pipeline: "sampled-image-alpha-blend",
                 resource_index,
-                first_vertex,
-                vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
-                first_index,
-                index_count: SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT,
-                vertex_buffer_offset_bytes: u64::from(first_vertex)
+                first_vertex: range.first_vertex,
+                vertex_count: range.vertex_count,
+                first_index: range.first_index,
+                index_count: range.index_count,
+                vertex_buffer_offset_bytes: u64::from(range.first_vertex)
                     .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES),
-                vertex_buffer_size_bytes: u64::from(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
+                vertex_buffer_size_bytes: u64::from(range.vertex_count)
                     .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES),
-                index_buffer_offset_bytes: u64::from(first_index)
+                index_buffer_offset_bytes: u64::from(range.first_index)
                     .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES),
-                index_buffer_size_bytes: u64::from(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
+                index_buffer_size_bytes: u64::from(range.index_count)
                     .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES),
             });
-            vertices.extend(quad_vertices);
-            indices.extend_from_slice(&[
-                first_vertex,
-                first_vertex + 1,
-                first_vertex + 2,
-                first_vertex + 2,
-                first_vertex + 1,
-                first_vertex + 3,
-            ]);
         }
     }
     NativeVulkanSceneSampledImageRecordingPayload {
@@ -874,6 +1029,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         steps,
         vertices,
         indices,
+        recordable_quad_count,
     }
 }
 
@@ -889,11 +1045,10 @@ fn native_vulkan_scene_video_recording_payload(
         .filter(|quad| native_vulkan_scene_video_quad_has_recordable_geometry(quad))
     {
         if let Some(quad_vertices) = native_vulkan_scene_video_vertices(quad) {
-            let index = steps.len();
             let resource_index =
                 native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
-            let first_vertex = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT);
-            let first_index = (index as u32).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT);
+            let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+            let first_index = indices.len().min(u32::MAX as usize) as u32;
             steps.push(NativeVulkanSceneVideoRecordingStep {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
@@ -943,6 +1098,67 @@ fn native_vulkan_scene_sampled_image_source_index(
     let index = sources.len().min(u32::MAX as usize) as u32;
     sources.push(source);
     index
+}
+
+fn native_vulkan_scene_push_unique_path(paths: &mut Vec<PathBuf>, source: &PathBuf) {
+    if !paths.iter().any(|existing| existing == source) {
+        paths.push(source.clone());
+    }
+}
+
+pub(super) fn native_vulkan_scene_sampled_image_vertices_visible_in_scene(
+    vertices: &[NativeVulkanSceneSampledImageVertex],
+    scene_size: Option<SceneSize>,
+) -> bool {
+    let Some(scene_size) = scene_size else {
+        return true;
+    };
+    if scene_size.width == 0 || scene_size.height == 0 || vertices.is_empty() {
+        return true;
+    }
+    let Some(bounds) = NativeVulkanSceneSampledImageBounds::from_vertices(vertices) else {
+        return false;
+    };
+    bounds.intersects_scene(scene_size)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct NativeVulkanSceneSampledImageBounds {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+}
+
+impl NativeVulkanSceneSampledImageBounds {
+    fn from_vertices(vertices: &[NativeVulkanSceneSampledImageVertex]) -> Option<Self> {
+        let mut bounds = Self {
+            min_x: f32::INFINITY,
+            min_y: f32::INFINITY,
+            max_x: f32::NEG_INFINITY,
+            max_y: f32::NEG_INFINITY,
+        };
+        for vertex in vertices {
+            let [x, y] = vertex.position;
+            if !x.is_finite() || !y.is_finite() {
+                return None;
+            }
+            bounds.min_x = bounds.min_x.min(x);
+            bounds.min_y = bounds.min_y.min(y);
+            bounds.max_x = bounds.max_x.max(x);
+            bounds.max_y = bounds.max_y.max(y);
+        }
+        Some(bounds)
+    }
+
+    fn intersects_scene(self, scene_size: SceneSize) -> bool {
+        let scene_width = scene_size.width as f32;
+        let scene_height = scene_size.height as f32;
+        self.max_x >= 0.0
+            && self.max_y >= 0.0
+            && self.min_x <= scene_width
+            && self.min_y <= scene_height
+    }
 }
 
 fn native_vulkan_scene_solid_has_recordable_geometry(
@@ -996,12 +1212,22 @@ fn native_vulkan_scene_recordable_has_stroke_geometry(
 fn native_vulkan_scene_sampled_image_quad_has_recordable_geometry(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> bool {
-    quad.width.is_finite()
-        && quad.width > 0.0
-        && quad.height.is_finite()
-        && quad.height > 0.0
-        && quad.opacity.is_finite()
+    quad.opacity.is_finite()
         && quad.opacity > 0.0
+        && if let Some(mesh) = &quad.mesh {
+            quad.width.is_finite()
+                && quad.width > 0.0
+                && quad.height.is_finite()
+                && quad.height > 0.0
+                && mesh.vertices.len() >= 3
+                && mesh.indices.len() >= 3
+                && mesh.indices.len() % 3 == 0
+        } else {
+            quad.width.is_finite()
+                && quad.width > 0.0
+                && quad.height.is_finite()
+                && quad.height > 0.0
+        }
 }
 
 fn native_vulkan_scene_video_quad_has_recordable_geometry(
@@ -2018,7 +2244,71 @@ fn native_vulkan_scene_text_glyph_pattern(ch: char) -> [u8; SCENE_FULL_TEXT_GLYP
     }
 }
 
-fn native_vulkan_scene_sampled_image_vertices(
+fn native_vulkan_scene_sampled_image_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
+    if let Some(mesh) = &quad.mesh {
+        return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
+    }
+    let vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
+    Some((vertices.to_vec(), vec![0, 1, 2, 2, 1, 3]))
+}
+
+fn native_vulkan_scene_append_sampled_image_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad) {
+        return None;
+    }
+    let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+    let first_index = indices.len().min(u32::MAX as usize) as u32;
+    if let Some(mesh) = &quad.mesh {
+        let (mesh_vertices, mesh_indices) =
+            native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh)?;
+        if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(&mesh_vertices, scene_size)
+        {
+            return None;
+        }
+        let vertex_count = mesh_vertices.len().min(u32::MAX as usize) as u32;
+        let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+        vertices.extend(mesh_vertices);
+        indices.extend(
+            mesh_indices
+                .into_iter()
+                .map(|index| first_vertex.saturating_add(index)),
+        );
+        return Some(NativeVulkanSceneSampledImageGeometryRange {
+            first_vertex,
+            vertex_count,
+            first_index,
+            index_count,
+        });
+    }
+    let quad_vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(&quad_vertices, scene_size) {
+        return None;
+    }
+    vertices.extend_from_slice(&quad_vertices);
+    indices.extend_from_slice(&[
+        first_vertex,
+        first_vertex.saturating_add(1),
+        first_vertex.saturating_add(2),
+        first_vertex.saturating_add(2),
+        first_vertex.saturating_add(1),
+        first_vertex.saturating_add(3),
+    ]);
+    Some(NativeVulkanSceneSampledImageGeometryRange {
+        first_vertex,
+        vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
+        first_index,
+        index_count: SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT,
+    })
+}
+
+fn native_vulkan_scene_sampled_image_quad_vertices(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<[NativeVulkanSceneSampledImageVertex; 4]> {
     let points = native_vulkan_scene_quad_positions(quad.width, quad.height, quad.transform)?;
@@ -2035,10 +2325,10 @@ fn native_vulkan_scene_sampled_image_vertices(
         loop_playback: true,
     });
     let uvs = [
-        [region.u_min as f32, region.v_min as f32],
-        [region.u_max as f32, region.v_min as f32],
         [region.u_min as f32, region.v_max as f32],
         [region.u_max as f32, region.v_max as f32],
+        [region.u_min as f32, region.v_min as f32],
+        [region.u_max as f32, region.v_min as f32],
     ];
     let mut vertices = [NativeVulkanSceneSampledImageVertex {
         position: [0.0, 0.0],
@@ -2050,6 +2340,69 @@ fn native_vulkan_scene_sampled_image_vertices(
         vertex.uv = uv;
     }
     Some(vertices)
+}
+
+fn native_vulkan_scene_sampled_image_mesh_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
+    if mesh.vertices.len() < 3
+        || mesh.indices.len() < 3
+        || mesh.indices.len() % 3 != 0
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let u_scale = region.u_max - region.u_min;
+    let v_scale = region.v_max - region.v_min;
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
+    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
+    let mut vertices = Vec::with_capacity(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            return None;
+        }
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: native_vulkan_scene_transform_point(
+                vertex.x + local_offset_x,
+                vertex.y + local_offset_y,
+                quad.transform,
+            )?,
+            uv: [
+                (region.u_min + vertex.u * u_scale) as f32,
+                (region.v_min + vertex.v * v_scale) as f32,
+            ],
+            opacity,
+        });
+    }
+    if mesh
+        .indices
+        .iter()
+        .any(|index| usize::try_from(*index).map_or(true, |index| index >= vertices.len()))
+    {
+        return None;
+    }
+    Some((vertices, mesh.indices.clone()))
 }
 
 fn native_vulkan_scene_video_vertices(
@@ -2129,16 +2482,12 @@ fn native_vulkan_scene_solid_index_buffer_bytes(index_count: usize) -> u64 {
     (index_count as u64).saturating_mul(SCENE_FULL_SOLID_QUAD_INDEX_BYTES)
 }
 
-fn native_vulkan_scene_sampled_image_vertex_buffer_bytes(quad_count: usize) -> u64 {
-    (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT))
-        .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES)
+fn native_vulkan_scene_sampled_image_vertex_buffer_bytes(vertex_count: usize) -> u64 {
+    (vertex_count as u64).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES)
 }
 
-fn native_vulkan_scene_sampled_image_index_buffer_bytes(quad_count: usize) -> u64 {
-    (quad_count as u64)
-        .saturating_mul(u64::from(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT))
-        .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES)
+fn native_vulkan_scene_sampled_image_index_buffer_bytes(index_count: usize) -> u64 {
+    (index_count as u64).saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES)
 }
 
 fn native_vulkan_scene_recordable_quad(
@@ -2171,7 +2520,9 @@ fn native_vulkan_scene_recordable_quad(
 fn native_vulkan_scene_sampled_image_quad(
     op: &NativeVulkanSceneDrawOp,
 ) -> Option<NativeVulkanSceneSampledImageQuad> {
-    if op.kind != NativeVulkanSceneDrawOpKind::Image {
+    if op.kind != NativeVulkanSceneDrawOpKind::Image
+        || native_vulkan_scene_full_extent_sampled_image_op_ready(op)
+    {
         return None;
     }
     Some(NativeVulkanSceneSampledImageQuad {
@@ -2180,8 +2531,9 @@ fn native_vulkan_scene_sampled_image_quad(
         source: op.source.clone()?,
         fit: op.fit,
         opacity: op.opacity,
-        width: op.width?,
-        height: op.height?,
+        width: op.width.unwrap_or(0.0),
+        height: op.height.unwrap_or(0.0),
+        mesh: op.mesh.clone(),
         texture_region: op.texture_region,
         transform: op.transform,
     })
@@ -2217,6 +2569,7 @@ fn native_vulkan_scene_full_extent_sampled_image_op_count(
 fn native_vulkan_scene_full_extent_sampled_image_op_ready(op: &NativeVulkanSceneDrawOp) -> bool {
     op.kind == NativeVulkanSceneDrawOpKind::Image
         && op.source.is_some()
+        && op.mesh.is_none()
         && op.opacity == 1.0
         && op.width.is_none()
         && op.height.is_none()
@@ -2991,7 +3344,8 @@ fn native_vulkan_scene_rgba_from_hex(color: &str, opacity: f64) -> Option<[f32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::{FitMode, ScenePathFillRule, SceneTextureRegion};
+    use crate::core::scene::{SceneMesh, SceneMeshVertex};
+    use crate::core::{FitMode, ScenePathFillRule, SceneSize, SceneTextureRegion};
 
     fn draw_op(layer_index: usize, kind: NativeVulkanSceneDrawOpKind) -> NativeVulkanSceneDrawOp {
         NativeVulkanSceneDrawOp {
@@ -3007,6 +3361,7 @@ mod tests {
             corner_radius: None,
             width: None,
             height: None,
+            mesh: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -3028,6 +3383,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![color],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3065,6 +3421,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![image, text, path],
             unsupported_layers: Vec::new(),
             runtime_display_available: true,
@@ -3100,6 +3457,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![video],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3138,6 +3496,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![left, right],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3179,6 +3538,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![sky, character, effects],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3215,6 +3575,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![video, image, panel],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3253,6 +3614,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3284,9 +3646,207 @@ mod tests {
             [-144.0, -82.0]
         );
         assert_eq!(pass_plan.sampled_image_vertices[3].position, [176.0, 98.0]);
-        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
-        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 1.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 1.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
+    }
+
+    #[test]
+    fn draw_pass_plan_culls_sampled_images_outside_scene_bounds() {
+        let mut visible = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        visible.source = Some(PathBuf::from("/tmp/visible.png"));
+        visible.width = Some(16.0);
+        visible.height = Some(16.0);
+        visible.transform.x = 40.0;
+        visible.transform.y = 40.0;
+        let mut outside = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        outside.source = Some(PathBuf::from("/tmp/offscreen.png"));
+        outside.width = Some(16.0);
+        outside.height = Some(16.0);
+        outside.transform.x = 140.0;
+        outside.transform.y = 140.0;
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: Some(SceneSize {
+                width: 100,
+                height: 100,
+            }),
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![visible, outside],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.sampled_image_op_count, 2);
+        assert_eq!(pass_plan.sampled_image_quads.len(), 2);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 4);
+        assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2, 2, 1, 3]);
+        assert_eq!(
+            pass_plan.sampled_image_sources,
+            vec![PathBuf::from("/tmp/visible.png")]
+        );
+        assert_eq!(
+            pass_plan.required_image_resources,
+            vec![
+                PathBuf::from("/tmp/visible.png"),
+                PathBuf::from("/tmp/offscreen.png")
+            ]
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_keeps_dynamic_topology_sampled_images_stable() {
+        let mut visible = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        visible.source = Some(PathBuf::from("/tmp/visible.png"));
+        visible.width = Some(16.0);
+        visible.height = Some(16.0);
+        visible.transform.x = 40.0;
+        visible.transform.y = 40.0;
+        let mut outside = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        outside.source = Some(PathBuf::from("/tmp/offscreen.png"));
+        outside.width = Some(16.0);
+        outside.height = Some(16.0);
+        outside.transform.x = 140.0;
+        outside.transform.y = 140.0;
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: Some(SceneSize {
+                width: 100,
+                height: 100,
+            }),
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: true,
+            draw_ops: vec![visible, outside],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 8);
+        assert_eq!(
+            pass_plan.sampled_image_sources,
+            vec![
+                PathBuf::from("/tmp/visible.png"),
+                PathBuf::from("/tmp/offscreen.png")
+            ]
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_sampled_image_mesh_payload() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/puppet.gtex"));
+        image.opacity = 0.8;
+        image.width = Some(10.0);
+        image.height = Some(10.0);
+        image.mesh = Some(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -1.0,
+                    y: -1.0,
+                    u: 0.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: 3.0,
+                    y: -1.0,
+                    u: 1.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: -1.0,
+                    y: 2.0,
+                    u: 0.0,
+                    v: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+        });
+        image.transform.x = 10.0;
+        image.transform.y = 20.0;
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.backend_status, "sampled-image-recording-ready");
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 60);
+        assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 12);
+        assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2]);
+        let step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(step.vertex_count, 3);
+        assert_eq!(step.index_count, 3);
+        assert_eq!(pass_plan.sampled_image_vertices[0].position, [9.0, 19.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[2].position, [9.0, 22.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[1].uv, [1.0, 0.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.8);
+    }
+
+    #[test]
+    fn draw_pass_plan_preserves_sampled_image_mesh_geometry() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/puppet.gtex"));
+        image.width = Some(2.0);
+        image.height = Some(2.0);
+        image.mesh = Some(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -0.5,
+                    y: 0.0,
+                    u: 0.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: 1.5,
+                    y: 0.0,
+                    u: 1.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: -0.5,
+                    y: 0.5,
+                    u: 0.0,
+                    v: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+        });
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 3);
+        assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].position, [-0.5, 0.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[1].position, [1.5, 0.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[2].position, [-0.5, 0.5]);
     }
 
     #[test]
@@ -3311,6 +3871,7 @@ mod tests {
             snapshot_time_ms: 416,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3334,8 +3895,8 @@ mod tests {
                 loop_playback: true,
             })
         );
-        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [2.0 / 3.0, 0.25]);
-        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.5]);
+        assert_eq!(pass_plan.sampled_image_vertices[0].uv, [2.0 / 3.0, 0.5]);
+        assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.25]);
     }
 
     #[test]
@@ -3365,6 +3926,7 @@ mod tests {
             snapshot_time_ms: 1000,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![clear, image],
             unsupported_layers: Vec::new(),
             runtime_display_available: true,
@@ -3395,6 +3957,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3433,6 +3996,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![image, rectangle],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3475,6 +4039,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![rectangle, image],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3514,6 +4079,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![rectangle, rounded],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3569,6 +4135,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![ellipse],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3602,6 +4169,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3635,6 +4203,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3668,6 +4237,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3701,6 +4271,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3732,6 +4303,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3769,6 +4341,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3805,6 +4378,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3841,6 +4415,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![text],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3882,6 +4457,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3926,6 +4502,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![path],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -3966,6 +4543,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![rectangle, ellipse],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
@@ -4005,6 +4583,7 @@ mod tests {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
             draw_ops: vec![rectangle],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,

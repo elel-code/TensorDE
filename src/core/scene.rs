@@ -144,6 +144,45 @@ impl SceneDocument {
         N: Fn(&str) -> Option<f64>,
         T: Fn(&str) -> Option<String>,
     {
+        self.snapshot_layers_at_with_resolvers_internal(
+            time_ms,
+            &resolve_property,
+            &resolve_text_property,
+            None,
+            layers,
+        );
+    }
+
+    pub fn snapshot_visible_layers_at_with_resolvers<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
+        self.snapshot_layers_at_with_resolvers_internal(
+            time_ms,
+            &resolve_property,
+            &resolve_text_property,
+            SceneSnapshotVisibility::from_size(self.size),
+            layers,
+        );
+    }
+
+    fn snapshot_layers_at_with_resolvers_internal<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: &N,
+        resolve_text_property: &T,
+        visibility: Option<SceneSnapshotVisibility>,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
         layers.clear();
         let resources = self
             .resources
@@ -153,7 +192,7 @@ impl SceneDocument {
         if let Some(clear_layer) = self.render_clear_layer() {
             layers.push(clear_layer);
         }
-        let parallax = self.parallax_offset(&resolve_property);
+        let parallax = self.parallax_offset(resolve_property);
         for node in &self.nodes {
             node.push_snapshot_layers(
                 time_ms,
@@ -163,8 +202,9 @@ impl SceneDocument {
                 &resources,
                 &self.timelines,
                 &self.property_bindings,
-                &resolve_property,
-                &resolve_text_property,
+                resolve_property,
+                resolve_text_property,
+                visibility,
                 layers,
             );
         }
@@ -219,6 +259,7 @@ impl SceneDocument {
             corner_radius: None,
             width: self.size.map(|size| f64::from(size.width)),
             height: self.size.map(|size| f64::from(size.height)),
+            mesh: None,
             parallax_depth: None,
             text: None,
             font_size: None,
@@ -482,6 +523,8 @@ pub struct SceneNode {
     #[serde(default)]
     pub height: Option<f64>,
     #[serde(default)]
+    pub mesh: Option<SceneMesh>,
+    #[serde(default)]
     pub parallax_depth: Option<f64>,
     #[serde(default)]
     pub text: Option<String>,
@@ -523,6 +566,9 @@ impl SceneNode {
         }
         validate_opacity(self.opacity, &self.id)?;
         self.transform.validate(&self.id)?;
+        if let Some(mesh) = &self.mesh {
+            mesh.validate(&self.id)?;
+        }
         if let Some(resource) = &self.resource
             && !resource_ids.contains(resource)
         {
@@ -567,6 +613,7 @@ impl SceneNode {
         property_bindings: &[ScenePropertyBinding],
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
+        visibility: Option<SceneSnapshotVisibility>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
         if !self.visible {
@@ -626,7 +673,9 @@ impl SceneNode {
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
         if self.kind == SceneNodeKind::ParticleEmitter
-            && self.push_particle_snapshot_layers(time_ms, transform, opacity, resources, output)
+            && self.push_particle_snapshot_layers(
+                time_ms, transform, opacity, resources, visibility, output,
+            )
         {
             for child in &self.children {
                 child.push_snapshot_layers(
@@ -639,6 +688,7 @@ impl SceneNode {
                     property_bindings,
                     resolve_property,
                     resolve_text_property,
+                    visibility,
                     output,
                 );
             }
@@ -666,6 +716,7 @@ impl SceneNode {
                 corner_radius,
                 width,
                 height,
+                mesh: self.mesh.clone(),
                 parallax_depth: self.parallax_depth,
                 text,
                 font_size: self.font_size,
@@ -683,8 +734,10 @@ impl SceneNode {
                 opacity,
                 transform,
             };
-            push_native_effect_snapshot_layers(&self.effects, &layer, output);
-            output.push(layer);
+            if scene_snapshot_layer_intersects_visibility(&layer, visibility) {
+                push_native_effect_snapshot_layers(&self.effects, &layer, output);
+                output.push(layer);
+            }
         }
         for child in &self.children {
             child.push_snapshot_layers(
@@ -697,6 +750,7 @@ impl SceneNode {
                 property_bindings,
                 resolve_property,
                 resolve_text_property,
+                visibility,
                 output,
             );
         }
@@ -708,6 +762,7 @@ impl SceneNode {
         transform: SceneTransform,
         opacity: f64,
         resources: &BTreeMap<&str, &SceneResource>,
+        visibility: Option<SceneSnapshotVisibility>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) -> bool {
         let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
@@ -734,6 +789,21 @@ impl SceneNode {
                 continue;
             }
             let (x, y, rotation_deg) = settings.transform_at(time_ms, index);
+            let particle_transform = transform.compose(SceneTransform {
+                x,
+                y,
+                rotation_deg,
+                ..SceneTransform::default()
+            });
+            if !scene_snapshot_visual_bounds_intersects(
+                Some(settings.particle_width),
+                Some(settings.particle_height),
+                None,
+                particle_transform,
+                visibility,
+            ) {
+                continue;
+            }
             output.push(SceneSnapshotLayer {
                 id: format!("{}::particle-{index}", self.id),
                 kind: layer_kind,
@@ -750,6 +820,7 @@ impl SceneNode {
                 corner_radius: None,
                 width: Some(settings.particle_width),
                 height: Some(settings.particle_height),
+                mesh: None,
                 parallax_depth: self.parallax_depth,
                 text: None,
                 font_size: None,
@@ -761,12 +832,7 @@ impl SceneNode {
                 path_fill_rule: ScenePathFillRule::default(),
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
-                transform: transform.compose(SceneTransform {
-                    x,
-                    y,
-                    rotation_deg,
-                    ..SceneTransform::default()
-                }),
+                transform: particle_transform,
             });
         }
         true
@@ -996,6 +1062,8 @@ pub struct SceneNodeProvenance {
     #[serde(default)]
     pub parent_id: Option<String>,
     #[serde(default)]
+    pub attachment: Option<String>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub original_type: Option<String>,
@@ -1021,6 +1089,7 @@ impl SceneNodeProvenance {
             ("source_format", self.source_format.as_deref()),
             ("source_id", self.source_id.as_deref()),
             ("parent_id", self.parent_id.as_deref()),
+            ("attachment", self.attachment.as_deref()),
             ("original_type", self.original_type.as_deref()),
             ("original_path", self.original_path.as_deref()),
         ] {
@@ -1643,6 +1712,62 @@ struct SceneParallaxOffset {
     y: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SceneSnapshotVisibility {
+    width: f64,
+    height: f64,
+}
+
+impl SceneSnapshotVisibility {
+    fn from_size(size: Option<SceneSize>) -> Option<Self> {
+        let size = size?;
+        if size.width == 0 || size.height == 0 {
+            return None;
+        }
+        Some(Self {
+            width: f64::from(size.width),
+            height: f64::from(size.height),
+        })
+    }
+
+    fn intersects(self, bounds: SceneSnapshotBounds) -> bool {
+        bounds.max_x >= 0.0
+            && bounds.max_y >= 0.0
+            && bounds.min_x <= self.width
+            && bounds.min_y <= self.height
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SceneSnapshotBounds {
+    min_x: f64,
+    min_y: f64,
+    max_x: f64,
+    max_y: f64,
+}
+
+impl SceneSnapshotBounds {
+    fn empty() -> Self {
+        Self {
+            min_x: f64::INFINITY,
+            min_y: f64::INFINITY,
+            max_x: f64::NEG_INFINITY,
+            max_y: f64::NEG_INFINITY,
+        }
+    }
+
+    fn include(&mut self, x: f64, y: f64) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        self.min_x = self.min_x.min(x);
+        self.min_y = self.min_y.min(y);
+        self.max_x = self.max_x.max(x);
+        self.max_y = self.max_y.max(y);
+        true
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSnapshotLayer {
     pub id: String,
@@ -1656,6 +1781,7 @@ pub struct SceneSnapshotLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
+    pub mesh: Option<SceneMesh>,
     pub parallax_depth: Option<f64>,
     pub text: Option<String>,
     pub font_size: Option<f64>,
@@ -1668,6 +1794,154 @@ pub struct SceneSnapshotLayer {
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+}
+
+fn scene_snapshot_layer_intersects_visibility(
+    layer: &SceneSnapshotLayer,
+    visibility: Option<SceneSnapshotVisibility>,
+) -> bool {
+    scene_snapshot_visual_bounds_intersects(
+        layer.width,
+        layer.height,
+        layer.mesh.as_ref(),
+        layer.transform,
+        visibility,
+    )
+}
+
+fn scene_snapshot_visual_bounds_intersects(
+    width: Option<f64>,
+    height: Option<f64>,
+    mesh: Option<&SceneMesh>,
+    transform: SceneTransform,
+    visibility: Option<SceneSnapshotVisibility>,
+) -> bool {
+    let Some(visibility) = visibility else {
+        return true;
+    };
+    let (Some(width), Some(height)) = (width, height) else {
+        return true;
+    };
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return true;
+    }
+    let Some(bounds) = scene_snapshot_visual_bounds(width, height, mesh, transform) else {
+        return true;
+    };
+    visibility.intersects(bounds)
+}
+
+fn scene_snapshot_visual_bounds(
+    width: f64,
+    height: f64,
+    mesh: Option<&SceneMesh>,
+    transform: SceneTransform,
+) -> Option<SceneSnapshotBounds> {
+    let rotation = transform.rotation_deg.to_radians();
+    let cos = rotation.cos();
+    let sin = rotation.sin();
+    let mut bounds = SceneSnapshotBounds::empty();
+    if let Some(mesh) = mesh {
+        let local_offset_x = (0.5 - transform.anchor_x) * width;
+        let local_offset_y = (0.5 - transform.anchor_y) * height;
+        for vertex in &mesh.vertices {
+            let (x, y) = scene_snapshot_transform_point(
+                vertex.x + local_offset_x,
+                vertex.y + local_offset_y,
+                transform,
+                cos,
+                sin,
+            )?;
+            if !bounds.include(x, y) {
+                return None;
+            }
+        }
+    } else {
+        let left = -transform.anchor_x * width;
+        let top = -transform.anchor_y * height;
+        let right = left + width;
+        let bottom = top + height;
+        for (x, y) in [(left, top), (right, top), (left, bottom), (right, bottom)] {
+            let (x, y) = scene_snapshot_transform_point(x, y, transform, cos, sin)?;
+            if !bounds.include(x, y) {
+                return None;
+            }
+        }
+    }
+    Some(bounds)
+}
+
+fn scene_snapshot_transform_point(
+    x: f64,
+    y: f64,
+    transform: SceneTransform,
+    cos: f64,
+    sin: f64,
+) -> Option<(f64, f64)> {
+    let scaled_x = x * transform.scale_x;
+    let scaled_y = y * transform.scale_y;
+    let scene_x = scaled_x.mul_add(cos, -scaled_y * sin) + transform.x;
+    let scene_y = scaled_x.mul_add(sin, scaled_y * cos) + transform.y;
+    if !scene_x.is_finite() || !scene_y.is_finite() {
+        return None;
+    }
+    Some((scene_x, scene_y))
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneMesh {
+    #[serde(default)]
+    pub vertices: Vec<SceneMeshVertex>,
+    #[serde(default)]
+    pub indices: Vec<u32>,
+}
+
+impl SceneMesh {
+    fn validate(&self, node_id: &str) -> Result<(), SceneError> {
+        if self.vertices.len() < 3 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh must contain at least 3 vertices"
+            )));
+        }
+        if self.indices.len() < 3 || self.indices.len() % 3 != 0 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh indices must contain complete triangles"
+            )));
+        }
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            vertex.validate(node_id, index)?;
+        }
+        let vertex_count = self.vertices.len();
+        for index in &self.indices {
+            if usize::try_from(*index).map_or(true, |index| index >= vertex_count) {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh index {index} is outside the vertex array"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshVertex {
+    pub x: f64,
+    pub y: f64,
+    pub u: f64,
+    pub v: f64,
+}
+
+impl SceneMeshVertex {
+    fn validate(&self, node_id: &str, index: usize) -> Result<(), SceneError> {
+        for (field, value) in [("x", self.x), ("y", self.y), ("u", self.u), ("v", self.v)] {
+            if !value.is_finite() {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh vertex {index} {field} must be finite"
+                )));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

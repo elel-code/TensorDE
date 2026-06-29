@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::core::scene::SceneMesh;
 use crate::core::{
     FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign, SceneTextureRegion,
     SceneTransform,
@@ -65,6 +66,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) corner_radius: Option<f64>,
     pub(in crate::renderer::native_vulkan) width: Option<f64>,
     pub(in crate::renderer::native_vulkan) height: Option<f64>,
+    pub(in crate::renderer::native_vulkan) mesh: Option<SceneMesh>,
     pub(in crate::renderer::native_vulkan) text: Option<String>,
     pub(in crate::renderer::native_vulkan) font_size: Option<f64>,
     pub(in crate::renderer::native_vulkan) font_family: Option<String>,
@@ -89,6 +91,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawPlan {
     pub(in crate::renderer::native_vulkan) snapshot_time_ms: u64,
     pub(in crate::renderer::native_vulkan) scene_size: Option<SceneSize>,
     pub(in crate::renderer::native_vulkan) scene_fit: FitMode,
+    pub(in crate::renderer::native_vulkan) dynamic_topology_required: bool,
     pub(in crate::renderer::native_vulkan) draw_ops: Vec<NativeVulkanSceneDrawOp>,
     pub(in crate::renderer::native_vulkan) unsupported_layers:
         Vec<NativeVulkanSceneUnsupportedLayer>,
@@ -110,6 +113,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
         snapshot_time_ms,
         scene_size,
         scene_fit,
+        dynamic_topology_required,
         ..
     } = render_item
     else {
@@ -119,6 +123,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan(
         *snapshot_time_ms,
         *scene_size,
         *scene_fit,
+        *dynamic_topology_required,
         display.is_some(),
         layers,
     ))
@@ -128,6 +133,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan_from_lay
     snapshot_time_ms: u64,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
+    dynamic_topology_required: bool,
     runtime_display_available: bool,
     layers: &[SceneRenderLayer],
 ) -> NativeVulkanSceneDrawPlan {
@@ -137,6 +143,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_draw_plan_from_lay
         snapshot_time_ms,
         scene_size,
         scene_fit,
+        dynamic_topology_required,
         draw_ops,
         unsupported_layers,
         runtime_display_available,
@@ -169,6 +176,7 @@ fn native_vulkan_scene_draw_layers(
                 corner_radius: layer.corner_radius,
                 width: layer.width,
                 height: layer.height,
+                mesh: layer.mesh.clone(),
                 text: layer.text.clone(),
                 font_size: layer.font_size,
                 font_family: layer.font_family.clone(),
@@ -352,6 +360,7 @@ mod tests {
             timeline_animated_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
+            dynamic_topology_required: false,
             scene_scenescript_binding_count: 0,
             scene_material_graph_count: 0,
             scene_material_graph_resource_count: 0,
