@@ -783,6 +783,8 @@ impl SceneNode {
         } else {
             settings.shape
         };
+        output.reserve(particle_count as usize);
+        let particle_id_prefix = format!("{}::particle-", self.id);
         for index in 0..particle_count {
             let layer_opacity = opacity * settings.opacity_at(time_ms, index);
             if layer_opacity <= 0.0 {
@@ -804,8 +806,14 @@ impl SceneNode {
             ) {
                 continue;
             }
+            let mut id = String::with_capacity(particle_id_prefix.len() + 10);
+            id.push_str(&particle_id_prefix);
+            {
+                use std::fmt::Write as _;
+                let _ = write!(&mut id, "{index}");
+            }
             output.push(SceneSnapshotLayer {
-                id: format!("{}::particle-{index}", self.id),
+                id,
                 kind: layer_kind,
                 source: source.clone(),
                 texture_region,
