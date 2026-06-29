@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::slice;
+#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
 use std::sync::Once;
 
 use serde::Serialize;

@@ -14,6 +14,8 @@ use vulkanalia::vk::{
 };
 
 #[cfg(feature = "native-vulkan-video")]
+use crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
+#[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video::codec_reference::{
     NativeVulkanAv1DecodeReferencePlanner, NativeVulkanAv1StreamingBootstrap,
     NativeVulkanH264DecodeReferencePlanner, NativeVulkanH264StreamingBootstrap,
@@ -35,10 +37,7 @@ use crate::renderer::native_vulkan::{
     NativeVulkanH264StreamingPacketQueue, NativeVulkanH265StreamingPacketQueue,
     native_vulkan_av1_update_active_dpb_refs_after_display_handoff,
 };
-use crate::renderer::native_vulkan::{
-    NativeVulkanClearColor, NativeVulkanVideoSessionCodec,
-    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-};
+use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanVideoSessionCodec};
 use crate::renderer::native_wayland::NativeWaylandHost;
 
 use super::super::scene::present::{
@@ -56,8 +55,8 @@ use super::render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot,
-    VulkanaliaDecodedImagePresentFrameResources, VulkanaliaDecodedImagePresentPipelineResources,
-    VulkanaliaDecodedImagePresentSamplerResources, VulkanaliaDecodedImagePresentTimingConfig,
+    VulkanaliaDecodedImagePresentPipelineResources, VulkanaliaDecodedImagePresentSamplerResources,
+    VulkanaliaDecodedImagePresentTimingConfig,
     native_vulkan_vulkanalia_create_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
@@ -68,11 +67,15 @@ use super::render_present::{
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_prepare_decoded_image_present_frame_slot,
     native_vulkan_vulkanalia_present_decoded_image_frame,
-    native_vulkan_vulkanalia_present_decoded_image_frame_with_sources,
     native_vulkan_vulkanalia_present_decoded_image_once,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
     native_vulkan_vulkanalia_try_complete_decoded_image_present_frame_slot,
     native_vulkan_vulkanalia_wait_decoded_image_present_frame_slot,
+};
+#[cfg(feature = "native-vulkan-video")]
+use super::render_present::{
+    VulkanaliaDecodedImagePresentFrameResources,
+    native_vulkan_vulkanalia_present_decoded_image_frame_with_sources,
 };
 use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,

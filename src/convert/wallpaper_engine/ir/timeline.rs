@@ -15,6 +15,7 @@ pub(in crate::convert::wallpaper_engine) struct SceneTimelineIr {
 struct SceneTimelineChannelIr {
     property: &'static str,
     loop_playback: bool,
+    time_offset_ms: u64,
     keyframes: Vec<SceneTimelineKeyframeIr>,
 }
 
@@ -110,15 +111,48 @@ impl SceneTimelineIr {
         }
         self
     }
+
+    pub(in crate::convert::wallpaper_engine) fn with_time_offset_fraction(
+        mut self,
+        fraction: f64,
+    ) -> Self {
+        if !fraction.is_finite() || fraction <= 0.0 {
+            return self;
+        }
+        let fraction = fraction.fract();
+        if fraction <= f64::EPSILON {
+            return self;
+        }
+        for channel in &mut self.channels {
+            let Some(last_time_ms) = channel.keyframes.last().map(|keyframe| keyframe.time_ms)
+            else {
+                continue;
+            };
+            if last_time_ms == 0 {
+                continue;
+            }
+            let offset = ((last_time_ms as f64) * fraction).round();
+            if offset.is_finite() && offset > 0.0 {
+                channel.time_offset_ms = channel.time_offset_ms.saturating_add(offset as u64);
+            }
+        }
+        self
+    }
 }
 
 impl SceneTimelineChannelIr {
     fn channel_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "property": self.property,
             "loop": self.loop_playback,
             "keyframes": self.keyframes.iter().map(SceneTimelineKeyframeIr::keyframe_value).collect::<Vec<_>>()
-        })
+        });
+        if self.time_offset_ms > 0
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("time_offset_ms".to_owned(), json!(self.time_offset_ms));
+        }
+        value
     }
 }
 
@@ -212,6 +246,7 @@ fn scene_timeline_channels_from_property(
                 Some(SceneTimelineChannelIr {
                     property: mapping.property,
                     loop_playback,
+                    time_offset_ms: 0,
                     keyframes,
                 })
             }

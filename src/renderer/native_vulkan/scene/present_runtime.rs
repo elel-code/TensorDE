@@ -13,9 +13,12 @@ use crate::renderer::{
 
 #[cfg(feature = "native-vulkan-video")]
 use super::super::NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot;
+#[cfg(feature = "native-vulkan-video")]
+use super::super::NativeVulkanVulkanaliaSceneVideoOverlayInput;
+use super::super::audio::clock::NativeVulkanAudioClockRuntimeSnapshot;
+#[cfg(feature = "native-vulkan-video")]
 use super::super::audio::clock::{
-    NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
-    native_vulkan_probe_ffmpeg_audio_clock,
+    NativeVulkanAudioClockProbeOptions, native_vulkan_probe_ffmpeg_audio_clock,
 };
 use super::super::present::render_item::native_vulkan_scene_item;
 use super::super::present::render_plan::{
@@ -38,7 +41,6 @@ use super::super::{
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
     NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
-    NativeVulkanVulkanaliaSceneVideoOverlayInput,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap, run_clear,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,

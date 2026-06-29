@@ -10,6 +10,8 @@ pub(in crate::convert::wallpaper_engine) struct SceneAnimationLayerIr {
     timelines: Vec<SceneAnimationLayerTimelineIr>,
     unlowered_layer_count: usize,
     rate_scaled_layer_count: usize,
+    native_script_lowering_count: usize,
+    phase_offset_layer_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -24,11 +26,13 @@ impl SceneAnimationLayerIr {
         target_node: &str,
     ) -> Self {
         let mut state = SceneAnimationLayerIrState::default();
-        scene_animation_layer_collect(value, target_node, None, 1.0, &mut state);
+        scene_animation_layer_collect(value, target_node, None, 1.0, None, &mut state);
         Self {
             timelines: state.timelines,
             unlowered_layer_count: state.unlowered_layer_count,
             rate_scaled_layer_count: state.rate_scaled_layer_count,
+            native_script_lowering_count: state.native_script_lowering_count,
+            phase_offset_layer_count: state.phase_offset_layer_count,
         }
     }
 
@@ -44,6 +48,14 @@ impl SceneAnimationLayerIr {
 
     pub(in crate::convert::wallpaper_engine) fn rate_scaled_layer_count(&self) -> usize {
         self.rate_scaled_layer_count
+    }
+
+    pub(in crate::convert::wallpaper_engine) fn native_script_lowering_count(&self) -> usize {
+        self.native_script_lowering_count
+    }
+
+    pub(in crate::convert::wallpaper_engine) fn phase_offset_layer_count(&self) -> usize {
+        self.phase_offset_layer_count
     }
 }
 
@@ -65,6 +77,8 @@ struct SceneAnimationLayerIrState {
     timelines: Vec<SceneAnimationLayerTimelineIr>,
     unlowered_layer_count: usize,
     rate_scaled_layer_count: usize,
+    native_script_lowering_count: usize,
+    phase_offset_layer_count: usize,
 }
 
 fn scene_animation_layer_collect(
@@ -72,6 +86,7 @@ fn scene_animation_layer_collect(
     target_node: &str,
     inherited_hint: Option<&str>,
     inherited_time_scale: f64,
+    inherited_phase_offset: Option<f64>,
     state: &mut SceneAnimationLayerIrState,
 ) {
     match value {
@@ -82,6 +97,7 @@ fn scene_animation_layer_collect(
                     target_node,
                     inherited_hint,
                     inherited_time_scale,
+                    inherited_phase_offset,
                     state,
                 );
             }
@@ -91,6 +107,7 @@ fn scene_animation_layer_collect(
             target_node,
             inherited_hint,
             inherited_time_scale,
+            inherited_phase_offset,
             state,
         ),
         Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {}
@@ -102,6 +119,7 @@ fn scene_animation_layer_collect_object(
     target_node: &str,
     inherited_hint: Option<&str>,
     inherited_time_scale: f64,
+    inherited_phase_offset: Option<f64>,
     state: &mut SceneAnimationLayerIrState,
 ) {
     if scene_animation_layer_disabled(object) {
@@ -111,6 +129,12 @@ fn scene_animation_layer_collect_object(
         .or_else(|| inherited_hint.map(str::to_owned));
     let (time_scale, invalid_time_scale) =
         scene_animation_layer_effective_time_scale(object, inherited_time_scale);
+    let explicit_phase_offset = scene_animation_layer_visible_initial_phase(object);
+    let phase_offset = explicit_phase_offset.or(inherited_phase_offset);
+    if explicit_phase_offset.is_some() {
+        state.native_script_lowering_count += 1;
+        state.phase_offset_layer_count += 1;
+    }
     let before = state.timelines.len();
 
     if let Some(timeline) =
@@ -123,6 +147,10 @@ fn scene_animation_layer_collect_object(
                 state.rate_scaled_layer_count += 1;
                 timeline.with_time_scale(time_scale)
             };
+        let timeline = match phase_offset {
+            Some(phase_offset) => timeline.with_time_offset_fraction(phase_offset),
+            None => timeline,
+        };
         state.timelines.push(SceneAnimationLayerTimelineIr {
             hint: layer_hint.clone(),
             timeline,
@@ -136,6 +164,7 @@ fn scene_animation_layer_collect_object(
                 target_node,
                 layer_hint.as_deref(),
                 time_scale,
+                phase_offset,
                 state,
             );
         }
@@ -145,6 +174,24 @@ fn scene_animation_layer_collect_object(
     if invalid_time_scale || !lowered || scene_animation_layer_has_unlowered_blending(object) {
         state.unlowered_layer_count += 1;
     }
+}
+
+fn scene_animation_layer_visible_initial_phase(object: &Map<String, Value>) -> Option<f64> {
+    let visible = object.get("visible")?.as_object()?;
+    let script = visible.get("script")?.as_str()?;
+    let normalized_script = script.split_whitespace().collect::<String>();
+    if !normalized_script.contains("setFrame(")
+        || !normalized_script.contains("frameCount*scriptProperties.percentage")
+    {
+        return None;
+    }
+    let phase = visible
+        .get("scriptproperties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("percentage"))
+        .and_then(value_to_f64_unwrapped)
+        .unwrap_or(1.0);
+    phase.is_finite().then_some(phase.clamp(0.0, 1.0))
 }
 
 fn scene_animation_layer_disabled(object: &Map<String, Value>) -> bool {
@@ -324,6 +371,59 @@ mod tests {
                         "keyframes": [
                             { "time_ms": 0, "value": 0.0 },
                             { "time_ms": 500, "value": 1.0 }
+                        ]
+                    }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn animation_layer_ir_lowers_visible_init_set_frame_to_timeline_phase() {
+        let layers = json!([{
+            "name": "offset-slide",
+            "visible": {
+                "value": true,
+                "script": "export function init(value) { const ani = thisObject.getAnimation(); ani.play(); ani.setFrame(ani.frameCount * scriptProperties.percentage); return value; }",
+                "scriptproperties": { "percentage": 0.25 }
+            },
+            "animations": [{
+                "property": "origin",
+                "loop": true,
+                "keyframes": [
+                    { "time_ms": 0, "value": [0, 0, 0] },
+                    { "time_ms": 1000, "value": [100, 200, 0] }
+                ]
+            }]
+        }]);
+        let ir = SceneAnimationLayerIr::from_wallpaper_engine_value(&layers, "node-panel");
+
+        assert_eq!(ir.unlowered_layer_count(), 0);
+        assert_eq!(ir.native_script_lowering_count(), 1);
+        assert_eq!(ir.phase_offset_layer_count(), 1);
+        let timelines = ir.into_timelines();
+        assert_eq!(
+            timelines[0].timeline_value("timeline-offset-slide".to_owned()),
+            json!({
+                "id": "timeline-offset-slide",
+                "target_node": "node-panel",
+                "channels": [
+                    {
+                        "property": "x",
+                        "loop": true,
+                        "time_offset_ms": 250,
+                        "keyframes": [
+                            { "time_ms": 0, "value": 0.0 },
+                            { "time_ms": 1000, "value": 100.0 }
+                        ]
+                    },
+                    {
+                        "property": "y",
+                        "loop": true,
+                        "time_offset_ms": 250,
+                        "keyframes": [
+                            { "time_ms": 0, "value": 0.0 },
+                            { "time_ms": 1000, "value": 200.0 }
                         ]
                     }
                 ]

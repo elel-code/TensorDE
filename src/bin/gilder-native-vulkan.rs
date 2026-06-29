@@ -208,20 +208,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::StaticWallpaperPlan;
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
-    #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputPolicy, NativeVulkanVideoSessionCodec,
-        native_vulkan_extract_av1_sequence_header_for_vulkanalia,
-        native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
-        native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-        run_vulkanalia_ready_prefix_video,
-    };
-    use gilder::renderer::native_vulkan::{
-        NativeVulkanOptions, NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions,
-        backend_contract, capabilities, native_vulkan_scene_runtime_snapshot_from_plan,
+        NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
+        NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
+        native_vulkan_scene_runtime_snapshot_from_plan,
         native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
         probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene, run_static_image,
         wallpaper_type_support_matrix,
+    };
+    #[cfg(feature = "native-vulkan-video")]
+    use gilder::renderer::native_vulkan::{
+        NativeVulkanVideoSessionCodec, native_vulkan_extract_av1_sequence_header_for_vulkanalia,
+        native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
+        native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
+        run_vulkanalia_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
@@ -260,7 +260,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
-    #[cfg(feature = "native-vulkan-video")]
     let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
@@ -465,15 +464,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--audio-output" => {
                 let value = args.next().ok_or("--audio-output requires a value")?;
-                #[cfg(feature = "native-vulkan-video")]
-                {
-                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
-                }
-                #[cfg(not(feature = "native-vulkan-video"))]
-                {
-                    let _ = value;
-                    return Err("--audio-output requires native-vulkan-video feature".into());
-                }
+                audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
             }
             "--decoder" => {
                 let value = args.next().ok_or("--decoder requires a value")?;
@@ -572,6 +563,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
+    #[cfg(not(feature = "native-vulkan-video"))]
+    let _ = (video_width_set, video_height_set);
 
     let report = match mode {
         NativeVulkanCliMode::All => {

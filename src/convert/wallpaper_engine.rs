@@ -2030,6 +2030,8 @@ fn scene_collect_animation_layer_timelines(
     let animation_layer = SceneAnimationLayerIr::from_wallpaper_engine_value(value, node_id);
     let unlowered_layer_count = animation_layer.unlowered_layer_count();
     let rate_scaled_layer_count = animation_layer.rate_scaled_layer_count();
+    let native_script_lowering_count = animation_layer.native_script_lowering_count();
+    let phase_offset_layer_count = animation_layer.phase_offset_layer_count();
     let mut timeline_count = 0usize;
     for timeline in animation_layer.into_timelines() {
         let timeline_id = scene_next_timeline_id(context, timeline.hint().or(Some(node_id)));
@@ -2047,6 +2049,17 @@ fn scene_collect_animation_layer_timelines(
             &mut context.converted_features,
             "scene-we-animation-layer-rate-time-scale",
         );
+    }
+    if timeline_count > 0 {
+        for _ in 0..native_script_lowering_count {
+            scene_record_native_script_lowering(context);
+        }
+        if phase_offset_layer_count > 0 {
+            push_unique(
+                &mut context.converted_features,
+                "scene-we-animation-layer-initial-frame-phase",
+            );
+        }
     }
     if unlowered_layer_count > 0 {
         scene_push_unsupported(

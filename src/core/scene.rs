@@ -13,6 +13,10 @@ const SCENE_PARTICLE_DEFAULT_LIFETIME_MS: u64 = 2_000;
 const SCENE_PARTICLE_DEFAULT_SIZE: f64 = 6.0;
 const SCENE_PARTICLE_DEFAULT_SPEED: f64 = 24.0;
 
+fn is_default<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneDocument {
     #[serde(default = "default_scene_version")]
@@ -1823,8 +1827,10 @@ fn scene_native_effect_adjustment_at(
             let (wave, cross_wave) = phase_radians.sin_cos();
             let amplitude = (extent * strength * 0.012).clamp(0.0, 18.0);
             let (direction_sin, direction_cos) = direction.sin_cos();
-            adjustment.translate_x += direction_cos * wave * amplitude;
-            adjustment.translate_y += direction_sin * cross_wave * amplitude;
+            if file.contains("shake") {
+                adjustment.translate_x += direction_cos * wave * amplitude;
+                adjustment.translate_y += direction_sin * cross_wave * amplitude;
+            }
             let scale = scene_effect_pass_f64(pass, &["scale", "scale1"], 8.0)
                 .abs()
                 .max(0.001);
@@ -2546,6 +2552,8 @@ pub struct SceneTimelineChannel {
     pub property: SceneAnimatedProperty,
     #[serde(rename = "loop", default)]
     pub loop_playback: bool,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub time_offset_ms: u64,
     #[serde(default)]
     pub keyframes: Vec<SceneKeyframe>,
 }
@@ -2570,6 +2578,7 @@ impl SceneTimelineChannel {
             .last()
             .map(|keyframe| keyframe.time_ms)
             .unwrap_or_default();
+        let time_ms = time_ms.saturating_add(self.time_offset_ms);
         let time_ms = if self.loop_playback && last_time > 0 {
             time_ms % last_time
         } else {
@@ -3739,6 +3748,41 @@ mod tests {
     }
 
     #[test]
+    fn looping_timeline_channels_apply_time_offset_for_animation_phase() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-panel",
+                    "type": "rectangle",
+                    "color": "#ffffff"
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "panel-slide",
+                    "target_node": "node-panel",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "loop": true,
+                            "time_offset_ms": 500,
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0 },
+                                { "time_ms": 1000, "value": 100 }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+        assert_eq!(snapshot.layers[0].transform.x, 50.0);
+    }
+
+    #[test]
     fn spritesheet_properties_drive_time_sampled_texture_region() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
@@ -3851,6 +3895,53 @@ mod tests {
         assert_eq!(layers.len(), 1);
         assert!(layers[0].effect_motion.is_active());
         assert!((layers[0].effect_motion.wave_phase - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn waterwave_effect_deforms_vertices_without_shaking_layer_origin() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-image",
+                    "type": "image",
+                    "source": "assets/image.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-water",
+                    "type": "image",
+                    "resource": "resource-image",
+                    "width": 100,
+                    "height": 100,
+                    "transform": { "x": 25, "y": 50 },
+                    "effects": [
+                        {
+                            "file": "effects/waterwaves/effect.json",
+                            "passes": [
+                                {
+                                    "constant_shader_values": {
+                                        "speed": 3.0,
+                                        "strength": 1.0,
+                                        "direction": 1.0,
+                                        "scale": 8.0
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut layers = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, &mut layers);
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].transform.x, 25.0);
+        assert_eq!(layers[0].transform.y, 50.0);
+        assert!(layers[0].effect_motion.is_active());
     }
 
     #[test]
