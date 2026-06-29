@@ -4651,6 +4651,82 @@ fn lowers_wallpaper_engine_origin_component_scenescript_bindings() {
 }
 
 #[test]
+fn lowers_wallpaper_engine_runtime_sine_origin_scenescript_to_timelines() {
+    let source = TestDir::new("we-scene-runtime-sine-origin-script-source");
+    let output = TestDir::new("we-scene-runtime-sine-origin-script-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r##"{
+              "objects": [
+                {
+                  "id": 30,
+                  "name": "Floating Star",
+                  "type": "image",
+                  "image": "star.png",
+                  "size": "64 64 0",
+                  "origin": {
+                    "value": "100 200 0",
+                    "script": "export var scriptProperties = createScriptProperties().addSlider({ name: 'xa', value: 100 }).addSlider({ name: 'xb', value: 1.57079632679 }).addSlider({ name: 'xc', value: 10 }).addSlider({ name: 'ya', value: 200 }).addSlider({ name: 'yb', value: 1.57079632679 }).addSlider({ name: 'yc', value: 20 }).finish();\nexport function update(value) {\n  value.x = scriptProperties.xa + (Math.sin(engine.runtime * scriptProperties.xb) * scriptProperties.xc);\n  value.y = scriptProperties.ya + (Math.sin(engine.runtime * scriptProperties.yb) * scriptProperties.yc);\n  return value;\n}",
+                    "scriptproperties": {
+                      "xa": 100,
+                      "xb": 1.57079632679,
+                      "xc": 10,
+                      "ya": 200,
+                      "yb": 1.57079632679,
+                      "yc": 20
+                    }
+                  }
+                }
+              ]
+            }"##,
+    );
+    source.write_file("star.png", "not real png");
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Runtime Sine Origin Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let timelines = scene["timelines"].as_array().unwrap();
+    assert_eq!(timelines.len(), 2);
+    assert!(
+        timelines
+            .iter()
+            .any(|timeline| timeline["channels"][0]["property"] == "x")
+    );
+    assert!(
+        timelines
+            .iter()
+            .any(|timeline| timeline["channels"][0]["property"] == "y")
+    );
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let snapshot = document.snapshot_at_with_property_resolver(1000, |_| None);
+    assert!((snapshot.layers[0].transform.x - 110.0).abs() < 0.001);
+    assert!((snapshot.layers[0].transform.y - 220.0).abs() < 0.001);
+
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"scene-deterministic-scenescript-sine-timeline".to_owned())
+    );
+}
+
+#[test]
 fn lowers_wallpaper_engine_embedded_property_keyframes_to_gscene_timelines() {
     let source = TestDir::new("we-scene-embedded-property-timeline-source");
     let output = TestDir::new("we-scene-embedded-property-timeline-output");

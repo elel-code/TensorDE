@@ -44,6 +44,9 @@ const FFPROBE_BINARY: &str = "ffprobe";
 const VIDEO_POSTER_WIDTH: u32 = 1920;
 const VIDEO_THUMBNAIL_WIDTH: u32 = 512;
 const FEATURE_SCAN_MAX_BYTES: u64 = 2 * 1024 * 1024;
+const SCENE_SCRIPT_SINE_TIMELINE_SAMPLES: usize = 64;
+const SCENE_SCRIPT_SINE_TIMELINE_MIN_PERIOD_MS: u64 = 250;
+const SCENE_SCRIPT_SINE_TIMELINE_MAX_PERIOD_MS: u64 = 60_000;
 const STATIC_IMAGE_VARIANTS: &[StaticImageVariantSpec] = &[
     StaticImageVariantSpec {
         id: "landscape-1080p",
@@ -2263,6 +2266,112 @@ fn scene_push_vector_component_script_property_bindings(
     }
 }
 
+fn scene_push_vector_component_script_timeline_bindings(
+    value: Option<&Value>,
+    components: &[(&str, &str)],
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) {
+    let Some(object) = value.and_then(Value::as_object) else {
+        return;
+    };
+    let Some(script) = string_field(object, &["script"]) else {
+        return;
+    };
+    let Some(script_properties) = object
+        .get("scriptproperties")
+        .or_else(|| object.get("scriptProperties"))
+        .and_then(Value::as_object)
+    else {
+        return;
+    };
+
+    let mut lowered = false;
+    for (component, target) in components {
+        let Some(timeline) = scene_vector_component_script_sine_timeline(
+            &script,
+            script_properties,
+            component,
+            target,
+            node_id,
+            context,
+        ) else {
+            continue;
+        };
+        context.timelines.push(timeline);
+        lowered = true;
+    }
+    if lowered {
+        scene_record_native_script_lowering(context);
+        push_unique(
+            &mut context.converted_features,
+            "scene-deterministic-scenescript-expression",
+        );
+        push_unique(
+            &mut context.converted_features,
+            "scene-deterministic-scenescript-sine-timeline",
+        );
+    }
+}
+
+fn scene_vector_component_script_sine_timeline(
+    script: &str,
+    script_properties: &Map<String, Value>,
+    component: &str,
+    target: &str,
+    node_id: &str,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<Value> {
+    let expression = scene_vector_component_script_assignment_expression(script, component)?;
+    if !expression.contains("Math.sin") || !expression.contains("engine.runtime") {
+        return None;
+    }
+    let angular_speed =
+        scene_script_expression_primary_runtime_sine_speed(expression, script_properties)?;
+    if angular_speed.abs() <= f64::EPSILON {
+        return None;
+    }
+    let period_ms = ((std::f64::consts::TAU / angular_speed.abs()) * 1000.0)
+        .round()
+        .clamp(
+            SCENE_SCRIPT_SINE_TIMELINE_MIN_PERIOD_MS as f64,
+            SCENE_SCRIPT_SINE_TIMELINE_MAX_PERIOD_MS as f64,
+        ) as u64;
+    let period_seconds = period_ms as f64 / 1000.0;
+    let mut keyframes = Vec::with_capacity(SCENE_SCRIPT_SINE_TIMELINE_SAMPLES + 1);
+    for sample in 0..=SCENE_SCRIPT_SINE_TIMELINE_SAMPLES {
+        let progress = sample as f64 / SCENE_SCRIPT_SINE_TIMELINE_SAMPLES as f64;
+        let runtime_seconds = progress * period_seconds;
+        let value = scene_eval_deterministic_script_expression(
+            expression,
+            script_properties,
+            runtime_seconds,
+        )?;
+        let time_ms = ((period_ms as f64) * progress).round() as u64;
+        keyframes.push(json!({
+            "time_ms": time_ms,
+            "value": value,
+            "curve": "linear"
+        }));
+    }
+
+    let timeline_id = scene_next_timeline_id(
+        context,
+        Some(&format!("{node_id}-{target}-scenescript-sine")),
+    );
+    Some(json!({
+        "id": timeline_id,
+        "target_node": node_id,
+        "channels": [
+            {
+                "property": target,
+                "loop": true,
+                "keyframes": keyframes
+            }
+        ]
+    }))
+}
+
 fn scene_vector_component_script_user_property(
     script: &str,
     script_properties: &Map<String, Value>,
@@ -2277,6 +2386,14 @@ fn scene_vector_component_script_user_property(
 }
 
 fn scene_vector_component_script_local_property<'a>(
+    script: &'a str,
+    component: &str,
+) -> Option<&'a str> {
+    let expression = scene_vector_component_script_assignment_expression(script, component)?;
+    scene_script_properties_access_identifier(expression)
+}
+
+fn scene_vector_component_script_assignment_expression<'a>(
     script: &'a str,
     component: &str,
 ) -> Option<&'a str> {
@@ -2303,14 +2420,242 @@ fn scene_vector_component_script_local_property<'a>(
         let expression_end = expression
             .find(|character: char| matches!(character, ';' | '\n' | '\r'))
             .unwrap_or(expression.len());
-        if let Some(property) =
-            scene_script_properties_access_identifier(&expression[..expression_end])
-        {
-            return Some(property);
-        }
-        offset = absolute + needle.len();
+        return Some(expression[..expression_end].trim());
     }
     None
+}
+
+fn scene_script_expression_primary_runtime_sine_speed(
+    expression: &str,
+    script_properties: &Map<String, Value>,
+) -> Option<f64> {
+    for argument in scene_script_math_sin_arguments(expression) {
+        let start = scene_eval_deterministic_script_expression(argument, script_properties, 0.0)?;
+        let end = scene_eval_deterministic_script_expression(argument, script_properties, 1.0)?;
+        let speed = end - start;
+        if speed.abs() > f64::EPSILON {
+            return Some(speed);
+        }
+    }
+    None
+}
+
+fn scene_script_math_sin_arguments(expression: &str) -> Vec<&str> {
+    let mut arguments = Vec::new();
+    let mut offset = 0usize;
+    while let Some(index) = expression[offset..].find("Math.sin") {
+        let function_start = offset + index;
+        let Some(open_relative) = expression[function_start..].find('(') else {
+            break;
+        };
+        let open = function_start + open_relative;
+        let Some(close) = scene_script_matching_parenthesis(expression, open) else {
+            break;
+        };
+        arguments.push(expression[open + 1..close].trim());
+        offset = close + 1;
+    }
+    arguments
+}
+
+fn scene_script_matching_parenthesis(expression: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (index, character) in expression[open..].char_indices() {
+        match character {
+            '(' => depth = depth.saturating_add(1),
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(open + index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn scene_eval_deterministic_script_expression(
+    expression: &str,
+    script_properties: &Map<String, Value>,
+    runtime_seconds: f64,
+) -> Option<f64> {
+    let mut parser = SceneScriptExpressionParser {
+        input: expression,
+        offset: 0,
+        script_properties,
+        runtime_seconds,
+    };
+    let value = parser.parse_expression()?;
+    parser.skip_whitespace();
+    (parser.offset == parser.input.len() && value.is_finite()).then_some(value)
+}
+
+struct SceneScriptExpressionParser<'a> {
+    input: &'a str,
+    offset: usize,
+    script_properties: &'a Map<String, Value>,
+    runtime_seconds: f64,
+}
+
+impl SceneScriptExpressionParser<'_> {
+    fn parse_expression(&mut self) -> Option<f64> {
+        self.parse_add_sub()
+    }
+
+    fn parse_add_sub(&mut self) -> Option<f64> {
+        let mut value = self.parse_mul_div()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume_char('+') {
+                value += self.parse_mul_div()?;
+            } else if self.consume_char('-') {
+                value -= self.parse_mul_div()?;
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    fn parse_mul_div(&mut self) -> Option<f64> {
+        let mut value = self.parse_unary()?;
+        loop {
+            self.skip_whitespace();
+            if self.consume_char('*') {
+                value *= self.parse_unary()?;
+            } else if self.consume_char('/') {
+                let divisor = self.parse_unary()?;
+                if divisor.abs() <= f64::EPSILON {
+                    return None;
+                }
+                value /= divisor;
+            } else {
+                return Some(value);
+            }
+        }
+    }
+
+    fn parse_unary(&mut self) -> Option<f64> {
+        self.skip_whitespace();
+        if self.consume_char('+') {
+            self.parse_unary()
+        } else if self.consume_char('-') {
+            self.parse_unary().map(|value| -value)
+        } else {
+            self.parse_primary()
+        }
+    }
+
+    fn parse_primary(&mut self) -> Option<f64> {
+        self.skip_whitespace();
+        if self.consume_char('(') {
+            let value = self.parse_expression()?;
+            self.skip_whitespace();
+            return self.consume_char(')').then_some(value);
+        }
+        if self
+            .peek_char()
+            .is_some_and(|character| character.is_ascii_digit() || character == '.')
+        {
+            return self.parse_number();
+        }
+        let identifier = self.parse_identifier()?;
+        if identifier == "Math.sin" {
+            self.skip_whitespace();
+            if !self.consume_char('(') {
+                return None;
+            }
+            let value = self.parse_expression()?.sin();
+            self.skip_whitespace();
+            return self.consume_char(')').then_some(value);
+        }
+        if identifier == "engine.runtime" {
+            return Some(self.runtime_seconds);
+        }
+        if let Some(property) = identifier
+            .strip_prefix("scriptProperties.")
+            .or_else(|| identifier.strip_prefix("this.scriptProperties."))
+        {
+            return self.script_property_value(property);
+        }
+        None
+    }
+
+    fn parse_number(&mut self) -> Option<f64> {
+        let start = self.offset;
+        let mut seen_digit = false;
+        let mut seen_dot = false;
+        while let Some(character) = self.peek_char() {
+            if character.is_ascii_digit() {
+                seen_digit = true;
+                self.bump_char();
+            } else if character == '.' && !seen_dot {
+                seen_dot = true;
+                self.bump_char();
+            } else {
+                break;
+            }
+        }
+        if matches!(self.peek_char(), Some('e' | 'E')) {
+            self.bump_char();
+            if matches!(self.peek_char(), Some('+' | '-')) {
+                self.bump_char();
+            }
+            while self
+                .peek_char()
+                .is_some_and(|character| character.is_ascii_digit())
+            {
+                self.bump_char();
+            }
+        }
+        if !seen_digit {
+            return None;
+        }
+        self.input[start..self.offset].parse().ok()
+    }
+
+    fn parse_identifier(&mut self) -> Option<String> {
+        let start = self.offset;
+        while let Some(character) = self.peek_char() {
+            if scene_script_identifier_character(character) || character == '.' {
+                self.bump_char();
+            } else {
+                break;
+            }
+        }
+        (self.offset > start).then(|| self.input[start..self.offset].to_owned())
+    }
+
+    fn script_property_value(&self, property: &str) -> Option<f64> {
+        self.script_properties
+            .get(property)
+            .and_then(value_to_f64_unwrapped)
+    }
+
+    fn consume_char(&mut self, expected: char) -> bool {
+        if self.peek_char() == Some(expected) {
+            self.bump_char();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn skip_whitespace(&mut self) {
+        while self.peek_char().is_some_and(char::is_whitespace) {
+            self.bump_char();
+        }
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.input[self.offset..].chars().next()
+    }
+
+    fn bump_char(&mut self) {
+        if let Some(character) = self.peek_char() {
+            self.offset += character.len_utf8();
+        }
+    }
 }
 
 fn scene_script_properties_access_identifier(expression: &str) -> Option<&str> {
@@ -5473,6 +5818,12 @@ fn scene_transform_from_object(
     }
     scene_apply_attachment_transform_from_object(object, &mut transform, context);
     scene_push_vector_component_script_property_bindings(
+        object.get("origin"),
+        &[("x", "x"), ("y", "y")],
+        node_id,
+        context,
+    );
+    scene_push_vector_component_script_timeline_bindings(
         object.get("origin"),
         &[("x", "x"), ("y", "y")],
         node_id,

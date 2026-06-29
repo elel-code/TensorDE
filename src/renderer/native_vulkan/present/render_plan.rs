@@ -1,6 +1,7 @@
 #![allow(dead_code)]
 
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::core::scene::SceneMesh;
 use crate::core::{
@@ -66,7 +67,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) corner_radius: Option<f64>,
     pub(in crate::renderer::native_vulkan) width: Option<f64>,
     pub(in crate::renderer::native_vulkan) height: Option<f64>,
-    pub(in crate::renderer::native_vulkan) mesh: Option<SceneMesh>,
+    pub(in crate::renderer::native_vulkan) mesh: Option<Arc<SceneMesh>>,
     pub(in crate::renderer::native_vulkan) text: Option<String>,
     pub(in crate::renderer::native_vulkan) font_size: Option<f64>,
     pub(in crate::renderer::native_vulkan) font_family: Option<String>,

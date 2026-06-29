@@ -42,6 +42,7 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -151,7 +152,7 @@ pub struct SceneRenderLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
-    pub mesh: Option<SceneMesh>,
+    pub mesh: Option<Arc<SceneMesh>>,
     pub text: Option<String>,
     pub font_size: Option<f64>,
     pub font_family: Option<String>,

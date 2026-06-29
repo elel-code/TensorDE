@@ -288,9 +288,15 @@ fn native_vulkan_scene_plan_requires_dynamic_topology(plan: &SceneWallpaperPlan)
         crate::core::scene::SceneSystemStatus::Detected
             | crate::core::scene::SceneSystemStatus::Ready
     );
+    let native_effect_runtime_active = matches!(
+        plan.scene_systems.shader_material_graph,
+        crate::core::scene::SceneSystemStatus::Detected
+            | crate::core::scene::SceneSystemStatus::Ready
+    );
     plan.timeline_animation_count > 0
         || plan.timeline_animated_layer_count > 0
         || particle_runtime_active
+        || native_effect_runtime_active
         || plan.layers.iter().any(|layer| {
             layer
                 .texture_region

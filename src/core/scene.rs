@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+use std::sync::Arc;
 
 const SCENE_VERSION: u32 = 1;
 const SCENE_PARTICLE_DEFAULT_COUNT: u32 = 64;
@@ -658,7 +659,7 @@ pub struct SceneNode {
     #[serde(default)]
     pub height: Option<f64>,
     #[serde(default)]
-    pub mesh: Option<SceneMesh>,
+    pub mesh: Option<Arc<SceneMesh>>,
     #[serde(default)]
     pub parallax_depth: Option<f64>,
     #[serde(default)]
@@ -837,6 +838,10 @@ impl SceneNode {
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
             let audio = scene_audio_cues_for_snapshot(&self.audio, resolve_property);
+            let layer_effect =
+                scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
+            let layer_transform = layer_effect.apply_transform(transform);
+            let layer_opacity = layer_effect.apply_opacity(opacity);
             let layer = SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -868,11 +873,11 @@ impl SceneNode {
                 path_data: self.path_data.clone(),
                 path_fill_rule: self.path_fill_rule,
                 fit: self.fit,
-                opacity,
-                transform,
+                opacity: layer_opacity,
+                transform: layer_transform,
             };
             if scene_snapshot_layer_intersects_visibility(&layer, visibility) {
-                push_native_effect_snapshot_layers(&self.effects, &layer, output);
+                push_native_effect_snapshot_layers(time_ms, &self.effects, &layer, output);
                 output.push(layer);
             }
         }
@@ -991,15 +996,20 @@ impl SceneNode {
                 .resource
                 .as_deref()
                 .and_then(|resource| resources.get(resource));
+            let layer_effect =
+                scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
+            let layer_transform = layer_effect.apply_transform(transform);
+            let layer_opacity = layer_effect.apply_opacity(opacity);
             let layer = SceneSnapshotSampledImageLayer {
                 has_source: source.is_some(),
                 texture_region: scene_texture_region_from_properties(&self.properties, time_ms),
                 width,
                 height,
                 mesh: self.mesh.clone(),
+                effect_motion: layer_effect.motion,
                 fit: self.fit,
-                opacity,
-                transform,
+                opacity: layer_opacity,
+                transform: layer_transform,
             };
             if scene_sampled_image_snapshot_layer_intersects_visibility(&layer, visibility) {
                 output.push(layer);
@@ -1118,6 +1128,10 @@ impl SceneNode {
         if self.subtree_self_has_solid_visual_geometry() {
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
+            let layer_effect =
+                scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
+            let layer_transform = layer_effect.apply_transform(transform);
+            let layer_opacity = layer_effect.apply_opacity(opacity);
             let layer = SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -1145,11 +1159,11 @@ impl SceneNode {
                 path_data: self.path_data.clone(),
                 path_fill_rule: self.path_fill_rule,
                 fit: self.fit,
-                opacity,
-                transform,
+                opacity: layer_opacity,
+                transform: layer_transform,
             };
             if scene_snapshot_layer_intersects_visibility(&layer, visibility) {
-                push_native_effect_snapshot_layers(&self.effects, &layer, output);
+                push_native_effect_snapshot_layers(time_ms, &self.effects, &layer, output);
                 output.push(layer);
             }
         }
@@ -1334,6 +1348,7 @@ impl SceneNode {
                 width: Some(settings.particle_width),
                 height: Some(settings.particle_height),
                 mesh: None,
+                effect_motion: SceneNativeEffectMotion::default(),
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: particle_transform,
@@ -1492,19 +1507,418 @@ impl SceneNode {
 }
 
 fn push_native_effect_snapshot_layers(
+    time_ms: u64,
     effects: &[SceneEffect],
     base: &SceneSnapshotLayer,
     output: &mut Vec<SceneSnapshotLayer>,
 ) {
-    if base.kind != SceneNodeKind::Text || base.text.as_deref().is_none_or(str::is_empty) {
+    for (effect_index, effect) in effects.iter().enumerate() {
+        if effect.runtime.as_deref() == Some("native-text-glow")
+            && base.kind == SceneNodeKind::Text
+            && base.text.as_deref().is_some_and(|text| !text.is_empty())
+        {
+            push_native_text_glow_snapshot_layers(effect_index, effect, base, output);
+        }
+        let file = effect.file.to_ascii_lowercase();
+        if file.contains("lightshafts") {
+            push_native_lightshaft_snapshot_layers(effect_index, effect, base, time_ms, output);
+        } else if file.contains("enhanced_simple_audio_bars") {
+            push_native_audio_bar_snapshot_layers(effect_index, effect, base, time_ms, output);
+        } else if file.contains("tech_circle") {
+            push_native_tech_circle_snapshot_layers(effect_index, effect, base, time_ms, output);
+        }
+    }
+}
+
+fn push_native_lightshaft_snapshot_layers(
+    effect_index: usize,
+    effect: &SceneEffect,
+    base: &SceneSnapshotLayer,
+    time_ms: u64,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    let Some((width, height)) = base.width.zip(base.height) else {
+        return;
+    };
+    if width <= 0.0 || height <= 0.0 || base.opacity <= 0.0 {
         return;
     }
-    for (effect_index, effect) in effects.iter().enumerate() {
-        if effect.runtime.as_deref() != Some("native-text-glow") {
+    let pass = effect.passes.first();
+    let color = pass
+        .and_then(|pass| scene_effect_pass_color(pass, &["colorend", "color"]))
+        .unwrap_or_else(|| "#6fe2ff".to_owned());
+    let speed = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["rayspeed", "speed"], 0.5))
+        .unwrap_or(0.5);
+    let phase = (time_ms as f64 / 1000.0 * speed * std::f64::consts::TAU).sin();
+    for index in 0..3 {
+        let t = index as f64 / 2.0;
+        let x = (-0.2 + t * 0.55 + phase * 0.015) * width;
+        let y = (-0.38 + t * 0.12) * height;
+        let mut transform = SceneTransform {
+            x,
+            y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_deg: -18.0 + index as f64 * 7.0,
+            anchor_x: 0.5,
+            anchor_y: 0.0,
+        };
+        transform = base.transform.compose(transform);
+        output.push(scene_native_effect_visual_layer(
+            format!("{}::lightshaft-{effect_index}-{index}", base.id),
+            SceneNodeKind::Rectangle,
+            Some(width * (0.08 + t * 0.04)),
+            Some(height * 0.92),
+            Some(color.clone()),
+            None,
+            None,
+            base.opacity * (0.18 + t * 0.08),
+            transform,
+            base.fit,
+        ));
+    }
+}
+
+fn push_native_audio_bar_snapshot_layers(
+    effect_index: usize,
+    effect: &SceneEffect,
+    base: &SceneSnapshotLayer,
+    time_ms: u64,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    let Some((width, height)) = base.width.zip(base.height) else {
+        return;
+    };
+    if width <= 0.0 || height <= 0.0 || base.opacity <= 0.0 {
+        return;
+    }
+    let pass = effect.passes.first();
+    let count = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["Bar Count", "bar_count", "bars"], 12.0))
+        .unwrap_or(12.0)
+        .round()
+        .clamp(1.0, 48.0) as usize;
+    let color = pass
+        .and_then(|pass| scene_effect_pass_color(pass, &["Bar Color", "bar_color", "color"]))
+        .unwrap_or_else(|| "#ffffff".to_owned());
+    let spacing = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["Bar Spacing", "bar_spacing"], 0.25))
+        .unwrap_or(0.25)
+        .clamp(0.0, 2.0);
+    let slot = width / count as f64;
+    let bar_width = (slot / (1.0 + spacing)).max(1.0);
+    let time = time_ms as f64 / 1000.0;
+    for index in 0..count {
+        let wave = (time.mul_add(5.0, index as f64 * 0.73)).sin().abs();
+        let bar_height = height * (0.18 + wave * 0.62);
+        let x = -width * 0.5 + slot * (index as f64 + 0.5);
+        let y = height * 0.5 - bar_height * 0.5;
+        let transform = base.transform.compose(SceneTransform {
+            x,
+            y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_deg: 0.0,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+        });
+        output.push(scene_native_effect_visual_layer(
+            format!("{}::audio-bars-{effect_index}-{index}", base.id),
+            SceneNodeKind::Rectangle,
+            Some(bar_width),
+            Some(bar_height),
+            Some(color.clone()),
+            None,
+            None,
+            base.opacity * 0.9,
+            transform,
+            base.fit,
+        ));
+    }
+}
+
+fn push_native_tech_circle_snapshot_layers(
+    effect_index: usize,
+    effect: &SceneEffect,
+    base: &SceneSnapshotLayer,
+    time_ms: u64,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    let Some((width, height)) = base.width.zip(base.height) else {
+        return;
+    };
+    let size = width.abs().min(height.abs());
+    if size <= 0.0 || base.opacity <= 0.0 {
+        return;
+    }
+    let pass = effect.passes.first();
+    let color = pass
+        .and_then(|pass| scene_effect_pass_color(pass, &["ui_editor_properties_1_color", "color"]))
+        .unwrap_or_else(|| "#ffffff".to_owned());
+    let speed = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["ui_editor_properties_3_speed", "speed"], 0.1))
+        .unwrap_or(0.1);
+    let rotation = time_ms as f64 / 1000.0 * speed * 360.0;
+    for index in 0..2 {
+        let diameter = size * (0.48 + index as f64 * 0.22);
+        let transform = base.transform.compose(SceneTransform {
+            x: 0.0,
+            y: 0.0,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_deg: rotation * if index == 0 { 1.0 } else { -0.65 },
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+        });
+        output.push(scene_native_effect_visual_layer(
+            format!("{}::tech-circle-{effect_index}-{index}", base.id),
+            SceneNodeKind::Ellipse,
+            Some(diameter),
+            Some(diameter),
+            None,
+            Some(color.clone()),
+            Some((size * 0.012).max(1.0)),
+            base.opacity * 0.75,
+            transform,
+            base.fit,
+        ));
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scene_native_effect_visual_layer(
+    id: String,
+    kind: SceneNodeKind,
+    width: Option<f64>,
+    height: Option<f64>,
+    color: Option<String>,
+    stroke_color: Option<String>,
+    stroke_width: Option<f64>,
+    opacity: f64,
+    transform: SceneTransform,
+    fit: FitMode,
+) -> SceneSnapshotLayer {
+    SceneSnapshotLayer {
+        id,
+        kind,
+        source: None,
+        texture_region: None,
+        audio: Vec::new(),
+        color,
+        stroke_color,
+        stroke_width,
+        corner_radius: None,
+        width,
+        height,
+        mesh: None,
+        parallax_depth: None,
+        text: None,
+        font_size: None,
+        font_family: None,
+        font_source: None,
+        font_weight: None,
+        text_align: None,
+        path_data: None,
+        path_fill_rule: ScenePathFillRule::default(),
+        fit,
+        opacity: opacity.clamp(0.0, 1.0),
+        transform,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct SceneNativeEffectAdjustment {
+    translate_x: f64,
+    translate_y: f64,
+    rotation_deg: f64,
+    opacity_multiplier: f64,
+    motion: SceneNativeEffectMotion,
+}
+
+impl Default for SceneNativeEffectAdjustment {
+    fn default() -> Self {
+        Self {
+            translate_x: 0.0,
+            translate_y: 0.0,
+            rotation_deg: 0.0,
+            opacity_multiplier: 1.0,
+            motion: SceneNativeEffectMotion::default(),
+        }
+    }
+}
+
+impl SceneNativeEffectAdjustment {
+    fn apply_transform(self, mut transform: SceneTransform) -> SceneTransform {
+        transform.x += self.translate_x;
+        transform.y += self.translate_y;
+        transform.rotation_deg += self.rotation_deg;
+        transform
+    }
+
+    fn apply_opacity(self, opacity: f64) -> f64 {
+        (opacity * self.opacity_multiplier).clamp(0.0, 1.0)
+    }
+}
+
+fn scene_native_effect_adjustment_at(
+    effects: &[SceneEffect],
+    width: Option<f64>,
+    height: Option<f64>,
+    time_ms: u64,
+) -> SceneNativeEffectAdjustment {
+    let mut adjustment = SceneNativeEffectAdjustment::default();
+    let extent = width
+        .zip(height)
+        .map(|(width, height)| width.abs().min(height.abs()))
+        .filter(|extent| extent.is_finite() && *extent > 0.0)
+        .unwrap_or(1024.0);
+    let time_seconds = time_ms as f64 / 1000.0;
+    for effect in effects {
+        if !scene_effect_is_visible(effect) {
             continue;
         }
-        push_native_text_glow_snapshot_layers(effect_index, effect, base, output);
+        let file = effect.file.to_ascii_lowercase();
+        if file.contains("opacity") {
+            for pass in &effect.passes {
+                adjustment.opacity_multiplier *=
+                    scene_effect_pass_f64(pass, &["alpha", "opacity"], 1.0).clamp(0.0, 1.0);
+            }
+        }
+        let native_motion = file.contains("waterwaves")
+            || file.contains("waterripple")
+            || file.contains("waterflow")
+            || file.contains("cloudmotion")
+            || file.contains("foliagesway")
+            || file.contains("auto_sway")
+            || file.contains("shake")
+            || file.contains("skew");
+        if !native_motion {
+            continue;
+        }
+        let phase_seed = effect.id.unwrap_or_default() as f64 * 0.017;
+        for pass in &effect.passes {
+            let speed = scene_effect_pass_f64(
+                pass,
+                &[
+                    "speed",
+                    "animationspeed",
+                    "scrollspeed",
+                    "speeduv",
+                    "speed_uv",
+                ],
+                1.0,
+            );
+            let strength = scene_effect_pass_f64(
+                pass,
+                &["strength", "ripplestrength", "ripple_strength", "power"],
+                0.0,
+            )
+            .abs();
+            if strength <= 0.0 {
+                continue;
+            }
+            let direction = scene_effect_pass_f64(pass, &["direction", "scrolldirection"], 0.0);
+            let phase_radians = time_seconds.mul_add(speed.max(0.0), phase_seed);
+            let (wave, cross_wave) = phase_radians.sin_cos();
+            let amplitude = (extent * strength * 0.012).clamp(0.0, 18.0);
+            let (direction_sin, direction_cos) = direction.sin_cos();
+            adjustment.translate_x += direction_cos * wave * amplitude;
+            adjustment.translate_y += direction_sin * cross_wave * amplitude;
+            let scale = scene_effect_pass_f64(pass, &["scale", "scale1"], 8.0)
+                .abs()
+                .max(0.001);
+            let spatial_period = (extent / scale).clamp(8.0, extent.max(8.0));
+            adjustment.motion.wave_x += direction_cos * amplitude * 0.75;
+            adjustment.motion.wave_y += direction_sin * amplitude * 0.75;
+            adjustment.motion.wave_direction_x += direction_cos;
+            adjustment.motion.wave_direction_y += direction_sin;
+            adjustment.motion.wave_spatial_frequency += std::f64::consts::TAU / spatial_period;
+            adjustment.motion.wave_phase += phase_radians + phase_seed;
+            adjustment.motion.wave_count = adjustment.motion.wave_count.saturating_add(1);
+            if file.contains("auto_sway") || file.contains("foliagesway") || file.contains("shake")
+            {
+                adjustment.rotation_deg += wave * strength.min(1.0) * 0.35;
+                adjustment.motion.sway_amplitude += (extent * strength * 0.02).clamp(0.0, 16.0);
+                adjustment.motion.sway_phase += phase_radians;
+                adjustment.motion.sway_spatial_frequency +=
+                    std::f64::consts::TAU / (extent * 0.75).clamp(8.0, extent.max(8.0));
+            }
+        }
     }
+    adjustment.motion.normalize();
+    adjustment
+}
+
+fn scene_effect_is_visible(effect: &SceneEffect) -> bool {
+    match &effect.visible {
+        Some(Value::Bool(value)) => *value,
+        Some(Value::Object(object)) => object.get("value").and_then(Value::as_bool).unwrap_or(true),
+        _ => true,
+    }
+}
+
+fn scene_effect_pass_f64(pass: &SceneEffectPass, keys: &[&str], fallback: f64) -> f64 {
+    keys.iter()
+        .find_map(|key| {
+            pass.constant_shader_values
+                .get(*key)
+                .and_then(scene_effect_value_f64)
+        })
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
+}
+
+fn scene_effect_pass_color(pass: &SceneEffectPass, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        pass.constant_shader_values
+            .get(*key)
+            .and_then(scene_effect_value_color)
+    })
+}
+
+fn scene_effect_value_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(value) => value.as_f64(),
+        Value::String(value) => value.trim().parse().ok(),
+        Value::Object(object) => object.get("value").and_then(scene_effect_value_f64),
+        _ => None,
+    }
+}
+
+fn scene_effect_value_color(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => scene_effect_color_string(value),
+        Value::Object(object) => object.get("value").and_then(scene_effect_value_color),
+        Value::Array(values) => {
+            let r = values.first().and_then(scene_effect_value_f64)?;
+            let g = values.get(1).and_then(scene_effect_value_f64)?;
+            let b = values.get(2).and_then(scene_effect_value_f64)?;
+            Some(scene_effect_rgb_hex(r, g, b))
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => None,
+    }
+}
+
+fn scene_effect_color_string(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.starts_with('#') && (value.len() == 7 || value.len() == 9) {
+        return Some(value[..7].to_owned());
+    }
+    let mut components = value
+        .split_ascii_whitespace()
+        .filter_map(|component| component.parse::<f64>().ok());
+    let r = components.next()?;
+    let g = components.next()?;
+    let b = components.next()?;
+    Some(scene_effect_rgb_hex(r, g, b))
+}
+
+fn scene_effect_rgb_hex(r: f64, g: f64, b: f64) -> String {
+    fn byte(value: f64) -> u8 {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+    format!("#{:02x}{:02x}{:02x}", byte(r), byte(g), byte(b))
 }
 
 fn push_native_text_glow_snapshot_layers(
@@ -2455,7 +2869,7 @@ pub struct SceneSnapshotLayer {
     pub corner_radius: Option<f64>,
     pub width: Option<f64>,
     pub height: Option<f64>,
-    pub mesh: Option<SceneMesh>,
+    pub mesh: Option<Arc<SceneMesh>>,
     pub parallax_depth: Option<f64>,
     pub text: Option<String>,
     pub font_size: Option<f64>,
@@ -2476,10 +2890,42 @@ pub struct SceneSnapshotSampledImageLayer {
     pub texture_region: Option<SceneTextureRegion>,
     pub width: Option<f64>,
     pub height: Option<f64>,
-    pub mesh: Option<SceneMesh>,
+    pub mesh: Option<Arc<SceneMesh>>,
+    pub effect_motion: SceneNativeEffectMotion,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SceneNativeEffectMotion {
+    pub wave_x: f64,
+    pub wave_y: f64,
+    pub wave_direction_x: f64,
+    pub wave_direction_y: f64,
+    pub wave_spatial_frequency: f64,
+    pub wave_phase: f64,
+    pub wave_count: u32,
+    pub sway_amplitude: f64,
+    pub sway_spatial_frequency: f64,
+    pub sway_phase: f64,
+}
+
+impl SceneNativeEffectMotion {
+    pub fn is_active(self) -> bool {
+        self.wave_count > 0 || self.sway_amplitude.abs() > f64::EPSILON
+    }
+
+    fn normalize(&mut self) {
+        if self.wave_count == 0 {
+            return;
+        }
+        let count = f64::from(self.wave_count);
+        self.wave_direction_x /= count;
+        self.wave_direction_y /= count;
+        self.wave_spatial_frequency /= count;
+        self.wave_phase /= count;
+    }
 }
 
 fn scene_snapshot_layer_intersects_visibility(
@@ -2489,7 +2935,7 @@ fn scene_snapshot_layer_intersects_visibility(
     scene_snapshot_visual_bounds_intersects(
         layer.width,
         layer.height,
-        layer.mesh.as_ref(),
+        layer.mesh.as_deref(),
         layer.transform,
         visibility,
     )
@@ -2502,7 +2948,7 @@ fn scene_sampled_image_snapshot_layer_intersects_visibility(
     scene_snapshot_visual_bounds_intersects(
         layer.width,
         layer.height,
-        layer.mesh.as_ref(),
+        layer.mesh.as_deref(),
         layer.transform,
         visibility,
     )
@@ -3360,6 +3806,51 @@ mod tests {
                 loop_playback: true,
             })
         );
+    }
+
+    #[test]
+    fn native_effect_motion_uses_wallpaper_engine_speed_as_radians_per_second() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-image",
+                    "type": "image",
+                    "source": "assets/image.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-water",
+                    "type": "image",
+                    "resource": "resource-image",
+                    "width": 100,
+                    "height": 100,
+                    "effects": [
+                        {
+                            "file": "effects/waterwaves/effect.json",
+                            "passes": [
+                                {
+                                    "constant_shader_values": {
+                                        "speed": 1.0,
+                                        "strength": 0.25,
+                                        "direction": 0.0,
+                                        "scale": 8.0
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut layers = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, &mut layers);
+        assert_eq!(layers.len(), 1);
+        assert!(layers[0].effect_motion.is_active());
+        assert!((layers[0].effect_motion.wave_phase - 1.0).abs() < 0.001);
     }
 
     #[test]
