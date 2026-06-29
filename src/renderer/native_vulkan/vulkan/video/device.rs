@@ -75,6 +75,43 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaVideoDecodeDevic
         NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaVideoDecodeDeviceExtensionPlan
+{
+    pub required_device_extensions: Vec<&'static str>,
+    pub enabled_device_extensions: Vec<&'static str>,
+}
+
+impl NativeVulkanVulkanaliaVideoDecodeDeviceExtensionPlan {
+    fn for_codecs(
+        codecs: &[NativeVulkanVideoSessionCodec],
+        feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
+    ) -> Result<Self, String> {
+        let required_device_extensions =
+            native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(codecs)?;
+        let mut enabled_device_extensions = required_device_extensions.clone();
+        if feature_selection.video_maintenance1_enabled
+            && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE1_EXTENSION_NAME)
+        {
+            enabled_device_extensions.push(VIDEO_MAINTENANCE1_EXTENSION_NAME);
+        }
+        if feature_selection.video_maintenance2_enabled
+            && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE2_EXTENSION_NAME)
+        {
+            enabled_device_extensions.push(VIDEO_MAINTENANCE2_EXTENSION_NAME);
+        }
+        if feature_selection.core_features.descriptor_heap
+            && !enabled_device_extensions.contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
+        {
+            enabled_device_extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
+        }
+        Ok(Self {
+            required_device_extensions,
+            enabled_device_extensions,
+        })
+    }
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_video_decode_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
@@ -260,44 +297,60 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_selec
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_decode_required_device_extensions(
     codec: NativeVulkanVideoSessionCodec,
 ) -> Vec<&'static str> {
+    native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(&[codec])
+        .expect("single codec extension set is non-empty")
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(
+    codecs: &[NativeVulkanVideoSessionCodec],
+) -> Result<Vec<&'static str>, String> {
+    if codecs.is_empty() {
+        return Err("Vulkan Video decode device requires at least one codec".to_owned());
+    }
     let mut extensions = vec![
         VIDEO_QUEUE_EXTENSION_NAME,
         VIDEO_DECODE_QUEUE_EXTENSION_NAME,
     ];
-    extensions.push(match codec {
-        NativeVulkanVideoSessionCodec::H264High8 => VIDEO_DECODE_H264_EXTENSION_NAME,
-        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
-            VIDEO_DECODE_H265_EXTENSION_NAME
+    for codec in codecs {
+        let codec_extension = match codec {
+            NativeVulkanVideoSessionCodec::H264High8 => VIDEO_DECODE_H264_EXTENSION_NAME,
+            NativeVulkanVideoSessionCodec::H265Main8
+            | NativeVulkanVideoSessionCodec::H265Main10 => VIDEO_DECODE_H265_EXTENSION_NAME,
+            NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+                VIDEO_DECODE_AV1_EXTENSION_NAME
+            }
+        };
+        if !extensions.contains(&codec_extension) {
+            extensions.push(codec_extension);
         }
-        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
-            VIDEO_DECODE_AV1_EXTENSION_NAME
-        }
-    });
-    extensions
+    }
+    Ok(extensions)
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_decode_device_extensions(
     codec: NativeVulkanVideoSessionCodec,
     feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
 ) -> Vec<&'static str> {
-    let mut enabled_device_extensions =
-        native_vulkan_vulkanalia_video_decode_required_device_extensions(codec);
-    if feature_selection.video_maintenance1_enabled
-        && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE1_EXTENSION_NAME)
-    {
-        enabled_device_extensions.push(VIDEO_MAINTENANCE1_EXTENSION_NAME);
-    }
-    if feature_selection.video_maintenance2_enabled
-        && !enabled_device_extensions.contains(&VIDEO_MAINTENANCE2_EXTENSION_NAME)
-    {
-        enabled_device_extensions.push(VIDEO_MAINTENANCE2_EXTENSION_NAME);
-    }
-    if feature_selection.core_features.descriptor_heap
-        && !enabled_device_extensions.contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
-    {
-        enabled_device_extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
-    }
-    enabled_device_extensions
+    native_vulkan_vulkanalia_video_decode_device_extensions_for_codecs(&[codec], feature_selection)
+        .expect("single codec extension set is non-empty")
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs(
+    codecs: &[NativeVulkanVideoSessionCodec],
+    feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
+) -> Result<NativeVulkanVulkanaliaVideoDecodeDeviceExtensionPlan, String> {
+    NativeVulkanVulkanaliaVideoDecodeDeviceExtensionPlan::for_codecs(codecs, feature_selection)
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_decode_device_extensions_for_codecs(
+    codecs: &[NativeVulkanVideoSessionCodec],
+    feature_selection: NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
+) -> Result<Vec<&'static str>, String> {
+    native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs(
+        codecs,
+        feature_selection,
+    )
+    .map(|plan| plan.enabled_device_extensions)
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_video_device_feature_selection(
@@ -415,6 +468,26 @@ mod tests {
     }
 
     #[test]
+    fn required_video_decode_extensions_support_mixed_codec_sets() {
+        assert_eq!(
+            native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(&[
+                NativeVulkanVideoSessionCodec::H264High8,
+                NativeVulkanVideoSessionCodec::H265Main10,
+                NativeVulkanVideoSessionCodec::Av1Main10,
+                NativeVulkanVideoSessionCodec::H265Main8,
+            ])
+            .unwrap(),
+            vec![
+                "VK_KHR_video_queue",
+                "VK_KHR_video_decode_queue",
+                "VK_KHR_video_decode_h264",
+                "VK_KHR_video_decode_h265",
+                "VK_KHR_video_decode_av1",
+            ]
+        );
+    }
+
+    #[test]
     fn enabled_extensions_add_video_maintenance_when_features_are_selected() {
         let disabled = NativeVulkanVulkanaliaVideoDeviceFeatureSelection {
             core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot {
@@ -464,6 +537,41 @@ mod tests {
                 descriptor_heap_enabled,
             )
             .contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
+        );
+        assert!(
+            native_vulkan_vulkanalia_video_decode_device_extensions_for_codecs(
+                &[
+                    NativeVulkanVideoSessionCodec::H264High8,
+                    NativeVulkanVideoSessionCodec::Av1Main8,
+                ],
+                descriptor_heap_enabled,
+            )
+            .unwrap()
+            .contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
+        );
+        let mixed_plan = native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs(
+            &[
+                NativeVulkanVideoSessionCodec::H264High8,
+                NativeVulkanVideoSessionCodec::H265Main8,
+                NativeVulkanVideoSessionCodec::Av1Main8,
+            ],
+            descriptor_heap_enabled,
+        )
+        .unwrap();
+        assert_eq!(
+            mixed_plan.required_device_extensions,
+            vec![
+                "VK_KHR_video_queue",
+                "VK_KHR_video_decode_queue",
+                "VK_KHR_video_decode_h264",
+                "VK_KHR_video_decode_h265",
+                "VK_KHR_video_decode_av1",
+            ]
+        );
+        assert!(
+            mixed_plan
+                .enabled_device_extensions
+                .contains(&DESCRIPTOR_HEAP_EXTENSION_NAME)
         );
         assert_eq!(
             enabled.inline_session_parameter_codecs(),

@@ -406,6 +406,47 @@ pub struct NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeOptions {
 }
 
 #[cfg(feature = "native-vulkan-video")]
+#[derive(Debug, Clone, PartialEq)]
+struct NativeVulkanVulkanaliaMultiVideoDecodePlan {
+    source_count: usize,
+    codecs: Vec<NativeVulkanVideoSessionCodec>,
+    requested_present_frame_count: u32,
+}
+
+#[cfg(feature = "native-vulkan-video")]
+impl NativeVulkanVulkanaliaMultiVideoDecodePlan {
+    fn from_sources(
+        sources: &[NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions],
+    ) -> Result<Self, String> {
+        if sources.is_empty() {
+            return Err("multi-source scene video requires at least one source".to_owned());
+        }
+        let mut codecs = Vec::new();
+        let mut requested_present_frame_count = 1u32;
+        for source in sources {
+            if !codecs.contains(&source.codec) {
+                codecs.push(source.codec);
+            }
+            requested_present_frame_count =
+                requested_present_frame_count.max(source.playback_frame_count.max(1));
+        }
+        Ok(Self {
+            source_count: sources.len(),
+            codecs,
+            requested_present_frame_count,
+        })
+    }
+
+    fn codecs(&self) -> &[NativeVulkanVideoSessionCodec] {
+        &self.codecs
+    }
+
+    fn codec_count(&self) -> usize {
+        self.codecs.len()
+    }
+}
+
+#[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSourceSnapshot {
     pub source_index: usize,
@@ -423,6 +464,8 @@ pub struct NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
     pub source_count: usize,
+    pub codec_count: usize,
+    pub codecs: Vec<NativeVulkanVideoSessionCodec>,
     pub sources: Vec<NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSourceSnapshot>,
     pub decoded_image_present_sequence_requested: bool,
     pub decoded_image_present_sequence:
@@ -1334,40 +1377,6 @@ fn native_vulkan_vulkanalia_create_decode_timeline_semaphore(
 }
 
 #[cfg(feature = "native-vulkan-video")]
-fn native_vulkan_vulkanalia_multi_source_shared_codec(
-    sources: &[NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions],
-) -> Result<NativeVulkanVideoSessionCodec, String> {
-    let mut shared_codec = None;
-    for source in sources {
-        match shared_codec {
-            None => shared_codec = Some(source.codec),
-            Some(codec) if codec == source.codec => {}
-            Some(codec) => {
-                return Err(format!(
-                    "multi-source scene video currently requires one Vulkan Video profile per shared device; {} uses {:?}, expected {:?}",
-                    source.source.display(),
-                    source.codec,
-                    codec
-                ));
-            }
-        }
-    }
-    shared_codec.ok_or_else(|| "multi-source scene video requires at least one source".to_owned())
-}
-
-#[cfg(feature = "native-vulkan-video")]
-fn native_vulkan_vulkanalia_multi_source_playback_frame_count(
-    sources: &[NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions],
-) -> Result<u32, String> {
-    sources
-        .iter()
-        .map(|source| source.playback_frame_count)
-        .max()
-        .map(|frame_count| frame_count.max(1))
-        .ok_or_else(|| "multi-source scene video requires at least one source".to_owned())
-}
-
-#[cfg(feature = "native-vulkan-video")]
 fn native_vulkan_vulkanalia_multi_source_descriptor_heap_plan(
     source_slots: &[NativeVulkanVulkanaliaMultiVideoDecodeSourceSlot],
 ) -> Result<NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot, String> {
@@ -1622,9 +1631,8 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_multi_str
             "Vulkanalia multi-source video present requires at least one source".to_owned(),
         );
     }
-    let shared_codec = native_vulkan_vulkanalia_multi_source_shared_codec(&options.sources)?;
-    let requested_present_frame_count =
-        native_vulkan_vulkanalia_multi_source_playback_frame_count(&options.sources)?;
+    let decode_plan = NativeVulkanVulkanaliaMultiVideoDecodePlan::from_sources(&options.sources)?;
+    let requested_present_frame_count = decode_plan.requested_present_frame_count;
 
     let mut host =
         NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
@@ -1655,12 +1663,12 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_multi_str
                 surface,
                 handles,
                 &physical_devices,
-                shared_codec,
+                decode_plan.codecs(),
             )?;
             let context = create_video_present_device(
                 instance,
                 &selection,
-                shared_codec,
+                decode_plan.codecs(),
                 vulkanalia_surface_maintenance1_enabled(&vulkan),
             )?;
             let result = (|| -> Result<NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot, String> {
@@ -1832,7 +1840,9 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_multi_str
                 Ok(NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot {
                     binding: "vulkanalia",
                     route: "multi-source-streaming-video-present-decode",
-                    source_count: source_snapshots.len(),
+                    source_count: decode_plan.source_count,
+                    codec_count: decode_plan.codec_count(),
+                    codecs: decode_plan.codecs.clone(),
                     sources: source_snapshots,
                     decoded_image_present_sequence_requested: true,
                     decoded_image_present_sequence: sequence,
@@ -1906,6 +1916,7 @@ fn run_multi_video_decode_present_sequence(
         == selection.present_queue_family_index
         && context.video_queue_index == context.present_queue_index;
     let queue_host_access_lock = same_queue_handle.then_some(&queue_host_access_mutex);
+    let decode_queue_host_access_lock = Some(&queue_host_access_mutex);
     let ffmpeg_decode_async_exec_depth =
         native_vulkan_vulkanalia_ffmpeg_decode_async_exec_depth(selection.video_queue_count);
     let source_slot_count = source_slots.len();
@@ -2129,7 +2140,7 @@ fn run_multi_video_decode_present_sequence(
                             handoff,
                             requested_present_frame_count,
                             ffmpeg_decode_async_exec_depth,
-                            queue_host_access_lock,
+                            decode_queue_host_access_lock,
                         )
                     })
                     .map_err(|err| format!("spawn multi-source video decode worker: {err}"))?,
@@ -2174,6 +2185,7 @@ fn run_multi_video_decode_present_sequence(
         ffmpeg_read_thread_active: true,
         video_decode_worker_active: true,
         present_worker_active: true,
+        source_count: source_slot_count.min(u32::MAX as usize) as u32,
         decode_thread_count: source_slot_count.min(u32::MAX as usize) as u32,
         decode_async_exec_depth: ffmpeg_decode_async_exec_depth,
     };
@@ -2559,12 +2571,13 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
             ));
         }
     };
+    let codec_set = [options.codec];
     let selection = match select_video_present_physical_device(
         instance,
         surface,
         handles,
         &physical_devices,
-        options.codec,
+        &codec_set,
     ) {
         Ok(selection) => selection,
         Err(err) => {
@@ -2578,7 +2591,7 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
     let context = match create_video_present_device(
         instance,
         &selection,
-        options.codec,
+        &codec_set,
         vulkanalia_surface_maintenance1_enabled(&vulkan),
     ) {
         Ok(context) => context,
@@ -3054,6 +3067,7 @@ fn create_video_present_session_pieces(
                             ffmpeg_read_thread_active: decoded_image_present_sequence_requested,
                             video_decode_worker_active: decoded_image_present_sequence_requested,
                             present_worker_active: sequence_builder.is_some(),
+                            source_count: 1,
                             decode_thread_count: FFMPEG_SINGLE_DECODE_THREAD_COUNT,
                             decode_async_exec_depth: decode_async_exec_depth_for_sequence,
                         };
@@ -3798,8 +3812,27 @@ struct NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
     ffmpeg_read_thread_active: bool,
     video_decode_worker_active: bool,
     present_worker_active: bool,
+    source_count: u32,
     decode_thread_count: u32,
     decode_async_exec_depth: u32,
+}
+
+impl NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
+    fn execution_model(self) -> &'static str {
+        if self.source_count > 1 || self.decode_thread_count > 1 {
+            "FFmpeg-style N-source read threads -> per-source bounded packet queues -> per-source Vulkan Video decode workers -> per-source decoded-frame handoffs -> one dynamic-rendering present worker"
+        } else {
+            "FFmpeg-style read thread -> bounded packet queue -> single Vulkan Video decode worker -> bounded decoded-frame handoff -> present worker"
+        }
+    }
+
+    fn ffmpeg_thread_model(self) -> &'static str {
+        if self.source_count > 1 || self.decode_thread_count > 1 {
+            "one FFmpeg packet read thread and one native Vulkan Video decode worker per streaming source; one shared native present worker composites decoded GPU images without CPU pixel copies"
+        } else {
+            "one FFmpeg packet read thread, one native Vulkan Video decode worker, one native present worker; Vulkan async-depth follows FFmpeg Vulkan decode formula"
+        }
+    }
 }
 
 impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
@@ -4067,8 +4100,8 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
         Some(NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
             binding: "vulkanalia",
             route: "decoded-image-dynamic-rendering-present-sequence",
-            execution_model: "FFmpeg-style read thread -> bounded packet queue -> single video decode worker -> bounded decoded-frame handoff -> present worker",
-            ffmpeg_thread_model: "one FFmpeg packet read thread per streaming source, one native video decode worker, one native present worker; decode thread_count stays 1 while Vulkan async-depth follows FFmpeg Vulkan decode formula",
+            execution_model: execution.execution_model(),
+            ffmpeg_thread_model: execution.ffmpeg_thread_model(),
             ffmpeg_read_thread_active: execution.ffmpeg_read_thread_active,
             video_decode_worker_active: execution.video_decode_worker_active,
             present_worker_active: execution.present_worker_active,
@@ -4727,9 +4760,59 @@ mod tests {
             },
         ];
 
+        let plan = NativeVulkanVulkanaliaMultiVideoDecodePlan::from_sources(&sources).unwrap();
+        assert_eq!(plan.source_count, 3);
+        assert_eq!(plan.requested_present_frame_count, 240);
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn multi_source_codec_set_preserves_distinct_codec_order() {
+        let sources = vec![
+            NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions {
+                source: PathBuf::from("/tmp/sky-h264.mp4"),
+                codec: NativeVulkanVideoSessionCodec::H264High8,
+                width: 1920,
+                height: 1080,
+                queue_capacity: 3,
+                playback_frame_count: 120,
+            },
+            NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions {
+                source: PathBuf::from("/tmp/fx-h265-main10.mp4"),
+                codec: NativeVulkanVideoSessionCodec::H265Main10,
+                width: 1920,
+                height: 1080,
+                queue_capacity: 3,
+                playback_frame_count: 120,
+            },
+            NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions {
+                source: PathBuf::from("/tmp/overlay-av1.mp4"),
+                codec: NativeVulkanVideoSessionCodec::Av1Main8,
+                width: 640,
+                height: 360,
+                queue_capacity: 3,
+                playback_frame_count: 120,
+            },
+            NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions {
+                source: PathBuf::from("/tmp/reuse-h265-main8.mp4"),
+                codec: NativeVulkanVideoSessionCodec::H265Main8,
+                width: 640,
+                height: 360,
+                queue_capacity: 3,
+                playback_frame_count: 120,
+            },
+        ];
+
+        let plan = NativeVulkanVulkanaliaMultiVideoDecodePlan::from_sources(&sources).unwrap();
+        assert_eq!(plan.source_count, 4);
         assert_eq!(
-            native_vulkan_vulkanalia_multi_source_playback_frame_count(&sources).unwrap(),
-            240
+            plan.codecs(),
+            &[
+                NativeVulkanVideoSessionCodec::H264High8,
+                NativeVulkanVideoSessionCodec::H265Main10,
+                NativeVulkanVideoSessionCodec::Av1Main8,
+                NativeVulkanVideoSessionCodec::H265Main8,
+            ]
         );
     }
 

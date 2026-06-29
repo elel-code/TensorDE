@@ -839,6 +839,7 @@ fn native_vulkan_scene_present_route(
         }
         #[cfg(feature = "native-vulkan-video")]
         "video-layer-vulkan-video-scene-bridge-ready"
+        | "multi-video-layer-vulkan-video-scene-bridge-ready"
         | "clear-background-video-layer-vulkan-video-scene-bridge-ready" => {
             Ok(NativeVulkanScenePresentRouteKind::Video)
         }
@@ -1002,6 +1003,30 @@ mod tests {
 
         assert_eq!(
             route_for_layers(vec![video, overlay, panel]).unwrap(),
+            NativeVulkanScenePresentRouteKind::Video
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-video")]
+    #[test]
+    fn scene_main_present_route_selects_video_for_multi_video_scene() {
+        let mut h264 = layer("h264-layer", SceneNodeKind::Video);
+        h264.source = Some(PathBuf::from("/tmp/h264.mp4"));
+        h264.width = Some(640.0);
+        h264.height = Some(360.0);
+        let mut h265 = layer("h265-layer", SceneNodeKind::Video);
+        h265.source = Some(PathBuf::from("/tmp/h265.mp4"));
+        h265.width = Some(640.0);
+        h265.height = Some(360.0);
+        h265.transform.x = 640.0;
+        let mut av1 = layer("av1-layer", SceneNodeKind::Video);
+        av1.source = Some(PathBuf::from("/tmp/av1.webm"));
+        av1.width = Some(640.0);
+        av1.height = Some(360.0);
+        av1.transform.x = 1280.0;
+
+        assert_eq!(
+            route_for_layers(vec![h264, h265, av1]).unwrap(),
             NativeVulkanScenePresentRouteKind::Video
         );
     }

@@ -43,8 +43,8 @@ use super::swapchain::{
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_device::{
     NativeVulkanVulkanaliaVideoDeviceFeatureSelection,
-    native_vulkan_vulkanalia_video_decode_device_extensions,
-    native_vulkan_vulkanalia_video_decode_required_device_extensions,
+    native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs,
+    native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs,
     native_vulkan_vulkanalia_video_device_extension_available,
     native_vulkan_vulkanalia_video_device_feature_selection,
 };
@@ -266,12 +266,17 @@ fn with_video_present_device(
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia video present): {err:?}"))?;
-    let selection =
-        select_video_present_physical_device(instance, surface, handles, &physical_devices, codec)?;
+    let selection = select_video_present_physical_device(
+        instance,
+        surface,
+        handles,
+        &physical_devices,
+        &[codec],
+    )?;
     let context = create_video_present_device(
         instance,
         &selection,
-        codec,
+        &[codec],
         vulkanalia_surface_maintenance1_enabled(vulkan),
     )?;
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
@@ -428,10 +433,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn select_video_present_physical_
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
     physical_devices: &[vk::PhysicalDevice],
-    codec: NativeVulkanVideoSessionCodec,
+    codecs: &[NativeVulkanVideoSessionCodec],
 ) -> Result<NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection, String> {
     let required_video_extensions =
-        native_vulkan_vulkanalia_video_decode_required_device_extensions(codec);
+        native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(codecs)?;
     let mut rejected = Vec::new();
 
     for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
@@ -584,7 +589,7 @@ fn select_graphics_present_queue(
 pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     instance: &Instance,
     selection: &NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,
-    codec: NativeVulkanVideoSessionCodec,
+    codecs: &[NativeVulkanVideoSessionCodec],
     surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceContext, String> {
     let video_feature_selection = native_vulkan_vulkanalia_video_device_feature_selection(
@@ -610,8 +615,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
         );
     }
 
-    let video_enabled_device_extensions =
-        native_vulkan_vulkanalia_video_decode_device_extensions(codec, video_feature_selection);
+    let video_extension_plan =
+        native_vulkan_vulkanalia_video_decode_device_extension_plan_for_codecs(
+            codecs,
+            video_feature_selection,
+        )?;
+    let video_enabled_device_extensions = video_extension_plan.enabled_device_extensions;
     let present_enabled_device_extensions =
         enabled_present_device_extensions(&present_feature_selection);
     let enabled_device_extensions = dedup_static_extensions(
