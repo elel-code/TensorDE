@@ -2871,6 +2871,13 @@ fn native_vulkan_scene_append_sampled_image_mesh_vertices(
         }
         let x = vertex.x + local_offset_x;
         let y = vertex.y + local_offset_y;
+        let (x, y) = native_vulkan_scene_apply_sampled_image_effect_motion(
+            x,
+            y,
+            quad.width,
+            quad.height,
+            quad.effect_motion,
+        );
         vertices.push(NativeVulkanSceneSampledImageVertex {
             position: native_vulkan_scene_transform_point_with_rotation(
                 x,
@@ -4634,6 +4641,79 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_recording_steps[0].vertex_count, 169);
         assert_eq!(pass_plan.sampled_image_recording_steps[0].index_count, 864);
         assert_eq!(pass_plan.sampled_image_vertices[84].position, [0.0, 0.0]);
+    }
+
+    #[test]
+    fn draw_pass_plan_applies_effect_motion_to_complex_sampled_meshes() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/skirt-mesh.gtex"));
+        image.width = Some(100.0);
+        image.height = Some(100.0);
+        image.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -50.0,
+                    y: -50.0,
+                    u: 0.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: 50.0,
+                    y: -50.0,
+                    u: 1.0,
+                    v: 0.0,
+                },
+                SceneMeshVertex {
+                    x: -50.0,
+                    y: 50.0,
+                    u: 0.0,
+                    v: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 50.0,
+                    y: 50.0,
+                    u: 1.0,
+                    v: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 0.0,
+                    y: 0.0,
+                    u: 0.5,
+                    v: 0.5,
+                },
+            ],
+            indices: vec![0, 1, 4, 0, 4, 2, 1, 3, 4, 2, 4, 3],
+            skin: None,
+            puppet_clips: Vec::new(),
+        }));
+        image.effect_motion = SceneNativeEffectMotion {
+            wave_x: 6.0,
+            wave_y: 3.0,
+            wave_direction_x: 1.0,
+            wave_spatial_frequency: 0.05,
+            wave_phase: 0.25,
+            wave_count: 1,
+            ..Default::default()
+        };
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 5);
+        assert_eq!(pass_plan.sampled_image_indices.len(), 12);
+        assert_eq!(pass_plan.sampled_image_recording_steps[0].vertex_count, 5);
+        assert_eq!(pass_plan.sampled_image_recording_steps[0].index_count, 12);
+        assert_ne!(pass_plan.sampled_image_vertices[0].position, [-50.0, -50.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[4].position, [0.0, 0.0]);
     }
 
     #[test]
