@@ -1145,7 +1145,7 @@ fn write_scene_document_to(
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
     nodes = scene_rebuild_parent_graph(nodes);
-    scene_lower_we_attachment_child_image_mesh_uvs(&mut nodes, &mut context);
+    scene_lower_we_image_mesh_uvs(&mut nodes, &mut context);
     scene_lower_pending_controllers(&mut nodes, &mut context);
     scene_lower_pending_audio_controllers(&mut nodes, &mut context);
     if context.all_detected_scripts_native_lowered() {
@@ -2015,16 +2015,13 @@ fn scene_attach_parented_children(
     node
 }
 
-fn scene_lower_we_attachment_child_image_mesh_uvs(
-    nodes: &mut [Value],
-    context: &mut SceneDocumentBuildContext,
-) {
+fn scene_lower_we_image_mesh_uvs(nodes: &mut [Value], context: &mut SceneDocumentBuildContext) {
     for node in nodes {
-        scene_lower_we_attachment_child_image_mesh_uv(node, false, context);
+        scene_lower_we_image_mesh_uv(node, false, context);
     }
 }
 
-fn scene_lower_we_attachment_child_image_mesh_uv(
+fn scene_lower_we_image_mesh_uv(
     node: &mut Value,
     parent_is_attachment_group: bool,
     context: &mut SceneDocumentBuildContext,
@@ -2032,35 +2029,53 @@ fn scene_lower_we_attachment_child_image_mesh_uv(
     let Some(object) = node.as_object_mut() else {
         return;
     };
-    if parent_is_attachment_group && scene_insert_we_attachment_child_quad_mesh(object) {
-        push_unique(
-            &mut context.converted_features,
-            "wallpaper-engine-attachment-child-image-uv-y-flip-lowering",
-        );
+    let is_we_model_image = scene_node_is_we_model_image(object);
+    if (parent_is_attachment_group || is_we_model_image) && scene_insert_we_image_quad_mesh(object)
+    {
+        if parent_is_attachment_group {
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-attachment-child-image-uv-y-flip-lowering",
+            );
+        }
+        if is_we_model_image {
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-model-image-uv-y-flip-lowering",
+            );
+        }
     }
     let is_attachment_group = scene_node_is_empty_attachment_group(object);
     if let Some(children) = object.get_mut("children").and_then(Value::as_array_mut) {
         for child in children {
-            scene_lower_we_attachment_child_image_mesh_uv(child, is_attachment_group, context);
+            scene_lower_we_image_mesh_uv(child, is_attachment_group, context);
         }
     }
 }
 
-fn scene_node_is_empty_attachment_group(object: &Map<String, Value>) -> bool {
-    object.get("type").and_then(Value::as_str) == Some("group")
+fn scene_node_is_we_model_image(object: &Map<String, Value>) -> bool {
+    object.get("type").and_then(Value::as_str) == Some("image")
+        && object.get("resource").is_some()
+        && object.get("mesh").is_none()
         && object
             .get("provenance")
             .and_then(Value::as_object)
-            .and_then(|provenance| provenance.get("attachment"))
-            .and_then(Value::as_str)
-            .is_some()
-        && object
-            .get("provenance")
-            .and_then(Value::as_object)
-            .is_none_or(|provenance| !provenance.contains_key("model"))
+            .is_some_and(|provenance| {
+                provenance.get("source_format").and_then(Value::as_str)
+                    == Some("wallpaper-engine-scene")
+                    && provenance
+                        .get("model")
+                        .and_then(Value::as_object)
+                        .is_some_and(|model| {
+                            model
+                                .get("texture_resources")
+                                .and_then(Value::as_array)
+                                .is_some_and(|resources| !resources.is_empty())
+                        })
+            })
 }
 
-fn scene_insert_we_attachment_child_quad_mesh(object: &mut Map<String, Value>) -> bool {
+fn scene_insert_we_image_quad_mesh(object: &mut Map<String, Value>) -> bool {
     if object.get("type").and_then(Value::as_str) != Some("image")
         || object.get("mesh").is_some()
         || object.get("resource").is_none()
@@ -2091,6 +2106,20 @@ fn scene_insert_we_attachment_child_quad_mesh(object: &mut Map<String, Value>) -
         }),
     );
     true
+}
+
+fn scene_node_is_empty_attachment_group(object: &Map<String, Value>) -> bool {
+    object.get("type").and_then(Value::as_str) == Some("group")
+        && object
+            .get("provenance")
+            .and_then(Value::as_object)
+            .and_then(|provenance| provenance.get("attachment"))
+            .and_then(Value::as_str)
+            .is_some()
+        && object
+            .get("provenance")
+            .and_then(Value::as_object)
+            .is_none_or(|provenance| !provenance.contains_key("model"))
 }
 
 fn scene_node_source_id(node: &Value) -> Option<String> {

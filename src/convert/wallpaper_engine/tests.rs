@@ -2951,6 +2951,16 @@ fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
     .unwrap();
     assert_eq!(scene["nodes"][0]["type"], "image");
     assert_eq!(scene["nodes"][0]["resource"], "resource-3-atlas-atlas");
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][0]["v"], 0.0);
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][1]["v"], 0.0);
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][2]["v"], 1.0);
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][3]["v"], 1.0);
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][0]["x"], -1.0);
+    assert_eq!(scene["nodes"][0]["mesh"]["vertices"][2]["y"], 1.0);
+    assert_eq!(
+        scene["nodes"][0]["mesh"]["indices"],
+        json!([0, 1, 2, 2, 1, 3])
+    );
     assert_eq!(
         scene["nodes"][0]["properties"]["spritesheet"]["type"],
         "atlas-grid"
@@ -3000,6 +3010,11 @@ fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
         report
             .converted_features
             .contains(&"scene-we-spritesheet-atlas-runtime".to_owned())
+    );
+    assert!(
+        report
+            .converted_features
+            .contains(&"wallpaper-engine-model-image-uv-y-flip-lowering".to_owned())
     );
 }
 
