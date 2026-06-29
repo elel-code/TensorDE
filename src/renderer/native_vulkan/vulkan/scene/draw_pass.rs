@@ -189,7 +189,11 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadPipelineResources {
     pub(in crate::renderer::native_vulkan::vulkan) pipeline_layout: vk::PipelineLayout,
-    pub(in crate::renderer::native_vulkan::vulkan) pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) alpha_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) additive_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) multiply_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) screen_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) max_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
 }
@@ -198,6 +202,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) pipeline_layout: vk::PipelineLayout,
     pub(in crate::renderer::native_vulkan::vulkan) alpha_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) additive_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) multiply_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) screen_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) max_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
@@ -223,6 +229,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
+    pub(in crate::renderer::native_vulkan::vulkan) blend_mode: SceneBlendMode,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
 }
@@ -258,7 +265,7 @@ struct VulkanaliaSceneOrderedDrawStep {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VulkanaliaSceneBoundDrawPipeline {
-    SolidQuad,
+    SolidQuad(SceneBlendMode),
     SampledImage(SceneBlendMode),
 }
 
@@ -310,11 +317,14 @@ fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
 
 fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
     draw: &VulkanaliaSceneOrderedDrawStep,
+    solid_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
     sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
 ) -> VulkanaliaSceneBoundDrawPipeline {
     match draw.pipeline {
         VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
-            VulkanaliaSceneBoundDrawPipeline::SolidQuad
+            VulkanaliaSceneBoundDrawPipeline::SolidQuad(
+                solid_commands[draw.command_index].blend_mode,
+            )
         }
         VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
             VulkanaliaSceneBoundDrawPipeline::SampledImage(
@@ -460,19 +470,33 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
     };
 
     let pipeline_labels = if solid_quad_ready {
-        vec!["scene-solid-quad-alpha-blend"]
+        vec![
+            "scene-solid-quad-alpha-blend",
+            "scene-solid-quad-additive-blend",
+            "scene-solid-quad-multiply-blend",
+            "scene-solid-quad-screen-blend",
+            "scene-solid-quad-max-blend",
+        ]
     } else if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_implicit_full_extent_ready
     {
         vec![
             "scene-solid-quad-alpha-blend",
+            "scene-solid-quad-additive-blend",
+            "scene-solid-quad-multiply-blend",
+            "scene-solid-quad-screen-blend",
+            "scene-solid-quad-max-blend",
             "scene-sampled-image-alpha-blend",
             "scene-sampled-image-additive-blend",
+            "scene-sampled-image-multiply-blend",
+            "scene-sampled-image-screen-blend",
             "scene-sampled-image-max-blend",
         ]
     } else if sampled_image_pending || sampled_image_implicit_full_extent_ready {
         vec![
             "scene-sampled-image-alpha-blend",
             "scene-sampled-image-additive-blend",
+            "scene-sampled-image-multiply-blend",
+            "scene-sampled-image-screen-blend",
             "scene-sampled-image-max-blend",
         ]
     } else {
@@ -644,128 +668,25 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 "scene solid quad fragment",
             )?;
             let result = (|| -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
-                let shader_entry = b"main\0";
-                let stages = [
-                    vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::VERTEX)
-                        .module(vertex_module)
-                        .name(shader_entry)
-                        .build(),
-                    vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::FRAGMENT)
-                        .module(fragment_module)
-                        .name(shader_entry)
-                        .build(),
-                ];
-                let binding = vk::VertexInputBindingDescription::builder()
-                    .binding(0)
-                    .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
-                    .input_rate(vk::VertexInputRate::VERTEX)
-                    .build();
-                let attributes = [
-                    vk::VertexInputAttributeDescription::builder()
-                        .location(0)
-                        .binding(0)
-                        .format(vk::Format::R32G32_SFLOAT)
-                        .offset(0)
-                        .build(),
-                    vk::VertexInputAttributeDescription::builder()
-                        .location(1)
-                        .binding(0)
-                        .format(vk::Format::R32G32B32A32_SFLOAT)
-                        .offset(8)
-                        .build(),
-                ];
-                let bindings = [binding];
-                let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
-                    .vertex_binding_descriptions(&bindings)
-                    .vertex_attribute_descriptions(&attributes)
-                    .build();
-                let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-                    .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-                    .build();
-                let viewport = vk::Viewport::builder()
-                    .x(0.0)
-                    .y(0.0)
-                    .width(extent.width as f32)
-                    .height(extent.height as f32)
-                    .min_depth(0.0)
-                    .max_depth(1.0)
-                    .build();
-                let scissor = vk::Rect2D::builder()
-                    .offset(vk::Offset2D { x: 0, y: 0 })
-                    .extent(extent)
-                    .build();
-                let viewports = [viewport];
-                let scissors = [scissor];
-                let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-                    .viewports(&viewports)
-                    .scissors(&scissors)
-                    .build();
-                let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-                    .polygon_mode(vk::PolygonMode::FILL)
-                    .cull_mode(vk::CullModeFlags::NONE)
-                    .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-                    .line_width(1.0)
-                    .build();
-                let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-                    .rasterization_samples(vk::SampleCountFlags::_1)
-                    .build();
-                let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
-                    .color_write_mask(
-                        vk::ColorComponentFlags::R
-                            | vk::ColorComponentFlags::G
-                            | vk::ColorComponentFlags::B
-                            | vk::ColorComponentFlags::A,
-                    )
-                    .blend_enable(true)
-                    .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-                    .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                    .color_blend_op(vk::BlendOp::ADD)
-                    .src_alpha_blend_factor(vk::BlendFactor::ONE)
-                    .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
-                    .alpha_blend_op(vk::BlendOp::ADD)
-                    .build();
-                let color_attachments = [color_attachment];
-                let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-                    .attachments(&color_attachments)
-                    .build();
-                let color_attachment_formats = [target_format];
-                let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-                    .color_attachment_formats(&color_attachment_formats)
-                    .build();
-                let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-                    .stages(&stages)
-                    .vertex_input_state(&vertex_input)
-                    .input_assembly_state(&input_assembly)
-                    .viewport_state(&viewport_state)
-                    .rasterization_state(&rasterization)
-                    .multisample_state(&multisample)
-                    .color_blend_state(&color_blend)
-                    .layout(pipeline_layout)
-                    .render_pass(vk::RenderPass::null())
-                    .subpass(0)
-                    .push_next(&mut rendering_info)
-                    .build();
-                let (pipelines, _success_code) = unsafe {
-                    device.create_graphics_pipelines(
-                        vk::PipelineCache::null(),
-                        &[pipeline_info],
-                        None,
-                    )
-                }
-                .map_err(|err| {
-                    format!("vkCreateGraphicsPipelines(vulkanalia scene quad): {err:?}")
-                })?;
-                let pipeline = pipelines[0];
-                Ok(VulkanaliaSceneSolidQuadPipelineResources {
+                let premultiplied_fragment_module =
+                native_vulkan_vulkanalia_scene_create_shader_module(
+                    device,
+                    &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV,
+                    "scene solid quad premultiplied fragment",
+                )?;
+                let result = native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
+                    device,
+                    target_format,
+                    extent,
                     pipeline_layout,
-                    pipeline,
-                    snapshot: native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
-                        target_format,
-                        extent,
-                    ),
-                })
+                    vertex_module,
+                    fragment_module,
+                    premultiplied_fragment_module,
+                );
+                unsafe {
+                    device.destroy_shader_module(premultiplied_fragment_module, None);
+                }
+                result
             })();
             unsafe {
                 device.destroy_shader_module(fragment_module, None);
@@ -786,12 +707,168 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     result
 }
 
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
+    device: &Device,
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+    pipeline_layout: vk::PipelineLayout,
+    vertex_module: vk::ShaderModule,
+    fragment_module: vk::ShaderModule,
+    premultiplied_fragment_module: vk::ShaderModule,
+) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
+    let shader_entry = b"main\0";
+    let create_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
+        let selected_fragment_module = native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+            blend_mode,
+            fragment_module,
+            premultiplied_fragment_module,
+        );
+        let stages = [
+            vk::PipelineShaderStageCreateInfo::builder()
+                .stage(vk::ShaderStageFlags::VERTEX)
+                .module(vertex_module)
+                .name(shader_entry)
+                .build(),
+            vk::PipelineShaderStageCreateInfo::builder()
+                .stage(vk::ShaderStageFlags::FRAGMENT)
+                .module(selected_fragment_module)
+                .name(shader_entry)
+                .build(),
+        ];
+        let binding = vk::VertexInputBindingDescription::builder()
+            .binding(0)
+            .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
+            .input_rate(vk::VertexInputRate::VERTEX)
+            .build();
+        let attributes = [
+            vk::VertexInputAttributeDescription::builder()
+                .location(0)
+                .binding(0)
+                .format(vk::Format::R32G32_SFLOAT)
+                .offset(0)
+                .build(),
+            vk::VertexInputAttributeDescription::builder()
+                .location(1)
+                .binding(0)
+                .format(vk::Format::R32G32B32A32_SFLOAT)
+                .offset(8)
+                .build(),
+        ];
+        let bindings = [binding];
+        let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
+            .vertex_binding_descriptions(&bindings)
+            .vertex_attribute_descriptions(&attributes)
+            .build();
+        let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
+            .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+            .build();
+        let viewport = vk::Viewport::builder()
+            .x(0.0)
+            .y(0.0)
+            .width(extent.width as f32)
+            .height(extent.height as f32)
+            .min_depth(0.0)
+            .max_depth(1.0)
+            .build();
+        let scissor = vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: 0, y: 0 })
+            .extent(extent)
+            .build();
+        let viewports = [viewport];
+        let scissors = [scissor];
+        let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+            .viewports(&viewports)
+            .scissors(&scissors)
+            .build();
+        let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
+            .polygon_mode(vk::PolygonMode::FILL)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .line_width(1.0)
+            .build();
+        let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
+            .rasterization_samples(vk::SampleCountFlags::_1)
+            .build();
+        let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
+        let color_attachments = [color_attachment];
+        let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
+            .attachments(&color_attachments)
+            .build();
+        let color_attachment_formats = [target_format];
+        let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
+            .color_attachment_formats(&color_attachment_formats)
+            .build();
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+            .stages(&stages)
+            .vertex_input_state(&vertex_input)
+            .input_assembly_state(&input_assembly)
+            .viewport_state(&viewport_state)
+            .rasterization_state(&rasterization)
+            .multisample_state(&multisample)
+            .color_blend_state(&color_blend)
+            .layout(pipeline_layout)
+            .render_pass(vk::RenderPass::null())
+            .subpass(0)
+            .push_next(&mut rendering_info)
+            .build();
+        let (pipelines, _success_code) = unsafe {
+            device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+        }
+        .map_err(|err| {
+            format!(
+                "vkCreateGraphicsPipelines(vulkanalia scene quad {}): {err:?}",
+                native_vulkan_vulkanalia_scene_blend_mode_label(blend_mode)
+            )
+        })?;
+        Ok(pipelines[0])
+    };
+
+    let mut created_pipelines = Vec::with_capacity(5);
+    let mut create_tracked_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
+        let pipeline = create_pipeline(blend_mode)?;
+        created_pipelines.push(pipeline);
+        Ok(pipeline)
+    };
+    let result = (|| -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
+        let alpha_pipeline = create_tracked_pipeline(SceneBlendMode::Alpha)?;
+        let additive_pipeline = create_tracked_pipeline(SceneBlendMode::Additive)?;
+        let multiply_pipeline = create_tracked_pipeline(SceneBlendMode::Multiply)?;
+        let screen_pipeline = create_tracked_pipeline(SceneBlendMode::Screen)?;
+        let max_pipeline = create_tracked_pipeline(SceneBlendMode::Max)?;
+        Ok(VulkanaliaSceneSolidQuadPipelineResources {
+            pipeline_layout,
+            alpha_pipeline,
+            additive_pipeline,
+            multiply_pipeline,
+            screen_pipeline,
+            max_pipeline,
+            snapshot: native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
+                target_format,
+                extent,
+            ),
+        })
+    })();
+    if result.is_err() {
+        unsafe {
+            for pipeline in created_pipelines {
+                device.destroy_pipeline(pipeline, None);
+            }
+        }
+    }
+    result
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_scene_solid_quad_pipeline_resources(
     device: &Device,
     resources: VulkanaliaSceneSolidQuadPipelineResources,
 ) {
     unsafe {
-        device.destroy_pipeline(resources.pipeline, None);
+        device.destroy_pipeline(resources.alpha_pipeline, None);
+        device.destroy_pipeline(resources.additive_pipeline, None);
+        device.destroy_pipeline(resources.multiply_pipeline, None);
+        device.destroy_pipeline(resources.screen_pipeline, None);
+        device.destroy_pipeline(resources.max_pipeline, None);
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
     }
 }
@@ -817,7 +894,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         vertex_color_format: "R32G32B32A32_SFLOAT",
         push_constant_bytes: SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
-        blend_model: "src-alpha over one-minus-src-alpha",
+        blend_model: "solid rgba with opacity; alpha/additive/multiply/screen/max blend pipeline selected per draw command",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -866,9 +943,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV,
                     "scene sampled image fragment",
                 )?;
+                let premultiplied_fragment_module =
+                    native_vulkan_vulkanalia_scene_create_shader_module(
+                        device,
+                        &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV,
+                        "scene sampled image premultiplied fragment",
+                    )?;
                 let result =
                     (|| -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
-                        let alpha_pipeline =
+                        let create_pipeline = |blend_mode| {
                             native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
                                 device,
                                 target_format,
@@ -876,48 +959,63 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                                 descriptor_heap_plan,
                                 pipeline_layout,
                                 vertex_module,
-                                fragment_module,
-                                SceneBlendMode::Alpha,
-                            )?;
+                                native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                                    blend_mode,
+                                    fragment_module,
+                                    premultiplied_fragment_module,
+                                ),
+                                blend_mode,
+                            )
+                        };
+                        let alpha_pipeline = create_pipeline(SceneBlendMode::Alpha)?;
                         let result =
                             (|| -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
-                                let additive_pipeline =
-                                    native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
-                                        device,
-                                        target_format,
-                                        extent,
-                                        descriptor_heap_plan,
-                                        pipeline_layout,
-                                        vertex_module,
-                                        fragment_module,
-                                        SceneBlendMode::Additive,
-                                    )?;
+                                let additive_pipeline = create_pipeline(SceneBlendMode::Additive)?;
                                 let result = (|| -> Result<
                                     VulkanaliaSceneSampledImagePipelineResources,
                                     String,
                                 > {
-                                    let max_pipeline =
-                                        native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
-                                            device,
-                                            target_format,
-                                            extent,
-                                            descriptor_heap_plan,
-                                            pipeline_layout,
-                                            vertex_module,
-                                            fragment_module,
-                                            SceneBlendMode::Max,
-                                        )?;
-                                    Ok(VulkanaliaSceneSampledImagePipelineResources {
-                                        pipeline_layout,
-                                        alpha_pipeline,
-                                        additive_pipeline,
-                                        max_pipeline,
-                                        snapshot:
-                                            native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
-                                                target_format,
-                                                extent,
-                                            ),
-                                    })
+                                    let multiply_pipeline =
+                                        create_pipeline(SceneBlendMode::Multiply)?;
+                                    let result = (|| -> Result<
+                                        VulkanaliaSceneSampledImagePipelineResources,
+                                        String,
+                                    > {
+                                        let screen_pipeline =
+                                            create_pipeline(SceneBlendMode::Screen)?;
+                                        let result = (|| -> Result<
+                                            VulkanaliaSceneSampledImagePipelineResources,
+                                            String,
+                                        > {
+                                            let max_pipeline =
+                                                create_pipeline(SceneBlendMode::Max)?;
+                                            Ok(VulkanaliaSceneSampledImagePipelineResources {
+                                                pipeline_layout,
+                                                alpha_pipeline,
+                                                additive_pipeline,
+                                                multiply_pipeline,
+                                                screen_pipeline,
+                                                max_pipeline,
+                                                snapshot:
+                                                    native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
+                                                        target_format,
+                                                        extent,
+                                                    ),
+                                            })
+                                        })();
+                                        if result.is_err() {
+                                            unsafe {
+                                                device.destroy_pipeline(screen_pipeline, None);
+                                            }
+                                        }
+                                        result
+                                    })();
+                                    if result.is_err() {
+                                        unsafe {
+                                            device.destroy_pipeline(multiply_pipeline, None);
+                                        }
+                                    }
+                                    result
                                 })();
                                 if result.is_err() {
                                     unsafe {
@@ -933,6 +1031,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         }
                         result
                     })();
+                unsafe {
+                    device.destroy_shader_module(premultiplied_fragment_module, None);
+                }
                 unsafe {
                     device.destroy_shader_module(fragment_module, None);
                 }
@@ -962,6 +1063,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     unsafe {
         device.destroy_pipeline(resources.alpha_pipeline, None);
         device.destroy_pipeline(resources.additive_pipeline, None);
+        device.destroy_pipeline(resources.multiply_pipeline, None);
+        device.destroy_pipeline(resources.screen_pipeline, None);
         device.destroy_pipeline(resources.max_pipeline, None);
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
     }
@@ -1062,8 +1165,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
         .rasterization_samples(vk::SampleCountFlags::_1)
         .build();
-    let color_attachment =
-        native_vulkan_vulkanalia_scene_sampled_image_color_attachment(blend_mode);
+    let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
     let color_attachments = [color_attachment];
     let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
         .attachments(&color_attachments)
@@ -1101,7 +1203,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     Ok(pipelines[0])
 }
 
-fn native_vulkan_vulkanalia_scene_sampled_image_color_attachment(
+fn native_vulkan_vulkanalia_scene_color_attachment(
     blend_mode: SceneBlendMode,
 ) -> vk::PipelineColorBlendAttachmentState {
     let builder = vk::PipelineColorBlendAttachmentState::builder()
@@ -1129,14 +1231,56 @@ fn native_vulkan_vulkanalia_scene_sampled_image_color_attachment(
             .dst_alpha_blend_factor(vk::BlendFactor::ONE)
             .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
+        SceneBlendMode::Multiply => builder
+            .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
+        SceneBlendMode::Screen => builder
+            .src_color_blend_factor(vk::BlendFactor::ONE_MINUS_DST_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
         SceneBlendMode::Max => builder
             .src_color_blend_factor(vk::BlendFactor::ONE)
             .dst_color_blend_factor(vk::BlendFactor::ONE)
             .color_blend_op(vk::BlendOp::MAX)
             .src_alpha_blend_factor(vk::BlendFactor::ONE)
-            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
-            .alpha_blend_op(vk::BlendOp::MAX)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
+    }
+}
+
+fn native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+    blend_mode: SceneBlendMode,
+    straight_fragment_module: vk::ShaderModule,
+    premultiplied_fragment_module: vk::ShaderModule,
+) -> vk::ShaderModule {
+    match blend_mode {
+        SceneBlendMode::Alpha | SceneBlendMode::Additive => straight_fragment_module,
+        SceneBlendMode::Multiply | SceneBlendMode::Screen | SceneBlendMode::Max => {
+            premultiplied_fragment_module
+        }
+    }
+}
+
+fn native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+    resources: &VulkanaliaSceneSolidQuadPipelineResources,
+    blend_mode: SceneBlendMode,
+) -> vk::Pipeline {
+    match blend_mode {
+        SceneBlendMode::Alpha => resources.alpha_pipeline,
+        SceneBlendMode::Additive => resources.additive_pipeline,
+        SceneBlendMode::Multiply => resources.multiply_pipeline,
+        SceneBlendMode::Screen => resources.screen_pipeline,
+        SceneBlendMode::Max => resources.max_pipeline,
     }
 }
 
@@ -1147,6 +1291,8 @@ fn native_vulkan_vulkanalia_scene_sampled_image_pipeline(
     match blend_mode {
         SceneBlendMode::Alpha => resources.alpha_pipeline,
         SceneBlendMode::Additive => resources.additive_pipeline,
+        SceneBlendMode::Multiply => resources.multiply_pipeline,
+        SceneBlendMode::Screen => resources.screen_pipeline,
         SceneBlendMode::Max => resources.max_pipeline,
     }
 }
@@ -1155,6 +1301,8 @@ fn native_vulkan_vulkanalia_scene_blend_mode_label(blend_mode: SceneBlendMode) -
     match blend_mode {
         SceneBlendMode::Alpha => "alpha",
         SceneBlendMode::Additive => "additive",
+        SceneBlendMode::Multiply => "multiply",
+        SceneBlendMode::Screen => "screen",
         SceneBlendMode::Max => "max",
     }
 }
@@ -1189,7 +1337,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_binding: 0,
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
-        blend_model: "sampled rgba with opacity; alpha/additive/max blend pipeline selected per draw command",
+        blend_model: "sampled rgba with opacity; alpha/additive/multiply/screen/max blend pipeline selected per draw command",
         sampled_image_model: "retained native BC sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -1274,7 +1422,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
-            pipeline_resources.pipeline,
+            pipeline_resources.alpha_pipeline,
         );
         let vertex_buffers = [vertex_buffer];
         let vertex_offsets = [0u64];
@@ -1363,28 +1511,35 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             solid_push_constants.as_ptr().cast::<u8>(),
             SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
         );
-        device.cmd_bind_pipeline(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            solid_quad_draw.pipeline_resources.pipeline,
-        );
-        let vertex_buffers = [solid_quad_draw.vertex_buffer];
-        let vertex_offsets = [0u64];
-        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
-        device.cmd_bind_index_buffer(
-            command_buffer,
-            solid_quad_draw.index_buffer,
-            0,
-            vk::IndexType::UINT32,
-        );
-        device.cmd_push_constants(
-            command_buffer,
-            solid_quad_draw.pipeline_resources.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
-            0,
-            solid_push_constant_bytes,
-        );
+        let mut bound_pipeline = None;
         for solid_draw in solid_quad_draw.draw_commands {
+            if bound_pipeline != Some(solid_draw.blend_mode) {
+                device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+                        solid_quad_draw.pipeline_resources,
+                        solid_draw.blend_mode,
+                    ),
+                );
+                let vertex_buffers = [solid_quad_draw.vertex_buffer];
+                let vertex_offsets = [0u64];
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    solid_quad_draw.index_buffer,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                device.cmd_push_constants(
+                    command_buffer,
+                    solid_quad_draw.pipeline_resources.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX,
+                    0,
+                    solid_push_constant_bytes,
+                );
+                bound_pipeline = Some(solid_draw.blend_mode);
+            }
             device.cmd_draw_indexed(
                 command_buffer,
                 solid_draw.index_count,
@@ -1477,7 +1632,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     let solid_draw = &solid_draw_commands[draw.command_index];
-                    let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SolidQuad;
+                    let pipeline_key =
+                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend_mode);
                     if bound_pipeline != Some(pipeline_key) {
                         let solid_resources = solid_quad_draw
                             .as_ref()
@@ -1485,7 +1641,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
-                            solid_resources.pipeline_resources.pipeline,
+                            native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+                                solid_resources.pipeline_resources,
+                                solid_draw.blend_mode,
+                            ),
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
                         let vertex_offsets = [0u64];
@@ -1750,7 +1909,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     let solid_draw = &solid_draw_commands[draw.command_index];
-                    let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SolidQuad;
+                    let pipeline_key =
+                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend_mode);
                     if bound_pipeline != Some(pipeline_key) {
                         let solid_resources = solid_quad_draw
                             .as_ref()
@@ -1758,7 +1918,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
-                            solid_resources.pipeline_resources.pipeline,
+                            native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+                                solid_resources.pipeline_resources,
+                                solid_draw.blend_mode,
+                            ),
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
                         let vertex_offsets = [0u64];
@@ -1906,7 +2069,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let mut last_pipeline = None;
     let mut pipeline_bind_count = 0u32;
     for draw in &ordered_draws {
-        let pipeline_key = native_vulkan_vulkanalia_scene_bound_pipeline_key(draw, draw_commands);
+        let pipeline_key = native_vulkan_vulkanalia_scene_bound_pipeline_key(
+            draw,
+            solid_quad_draw.map_or(&[], |draw| draw.draw_commands),
+            draw_commands,
+        );
         if last_pipeline != Some(pipeline_key) {
             pipeline_bind_count = pipeline_bind_count.saturating_add(1);
             last_pipeline = Some(pipeline_key);
@@ -2078,6 +2245,18 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_FRAGMENT_SPIRV: [u32; 94] =
     262205, 7, 12, 11, 196670, 9, 12, 65789, 65592,
 ];
 
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 164] = [
+    119734787, 65536, 524299, 27, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
+    196622, 0, 1, 458767, 4, 4, 1852399981, 0, 9, 11, 196624, 4, 7, 196611, 2, 450, 262149, 4,
+    1852399981, 0, 327685, 9, 1601467759, 1869377379, 114, 327685, 11, 1667198569, 1919904879, 0,
+    262215, 9, 30, 0, 262215, 11, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 4,
+    262176, 8, 3, 7, 262203, 8, 9, 3, 262176, 10, 1, 7, 262203, 10, 11, 1, 262167, 12, 6, 3,
+    262165, 15, 32, 0, 262187, 15, 16, 3, 262176, 17, 1, 6, 327734, 2, 4, 0, 3, 131320, 5, 262205,
+    7, 13, 11, 524367, 12, 14, 13, 13, 0, 1, 2, 327745, 17, 18, 11, 16, 262205, 6, 19, 18, 327822,
+    12, 20, 14, 19, 327745, 17, 21, 11, 16, 262205, 6, 22, 21, 327761, 6, 23, 20, 0, 327761, 6, 24,
+    20, 1, 327761, 6, 25, 20, 2, 458832, 7, 26, 23, 24, 25, 22, 196670, 9, 26, 65789, 65592,
+];
+
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 446] = [
     119734787, 65536, 851979, 62, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
     196622, 0, 1, 720911, 0, 4, 1852399981, 0, 11, 43, 55, 56, 59, 60, 196611, 2, 450, 655364,
@@ -2127,6 +2306,24 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 25
     33, 196670, 21, 37, 65789, 65592,
 ];
 
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 265] = [
+    119734787, 65536, 524299, 42, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
+    196622, 0, 1, 524303, 4, 4, 1852399981, 0, 17, 27, 31, 196624, 4, 7, 196611, 2, 450, 262149, 4,
+    1852399981, 0, 262149, 9, 1869377379, 114, 327685, 13, 1852138355, 1835622245, 6645601, 262149,
+    17, 1969188457, 118, 262149, 21, 1752198241, 97, 327685, 27, 1868525161, 1768120688, 31092,
+    327685, 31, 1601467759, 1869377379, 114, 262215, 13, 33, 0, 262215, 13, 34, 0, 262215, 17, 30,
+    0, 262215, 27, 30, 1, 262215, 31, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6,
+    4, 262176, 8, 7, 7, 589849, 10, 6, 1, 0, 0, 0, 1, 0, 196635, 11, 10, 262176, 12, 0, 11, 262203,
+    12, 13, 0, 262167, 15, 6, 2, 262176, 16, 1, 15, 262203, 16, 17, 1, 262176, 20, 7, 6, 262165,
+    22, 32, 0, 262187, 22, 23, 3, 262176, 26, 1, 6, 262203, 26, 27, 1, 262176, 30, 3, 7, 262203,
+    30, 31, 3, 262167, 32, 6, 3, 327734, 2, 4, 0, 3, 131320, 5, 262203, 8, 9, 7, 262203, 20, 21, 7,
+    262205, 11, 14, 13, 262205, 15, 18, 17, 327767, 7, 19, 14, 18, 196670, 9, 19, 327745, 20, 24,
+    9, 23, 262205, 6, 25, 24, 262205, 6, 28, 27, 327813, 6, 29, 25, 28, 196670, 21, 29, 262205, 7,
+    33, 9, 524367, 32, 34, 33, 33, 0, 1, 2, 262205, 6, 35, 21, 327822, 32, 36, 34, 35, 262205, 6,
+    37, 21, 327761, 6, 38, 36, 0, 327761, 6, 39, 36, 1, 327761, 6, 40, 36, 2, 458832, 7, 41, 38,
+    39, 40, 37, 196670, 31, 41, 65789, 65592,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2168,7 +2365,13 @@ mod tests {
         );
         assert_eq!(
             snapshot.pipeline_labels,
-            vec!["scene-solid-quad-alpha-blend"]
+            vec![
+                "scene-solid-quad-alpha-blend",
+                "scene-solid-quad-additive-blend",
+                "scene-solid-quad-multiply-blend",
+                "scene-solid-quad-screen-blend",
+                "scene-solid-quad-max-blend"
+            ]
         );
         assert_eq!(snapshot.vertex_buffer_bytes, 96);
         assert_eq!(snapshot.index_buffer_bytes, 24);
@@ -2219,6 +2422,8 @@ mod tests {
             vec![
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-additive-blend",
+                "scene-sampled-image-multiply-blend",
+                "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend"
             ]
         );
@@ -2267,6 +2472,8 @@ mod tests {
             vec![
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-additive-blend",
+                "scene-sampled-image-multiply-blend",
+                "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend"
             ]
         );
@@ -2307,8 +2514,14 @@ mod tests {
             snapshot.pipeline_labels,
             vec![
                 "scene-solid-quad-alpha-blend",
+                "scene-solid-quad-additive-blend",
+                "scene-solid-quad-multiply-blend",
+                "scene-solid-quad-screen-blend",
+                "scene-solid-quad-max-blend",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-additive-blend",
+                "scene-sampled-image-multiply-blend",
+                "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend"
             ]
         );
@@ -2387,20 +2600,19 @@ mod tests {
         assert!(snapshot.descriptor_heap_pipeline_flag_enabled);
         assert_eq!(
             snapshot.blend_model,
-            "sampled rgba with opacity; alpha/additive/max blend pipeline selected per draw command"
+            "sampled rgba with opacity; alpha/additive/multiply/screen/max blend pipeline selected per draw command"
         );
         assert!(snapshot.descriptor_set_layout_create_flags.is_empty());
         assert!(!snapshot.uses_push_descriptor_fast_path);
     }
 
     #[test]
-    fn sampled_image_blend_attachments_cover_alpha_additive_and_max_modes() {
-        let alpha =
-            native_vulkan_vulkanalia_scene_sampled_image_color_attachment(SceneBlendMode::Alpha);
-        let additive =
-            native_vulkan_vulkanalia_scene_sampled_image_color_attachment(SceneBlendMode::Additive);
-        let max =
-            native_vulkan_vulkanalia_scene_sampled_image_color_attachment(SceneBlendMode::Max);
+    fn scene_blend_attachments_cover_alpha_additive_multiply_screen_and_max_modes() {
+        let alpha = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Alpha);
+        let additive = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Additive);
+        let multiply = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Multiply);
+        let screen = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Screen);
+        let max = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Max);
 
         assert_eq!(alpha.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
         assert_eq!(
@@ -2411,10 +2623,73 @@ mod tests {
         assert_eq!(additive.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
         assert_eq!(additive.dst_color_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(additive.color_blend_op, vk::BlendOp::ADD);
+        assert_eq!(multiply.src_color_blend_factor, vk::BlendFactor::DST_COLOR);
+        assert_eq!(
+            multiply.dst_color_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
+        assert_eq!(multiply.color_blend_op, vk::BlendOp::ADD);
+        assert_eq!(
+            screen.src_color_blend_factor,
+            vk::BlendFactor::ONE_MINUS_DST_COLOR
+        );
+        assert_eq!(screen.dst_color_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(screen.color_blend_op, vk::BlendOp::ADD);
         assert_eq!(max.src_color_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(max.dst_color_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(max.color_blend_op, vk::BlendOp::MAX);
-        assert_eq!(max.alpha_blend_op, vk::BlendOp::MAX);
+        assert_eq!(
+            max.dst_alpha_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
+        assert_eq!(max.alpha_blend_op, vk::BlendOp::ADD);
+    }
+
+    #[test]
+    fn non_alpha_blend_modes_use_premultiplied_fragment_shader() {
+        let straight = vk::ShaderModule::from_raw(1);
+        let premultiplied = vk::ShaderModule::from_raw(2);
+
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::Alpha,
+                straight,
+                premultiplied
+            ),
+            straight
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::Additive,
+                straight,
+                premultiplied
+            ),
+            straight
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::Multiply,
+                straight,
+                premultiplied
+            ),
+            premultiplied
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::Screen,
+                straight,
+                premultiplied
+            ),
+            premultiplied
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::Max,
+                straight,
+                premultiplied
+            ),
+            premultiplied
+        );
     }
 
     #[test]
@@ -2444,6 +2719,7 @@ mod tests {
         let solid_commands = [VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: 2,
             last_layer_index: 2,
+            blend_mode: SceneBlendMode::Alpha,
             first_index: 0,
             index_count: 6,
         }];
@@ -2498,11 +2774,19 @@ mod tests {
             0x0723_0203
         );
         assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV[0],
+            0x0723_0203
+        );
+        assert_eq!(
             NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV[0],
             0x0723_0203
         );
         assert_eq!(
             NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV[0],
+            0x0723_0203
+        );
+        assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV[0],
             0x0723_0203
         );
         assert_eq!(
@@ -2519,6 +2803,12 @@ mod tests {
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV
+            ),
+            656
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV
             ),
             1784
@@ -2528,6 +2818,12 @@ mod tests {
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV
             ),
             1036
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV
+            ),
+            1060
         );
     }
 

@@ -277,6 +277,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
     pub layer_index: usize,
     pub first_index: u32,
     pub index_count: u32,
+    pub blend_mode: SceneBlendMode,
 }
 
 impl NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
@@ -352,6 +353,7 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
                 layer_index: 0,
                 first_index: 0,
                 index_count,
+                blend_mode: SceneBlendMode::Alpha,
             }],
             source_label,
         )
@@ -5428,6 +5430,7 @@ fn scene_solid_quad_draw_commands(
         let command = VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
+            blend_mode: step.blend_mode,
             first_index: step.first_index,
             index_count: step.index_count,
         };
@@ -5448,6 +5451,7 @@ fn scene_solid_quad_draw_commands_can_merge(
     next: &VulkanaliaSceneSolidQuadDrawCommand,
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
+        && previous.blend_mode == next.blend_mode
         && previous
             .first_index
             .checked_add(previous.index_count)
@@ -5959,16 +5963,19 @@ mod tests {
                 layer_index: 4,
                 first_index: 0,
                 index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 5,
                 first_index: 6,
                 index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 6,
                 first_index: 12,
                 index_count: 12,
+                blend_mode: SceneBlendMode::Alpha,
             },
         ])
         .unwrap();
@@ -5978,6 +5985,7 @@ mod tests {
             vec![VulkanaliaSceneSolidQuadDrawCommand {
                 layer_index: 4,
                 last_layer_index: 6,
+                blend_mode: SceneBlendMode::Alpha,
                 first_index: 0,
                 index_count: 24,
             }]
@@ -5991,16 +5999,19 @@ mod tests {
                 layer_index: 4,
                 first_index: 0,
                 index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 6,
                 first_index: 6,
                 index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 7,
                 first_index: 24,
                 index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
             },
         ])
         .unwrap();
@@ -6011,23 +6022,49 @@ mod tests {
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 4,
                     last_layer_index: 4,
+                    blend_mode: SceneBlendMode::Alpha,
                     first_index: 0,
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 6,
                     last_layer_index: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     first_index: 6,
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 7,
                     last_layer_index: 7,
+                    blend_mode: SceneBlendMode::Alpha,
                     first_index: 24,
                     index_count: 6,
                 }
             ]
         );
+    }
+
+    #[test]
+    fn solid_quad_draw_commands_keep_different_blend_modes_separate() {
+        let commands = scene_solid_quad_draw_commands(&[
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 4,
+                first_index: 0,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
+            },
+            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 5,
+                first_index: 6,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Screen,
+            },
+        ])
+        .unwrap();
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(commands[1].blend_mode, SceneBlendMode::Screen);
     }
 
     #[test]

@@ -1499,6 +1499,10 @@ impl ScenePuppetAttachmentMap {
             value.insert("y".to_owned(), json!(attachment.y));
             value.insert("z".to_owned(), json!(attachment.z));
             value.insert(
+                "local_position".to_owned(),
+                json!(attachment.local_position),
+            );
+            value.insert(
                 "placement_source".to_owned(),
                 json!(attachment.placement_source),
             );
@@ -1528,18 +1532,220 @@ struct ScenePuppetMesh {
     bounds: ScenePuppetMeshBounds,
     vertices: Vec<ScenePuppetMeshVertex>,
     indices: Vec<u32>,
+    skin_vertices: Vec<ScenePuppetSkinVertex>,
+    skin: Option<ScenePuppetSkin>,
+    clips: Vec<ScenePuppetAnimationClip>,
 }
 
 impl ScenePuppetMesh {
     fn to_scene_mesh_value(&self) -> Value {
+        let mut mesh = Map::new();
+        mesh.insert(
+            "vertices".to_owned(),
+            Value::Array(
+                self.vertices
+                    .iter()
+                    .map(ScenePuppetMeshVertex::to_value)
+                    .collect(),
+            ),
+        );
+        mesh.insert(
+            "indices".to_owned(),
+            Value::Array(self.indices.iter().map(|index| json!(index)).collect()),
+        );
+        if let Some(skin) = &self.skin {
+            mesh.insert("skin".to_owned(), skin.to_value());
+        }
+        if !self.clips.is_empty() {
+            mesh.insert(
+                "puppet_clips".to_owned(),
+                Value::Array(
+                    self.clips
+                        .iter()
+                        .map(ScenePuppetAnimationClip::to_value)
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(mesh)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetSkin {
+    bones: Vec<ScenePuppetSkinBone>,
+    vertices: Vec<ScenePuppetSkinVertex>,
+    attachments: Vec<ScenePuppetSkinAttachment>,
+}
+
+impl ScenePuppetSkin {
+    fn to_value(&self) -> Value {
+        let mut skin = Map::new();
+        skin.insert(
+            "bones".to_owned(),
+            Value::Array(
+                self.bones
+                    .iter()
+                    .map(|bone| bone.to_value())
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        skin.insert(
+            "vertices".to_owned(),
+            Value::Array(
+                self.vertices
+                    .iter()
+                    .map(|vertex| vertex.to_value())
+                    .collect::<Vec<_>>(),
+            ),
+        );
+        if !self.attachments.is_empty() {
+            skin.insert(
+                "attachments".to_owned(),
+                Value::Array(
+                    self.attachments
+                        .iter()
+                        .map(|attachment| attachment.to_value())
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(skin)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetSkinAttachment {
+    name: String,
+    bone_index: usize,
+    local_position: [f64; 3],
+    bind_position: [f64; 3],
+}
+
+impl ScenePuppetSkinAttachment {
+    fn to_value(&self) -> Value {
         json!({
-            "vertices": self
-                .vertices
-                .iter()
-                .map(ScenePuppetMeshVertex::to_value)
-                .collect::<Vec<_>>(),
-            "indices": self.indices
+            "name": self.name,
+            "bone_index": self.bone_index,
+            "local_position": self.local_position,
+            "bind_position": self.bind_position
         })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetSkinBone {
+    parent: Option<usize>,
+    bind: ScenePuppetTransform,
+}
+
+impl ScenePuppetSkinBone {
+    fn to_value(self) -> Value {
+        json!({
+            "parent": self.parent,
+            "bind": self.bind.to_value()
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetSkinVertex {
+    bone_indices: [usize; 4],
+    weights: [f64; 4],
+}
+
+impl ScenePuppetSkinVertex {
+    fn to_value(self) -> Value {
+        json!({
+            "bone_indices": self.bone_indices,
+            "weights": self.weights
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetAnimationClip {
+    id: u32,
+    name: Option<String>,
+    fps: f64,
+    frame_count: u32,
+    looping: bool,
+    bones: Vec<ScenePuppetAnimationBone>,
+}
+
+impl ScenePuppetAnimationClip {
+    fn to_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "fps": self.fps,
+            "frame_count": self.frame_count,
+            "looping": self.looping,
+            "bones": self
+                .bones
+                .iter()
+                .map(ScenePuppetAnimationBone::to_value)
+                .collect::<Vec<_>>()
+        })
+    }
+
+    fn summary_value(&self) -> Value {
+        json!({
+            "id": self.id,
+            "name": self.name,
+            "fps": self.fps,
+            "frame_count": self.frame_count,
+            "looping": self.looping,
+            "bone_count": self.bones.len()
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetAnimationBone {
+    frames: Vec<ScenePuppetTransform>,
+}
+
+impl ScenePuppetAnimationBone {
+    fn to_value(&self) -> Value {
+        json!({
+            "frames": self
+                .frames
+                .iter()
+                .map(|frame| frame.to_value())
+                .collect::<Vec<_>>()
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScenePuppetTransform {
+    translation: [f64; 3],
+    rotation: [f64; 3],
+    scale: [f64; 3],
+}
+
+impl ScenePuppetTransform {
+    fn identity() -> Self {
+        Self {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+
+    fn to_value(self) -> Value {
+        json!({
+            "translation": self.translation,
+            "rotation": self.rotation,
+            "scale": self.scale
+        })
+    }
+}
+
+impl Default for ScenePuppetTransform {
+    fn default() -> Self {
+        Self::identity()
     }
 }
 
@@ -1581,8 +1787,20 @@ struct ScenePuppetAttachment {
     x: f64,
     y: f64,
     z: f64,
+    local_position: [f64; 3],
     placement_source: &'static str,
     target_position: Option<(f64, f64, f64)>,
+}
+
+impl ScenePuppetAttachment {
+    fn skin_attachment(&self, name: String) -> ScenePuppetSkinAttachment {
+        ScenePuppetSkinAttachment {
+            name,
+            bone_index: self.bone_index,
+            local_position: self.local_position,
+            bind_position: [self.x, self.y, self.z],
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1590,6 +1808,16 @@ struct ScenePuppetBone {
     parent: Option<usize>,
     translation: (f64, f64, f64),
     target_position: Option<(f64, f64, f64)>,
+    bind: ScenePuppetTransform,
+}
+
+impl ScenePuppetBone {
+    fn skin_bone(self) -> ScenePuppetSkinBone {
+        ScenePuppetSkinBone {
+            parent: self.parent,
+            bind: self.bind,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1898,6 +2126,7 @@ fn scene_collect_object_timelines(
     object: &Map<String, Value>,
     node_id: &str,
     context: &mut SceneDocumentBuildContext,
+    puppet_animation_layers_lowered: bool,
 ) {
     for key in [
         "timeline",
@@ -1911,7 +2140,9 @@ fn scene_collect_object_timelines(
         }
     }
     scene_collect_embedded_property_timelines(object, node_id, context);
-    if let Some(animation_layers) = object.get("animationlayers") {
+    if !puppet_animation_layers_lowered
+        && let Some(animation_layers) = object.get("animationlayers")
+    {
         scene_collect_animation_layer_timelines(animation_layers, node_id, context);
     }
 }
@@ -3129,6 +3360,13 @@ fn scene_node_from_object(
     if let Some(transform) = scene_transform_from_object(object, &node_id, context) {
         node.insert("transform".to_owned(), transform);
     }
+    if let Some(attachment) = string_field(object, &["attachment"]) {
+        node.insert("puppet_attachment".to_owned(), Value::String(attachment));
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-puppet-attachment-runtime",
+        );
+    }
     if let Some(depth) = number_value_field(object, &["parallax_depth", "parallaxDepth"]) {
         node.insert("parallax_depth".to_owned(), json!(depth));
     }
@@ -3319,6 +3557,21 @@ fn scene_node_from_object(
             "wallpaper-engine-puppet-mesh-lowering",
         );
     }
+    let mesh_has_puppet_clips = source_model_mesh
+        .and_then(|mesh| mesh.get("puppet_clips"))
+        .is_some_and(|clips| clips.as_array().is_some_and(|clips| !clips.is_empty()));
+    let mut puppet_animation_layers_lowered = false;
+    if mesh_has_puppet_clips {
+        let layers = scene_puppet_animation_layers_from_object(object);
+        if !layers.is_empty() {
+            node.insert("puppet_animation_layers".to_owned(), Value::Array(layers));
+            puppet_animation_layers_lowered = true;
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-puppet-animation-layer-lowering",
+            );
+        }
+    }
     if let Some((controller, pending_controller)) =
         scene_controller_from_object(object, &node_id, source_model.as_ref())
     {
@@ -3381,7 +3634,7 @@ fn scene_node_from_object(
     ) {
         node.insert("provenance".to_owned(), provenance);
     }
-    scene_collect_object_timelines(object, &node_id, context);
+    scene_collect_object_timelines(object, &node_id, context, puppet_animation_layers_lowered);
 
     let children =
         scene_child_nodes_from_object(project, output_dir, object, report, context, resources);
@@ -3474,6 +3727,87 @@ fn scene_merge_node_properties(node: &mut Map<String, Value>, properties: Value)
     for (key, value) in new_properties {
         existing.insert(key.clone(), value.clone());
     }
+}
+
+fn scene_puppet_animation_layers_from_object(object: &Map<String, Value>) -> Vec<Value> {
+    let Some(value) = object.get("animationlayers") else {
+        return Vec::new();
+    };
+    let mut layers = Vec::new();
+    scene_collect_puppet_animation_layers(value, &mut layers);
+    layers
+}
+
+fn scene_collect_puppet_animation_layers(value: &Value, layers: &mut Vec<Value>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                scene_collect_puppet_animation_layers(value, layers);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(layer) = scene_puppet_animation_layer_from_object(object) {
+                layers.push(layer);
+            }
+            for key in ["layers", "children", "items"] {
+                if let Some(value) = object.get(key) {
+                    scene_collect_puppet_animation_layers(value, layers);
+                }
+            }
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn scene_puppet_animation_layer_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let clip_id = object.get("animation").and_then(value_to_u32)?;
+    let visible = object
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .unwrap_or(true);
+    if !visible {
+        return None;
+    }
+    let mut layer = Map::new();
+    layer.insert("clip_id".to_owned(), json!(clip_id));
+    if let Some(name) = string_field(object, &["name"]) {
+        layer.insert("name".to_owned(), Value::String(name));
+    }
+    if let Some(additive) = object.get("additive").and_then(value_to_bool_unwrapped) {
+        layer.insert("additive".to_owned(), json!(additive));
+    }
+    if let Some(blend) = number_value_field(object, &["blend", "weight", "strength"])
+        && blend.is_finite()
+    {
+        layer.insert("blend".to_owned(), json!(blend));
+    }
+    if let Some(rate) = number_value_field(object, &["rate", "speed", "timescale"])
+        && rate.is_finite()
+    {
+        layer.insert("rate".to_owned(), json!(rate.max(0.0)));
+    }
+    if let Some(phase) = scene_puppet_animation_layer_initial_phase(object) {
+        layer.insert("initial_phase".to_owned(), json!(phase));
+    }
+    Some(Value::Object(layer))
+}
+
+fn scene_puppet_animation_layer_initial_phase(object: &Map<String, Value>) -> Option<f64> {
+    let visible = object.get("visible")?.as_object()?;
+    let script = visible.get("script")?.as_str()?;
+    let normalized = script.split_whitespace().collect::<String>();
+    if !normalized.contains("setFrame(")
+        || !normalized.contains("frameCount*scriptProperties.percentage")
+    {
+        return None;
+    }
+    let phase = visible
+        .get("scriptproperties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("percentage"))
+        .and_then(value_to_f64_unwrapped)
+        .unwrap_or(0.0);
+    phase.is_finite().then_some(phase.clamp(0.0, 1.0))
 }
 
 fn scene_enable_native_audio_response_if_recordable(
@@ -4195,6 +4529,21 @@ fn scene_insert_puppet_model_conversion(
         }
         if let Some(mesh) = attachments.mesh.clone() {
             model.insert("puppet_mesh_bounds".to_owned(), mesh.bounds.to_value());
+            if !mesh.clips.is_empty() {
+                model.insert(
+                    "puppet_animation_clips".to_owned(),
+                    Value::Array(
+                        mesh.clips
+                            .iter()
+                            .map(ScenePuppetAnimationClip::summary_value)
+                            .collect(),
+                    ),
+                );
+                push_unique(
+                    &mut context.converted_features,
+                    "wallpaper-engine-puppet-animation-clips",
+                );
+            }
             push_unique(
                 &mut context.converted_features,
                 "wallpaper-engine-puppet-mesh-lowering",
@@ -4284,7 +4633,7 @@ fn scene_parse_puppet_attachment_map(
 ) -> Result<ScenePuppetAttachmentMap, String> {
     let mdls_offset = scene_find_mdl_section(bytes, b"MDLS")
         .ok_or_else(|| "Wallpaper Engine puppet MDL does not contain MDLS.".to_owned())?;
-    let mesh = scene_puppet_mesh(bytes, mdls_offset);
+    let mut mesh = scene_puppet_mesh(bytes, mdls_offset);
     let mesh_bounds = mesh.as_ref().map(|mesh| mesh.bounds);
     let (mdls_end, bone_count, mut position) =
         scene_mdl_section_end_count_start(bytes, mdls_offset, "MDLS")?;
@@ -4318,10 +4667,26 @@ fn scene_parse_puppet_attachment_map(
                 .filter(|parent| *parent < bone_count),
             translation: (matrix[12], matrix[13], matrix[14]),
             target_position: scene_puppet_bone_target_position(&info, frame_size),
+            bind: scene_puppet_transform_from_mdl_matrix(matrix),
         });
         if position <= bone_start {
             return Err("Wallpaper Engine puppet MDLS parser did not advance.".to_owned());
         }
+    }
+    if let Some(mesh) = mesh.as_mut()
+        && scene_puppet_skin_vertices_valid(&mesh.skin_vertices, bone_count)
+    {
+        mesh.skin = Some(ScenePuppetSkin {
+            bones: bones
+                .iter()
+                .copied()
+                .map(ScenePuppetBone::skin_bone)
+                .collect(),
+            vertices: mesh.skin_vertices.clone(),
+            attachments: Vec::new(),
+        });
+        mesh.clips =
+            scene_parse_puppet_animation_clips(bytes, mdls_end, bone_count).unwrap_or_default();
     }
 
     let Some(mdat_offset) = scene_find_mdl_section_after(bytes, b"MDAT", mdls_end) else {
@@ -4343,6 +4708,11 @@ fn scene_parse_puppet_attachment_map(
         )?);
         let name = scene_take_mdl_c_string(bytes, &mut position, mdat_end, "MDAT attachment name")?;
         let attachment_matrix = scene_take_mdl_matrix(bytes, &mut position, mdat_end)?;
+        let local_position = [
+            f64::from(attachment_matrix[12]),
+            f64::from(attachment_matrix[13]),
+            f64::from(attachment_matrix[14]),
+        ];
         let Some(chain_position) = scene_puppet_attachment_chain_position(bone_index, &bones)
         else {
             continue;
@@ -4350,9 +4720,9 @@ fn scene_parse_puppet_attachment_map(
         let target_position = scene_puppet_attachment_target_position(bone_index, &bones).map(
             |(_target_bone_index, target_position)| {
                 (
-                    target_position.0 + f64::from(attachment_matrix[12]),
-                    target_position.1 + f64::from(attachment_matrix[13]),
-                    target_position.2 + f64::from(attachment_matrix[14]),
+                    target_position.0 + local_position[0],
+                    target_position.1 + local_position[1],
+                    target_position.2 + local_position[2],
                 )
             },
         );
@@ -4360,13 +4730,20 @@ fn scene_parse_puppet_attachment_map(
             name,
             ScenePuppetAttachment {
                 bone_index,
-                x: chain_position.0 + f64::from(attachment_matrix[12]),
-                y: chain_position.1 + f64::from(attachment_matrix[13]),
-                z: chain_position.2 + f64::from(attachment_matrix[14]),
+                x: chain_position.0 + local_position[0],
+                y: chain_position.1 + local_position[1],
+                z: chain_position.2 + local_position[2],
+                local_position,
                 placement_source: "mdls-bone-matrix-chain",
                 target_position,
             },
         );
+    }
+    if let Some(skin) = mesh.as_mut().and_then(|mesh| mesh.skin.as_mut()) {
+        skin.attachments = attachments
+            .iter()
+            .map(|(name, attachment)| attachment.skin_attachment(name.clone()))
+            .collect();
     }
     let mesh_bounds = mesh.as_ref().map(|mesh| mesh.bounds).or(mesh_bounds);
     Ok(ScenePuppetAttachmentMap {
@@ -4381,6 +4758,8 @@ fn scene_puppet_mesh(bytes: &[u8], mdls_offset: usize) -> Option<ScenePuppetMesh
     const MESH_HEADER_SIZE: usize = 8;
     const VERTEX_STRIDE: usize = 80;
     const POSITION_OFFSET: usize = 0;
+    const BONE_INDEX_OFFSET: usize = 40;
+    const BONE_WEIGHT_OFFSET: usize = 56;
     const UV_OFFSET: usize = 72;
     const TRIANGLE_INDEX_BYTES: usize = 6;
 
@@ -4412,6 +4791,8 @@ fn scene_puppet_mesh(bytes: &[u8], mdls_offset: usize) -> Option<ScenePuppetMesh
             vertex_bytes / VERTEX_STRIDE,
             VERTEX_STRIDE,
             POSITION_OFFSET,
+            BONE_INDEX_OFFSET,
+            BONE_WEIGHT_OFFSET,
             UV_OFFSET,
             indices_offset,
             index_bytes / 2,
@@ -4426,6 +4807,8 @@ fn scene_puppet_mesh_from_block(
     vertex_count: usize,
     vertex_stride: usize,
     position_offset: usize,
+    bone_index_offset: usize,
+    bone_weight_offset: usize,
     uv_offset: usize,
     indices_offset: usize,
     index_count: usize,
@@ -4435,10 +4818,13 @@ fn scene_puppet_mesh_from_block(
     let mut max_x = f64::NEG_INFINITY;
     let mut max_y = f64::NEG_INFINITY;
     let mut vertices = Vec::with_capacity(vertex_count);
+    let mut skin_vertices = Vec::with_capacity(vertex_count);
 
     for index in 0..vertex_count {
         let vertex_base = vertices_offset.checked_add(index.checked_mul(vertex_stride)?)?;
         let position_base = vertex_base.checked_add(position_offset)?;
+        let bone_index_base = vertex_base.checked_add(bone_index_offset)?;
+        let bone_weight_base = vertex_base.checked_add(bone_weight_offset)?;
         let uv_base = vertex_base.checked_add(uv_offset)?;
         let raw_x = scene_read_f32_le_at(bytes, position_base)?;
         let raw_y = scene_read_f32_le_at(bytes, position_base + 4)?;
@@ -4455,6 +4841,20 @@ fn scene_puppet_mesh_from_block(
         max_x = max_x.max(x);
         max_y = max_y.max(y);
         vertices.push(ScenePuppetMeshVertex { x, y, u, v });
+        skin_vertices.push(ScenePuppetSkinVertex {
+            bone_indices: [
+                usize::try_from(scene_read_u32_le_at(bytes, bone_index_base)?).ok()?,
+                usize::try_from(scene_read_u32_le_at(bytes, bone_index_base + 4)?).ok()?,
+                usize::try_from(scene_read_u32_le_at(bytes, bone_index_base + 8)?).ok()?,
+                usize::try_from(scene_read_u32_le_at(bytes, bone_index_base + 12)?).ok()?,
+            ],
+            weights: [
+                f64::from(scene_read_f32_le_at(bytes, bone_weight_base)?),
+                f64::from(scene_read_f32_le_at(bytes, bone_weight_base + 4)?),
+                f64::from(scene_read_f32_le_at(bytes, bone_weight_base + 8)?),
+                f64::from(scene_read_f32_le_at(bytes, bone_weight_base + 12)?),
+            ],
+        });
     }
 
     if vertices.len() < 3 {
@@ -4492,6 +4892,9 @@ fn scene_puppet_mesh_from_block(
         },
         vertices,
         indices,
+        skin_vertices,
+        skin: None,
+        clips: Vec::new(),
     })
 }
 
@@ -4557,6 +4960,160 @@ fn scene_puppet_bone_target_position(
         y - f64::from(frame_size.height) * 0.5,
         z,
     ))
+}
+
+fn scene_puppet_skin_vertices_valid(vertices: &[ScenePuppetSkinVertex], bone_count: usize) -> bool {
+    !vertices.is_empty()
+        && vertices.iter().any(|vertex| {
+            vertex
+                .weights
+                .iter()
+                .any(|weight| weight.is_finite() && *weight > f64::EPSILON)
+        })
+        && vertices.iter().all(|vertex| {
+            vertex
+                .weights
+                .iter()
+                .all(|weight| weight.is_finite() && *weight >= 0.0 && *weight <= 1.0 + f64::EPSILON)
+                && vertex
+                    .bone_indices
+                    .iter()
+                    .zip(vertex.weights.iter())
+                    .all(|(bone_index, weight)| *weight <= f64::EPSILON || *bone_index < bone_count)
+        })
+}
+
+fn scene_parse_puppet_animation_clips(
+    bytes: &[u8],
+    after_offset: usize,
+    bone_count: usize,
+) -> Result<Vec<ScenePuppetAnimationClip>, String> {
+    let Some(mdla_offset) = scene_find_mdl_section_after(bytes, b"MDLA", after_offset) else {
+        return Ok(Vec::new());
+    };
+    let (mdla_end, clip_count, mut position) =
+        scene_mdl_section_end_count_start(bytes, mdla_offset, "MDLA")?;
+    let mut clips = Vec::with_capacity(clip_count);
+    for clip_index in 0..clip_count {
+        while position < mdla_end && bytes.get(position) == Some(&0) {
+            position += 1;
+        }
+        let clip_id = scene_take_u32_le(bytes, &mut position, mdla_end, "MDLA clip id")?;
+        scene_skip_bytes(bytes, &mut position, mdla_end, 4, "MDLA clip flags")?;
+        let name = scene_take_mdl_c_string(bytes, &mut position, mdla_end, "MDLA clip name")?;
+        let playback =
+            scene_take_mdl_c_string(bytes, &mut position, mdla_end, "MDLA clip playback")?;
+        let fps = scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA clip fps")?;
+        let frame_count =
+            scene_take_u32_le(bytes, &mut position, mdla_end, "MDLA clip frame count")?;
+        scene_skip_bytes(
+            bytes,
+            &mut position,
+            mdla_end,
+            4,
+            "MDLA clip reserved frame field",
+        )?;
+        let clip_bone_count = usize::try_from(scene_take_u32_le(
+            bytes,
+            &mut position,
+            mdla_end,
+            "MDLA clip bone count",
+        )?)
+        .map_err(|_| "Wallpaper Engine puppet MDLA bone count overflowed.".to_owned())?;
+        if clip_bone_count != bone_count {
+            return Err(format!(
+                "Wallpaper Engine puppet MDLA clip {clip_index} bone count {clip_bone_count} does not match MDLS bone count {bone_count}."
+            ));
+        }
+        let mut bones = Vec::with_capacity(clip_bone_count);
+        let expected_samples = usize::try_from(frame_count)
+            .ok()
+            .and_then(|frame_count| frame_count.checked_add(1))
+            .ok_or_else(|| "Wallpaper Engine puppet MDLA frame count overflowed.".to_owned())?;
+        for bone_index in 0..clip_bone_count {
+            scene_skip_bytes(bytes, &mut position, mdla_end, 4, "MDLA bone track flags")?;
+            let byte_count = usize::try_from(scene_take_u32_le(
+                bytes,
+                &mut position,
+                mdla_end,
+                "MDLA bone frame byte count",
+            )?)
+            .map_err(|_| "Wallpaper Engine puppet MDLA byte count overflowed.".to_owned())?;
+            if byte_count % 36 != 0 {
+                return Err(format!(
+                    "Wallpaper Engine puppet MDLA clip {clip_index} bone {bone_index} has invalid frame byte count {byte_count}."
+                ));
+            }
+            let sample_count = byte_count / 36;
+            if sample_count != expected_samples {
+                return Err(format!(
+                    "Wallpaper Engine puppet MDLA clip {clip_index} bone {bone_index} has {sample_count} samples, expected {expected_samples}."
+                ));
+            }
+            let mut frames = Vec::with_capacity(sample_count);
+            for _ in 0..sample_count {
+                frames.push(ScenePuppetTransform {
+                    translation: [
+                        scene_take_f32_le(
+                            bytes,
+                            &mut position,
+                            mdla_end,
+                            "MDLA frame translation x",
+                        )?,
+                        scene_take_f32_le(
+                            bytes,
+                            &mut position,
+                            mdla_end,
+                            "MDLA frame translation y",
+                        )?,
+                        scene_take_f32_le(
+                            bytes,
+                            &mut position,
+                            mdla_end,
+                            "MDLA frame translation z",
+                        )?,
+                    ],
+                    rotation: [
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame rotation x")?,
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame rotation y")?,
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame rotation z")?,
+                    ],
+                    scale: [
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame scale x")?,
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame scale y")?,
+                        scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame scale z")?,
+                    ],
+                });
+            }
+            bones.push(ScenePuppetAnimationBone { frames });
+        }
+        clips.push(ScenePuppetAnimationClip {
+            id: clip_id,
+            name: (!name.is_empty()).then_some(name),
+            fps,
+            frame_count,
+            looping: normalize_project_key(&playback) == "loop",
+            bones,
+        });
+    }
+    Ok(clips)
+}
+
+fn scene_puppet_transform_from_mdl_matrix(matrix: [f64; 16]) -> ScenePuppetTransform {
+    let scale_x = (matrix[0] * matrix[0] + matrix[1] * matrix[1] + matrix[2] * matrix[2])
+        .sqrt()
+        .max(f64::EPSILON);
+    let scale_y = (matrix[4] * matrix[4] + matrix[5] * matrix[5] + matrix[6] * matrix[6])
+        .sqrt()
+        .max(f64::EPSILON);
+    let scale_z = (matrix[8] * matrix[8] + matrix[9] * matrix[9] + matrix[10] * matrix[10])
+        .sqrt()
+        .max(f64::EPSILON);
+    ScenePuppetTransform {
+        translation: [matrix[12], matrix[13], matrix[14]],
+        rotation: [0.0, 0.0, (matrix[1] / scale_x).atan2(matrix[0] / scale_x)],
+        scale: [scale_x, scale_y, scale_z],
+    }
 }
 
 fn scene_find_mdl_section(bytes: &[u8], section: &[u8; 4]) -> Option<usize> {
@@ -4662,6 +5219,27 @@ fn scene_take_u16_le(
         return Err(format!(
             "Wallpaper Engine puppet {field} extends outside its section."
         ));
+    }
+    Ok(value)
+}
+
+fn scene_take_f32_le(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<f64, String> {
+    let start = *position;
+    let value = scene_read_f32_le_at(bytes, start)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is truncated."))?;
+    *position = start + 4;
+    if *position > end {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} extends outside its section."
+        ));
+    }
+    if !value.is_finite() {
+        return Err(format!("Wallpaper Engine puppet {field} must be finite."));
     }
     Ok(value)
 }

@@ -212,6 +212,7 @@ impl SceneDocument {
                 &resolve_property,
                 &resolve_text_property,
                 None,
+                None,
                 layers,
             );
         }
@@ -245,6 +246,7 @@ impl SceneDocument {
                 &self.property_bindings,
                 &resolve_property,
                 &resolve_text_property,
+                None,
                 None,
                 layers,
             );
@@ -349,6 +351,7 @@ impl SceneDocument {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                None,
                 options,
                 layers,
             );
@@ -671,6 +674,10 @@ pub struct SceneNode {
     pub height: Option<f64>,
     #[serde(default)]
     pub mesh: Option<Arc<SceneMesh>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub puppet_animation_layers: Vec<ScenePuppetAnimationLayer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub puppet_attachment: Option<String>,
     #[serde(default)]
     pub parallax_depth: Option<f64>,
     #[serde(default)]
@@ -715,6 +722,31 @@ impl SceneNode {
         self.transform.validate(&self.id)?;
         if let Some(mesh) = &self.mesh {
             mesh.validate(&self.id)?;
+        }
+        if let Some(attachment) = &self.puppet_attachment {
+            validate_required_text("scene node puppet_attachment", attachment)?;
+        }
+        if !self.puppet_animation_layers.is_empty() {
+            let Some(mesh) = &self.mesh else {
+                return Err(SceneError::invalid(format!(
+                    "scene node {:?} has puppet animation layers without a mesh",
+                    self.id
+                )));
+            };
+            let clip_ids = mesh
+                .puppet_clips
+                .iter()
+                .map(|clip| clip.id)
+                .collect::<BTreeSet<_>>();
+            if mesh.skin.is_none() || clip_ids.is_empty() {
+                return Err(SceneError::invalid(format!(
+                    "scene node {:?} has puppet animation layers without mesh skin/clips",
+                    self.id
+                )));
+            }
+            for layer in &self.puppet_animation_layers {
+                layer.validate(&self.id, &clip_ids)?;
+            }
         }
         if let Some(resource) = &self.resource
             && !resource_ids.contains(resource)
@@ -810,6 +842,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
+        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
         options: SceneSnapshotBuildOptions,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
@@ -863,6 +896,7 @@ impl SceneNode {
             }
         }
 
+        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -871,6 +905,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
+        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_snapshot_layers(
                 time_ms, transform, opacity, resources, visibility, options, output,
@@ -888,6 +924,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
+                    child_puppet_attachment_deltas,
                     options,
                     output,
                 );
@@ -917,6 +954,7 @@ impl SceneNode {
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
             let layer_opacity = layer_effect.apply_opacity(opacity);
+            let mesh = self.snapshot_mesh_at(time_ms);
             let layer = SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
@@ -935,7 +973,7 @@ impl SceneNode {
                 corner_radius,
                 width,
                 height,
-                mesh: self.mesh.clone(),
+                mesh,
                 parallax_depth: self.parallax_depth,
                 text,
                 font_size: self.font_size,
@@ -970,6 +1008,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                child_puppet_attachment_deltas,
                 options,
                 output,
             );
@@ -989,6 +1028,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
+        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
         output: &mut Vec<SceneSnapshotSampledImageLayer>,
     ) {
         if !self.visible
@@ -1041,6 +1081,7 @@ impl SceneNode {
             }
         }
 
+        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -1049,6 +1090,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
+        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_sampled_image_snapshot_layers(
                 time_ms, transform, opacity, resources, visibility, output,
@@ -1066,6 +1109,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
+                    child_puppet_attachment_deltas,
                     output,
                 );
             }
@@ -1082,12 +1126,13 @@ impl SceneNode {
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
             let layer_opacity = layer_effect.apply_opacity(opacity);
+            let mesh = self.snapshot_mesh_at(time_ms);
             let layer = SceneSnapshotSampledImageLayer {
                 has_source: source.is_some(),
                 texture_region: scene_texture_region_from_properties(&self.properties, time_ms),
                 width,
                 height,
-                mesh: self.mesh.clone(),
+                mesh,
                 effect_motion: layer_effect.motion,
                 blend_mode,
                 fit: self.fit,
@@ -1110,6 +1155,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                child_puppet_attachment_deltas,
                 output,
             );
         }
@@ -1128,6 +1174,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
+        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
         if !self.visible
@@ -1180,6 +1227,7 @@ impl SceneNode {
             }
         }
 
+        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -1188,6 +1236,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
+        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_solid_snapshot_layers(
                 time_ms, transform, opacity, resources, visibility, output,
@@ -1205,6 +1255,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
+                    child_puppet_attachment_deltas,
                     output,
                 );
             }
@@ -1280,6 +1331,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                child_puppet_attachment_deltas,
                 output,
             );
         }
@@ -1554,6 +1606,42 @@ impl SceneNode {
             return Some(self);
         }
         self.children.iter().find_map(|child| child.find_by_id(id))
+    }
+
+    fn snapshot_mesh_at(&self, time_ms: u64) -> Option<Arc<SceneMesh>> {
+        let mesh = self.mesh.as_ref()?;
+        if self.puppet_animation_layers.is_empty() {
+            return Some(mesh.clone());
+        }
+        mesh.sample_puppet_animation(&self.puppet_animation_layers, time_ms)
+            .map(Arc::new)
+            .or_else(|| Some(mesh.clone()))
+    }
+
+    fn snapshot_puppet_attachment_deltas(
+        &self,
+        time_ms: u64,
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
+        self.mesh
+            .as_ref()?
+            .sample_puppet_attachment_deltas(&self.puppet_animation_layers, time_ms)
+    }
+
+    fn apply_puppet_attachment_delta(
+        &self,
+        transform: &mut SceneTransform,
+        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
+    ) {
+        let Some(attachment) = self.puppet_attachment.as_deref() else {
+            return;
+        };
+        let Some(delta) = parent_puppet_attachment_deltas.and_then(|deltas| deltas.get(attachment))
+        else {
+            return;
+        };
+        transform.x += delta.x;
+        transform.y += delta.y;
+        transform.rotation_deg += delta.rotation_deg;
     }
 
     fn subtree_has_dynamic_solid_runtime(&self) -> bool {
@@ -2606,6 +2694,8 @@ pub enum SceneBlendMode {
     #[default]
     Alpha,
     Additive,
+    Multiply,
+    Screen,
     Max,
 }
 
@@ -3332,6 +3422,10 @@ pub struct SceneMesh {
     pub vertices: Vec<SceneMeshVertex>,
     #[serde(default)]
     pub indices: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skin: Option<SceneMeshSkin>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub puppet_clips: Vec<ScenePuppetAnimationClip>,
 }
 
 impl SceneMesh {
@@ -3357,7 +3451,161 @@ impl SceneMesh {
                 )));
             }
         }
+        if let Some(skin) = &self.skin {
+            skin.validate(node_id, self.vertices.len())?;
+        } else if !self.puppet_clips.is_empty() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh has puppet clips without skin"
+            )));
+        }
+        if !self.puppet_clips.is_empty() {
+            let Some(skin) = &self.skin else {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh has puppet clips without skin"
+                )));
+            };
+            for clip in &self.puppet_clips {
+                clip.validate(node_id, skin.bones.len())?;
+            }
+        }
         Ok(())
+    }
+
+    fn sample_puppet_animation(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Option<SceneMesh> {
+        let (skin, bind_world, pose_world) = self.sample_puppet_pose_world(layers, time_ms)?;
+        let inverse_bind_world = bind_world
+            .iter()
+            .map(|matrix| scene_puppet_inverse_affine_matrix(*matrix))
+            .collect::<Option<Vec<_>>>()?;
+
+        let mut vertices = Vec::with_capacity(self.vertices.len());
+        for (vertex, skin_vertex) in self.vertices.iter().zip(&skin.vertices) {
+            let mut x = 0.0;
+            let mut y = 0.0;
+            let mut z = 0.0;
+            let mut total_weight = 0.0;
+            for slot in 0..4 {
+                let weight = skin_vertex.weights[slot];
+                if !weight.is_finite() || weight <= f64::EPSILON {
+                    continue;
+                }
+                let bone_index = skin_vertex.bone_indices[slot];
+                let skin_matrix =
+                    scene_puppet_matrix_mul(pose_world[bone_index], inverse_bind_world[bone_index]);
+                let point = scene_puppet_transform_point_3d(skin_matrix, vertex.x, vertex.y, 0.0);
+                x += point[0] * weight;
+                y += point[1] * weight;
+                z += point[2] * weight;
+                total_weight += weight;
+            }
+            let (sampled_x, sampled_y) = if total_weight > f64::EPSILON {
+                (x / total_weight, y / total_weight)
+            } else {
+                (vertex.x, vertex.y)
+            };
+            let _ = z;
+            vertices.push(SceneMeshVertex {
+                x: sampled_x,
+                y: sampled_y,
+                u: vertex.u,
+                v: vertex.v,
+            });
+        }
+
+        Some(SceneMesh {
+            vertices,
+            indices: self.indices.clone(),
+            skin: None,
+            puppet_clips: Vec::new(),
+        })
+    }
+
+    fn sample_puppet_attachment_deltas(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
+        let (skin, bind_world, pose_world) = self.sample_puppet_pose_world(layers, time_ms)?;
+        if skin.attachments.is_empty() {
+            return None;
+        }
+        let mut deltas = BTreeMap::new();
+        for attachment in &skin.attachments {
+            let bone_index = attachment.bone_index;
+            let pose_point = scene_puppet_transform_point_3d(
+                *pose_world.get(bone_index)?,
+                attachment.local_position[0],
+                attachment.local_position[1],
+                attachment.local_position[2],
+            );
+            let bind_angle = scene_puppet_matrix_rotation_z(*bind_world.get(bone_index)?)?;
+            let pose_angle = scene_puppet_matrix_rotation_z(*pose_world.get(bone_index)?)?;
+            deltas.insert(
+                attachment.name.clone(),
+                ScenePuppetAttachmentDelta {
+                    x: pose_point[0] - attachment.bind_position[0],
+                    y: pose_point[1] - attachment.bind_position[1],
+                    rotation_deg: scene_puppet_angle_delta(bind_angle, pose_angle).to_degrees(),
+                },
+            );
+        }
+        (!deltas.is_empty()).then_some(deltas)
+    }
+
+    fn sample_puppet_pose_world(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Option<(&SceneMeshSkin, Vec<[f64; 16]>, Vec<[f64; 16]>)> {
+        let (skin, local_pose) = self.sample_puppet_local_pose(layers, time_ms)?;
+        let bind_world = scene_puppet_world_matrices(
+            skin.bones.iter().map(|bone| bone.parent),
+            skin.bones.iter().map(|bone| bone.bind.matrix()),
+        )?;
+        let pose_world = scene_puppet_world_matrices(
+            skin.bones.iter().map(|bone| bone.parent),
+            local_pose.iter().map(|transform| transform.matrix()),
+        )?;
+        Some((skin, bind_world, pose_world))
+    }
+
+    fn sample_puppet_local_pose(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Option<(&SceneMeshSkin, Vec<ScenePuppetTransform>)> {
+        let skin = self.skin.as_ref()?;
+        if skin.bones.is_empty() || skin.vertices.len() != self.vertices.len() {
+            return None;
+        }
+        let mut local_pose = skin.bones.iter().map(|bone| bone.bind).collect::<Vec<_>>();
+        let mut has_layer = false;
+        for layer in layers {
+            if !layer.visible || layer.blend <= 0.0 {
+                continue;
+            }
+            let clip = self
+                .puppet_clips
+                .iter()
+                .find(|clip| clip.id == layer.clip_id)?;
+            let sampled = clip.sample(layer, time_ms, skin.bones.len())?;
+            let blend = layer.blend.clamp(0.0, 1.0);
+            for (bone_index, transform) in sampled.iter().enumerate() {
+                let bind = skin.bones.get(bone_index)?.bind;
+                if layer.additive {
+                    local_pose[bone_index] =
+                        local_pose[bone_index].additive_blend(bind, *transform, blend);
+                } else {
+                    local_pose[bone_index] = local_pose[bone_index].lerp(*transform, blend);
+                }
+            }
+            has_layer = true;
+        }
+        has_layer.then_some((skin, local_pose))
     }
 }
 
@@ -3380,6 +3628,529 @@ impl SceneMeshVertex {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshSkin {
+    #[serde(default)]
+    pub bones: Vec<SceneMeshSkinBone>,
+    #[serde(default)]
+    pub vertices: Vec<SceneMeshSkinVertex>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<SceneMeshSkinAttachment>,
+}
+
+impl SceneMeshSkin {
+    fn validate(&self, node_id: &str, vertex_count: usize) -> Result<(), SceneError> {
+        if self.bones.is_empty() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh skin must contain at least one bone"
+            )));
+        }
+        if self.vertices.len() != vertex_count {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh skin vertex count {} does not match mesh vertex count {vertex_count}",
+                self.vertices.len()
+            )));
+        }
+        for (index, bone) in self.bones.iter().enumerate() {
+            bone.validate(node_id, index, self.bones.len())?;
+        }
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            vertex.validate(node_id, index, self.bones.len())?;
+        }
+        for (index, attachment) in self.attachments.iter().enumerate() {
+            attachment.validate(node_id, index, self.bones.len())?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshSkinAttachment {
+    pub name: String,
+    pub bone_index: usize,
+    #[serde(default)]
+    pub local_position: [f64; 3],
+    #[serde(default)]
+    pub bind_position: [f64; 3],
+}
+
+impl SceneMeshSkinAttachment {
+    fn validate(&self, node_id: &str, index: usize, bone_count: usize) -> Result<(), SceneError> {
+        validate_required_text("scene mesh skin attachment name", &self.name)?;
+        if self.bone_index >= bone_count {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh skin attachment {index} bone index {} is outside the bone array",
+                self.bone_index
+            )));
+        }
+        for (field, values) in [
+            ("local_position", self.local_position),
+            ("bind_position", self.bind_position),
+        ] {
+            for (component, value) in values.iter().enumerate() {
+                if !value.is_finite() {
+                    return Err(SceneError::invalid(format!(
+                        "scene node {node_id:?} mesh skin attachment {index} {field}[{component}] must be finite"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScenePuppetAttachmentDelta {
+    x: f64,
+    y: f64,
+    rotation_deg: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshSkinBone {
+    #[serde(default)]
+    pub parent: Option<usize>,
+    #[serde(default)]
+    pub bind: ScenePuppetTransform,
+}
+
+impl SceneMeshSkinBone {
+    fn validate(&self, node_id: &str, index: usize, bone_count: usize) -> Result<(), SceneError> {
+        if let Some(parent) = self.parent
+            && parent >= bone_count
+        {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh skin bone {index} parent {parent} is outside the bone array"
+            )));
+        }
+        self.bind.validate(node_id, "mesh skin bind transform")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshSkinVertex {
+    #[serde(default)]
+    pub bone_indices: [usize; 4],
+    #[serde(default)]
+    pub weights: [f64; 4],
+}
+
+impl SceneMeshSkinVertex {
+    fn validate(&self, node_id: &str, index: usize, bone_count: usize) -> Result<(), SceneError> {
+        for (slot, bone_index) in self.bone_indices.iter().enumerate() {
+            if *bone_index >= bone_count {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh skin vertex {index} bone slot {slot} index {bone_index} is outside the bone array"
+                )));
+            }
+        }
+        for (slot, weight) in self.weights.iter().enumerate() {
+            if !weight.is_finite() || *weight < 0.0 {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh skin vertex {index} weight slot {slot} must be finite and non-negative"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationClip {
+    pub id: u32,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub fps: f64,
+    #[serde(default)]
+    pub frame_count: u32,
+    #[serde(default)]
+    pub looping: bool,
+    #[serde(default)]
+    pub bones: Vec<ScenePuppetAnimationBone>,
+}
+
+impl ScenePuppetAnimationClip {
+    fn validate(&self, node_id: &str, bone_count: usize) -> Result<(), SceneError> {
+        if self.fps <= 0.0 || !self.fps.is_finite() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet clip {} fps must be positive and finite",
+                self.id
+            )));
+        }
+        if self.frame_count == 0 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet clip {} must contain at least one frame",
+                self.id
+            )));
+        }
+        if self.bones.len() != bone_count {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet clip {} bone count {} does not match skin bone count {bone_count}",
+                self.id,
+                self.bones.len()
+            )));
+        }
+        for (bone_index, bone) in self.bones.iter().enumerate() {
+            bone.validate(node_id, self.id, bone_index)?;
+        }
+        Ok(())
+    }
+
+    fn sample(
+        &self,
+        layer: &ScenePuppetAnimationLayer,
+        time_ms: u64,
+        bone_count: usize,
+    ) -> Option<Vec<ScenePuppetTransform>> {
+        if self.bones.len() != bone_count || self.frame_count == 0 || self.fps <= 0.0 {
+            return None;
+        }
+        let duration_frames = f64::from(self.frame_count);
+        let phase = layer.initial_phase.clamp(0.0, 1.0) * duration_frames;
+        let mut frame = time_ms as f64 * 0.001 * self.fps * layer.rate.max(0.0) + phase;
+        if self.looping {
+            frame = frame.rem_euclid(duration_frames);
+        } else {
+            frame = frame.clamp(0.0, duration_frames);
+        }
+        let frame0 = frame.floor().min(duration_frames) as usize;
+        let frame1 = (frame0 + 1).min(self.frame_count as usize);
+        let mix = (frame - frame0 as f64).clamp(0.0, 1.0);
+        let mut pose = Vec::with_capacity(bone_count);
+        for bone in &self.bones {
+            let first = *bone.frames.get(frame0)?;
+            let second = *bone.frames.get(frame1)?;
+            pose.push(first.lerp(second, mix));
+        }
+        Some(pose)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationBone {
+    #[serde(default)]
+    pub frames: Vec<ScenePuppetTransform>,
+}
+
+impl ScenePuppetAnimationBone {
+    fn validate(&self, node_id: &str, clip_id: u32, bone_index: usize) -> Result<(), SceneError> {
+        if self.frames.len() < 2 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet clip {clip_id} bone {bone_index} must contain at least two sampled frames"
+            )));
+        }
+        for (frame_index, frame) in self.frames.iter().enumerate() {
+            frame.validate(
+                node_id,
+                &format!("puppet clip {clip_id} bone {bone_index} frame {frame_index}"),
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetTransform {
+    #[serde(default)]
+    pub translation: [f64; 3],
+    #[serde(default)]
+    pub rotation: [f64; 3],
+    #[serde(default = "scene_puppet_default_scale")]
+    pub scale: [f64; 3],
+}
+
+impl Default for ScenePuppetTransform {
+    fn default() -> Self {
+        Self {
+            translation: [0.0, 0.0, 0.0],
+            rotation: [0.0, 0.0, 0.0],
+            scale: [1.0, 1.0, 1.0],
+        }
+    }
+}
+
+impl ScenePuppetTransform {
+    fn validate(&self, node_id: &str, label: &str) -> Result<(), SceneError> {
+        for (field, values) in [
+            ("translation", self.translation),
+            ("rotation", self.rotation),
+            ("scale", self.scale),
+        ] {
+            for (index, value) in values.iter().enumerate() {
+                if !value.is_finite() {
+                    return Err(SceneError::invalid(format!(
+                        "scene node {node_id:?} {label} {field}[{index}] must be finite"
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn lerp(self, target: Self, mix: f64) -> Self {
+        let mix = mix.clamp(0.0, 1.0);
+        let mut rotation = [0.0; 3];
+        for (index, value) in rotation.iter_mut().enumerate() {
+            *value = self.rotation[index]
+                + scene_puppet_angle_delta(self.rotation[index], target.rotation[index]) * mix;
+        }
+        Self {
+            translation: [
+                scene_lerp(self.translation[0], target.translation[0], mix),
+                scene_lerp(self.translation[1], target.translation[1], mix),
+                scene_lerp(self.translation[2], target.translation[2], mix),
+            ],
+            rotation,
+            scale: [
+                scene_lerp(self.scale[0], target.scale[0], mix),
+                scene_lerp(self.scale[1], target.scale[1], mix),
+                scene_lerp(self.scale[2], target.scale[2], mix),
+            ],
+        }
+    }
+
+    fn additive_blend(self, bind: Self, target: Self, mix: f64) -> Self {
+        let mix = mix.clamp(0.0, 1.0);
+        Self {
+            translation: [
+                self.translation[0] + (target.translation[0] - bind.translation[0]) * mix,
+                self.translation[1] + (target.translation[1] - bind.translation[1]) * mix,
+                self.translation[2] + (target.translation[2] - bind.translation[2]) * mix,
+            ],
+            rotation: [
+                self.rotation[0]
+                    + scene_puppet_angle_delta(bind.rotation[0], target.rotation[0]) * mix,
+                self.rotation[1]
+                    + scene_puppet_angle_delta(bind.rotation[1], target.rotation[1]) * mix,
+                self.rotation[2]
+                    + scene_puppet_angle_delta(bind.rotation[2], target.rotation[2]) * mix,
+            ],
+            scale: [
+                self.scale[0] + (target.scale[0] - bind.scale[0]) * mix,
+                self.scale[1] + (target.scale[1] - bind.scale[1]) * mix,
+                self.scale[2] + (target.scale[2] - bind.scale[2]) * mix,
+            ],
+        }
+    }
+
+    fn matrix(self) -> [f64; 16] {
+        let rx = scene_puppet_rotation_x_matrix(self.rotation[0]);
+        let ry = scene_puppet_rotation_y_matrix(self.rotation[1]);
+        let rz = scene_puppet_rotation_z_matrix(self.rotation[2]);
+        let rotation = scene_puppet_matrix_mul(scene_puppet_matrix_mul(rz, ry), rx);
+        let scale = scene_puppet_scale_matrix(self.scale);
+        let translation = scene_puppet_translation_matrix(self.translation);
+        scene_puppet_matrix_mul(translation, scene_puppet_matrix_mul(rotation, scale))
+    }
+}
+
+fn scene_puppet_default_scale() -> [f64; 3] {
+    [1.0, 1.0, 1.0]
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationLayer {
+    pub clip_id: u32,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub additive: bool,
+    #[serde(default = "default_opacity")]
+    pub blend: f64,
+    #[serde(default = "default_true")]
+    pub visible: bool,
+    #[serde(default = "default_opacity")]
+    pub rate: f64,
+    #[serde(default)]
+    pub initial_phase: f64,
+}
+
+impl ScenePuppetAnimationLayer {
+    fn validate(&self, node_id: &str, clip_ids: &BTreeSet<u32>) -> Result<(), SceneError> {
+        if !clip_ids.contains(&self.clip_id) {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet animation layer references unknown clip {}",
+                self.clip_id
+            )));
+        }
+        for (field, value) in [
+            ("blend", self.blend),
+            ("rate", self.rate),
+            ("initial_phase", self.initial_phase),
+        ] {
+            if !value.is_finite() {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} puppet animation layer {field} must be finite"
+                )));
+            }
+        }
+        if self.rate < 0.0 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} puppet animation layer rate must be non-negative"
+            )));
+        }
+        Ok(())
+    }
+}
+
+fn scene_lerp(start: f64, end: f64, mix: f64) -> f64 {
+    start + (end - start) * mix
+}
+
+fn scene_puppet_angle_delta(start: f64, end: f64) -> f64 {
+    let mut delta = end - start;
+    while delta > std::f64::consts::PI {
+        delta -= std::f64::consts::TAU;
+    }
+    while delta < -std::f64::consts::PI {
+        delta += std::f64::consts::TAU;
+    }
+    delta
+}
+
+fn scene_puppet_world_matrices<P, M>(parents: P, local_matrices: M) -> Option<Vec<[f64; 16]>>
+where
+    P: IntoIterator<Item = Option<usize>>,
+    M: IntoIterator<Item = [f64; 16]>,
+{
+    let parents = parents.into_iter().collect::<Vec<_>>();
+    let locals = local_matrices.into_iter().collect::<Vec<_>>();
+    if parents.len() != locals.len() {
+        return None;
+    }
+    let mut worlds = vec![scene_puppet_identity_matrix(); locals.len()];
+    for index in 0..locals.len() {
+        worlds[index] = if let Some(parent) = parents[index] {
+            if parent >= index {
+                return None;
+            }
+            scene_puppet_matrix_mul(worlds[parent], locals[index])
+        } else {
+            locals[index]
+        };
+    }
+    Some(worlds)
+}
+
+fn scene_puppet_identity_matrix() -> [f64; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_translation_matrix(translation: [f64; 3]) -> [f64; 16] {
+    let mut matrix = scene_puppet_identity_matrix();
+    matrix[12] = translation[0];
+    matrix[13] = translation[1];
+    matrix[14] = translation[2];
+    matrix
+}
+
+fn scene_puppet_scale_matrix(scale: [f64; 3]) -> [f64; 16] {
+    [
+        scale[0], 0.0, 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 0.0, scale[2], 0.0, 0.0, 0.0, 0.0,
+        1.0,
+    ]
+}
+
+fn scene_puppet_rotation_x_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_rotation_y_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        cos, 0.0, -sin, 0.0, 0.0, 1.0, 0.0, 0.0, sin, 0.0, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_rotation_z_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_matrix_mul(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
+    let mut output = [0.0; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            output[column * 4 + row] = (0..4)
+                .map(|index| a[index * 4 + row] * b[column * 4 + index])
+                .sum();
+        }
+    }
+    output
+}
+
+fn scene_puppet_inverse_affine_matrix(matrix: [f64; 16]) -> Option<[f64; 16]> {
+    let a00 = matrix[0];
+    let a01 = matrix[4];
+    let a02 = matrix[8];
+    let a10 = matrix[1];
+    let a11 = matrix[5];
+    let a12 = matrix[9];
+    let a20 = matrix[2];
+    let a21 = matrix[6];
+    let a22 = matrix[10];
+    let det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+        + a02 * (a10 * a21 - a11 * a20);
+    if !det.is_finite() || det.abs() <= f64::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let b00 = (a11 * a22 - a12 * a21) * inv_det;
+    let b01 = (a02 * a21 - a01 * a22) * inv_det;
+    let b02 = (a01 * a12 - a02 * a11) * inv_det;
+    let b10 = (a12 * a20 - a10 * a22) * inv_det;
+    let b11 = (a00 * a22 - a02 * a20) * inv_det;
+    let b12 = (a02 * a10 - a00 * a12) * inv_det;
+    let b20 = (a10 * a21 - a11 * a20) * inv_det;
+    let b21 = (a01 * a20 - a00 * a21) * inv_det;
+    let b22 = (a00 * a11 - a01 * a10) * inv_det;
+    let tx = matrix[12];
+    let ty = matrix[13];
+    let tz = matrix[14];
+    Some([
+        b00,
+        b10,
+        b20,
+        0.0,
+        b01,
+        b11,
+        b21,
+        0.0,
+        b02,
+        b12,
+        b22,
+        0.0,
+        -(b00 * tx + b01 * ty + b02 * tz),
+        -(b10 * tx + b11 * ty + b12 * tz),
+        -(b20 * tx + b21 * ty + b22 * tz),
+        1.0,
+    ])
+}
+
+fn scene_puppet_transform_point_3d(matrix: [f64; 16], x: f64, y: f64, z: f64) -> [f64; 3] {
+    [
+        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+    ]
+}
+
+fn scene_puppet_matrix_rotation_z(matrix: [f64; 16]) -> Option<f64> {
+    let scale_x = (matrix[0] * matrix[0] + matrix[1] * matrix[1])
+        .sqrt()
+        .max(f64::EPSILON);
+    let angle = (matrix[1] / scale_x).atan2(matrix[0] / scale_x);
+    angle.is_finite().then_some(angle)
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3531,8 +4302,11 @@ fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
         .as_i64()
         .or_else(|| value.as_str()?.parse::<i64>().ok())?;
     match mode {
+        2 => Some(SceneBlendMode::Multiply),
         3 => Some(SceneBlendMode::Additive),
         7 => Some(SceneBlendMode::Max),
+        8 | 28 | 32 => Some(SceneBlendMode::Screen),
+        31 => Some(SceneBlendMode::Additive),
         _ => None,
     }
 }
@@ -3549,6 +4323,8 @@ fn scene_blend_mode_from_material(
         .filter_map(|pass| pass.get("blending").and_then(Value::as_str))
         .find_map(|blending| match blending.to_ascii_lowercase().as_str() {
             "additive" | "add" => Some(SceneBlendMode::Additive),
+            "multiply" => Some(SceneBlendMode::Multiply),
+            "screen" => Some(SceneBlendMode::Screen),
             _ => None,
         })
 }
@@ -3978,6 +4754,46 @@ mod tests {
     }
 
     #[test]
+    fn wallpaper_engine_color_blend_modes_from_real_scenes_reach_snapshot_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-a", "type": "image", "source": "assets/a.gtex" },
+                { "id": "resource-b", "type": "image", "source": "assets/b.gtex" },
+                { "id": "resource-c", "type": "image", "source": "assets/c.gtex" }
+            ],
+            "nodes": [
+                {
+                    "id": "node-shadow",
+                    "type": "image",
+                    "resource": "resource-a",
+                    "properties": { "wallpaper_engine_blend": { "colorBlendMode": 2 } }
+                },
+                {
+                    "id": "node-blue-solid",
+                    "type": "rectangle",
+                    "color": "#003ca4",
+                    "width": 32,
+                    "height": 16,
+                    "properties": { "wallpaper_engine_blend": { "colorBlendMode": 28 } }
+                },
+                {
+                    "id": "node-water",
+                    "type": "image",
+                    "resource": "resource-c",
+                    "properties": { "wallpaper_engine_blend": { "colorBlendMode": 32 } }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+
+        assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
+        assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Screen);
+        assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Screen);
+    }
+
+    #[test]
     fn text_binding_resolver_overrides_static_snapshot_text() {
         let document: SceneDocument = serde_json::from_value(json!({
             "nodes": [
@@ -4251,6 +5067,245 @@ mod tests {
         document.validate().unwrap();
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
         assert_eq!(snapshot.layers[0].transform.x, 50.0);
+    }
+
+    #[test]
+    fn puppet_animation_layers_sample_skinned_mesh_vertices_over_time() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-puppet",
+                    "type": "image",
+                    "source": "assets/puppet.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-puppet",
+                    "type": "image",
+                    "resource": "resource-puppet",
+                    "width": 32,
+                    "height": 32,
+                    "mesh": {
+                        "vertices": [
+                            { "x": 20.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 20.0, "y": 1.0, "u": 0.0, "v": 1.0 },
+                            { "x": 21.0, "y": 0.0, "u": 1.0, "v": 0.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                {
+                                    "bind": {
+                                        "translation": [0.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                },
+                                {
+                                    "parent": 0,
+                                    "bind": {
+                                        "translation": [10.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 7,
+                                "fps": 1.0,
+                                "frame_count": 1,
+                                "looping": false,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] },
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] }
+                                        ]
+                                    },
+                                    {
+                                        "frames": [
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] },
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 1.5707963267948966], "scale": [1.0, 1.0, 1.0] }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        { "clip_id": 7, "rate": 1.0, "blend": 1.0 }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut first = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(0, |_| None, |_| None, &mut first);
+        let first_mesh = first[0].mesh.as_ref().expect("first sampled mesh");
+        assert_eq!(first_mesh.indices, vec![0, 1, 2]);
+        assert!((first_mesh.vertices[0].x - 20.0).abs() < 0.000_001);
+        assert!(first_mesh.vertices[0].y.abs() < 0.000_001);
+
+        let mut later = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut later,
+        );
+        let later_mesh = later[0].mesh.as_ref().expect("later sampled mesh");
+        assert_eq!(later_mesh.indices, vec![0, 1, 2]);
+        assert!((later_mesh.vertices[0].x - 10.0).abs() < 0.000_001);
+        assert!((later_mesh.vertices[0].y - 10.0).abs() < 0.000_001);
+        assert_eq!(later_mesh.vertices[0].u, first_mesh.vertices[0].u);
+        assert_eq!(later_mesh.vertices[0].v, first_mesh.vertices[0].v);
+    }
+
+    #[test]
+    fn puppet_attachment_children_follow_sampled_bone_pose() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-puppet",
+                    "type": "image",
+                    "source": "assets/puppet.gtex"
+                },
+                {
+                    "id": "resource-eye",
+                    "type": "image",
+                    "source": "assets/eye.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-puppet",
+                    "type": "image",
+                    "resource": "resource-puppet",
+                    "width": 32,
+                    "height": 32,
+                    "transform": { "x": 100.0, "y": 200.0 },
+                    "mesh": {
+                        "vertices": [
+                            { "x": 20.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 20.0, "y": 1.0, "u": 0.0, "v": 1.0 },
+                            { "x": 21.0, "y": 0.0, "u": 1.0, "v": 0.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                {
+                                    "bind": {
+                                        "translation": [0.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                },
+                                {
+                                    "parent": 0,
+                                    "bind": {
+                                        "translation": [10.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ],
+                            "attachments": [
+                                {
+                                    "name": "eye",
+                                    "bone_index": 1,
+                                    "local_position": [10.0, 0.0, 0.0],
+                                    "bind_position": [20.0, 0.0, 0.0]
+                                }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 7,
+                                "fps": 1.0,
+                                "frame_count": 1,
+                                "looping": false,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] },
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] }
+                                        ]
+                                    },
+                                    {
+                                        "frames": [
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0] },
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 1.5707963267948966], "scale": [1.0, 1.0, 1.0] }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        { "clip_id": 7, "rate": 1.0, "blend": 1.0 }
+                    ],
+                    "children": [
+                        {
+                            "id": "node-eye",
+                            "type": "image",
+                            "resource": "resource-eye",
+                            "width": 8,
+                            "height": 4,
+                            "transform": { "x": 20.0, "y": 0.0 },
+                            "puppet_attachment": "eye"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let first = document.snapshot_at_with_property_resolver(0, |_| None);
+        let first_eye = first
+            .layers
+            .iter()
+            .find(|layer| layer.id == "node-eye")
+            .expect("first eye layer");
+        assert!((first_eye.transform.x - 120.0).abs() < 0.000_001);
+        assert!((first_eye.transform.y - 200.0).abs() < 0.000_001);
+        assert!(first_eye.transform.rotation_deg.abs() < 0.000_001);
+
+        let later = document.snapshot_at_with_property_resolver(1000, |_| None);
+        let later_eye = later
+            .layers
+            .iter()
+            .find(|layer| layer.id == "node-eye")
+            .expect("later eye layer");
+        assert!((later_eye.transform.x - 110.0).abs() < 0.000_001);
+        assert!((later_eye.transform.y - 210.0).abs() < 0.000_001);
+        assert!((later_eye.transform.rotation_deg - 90.0).abs() < 0.000_001);
+
+        let mut sampled = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut sampled,
+        );
+        assert!((sampled[1].transform.x - 110.0).abs() < 0.000_001);
+        assert!((sampled[1].transform.y - 210.0).abs() < 0.000_001);
+        assert!((sampled[1].transform.rotation_deg - 90.0).abs() < 0.000_001);
     }
 
     #[test]

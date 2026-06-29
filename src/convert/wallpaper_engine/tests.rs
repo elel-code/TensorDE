@@ -4188,6 +4188,214 @@ fn lowers_wallpaper_engine_puppet_mesh_to_scene_mesh_geometry() {
 }
 
 #[test]
+fn lowers_wallpaper_engine_puppet_animation_layers_to_sampled_skinning() {
+    let source = TestDir::new("we-scene-puppet-animation-source");
+    let output = TestDir::new("we-scene-puppet-animation-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [{
+                "id": 10,
+                "name": "Animated Puppet",
+                "image": "models/body.json",
+                "origin": [0, 0, 0],
+                "size": [32, 32, 0],
+                "animationlayers": [
+                  {
+                    "id": 20,
+                    "name": "turn",
+                    "animation": 7,
+                    "additive": false,
+                    "blend": 1.0,
+                    "rate": 1.0,
+                    "visible": true
+                  }
+                ]
+              }]
+            }"#,
+    );
+    source.write_file(
+        "models/body.json",
+        r#"{
+              "width": 32,
+              "height": 32,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+    );
+    source.write_bytes(
+        "models/body_puppet.mdl",
+        &test_we_mdl_with_skinned_animation(),
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Puppet Animation Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let node = &scene["nodes"][0];
+    assert_eq!(node["mesh"]["skin"]["bones"].as_array().unwrap().len(), 2);
+    assert_eq!(node["mesh"]["puppet_clips"][0]["id"], 7);
+    assert_eq!(node["puppet_animation_layers"][0]["clip_id"], 7);
+    assert_eq!(node["puppet_animation_layers"][0]["name"], "turn");
+    assert!(
+        !scene["unsupported_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature["feature"] == "we-animation-layer-blending")
+    );
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let mut first = Vec::new();
+    document.snapshot_sampled_image_layers_at_with_resolvers(0, |_| None, |_| None, &mut first);
+    let first_mesh = first[0].mesh.as_ref().expect("first puppet mesh");
+    assert!((first_mesh.vertices[0].x - 20.0).abs() < 0.000_001);
+    assert!(first_mesh.vertices[0].y.abs() < 0.000_001);
+
+    let mut later = Vec::new();
+    document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, |_| None, &mut later);
+    let later_mesh = later[0].mesh.as_ref().expect("later puppet mesh");
+    assert_eq!(later_mesh.indices, first_mesh.indices);
+    assert!((later_mesh.vertices[0].x - 10.0).abs() < 0.000_001);
+    assert!((later_mesh.vertices[0].y - 10.0).abs() < 0.000_001);
+
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"wallpaper-engine-puppet-animation-clips".to_owned())
+    );
+    assert!(
+        report
+            .converted_features
+            .contains(&"wallpaper-engine-puppet-animation-layer-lowering".to_owned())
+    );
+    assert!(
+        !report
+            .unsupported_features
+            .contains(&"we-animation-layer-blending".to_owned())
+    );
+}
+
+#[test]
+fn lowers_wallpaper_engine_puppet_attachments_to_runtime_bone_pose() {
+    let source = TestDir::new("we-scene-puppet-attachment-animation-source");
+    let output = TestDir::new("we-scene-puppet-attachment-animation-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Animated Body",
+                  "image": "models/body.json",
+                  "origin": [100, 200, 0],
+                  "size": [32, 32, 0],
+                  "animationlayers": [
+                    {
+                      "id": 20,
+                      "name": "turn",
+                      "animation": 7,
+                      "additive": false,
+                      "blend": 1.0,
+                      "rate": 1.0,
+                      "visible": true
+                    }
+                  ]
+                },
+                {
+                  "id": 30,
+                  "parent": 10,
+                  "name": "Eye",
+                  "type": "image",
+                  "path": "eye.png",
+                  "attachment": "eye",
+                  "size": [8, 4, 0]
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        "models/body.json",
+        r#"{
+              "width": 32,
+              "height": 32,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+    );
+    source.write_file("eye.png", "not real png");
+    source.write_bytes(
+        "models/body_puppet.mdl",
+        &test_we_mdl_with_skinned_animation_and_attachment("eye", 1, (10.0, 0.0)),
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Puppet Attachment Animation Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let parent = &scene["nodes"][0];
+    let child = &parent["children"][0];
+    assert_eq!(child["puppet_attachment"], "eye");
+    assert_eq!(child["transform"]["x"], 20.0);
+    assert_eq!(child["transform"]["y"], 0.0);
+    assert_eq!(parent["mesh"]["skin"]["attachments"][0]["name"], "eye");
+    assert_eq!(
+        parent["mesh"]["skin"]["attachments"][0]["local_position"],
+        json!([10.0, 0.0, 0.0])
+    );
+    assert_eq!(
+        parent["mesh"]["skin"]["attachments"][0]["bind_position"],
+        json!([20.0, 0.0, 0.0])
+    );
+
+    let child_id = child["id"].as_str().unwrap().to_owned();
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let first = document.snapshot_at_with_property_resolver(0, |_| None);
+    let first_eye = first
+        .layers
+        .iter()
+        .find(|layer| layer.id == child_id)
+        .expect("first eye layer");
+    assert!((first_eye.transform.x - 120.0).abs() < 0.000_001);
+    assert!((first_eye.transform.y - 200.0).abs() < 0.000_001);
+    assert!(first_eye.transform.rotation_deg.abs() < 0.000_001);
+
+    let later = document.snapshot_at_with_property_resolver(1000, |_| None);
+    let later_eye = later
+        .layers
+        .iter()
+        .find(|layer| layer.id == child_id)
+        .expect("later eye layer");
+    assert!((later_eye.transform.x - 110.0).abs() < 0.000_001);
+    assert!((later_eye.transform.y - 210.0).abs() < 0.000_001);
+    assert!((later_eye.transform.rotation_deg - 90.0).abs() < 0.000_01);
+}
+
+#[test]
 fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
     let source = TestDir::new("we-scene-text-binding-source");
     let output = TestDir::new("we-scene-text-binding-output");
@@ -6123,6 +6331,87 @@ fn test_we_mdl_with_mesh_bounds(vertices: &[(f32, f32, f32, f32)]) -> Vec<u8> {
     bytes
 }
 
+fn test_we_mdl_with_skinned_animation() -> Vec<u8> {
+    let mut bytes = b"MDLV0023\0".to_vec();
+    test_push_mdl_mesh_block_with_skin(
+        &mut bytes,
+        &[
+            (20.0, 0.0, 0.0, 0.0, 1),
+            (20.0, 1.0, 0.0, 1.0, 1),
+            (21.0, 0.0, 1.0, 0.0, 1),
+        ],
+    );
+    let mdls_offset = bytes.len();
+    bytes.extend_from_slice(b"MDLS0004");
+    bytes.push(0);
+    let mdls_end_offset = bytes.len();
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    test_push_mdl_bone_with_translation(&mut bytes, 0, -1, Some((16.0, 16.0)), (0.0, 0.0));
+    test_push_mdl_bone_with_translation(&mut bytes, 1, 0, None, (10.0, 0.0));
+    let mdls_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdls_end_offset..mdls_end_offset + 4].copy_from_slice(&mdls_end.to_le_bytes());
+
+    let mdla_offset = bytes.len();
+    bytes.extend_from_slice(b"MDLA0006");
+    bytes.push(0);
+    let mdla_end_offset = bytes.len();
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(b"turn\0");
+    bytes.extend_from_slice(b"once\0");
+    bytes.extend_from_slice(&1.0f32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&2u32.to_le_bytes());
+    test_push_mdl_animation_bone_frames(
+        &mut bytes,
+        [
+            test_puppet_frame((0.0, 0.0, 0.0), 0.0),
+            test_puppet_frame((0.0, 0.0, 0.0), 0.0),
+        ],
+    );
+    test_push_mdl_animation_bone_frames(
+        &mut bytes,
+        [
+            test_puppet_frame((10.0, 0.0, 0.0), 0.0),
+            test_puppet_frame((10.0, 0.0, 0.0), std::f32::consts::FRAC_PI_2),
+        ],
+    );
+    let mdla_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdla_end_offset..mdla_end_offset + 4].copy_from_slice(&mdla_end.to_le_bytes());
+    assert!(bytes[mdls_offset..].starts_with(b"MDLS"));
+    assert!(bytes[mdla_offset..].starts_with(b"MDLA"));
+    bytes
+}
+
+fn test_we_mdl_with_skinned_animation_and_attachment(
+    attachment_name: &str,
+    attachment_bone: u16,
+    attachment_offset: (f32, f32),
+) -> Vec<u8> {
+    let mut bytes = test_we_mdl_with_skinned_animation();
+    let mdat_offset = bytes.len();
+    bytes.extend_from_slice(b"MDAT0001");
+    bytes.push(0);
+    let mdat_end_offset = bytes.len();
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&1u16.to_le_bytes());
+    bytes.extend_from_slice(&attachment_bone.to_le_bytes());
+    bytes.extend_from_slice(attachment_name.as_bytes());
+    bytes.push(0);
+    let mut attachment_matrix = test_mdl_identity_matrix();
+    attachment_matrix[12] = attachment_offset.0;
+    attachment_matrix[13] = attachment_offset.1;
+    test_push_mdl_matrix(&mut bytes, attachment_matrix);
+    let mdat_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdat_end_offset..mdat_end_offset + 4].copy_from_slice(&mdat_end.to_le_bytes());
+    assert!(bytes[mdat_offset..].starts_with(b"MDAT"));
+    bytes
+}
+
 fn test_push_mdl_mesh_block(bytes: &mut Vec<u8>, vertices: &[(f32, f32, f32, f32)]) {
     bytes.extend_from_slice(&0u32.to_le_bytes());
     bytes.extend_from_slice(&u32::try_from(vertices.len() * 80).unwrap().to_le_bytes());
@@ -6139,6 +6428,50 @@ fn test_push_mdl_mesh_block(bytes: &mut Vec<u8>, vertices: &[(f32, f32, f32, f32
     for index in [0u16, 1, 2] {
         bytes.extend_from_slice(&index.to_le_bytes());
     }
+}
+
+fn test_push_mdl_mesh_block_with_skin(bytes: &mut Vec<u8>, vertices: &[(f32, f32, f32, f32, u32)]) {
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&u32::try_from(vertices.len() * 80).unwrap().to_le_bytes());
+    for (x, y, u, v, bone) in vertices {
+        let mut vertex = [0u8; 80];
+        vertex[0..4].copy_from_slice(&x.to_le_bytes());
+        vertex[4..8].copy_from_slice(&y.to_le_bytes());
+        vertex[8..12].copy_from_slice(&0.0f32.to_le_bytes());
+        vertex[40..44].copy_from_slice(&bone.to_le_bytes());
+        vertex[56..60].copy_from_slice(&1.0f32.to_le_bytes());
+        vertex[72..76].copy_from_slice(&u.to_le_bytes());
+        vertex[76..80].copy_from_slice(&v.to_le_bytes());
+        bytes.extend_from_slice(&vertex);
+    }
+    bytes.extend_from_slice(&6u32.to_le_bytes());
+    for index in [0u16, 1, 2] {
+        bytes.extend_from_slice(&index.to_le_bytes());
+    }
+}
+
+fn test_push_mdl_animation_bone_frames(bytes: &mut Vec<u8>, frames: [[f32; 9]; 2]) {
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&72u32.to_le_bytes());
+    for frame in frames {
+        for value in frame {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+    }
+}
+
+fn test_puppet_frame(translation: (f32, f32, f32), rotation_z: f32) -> [f32; 9] {
+    [
+        translation.0,
+        translation.1,
+        translation.2,
+        0.0,
+        0.0,
+        rotation_z,
+        1.0,
+        1.0,
+        1.0,
+    ]
 }
 
 fn test_push_mdl_bone(bytes: &mut Vec<u8>, index: u32, parent: i32, tp: Option<(f32, f32)>) {

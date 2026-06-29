@@ -102,6 +102,8 @@ pub struct SceneWallpaperPlan {
     #[serde(default)]
     pub timeline_animated_layer_count: usize,
     #[serde(default)]
+    pub puppet_animation_layer_count: usize,
+    #[serde(default)]
     pub property_binding_count: usize,
     #[serde(default)]
     pub cursor_parallax_input_ready: bool,
@@ -308,6 +310,7 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         bound_properties: scene_bound_properties(&document),
         timeline_animation_count: scene_timeline_animation_count(&document),
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
+        puppet_animation_layer_count: scene_puppet_animation_layer_count(&document.nodes),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
         scene_input_properties,
@@ -1774,6 +1777,7 @@ fn scene_wallpaper_plan(
         bound_properties: scene_bound_properties(&document),
         timeline_animation_count: scene_timeline_animation_count(&document),
         timeline_animated_layer_count: scene_timeline_animated_layer_count(&document),
+        puppet_animation_layer_count: scene_puppet_animation_layer_count(&document.nodes),
         property_binding_count: document.property_bindings.len(),
         cursor_parallax_input_ready,
         scene_input_properties,
@@ -2038,6 +2042,15 @@ fn scene_timeline_animated_layer_count(document: &SceneDocument) -> usize {
         .filter_map(|timeline| timeline.target_node.as_deref())
         .collect::<BTreeSet<_>>()
         .len()
+}
+
+pub(crate) fn scene_puppet_animation_layer_count(nodes: &[crate::core::SceneNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| {
+            node.puppet_animation_layers.len() + scene_puppet_animation_layer_count(&node.children)
+        })
+        .sum()
 }
 
 fn load_scene_document(path: &Path) -> Result<SceneDocument, RendererPlanError> {

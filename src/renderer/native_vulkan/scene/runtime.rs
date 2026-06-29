@@ -161,6 +161,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub timeline_animation_runtime_ready: bool,
     pub timeline_animation_count: usize,
     pub timeline_animated_layer_count: usize,
+    pub puppet_animation_layer_count: usize,
     pub source_layer_count: usize,
     pub active_scene_layer_count: usize,
     pub flattened_draw_layer_count: usize,
@@ -264,6 +265,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
+                blend_mode: step.blend_mode,
             })
             .collect::<Vec<_>>();
 
@@ -406,6 +408,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
+                blend_mode: step.blend_mode,
             })
             .collect::<Vec<_>>();
 
@@ -459,6 +462,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometr
             layer_index,
             first_index,
             index_count,
+            blend_mode: layer.blend_mode,
         });
         vertices.extend(solid_vertices.into_iter().map(|vertex| {
             NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -621,6 +625,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
+                blend_mode: layer.blend_mode,
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -765,6 +770,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
+                blend_mode: layer.blend_mode,
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -863,6 +869,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
                 layer_index,
                 first_index,
                 index_count,
+                blend_mode: layer.blend_mode,
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -1075,6 +1082,7 @@ pub struct NativeVulkanSceneRecordableQuadSnapshot {
     pub kind: &'static str,
     pub color: String,
     pub rgba: [f32; 4],
+    pub blend_mode: SceneBlendMode,
     pub fill_color: Option<String>,
     pub fill_rgba: Option<[f32; 4]>,
     pub stroke_color: Option<String>,
@@ -1099,6 +1107,7 @@ pub struct NativeVulkanSceneQuadRecordingStepSnapshot {
     pub layer_index: usize,
     pub layer_id: String,
     pub kind: &'static str,
+    pub blend_mode: SceneBlendMode,
     pub pipeline: &'static str,
     pub first_vertex: u32,
     pub vertex_count: u32,
@@ -1274,6 +1283,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 kind: quad.kind,
                 color: quad.color,
                 rgba: quad.rgba,
+                blend_mode: quad.blend_mode,
                 fill_color: quad.fill_color,
                 fill_rgba: quad.fill_rgba,
                 stroke_color: quad.stroke_color,
@@ -1302,6 +1312,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_index: step.layer_index,
                 layer_id: step.layer_id,
                 kind: step.kind,
+                blend_mode: step.blend_mode,
                 pipeline: step.pipeline,
                 first_vertex: step.first_vertex,
                 vertex_count: step.vertex_count,
@@ -1504,6 +1515,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         source_layer_count,
         timeline_animation_count,
         timeline_animated_layer_count,
+        puppet_animation_layer_count,
         property_binding_count,
         cursor_parallax_input_ready,
         scene_scenescript_binding_count,
@@ -1521,6 +1533,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             layer_count,
             timeline_animation_count,
             timeline_animated_layer_count,
+            puppet_animation_layer_count,
             property_binding_count,
             cursor_parallax_input_ready,
             scene_scenescript_binding_count,
@@ -1536,6 +1549,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             *layer_count,
             *timeline_animation_count,
             *timeline_animated_layer_count,
+            *puppet_animation_layer_count,
             *property_binding_count,
             *cursor_parallax_input_ready,
             *scene_scenescript_binding_count,
@@ -1556,6 +1570,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
             unsupported_scene_features.clone(),
         ),
         _ => (
+            0,
             0,
             0,
             0,
@@ -1907,6 +1922,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         timeline_animation_runtime_ready,
         timeline_animation_count,
         timeline_animated_layer_count,
+        puppet_animation_layer_count,
         source_layer_count,
         active_scene_layer_count,
         flattened_draw_layer_count: plan.draw_ops.len(),
@@ -2148,6 +2164,7 @@ mod tests {
             bound_properties,
             timeline_animation_count,
             timeline_animated_layer_count,
+            puppet_animation_layer_count: 0,
             property_binding_count,
             cursor_parallax_input_ready: false,
             dynamic_topology_required: false,
@@ -3300,8 +3317,14 @@ mod tests {
             snapshot.vulkanalia_draw_pass.pipeline_labels,
             vec![
                 "scene-solid-quad-alpha-blend",
+                "scene-solid-quad-additive-blend",
+                "scene-solid-quad-multiply-blend",
+                "scene-solid-quad-screen-blend",
+                "scene-solid-quad-max-blend",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-additive-blend",
+                "scene-sampled-image-multiply-blend",
+                "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend"
             ]
         );

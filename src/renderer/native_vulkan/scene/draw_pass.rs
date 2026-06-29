@@ -47,6 +47,7 @@ pub(super) struct NativeVulkanSceneRecordableQuad {
     pub(super) kind: &'static str,
     pub(super) color: String,
     pub(super) rgba: [f32; 4],
+    pub(super) blend_mode: SceneBlendMode,
     pub(super) fill_color: Option<String>,
     pub(super) fill_rgba: Option<[f32; 4]>,
     pub(super) stroke_color: Option<String>,
@@ -71,6 +72,7 @@ pub(super) struct NativeVulkanSceneQuadRecordingStep {
     pub(super) layer_index: usize,
     pub(super) layer_id: String,
     pub(super) kind: &'static str,
+    pub(super) blend_mode: SceneBlendMode,
     pub(super) pipeline: &'static str,
     pub(super) first_vertex: u32,
     pub(super) vertex_count: u32,
@@ -1011,6 +1013,7 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
         kind,
         color,
         rgba,
+        blend_mode: layer.blend_mode,
         fill_color,
         fill_rgba,
         stroke_color,
@@ -1071,7 +1074,8 @@ fn native_vulkan_scene_quad_recording_payload(
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
                 kind: quad.kind,
-                pipeline: "solid-quad-alpha-blend",
+                blend_mode: quad.blend_mode,
+                pipeline: native_vulkan_scene_solid_quad_pipeline_label(quad.blend_mode),
                 first_vertex,
                 vertex_count,
                 first_index,
@@ -1099,6 +1103,16 @@ fn native_vulkan_scene_quad_recording_payload(
         steps,
         vertices,
         indices,
+    }
+}
+
+fn native_vulkan_scene_solid_quad_pipeline_label(blend_mode: SceneBlendMode) -> &'static str {
+    match blend_mode {
+        SceneBlendMode::Alpha => "solid-quad-alpha-blend",
+        SceneBlendMode::Additive => "solid-quad-additive-blend",
+        SceneBlendMode::Multiply => "solid-quad-multiply-blend",
+        SceneBlendMode::Screen => "solid-quad-screen-blend",
+        SceneBlendMode::Max => "solid-quad-max-blend",
     }
 }
 
@@ -1216,6 +1230,8 @@ fn native_vulkan_scene_sampled_image_pipeline_label(blend_mode: SceneBlendMode) 
     match blend_mode {
         SceneBlendMode::Alpha => "sampled-image-alpha-blend",
         SceneBlendMode::Additive => "sampled-image-additive-blend",
+        SceneBlendMode::Multiply => "sampled-image-multiply-blend",
+        SceneBlendMode::Screen => "sampled-image-screen-blend",
         SceneBlendMode::Max => "sampled-image-max-blend",
     }
 }
@@ -3138,6 +3154,7 @@ fn native_vulkan_scene_recordable_quad_from_op(
         kind,
         color,
         rgba,
+        blend_mode: op.blend_mode,
         fill_color,
         fill_rgba,
         stroke_color,
@@ -4211,6 +4228,78 @@ mod tests {
     }
 
     #[test]
+    fn draw_pass_plan_reports_sampled_image_multiply_and_screen_blend_pipelines() {
+        let mut multiply = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        multiply.source = Some(PathBuf::from("/tmp/shadow.gtex"));
+        multiply.blend_mode = SceneBlendMode::Multiply;
+        multiply.width = Some(64.0);
+        multiply.height = Some(64.0);
+        let mut screen = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        screen.source = Some(PathBuf::from("/tmp/water.gtex"));
+        screen.blend_mode = SceneBlendMode::Screen;
+        screen.width = Some(64.0);
+        screen.height = Some(64.0);
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![multiply, screen],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.sampled_image_recording_ready);
+        assert_eq!(
+            pass_plan
+                .sampled_image_recording_steps
+                .iter()
+                .map(|step| (step.blend_mode, step.pipeline))
+                .collect::<Vec<_>>(),
+            vec![
+                (SceneBlendMode::Multiply, "sampled-image-multiply-blend"),
+                (SceneBlendMode::Screen, "sampled-image-screen-blend"),
+            ]
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_reports_solid_quad_screen_blend_pipeline() {
+        let mut panel = draw_op(0, NativeVulkanSceneDrawOpKind::Rectangle);
+        panel.color = Some("#003ca4".to_owned());
+        panel.blend_mode = SceneBlendMode::Screen;
+        panel.width = Some(320.0);
+        panel.height = Some(180.0);
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![panel],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.quad_recording_ready);
+        assert_eq!(
+            pass_plan.recordable_quads[0].blend_mode,
+            SceneBlendMode::Screen
+        );
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].blend_mode,
+            SceneBlendMode::Screen
+        );
+        assert_eq!(
+            pass_plan.quad_recording_steps[0].pipeline,
+            "solid-quad-screen-blend"
+        );
+    }
+
+    #[test]
     fn draw_pass_plan_culls_sampled_images_outside_scene_bounds() {
         let mut visible = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         visible.source = Some(PathBuf::from("/tmp/visible.png"));
@@ -4330,6 +4419,8 @@ mod tests {
                 },
             ],
             indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
         }));
         image.transform.x = 10.0;
         image.transform.y = 20.0;
@@ -4387,6 +4478,8 @@ mod tests {
                 },
             ],
             indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
         }));
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
@@ -4481,6 +4574,8 @@ mod tests {
                 },
             ],
             indices: vec![0, 1, 2, 2, 1, 3],
+            skin: None,
+            puppet_clips: Vec::new(),
         }));
         image.effect_motion = SceneNativeEffectMotion {
             sway_amplitude: 8.0,

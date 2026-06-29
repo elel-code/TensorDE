@@ -58,6 +58,7 @@ pub enum NativeVulkanRenderItem {
         bound_properties: Vec<String>,
         timeline_animation_count: usize,
         timeline_animated_layer_count: usize,
+        puppet_animation_layer_count: usize,
         property_binding_count: usize,
         cursor_parallax_input_ready: bool,
         dynamic_topology_required: bool,
@@ -147,6 +148,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         bound_properties: Vec::new(),
         timeline_animation_count: 0,
         timeline_animated_layer_count: 0,
+        puppet_animation_layer_count: 0,
         property_binding_count: 0,
         cursor_parallax_input_ready: false,
         dynamic_topology_required: false,
@@ -267,6 +269,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         bound_properties: plan.bound_properties.clone(),
         timeline_animation_count: plan.timeline_animation_count,
         timeline_animated_layer_count: plan.timeline_animated_layer_count,
+        puppet_animation_layer_count: plan.puppet_animation_layer_count,
         property_binding_count: plan.property_binding_count,
         cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
         dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
@@ -297,6 +300,7 @@ fn native_vulkan_scene_plan_requires_dynamic_topology(plan: &SceneWallpaperPlan)
     );
     plan.timeline_animation_count > 0
         || plan.timeline_animated_layer_count > 0
+        || plan.puppet_animation_layer_count > 0
         || particle_runtime_active
         || native_effect_runtime_active
         || plan.layers.iter().any(|layer| {

@@ -284,6 +284,7 @@ fn native_vulkan_scene_plan_needs_dynamic_sampler(plan: &SceneWallpaperPlan) -> 
     );
     plan.timeline_animation_count > 0
         || plan.timeline_animated_layer_count > 0
+        || plan.puppet_animation_layer_count > 0
         || particle_runtime_active
         || native_effect_runtime_active
         || plan.layers.iter().any(|layer| {
@@ -964,6 +965,7 @@ mod tests {
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
+            puppet_animation_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
             scene_input_properties: Default::default(),
@@ -1114,6 +1116,17 @@ mod tests {
         });
 
         let plan = plan(vec![image]);
+
+        assert!(native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
+    }
+
+    #[test]
+    fn puppet_animation_layers_enable_dynamic_scene_sampling() {
+        let mut image = layer("puppet", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/puppet.gtex"));
+
+        let mut plan = plan(vec![image]);
+        plan.puppet_animation_layer_count = 1;
 
         assert!(native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
     }

@@ -12,9 +12,9 @@ use crate::core::{FitMode, SceneDocument, SceneSize};
 use crate::renderer::{
     RendererPlanError, SceneRenderLayer, SceneWallpaperPlan, load_scene_document,
     scene_bound_properties, scene_default_gscene_package_root, scene_display_plan,
-    scene_plan_system_metrics, scene_render_layers_from_snapshot,
-    scene_render_layers_from_snapshot_into, scene_timeline_animated_layer_count,
-    scene_timeline_animation_count,
+    scene_plan_system_metrics, scene_puppet_animation_layer_count,
+    scene_render_layers_from_snapshot, scene_render_layers_from_snapshot_into,
+    scene_timeline_animated_layer_count, scene_timeline_animation_count,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -273,6 +273,7 @@ impl SceneWallpaperRuntimeSampler {
             bound_properties: scene_bound_properties(&self.document),
             timeline_animation_count: scene_timeline_animation_count(&self.document),
             timeline_animated_layer_count: scene_timeline_animated_layer_count(&self.document),
+            puppet_animation_layer_count: scene_puppet_animation_layer_count(&self.document.nodes),
             property_binding_count: self.document.property_bindings.len(),
             cursor_parallax_input_ready: self.cursor_parallax_input_ready,
             scene_input_properties: self.input_properties.clone(),

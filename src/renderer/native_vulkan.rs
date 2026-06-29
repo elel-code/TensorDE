@@ -12301,6 +12301,7 @@ mod tests {
                 bound_properties: vec!["scene_opacity".to_owned()],
                 timeline_animation_count: 2,
                 timeline_animated_layer_count: 1,
+                puppet_animation_layer_count: 0,
                 property_binding_count: 1,
                 cursor_parallax_input_ready: true,
                 scene_input_properties: Default::default(),

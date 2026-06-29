@@ -363,6 +363,7 @@ mod tests {
             bound_properties: Vec::new(),
             timeline_animation_count: 0,
             timeline_animated_layer_count: 0,
+            puppet_animation_layer_count: 0,
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
             dynamic_topology_required: false,
