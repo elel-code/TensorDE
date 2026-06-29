@@ -323,10 +323,11 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 std::mem::take(&mut self.draw_pass_sampled_image_vertices)
                     .into_iter()
                     .map(|vertex| {
-                        NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
                             vertex.position,
                             vertex.uv,
                             vertex.opacity,
+                            vertex.tint,
                         )
                     })
                     .collect(),
@@ -650,10 +651,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     let sampled_vertices = sampled_scene_vertices
         .into_iter()
         .map(|vertex: NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
                 vertex.position,
                 vertex.uv,
                 vertex.opacity,
+                vertex.tint,
             )
         })
         .collect();
@@ -792,10 +794,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     let sampled_vertices = sampled_scene_vertices
         .into_iter()
         .map(|vertex: NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
                 vertex.position,
                 vertex.uv,
                 vertex.opacity,
+                vertex.tint,
             )
         })
         .collect();
@@ -888,10 +891,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     let sampled_vertices = sampled_scene_vertices
         .into_iter()
         .map(|vertex: NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
                 vertex.position,
                 vertex.uv,
                 vertex.opacity,
+                vertex.tint,
             )
         })
         .collect();
@@ -944,10 +948,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(sampled_scene_vertices.len());
     sampled_vertices.extend(sampled_scene_vertices.iter().map(
         |vertex: &NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
                 vertex.position,
                 vertex.uv,
                 vertex.opacity,
+                vertex.tint,
             )
         },
     ));
@@ -1196,6 +1201,7 @@ pub struct NativeVulkanSceneSampledImageVertexSnapshot {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub opacity: f32,
+    pub tint: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1387,6 +1393,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 position: vertex.position,
                 uv: vertex.uv,
                 opacity: vertex.opacity,
+                tint: vertex.tint,
             })
             .collect(),
         draw_pass_sampled_image_indices: pass_plan.sampled_image_indices,
@@ -1436,6 +1443,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 position: vertex.position,
                 uv: vertex.uv,
                 opacity: vertex.opacity,
+                tint: vertex.tint,
             })
             .collect(),
         draw_pass_video_indices: pass_plan.video_indices,
@@ -3165,6 +3173,7 @@ mod tests {
         image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
         image.fit = FitMode::Contain;
         image.opacity = 0.5;
+        image.color = Some("#000000".to_owned());
         image.width = Some(200.0);
         image.height = Some(100.0);
         image.transform.x = 10.0;
@@ -3191,7 +3200,7 @@ mod tests {
         assert_eq!(snapshot.draw_pass_sampled_image_quads.len(), 1);
         assert!(snapshot.draw_pass_sampled_image_recording_ready);
         assert_eq!(snapshot.draw_pass_sampled_image_recording_step_count, 1);
-        assert_eq!(snapshot.draw_pass_sampled_image_vertex_buffer_bytes, 80);
+        assert_eq!(snapshot.draw_pass_sampled_image_vertex_buffer_bytes, 144);
         assert_eq!(snapshot.draw_pass_sampled_image_index_buffer_bytes, 24);
         assert_eq!(
             snapshot.draw_pass_sampled_image_indices,
@@ -3220,6 +3229,10 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[0].uv, [0.0, 1.0]);
         assert_eq!(snapshot.draw_pass_sampled_image_vertices[3].uv, [1.0, 0.0]);
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_vertices[0].tint,
+            [0.0, 0.0, 0.0, 1.0]
+        );
         let (source, sampled_geometry) = snapshot
             .take_vulkanalia_sampled_image_geometry_input()
             .expect("recordable sampled image geometry");
@@ -3232,6 +3245,7 @@ mod tests {
         assert_eq!(sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
         assert_eq!(sampled_geometry.vertices[0].position, [-90.0, -50.0]);
         assert_eq!(sampled_geometry.vertices[3].uv, [1.0, 0.0]);
+        assert_eq!(sampled_geometry.vertices[0].tint, [0.0, 0.0, 0.0, 1.0]);
         assert_eq!(sampled_geometry.vertices[0].opacity, 0.5);
         assert!(snapshot.vulkanalia_draw_pass.backend_ready);
         assert_eq!(
@@ -3240,7 +3254,7 @@ mod tests {
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.blocking_reason, None);
         assert_eq!(snapshot.vulkanalia_draw_pass.descriptor_set_count, 0);
-        assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 20);
+        assert_eq!(snapshot.vulkanalia_draw_pass.vertex_stride_bytes, 36);
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 1);
         assert!(snapshot.vulkanalia_sampled_image.backend_ready);
         assert_eq!(
@@ -3257,7 +3271,7 @@ mod tests {
             snapshot.vulkanalia_sampled_image.descriptor_type,
             "combined-image-sampler"
         );
-        assert_eq!(snapshot.vulkanalia_sampled_image.vertex_buffer_bytes, 80);
+        assert_eq!(snapshot.vulkanalia_sampled_image.vertex_buffer_bytes, 144);
         assert_eq!(snapshot.vulkanalia_sampled_image.index_buffer_bytes, 24);
         assert!(
             snapshot

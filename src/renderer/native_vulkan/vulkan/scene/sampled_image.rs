@@ -11,7 +11,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 36;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: usize = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: usize = 6;
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
@@ -1558,7 +1558,7 @@ mod tests {
                 recording_step_count: 1,
                 vertex_count: 4,
                 index_count: 6,
-                vertex_buffer_bytes: 80,
+                vertex_buffer_bytes: 144,
                 index_buffer_bytes: 24,
             },
         );
@@ -1604,6 +1604,10 @@ mod tests {
                 .contains(&"cmd_bind_scene_descriptor_heap")
         );
         assert_eq!(snapshot.draw_indexed_count, 1);
+        assert_eq!(
+            snapshot.vertex_stride_bytes,
+            SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES
+        );
         assert!(!snapshot.retains_decoded_rgba_payload_after_upload);
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
@@ -1619,7 +1623,7 @@ mod tests {
                 recording_step_count: 1,
                 vertex_count: 3,
                 index_count: 3,
-                vertex_buffer_bytes: 60,
+                vertex_buffer_bytes: 108,
                 index_buffer_bytes: 12,
             },
         );
@@ -1640,7 +1644,7 @@ mod tests {
                 recording_step_count: 2,
                 vertex_count: 8,
                 index_count: 12,
-                vertex_buffer_bytes: 160,
+                vertex_buffer_bytes: 288,
                 index_buffer_bytes: 48,
             },
         );

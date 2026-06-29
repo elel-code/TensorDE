@@ -28,9 +28,10 @@ const SCENE_FULL_PATH_CURVE_SEGMENTS: usize = 16;
 const SCENE_FULL_PATH_ARC_SEGMENTS_PER_QUARTER: usize = 8;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 36;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
 const SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS: usize = 12;
+const SCENE_SAMPLED_IMAGE_DEFAULT_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanSceneSampledImageGridCorner {
@@ -93,6 +94,7 @@ pub(super) struct NativeVulkanSceneSampledImageQuad {
     pub(super) source: PathBuf,
     pub(super) fit: FitMode,
     pub(super) opacity: f64,
+    pub(super) tint: [f32; 4],
     pub(super) width: f64,
     pub(super) height: f64,
     pub(super) mesh: Option<Arc<SceneMesh>>,
@@ -163,6 +165,7 @@ pub(super) struct NativeVulkanSceneSampledImageVertex {
     pub(super) position: [f32; 2],
     pub(super) uv: [f32; 2],
     pub(super) opacity: f32,
+    pub(super) tint: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -718,6 +721,7 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_payload_from_render_lay
         source: PathBuf::new(),
         fit: layer.fit,
         opacity: layer.opacity,
+        tint: native_vulkan_scene_tint_from_color(layer.color.as_deref()),
         width,
         height,
         mesh,
@@ -759,6 +763,7 @@ pub(super) fn native_vulkan_scene_append_sampled_image_geometry_from_render_laye
         layer.mesh.clone(),
         layer.effect_motion,
         layer.blend_mode,
+        native_vulkan_scene_tint_from_color(layer.color.as_deref()),
         layer.texture_region,
         layer.transform,
         vertices,
@@ -791,6 +796,7 @@ pub(super) fn native_vulkan_scene_append_sampled_image_geometry_from_snapshot_la
         layer.mesh.clone(),
         layer.effect_motion,
         layer.blend_mode,
+        native_vulkan_scene_tint_from_color(layer.color.as_deref()),
         layer.texture_region,
         layer.transform,
         vertices,
@@ -814,6 +820,7 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_snapshot_la
         layer.mesh.clone(),
         layer.effect_motion,
         layer.blend_mode,
+        native_vulkan_scene_tint_from_color(layer.color.as_deref()),
         layer.texture_region,
         layer.transform,
         vertices,
@@ -836,6 +843,7 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         layer.mesh.clone(),
         layer.effect_motion,
         layer.blend_mode,
+        native_vulkan_scene_tint_from_color(layer.color.as_deref()),
         layer.texture_region,
         layer.transform,
         vertices,
@@ -856,6 +864,7 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
     mesh: Option<Arc<SceneMesh>>,
     effect_motion: SceneNativeEffectMotion,
     blend_mode: SceneBlendMode,
+    tint: [f32; 4],
     texture_region: Option<SceneTextureRegion>,
     transform: SceneTransform,
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
@@ -891,6 +900,7 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
         source: PathBuf::new(),
         fit,
         opacity,
+        tint,
         width,
         height,
         mesh,
@@ -917,6 +927,7 @@ fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
     mesh: Option<Arc<SceneMesh>>,
     effect_motion: SceneNativeEffectMotion,
     blend_mode: SceneBlendMode,
+    tint: [f32; 4],
     texture_region: Option<SceneTextureRegion>,
     transform: SceneTransform,
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
@@ -944,6 +955,7 @@ fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
         source: PathBuf::new(),
         fit,
         opacity,
+        tint,
         width,
         height,
         mesh,
@@ -2544,6 +2556,7 @@ fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(
 ) -> Option<u32> {
     let segments = SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS;
     let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
     let rotation = quad.transform.rotation_deg.to_radians();
     let cos = rotation.cos();
     let sin = rotation.sin();
@@ -2573,6 +2586,7 @@ fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(
                 )?,
                 uv: [point.u as f32, point.v as f32],
                 opacity,
+                tint,
             });
         }
     }
@@ -2753,6 +2767,7 @@ fn native_vulkan_scene_sampled_image_quad_vertices(
         position: [0.0, 0.0],
         uv: [0.0, 0.0],
         opacity: quad.opacity.clamp(0.0, 1.0) as f32,
+        tint: quad.tint,
     }; 4];
     for ((vertex, position), uv) in vertices.iter_mut().zip(points).zip(uvs) {
         vertex.position = position;
@@ -2840,6 +2855,7 @@ fn native_vulkan_scene_append_sampled_image_mesh_vertices(
     let u_scale = region.u_max - region.u_min;
     let v_scale = region.v_max - region.v_min;
     let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
     let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
     let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
     let rotation = quad.transform.rotation_deg.to_radians();
@@ -2868,6 +2884,7 @@ fn native_vulkan_scene_append_sampled_image_mesh_vertices(
                 (region.v_min + vertex.v * v_scale) as f32,
             ],
             opacity,
+            tint,
         });
     }
     Some(())
@@ -2959,6 +2976,7 @@ fn native_vulkan_scene_video_vertices(
         position: [0.0, 0.0],
         uv: [0.0, 0.0],
         opacity: quad.opacity.clamp(0.0, 1.0) as f32,
+        tint: SCENE_SAMPLED_IMAGE_DEFAULT_TINT,
     }; 4];
     for ((vertex, position), uv) in vertices.iter_mut().zip(points).zip(uvs) {
         vertex.position = position;
@@ -3076,6 +3094,7 @@ fn native_vulkan_scene_sampled_image_quad(
         source: op.source.clone()?,
         fit: op.fit,
         opacity: op.opacity,
+        tint: native_vulkan_scene_tint_from_color(op.color.as_deref()),
         width: op.width.unwrap_or(0.0),
         height: op.height.unwrap_or(0.0),
         mesh: op.mesh.clone(),
@@ -3889,6 +3908,13 @@ fn native_vulkan_scene_rgba_from_hex(color: &str, opacity: f64) -> Option<[f32; 
     Some([r, g, b, opacity.clamp(0.0, 1.0) as f32])
 }
 
+fn native_vulkan_scene_tint_from_color(color: Option<&str>) -> [f32; 4] {
+    color
+        .filter(|color| !color.is_empty())
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, 1.0))
+        .unwrap_or(SCENE_SAMPLED_IMAGE_DEFAULT_TINT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4156,6 +4182,7 @@ mod tests {
         image.source = Some(PathBuf::from("/tmp/hero.png"));
         image.fit = FitMode::Contain;
         image.opacity = 0.75;
+        image.color = Some("#000000".to_owned());
         image.width = Some(320.0);
         image.height = Some(180.0);
         image.transform.x = 16.0;
@@ -4180,7 +4207,7 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_quads.len(), 1);
         assert!(pass_plan.sampled_image_recording_ready);
         assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
-        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 80);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 144);
         assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 24);
         assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2, 2, 1, 3]);
         let step = &pass_plan.sampled_image_recording_steps[0];
@@ -4200,6 +4227,12 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 1.0]);
         assert_eq!(pass_plan.sampled_image_vertices[3].uv, [1.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[0].opacity, 0.75);
+        assert!(
+            pass_plan
+                .sampled_image_vertices
+                .iter()
+                .all(|vertex| vertex.tint == [0.0, 0.0, 0.0, 1.0])
+        );
     }
 
     #[test]
@@ -4438,7 +4471,7 @@ mod tests {
 
         assert!(pass_plan.backend_ready);
         assert_eq!(pass_plan.backend_status, "sampled-image-recording-ready");
-        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 60);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 108);
         assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 12);
         assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2]);
         let step = &pass_plan.sampled_image_recording_steps[0];
@@ -4531,7 +4564,7 @@ mod tests {
         assert!(pass_plan.backend_ready);
         assert_eq!(pass_plan.sampled_image_vertices.len(), 169);
         assert_eq!(pass_plan.sampled_image_indices.len(), 864);
-        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 3380);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 6084);
         assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 3456);
         let step = &pass_plan.sampled_image_recording_steps[0];
         assert_eq!(step.vertex_count, 169);
@@ -4813,7 +4846,7 @@ mod tests {
         assert_eq!(pass_plan.quad_recording_steps.len(), 1);
         assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
         assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
-        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 80);
+        assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 144);
     }
 
     #[test]

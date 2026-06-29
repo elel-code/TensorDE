@@ -87,7 +87,7 @@ use super::video_session::{
 const SCENE_FULL_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 20;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 36;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES: usize = 8;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES: usize = 8;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
@@ -169,14 +169,20 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
     pub opacity: f32,
+    pub tint: [f32; 4],
 }
 
 impl NativeVulkanVulkanaliaSceneSampledImageVertex {
     pub fn new(position: [f32; 2], uv: [f32; 2], opacity: f32) -> Self {
+        Self::new_tinted(position, uv, opacity, [1.0, 1.0, 1.0, 1.0])
+    }
+
+    pub fn new_tinted(position: [f32; 2], uv: [f32; 2], opacity: f32, tint: [f32; 4]) -> Self {
         Self {
             position,
             uv,
             opacity,
+            tint,
         }
     }
 }
@@ -3330,6 +3336,7 @@ fn scene_static_transfer_pipeline_snapshot(
         vertex_position_format: "none",
         vertex_uv_format: "none",
         vertex_opacity_format: "none",
+        vertex_tint_format: "none",
         descriptor_set_count: 0,
         descriptor_model: "none-transfer-only",
         descriptor_heap_mapping_enabled: false,
@@ -4438,13 +4445,19 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
                 .into_iter()
                 .chain(uv)
                 .chain([vertex.opacity])
+                .chain(vertex.tint)
                 .all(f32::is_finite)
             {
                 return Err(format!(
                     "scene sampled-image vertex {index} contains a non-finite value"
                 ));
             }
-            for value in position.into_iter().chain(uv).chain([vertex.opacity]) {
+            for value in position
+                .into_iter()
+                .chain(uv)
+                .chain([vertex.opacity])
+                .chain(vertex.tint)
+            {
                 write_scene_f32_to_mapped(dst, &mut offset, value);
             }
         }
@@ -5659,6 +5672,7 @@ fn scene_sampled_image_vertex_bytes_for_time(
             .into_iter()
             .chain(vertex.uv)
             .chain([vertex.opacity])
+            .chain(vertex.tint)
             .all(f32::is_finite)
         {
             return Err(format!(
@@ -5671,6 +5685,7 @@ fn scene_sampled_image_vertex_bytes_for_time(
             .into_iter()
             .chain(uv)
             .chain([vertex.opacity])
+            .chain(vertex.tint)
         {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
@@ -6259,15 +6274,21 @@ mod tests {
         assert_eq!(payload.vertex_count, 4);
         assert_eq!(payload.index_count, 6);
         assert_eq!(payload.quad_count, 1);
-        assert_eq!(payload.vertex_bytes.len(), 80);
+        assert_eq!(payload.vertex_bytes.len(), 144);
         assert_eq!(payload.index_bytes.len(), 24);
         let floats = payload
             .vertex_bytes
             .chunks_exact(4)
             .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
-        assert_eq!(&floats[0..5], &[0.0, 0.0, 0.0, 0.0, 1.0]);
-        assert_eq!(&floats[15..20], &[0.0, 500.0, 0.0, 1.0, 1.0]);
+        assert_eq!(
+            &floats[0..9],
+            &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        );
+        assert_eq!(
+            &floats[27..36],
+            &[0.0, 500.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+        );
     }
 
     #[test]
@@ -6467,10 +6488,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_close(floats[0], 0.0);
         assert_close(floats[1], -53.166668);
-        assert_close(floats[5], 2561.0);
-        assert_close(floats[6], -53.166668);
-        assert_close(floats[15], 2561.0);
-        assert_close(floats[16], 1654.1666);
+        assert_close(floats[9], 2561.0);
+        assert_close(floats[10], -53.166668);
+        assert_close(floats[27], 2561.0);
+        assert_close(floats[28], 1654.1666);
     }
 
     #[test]
@@ -6613,12 +6634,20 @@ mod tests {
         assert_close(read_f32(&bytes, 8), 2.0 / 3.0);
         assert_close(read_f32(&bytes, 12), 0.25);
         assert_close(read_f32(&bytes, 16), 0.5);
+        assert_close(read_f32(&bytes, 20), 1.0);
+        assert_close(read_f32(&bytes, 24), 1.0);
+        assert_close(read_f32(&bytes, 28), 1.0);
+        assert_close(read_f32(&bytes, 32), 1.0);
         let fourth = 3 * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
         assert_close(read_f32(&bytes, fourth), 140.0);
         assert_close(read_f32(&bytes, fourth + 4), 120.0);
         assert_close(read_f32(&bytes, fourth + 8), 1.0);
         assert_close(read_f32(&bytes, fourth + 12), 0.5);
         assert_close(read_f32(&bytes, fourth + 16), 0.5);
+        assert_close(read_f32(&bytes, fourth + 20), 1.0);
+        assert_close(read_f32(&bytes, fourth + 24), 1.0);
+        assert_close(read_f32(&bytes, fourth + 28), 1.0);
+        assert_close(read_f32(&bytes, fourth + 32), 1.0);
     }
 
     #[test]
@@ -6742,7 +6771,7 @@ mod tests {
         assert_eq!(payload.vertex_count, 4);
         assert_eq!(payload.index_count, 6);
         assert_eq!(payload.quad_count, 1);
-        assert_eq!(payload.vertex_bytes.len(), 80);
+        assert_eq!(payload.vertex_bytes.len(), 144);
         assert_eq!(payload.index_bytes.len(), 24);
         let indices = payload
             .index_bytes
@@ -6750,6 +6779,45 @@ mod tests {
             .map(|chunk| u32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
         assert_eq!(indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn sampled_image_geometry_serializes_vertex_tint_after_opacity() {
+        let input = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new(
+            vec![
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
+                    [0.0, 0.0],
+                    [0.0, 0.0],
+                    0.3,
+                    [0.0, 0.0, 0.0, 1.0],
+                ),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
+                    [10.0, 0.0],
+                    [1.0, 0.0],
+                    0.3,
+                    [0.0, 0.0, 0.0, 1.0],
+                ),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new_tinted(
+                    [0.0, 10.0],
+                    [0.0, 1.0],
+                    0.3,
+                    [0.0, 0.0, 0.0, 1.0],
+                ),
+            ],
+            vec![0, 1, 2],
+            "sampled-shadow-tint",
+        );
+
+        let payload = scene_sampled_image_geometry_payload_from_input(input).unwrap();
+        let floats = payload
+            .vertex_bytes
+            .chunks_exact(4)
+            .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
+            .collect::<Vec<_>>();
+
+        assert_eq!(payload.vertex_bytes.len(), 108);
+        assert_close(floats[4], 0.3);
+        assert_eq!(&floats[5..9], &[0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

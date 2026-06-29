@@ -1122,6 +1122,12 @@ impl SceneNode {
                 .as_deref()
                 .and_then(|resource| resources.get(resource));
             let blend_mode = scene_blend_mode_from_properties(&self.properties);
+            let color = scene_color_from_properties(
+                &self.properties,
+                "color_binding",
+                resolve_text_property,
+            )
+            .or_else(|| self.color.clone());
             let layer_effect =
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
@@ -1135,6 +1141,7 @@ impl SceneNode {
                 mesh,
                 effect_motion: layer_effect.motion,
                 blend_mode,
+                color,
                 fit: self.fit,
                 opacity: layer_opacity,
                 transform: layer_transform,
@@ -1507,6 +1514,7 @@ impl SceneNode {
                 mesh: None,
                 effect_motion: SceneNativeEffectMotion::default(),
                 blend_mode,
+                color: Some(settings.color.clone()),
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: particle_transform,
@@ -3182,6 +3190,7 @@ pub struct SceneSnapshotSampledImageLayer {
     pub mesh: Option<Arc<SceneMesh>>,
     pub effect_motion: SceneNativeEffectMotion,
     pub blend_mode: SceneBlendMode,
+    pub color: Option<String>,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
@@ -4912,6 +4921,58 @@ mod tests {
             switched_snapshot.layers[0].color.as_deref(),
             Some("#0097bc")
         );
+    }
+
+    #[test]
+    fn sampled_image_snapshot_preserves_static_and_bound_color() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-shadow", "type": "image", "source": "assets/shadow.gtex" },
+                { "id": "resource-tinted", "type": "image", "source": "assets/tinted.gtex" }
+            ],
+            "nodes": [
+                {
+                    "id": "node-shadow",
+                    "type": "image",
+                    "resource": "resource-shadow",
+                    "color": "#000000"
+                },
+                {
+                    "id": "node-tinted",
+                    "type": "image",
+                    "resource": "resource-tinted",
+                    "color": "#ffffff",
+                    "properties": {
+                        "color_binding": {
+                            "runtime": "wallpaper-engine-user-color",
+                            "property": "tint_color",
+                            "default": "#003ca4"
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut default_snapshot = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            0,
+            |_| None,
+            |_| None,
+            &mut default_snapshot,
+        );
+        assert_eq!(default_snapshot[0].color.as_deref(), Some("#000000"));
+        assert_eq!(default_snapshot[1].color.as_deref(), Some("#003ca4"));
+
+        let mut switched_snapshot = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            0,
+            |_| None,
+            |property| (property == "tint_color").then_some("0 0 0".to_owned()),
+            &mut switched_snapshot,
+        );
+        assert_eq!(switched_snapshot[1].color.as_deref(), Some("#000000"));
     }
 
     #[test]
