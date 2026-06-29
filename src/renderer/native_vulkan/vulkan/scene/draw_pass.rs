@@ -1080,7 +1080,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             .reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::empty())
             .map_err(|err| format!("vkResetCommandBuffer(vulkanalia scene quad): {err:?}"))?;
         let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .flags(vk::CommandBufferUsageFlags::empty())
             .build();
         device
             .begin_command_buffer(command_buffer, &begin_info)
@@ -1535,7 +1535,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 format!("vkResetCommandBuffer(vulkanalia scene sampled image): {err:?}")
             })?;
         let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT)
+            .flags(vk::CommandBufferUsageFlags::empty())
             .build();
         device
             .begin_command_buffer(command_buffer, &begin_info)

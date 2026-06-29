@@ -149,8 +149,140 @@ impl SceneDocument {
             &resolve_property,
             &resolve_text_property,
             None,
+            SceneSnapshotBuildOptions::default(),
             layers,
         );
+    }
+
+    pub fn snapshot_compact_layers_at_with_resolvers<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
+        self.snapshot_layers_at_with_resolvers_internal(
+            time_ms,
+            &resolve_property,
+            &resolve_text_property,
+            None,
+            SceneSnapshotBuildOptions {
+                compact_particle_ids: true,
+            },
+            layers,
+        );
+    }
+
+    pub fn snapshot_sampled_image_layers_at_with_resolvers<N>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        layers: &mut Vec<SceneSnapshotSampledImageLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+    {
+        layers.clear();
+        let resources = self
+            .resources
+            .iter()
+            .map(|resource| (resource.id.as_str(), resource))
+            .collect::<BTreeMap<_, _>>();
+        let parallax = self.parallax_offset(&resolve_property);
+        for node in &self.nodes {
+            node.push_sampled_image_snapshot_layers(
+                time_ms,
+                SceneTransform::default(),
+                1.0,
+                parallax,
+                &resources,
+                &self.timelines,
+                &self.property_bindings,
+                &resolve_property,
+                None,
+                layers,
+            );
+        }
+    }
+
+    pub fn snapshot_solid_layers_at_with_resolvers<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+        layers: &mut Vec<SceneSnapshotLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
+        layers.clear();
+        let resources = self
+            .resources
+            .iter()
+            .map(|resource| (resource.id.as_str(), resource))
+            .collect::<BTreeMap<_, _>>();
+        let parallax = self.parallax_offset(&resolve_property);
+        for node in &self.nodes {
+            node.push_solid_snapshot_layers(
+                time_ms,
+                SceneTransform::default(),
+                1.0,
+                parallax,
+                &resources,
+                &self.timelines,
+                &self.property_bindings,
+                &resolve_property,
+                &resolve_text_property,
+                None,
+                layers,
+            );
+        }
+    }
+
+    pub fn dynamic_solid_geometry_required(&self) -> bool {
+        if self
+            .nodes
+            .iter()
+            .any(SceneNode::subtree_has_dynamic_solid_runtime)
+        {
+            return true;
+        }
+        if self.property_bindings.iter().any(|binding| {
+            binding
+                .target_node
+                .as_deref()
+                .map(|target| {
+                    self.node_by_id(target)
+                        .is_some_and(SceneNode::subtree_has_solid_visual_geometry)
+                })
+                .unwrap_or_else(|| {
+                    self.nodes
+                        .iter()
+                        .any(SceneNode::subtree_has_solid_visual_geometry)
+                })
+        }) {
+            return true;
+        }
+        self.timelines.iter().any(|timeline| {
+            timeline
+                .target_node
+                .as_deref()
+                .map(|target| {
+                    self.node_by_id(target)
+                        .is_some_and(SceneNode::subtree_has_solid_visual_geometry)
+                })
+                .unwrap_or_else(|| {
+                    self.nodes
+                        .iter()
+                        .any(SceneNode::subtree_has_solid_visual_geometry)
+                })
+        })
+    }
+
+    fn node_by_id(&self, id: &str) -> Option<&SceneNode> {
+        self.nodes.iter().find_map(|node| node.find_by_id(id))
     }
 
     pub fn snapshot_visible_layers_at_with_resolvers<N, T>(
@@ -168,6 +300,7 @@ impl SceneDocument {
             &resolve_property,
             &resolve_text_property,
             SceneSnapshotVisibility::from_size(self.size),
+            SceneSnapshotBuildOptions::default(),
             layers,
         );
     }
@@ -178,6 +311,7 @@ impl SceneDocument {
         resolve_property: &N,
         resolve_text_property: &T,
         visibility: Option<SceneSnapshotVisibility>,
+        options: SceneSnapshotBuildOptions,
         layers: &mut Vec<SceneSnapshotLayer>,
     ) where
         N: Fn(&str) -> Option<f64>,
@@ -205,6 +339,7 @@ impl SceneDocument {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                options,
                 layers,
             );
         }
@@ -614,6 +749,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
+        options: SceneSnapshotBuildOptions,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
         if !self.visible {
@@ -674,7 +810,7 @@ impl SceneNode {
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_snapshot_layers(
-                time_ms, transform, opacity, resources, visibility, output,
+                time_ms, transform, opacity, resources, visibility, options, output,
             )
         {
             for child in &self.children {
@@ -689,6 +825,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
+                    options,
                     output,
                 );
             }
@@ -751,6 +888,283 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
+                options,
+                output,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_sampled_image_snapshot_layers(
+        &self,
+        time_ms: u64,
+        parent_transform: SceneTransform,
+        parent_opacity: f64,
+        parallax: SceneParallaxOffset,
+        resources: &BTreeMap<&str, &SceneResource>,
+        timelines: &[SceneTimeline],
+        property_bindings: &[ScenePropertyBinding],
+        resolve_property: &impl Fn(&str) -> Option<f64>,
+        visibility: Option<SceneSnapshotVisibility>,
+        output: &mut Vec<SceneSnapshotSampledImageLayer>,
+    ) {
+        if !self.visible {
+            return;
+        }
+        let mut transform = self.transform;
+        let mut opacity = self.opacity;
+        let mut width = self.width;
+        let mut height = self.height;
+        let mut corner_radius = self.corner_radius;
+        for timeline in timelines
+            .iter()
+            .filter(|timeline| timeline.target_node.as_deref() == Some(self.id.as_str()))
+        {
+            for channel in &timeline.channels {
+                let value = channel.value_at(time_ms);
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    channel.property,
+                    value,
+                );
+            }
+        }
+        for binding in property_bindings.iter().filter(|binding| {
+            binding
+                .target_node
+                .as_deref()
+                .is_none_or(|target| target == self.id)
+        }) {
+            let Some(raw_value) = resolve_property(&binding.property) else {
+                continue;
+            };
+            let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
+            if value.is_finite() {
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    binding.target,
+                    value,
+                );
+            }
+        }
+
+        if let Some(depth) = self.parallax_depth
+            && depth.is_finite()
+        {
+            transform.x += parallax.x * depth;
+            transform.y += parallax.y * depth;
+        }
+        let transform = parent_transform.compose(transform);
+        let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        if self.kind == SceneNodeKind::ParticleEmitter
+            && self.push_particle_sampled_image_snapshot_layers(
+                time_ms, transform, opacity, resources, visibility, output,
+            )
+        {
+            for child in &self.children {
+                child.push_sampled_image_snapshot_layers(
+                    time_ms,
+                    transform,
+                    opacity,
+                    parallax,
+                    resources,
+                    timelines,
+                    property_bindings,
+                    resolve_property,
+                    visibility,
+                    output,
+                );
+            }
+            return;
+        }
+
+        if self.kind == SceneNodeKind::Image {
+            let source = self
+                .resource
+                .as_deref()
+                .and_then(|resource| resources.get(resource));
+            let layer = SceneSnapshotSampledImageLayer {
+                has_source: source.is_some(),
+                texture_region: scene_texture_region_from_properties(&self.properties, time_ms),
+                width,
+                height,
+                mesh: self.mesh.clone(),
+                fit: self.fit,
+                opacity,
+                transform,
+            };
+            if scene_sampled_image_snapshot_layer_intersects_visibility(&layer, visibility) {
+                output.push(layer);
+            }
+        }
+        for child in &self.children {
+            child.push_sampled_image_snapshot_layers(
+                time_ms,
+                transform,
+                opacity,
+                parallax,
+                resources,
+                timelines,
+                property_bindings,
+                resolve_property,
+                visibility,
+                output,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push_solid_snapshot_layers(
+        &self,
+        time_ms: u64,
+        parent_transform: SceneTransform,
+        parent_opacity: f64,
+        parallax: SceneParallaxOffset,
+        resources: &BTreeMap<&str, &SceneResource>,
+        timelines: &[SceneTimeline],
+        property_bindings: &[ScenePropertyBinding],
+        resolve_property: &impl Fn(&str) -> Option<f64>,
+        resolve_text_property: &impl Fn(&str) -> Option<String>,
+        visibility: Option<SceneSnapshotVisibility>,
+        output: &mut Vec<SceneSnapshotLayer>,
+    ) {
+        if !self.visible {
+            return;
+        }
+        let mut transform = self.transform;
+        let mut opacity = self.opacity;
+        let mut width = self.width;
+        let mut height = self.height;
+        let mut corner_radius = self.corner_radius;
+        for timeline in timelines
+            .iter()
+            .filter(|timeline| timeline.target_node.as_deref() == Some(self.id.as_str()))
+        {
+            for channel in &timeline.channels {
+                let value = channel.value_at(time_ms);
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    channel.property,
+                    value,
+                );
+            }
+        }
+        for binding in property_bindings.iter().filter(|binding| {
+            binding
+                .target_node
+                .as_deref()
+                .is_none_or(|target| target == self.id)
+        }) {
+            let Some(raw_value) = resolve_property(&binding.property) else {
+                continue;
+            };
+            let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
+            if value.is_finite() {
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    binding.target,
+                    value,
+                );
+            }
+        }
+
+        if let Some(depth) = self.parallax_depth
+            && depth.is_finite()
+        {
+            transform.x += parallax.x * depth;
+            transform.y += parallax.y * depth;
+        }
+        let transform = parent_transform.compose(transform);
+        let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
+        if self.kind == SceneNodeKind::ParticleEmitter
+            && self.push_particle_solid_snapshot_layers(
+                time_ms, transform, opacity, resources, visibility, output,
+            )
+        {
+            for child in &self.children {
+                child.push_solid_snapshot_layers(
+                    time_ms,
+                    transform,
+                    opacity,
+                    parallax,
+                    resources,
+                    timelines,
+                    property_bindings,
+                    resolve_property,
+                    resolve_text_property,
+                    visibility,
+                    output,
+                );
+            }
+            return;
+        }
+
+        if self.subtree_self_has_solid_visual_geometry() {
+            let text = scene_text_from_properties(&self.properties, resolve_text_property)
+                .or_else(|| self.text.clone());
+            let layer = SceneSnapshotLayer {
+                id: self.id.clone(),
+                kind: self.kind,
+                source: None,
+                texture_region: None,
+                audio: Vec::new(),
+                color: self.color.clone(),
+                stroke_color: self.stroke_color.clone(),
+                stroke_width: self.stroke_width,
+                corner_radius,
+                width,
+                height,
+                mesh: self.mesh.clone(),
+                parallax_depth: self.parallax_depth,
+                text,
+                font_size: self.font_size,
+                font_family: self.font_family.clone(),
+                font_source: self
+                    .font_resource
+                    .as_deref()
+                    .and_then(|resource| resources.get(resource))
+                    .map(|resource| resource.source.clone()),
+                font_weight: self.font_weight.clone(),
+                text_align: self.text_align,
+                path_data: self.path_data.clone(),
+                path_fill_rule: self.path_fill_rule,
+                fit: self.fit,
+                opacity,
+                transform,
+            };
+            if scene_snapshot_layer_intersects_visibility(&layer, visibility) {
+                push_native_effect_snapshot_layers(&self.effects, &layer, output);
+                output.push(layer);
+            }
+        }
+        for child in &self.children {
+            child.push_solid_snapshot_layers(
+                time_ms,
+                transform,
+                opacity,
+                parallax,
+                resources,
+                timelines,
+                property_bindings,
+                resolve_property,
+                resolve_text_property,
+                visibility,
                 output,
             );
         }
@@ -763,6 +1177,7 @@ impl SceneNode {
         opacity: f64,
         resources: &BTreeMap<&str, &SceneResource>,
         visibility: Option<SceneSnapshotVisibility>,
+        options: SceneSnapshotBuildOptions,
         output: &mut Vec<SceneSnapshotLayer>,
     ) -> bool {
         let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
@@ -784,19 +1199,27 @@ impl SceneNode {
             settings.shape
         };
         output.reserve(particle_count as usize);
-        let particle_id_prefix = format!("{}::particle-", self.id);
+        let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
+        let particle_id_prefix =
+            (!options.compact_particle_ids).then(|| format!("{}::particle-", self.id));
         for index in 0..particle_count {
-            let layer_opacity = opacity * settings.opacity_at(time_ms, index);
+            let Some((particle_opacity, x, y, rotation_deg)) =
+                settings.opacity_and_transform_at(time_ms, index)
+            else {
+                continue;
+            };
+            let layer_opacity = opacity * particle_opacity;
             if layer_opacity <= 0.0 {
                 continue;
             }
-            let (x, y, rotation_deg) = settings.transform_at(time_ms, index);
-            let particle_transform = transform.compose(SceneTransform {
+            let particle_transform = scene_compose_particle_transform(
+                transform,
+                parent_sin,
+                parent_cos,
                 x,
                 y,
                 rotation_deg,
-                ..SceneTransform::default()
-            });
+            );
             if !scene_snapshot_visual_bounds_intersects(
                 Some(settings.particle_width),
                 Some(settings.particle_height),
@@ -806,12 +1229,17 @@ impl SceneNode {
             ) {
                 continue;
             }
-            let mut id = String::with_capacity(particle_id_prefix.len() + 10);
-            id.push_str(&particle_id_prefix);
-            {
-                use std::fmt::Write as _;
-                let _ = write!(&mut id, "{index}");
-            }
+            let id = if let Some(prefix) = particle_id_prefix.as_deref() {
+                let mut id = String::with_capacity(prefix.len() + 10);
+                id.push_str(prefix);
+                {
+                    use std::fmt::Write as _;
+                    let _ = write!(&mut id, "{index}");
+                }
+                id
+            } else {
+                String::new()
+            };
             output.push(SceneSnapshotLayer {
                 id,
                 kind: layer_kind,
@@ -844,6 +1272,222 @@ impl SceneNode {
             });
         }
         true
+    }
+
+    fn push_particle_sampled_image_snapshot_layers(
+        &self,
+        time_ms: u64,
+        transform: SceneTransform,
+        opacity: f64,
+        resources: &BTreeMap<&str, &SceneResource>,
+        visibility: Option<SceneSnapshotVisibility>,
+        output: &mut Vec<SceneSnapshotSampledImageLayer>,
+    ) -> bool {
+        let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
+            return false;
+        };
+        let particle_count = settings.count.min(SCENE_PARTICLE_MAX_COUNT);
+        if particle_count == 0 || opacity <= 0.0 {
+            return true;
+        }
+        let has_source = self
+            .resource
+            .as_deref()
+            .and_then(|resource| resources.get(resource))
+            .is_some();
+        if !has_source {
+            return true;
+        }
+        let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+        output.reserve(particle_count as usize);
+        let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
+        for index in 0..particle_count {
+            let Some((particle_opacity, x, y, rotation_deg)) =
+                settings.opacity_and_transform_at(time_ms, index)
+            else {
+                continue;
+            };
+            let layer_opacity = opacity * particle_opacity;
+            if layer_opacity <= 0.0 {
+                continue;
+            }
+            let particle_transform = scene_compose_particle_transform(
+                transform,
+                parent_sin,
+                parent_cos,
+                x,
+                y,
+                rotation_deg,
+            );
+            if !scene_snapshot_visual_bounds_intersects(
+                Some(settings.particle_width),
+                Some(settings.particle_height),
+                None,
+                particle_transform,
+                visibility,
+            ) {
+                continue;
+            }
+            output.push(SceneSnapshotSampledImageLayer {
+                has_source: true,
+                texture_region,
+                width: Some(settings.particle_width),
+                height: Some(settings.particle_height),
+                mesh: None,
+                fit: self.fit,
+                opacity: layer_opacity.clamp(0.0, 1.0),
+                transform: particle_transform,
+            });
+        }
+        true
+    }
+
+    fn push_particle_solid_snapshot_layers(
+        &self,
+        time_ms: u64,
+        transform: SceneTransform,
+        opacity: f64,
+        resources: &BTreeMap<&str, &SceneResource>,
+        visibility: Option<SceneSnapshotVisibility>,
+        output: &mut Vec<SceneSnapshotLayer>,
+    ) -> bool {
+        let Some(settings) = SceneParticleEmitterSettings::from_node(self) else {
+            return false;
+        };
+        let particle_count = settings.count.min(SCENE_PARTICLE_MAX_COUNT);
+        if particle_count == 0 || opacity <= 0.0 {
+            return true;
+        }
+        let has_source = self
+            .resource
+            .as_deref()
+            .and_then(|resource| resources.get(resource))
+            .is_some();
+        if has_source {
+            return true;
+        }
+        output.reserve(particle_count as usize);
+        let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
+        for index in 0..particle_count {
+            let Some((particle_opacity, x, y, rotation_deg)) =
+                settings.opacity_and_transform_at(time_ms, index)
+            else {
+                continue;
+            };
+            let layer_opacity = opacity * particle_opacity;
+            if layer_opacity <= 0.0 {
+                continue;
+            }
+            let particle_transform = scene_compose_particle_transform(
+                transform,
+                parent_sin,
+                parent_cos,
+                x,
+                y,
+                rotation_deg,
+            );
+            if !scene_snapshot_visual_bounds_intersects(
+                Some(settings.particle_width),
+                Some(settings.particle_height),
+                None,
+                particle_transform,
+                visibility,
+            ) {
+                continue;
+            }
+            output.push(SceneSnapshotLayer {
+                id: String::new(),
+                kind: settings.shape,
+                source: None,
+                texture_region: None,
+                audio: Vec::new(),
+                color: Some(settings.color.clone()),
+                stroke_color: None,
+                stroke_width: None,
+                corner_radius: None,
+                width: Some(settings.particle_width),
+                height: Some(settings.particle_height),
+                mesh: None,
+                parallax_depth: self.parallax_depth,
+                text: None,
+                font_size: None,
+                font_family: None,
+                font_source: None,
+                font_weight: None,
+                text_align: None,
+                path_data: None,
+                path_fill_rule: ScenePathFillRule::default(),
+                fit: self.fit,
+                opacity: layer_opacity.clamp(0.0, 1.0),
+                transform: particle_transform,
+            });
+        }
+        true
+    }
+
+    fn find_by_id(&self, id: &str) -> Option<&SceneNode> {
+        if self.id == id {
+            return Some(self);
+        }
+        self.children.iter().find_map(|child| child.find_by_id(id))
+    }
+
+    fn subtree_has_dynamic_solid_runtime(&self) -> bool {
+        self.particle_emitter_outputs_solid()
+            || self
+                .children
+                .iter()
+                .any(SceneNode::subtree_has_dynamic_solid_runtime)
+    }
+
+    fn subtree_has_solid_visual_geometry(&self) -> bool {
+        let self_has_solid = match self.kind {
+            SceneNodeKind::Color
+            | SceneNodeKind::Rectangle
+            | SceneNodeKind::Ellipse
+            | SceneNodeKind::Text
+            | SceneNodeKind::Path
+            | SceneNodeKind::AudioResponse => true,
+            SceneNodeKind::ParticleEmitter => self.particle_emitter_outputs_solid(),
+            SceneNodeKind::Group
+            | SceneNodeKind::Image
+            | SceneNodeKind::Video
+            | SceneNodeKind::Audio
+            | SceneNodeKind::Shader
+            | SceneNodeKind::Script
+            | SceneNodeKind::Unknown => false,
+        };
+        self_has_solid
+            || self
+                .children
+                .iter()
+                .any(SceneNode::subtree_has_solid_visual_geometry)
+    }
+
+    fn subtree_self_has_solid_visual_geometry(&self) -> bool {
+        match self.kind {
+            SceneNodeKind::Color
+            | SceneNodeKind::Rectangle
+            | SceneNodeKind::Ellipse
+            | SceneNodeKind::Text
+            | SceneNodeKind::Path
+            | SceneNodeKind::AudioResponse => true,
+            SceneNodeKind::ParticleEmitter => self.particle_emitter_outputs_solid(),
+            SceneNodeKind::Group
+            | SceneNodeKind::Image
+            | SceneNodeKind::Video
+            | SceneNodeKind::Audio
+            | SceneNodeKind::Shader
+            | SceneNodeKind::Script
+            | SceneNodeKind::Unknown => false,
+        }
+    }
+
+    fn particle_emitter_outputs_solid(&self) -> bool {
+        self.kind == SceneNodeKind::ParticleEmitter
+            && self.resource.is_none()
+            && SceneParticleEmitterSettings::from_node(self)
+                .is_some_and(|settings| settings.count > 0)
     }
 }
 
@@ -1035,19 +1679,11 @@ impl SceneParticleEmitterSettings {
         Some(local_ms as f64 / 1000.0)
     }
 
-    fn age_progress(&self, time_ms: u64, index: u32) -> Option<f64> {
-        Some((self.age_seconds(time_ms, index)? * 1000.0 / self.lifetime_ms as f64).clamp(0.0, 1.0))
-    }
-
-    fn opacity_at(&self, time_ms: u64, index: u32) -> f64 {
-        let Some(progress) = self.age_progress(time_ms, index) else {
-            return 0.0;
-        };
-        if self.fade { 1.0 - progress } else { 1.0 }
-    }
-
-    fn transform_at(&self, time_ms: u64, index: u32) -> (f64, f64, f64) {
-        let age = self.age_seconds(time_ms, index).unwrap_or(0.0);
+    #[inline]
+    fn opacity_and_transform_at(&self, time_ms: u64, index: u32) -> Option<(f64, f64, f64, f64)> {
+        let age = self.age_seconds(time_ms, index)?;
+        let progress = (age * 1000.0 / self.lifetime_ms as f64).clamp(0.0, 1.0);
+        let opacity = if self.fade { 1.0 - progress } else { 1.0 };
         let spawn_x = (scene_particle_unit(self.seed, index, 1) - 0.5) * self.spawn_width;
         let spawn_y = (scene_particle_unit(self.seed, index, 2) - 0.5) * self.spawn_height;
         let speed = self.speed_min
@@ -1055,9 +1691,10 @@ impl SceneParticleEmitterSettings {
         let direction =
             self.direction_deg + (scene_particle_unit(self.seed, index, 4) - 0.5) * self.spread_deg;
         let radians = direction.to_radians();
-        let x = spawn_x + radians.cos() * speed * age + 0.5 * self.gravity_x * age * age;
-        let y = spawn_y + radians.sin() * speed * age + 0.5 * self.gravity_y * age * age;
-        (x, y, direction)
+        let (direction_sin, direction_cos) = radians.sin_cos();
+        let x = spawn_x + direction_cos * speed * age + 0.5 * self.gravity_x * age * age;
+        let y = spawn_y + direction_sin * speed * age + 0.5 * self.gravity_y * age * age;
+        Some((opacity, x, y, direction))
     }
 }
 
@@ -1439,6 +2076,30 @@ impl SceneTransform {
     }
 }
 
+#[inline]
+fn scene_compose_particle_transform(
+    parent: SceneTransform,
+    parent_sin: f64,
+    parent_cos: f64,
+    x: f64,
+    y: f64,
+    rotation_deg: f64,
+) -> SceneTransform {
+    let child_x = x * parent.scale_x;
+    let child_y = y * parent.scale_y;
+    let rotated_child_x = child_x.mul_add(parent_cos, -child_y * parent_sin);
+    let rotated_child_y = child_x.mul_add(parent_sin, child_y * parent_cos);
+    SceneTransform {
+        x: parent.x + rotated_child_x,
+        y: parent.y + rotated_child_y,
+        scale_x: parent.scale_x,
+        scale_y: parent.scale_y,
+        rotation_deg: parent.rotation_deg + rotation_deg,
+        anchor_x: 0.5,
+        anchor_y: 0.5,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneTimeline {
     pub id: String,
@@ -1726,6 +2387,11 @@ struct SceneSnapshotVisibility {
     height: f64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct SceneSnapshotBuildOptions {
+    compact_particle_ids: bool,
+}
+
 impl SceneSnapshotVisibility {
     fn from_size(size: Option<SceneSize>) -> Option<Self> {
         let size = size?;
@@ -1804,8 +2470,33 @@ pub struct SceneSnapshotLayer {
     pub transform: SceneTransform,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneSnapshotSampledImageLayer {
+    pub has_source: bool,
+    pub texture_region: Option<SceneTextureRegion>,
+    pub width: Option<f64>,
+    pub height: Option<f64>,
+    pub mesh: Option<SceneMesh>,
+    pub fit: FitMode,
+    pub opacity: f64,
+    pub transform: SceneTransform,
+}
+
 fn scene_snapshot_layer_intersects_visibility(
     layer: &SceneSnapshotLayer,
+    visibility: Option<SceneSnapshotVisibility>,
+) -> bool {
+    scene_snapshot_visual_bounds_intersects(
+        layer.width,
+        layer.height,
+        layer.mesh.as_ref(),
+        layer.transform,
+        visibility,
+    )
+}
+
+fn scene_sampled_image_snapshot_layer_intersects_visibility(
+    layer: &SceneSnapshotSampledImageLayer,
     visibility: Option<SceneSnapshotVisibility>,
 ) -> bool {
     scene_snapshot_visual_bounds_intersects(
@@ -2220,6 +2911,7 @@ fn scene_particle_seed_from_id(id: &str) -> u64 {
     seed
 }
 
+#[inline]
 fn scene_particle_unit(seed: u64, index: u32, salt: u64) -> f64 {
     let mut value = seed
         ^ (u64::from(index).wrapping_mul(0x9e3779b97f4a7c15))

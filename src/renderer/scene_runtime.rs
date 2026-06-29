@@ -7,7 +7,7 @@ pub(super) use self::input::{
     scene_runtime_property_value_with_inputs, scene_runtime_text_property_value_with_inputs,
 };
 
-use crate::core::scene::SceneSnapshotLayer;
+use crate::core::scene::{SceneSnapshotLayer, SceneSnapshotSampledImageLayer};
 use crate::core::{FitMode, SceneDocument, SceneSize};
 use crate::renderer::{
     RendererPlanError, SceneRenderLayer, SceneWallpaperPlan, load_scene_document,
@@ -31,6 +31,7 @@ pub struct SceneWallpaperRuntimeSampler {
     input_properties: BTreeMap<String, Value>,
     document: SceneDocument,
     snapshot_layers_scratch: Vec<SceneSnapshotLayer>,
+    sampled_image_layers_scratch: Vec<SceneSnapshotSampledImageLayer>,
     render_layers_scratch: Vec<SceneRenderLayer>,
 }
 
@@ -50,6 +51,14 @@ pub struct SceneWallpaperRuntimeSnapshotFrame {
     pub layers: Vec<SceneSnapshotLayer>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneWallpaperRuntimeSampledImageFrame {
+    pub snapshot_time_ms: u64,
+    pub scene_size: Option<SceneSize>,
+    pub scene_fit: FitMode,
+    pub layers: Vec<SceneSnapshotSampledImageLayer>,
+}
+
 impl SceneWallpaperRuntimeSampler {
     pub fn from_plan(plan: &SceneWallpaperPlan) -> Result<Option<Self>, RendererPlanError> {
         let Some(source_path) = plan.source.clone() else {
@@ -66,6 +75,7 @@ impl SceneWallpaperRuntimeSampler {
             input_properties: plan.scene_input_properties.clone(),
             document,
             snapshot_layers_scratch: Vec::new(),
+            sampled_image_layers_scratch: Vec::new(),
             render_layers_scratch: Vec::new(),
         }))
     }
@@ -102,7 +112,7 @@ impl SceneWallpaperRuntimeSampler {
         &mut self,
         time_ms: u64,
     ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
-        self.document.snapshot_layers_at_with_resolvers(
+        self.document.snapshot_compact_layers_at_with_resolvers(
             time_ms,
             |property| {
                 scene_runtime_property_value_with_inputs(
@@ -144,7 +154,7 @@ impl SceneWallpaperRuntimeSampler {
         &mut self,
         time_ms: u64,
     ) -> Result<SceneWallpaperRuntimeSnapshotFrame, RendererPlanError> {
-        self.document.snapshot_layers_at_with_resolvers(
+        self.document.snapshot_compact_layers_at_with_resolvers(
             time_ms,
             |property| {
                 scene_runtime_property_value_with_inputs(
@@ -170,6 +180,70 @@ impl SceneWallpaperRuntimeSampler {
     pub fn recycle_snapshot_frame(&mut self, mut frame: SceneWallpaperRuntimeSnapshotFrame) {
         frame.layers.clear();
         self.snapshot_layers_scratch = frame.layers;
+    }
+
+    pub fn sample_solid_snapshot_frame_reusing(
+        &mut self,
+        time_ms: u64,
+    ) -> Result<SceneWallpaperRuntimeSnapshotFrame, RendererPlanError> {
+        self.document.snapshot_solid_layers_at_with_resolvers(
+            time_ms,
+            |property| {
+                scene_runtime_property_value_with_inputs(
+                    &self.document,
+                    time_ms,
+                    property,
+                    &self.input_properties,
+                )
+            },
+            |property| {
+                scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
+            },
+            &mut self.snapshot_layers_scratch,
+        );
+        Ok(SceneWallpaperRuntimeSnapshotFrame {
+            snapshot_time_ms: time_ms,
+            scene_size: self.document.size,
+            scene_fit: self.scene_fit,
+            layers: std::mem::take(&mut self.snapshot_layers_scratch),
+        })
+    }
+
+    pub fn sample_sampled_image_frame_reusing(
+        &mut self,
+        time_ms: u64,
+    ) -> Result<SceneWallpaperRuntimeSampledImageFrame, RendererPlanError> {
+        self.document
+            .snapshot_sampled_image_layers_at_with_resolvers(
+                time_ms,
+                |property| {
+                    scene_runtime_property_value_with_inputs(
+                        &self.document,
+                        time_ms,
+                        property,
+                        &self.input_properties,
+                    )
+                },
+                &mut self.sampled_image_layers_scratch,
+            );
+        Ok(SceneWallpaperRuntimeSampledImageFrame {
+            snapshot_time_ms: time_ms,
+            scene_size: self.document.size,
+            scene_fit: self.scene_fit,
+            layers: std::mem::take(&mut self.sampled_image_layers_scratch),
+        })
+    }
+
+    pub fn recycle_sampled_image_frame(
+        &mut self,
+        mut frame: SceneWallpaperRuntimeSampledImageFrame,
+    ) {
+        frame.layers.clear();
+        self.sampled_image_layers_scratch = frame.layers;
+    }
+
+    pub fn dynamic_solid_geometry_required(&self) -> bool {
+        self.document.dynamic_solid_geometry_required()
     }
 
     pub fn sample_plan(&self, time_ms: u64) -> Result<SceneWallpaperPlan, RendererPlanError> {

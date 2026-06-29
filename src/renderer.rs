@@ -14,7 +14,8 @@ use self::scene_display::{
 #[cfg(test)]
 use self::scene_runtime::scene_audio_response_property_value;
 pub use self::scene_runtime::{
-    SceneWallpaperRuntimeFrame, SceneWallpaperRuntimeSampler, SceneWallpaperRuntimeSnapshotFrame,
+    SceneWallpaperRuntimeFrame, SceneWallpaperRuntimeSampledImageFrame,
+    SceneWallpaperRuntimeSampler, SceneWallpaperRuntimeSnapshotFrame,
 };
 use self::scene_runtime::{
     scene_input_properties_from_sources, scene_property_value, scene_render_property_value,

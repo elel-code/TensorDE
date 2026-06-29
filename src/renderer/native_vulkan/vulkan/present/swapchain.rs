@@ -1079,7 +1079,7 @@ fn choose_swapchain_extent(
 }
 
 fn swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
-    let required = capabilities.min_image_count.max(1);
+    let required = capabilities.min_image_count.max(1).saturating_add(2);
     if capabilities.max_image_count > 0 {
         required.min(capabilities.max_image_count)
     } else {
@@ -1446,7 +1446,7 @@ mod tests {
         let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
         capabilities.min_image_count = 2;
         capabilities.max_image_count = 0;
-        assert_eq!(swapchain_image_count(&capabilities), 2);
+        assert_eq!(swapchain_image_count(&capabilities), 4);
 
         capabilities.min_image_count = 3;
         capabilities.max_image_count = 2;

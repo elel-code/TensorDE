@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::core::scene::{SceneMesh, SceneSnapshotLayer};
+use crate::core::scene::{SceneMesh, SceneSnapshotLayer, SceneSnapshotSampledImageLayer};
 use crate::core::{
     FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign, SceneTextureRegion,
     SceneTransform,
@@ -775,7 +775,48 @@ pub(super) fn native_vulkan_scene_append_sampled_image_geometry_from_snapshot_la
     )
 }
 
+pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_snapshot_layer(
+    layer_index: usize,
+    layer: &SceneSnapshotLayer,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Result<Option<u32>, &'static str> {
+    native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
+        layer_index,
+        layer.kind,
+        layer.source.is_some(),
+        layer.fit,
+        layer.opacity,
+        layer.width,
+        layer.height,
+        layer.mesh.clone(),
+        layer.texture_region,
+        layer.transform,
+        vertices,
+    )
+}
+
+pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer(
+    layer_index: usize,
+    layer: &SceneSnapshotSampledImageLayer,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Result<Option<u32>, &'static str> {
+    native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
+        layer_index,
+        SceneNodeKind::Image,
+        layer.has_source,
+        layer.fit,
+        layer.opacity,
+        layer.width,
+        layer.height,
+        layer.mesh.clone(),
+        layer.texture_region,
+        layer.transform,
+        vertices,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
+#[inline]
 fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
     layer_index: usize,
     _layer_id: &str,
@@ -830,6 +871,55 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
     let range = native_vulkan_scene_append_sampled_image_geometry(&quad, None, vertices, indices)
         .ok_or("image-layer-missing-recordable-geometry")?;
     Ok(Some((fit, texture_region, range)))
+}
+
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
+    layer_index: usize,
+    kind: SceneNodeKind,
+    has_source: bool,
+    fit: FitMode,
+    opacity: f64,
+    width: Option<f64>,
+    height: Option<f64>,
+    mesh: Option<SceneMesh>,
+    texture_region: Option<SceneTextureRegion>,
+    transform: SceneTransform,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Result<Option<u32>, &'static str> {
+    if opacity <= 0.0 {
+        return Ok(None);
+    }
+    if kind != SceneNodeKind::Image {
+        return Err("non-image-layer-needs-non-sampled-runtime");
+    }
+    if !has_source {
+        return Err("image-layer-missing-source");
+    }
+    let (width, height) = if mesh.is_some() {
+        (width.unwrap_or(0.0), height.unwrap_or(0.0))
+    } else {
+        (
+            width.ok_or("image-layer-missing-width")?,
+            height.ok_or("image-layer-missing-height")?,
+        )
+    };
+    let quad = NativeVulkanSceneSampledImageQuad {
+        layer_index,
+        layer_id: String::new(),
+        source: PathBuf::new(),
+        fit,
+        opacity,
+        width,
+        height,
+        mesh,
+        texture_region,
+        transform,
+    };
+    native_vulkan_scene_append_sampled_image_vertices(&quad, vertices)
+        .ok_or("image-layer-missing-recordable-geometry")
+        .map(Some)
 }
 
 fn native_vulkan_scene_render_layer_has_shape_paint(layer: &SceneRenderLayer) -> bool {
@@ -2308,6 +2398,25 @@ fn native_vulkan_scene_append_sampled_image_geometry(
     })
 }
 
+fn native_vulkan_scene_append_sampled_image_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad) {
+        return None;
+    }
+    if let Some(mesh) = &quad.mesh {
+        let (mesh_vertices, _) = native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh)?;
+        let vertex_count = mesh_vertices.len().min(u32::MAX as usize) as u32;
+        vertices.extend(mesh_vertices);
+        return Some(vertex_count);
+    }
+    let quad_vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
+    vertices.extend_from_slice(&quad_vertices);
+    Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
+}
+
+#[inline]
 fn native_vulkan_scene_sampled_image_quad_vertices(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<[NativeVulkanSceneSampledImageVertex; 4]> {

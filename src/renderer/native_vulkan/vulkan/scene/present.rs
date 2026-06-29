@@ -181,6 +181,45 @@ impl NativeVulkanVulkanaliaSceneSampledImageVertex {
     }
 }
 
+const SCENE_SAMPLED_IMAGE_VERTEX_POOL_MAX_RETAINED: usize = 3;
+const SCENE_SAMPLED_IMAGE_VERTEX_POOL_MAX_CAPACITY: usize = 128 * 1024;
+
+thread_local! {
+    static SCENE_SAMPLED_IMAGE_VERTEX_POOL:
+        RefCell<Vec<Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>>> =
+            RefCell::new(Vec::new());
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(
+    capacity: usize,
+) -> Vec<NativeVulkanVulkanaliaSceneSampledImageVertex> {
+    SCENE_SAMPLED_IMAGE_VERTEX_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        let mut vertices = pool
+            .iter()
+            .position(|vertices| vertices.capacity() >= capacity)
+            .map(|index| pool.swap_remove(index))
+            .unwrap_or_else(|| Vec::with_capacity(capacity));
+        vertices.clear();
+        vertices
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_recycle_scene_sampled_image_vertex_vec(
+    mut vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+) {
+    if vertices.capacity() > SCENE_SAMPLED_IMAGE_VERTEX_POOL_MAX_CAPACITY {
+        return;
+    }
+    vertices.clear();
+    SCENE_SAMPLED_IMAGE_VERTEX_POOL.with(|pool| {
+        let mut pool = pool.borrow_mut();
+        if pool.len() < SCENE_SAMPLED_IMAGE_VERTEX_POOL_MAX_RETAINED {
+            pool.push(vertices);
+        }
+    });
+}
+
 impl NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub fn new(position: [f32; 2], rgba: [f32; 4]) -> Self {
         Self { position, rgba }
@@ -2273,6 +2312,7 @@ fn run_scene_sampled_image_present_loop(
     };
     let descriptor_heap_draw =
         descriptor_heap.map(|resources| VulkanaliaSceneDescriptorHeapDrawResources { resources });
+    let mut recorded_commands = vec![None; swapchain_images.len()];
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -2313,11 +2353,12 @@ fn run_scene_sampled_image_present_loop(
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let geometry_frame_slot = image_index_usize;
         let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
             update_scene_sampled_image_geometry_input_for_time(
                 device,
                 geometry,
-                present_frame_slot,
+                geometry_frame_slot,
                 dynamic_geometry(elapsed_ms)?,
                 extent,
                 options.scene_size,
@@ -2327,7 +2368,7 @@ fn run_scene_sampled_image_present_loop(
             update_scene_sampled_image_geometry_for_time(
                 device,
                 geometry,
-                present_frame_slot,
+                geometry_frame_slot,
                 elapsed_ms,
                 None,
             )?
@@ -2344,7 +2385,7 @@ fn run_scene_sampled_image_present_loop(
                     update_scene_solid_quad_geometry_input_for_time(
                         device,
                         geometry,
-                        present_frame_slot,
+                        geometry_frame_slot,
                         input,
                         extent,
                         options.scene_size,
@@ -2354,7 +2395,7 @@ fn run_scene_sampled_image_present_loop(
                     update_scene_solid_quad_geometry_for_time(
                         device,
                         geometry,
-                        present_frame_slot,
+                        geometry_frame_slot,
                         None,
                     )?
                 };
@@ -2368,25 +2409,37 @@ fn run_scene_sampled_image_present_loop(
             _ => None,
         };
 
-        let command = native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
-            device,
-            command_buffer,
-            swapchain_image,
-            swapchain_view,
-            extent,
-            solid_quad_draw,
-            descriptor_heap_draw,
-            pipeline,
-            draw_commands,
-            vertex_buffer,
-            geometry.index_buffer,
-            [
-                options.clear_color.r,
-                options.clear_color.g,
-                options.clear_color.b,
-                options.clear_color.a,
-            ],
-        )?;
+        let command = if let Some(command) = recorded_commands
+            .get(image_index_usize)
+            .and_then(Option::as_ref)
+            .cloned()
+        {
+            command
+        } else {
+            let command = native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
+                device,
+                command_buffer,
+                swapchain_image,
+                swapchain_view,
+                extent,
+                solid_quad_draw,
+                descriptor_heap_draw,
+                pipeline,
+                draw_commands,
+                vertex_buffer,
+                geometry.index_buffer,
+                [
+                    options.clear_color.r,
+                    options.clear_color.g,
+                    options.clear_color.b,
+                    options.clear_color.a,
+                ],
+            )?;
+            if let Some(slot) = recorded_commands.get_mut(image_index_usize) {
+                *slot = Some(command.clone());
+            }
+            command
+        };
         submit_scene_solid_quad_command_buffer2(
             device,
             queue,
@@ -4083,10 +4136,10 @@ fn update_scene_solid_quad_geometry_input_for_time(
     if let Some(transform) = scene_viewport_transform(scene_size, scene_fit, extent) {
         scene_solid_quad_apply_viewport(&mut input, transform);
     }
-    if input.indices != geometry.indices {
+    if !input.indices.is_empty() && input.indices != geometry.indices {
         return Err("scene dynamic solid-quad geometry changed index topology".to_owned());
     }
-    if input.draw_steps != geometry.draw_steps {
+    if !input.draw_steps.is_empty() && input.draw_steps != geometry.draw_steps {
         return Err("scene dynamic solid-quad geometry changed draw step topology".to_owned());
     }
     let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
@@ -4361,6 +4414,7 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
     vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
     animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
     elapsed_ms: u64,
+    viewport_transform: Option<SceneViewportTransform>,
     label: &'static str,
 ) -> Result<(), String> {
     scene_sampled_image_validate_animated_uv_steps(vertices.len(), animated_uv_steps)?;
@@ -4373,8 +4427,10 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
         for (index, vertex) in vertices.iter().enumerate() {
             let uv =
                 scene_sampled_image_uv_for_time(vertex.uv, index, animated_uv_steps, elapsed_ms);
-            if !vertex
-                .position
+            let position = viewport_transform
+                .map(|transform| scene_viewport_transform_position(vertex.position, transform))
+                .unwrap_or(vertex.position);
+            if !position
                 .into_iter()
                 .chain(uv)
                 .chain([vertex.opacity])
@@ -4384,12 +4440,7 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
                     "scene sampled-image vertex {index} contains a non-finite value"
                 ));
             }
-            for value in vertex
-                .position
-                .into_iter()
-                .chain(uv)
-                .chain([vertex.opacity])
-            {
+            for value in position.into_iter().chain(uv).chain([vertex.opacity]) {
                 write_scene_f32_to_mapped(dst, &mut offset, value);
             }
         }
@@ -4567,29 +4618,36 @@ fn update_scene_sampled_image_geometry_input_for_time(
     if geometry.vertex_buffers.is_empty() {
         return Err("scene sampled-image geometry has no vertex buffers".to_owned());
     }
-    if let Some(transform) = scene_viewport_transform(scene_size, scene_fit, extent) {
-        scene_sampled_image_apply_viewport(&mut input, transform);
-    }
-    if input.indices != geometry.indices {
+    let viewport_transform = scene_viewport_transform(scene_size, scene_fit, extent);
+    if !input.indices.is_empty() && input.indices != geometry.indices {
         return Err("scene dynamic sampled-image geometry changed index topology".to_owned());
     }
     if !input.sources.is_empty() && input.sources != geometry.sources {
         return Err("scene dynamic sampled-image geometry changed sampled sources".to_owned());
     }
-    if !scene_sampled_image_draw_step_topology_matches(&input.draw_steps, &geometry.draw_steps) {
+    if !input.draw_steps.is_empty()
+        && !scene_sampled_image_draw_step_topology_matches(&input.draw_steps, &geometry.draw_steps)
+    {
         return Err("scene dynamic sampled-image geometry changed draw step topology".to_owned());
     }
-    let source_count = if input.sources.is_empty() {
-        geometry.sources.len().max(1)
-    } else {
-        input.sources.len().max(1)
-    };
-    for (step_index, step) in input.draw_steps.iter().enumerate() {
-        if step.resource_index as usize >= source_count {
-            return Err(format!(
-                "scene dynamic sampled-image draw step {step_index} resource index {} exceeds source count {}",
-                step.resource_index, source_count
-            ));
+    if !input.sources.is_empty() || !input.draw_steps.is_empty() {
+        let source_count = if input.sources.is_empty() {
+            geometry.sources.len().max(1)
+        } else {
+            input.sources.len().max(1)
+        };
+        let draw_steps = if input.draw_steps.is_empty() {
+            geometry.draw_steps.as_slice()
+        } else {
+            input.draw_steps.as_slice()
+        };
+        for (step_index, step) in draw_steps.iter().enumerate() {
+            if step.resource_index as usize >= source_count {
+                return Err(format!(
+                    "scene dynamic sampled-image draw step {step_index} resource index {} exceeds source count {}",
+                    step.resource_index, source_count
+                ));
+            }
         }
     }
     let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
@@ -4614,8 +4672,12 @@ fn update_scene_sampled_image_geometry_input_for_time(
         &input.vertices,
         &[],
         0,
+        viewport_transform,
         "dynamic scene sampled-image vertex",
     )?;
+    native_vulkan_vulkanalia_recycle_scene_sampled_image_vertex_vec(std::mem::take(
+        &mut input.vertices,
+    ));
     Ok(vertex.buffer)
 }
 
