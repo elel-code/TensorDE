@@ -146,6 +146,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaSceneVideoOverlayInput {
+    pub video_geometry: Option<NativeVulkanVulkanaliaSceneVideoLayerGeometryInput>,
     pub source: Option<PathBuf>,
     pub clear_color: NativeVulkanClearColor,
     pub fit: Option<FitMode>,
@@ -203,6 +204,15 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
     pub source_label: String,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
+    pub vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+    pub indices: Vec<u32>,
+    pub source: PathBuf,
+    pub draw_steps: Vec<NativeVulkanVulkanaliaSceneVideoLayerDrawStep>,
+    pub source_label: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
     pub layer_index: usize,
@@ -214,10 +224,36 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
+    pub layer_index: usize,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub fit: Option<FitMode>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
     pub layer_index: usize,
     pub first_index: u32,
     pub index_count: u32,
+}
+
+impl NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
+    pub fn new_batched(
+        vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+        indices: Vec<u32>,
+        source: PathBuf,
+        draw_steps: Vec<NativeVulkanVulkanaliaSceneVideoLayerDrawStep>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            vertices,
+            indices,
+            source,
+            draw_steps,
+            source_label: source_label.into(),
+        }
+    }
 }
 
 impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
@@ -433,7 +469,23 @@ struct VulkanaliaSceneSampledImageGeometryResources {
 }
 
 #[derive(Clone, Copy)]
-pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneVideoOverlayFrameDraw<'a> {
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerFrameDraw<'a> {
+    pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
+        &'a [VulkanaliaSceneVideoLayerDrawCommand],
+    pub(in crate::renderer::native_vulkan::vulkan) vertex_buffer: vk::Buffer,
+    pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverlayFrameDraw<'a> {
+    pub(in crate::renderer::native_vulkan::vulkan) video_draw:
+        Option<VulkanaliaSceneVideoLayerFrameDraw<'a>>,
+    pub(in crate::renderer::native_vulkan::vulkan) overlay_draw:
+        Option<VulkanaliaSceneVideoOverlayBlendFrameDraw<'a>>,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneVideoOverlayBlendFrameDraw<'a> {
     Solid {
         draw: VulkanaliaSceneSolidQuadDrawResources<'a>,
     },
@@ -447,7 +499,15 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneVideoOverlayF
     },
 }
 
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerDrawCommand {
+    pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
+    pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverlayResources {
+    video_geometry: Option<VulkanaliaSceneSampledImageGeometryResources>,
+    video_draw_commands: Vec<VulkanaliaSceneVideoLayerDrawCommand>,
     sampled_pipeline: Option<VulkanaliaSceneSampledImagePipelineResources>,
     sampled_geometry: Option<VulkanaliaSceneSampledImageGeometryResources>,
     sampled_images: Vec<VulkanaliaSceneSampledImageResources>,
@@ -1509,10 +1569,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     };
     let sampled_overlay_requested = !sampled_image_sources.is_empty();
     let solid_overlay_requested = input.solid_geometry.is_some();
-    if !sampled_overlay_requested && !solid_overlay_requested {
+    let video_layer_requested = input.video_geometry.is_some();
+    if !sampled_overlay_requested && !solid_overlay_requested && !video_layer_requested {
         return Ok(None);
     }
 
+    let mut video_geometry = None;
+    let mut video_draw_commands = Vec::new();
     let mut sampled_pipeline = None;
     let mut sampled_geometry = None;
     let mut sampled_images = Vec::new();
@@ -1523,6 +1586,28 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     let mut solid_draw_commands = Vec::new();
 
     let result = (|| -> Result<VulkanaliaSceneVideoOverlayResources, String> {
+        if let Some(video_geometry_input) = input.video_geometry.take() {
+            let geometry_payload = scene_video_layer_geometry_payload(
+                video_geometry_input,
+                extent,
+                input.scene_size,
+                input.scene_fit,
+            )?;
+            video_geometry = Some(create_scene_sampled_image_geometry_resources(
+                device,
+                memory_properties,
+                geometry_payload,
+                frame_resource_count,
+                false,
+            )?);
+            video_draw_commands = scene_video_layer_draw_commands(
+                &video_geometry
+                    .as_ref()
+                    .expect("scene video layer geometry is live")
+                    .draw_steps,
+            )?;
+        }
+
         if sampled_overlay_requested {
             if !texture_compression_bc_available {
                 return Err(
@@ -1646,6 +1731,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         }
 
         Ok(VulkanaliaSceneVideoOverlayResources {
+            video_geometry: video_geometry.take(),
+            video_draw_commands: std::mem::take(&mut video_draw_commands),
             sampled_pipeline: sampled_pipeline.take(),
             sampled_geometry: sampled_geometry.take(),
             sampled_images: std::mem::take(&mut sampled_images),
@@ -1664,6 +1751,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     if result.is_err() {
         native_vulkan_vulkanalia_destroy_partial_scene_video_overlay_resources(
             device,
+            video_geometry,
             sampled_pipeline,
             sampled_geometry,
             sampled_images,
@@ -1682,6 +1770,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
 ) {
     native_vulkan_vulkanalia_destroy_partial_scene_video_overlay_resources(
         device,
+        resources.video_geometry,
         resources.sampled_pipeline,
         resources.sampled_geometry,
         resources.sampled_images,
@@ -1693,6 +1782,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
 
 fn native_vulkan_vulkanalia_destroy_partial_scene_video_overlay_resources(
     device: &Device,
+    video_geometry: Option<VulkanaliaSceneSampledImageGeometryResources>,
     sampled_pipeline: Option<VulkanaliaSceneSampledImagePipelineResources>,
     sampled_geometry: Option<VulkanaliaSceneSampledImageGeometryResources>,
     sampled_images: Vec<VulkanaliaSceneSampledImageResources>,
@@ -1700,6 +1790,9 @@ fn native_vulkan_vulkanalia_destroy_partial_scene_video_overlay_resources(
     solid_pipeline: Option<VulkanaliaSceneSolidQuadPipelineResources>,
     solid_geometry: Option<VulkanaliaSceneSolidQuadGeometryResources>,
 ) {
+    if let Some(video_geometry) = video_geometry {
+        destroy_scene_sampled_image_geometry_resources(device, video_geometry);
+    }
     if let Some(solid_geometry) = solid_geometry {
         destroy_scene_solid_quad_geometry_resources(device, solid_geometry);
     }
@@ -1737,6 +1830,21 @@ impl VulkanaliaSceneVideoOverlayResources {
         elapsed_ms: u64,
         extent: vk::Extent2D,
     ) -> Result<Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>, String> {
+        let video_draw = if let Some(geometry) = self.video_geometry.as_ref() {
+            if self.video_draw_commands.is_empty() {
+                return Err("scene video overlay requires non-empty video layer draws".to_owned());
+            }
+            Some(VulkanaliaSceneVideoLayerFrameDraw {
+                draw_commands: &self.video_draw_commands,
+                vertex_buffer: update_scene_sampled_image_geometry_for_time(
+                    device, geometry, frame_slot, elapsed_ms, None,
+                )?,
+                index_buffer: geometry.index_buffer,
+            })
+        } else {
+            None
+        };
+
         let solid_draw = match (self.solid_pipeline.as_ref(), self.solid_geometry.as_ref()) {
             (Some(pipeline), Some(geometry)) => {
                 let dynamic_solid_input = self
@@ -1811,19 +1919,31 @@ impl VulkanaliaSceneVideoOverlayResources {
                         device, geometry, frame_slot, elapsed_ms, None,
                     )?
                 };
-                Ok(Some(VulkanaliaSceneVideoOverlayFrameDraw::Sampled {
-                    solid_draw,
-                    descriptor_heap_draw: VulkanaliaSceneDescriptorHeapDrawResources {
-                        resources: descriptor_heap,
-                    },
-                    pipeline,
-                    draw_commands: &self.sampled_draw_commands,
-                    vertex_buffer,
-                    index_buffer: geometry.index_buffer,
+                Ok(Some(VulkanaliaSceneVideoOverlayFrameDraw {
+                    video_draw,
+                    overlay_draw: Some(VulkanaliaSceneVideoOverlayBlendFrameDraw::Sampled {
+                        solid_draw,
+                        descriptor_heap_draw: VulkanaliaSceneDescriptorHeapDrawResources {
+                            resources: descriptor_heap,
+                        },
+                        pipeline,
+                        draw_commands: &self.sampled_draw_commands,
+                        vertex_buffer,
+                        index_buffer: geometry.index_buffer,
+                    }),
                 }))
             }
             (None, None, None) => {
-                Ok(solid_draw.map(|draw| VulkanaliaSceneVideoOverlayFrameDraw::Solid { draw }))
+                let overlay_draw = solid_draw
+                    .map(|draw| VulkanaliaSceneVideoOverlayBlendFrameDraw::Solid { draw });
+                if video_draw.is_some() || overlay_draw.is_some() {
+                    Ok(Some(VulkanaliaSceneVideoOverlayFrameDraw {
+                        video_draw,
+                        overlay_draw,
+                    }))
+                } else {
+                    Ok(None)
+                }
             }
             _ => Err("scene video overlay sampled resources are partially initialized".to_owned()),
         }
@@ -1836,8 +1956,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     extent: vk::Extent2D,
     draw: VulkanaliaSceneVideoOverlayFrameDraw<'_>,
 ) -> Result<u32, String> {
-    match draw {
-        VulkanaliaSceneVideoOverlayFrameDraw::Solid { draw } => {
+    match draw.overlay_draw {
+        Some(VulkanaliaSceneVideoOverlayBlendFrameDraw::Solid { draw }) => {
             native_vulkan_vulkanalia_record_scene_solid_quad_draws_inside_rendering(
                 device,
                 command_buffer,
@@ -1845,14 +1965,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 draw,
             )
         }
-        VulkanaliaSceneVideoOverlayFrameDraw::Sampled {
+        Some(VulkanaliaSceneVideoOverlayBlendFrameDraw::Sampled {
             solid_draw,
             descriptor_heap_draw,
             pipeline,
             draw_commands,
             vertex_buffer,
             index_buffer,
-        } => native_vulkan_vulkanalia_record_scene_sampled_image_draws_inside_rendering(
+        }) => native_vulkan_vulkanalia_record_scene_sampled_image_draws_inside_rendering(
             device,
             command_buffer,
             extent,
@@ -1863,6 +1983,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             vertex_buffer,
             index_buffer,
         ),
+        None => Ok(0),
     }
 }
 
@@ -4948,6 +5069,37 @@ fn scene_sampled_image_geometry_payload(
     scene_sampled_image_geometry_payload_from_input(input)
 }
 
+fn scene_video_layer_geometry_payload(
+    input: NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
+    extent: vk::Extent2D,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+) -> Result<VulkanaliaSceneSampledImageGeometryPayload, String> {
+    let mut sampled_input = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
+        input.vertices,
+        input.indices,
+        vec![input.source],
+        input
+            .draw_steps
+            .into_iter()
+            .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: step.layer_index,
+                resource_index: 0,
+                first_index: step.first_index,
+                index_count: step.index_count,
+                fit: step.fit,
+                texture_region: None,
+            })
+            .collect(),
+        input.source_label,
+    );
+    if let Some(transform) = scene_viewport_transform(scene_size, scene_fit, extent) {
+        scene_sampled_image_apply_viewport(&mut sampled_input, transform);
+        sampled_input.source_label = format!("{}+scene-viewport-fit", sampled_input.source_label);
+    }
+    scene_sampled_image_geometry_payload_from_input(sampled_input)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct SceneViewportTransform {
     scale_x: f32,
@@ -5123,6 +5275,28 @@ fn scene_sampled_image_draw_commands(
         draw_commands.push(VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
             descriptor_binding,
+            first_index: step.first_index,
+            index_count: step.index_count,
+        });
+    }
+    Ok(draw_commands)
+}
+
+fn scene_video_layer_draw_commands(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+) -> Result<Vec<VulkanaliaSceneVideoLayerDrawCommand>, String> {
+    if draw_steps.is_empty() {
+        return Err("scene video layer draw command list requires at least one step".to_owned());
+    }
+    let mut draw_commands = Vec::with_capacity(draw_steps.len());
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        if step.index_count == 0 {
+            return Err(format!(
+                "scene video layer draw step {step_index} requires at least one index"
+            ));
+        }
+        draw_commands.push(VulkanaliaSceneVideoLayerDrawCommand {
+            layer_index: step.layer_index,
             first_index: step.first_index,
             index_count: step.index_count,
         });

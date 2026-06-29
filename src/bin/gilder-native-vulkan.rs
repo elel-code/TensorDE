@@ -146,13 +146,18 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
     let Some(video_layer) = visible_video_layers.next() else {
         return Ok(None);
     };
-    if visible_video_layers.next().is_some() {
-        return Ok(None);
-    }
     let source = video_layer
         .source
         .as_ref()
         .expect("visible video layer source is present");
+    for layer in visible_video_layers {
+        let Some(layer_source) = layer.source.as_ref() else {
+            continue;
+        };
+        if layer_source != source {
+            return Ok(None);
+        }
+    }
     let mut options = base_options.clone();
     options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
     if !video_width_set {

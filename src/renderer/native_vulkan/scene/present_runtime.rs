@@ -510,6 +510,7 @@ pub fn run_scene(
             let width = native_vulkan_scene_video_extent(video_bridge.width, video.width);
             let height = native_vulkan_scene_video_extent(video_bridge.height, video.height);
             let video_fit = video.fit;
+            let video_geometry = runtime.take_vulkanalia_video_layer_geometry_input();
             let mut overlay_source = None;
             let mut overlay_fit = None;
             let mut overlay_geometry = None;
@@ -540,8 +541,10 @@ pub fn run_scene(
             };
             let scene_video_overlay = (overlay_source.is_some()
                 || overlay_geometry.is_some()
-                || solid_geometry.is_some())
+                || solid_geometry.is_some()
+                || video_geometry.is_some())
             .then_some(NativeVulkanVulkanaliaSceneVideoOverlayInput {
+                video_geometry,
                 source: overlay_source,
                 clear_color: options.clear_color,
                 fit: overlay_fit,

@@ -11,7 +11,7 @@ use vulkanalia::vk::{
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::super::scene::present::{
-    VulkanaliaSceneVideoOverlayFrameDraw,
+    VulkanaliaSceneVideoLayerFrameDraw, VulkanaliaSceneVideoOverlayFrameDraw,
     native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering,
 };
 use super::descriptor_heap::{
@@ -34,6 +34,8 @@ use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSna
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 
 pub(in crate::renderer::native_vulkan::vulkan) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 0;
+const DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES: u32 = 20;
+const DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES: u32 = 8;
 
 fn native_vulkan_vulkanalia_elapsed_micros(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
@@ -67,8 +69,14 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePres
 {
     pub(in crate::renderer::native_vulkan::vulkan) pipeline_layout: vk::PipelineLayout,
     pub(in crate::renderer::native_vulkan::vulkan) pipeline: vk::Pipeline,
+    scene_video_layer: VulkanaliaDecodedImageSceneVideoLayerPipelineResources,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot,
+}
+
+struct VulkanaliaDecodedImageSceneVideoLayerPipelineResources {
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePresentFrameResources {
@@ -394,9 +402,25 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     )
                 })?;
                 let pipeline = pipelines[0];
+                let scene_video_layer =
+                    match native_vulkan_vulkanalia_create_decoded_image_scene_video_layer_pipeline_resources(
+                        device,
+                        target_format,
+                        extent,
+                        descriptor_heap_plan,
+                    ) {
+                        Ok(resources) => resources,
+                        Err(err) => {
+                            unsafe {
+                                device.destroy_pipeline(pipeline, None);
+                            }
+                            return Err(err);
+                        }
+                    };
                 Ok(VulkanaliaDecodedImagePresentPipelineResources {
                     pipeline_layout,
                     pipeline,
+                    scene_video_layer,
                     snapshot: NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
                         binding: "vulkanalia",
                         route: "decoded-image-dynamic-rendering-present-pipeline",
@@ -440,11 +464,215 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     result
 }
 
+fn native_vulkan_vulkanalia_create_decoded_image_scene_video_layer_pipeline_resources(
+    device: &Device,
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+) -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
+    let push_range = vk::PushConstantRange::builder()
+        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .offset(0)
+        .size(DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES)
+        .build();
+    let push_ranges = [push_range];
+    let pipeline_layout_info =
+        vk::PipelineLayoutCreateInfo::builder().push_constant_ranges(&push_ranges);
+    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
+        .map_err(|err| {
+            format!("vkCreatePipelineLayout(vulkanalia decoded scene video layer): {err:?}")
+        })?;
+
+    let result = (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
+        let vertex_module = native_vulkan_vulkanalia_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV,
+            "decoded scene video layer vertex",
+        )?;
+        let result =
+            (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
+                let fragment_module = native_vulkan_vulkanalia_create_shader_module(
+                    device,
+                    &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV,
+                    "decoded scene video layer fragment",
+                )?;
+                let result =
+                (|| -> Result<VulkanaliaDecodedImageSceneVideoLayerPipelineResources, String> {
+                    let shader_entry = b"main\0";
+                    let y_descriptor_heap_mapping =
+                        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+                            descriptor_heap_plan,
+                            0,
+                            0,
+                        )?;
+                    let uv_descriptor_heap_mapping =
+                        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+                            descriptor_heap_plan,
+                            1,
+                            1,
+                        )?;
+                    let descriptor_heap_mappings =
+                        [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
+                    let mut descriptor_heap_mapping_info =
+                        vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
+                            .mappings(&descriptor_heap_mappings)
+                            .build();
+                    let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+                        .stage(vk::ShaderStageFlags::FRAGMENT)
+                        .module(fragment_module)
+                        .name(shader_entry)
+                        .push_next(&mut descriptor_heap_mapping_info);
+                    let stages = [
+                        vk::PipelineShaderStageCreateInfo::builder()
+                            .stage(vk::ShaderStageFlags::VERTEX)
+                            .module(vertex_module)
+                            .name(shader_entry)
+                            .build(),
+                        fragment_stage.build(),
+                    ];
+                    let binding = vk::VertexInputBindingDescription::builder()
+                        .binding(0)
+                        .stride(DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES)
+                        .input_rate(vk::VertexInputRate::VERTEX)
+                        .build();
+                    let attributes = [
+                        vk::VertexInputAttributeDescription::builder()
+                            .location(0)
+                            .binding(0)
+                            .format(vk::Format::R32G32_SFLOAT)
+                            .offset(0)
+                            .build(),
+                        vk::VertexInputAttributeDescription::builder()
+                            .location(1)
+                            .binding(0)
+                            .format(vk::Format::R32G32_SFLOAT)
+                            .offset(8)
+                            .build(),
+                        vk::VertexInputAttributeDescription::builder()
+                            .location(2)
+                            .binding(0)
+                            .format(vk::Format::R32_SFLOAT)
+                            .offset(16)
+                            .build(),
+                    ];
+                    let bindings = [binding];
+                    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
+                        .vertex_binding_descriptions(&bindings)
+                        .vertex_attribute_descriptions(&attributes)
+                        .build();
+                    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
+                        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+                        .build();
+                    let viewport = vk::Viewport::builder()
+                        .x(0.0)
+                        .y(0.0)
+                        .width(extent.width as f32)
+                        .height(extent.height as f32)
+                        .min_depth(0.0)
+                        .max_depth(1.0)
+                        .build();
+                    let scissor = vk::Rect2D::builder()
+                        .offset(vk::Offset2D { x: 0, y: 0 })
+                        .extent(extent)
+                        .build();
+                    let viewports = [viewport];
+                    let scissors = [scissor];
+                    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+                        .viewports(&viewports)
+                        .scissors(&scissors)
+                        .build();
+                    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
+                        .polygon_mode(vk::PolygonMode::FILL)
+                        .cull_mode(vk::CullModeFlags::NONE)
+                        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                        .line_width(1.0)
+                        .build();
+                    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
+                        .rasterization_samples(vk::SampleCountFlags::_1)
+                        .build();
+                    let color_attachment = vk::PipelineColorBlendAttachmentState::builder()
+                        .color_write_mask(
+                            vk::ColorComponentFlags::R
+                                | vk::ColorComponentFlags::G
+                                | vk::ColorComponentFlags::B
+                                | vk::ColorComponentFlags::A,
+                        )
+                        .blend_enable(true)
+                        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+                        .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .color_blend_op(vk::BlendOp::ADD)
+                        .src_alpha_blend_factor(vk::BlendFactor::ONE)
+                        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+                        .alpha_blend_op(vk::BlendOp::ADD)
+                        .build();
+                    let color_attachments = [color_attachment];
+                    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
+                        .attachments(&color_attachments)
+                        .build();
+                    let color_attachment_formats = [target_format];
+                    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
+                        .color_attachment_formats(&color_attachment_formats)
+                        .build();
+                    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
+                        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
+                        .build();
+                    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+                        .stages(&stages)
+                        .vertex_input_state(&vertex_input)
+                        .input_assembly_state(&input_assembly)
+                        .viewport_state(&viewport_state)
+                        .rasterization_state(&rasterization)
+                        .multisample_state(&multisample)
+                        .color_blend_state(&color_blend)
+                        .layout(pipeline_layout)
+                        .render_pass(vk::RenderPass::null())
+                        .subpass(0)
+                        .push_next(&mut rendering_info);
+                    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
+                    let pipeline_info = pipeline_info.build();
+                    let (pipelines, _success_code) = unsafe {
+                        device.create_graphics_pipelines(
+                            vk::PipelineCache::null(),
+                            &[pipeline_info],
+                            None,
+                        )
+                    }
+                    .map_err(|err| {
+                        format!(
+                            "vkCreateGraphicsPipelines(vulkanalia decoded scene video layer): {err:?}"
+                        )
+                    })?;
+                    Ok(VulkanaliaDecodedImageSceneVideoLayerPipelineResources {
+                        pipeline_layout,
+                        pipeline: pipelines[0],
+                    })
+                })();
+                unsafe {
+                    device.destroy_shader_module(fragment_module, None);
+                }
+                result
+            })();
+        unsafe {
+            device.destroy_shader_module(vertex_module, None);
+        }
+        result
+    })();
+
+    if result.is_err() {
+        unsafe {
+            device.destroy_pipeline_layout(pipeline_layout, None);
+        }
+    }
+    result
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources(
     device: &Device,
     resources: VulkanaliaDecodedImagePresentPipelineResources,
 ) {
     unsafe {
+        device.destroy_pipeline(resources.scene_video_layer.pipeline, None);
+        device.destroy_pipeline_layout(resources.scene_video_layer.pipeline_layout, None);
         device.destroy_pipeline(resources.pipeline, None);
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
     }
@@ -768,8 +996,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         resource_image.image,
         sampled_array_layer,
         &sampler.descriptor_heap,
-        pipeline.pipeline_layout,
-        pipeline.pipeline,
+        pipeline,
         clear_color,
         scene_overlay_draw,
     )?;
@@ -863,6 +1090,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         native_vulkan_vulkanalia_elapsed_micros(stage_started_at);
     let present_call_total_micros =
         native_vulkan_vulkanalia_elapsed_micros(present_call_started_at);
+    let scene_video_layer_draw_enabled =
+        scene_overlay_draw.is_some_and(|draw| draw.video_draw.is_some());
+    let scene_overlay_blend_draw_enabled =
+        scene_overlay_draw.is_some_and(|draw| draw.overlay_draw.is_some());
 
     Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
         binding: "vulkanalia",
@@ -903,7 +1134,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         presented: true,
         decoded_image_layout_transition: "video-decode-dpb -> shader-read-only-optimal -> video-decode-dpb",
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
-        render_model: if scene_overlay_draw.is_some() {
+        render_model: if scene_video_layer_draw_enabled {
+            "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping plus native scene video layer indexed quads -> Vulkan 1.4 dynamic rendering pass -> Wayland swapchain"
+        } else if scene_overlay_blend_draw_enabled {
             "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping plus native scene overlay draw -> Vulkan 1.4 dynamic rendering pass -> Wayland swapchain"
         } else {
             "VK_EXT_descriptor_heap retained Y/UV plane-array sampler mapping -> Vulkan 1.3/1.4 dynamic rendering fullscreen triangle -> Wayland swapchain"
@@ -912,7 +1145,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
             true,
             present_timing.present_id_mode(),
             present_timing.present_wait_mode(),
-            scene_overlay_draw.is_some(),
+            scene_video_layer_draw_enabled,
+            scene_overlay_blend_draw_enabled,
         ),
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -1101,8 +1335,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     decoded_image: vk::Image,
     sampled_array_layer: u32,
     descriptor_heap: &VulkanaliaDescriptorHeapImageSamplerResources,
-    _pipeline_layout: vk::PipelineLayout,
-    pipeline: vk::Pipeline,
+    pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
     clear_color: NativeVulkanClearColor,
     scene_overlay_draw: Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>,
 ) -> Result<(), String> {
@@ -1176,14 +1409,30 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .color_attachments(&color_attachments)
             .build();
         device.cmd_begin_rendering(command_buffer, &rendering_info);
-        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(descriptor_heap);
         let sampler_bind =
             native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(descriptor_heap);
         device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
         device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
-        device.cmd_draw(command_buffer, 3, 1, 0, sampled_array_layer);
+        let scene_video_layer_draw = scene_overlay_draw.and_then(|draw| draw.video_draw);
+        if let Some(scene_video_layer_draw) = scene_video_layer_draw {
+            native_vulkan_vulkanalia_record_decoded_image_scene_video_layer_draws_inside_rendering(
+                device,
+                command_buffer,
+                extent,
+                &pipeline.scene_video_layer,
+                scene_video_layer_draw,
+                sampled_array_layer,
+            )?;
+        } else {
+            device.cmd_bind_pipeline(
+                command_buffer,
+                vk::PipelineBindPoint::GRAPHICS,
+                pipeline.pipeline,
+            );
+            device.cmd_draw(command_buffer, 3, 1, 0, sampled_array_layer);
+        }
         if let Some(scene_overlay_draw) = scene_overlay_draw {
             native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering(
                 device,
@@ -1232,6 +1481,66 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     }
 
     Ok(())
+}
+
+fn native_vulkan_vulkanalia_record_decoded_image_scene_video_layer_draws_inside_rendering(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    extent: vk::Extent2D,
+    pipeline: &VulkanaliaDecodedImageSceneVideoLayerPipelineResources,
+    draw: VulkanaliaSceneVideoLayerFrameDraw<'_>,
+    sampled_array_layer: u32,
+) -> Result<u32, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("decoded scene video layer draw requires non-zero extent".to_owned());
+    }
+    if draw.draw_commands.is_empty() {
+        return Err("decoded scene video layer draw requires at least one draw".to_owned());
+    }
+    for draw_command in draw.draw_commands {
+        if draw_command.index_count == 0 {
+            return Err("decoded scene video layer draw requires non-empty indices".to_owned());
+        }
+    }
+
+    unsafe {
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            pipeline.pipeline,
+        );
+        let vertex_buffers = [draw.vertex_buffer];
+        let vertex_offsets = [0u64];
+        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+        device.cmd_bind_index_buffer(command_buffer, draw.index_buffer, 0, vk::IndexType::UINT32);
+        let push_constants = [extent.width as f32, extent.height as f32];
+        let push_constant_bytes = std::slice::from_raw_parts(
+            push_constants.as_ptr().cast::<u8>(),
+            DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES as usize,
+        );
+        device.cmd_push_constants(
+            command_buffer,
+            pipeline.pipeline_layout,
+            vk::ShaderStageFlags::VERTEX,
+            0,
+            push_constant_bytes,
+        );
+        for draw_command in draw.draw_commands {
+            device.cmd_draw_indexed(
+                command_buffer,
+                draw_command.index_count,
+                1,
+                draw_command.first_index,
+                0,
+                sampled_array_layer,
+            );
+        }
+    }
+
+    Ok(draw
+        .draw_commands
+        .iter()
+        .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count)))
 }
 
 fn native_vulkan_vulkanalia_submit_decoded_image_present_command_buffer2(
@@ -1292,12 +1601,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
     same_queue_family: bool,
     present_id_mode: &'static str,
     present_wait_mode: &'static str,
+    scene_video_layer_draw_enabled: bool,
     scene_overlay_draw_enabled: bool,
 ) -> Vec<&'static str> {
-    let bind_steps = [
+    let fullscreen_bind_steps = [
         "cmd_bind_resource_heap_ext",
         "cmd_bind_sampler_heap_ext",
         "draw_with_descriptor_heap_plane_array_sampler_mapping",
+    ];
+    let video_layer_bind_steps = [
+        "cmd_bind_resource_heap_ext",
+        "cmd_bind_sampler_heap_ext",
+        "cmd_bind_scene_video_layer_pipeline",
+        "cmd_draw_scene_video_layers_inside_video_rendering",
     ];
     let mut order = if same_queue_family {
         let mut order = vec![
@@ -1305,7 +1621,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
             "cmd_pipeline_barrier2_shader_read",
             "cmd_begin_rendering",
         ];
-        order.extend(bind_steps);
+        if scene_video_layer_draw_enabled {
+            order.extend(video_layer_bind_steps);
+        } else {
+            order.extend(fullscreen_bind_steps);
+        }
         if scene_overlay_draw_enabled {
             order.extend([
                 "cmd_bind_scene_overlay_pipeline",
@@ -1329,7 +1649,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_decod
             "cmd_pipeline_barrier2_graphics_acquire_shader_read",
             "cmd_begin_rendering",
         ];
-        order.extend(bind_steps);
+        if scene_video_layer_draw_enabled {
+            order.extend(video_layer_bind_steps);
+        } else {
+            order.extend(fullscreen_bind_steps);
+        }
         if scene_overlay_draw_enabled {
             order.extend([
                 "cmd_bind_scene_overlay_pipeline",
@@ -1483,6 +1807,136 @@ const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_FRAGMENT_SPIRV: [u32; 291] = [
     0x0000004d, 0x000100fd, 0x00010038,
 ];
 
+const NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV: [u32; 495] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x00000043, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000d000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000b, 0x0000002b, 0x00000036,
+    0x00000037, 0x0000003a, 0x0000003b, 0x0000003e, 0x00000040, 0x00030003, 0x00000002, 0x000001c2,
+    0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f,
+    0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65,
+    0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00030005, 0x00000009,
+    0x0063646e, 0x00040005, 0x0000000b, 0x705f6e69, 0x0000736f, 0x00040005, 0x00000011, 0x68737550,
+    0x00000000, 0x00050006, 0x00000011, 0x00000000, 0x65747865, 0x0000746e, 0x00050005, 0x00000013,
+    0x68737570, 0x7461645f, 0x00000061, 0x00060005, 0x00000029, 0x505f6c67, 0x65567265, 0x78657472,
+    0x00000000, 0x00060006, 0x00000029, 0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006,
+    0x00000029, 0x00000001, 0x505f6c67, 0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x00000029,
+    0x00000002, 0x435f6c67, 0x4470696c, 0x61747369, 0x0065636e, 0x00070006, 0x00000029, 0x00000003,
+    0x435f6c67, 0x446c6c75, 0x61747369, 0x0065636e, 0x00030005, 0x0000002b, 0x00000000, 0x00040005,
+    0x00000036, 0x5f74756f, 0x00007675, 0x00040005, 0x00000037, 0x755f6e69, 0x00000076, 0x00050005,
+    0x0000003a, 0x5f74756f, 0x6361706f, 0x00797469, 0x00050005, 0x0000003b, 0x6f5f6e69, 0x69636170,
+    0x00007974, 0x00050005, 0x0000003e, 0x5f74756f, 0x6579616c, 0x00000072, 0x00070005, 0x00000040,
+    0x495f6c67, 0x6174736e, 0x4965636e, 0x7865646e, 0x00000000, 0x00040047, 0x0000000b, 0x0000001e,
+    0x00000000, 0x00030047, 0x00000011, 0x00000002, 0x00050048, 0x00000011, 0x00000000, 0x00000023,
+    0x00000000, 0x00030047, 0x00000029, 0x00000002, 0x00050048, 0x00000029, 0x00000000, 0x0000000b,
+    0x00000000, 0x00050048, 0x00000029, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x00000029,
+    0x00000002, 0x0000000b, 0x00000003, 0x00050048, 0x00000029, 0x00000003, 0x0000000b, 0x00000004,
+    0x00040047, 0x00000036, 0x0000001e, 0x00000000, 0x00040047, 0x00000037, 0x0000001e, 0x00000001,
+    0x00040047, 0x0000003a, 0x0000001e, 0x00000001, 0x00040047, 0x0000003b, 0x0000001e, 0x00000002,
+    0x00030047, 0x0000003e, 0x0000000e, 0x00040047, 0x0000003e, 0x0000001e, 0x00000002, 0x00040047,
+    0x00000040, 0x0000000b, 0x0000002b, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+    0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002, 0x00040020,
+    0x00000008, 0x00000007, 0x00000007, 0x00040020, 0x0000000a, 0x00000001, 0x00000007, 0x0004003b,
+    0x0000000a, 0x0000000b, 0x00000001, 0x00040015, 0x0000000c, 0x00000020, 0x00000000, 0x0004002b,
+    0x0000000c, 0x0000000d, 0x00000000, 0x00040020, 0x0000000e, 0x00000001, 0x00000006, 0x0003001e,
+    0x00000011, 0x00000007, 0x00040020, 0x00000012, 0x00000009, 0x00000011, 0x0004003b, 0x00000012,
+    0x00000013, 0x00000009, 0x00040015, 0x00000014, 0x00000020, 0x00000001, 0x0004002b, 0x00000014,
+    0x00000015, 0x00000000, 0x00040020, 0x00000016, 0x00000009, 0x00000006, 0x0004002b, 0x00000006,
+    0x0000001a, 0x40000000, 0x0004002b, 0x00000006, 0x0000001c, 0x3f800000, 0x0004002b, 0x0000000c,
+    0x0000001e, 0x00000001, 0x00040017, 0x00000027, 0x00000006, 0x00000004, 0x0004001c, 0x00000028,
+    0x00000006, 0x0000001e, 0x0006001e, 0x00000029, 0x00000027, 0x00000006, 0x00000028, 0x00000028,
+    0x00040020, 0x0000002a, 0x00000003, 0x00000029, 0x0004003b, 0x0000002a, 0x0000002b, 0x00000003,
+    0x00040020, 0x0000002c, 0x00000007, 0x00000006, 0x0004002b, 0x00000006, 0x00000031, 0x00000000,
+    0x00040020, 0x00000033, 0x00000003, 0x00000027, 0x00040020, 0x00000035, 0x00000003, 0x00000007,
+    0x0004003b, 0x00000035, 0x00000036, 0x00000003, 0x0004003b, 0x0000000a, 0x00000037, 0x00000001,
+    0x00040020, 0x00000039, 0x00000003, 0x00000006, 0x0004003b, 0x00000039, 0x0000003a, 0x00000003,
+    0x0004003b, 0x0000000e, 0x0000003b, 0x00000001, 0x00040020, 0x0000003d, 0x00000003, 0x0000000c,
+    0x0004003b, 0x0000003d, 0x0000003e, 0x00000003, 0x00040020, 0x0000003f, 0x00000001, 0x00000014,
+    0x0004003b, 0x0000003f, 0x00000040, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x00050041,
+    0x0000000e, 0x0000000f, 0x0000000b, 0x0000000d, 0x0004003d, 0x00000006, 0x00000010, 0x0000000f,
+    0x00060041, 0x00000016, 0x00000017, 0x00000013, 0x00000015, 0x0000000d, 0x0004003d, 0x00000006,
+    0x00000018, 0x00000017, 0x00050088, 0x00000006, 0x00000019, 0x00000010, 0x00000018, 0x00050085,
+    0x00000006, 0x0000001b, 0x00000019, 0x0000001a, 0x00050083, 0x00000006, 0x0000001d, 0x0000001b,
+    0x0000001c, 0x00050041, 0x0000000e, 0x0000001f, 0x0000000b, 0x0000001e, 0x0004003d, 0x00000006,
+    0x00000020, 0x0000001f, 0x00060041, 0x00000016, 0x00000021, 0x00000013, 0x00000015, 0x0000001e,
+    0x0004003d, 0x00000006, 0x00000022, 0x00000021, 0x00050088, 0x00000006, 0x00000023, 0x00000020,
+    0x00000022, 0x00050085, 0x00000006, 0x00000024, 0x00000023, 0x0000001a, 0x00050083, 0x00000006,
+    0x00000025, 0x00000024, 0x0000001c, 0x00050050, 0x00000007, 0x00000026, 0x0000001d, 0x00000025,
+    0x0003003e, 0x00000009, 0x00000026, 0x00050041, 0x0000002c, 0x0000002d, 0x00000009, 0x0000000d,
+    0x0004003d, 0x00000006, 0x0000002e, 0x0000002d, 0x00050041, 0x0000002c, 0x0000002f, 0x00000009,
+    0x0000001e, 0x0004003d, 0x00000006, 0x00000030, 0x0000002f, 0x00070050, 0x00000027, 0x00000032,
+    0x0000002e, 0x00000030, 0x00000031, 0x0000001c, 0x00050041, 0x00000033, 0x00000034, 0x0000002b,
+    0x00000015, 0x0003003e, 0x00000034, 0x00000032, 0x0004003d, 0x00000007, 0x00000038, 0x00000037,
+    0x0003003e, 0x00000036, 0x00000038, 0x0004003d, 0x00000006, 0x0000003c, 0x0000003b, 0x0003003e,
+    0x0000003a, 0x0000003c, 0x0004003d, 0x00000014, 0x00000041, 0x00000040, 0x0004007c, 0x0000000c,
+    0x00000042, 0x00000041, 0x0003003e, 0x0000003e, 0x00000042, 0x000100fd, 0x00010038,
+];
+
+const NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV: [u32; 496] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x00000050, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0009000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000c, 0x00000010, 0x00000048,
+    0x0000004d, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2, 0x000a0004,
+    0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365,
+    0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572,
+    0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00040005, 0x00000009, 0x726f6f63,
+    0x00000064, 0x00040005, 0x0000000c, 0x755f6e69, 0x00000076, 0x00050005, 0x00000010, 0x6c5f6e69,
+    0x72657961, 0x00000000, 0x00030005, 0x00000017, 0x00000079, 0x00040005, 0x0000001b, 0x6c705f79,
+    0x00656e61, 0x00030005, 0x00000023, 0x00007675, 0x00050005, 0x00000024, 0x705f7675, 0x656e616c,
+    0x00000000, 0x00030005, 0x0000002c, 0x00000072, 0x00030005, 0x00000034, 0x00000067, 0x00030005,
+    0x00000040, 0x00000062, 0x00050005, 0x00000048, 0x5f74756f, 0x6f6c6f63, 0x00000072, 0x00050005,
+    0x0000004d, 0x6f5f6e69, 0x69636170, 0x00007974, 0x00040047, 0x0000000c, 0x0000001e, 0x00000000,
+    0x00030047, 0x00000010, 0x0000000e, 0x00040047, 0x00000010, 0x0000001e, 0x00000002, 0x00040047,
+    0x0000001b, 0x00000021, 0x00000000, 0x00040047, 0x0000001b, 0x00000022, 0x00000000, 0x00040047,
+    0x00000024, 0x00000021, 0x00000001, 0x00040047, 0x00000024, 0x00000022, 0x00000000, 0x00040047,
+    0x00000048, 0x0000001e, 0x00000000, 0x00040047, 0x0000004d, 0x0000001e, 0x00000001, 0x00020013,
+    0x00000002, 0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017,
+    0x00000007, 0x00000006, 0x00000003, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00040017,
+    0x0000000a, 0x00000006, 0x00000002, 0x00040020, 0x0000000b, 0x00000001, 0x0000000a, 0x0004003b,
+    0x0000000b, 0x0000000c, 0x00000001, 0x00040015, 0x0000000e, 0x00000020, 0x00000000, 0x00040020,
+    0x0000000f, 0x00000001, 0x0000000e, 0x0004003b, 0x0000000f, 0x00000010, 0x00000001, 0x00040020,
+    0x00000016, 0x00000007, 0x00000006, 0x00090019, 0x00000018, 0x00000006, 0x00000001, 0x00000000,
+    0x00000001, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x00000019, 0x00000018, 0x00040020,
+    0x0000001a, 0x00000000, 0x00000019, 0x0004003b, 0x0000001a, 0x0000001b, 0x00000000, 0x00040017,
+    0x0000001e, 0x00000006, 0x00000004, 0x0004002b, 0x0000000e, 0x00000020, 0x00000000, 0x00040020,
+    0x00000022, 0x00000007, 0x0000000a, 0x0004003b, 0x0000001a, 0x00000024, 0x00000000, 0x0004002b,
+    0x00000006, 0x00000029, 0x3f000000, 0x0005002c, 0x0000000a, 0x0000002a, 0x00000029, 0x00000029,
+    0x0004002b, 0x00000006, 0x0000002e, 0x3fc9930c, 0x0004002b, 0x0000000e, 0x0000002f, 0x00000001,
+    0x0004002b, 0x00000006, 0x00000036, 0x3e3fcb92, 0x0004002b, 0x00000006, 0x0000003b, 0x3eefaace,
+    0x0004002b, 0x00000006, 0x00000042, 0x3fed844d, 0x00040020, 0x00000047, 0x00000003, 0x0000001e,
+    0x0004003b, 0x00000047, 0x00000048, 0x00000003, 0x00040020, 0x0000004c, 0x00000001, 0x00000006,
+    0x0004003b, 0x0000004c, 0x0000004d, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000,
+    0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007, 0x0004003b,
+    0x00000016, 0x00000017, 0x00000007, 0x0004003b, 0x00000022, 0x00000023, 0x00000007, 0x0004003b,
+    0x00000016, 0x0000002c, 0x00000007, 0x0004003b, 0x00000016, 0x00000034, 0x00000007, 0x0004003b,
+    0x00000016, 0x00000040, 0x00000007, 0x0004003d, 0x0000000a, 0x0000000d, 0x0000000c, 0x0004003d,
+    0x0000000e, 0x00000011, 0x00000010, 0x00040070, 0x00000006, 0x00000012, 0x00000011, 0x00050051,
+    0x00000006, 0x00000013, 0x0000000d, 0x00000000, 0x00050051, 0x00000006, 0x00000014, 0x0000000d,
+    0x00000001, 0x00060050, 0x00000007, 0x00000015, 0x00000013, 0x00000014, 0x00000012, 0x0003003e,
+    0x00000009, 0x00000015, 0x0004003d, 0x00000019, 0x0000001c, 0x0000001b, 0x0004003d, 0x00000007,
+    0x0000001d, 0x00000009, 0x00050057, 0x0000001e, 0x0000001f, 0x0000001c, 0x0000001d, 0x00050051,
+    0x00000006, 0x00000021, 0x0000001f, 0x00000000, 0x0003003e, 0x00000017, 0x00000021, 0x0004003d,
+    0x00000019, 0x00000025, 0x00000024, 0x0004003d, 0x00000007, 0x00000026, 0x00000009, 0x00050057,
+    0x0000001e, 0x00000027, 0x00000025, 0x00000026, 0x0007004f, 0x0000000a, 0x00000028, 0x00000027,
+    0x00000027, 0x00000000, 0x00000001, 0x00050083, 0x0000000a, 0x0000002b, 0x00000028, 0x0000002a,
+    0x0003003e, 0x00000023, 0x0000002b, 0x0004003d, 0x00000006, 0x0000002d, 0x00000017, 0x00050041,
+    0x00000016, 0x00000030, 0x00000023, 0x0000002f, 0x0004003d, 0x00000006, 0x00000031, 0x00000030,
+    0x00050085, 0x00000006, 0x00000032, 0x0000002e, 0x00000031, 0x00050081, 0x00000006, 0x00000033,
+    0x0000002d, 0x00000032, 0x0003003e, 0x0000002c, 0x00000033, 0x0004003d, 0x00000006, 0x00000035,
+    0x00000017, 0x00050041, 0x00000016, 0x00000037, 0x00000023, 0x00000020, 0x0004003d, 0x00000006,
+    0x00000038, 0x00000037, 0x00050085, 0x00000006, 0x00000039, 0x00000036, 0x00000038, 0x00050083,
+    0x00000006, 0x0000003a, 0x00000035, 0x00000039, 0x00050041, 0x00000016, 0x0000003c, 0x00000023,
+    0x0000002f, 0x0004003d, 0x00000006, 0x0000003d, 0x0000003c, 0x00050085, 0x00000006, 0x0000003e,
+    0x0000003b, 0x0000003d, 0x00050083, 0x00000006, 0x0000003f, 0x0000003a, 0x0000003e, 0x0003003e,
+    0x00000034, 0x0000003f, 0x0004003d, 0x00000006, 0x00000041, 0x00000017, 0x00050041, 0x00000016,
+    0x00000043, 0x00000023, 0x00000020, 0x0004003d, 0x00000006, 0x00000044, 0x00000043, 0x00050085,
+    0x00000006, 0x00000045, 0x00000042, 0x00000044, 0x00050081, 0x00000006, 0x00000046, 0x00000041,
+    0x00000045, 0x0003003e, 0x00000040, 0x00000046, 0x0004003d, 0x00000006, 0x00000049, 0x0000002c,
+    0x0004003d, 0x00000006, 0x0000004a, 0x00000034, 0x0004003d, 0x00000006, 0x0000004b, 0x00000040,
+    0x0004003d, 0x00000006, 0x0000004e, 0x0000004d, 0x00070050, 0x0000001e, 0x0000004f, 0x00000049,
+    0x0000004a, 0x0000004b, 0x0000004e, 0x0003003e, 0x00000048, 0x0000004f, 0x000100fd, 0x00010038,
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1490,7 +1944,7 @@ mod tests {
     #[test]
     fn decoded_image_present_order_keeps_queue_ownership_explicit() {
         let split = native_vulkan_vulkanalia_decoded_image_present_command_order(
-            false, "disabled", "disabled", false,
+            false, "disabled", "disabled", false, false,
         );
         assert!(split.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(split.contains(&"cmd_pipeline_barrier2_graphics_acquire_shader_read"));
@@ -1504,7 +1958,7 @@ mod tests {
         assert!(split.contains(&"no_queue_wait_idle_after_present"));
 
         let same = native_vulkan_vulkanalia_decoded_image_present_command_order(
-            true, "disabled", "disabled", false,
+            true, "disabled", "disabled", false, false,
         );
         assert!(!same.contains(&"cmd_pipeline_barrier2_video_release"));
         assert!(same.contains(&"cmd_bind_resource_heap_ext"));
@@ -1512,10 +1966,18 @@ mod tests {
         assert!(same.contains(&"draw_with_descriptor_heap_plane_array_sampler_mapping"));
         assert!(same.contains(&"defer_frame_slot_reuse_until_render_fence"));
 
+        let video_layer = native_vulkan_vulkanalia_decoded_image_present_command_order(
+            true, "disabled", "disabled", true, false,
+        );
+        assert!(video_layer.contains(&"cmd_bind_scene_video_layer_pipeline"));
+        assert!(video_layer.contains(&"cmd_draw_scene_video_layers_inside_video_rendering"));
+        assert!(!video_layer.contains(&"draw_with_descriptor_heap_plane_array_sampler_mapping"));
+
         let present_id2 = native_vulkan_vulkanalia_decoded_image_present_command_order(
             true,
             "present-id2-khr",
             "present-wait2-khr",
+            false,
             false,
         );
         assert!(present_id2.contains(&"present_id2_khr"));
@@ -1535,6 +1997,26 @@ mod tests {
                 &NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV
             ),
             NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV.len() * 4
+        );
+        assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV[0],
+            0x07230203
+        );
+        assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV[0],
+            0x07230203
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV
+            ),
+            NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_VERTEX_SPIRV.len() * 4
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV
+            ),
+            NATIVE_VULKAN_VULKANALIA_PLANE_SCENE_VIDEO_LAYER_FRAGMENT_SPIRV.len() * 4
         );
     }
 }

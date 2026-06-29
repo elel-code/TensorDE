@@ -19,6 +19,8 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageVertex, NativeVulkanVulkanaliaSceneSolidQuadDrawStep,
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, NativeVulkanVulkanaliaSceneSolidQuadVertex,
+    NativeVulkanVulkanaliaSceneVideoLayerDrawStep,
+    NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
 };
@@ -62,6 +64,15 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_indices: Vec<u32>,
     pub draw_pass_sampled_image_vertex_buffer_bytes: u64,
     pub draw_pass_sampled_image_index_buffer_bytes: u64,
+    pub draw_pass_video_quads: Vec<NativeVulkanSceneVideoQuadSnapshot>,
+    pub draw_pass_video_sources: Vec<PathBuf>,
+    pub draw_pass_video_recording_ready: bool,
+    pub draw_pass_video_recording_step_count: usize,
+    pub draw_pass_video_recording_steps: Vec<NativeVulkanSceneVideoRecordingStepSnapshot>,
+    pub draw_pass_video_vertices: Vec<NativeVulkanSceneSampledImageVertexSnapshot>,
+    pub draw_pass_video_indices: Vec<u32>,
+    pub draw_pass_video_vertex_buffer_bytes: u64,
+    pub draw_pass_video_index_buffer_bytes: u64,
     pub draw_pass_clear_background_op_count: usize,
     pub draw_pass_background_clear_color: Option<String>,
     pub draw_pass_color_op_count: usize,
@@ -180,6 +191,11 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
         self.draw_pass_sampled_image_indices = Vec::new();
+        self.draw_pass_video_quads = Vec::new();
+        self.draw_pass_video_sources = Vec::new();
+        self.draw_pass_video_recording_steps = Vec::new();
+        self.draw_pass_video_vertices = Vec::new();
+        self.draw_pass_video_indices = Vec::new();
         self.draw_pass_required_image_resources = Vec::new();
         self.draw_pass_required_video_resources = Vec::new();
         self.draw_ops = Vec::new();
@@ -281,6 +297,49 @@ impl NativeVulkanSceneRuntimeSnapshot {
         }
         let op = self.draw_ops.iter_mut().find(|op| op.kind == "image")?;
         Some((op.source.take()?, op.fit))
+    }
+
+    pub fn take_vulkanalia_video_layer_geometry_input(
+        &mut self,
+    ) -> Option<NativeVulkanVulkanaliaSceneVideoLayerGeometryInput> {
+        if !self.draw_pass_video_recording_ready
+            || self.draw_pass_video_sources.len() != 1
+            || self.draw_pass_video_vertices.is_empty()
+            || self.draw_pass_video_indices.is_empty()
+        {
+            return None;
+        }
+
+        let source = self.draw_pass_video_sources.first().cloned()?;
+        self.draw_pass_video_quads = Vec::new();
+        let draw_steps = std::mem::take(&mut self.draw_pass_video_recording_steps)
+            .into_iter()
+            .map(|step| NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
+                layer_index: step.layer_index,
+                first_index: step.first_index,
+                index_count: step.index_count,
+                fit: Some(step.fit),
+            })
+            .collect::<Vec<_>>();
+
+        Some(
+            NativeVulkanVulkanaliaSceneVideoLayerGeometryInput::new_batched(
+                std::mem::take(&mut self.draw_pass_video_vertices)
+                    .into_iter()
+                    .map(|vertex| {
+                        NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                            vertex.position,
+                            vertex.uv,
+                            vertex.opacity,
+                        )
+                    })
+                    .collect(),
+                std::mem::take(&mut self.draw_pass_video_indices),
+                source,
+                draw_steps,
+                "scene-runtime-video-layer-draw-plan",
+            ),
+        )
     }
 
     pub fn take_vulkanalia_mixed_solid_quad_geometry_input(
@@ -629,6 +688,36 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub index_buffer_size_bytes: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneVideoQuadSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub source: PathBuf,
+    pub fit: FitMode,
+    pub opacity: f64,
+    pub width: f64,
+    pub height: f64,
+    pub transform: SceneTransform,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneVideoRecordingStepSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub source: PathBuf,
+    pub fit: FitMode,
+    pub pipeline: &'static str,
+    pub resource_index: u32,
+    pub first_vertex: u32,
+    pub vertex_count: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub vertex_buffer_offset_bytes: u64,
+    pub vertex_buffer_size_bytes: u64,
+    pub index_buffer_offset_bytes: u64,
+    pub index_buffer_size_bytes: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct NativeVulkanSceneQuadVertexSnapshot {
     pub position: [f32; 2],
@@ -832,6 +921,55 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_pass_sampled_image_indices: pass_plan.sampled_image_indices,
         draw_pass_sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
         draw_pass_sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
+        draw_pass_video_quads: pass_plan
+            .video_quads
+            .into_iter()
+            .map(|quad| NativeVulkanSceneVideoQuadSnapshot {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id,
+                source: quad.source,
+                fit: quad.fit,
+                opacity: quad.opacity,
+                width: quad.width,
+                height: quad.height,
+                transform: quad.transform,
+            })
+            .collect(),
+        draw_pass_video_sources: pass_plan.video_sources,
+        draw_pass_video_recording_ready: pass_plan.video_recording_ready,
+        draw_pass_video_recording_step_count: pass_plan.video_recording_steps.len(),
+        draw_pass_video_recording_steps: pass_plan
+            .video_recording_steps
+            .into_iter()
+            .map(|step| NativeVulkanSceneVideoRecordingStepSnapshot {
+                layer_index: step.layer_index,
+                layer_id: step.layer_id,
+                source: step.source,
+                fit: step.fit,
+                pipeline: step.pipeline,
+                resource_index: step.resource_index,
+                first_vertex: step.first_vertex,
+                vertex_count: step.vertex_count,
+                first_index: step.first_index,
+                index_count: step.index_count,
+                vertex_buffer_offset_bytes: step.vertex_buffer_offset_bytes,
+                vertex_buffer_size_bytes: step.vertex_buffer_size_bytes,
+                index_buffer_offset_bytes: step.index_buffer_offset_bytes,
+                index_buffer_size_bytes: step.index_buffer_size_bytes,
+            })
+            .collect(),
+        draw_pass_video_vertices: pass_plan
+            .video_vertices
+            .into_iter()
+            .map(|vertex| NativeVulkanSceneSampledImageVertexSnapshot {
+                position: vertex.position,
+                uv: vertex.uv,
+                opacity: vertex.opacity,
+            })
+            .collect(),
+        draw_pass_video_indices: pass_plan.video_indices,
+        draw_pass_video_vertex_buffer_bytes: pass_plan.video_vertex_buffer_bytes,
+        draw_pass_video_index_buffer_bytes: pass_plan.video_index_buffer_bytes,
         draw_pass_clear_background_op_count: pass_plan.clear_background_op_count,
         draw_pass_background_clear_color: pass_plan.background_clear_color,
         draw_pass_color_op_count: pass_plan.color_op_count,
@@ -1144,6 +1282,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         pass_plan.backend_status,
         "video-layer-vulkan-video-scene-bridge-ready"
             | "clear-background-video-layer-vulkan-video-scene-bridge-ready"
+            | "multi-video-layer-vulkan-video-scene-bridge-ready"
     );
     let video_native_layer_count = if scene_video_composition_ready {
         pass_plan.video_op_count
@@ -1409,6 +1548,9 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
         }
         "clear-background-video-layer-vulkan-video-scene-bridge-ready" => {
             "clear-background-and-retained-vulkan-video-scene-resource"
+        }
+        "multi-video-layer-vulkan-video-scene-bridge-ready" => {
+            "retained-single-source-vulkan-video-multi-layer-scene-resources"
         }
         "sampled-image-recording-ready"
         | "sampled-image-implicit-full-extent-ready"
@@ -1706,6 +1848,58 @@ mod tests {
             snapshot.draw_ops[0].source.as_deref(),
             Some(Path::new("/tmp/scene-video.mp4"))
         );
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_reports_same_source_multi_video_bridge_ready() {
+        let mut left = scene_test_layer("left-video", SceneNodeKind::Video);
+        left.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        left.width = Some(640.0);
+        left.height = Some(360.0);
+        left.transform.x = 0.0;
+        let mut right = scene_test_layer("right-video", SceneNodeKind::Video);
+        right.source = Some(PathBuf::from("/tmp/scene-video.mp4"));
+        right.width = Some(640.0);
+        right.height = Some(360.0);
+        right.transform.x = 640.0;
+        let item = scene_test_item(vec![left, right], None);
+
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "multi-video-layer-vulkan-video-scene-bridge-ready"
+        );
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-single-source-vulkan-video-multi-layer-scene-resources"
+        );
+        assert_eq!(snapshot.draw_pass_video_op_count, 2);
+        assert_eq!(snapshot.scene_video_layer_resource_count, 1);
+        assert_eq!(snapshot.scene_video_native_layer_count, 2);
+        assert_eq!(snapshot.full_scene.video_native_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_layer_count, 2);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
+        assert!(snapshot.full_scene.scene_video_composition_ready);
+        assert!(snapshot.draw_pass_video_recording_ready);
+        assert_eq!(snapshot.draw_pass_video_recording_step_count, 2);
+        assert_eq!(snapshot.draw_pass_video_vertices.len(), 8);
+        assert_eq!(snapshot.draw_pass_video_indices.len(), 12);
+        assert!(
+            !snapshot
+                .full_scene
+                .pending_boundaries
+                .contains(&"mixed-video-scene-composition")
+        );
+
+        let geometry = snapshot
+            .take_vulkanalia_video_layer_geometry_input()
+            .expect("same-source multi video geometry");
+        assert_eq!(geometry.source, PathBuf::from("/tmp/scene-video.mp4"));
+        assert_eq!(geometry.draw_steps.len(), 2);
+        assert_eq!(geometry.vertices.len(), 8);
+        assert_eq!(geometry.indices.len(), 12);
     }
 
     #[test]
