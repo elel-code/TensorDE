@@ -22,7 +22,10 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeOptions,
+    NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaSceneVideoOverlayInput,
+    NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions,
     NativeVulkanVulkanaliaSurfaceSwapchainProbeSnapshot,
     NativeVulkanVulkanaliaVideoPresentAudioMasterClock,
     NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
@@ -34,8 +37,11 @@ use super::super::vulkan::{
     run_native_vulkan_vulkanalia_clear_present,
     run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_multi_streaming_video_present_decode_with_scene_video_overlay,
 };
-use super::super::{NativeVulkanError, NativeVulkanOptions};
+use super::super::{
+    NativeVulkanError, NativeVulkanOptions, NativeVulkanSceneVideoBridgeSourceOptions,
+};
 use super::codec::NativeVulkanVideoSessionCodec;
 use super::demux::NATIVE_VULKAN_PACKET_HANDOFF_FRAMES;
 
@@ -550,6 +556,55 @@ pub(in crate::renderer::native_vulkan) fn run_vulkanalia_ready_prefix_video_with
         ffmpeg_reference: "references/ffmpeg/libavcodec/vulkan_decode.c",
         session,
     })
+}
+
+pub(in crate::renderer::native_vulkan) fn run_vulkanalia_ready_prefix_video_sources_with_scene_overlay(
+    options: NativeVulkanOptions,
+    sources: Vec<NativeVulkanSceneVideoBridgeSourceOptions>,
+    audio_clock_probe_requested: bool,
+    audio_output_mode: NativeVulkanAudioOutputMode,
+    scene_video_overlay: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
+) -> Result<NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot, NativeVulkanError> {
+    if sources.is_empty() {
+        return Err(NativeVulkanError::Video(
+            "Vulkanalia multi-source ready-prefix run requires at least one source".to_owned(),
+        ));
+    }
+    let streaming_sources = sources
+        .into_iter()
+        .map(
+            |source| NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions {
+                source: source.source,
+                codec: source.codec,
+                width: source.width,
+                height: source.height,
+                queue_capacity: native_vulkan_vulkanalia_streaming_packet_queue_capacity(
+                    source.bitstream_extract_max_samples,
+                    source.ready_prefix_frames,
+                ),
+                playback_frame_count: source.playback_frames.max(1),
+            },
+        )
+        .collect();
+    let audio_master_clock = if audio_clock_probe_requested
+        || audio_output_mode == NativeVulkanAudioOutputMode::ClockOnly
+    {
+        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::clock_only(None)
+    } else {
+        NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED
+    };
+    run_native_vulkan_vulkanalia_multi_streaming_video_present_decode_with_scene_video_overlay(
+        NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeOptions {
+            host: options.host,
+            wait_configure_roundtrips: options.wait_configure_roundtrips,
+            target_max_fps: options.target_max_fps,
+            audio_master_clock,
+            clear_color: options.clear_color,
+            sources: streaming_sources,
+        },
+        scene_video_overlay,
+    )
+    .map_err(NativeVulkanError::Video)
 }
 
 fn native_vulkan_vulkanalia_visible_present_duration(

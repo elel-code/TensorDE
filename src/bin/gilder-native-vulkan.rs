@@ -7,8 +7,8 @@ use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
 use gilder::renderer::native_vulkan::{
     NativeVulkanAudioOutputMode, NativeVulkanSceneVideoBridgeOptions,
-    NativeVulkanVideoSessionSmokeOptions, native_vulkan_resolve_ffmpeg_video_session_codec,
-    native_vulkan_video_run_route,
+    NativeVulkanSceneVideoBridgeSourceOptions, NativeVulkanVideoSessionSmokeOptions,
+    native_vulkan_resolve_ffmpeg_video_session_codec, native_vulkan_video_run_route,
 };
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
@@ -140,54 +140,56 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<Option<NativeVulkanSceneVideoBridgeOptions>, Box<dyn std::error::Error>> {
-    let mut visible_video_layers = plan.layers.iter().filter(|layer| {
+    let mut sources = Vec::new();
+    for layer in plan.layers.iter().filter(|layer| {
         layer.kind == SceneNodeKind::Video && layer.opacity > 0.0 && layer.source.is_some()
-    });
-    let Some(video_layer) = visible_video_layers.next() else {
-        return Ok(None);
-    };
-    let source = video_layer
-        .source
-        .as_ref()
-        .expect("visible video layer source is present");
-    for layer in visible_video_layers {
-        let Some(layer_source) = layer.source.as_ref() else {
+    }) {
+        let Some(source) = layer.source.as_ref() else {
             continue;
         };
-        if layer_source != source {
-            return Ok(None);
+        if sources
+            .iter()
+            .any(|entry: &NativeVulkanSceneVideoBridgeSourceOptions| entry.source == *source)
+        {
+            continue;
         }
-    }
-    let mut options = base_options.clone();
-    options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
-    if !video_width_set {
-        options.width = native_vulkan_scene_video_bridge_extent(video_layer.width, options.width);
-    }
-    if !video_height_set {
-        options.height =
-            native_vulkan_scene_video_bridge_extent(video_layer.height, options.height);
-    }
+        let mut options = base_options.clone();
+        options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
+        if !video_width_set {
+            options.width = native_vulkan_scene_video_bridge_extent(layer.width, options.width);
+        }
+        if !video_height_set {
+            options.height = native_vulkan_scene_video_bridge_extent(layer.height, options.height);
+        }
 
-    let route = native_vulkan_video_run_route(
-        &options,
-        ready_prefix_playback_frames,
-        duration_playback_frames,
-    );
-    if !route.is_vulkanalia_ready_prefix() {
-        return Err(format!(
-            "scene video layer cannot use Vulkanalia ready-prefix route for {}: {}",
-            source.display(),
-            route.status
-        )
-        .into());
+        let route = native_vulkan_video_run_route(
+            &options,
+            ready_prefix_playback_frames,
+            duration_playback_frames,
+        );
+        if !route.is_vulkanalia_ready_prefix() {
+            return Err(format!(
+                "scene video layer cannot use Vulkanalia ready-prefix route for {}: {}",
+                source.display(),
+                route.status
+            )
+            .into());
+        }
+        sources.push(NativeVulkanSceneVideoBridgeSourceOptions {
+            source: source.clone(),
+            codec: route.codec,
+            width: route.width,
+            height: route.height,
+            bitstream_extract_max_samples: options.bitstream_extract_max_samples,
+            ready_prefix_frames: route.ready_prefix_frames,
+            playback_frames: route.playback_frames,
+        });
+    }
+    if sources.is_empty() {
+        return Ok(None);
     }
     Ok(Some(NativeVulkanSceneVideoBridgeOptions {
-        codec: route.codec,
-        width: route.width,
-        height: route.height,
-        bitstream_extract_max_samples: options.bitstream_extract_max_samples,
-        ready_prefix_frames: route.ready_prefix_frames,
-        playback_frames: route.playback_frames,
+        sources,
         audio_clock_probe_requested,
         audio_output_mode,
     }))
@@ -208,8 +210,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputPolicy, NativeVulkanSceneVideoBridgeOptions,
-        NativeVulkanVideoSessionCodec, native_vulkan_extract_av1_sequence_header_for_vulkanalia,
+        NativeVulkanAudioOutputPolicy, NativeVulkanVideoSessionCodec,
+        native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
         native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
         run_vulkanalia_ready_prefix_video,
@@ -715,59 +717,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_snapshot_time_ms,
                 target_max_fps,
             )?;
-            let explicit_video_bridge = if scene_video_layer {
-                #[cfg(feature = "native-vulkan-video")]
-                {
-                    let route = native_vulkan_video_run_route(
-                        &video_session_options,
-                        ready_prefix_playback_frames,
-                        duration_playback_frames,
-                    );
-                    if !route.is_vulkanalia_ready_prefix() {
-                        return Err(format!(
-                            "--run-scene --scene-video cannot use Vulkanalia ready-prefix route: {}",
-                            route.status
-                        )
-                        .into());
-                    }
-                    Some(NativeVulkanSceneVideoBridgeOptions {
-                        codec: route.codec,
-                        width: route.width,
-                        height: route.height,
-                        bitstream_extract_max_samples: video_session_options
-                            .bitstream_extract_max_samples,
-                        ready_prefix_frames: route.ready_prefix_frames,
-                        playback_frames: route.playback_frames,
-                        audio_clock_probe_requested,
-                        audio_output_mode: audio_output_policy.resolve(_muted),
-                    })
-                }
-                #[cfg(not(feature = "native-vulkan-video"))]
-                {
-                    return Err(
-                        "--run-scene --scene-video requires native-vulkan-video feature".into(),
-                    );
-                }
-            } else {
-                None
-            };
             #[cfg(feature = "native-vulkan-video")]
-            let video_bridge = if explicit_video_bridge.is_some() {
-                explicit_video_bridge
-            } else {
-                native_vulkan_scene_video_bridge_options_from_plan(
-                    &plan,
-                    &video_session_options,
-                    video_width_set,
-                    video_height_set,
-                    ready_prefix_playback_frames,
-                    duration_playback_frames,
-                    audio_clock_probe_requested,
-                    audio_output_policy.resolve(_muted),
-                )?
-            };
+            let video_bridge = native_vulkan_scene_video_bridge_options_from_plan(
+                &plan,
+                &video_session_options,
+                video_width_set,
+                video_height_set,
+                ready_prefix_playback_frames,
+                duration_playback_frames,
+                audio_clock_probe_requested,
+                audio_output_policy.resolve(_muted),
+            )?;
             #[cfg(not(feature = "native-vulkan-video"))]
-            let video_bridge = explicit_video_bridge;
+            let video_bridge = None;
             json!(run_scene(
                 options,
                 duration,

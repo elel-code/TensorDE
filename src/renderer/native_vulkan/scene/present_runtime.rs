@@ -12,7 +12,7 @@ use crate::renderer::{
 };
 
 #[cfg(feature = "native-vulkan-video")]
-use super::super::NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot;
+use super::super::NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot;
 use super::super::audio::clock::{
     NativeVulkanAudioClockProbeOptions, NativeVulkanAudioClockRuntimeSnapshot,
     native_vulkan_probe_ffmpeg_audio_clock,
@@ -24,7 +24,7 @@ use super::super::present::render_plan::{
 #[cfg(feature = "native-vulkan-video")]
 use super::super::video::direct::{
     NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES, native_vulkan_audio_runtime_packet_budget,
-    run_vulkanalia_ready_prefix_video_with_scene_overlay,
+    run_vulkanalia_ready_prefix_video_sources_with_scene_overlay,
 };
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
@@ -88,9 +88,17 @@ pub enum NativeVulkanScenePresentSnapshot {
     Video {
         runtime: NativeVulkanSceneRuntimeSnapshot,
         scene_audio: Vec<NativeVulkanSceneAudioCueRuntimeSnapshot>,
-        present: NativeVulkanVulkanaliaReadyPrefixRuntimeSnapshot,
+        present: NativeVulkanSceneVideoPresentRuntimeSnapshot,
     },
 }
+
+#[cfg(feature = "native-vulkan-video")]
+pub type NativeVulkanSceneVideoPresentRuntimeSnapshot =
+    NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot;
+
+#[cfg(not(feature = "native-vulkan-video"))]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum NativeVulkanSceneVideoPresentRuntimeSnapshot {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanScenePresentRouteKind {
@@ -210,14 +218,20 @@ fn native_vulkan_scene_sampled_geometry_inputs_from_runtime_frame(
     )
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeVulkanSceneVideoBridgeOptions {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanSceneVideoBridgeSourceOptions {
+    pub source: std::path::PathBuf,
     pub codec: NativeVulkanVideoSessionCodec,
     pub width: u32,
     pub height: u32,
     pub bitstream_extract_max_samples: u32,
     pub ready_prefix_frames: u32,
     pub playback_frames: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanSceneVideoBridgeOptions {
+    pub sources: Vec<NativeVulkanSceneVideoBridgeSourceOptions>,
     pub audio_clock_probe_requested: bool,
     pub audio_output_mode: NativeVulkanAudioOutputMode,
 }
@@ -497,20 +511,13 @@ pub fn run_scene(
                     "scene video layer requires Vulkan Video bridge options".to_owned(),
                 )
             })?;
-            let video = runtime
-                .draw_ops
-                .iter()
-                .find(|op| op.kind == "video")
-                .ok_or_else(|| {
-                    NativeVulkanError::Scene("scene video route has no video draw op".to_owned())
-                })?;
-            let source = video.source.clone().ok_or_else(|| {
-                NativeVulkanError::Scene("scene video route has no video source".to_owned())
-            })?;
-            let width = native_vulkan_scene_video_extent(video_bridge.width, video.width);
-            let height = native_vulkan_scene_video_extent(video_bridge.height, video.height);
-            let video_fit = video.fit;
             let video_geometry = runtime.take_vulkanalia_video_layer_geometry_input();
+            let video_bridge_sources = video_bridge.sources.clone();
+            if video_bridge_sources.is_empty() {
+                return Err(NativeVulkanError::Scene(
+                    "scene video bridge requires at least one source".to_owned(),
+                ));
+            }
             let mut overlay_source = None;
             let mut overlay_fit = None;
             let mut overlay_geometry = None;
@@ -563,16 +570,9 @@ pub fn run_scene(
                 duration,
                 scene_audio_output_mode,
                 || {
-                    run_vulkanalia_ready_prefix_video_with_scene_overlay(
+                    run_vulkanalia_ready_prefix_video_sources_with_scene_overlay(
                         options,
-                        video_bridge.codec,
-                        source,
-                        width,
-                        height,
-                        video_fit,
-                        video_bridge.bitstream_extract_max_samples,
-                        video_bridge.ready_prefix_frames,
-                        video_bridge.playback_frames,
+                        video_bridge_sources,
                         video_bridge.audio_clock_probe_requested,
                         video_bridge.audio_output_mode,
                         scene_video_overlay,
@@ -846,16 +846,6 @@ fn native_vulkan_scene_present_route(
             "scene draw plan has no native Vulkan present route: {status}"
         ))),
     }
-}
-
-fn native_vulkan_scene_video_extent(option_extent: u32, layer_extent: Option<f64>) -> u32 {
-    if option_extent > 0 {
-        return option_extent;
-    }
-    layer_extent
-        .filter(|extent| extent.is_finite() && *extent > 0.0)
-        .map(|extent| extent.round().clamp(1.0, f64::from(u32::MAX)) as u32)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

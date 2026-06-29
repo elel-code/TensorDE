@@ -321,20 +321,20 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
     let video_index_buffer_bytes =
         native_vulkan_scene_sampled_image_index_buffer_bytes(video_recording_payload.steps.len());
     let plan_ready = draw_plan.native_draw_ready();
-    let single_video_resource_ready = video_op_count > 0 && required_video_resources.len() == 1;
+    let video_resource_ready = video_op_count > 0 && !required_video_resources.is_empty();
     let video_scene_layer_count = if video_op_count <= 1 {
         video_op_count
     } else {
         video_recording_payload.steps.len()
     };
     let single_video_scene_bridge_ready =
-        video_op_count == 1 && single_video_resource_ready && draw_plan.draw_ops.len() == 1;
+        video_op_count == 1 && video_resource_ready && draw_plan.draw_ops.len() == 1;
     let multi_video_scene_bridge_ready = video_op_count > 1
-        && single_video_resource_ready
+        && video_resource_ready
         && video_recording_ready
         && draw_plan.draw_ops.len() == video_op_count;
     let clear_background_video_scene_bridge_ready = video_op_count == 1
-        && single_video_resource_ready
+        && video_resource_ready
         && clear_background_op_count == 1
         && draw_plan.draw_ops.len() == 2;
     let sampled_image_recording_complete = sampled_image_recording_ready
@@ -344,7 +344,7 @@ pub(super) fn native_vulkan_scene_draw_pass_plan(
         && sampled_image_op_count.saturating_add(clear_background_op_count)
             == draw_plan.draw_ops.len();
     let mixed_video_scene_bridge_ready = video_op_count > 0
-        && single_video_resource_ready
+        && video_resource_ready
         && draw_plan.draw_ops.len() > 1
         && video_scene_layer_count
             .saturating_add(clear_background_op_count)
@@ -3162,34 +3162,41 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_keeps_distinct_multi_video_pending() {
-        let mut left = draw_op(0, NativeVulkanSceneDrawOpKind::Video);
-        left.source = Some(PathBuf::from("/tmp/left.mp4"));
-        left.width = Some(640.0);
-        left.height = Some(360.0);
-        let mut right = draw_op(1, NativeVulkanSceneDrawOpKind::Video);
-        right.source = Some(PathBuf::from("/tmp/right.mp4"));
-        right.width = Some(640.0);
-        right.height = Some(360.0);
+    fn draw_pass_plan_reports_distinct_n_source_video_bridge_ready() {
+        let mut sky = draw_op(0, NativeVulkanSceneDrawOpKind::Video);
+        sky.source = Some(PathBuf::from("/tmp/sky.mp4"));
+        sky.width = Some(1920.0);
+        sky.height = Some(1080.0);
+        let mut character = draw_op(1, NativeVulkanSceneDrawOpKind::Video);
+        character.source = Some(PathBuf::from("/tmp/character.mp4"));
+        character.width = Some(640.0);
+        character.height = Some(1080.0);
+        let mut effects = draw_op(2, NativeVulkanSceneDrawOpKind::Video);
+        effects.source = Some(PathBuf::from("/tmp/effects.mp4"));
+        effects.width = Some(1920.0);
+        effects.height = Some(1080.0);
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
             scene_size: None,
             scene_fit: FitMode::Cover,
-            draw_ops: vec![left, right],
+            draw_ops: vec![sky, character, effects],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
         };
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
-        assert!(!pass_plan.backend_ready);
+        assert!(pass_plan.backend_ready);
         assert_eq!(
             pass_plan.backend_status,
-            "video-layer-vulkan-video-scene-bridge-pending"
+            "multi-video-layer-vulkan-video-scene-bridge-ready"
         );
-        assert_eq!(pass_plan.video_op_count, 2);
-        assert_eq!(pass_plan.required_video_resources.len(), 2);
+        assert_eq!(pass_plan.video_op_count, 3);
+        assert_eq!(pass_plan.required_video_resources.len(), 3);
         assert!(pass_plan.video_recording_ready);
+        assert_eq!(pass_plan.video_recording_steps[0].resource_index, 0);
+        assert_eq!(pass_plan.video_recording_steps[1].resource_index, 1);
+        assert_eq!(pass_plan.video_recording_steps[2].resource_index, 2);
     }
 
     #[test]

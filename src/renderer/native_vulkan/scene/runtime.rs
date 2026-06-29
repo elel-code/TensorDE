@@ -303,19 +303,20 @@ impl NativeVulkanSceneRuntimeSnapshot {
         &mut self,
     ) -> Option<NativeVulkanVulkanaliaSceneVideoLayerGeometryInput> {
         if !self.draw_pass_video_recording_ready
-            || self.draw_pass_video_sources.len() != 1
+            || self.draw_pass_video_sources.is_empty()
             || self.draw_pass_video_vertices.is_empty()
             || self.draw_pass_video_indices.is_empty()
         {
             return None;
         }
 
-        let source = self.draw_pass_video_sources.first().cloned()?;
+        let sources = std::mem::take(&mut self.draw_pass_video_sources);
         self.draw_pass_video_quads = Vec::new();
         let draw_steps = std::mem::take(&mut self.draw_pass_video_recording_steps)
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
                 layer_index: step.layer_index,
+                resource_index: step.resource_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
                 fit: Some(step.fit),
@@ -335,7 +336,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                     })
                     .collect(),
                 std::mem::take(&mut self.draw_pass_video_indices),
-                source,
+                sources,
                 draw_steps,
                 "scene-runtime-video-layer-draw-plan",
             ),
@@ -1550,7 +1551,7 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
             "clear-background-and-retained-vulkan-video-scene-resource"
         }
         "multi-video-layer-vulkan-video-scene-bridge-ready" => {
-            "retained-single-source-vulkan-video-multi-layer-scene-resources"
+            "retained-vulkan-video-multi-source-multi-layer-scene-resources"
         }
         "sampled-image-recording-ready"
         | "sampled-image-implicit-full-extent-ready"
@@ -1873,7 +1874,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.scene_resource_model,
-            "retained-single-source-vulkan-video-multi-layer-scene-resources"
+            "retained-vulkan-video-multi-source-multi-layer-scene-resources"
         );
         assert_eq!(snapshot.draw_pass_video_op_count, 2);
         assert_eq!(snapshot.scene_video_layer_resource_count, 1);
@@ -1896,10 +1897,65 @@ mod tests {
         let geometry = snapshot
             .take_vulkanalia_video_layer_geometry_input()
             .expect("same-source multi video geometry");
-        assert_eq!(geometry.source, PathBuf::from("/tmp/scene-video.mp4"));
+        assert_eq!(
+            geometry.sources,
+            vec![PathBuf::from("/tmp/scene-video.mp4")]
+        );
         assert_eq!(geometry.draw_steps.len(), 2);
+        assert_eq!(geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(geometry.draw_steps[1].resource_index, 0);
         assert_eq!(geometry.vertices.len(), 8);
         assert_eq!(geometry.indices.len(), 12);
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_reports_distinct_n_source_video_bridge_ready() {
+        let mut sky = scene_test_layer("sky-video", SceneNodeKind::Video);
+        sky.source = Some(PathBuf::from("/tmp/sky.mp4"));
+        sky.width = Some(1920.0);
+        sky.height = Some(1080.0);
+        let mut character = scene_test_layer("character-video", SceneNodeKind::Video);
+        character.source = Some(PathBuf::from("/tmp/character.mp4"));
+        character.width = Some(640.0);
+        character.height = Some(1080.0);
+        character.transform.x = 640.0;
+        let mut effects = scene_test_layer("effects-video", SceneNodeKind::Video);
+        effects.source = Some(PathBuf::from("/tmp/effects.mp4"));
+        effects.width = Some(1920.0);
+        effects.height = Some(1080.0);
+        let item = scene_test_item(vec![sky, character, effects], None);
+
+        let mut snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(
+            snapshot.draw_pass_backend_status,
+            "multi-video-layer-vulkan-video-scene-bridge-ready"
+        );
+        assert_eq!(
+            snapshot.scene_resource_model,
+            "retained-vulkan-video-multi-source-multi-layer-scene-resources"
+        );
+        assert_eq!(snapshot.scene_video_layer_resource_count, 3);
+        assert_eq!(snapshot.scene_video_native_layer_count, 3);
+        assert!(snapshot.full_scene.scene_video_composition_ready);
+        assert_eq!(snapshot.full_scene.native_runtime_pending_layer_count, 0);
+
+        let geometry = snapshot
+            .take_vulkanalia_video_layer_geometry_input()
+            .expect("distinct-source n video geometry");
+        assert_eq!(
+            geometry.sources,
+            vec![
+                PathBuf::from("/tmp/sky.mp4"),
+                PathBuf::from("/tmp/character.mp4"),
+                PathBuf::from("/tmp/effects.mp4")
+            ]
+        );
+        assert_eq!(geometry.draw_steps.len(), 3);
+        assert_eq!(geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(geometry.draw_steps[1].resource_index, 1);
+        assert_eq!(geometry.draw_steps[2].resource_index, 2);
     }
 
     #[test]

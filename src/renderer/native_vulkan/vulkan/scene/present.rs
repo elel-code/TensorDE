@@ -208,7 +208,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
 pub struct NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
     pub vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
     pub indices: Vec<u32>,
-    pub source: PathBuf,
+    pub sources: Vec<PathBuf>,
     pub draw_steps: Vec<NativeVulkanVulkanaliaSceneVideoLayerDrawStep>,
     pub source_label: String,
 }
@@ -226,6 +226,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
     pub layer_index: usize,
+    pub resource_index: u32,
     pub first_index: u32,
     pub index_count: u32,
     pub fit: Option<FitMode>,
@@ -242,14 +243,14 @@ impl NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
     pub fn new_batched(
         vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
         indices: Vec<u32>,
-        source: PathBuf,
+        sources: Vec<PathBuf>,
         draw_steps: Vec<NativeVulkanVulkanaliaSceneVideoLayerDrawStep>,
         source_label: impl Into<String>,
     ) -> Self {
         Self {
             vertices,
             indices,
-            source,
+            sources,
             draw_steps,
             source_label: source_label.into(),
         }
@@ -501,6 +502,7 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneVideoOverlayB
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::vulkan) resource_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
 }
@@ -5078,13 +5080,13 @@ fn scene_video_layer_geometry_payload(
     let mut sampled_input = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
         input.vertices,
         input.indices,
-        vec![input.source],
+        input.sources,
         input
             .draw_steps
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: step.layer_index,
-                resource_index: 0,
+                resource_index: step.resource_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
                 fit: step.fit,
@@ -5297,6 +5299,7 @@ fn scene_video_layer_draw_commands(
         }
         draw_commands.push(VulkanaliaSceneVideoLayerDrawCommand {
             layer_index: step.layer_index,
+            resource_index: step.resource_index,
             first_index: step.first_index,
             index_count: step.index_count,
         });
@@ -6444,6 +6447,77 @@ mod tests {
             scene_sampled_image_resource_sampler_mode(1, &payload.draw_steps, None),
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::Repeat
         );
+    }
+
+    #[test]
+    fn video_layer_geometry_accepts_distinct_n_source_scene_payload() {
+        let input = NativeVulkanVulkanaliaSceneVideoLayerGeometryInput::new_batched(
+            vec![
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([0.0, 0.0], [0.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([10.0, 0.0], [1.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([0.0, 10.0], [0.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([10.0, 10.0], [1.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([20.0, 20.0], [0.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([30.0, 20.0], [1.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([20.0, 30.0], [0.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([30.0, 30.0], [1.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 40.0], [0.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([50.0, 40.0], [1.0, 0.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 50.0], [0.0, 1.0], 1.0),
+                NativeVulkanVulkanaliaSceneSampledImageVertex::new([50.0, 50.0], [1.0, 1.0], 1.0),
+            ],
+            vec![0, 1, 2, 2, 1, 3, 4, 5, 6, 6, 5, 7, 8, 9, 10, 10, 9, 11],
+            vec![
+                PathBuf::from("/tmp/sky.mp4"),
+                PathBuf::from("/tmp/character.mp4"),
+                PathBuf::from("/tmp/effects.mp4"),
+            ],
+            vec![
+                NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
+                    layer_index: 0,
+                    resource_index: 0,
+                    first_index: 0,
+                    index_count: 6,
+                    fit: Some(FitMode::Cover),
+                },
+                NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
+                    layer_index: 1,
+                    resource_index: 1,
+                    first_index: 6,
+                    index_count: 6,
+                    fit: Some(FitMode::Contain),
+                },
+                NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
+                    layer_index: 2,
+                    resource_index: 2,
+                    first_index: 12,
+                    index_count: 6,
+                    fit: Some(FitMode::Cover),
+                },
+            ],
+            "scene-runtime-video-layer-draw-plan",
+        );
+
+        let payload = scene_video_layer_geometry_payload(
+            input,
+            vk::Extent2D {
+                width: 1920,
+                height: 1080,
+            },
+            None,
+            FitMode::Cover,
+        )
+        .unwrap();
+
+        assert_eq!(payload.vertex_count, 12);
+        assert_eq!(payload.index_count, 18);
+        assert_eq!(payload.quad_count, 3);
+        assert_eq!(payload.source_count, 3);
+        assert_eq!(payload.draw_steps.len(), 3);
+        assert_eq!(payload.draw_steps[0].resource_index, 0);
+        assert_eq!(payload.draw_steps[1].resource_index, 1);
+        assert_eq!(payload.draw_steps[2].resource_index, 2);
+        assert_eq!(payload.draw_steps[2].first_index, 12);
     }
 
     #[test]
