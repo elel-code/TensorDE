@@ -120,6 +120,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             kind: SceneNodeKind::Image,
             source: Some(plan.source.clone()),
             texture_region: None,
+            effect_motion: Default::default(),
+            blend_mode: Default::default(),
             audio: Vec::new(),
             color: None,
             stroke_color: None,

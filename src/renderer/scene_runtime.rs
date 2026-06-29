@@ -224,6 +224,9 @@ impl SceneWallpaperRuntimeSampler {
                         &self.input_properties,
                     )
                 },
+                |property| {
+                    scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
+                },
                 &mut self.sampled_image_layers_scratch,
             );
         Ok(SceneWallpaperRuntimeSampledImageFrame {

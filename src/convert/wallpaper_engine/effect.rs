@@ -52,6 +52,18 @@ pub(super) fn scene_effects_from_object(
                 );
                 return Some(Value::Object(output));
             }
+            if opacity_timeline_lowered {
+                output.insert(
+                    "runtime".to_owned(),
+                    Value::String("native-opacity-timeline".to_owned()),
+                );
+                return Some(Value::Object(output));
+            }
+            if let Some(runtime) = scene_native_effect_runtime(&file, effect) {
+                output.insert("runtime".to_owned(), Value::String(runtime.to_owned()));
+                push_unique(&mut context.converted_features, scene_native_effect_feature(runtime));
+                return Some(Value::Object(output));
+            }
             let requires_runtime =
                 scene_effect_requires_runtime(project, &file, effect, opacity_timeline_lowered);
             if requires_runtime {
@@ -77,11 +89,6 @@ pub(super) fn scene_effects_from_object(
                     "Wallpaper Engine effect graph is preserved in gscene but not executed by the native scene runtime yet.",
                     Some(&file),
                 );
-            } else if opacity_timeline_lowered {
-                output.insert(
-                    "runtime".to_owned(),
-                    Value::String("native-opacity-timeline".to_owned()),
-                );
             } else {
                 output.insert(
                     "runtime".to_owned(),
@@ -95,6 +102,39 @@ pub(super) fn scene_effects_from_object(
             Some(Value::Object(output))
         })
         .collect()
+}
+
+fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Option<&'static str> {
+    if effect
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+    {
+        return None;
+    }
+    if file.contains("watercaustics") {
+        return Some("native-water-caustics");
+    }
+    if file.contains("waterwaves")
+        || file.contains("waterripple")
+        || file.contains("waterflow")
+        || file.contains("cloudmotion")
+        || file.contains("foliagesway")
+        || file.contains("auto_sway")
+        || file.contains("shake")
+        || file.contains("skew")
+    {
+        return Some("native-effect-motion");
+    }
+    None
+}
+
+fn scene_native_effect_feature(runtime: &str) -> &'static str {
+    match runtime {
+        "native-water-caustics" => "native-water-caustics-effect-runtime",
+        "native-effect-motion" => "native-effect-motion-runtime",
+        _ => "native-effect-runtime",
+    }
 }
 
 fn scene_native_text_glow_effect_properties(

@@ -3,10 +3,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::core::scene::SceneMesh;
+use crate::core::scene::{SceneMesh, SceneNativeEffectMotion};
 use crate::core::{
-    FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign, SceneTextureRegion,
-    SceneTransform,
+    FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign,
+    SceneTextureRegion, SceneTransform,
 };
 use crate::renderer::{SceneDisplayPlan, SceneRenderLayer};
 
@@ -61,6 +61,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) opacity: f64,
     pub(in crate::renderer::native_vulkan) source: Option<PathBuf>,
     pub(in crate::renderer::native_vulkan) texture_region: Option<SceneTextureRegion>,
+    pub(in crate::renderer::native_vulkan) effect_motion: SceneNativeEffectMotion,
+    pub(in crate::renderer::native_vulkan) blend_mode: SceneBlendMode,
     pub(in crate::renderer::native_vulkan) color: Option<String>,
     pub(in crate::renderer::native_vulkan) stroke_color: Option<String>,
     pub(in crate::renderer::native_vulkan) stroke_width: Option<f64>,
@@ -171,6 +173,8 @@ fn native_vulkan_scene_draw_layers(
                 opacity: layer.opacity.clamp(0.0, 1.0),
                 source: layer.source.clone(),
                 texture_region: layer.texture_region,
+                effect_motion: layer.effect_motion,
+                blend_mode: layer.blend_mode,
                 color: layer.color.clone(),
                 stroke_color: layer.stroke_color.clone(),
                 stroke_width: layer.stroke_width,

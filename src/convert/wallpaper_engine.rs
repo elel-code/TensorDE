@@ -1114,6 +1114,8 @@ fn write_scene_document_to(
         source_script_count: source_scene
             .map(scene_source_script_count)
             .unwrap_or_default(),
+        project_property_defaults: scene_project_property_defaults(project),
+        model_blend_opacity_defaults: scene_model_blend_opacity_defaults(source_scene),
         ..SceneDocumentBuildContext::default()
     };
     let mut resources = Vec::new();
@@ -1182,6 +1184,7 @@ fn write_scene_document_to(
     );
     let native_lowering = scene_native_lowering_from_status(&full_scene_status);
     report.full_scene = Some(full_scene_status);
+    let properties = convert_properties(project, report);
 
     let document = json!({
         "version": 1,
@@ -1195,6 +1198,7 @@ fn write_scene_document_to(
         "render": scene_render_settings(source_scene),
         "camera": scene_camera_settings(source_scene),
         "import": scene_import_metadata(source_scene),
+        "properties": properties,
         "resources": resources,
         "nodes": nodes,
         "timelines": context.timelines,
@@ -1430,6 +1434,8 @@ struct SceneDocumentBuildContext {
     pending_audio_controllers: Vec<SceneAudioControllerIr>,
     timelines: Vec<Value>,
     property_bindings: Vec<Value>,
+    project_property_defaults: BTreeMap<String, Value>,
+    model_blend_opacity_defaults: BTreeMap<String, f64>,
     converted_features: Vec<String>,
     unsupported_features: Vec<Value>,
     puppet_attachments_by_source_id: BTreeMap<String, ScenePuppetAttachmentMap>,
@@ -1936,6 +1942,11 @@ fn scene_collect_embedded_property_timelines(
 fn scene_embedded_property_timeline_value(property: &str, value: &Value) -> Option<Value> {
     match value {
         Value::Object(object) => {
+            if let Some(timeline) =
+                scene_embedded_property_component_animation_timeline(property, object)
+            {
+                return Some(timeline);
+            }
             let source = scene_embedded_timeline_source(object)?;
             Some(scene_embedded_property_timeline_object(
                 property,
@@ -1950,6 +1961,233 @@ fn scene_embedded_property_timeline_value(property: &str, value: &Value) -> Opti
             None
         }
     }
+}
+
+fn scene_embedded_property_component_animation_timeline(
+    property: &str,
+    object: &Map<String, Value>,
+) -> Option<Value> {
+    let animation = object.get("animation")?.as_object()?;
+    let options = animation.get("options").and_then(Value::as_object);
+    let fps = options
+        .and_then(|options| number_value_field(options, &["fps"]))
+        .filter(|fps| fps.is_finite() && *fps > 0.0)
+        .unwrap_or(30.0);
+    let relative = animation
+        .get("relative")
+        .and_then(value_to_bool_unwrapped)
+        .unwrap_or(false);
+    let wraploop = animation
+        .get("wraploop")
+        .and_then(value_to_bool_unwrapped)
+        .or_else(|| options.and_then(|options| scene_bool_value_field(options, &["wraploop"])))
+        .unwrap_or(false);
+    let loop_playback = animation
+        .get("loop")
+        .and_then(value_to_bool_unwrapped)
+        .or_else(|| options.and_then(|options| scene_bool_value_field(options, &["loop"])))
+        .unwrap_or_else(|| {
+            options
+                .and_then(|options| value_field(options, &["mode"]))
+                .is_some_and(|mode| normalize_project_key(&mode) == "loop")
+                || wraploop
+        });
+    let length_frame = options
+        .and_then(|options| number_value_field(options, &["length", "frames"]))
+        .filter(|length| length.is_finite() && *length > 0.0);
+    let channels = scene_embedded_property_component_animation_channels(
+        property,
+        object,
+        animation,
+        fps,
+        relative,
+        wraploop,
+        length_frame,
+    )?;
+    let mut timeline = Map::new();
+    timeline.insert("channels".to_owned(), Value::Array(channels));
+    timeline.insert("loop".to_owned(), json!(loop_playback));
+    Some(Value::Object(timeline))
+}
+
+fn scene_embedded_property_component_animation_channels(
+    property: &str,
+    object: &Map<String, Value>,
+    animation: &Map<String, Value>,
+    fps: f64,
+    relative: bool,
+    wraploop: bool,
+    length_frame: Option<f64>,
+) -> Option<Vec<Value>> {
+    let targets = scene_embedded_property_component_animation_targets(property, object)?;
+    let mut channels = Vec::new();
+    for target in targets {
+        let Some(entries) = animation
+            .get(target.source_channel)
+            .and_then(Value::as_array)
+            .filter(|entries| !entries.is_empty())
+        else {
+            continue;
+        };
+        let mut keyframes = entries
+            .iter()
+            .filter_map(|entry| {
+                scene_embedded_property_component_animation_keyframe(
+                    entry,
+                    fps,
+                    target.value_scale,
+                    target.base_value,
+                    relative,
+                )
+            })
+            .collect::<Vec<_>>();
+        keyframes.sort_by_key(|keyframe| {
+            keyframe
+                .get("time_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or_default()
+        });
+        if wraploop
+            && keyframes.len() >= 2
+            && let Some(length_ms) =
+                length_frame.and_then(|length| scene_frame_to_time_ms(length, fps))
+            && keyframes
+                .last()
+                .and_then(|keyframe| keyframe.get("time_ms"))
+                .and_then(Value::as_u64)
+                .is_some_and(|last_time_ms| last_time_ms < length_ms)
+            && let Some(first_value) = keyframes
+                .first()
+                .and_then(|keyframe| keyframe.get("value"))
+                .cloned()
+        {
+            keyframes.push(json!({
+                "time_ms": length_ms,
+                "value": first_value
+            }));
+        }
+        if keyframes.is_empty() {
+            continue;
+        }
+        channels.push(json!({
+            "property": target.target_property,
+            "keyframes": keyframes
+        }));
+    }
+    (!channels.is_empty()).then_some(channels)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneEmbeddedComponentAnimationTarget {
+    source_channel: &'static str,
+    target_property: &'static str,
+    base_value: f64,
+    value_scale: f64,
+}
+
+fn scene_embedded_property_component_animation_targets(
+    property: &str,
+    object: &Map<String, Value>,
+) -> Option<Vec<SceneEmbeddedComponentAnimationTarget>> {
+    let normalized = normalize_project_key(property);
+    let vector = object
+        .get("value")
+        .and_then(vector3_components_from_value)
+        .unwrap_or((0.0, 0.0, 0.0));
+    let scalar = object
+        .get("value")
+        .and_then(value_to_f64_unwrapped)
+        .unwrap_or(0.0);
+    let to_degrees = 180.0 / std::f64::consts::PI;
+    let target = |source_channel, target_property, base_value, value_scale| {
+        SceneEmbeddedComponentAnimationTarget {
+            source_channel,
+            target_property,
+            base_value,
+            value_scale,
+        }
+    };
+    match normalized.as_str() {
+        "origin" | "position" | "translation" => Some(vec![
+            target("c0", "x", vector.0, 1.0),
+            target("c1", "y", vector.1, 1.0),
+        ]),
+        "x" | "left" | "originx" | "positionx" | "translationx" => {
+            Some(vec![target("c0", "x", scalar, 1.0)])
+        }
+        "y" | "top" | "originy" | "positiony" | "translationy" => {
+            Some(vec![target("c0", "y", scalar, 1.0)])
+        }
+        "scale" => Some(vec![
+            target("c0", "scale-x", vector.0, 1.0),
+            target("c1", "scale-y", vector.1, 1.0),
+        ]),
+        "scalex" => Some(vec![target("c0", "scale-x", scalar, 1.0)]),
+        "scaley" => Some(vec![target("c0", "scale-y", scalar, 1.0)]),
+        "opacity" | "alpha" | "visible" | "visibility" => {
+            Some(vec![target("c0", "opacity", scalar, 1.0)])
+        }
+        "angles" => Some(vec![target(
+            "c2",
+            "rotation-deg",
+            vector.2 * to_degrees,
+            to_degrees,
+        )]),
+        "anglesz" => Some(vec![target(
+            "c0",
+            "rotation-deg",
+            scalar * to_degrees,
+            to_degrees,
+        )]),
+        "rotation" | "rotationdeg" | "angle" | "rotationz" => {
+            Some(vec![target("c0", "rotation-deg", scalar, 1.0)])
+        }
+        "width" | "w" | "sizex" => Some(vec![target("c0", "width", scalar, 1.0)]),
+        "height" | "h" | "sizey" => Some(vec![target("c0", "height", scalar, 1.0)]),
+        "size" | "dimensions" => Some(vec![
+            target("c0", "width", vector.0, 1.0),
+            target("c1", "height", vector.1, 1.0),
+        ]),
+        "radius" | "cornerradius" | "borderradius" => {
+            Some(vec![target("c0", "corner-radius", scalar, 1.0)])
+        }
+        _ => None,
+    }
+}
+
+fn scene_embedded_property_component_animation_keyframe(
+    entry: &Value,
+    fps: f64,
+    value_scale: f64,
+    base_value: f64,
+    relative: bool,
+) -> Option<Value> {
+    let object = entry.as_object()?;
+    let frame = number_value_field(object, &["frame", "f"])
+        .or_else(|| number_value_field(object, &["time", "seconds", "sec"]).map(|time| time * fps))
+        .or_else(|| {
+            number_value_field(object, &["time_ms", "timeMs", "ms"])
+                .map(|time_ms| time_ms * fps / 1000.0)
+        })?;
+    let raw_value = number_value_field(object, &["value", "val", "v"])?;
+    let value = raw_value * value_scale;
+    let value = if relative { base_value + value } else { value };
+    if !value.is_finite() {
+        return None;
+    }
+    Some(json!({
+        "time_ms": scene_frame_to_time_ms(frame, fps)?,
+        "value": value
+    }))
+}
+
+fn scene_frame_to_time_ms(frame: f64, fps: f64) -> Option<u64> {
+    if !frame.is_finite() || frame < 0.0 || !fps.is_finite() || fps <= 0.0 {
+        return None;
+    }
+    let time_ms = frame / fps * 1000.0;
+    (time_ms.is_finite() && time_ms >= 0.0 && time_ms <= u64::MAX as f64)
+        .then_some(time_ms.round() as u64)
 }
 
 fn scene_embedded_timeline_source(object: &Map<String, Value>) -> Option<&Value> {
@@ -2192,8 +2430,8 @@ fn scene_visible_from_object(
     let Some(binding) = value.as_object() else {
         return SceneVisibleConversion::default();
     };
-    let initial_visible = binding.get("value").and_then(value_to_bool).unwrap_or(true);
-    if let Some(property) = string_field(binding, &["user", "property"]) {
+    let initial_visible = scene_visible_initial_value(binding, context);
+    if let Some(property) = scene_visible_bool_property(binding) {
         context.property_bindings.push(json!({
             "property": property,
             "target_node": node_id,
@@ -2205,12 +2443,75 @@ fn scene_visible_from_object(
             static_visible: Some(true),
             initial_opacity: Some(if initial_visible { 1.0 } else { 0.0 }),
         }
+    } else if scene_visible_user_condition_value(binding, context).is_some() {
+        SceneVisibleConversion {
+            static_visible: Some(true),
+            initial_opacity: None,
+        }
     } else {
         SceneVisibleConversion {
             static_visible: Some(initial_visible),
             initial_opacity: None,
         }
     }
+}
+
+fn scene_visible_initial_value(
+    binding: &Map<String, Value>,
+    context: &SceneDocumentBuildContext,
+) -> bool {
+    let authored_visible = binding.get("value").and_then(value_to_bool).unwrap_or(true);
+    let Some(user) = binding.get("user") else {
+        return authored_visible;
+    };
+    if let Some(property) = value_to_string(user) {
+        return context
+            .project_property_defaults
+            .get(&property)
+            .and_then(value_to_bool)
+            .unwrap_or(authored_visible);
+    }
+    let Some(user) = user.as_object() else {
+        return authored_visible;
+    };
+    let Some(property) = string_field(user, &["name", "property", "user"]) else {
+        return authored_visible;
+    };
+    let Some(expected) = value_field(user, &["condition", "value", "equals", "eq"]) else {
+        return authored_visible;
+    };
+    let Some(actual) = context
+        .project_property_defaults
+        .get(&property)
+        .and_then(value_to_string_unwrapped)
+    else {
+        return authored_visible;
+    };
+    normalize_project_key(&actual) == normalize_project_key(&expected)
+}
+
+fn scene_visible_bool_property(binding: &Map<String, Value>) -> Option<String> {
+    binding
+        .get("user")
+        .and_then(value_to_string)
+        .or_else(|| binding.get("property").and_then(value_to_string))
+}
+
+fn scene_visible_user_condition_value(
+    binding: &Map<String, Value>,
+    context: &SceneDocumentBuildContext,
+) -> Option<Value> {
+    let user = binding.get("user")?.as_object()?;
+    let property = string_field(user, &["name", "property", "user"])?;
+    let condition = value_field(user, &["condition", "value", "equals", "eq"])?;
+    let default_visible = scene_visible_initial_value(binding, context);
+    Some(json!({
+        "runtime": "wallpaper-engine-user-condition",
+        "property": property,
+        "condition": condition,
+        "default_visible": default_visible,
+        "authored_value": binding.get("value").cloned().unwrap_or(Value::Bool(true))
+    }))
 }
 
 fn scene_push_numeric_property_binding(
@@ -2770,6 +3071,20 @@ fn scene_node_from_object(
     if let Some(visible) = visible.static_visible {
         node.insert("visible".to_owned(), Value::Bool(visible));
     }
+    if let Some(visibility_condition) = object
+        .get("visible")
+        .and_then(Value::as_object)
+        .and_then(|visible| scene_visible_user_condition_value(visible, context))
+    {
+        scene_merge_node_properties(
+            &mut node,
+            json!({ "visibility_condition": visibility_condition }),
+        );
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-conditional-visibility-ir",
+        );
+    }
     scene_push_numeric_property_binding(
         object,
         &["opacity", "alpha"],
@@ -2779,15 +3094,37 @@ fn scene_node_from_object(
         1.0,
         0.0,
     );
-    if let Some(opacity) = number_value_field(object, &["opacity", "alpha"]) {
+    let blend_opacity = number_value_field(object, &["blend"])
+        .filter(|blend| blend.is_finite())
+        .map(|blend| blend.clamp(0.0, 1.0))
+        .unwrap_or(1.0);
+    let object_opacity = number_value_field(object, &["opacity", "alpha"]);
+    let inferred_blend_opacity = object_opacity
+        .or_else(|| scene_inferred_blend_opacity(object, source_model.as_ref(), context));
+    if let Some(opacity) = inferred_blend_opacity {
         let opacity = if let Some(visible_opacity) = visible.initial_opacity {
             opacity * visible_opacity
         } else {
             opacity
         };
-        node.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
+        node.insert(
+            "opacity".to_owned(),
+            json!((opacity * blend_opacity).clamp(0.0, 1.0)),
+        );
     } else if let Some(opacity) = visible.initial_opacity {
-        node.insert("opacity".to_owned(), json!(opacity.clamp(0.0, 1.0)));
+        node.insert(
+            "opacity".to_owned(),
+            json!((opacity * blend_opacity).clamp(0.0, 1.0)),
+        );
+    } else if blend_opacity < 1.0 {
+        node.insert("opacity".to_owned(), json!(blend_opacity));
+    }
+    if let Some(blend) = scene_blend_properties_from_object(object) {
+        scene_merge_node_properties(&mut node, json!({ "wallpaper_engine_blend": blend }));
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-layer-blend-lowering",
+        );
     }
     if let Some(transform) = scene_transform_from_object(object, &node_id, context) {
         node.insert("transform".to_owned(), transform);
@@ -2795,12 +3132,41 @@ fn scene_node_from_object(
     if let Some(depth) = number_value_field(object, &["parallax_depth", "parallaxDepth"]) {
         node.insert("parallax_depth".to_owned(), json!(depth));
     }
+    if let Some(color_binding) = scene_color_property_binding_from_object(
+        object,
+        &[
+            "color",
+            "fill",
+            "background",
+            "backgroundColor",
+            "backgroundcolor",
+            "tint",
+        ],
+        context,
+    ) {
+        scene_merge_node_properties(&mut node, json!({ "color_binding": color_binding }));
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-user-color-ir",
+        );
+    }
     if let Some(color) = scene_color_from_object(object)
         .or_else(|| scene_builtin_util_default_color(source_model.as_ref()))
     {
         node.insert("color".to_owned(), Value::String(color));
     } else if kind == "text" {
         node.insert("color".to_owned(), Value::String("#ffffff".to_owned()));
+    }
+    if let Some(stroke_binding) = scene_color_property_binding_from_object(
+        object,
+        &["stroke_color", "strokeColor", "stroke"],
+        context,
+    ) {
+        scene_merge_node_properties(&mut node, json!({ "stroke_color_binding": stroke_binding }));
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-user-color-ir",
+        );
     }
     if let Some(stroke) = scene_stroke_color_from_object(object) {
         node.insert("stroke_color".to_owned(), Value::String(stroke));
@@ -4740,7 +5106,7 @@ fn scene_material_textures(
     let spritesheet_enabled = scene_material_spritesheet_enabled(material_json);
     let mut texture_resources = Vec::new();
     let mut render_resource = None;
-    let mut render_properties = None;
+    let mut render_properties = scene_material_runtime_properties(material_json);
     let mut render_kind = None;
     for texture in &texture_paths {
         if texture.starts_with("_rt_") {
@@ -4777,10 +5143,11 @@ fn scene_material_textures(
                     render_resource = Some(decoded.resource_id.clone());
                     render_kind = Some(decoded.render_kind);
                 }
-                if render_properties.is_none()
-                    && let Some(spritesheet) = decoded.spritesheet
-                {
-                    render_properties = Some(json!({ "spritesheet": spritesheet }));
+                if let Some(spritesheet) = decoded.spritesheet {
+                    scene_merge_render_properties(
+                        &mut render_properties,
+                        json!({ "spritesheet": spritesheet }),
+                    );
                 }
                 texture_resources.push(decoded.resource_id);
             } else {
@@ -4831,6 +5198,64 @@ fn scene_material_textures(
         render_properties,
         render_kind,
     )
+}
+
+fn scene_merge_render_properties(properties: &mut Option<Value>, update: Value) {
+    let Some(update) = update.as_object() else {
+        return;
+    };
+    let entry = properties
+        .get_or_insert_with(|| Value::Object(Map::new()))
+        .as_object_mut();
+    let Some(entry) = entry else {
+        return;
+    };
+    for (key, value) in update {
+        entry.insert(key.clone(), value.clone());
+    }
+}
+
+fn scene_material_runtime_properties(material_json: &Value) -> Option<Value> {
+    let passes = scene_material_runtime_passes(material_json);
+    (!passes.is_empty()).then(|| {
+        json!({
+            "material": {
+                "runtime": "wallpaper-engine-material",
+                "passes": passes
+            }
+        })
+    })
+}
+
+fn scene_material_runtime_passes(material_json: &Value) -> Vec<Value> {
+    let Some(passes) = material_json.get("passes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    passes
+        .iter()
+        .filter_map(Value::as_object)
+        .map(|pass| {
+            let mut output = Map::new();
+            for key in ["shader", "blending", "cullmode", "depthtest", "depthwrite"] {
+                if let Some(value) = pass.get(key) {
+                    output.insert(key.to_owned(), value.clone());
+                }
+            }
+            if let Some(combos) = pass.get("combos").and_then(scene_i64_map_from_value) {
+                output.insert("combos".to_owned(), combos);
+            }
+            if let Some(values) = pass.get("constantshadervalues").and_then(Value::as_object) {
+                output.insert(
+                    "constant_shader_values".to_owned(),
+                    Value::Object(values.clone()),
+                );
+            }
+            if let Some(textures) = pass.get("textures") {
+                output.insert("textures".to_owned(), textures.clone());
+            }
+            Value::Object(output)
+        })
+        .collect()
 }
 
 fn scene_material_texture_paths(material_json: &Value) -> Vec<String> {
@@ -6047,6 +6472,97 @@ fn scene_stroke_color_from_object(object: &Map<String, Value>) -> Option<String>
         .iter()
         .filter_map(|key| object.get(*key))
         .find_map(scene_color_from_value)
+}
+
+fn scene_inferred_blend_opacity(
+    object: &Map<String, Value>,
+    source_model: Option<&SceneSourceModelConversion>,
+    context: &mut SceneDocumentBuildContext,
+) -> Option<f64> {
+    let color_blend_mode = scene_color_blend_mode_from_object(object)?;
+    let owned_model_path;
+    let model_path = if let Some(source_model) = source_model {
+        source_model.original_path.as_str()
+    } else {
+        owned_model_path = scene_model_path_from_object(object)?;
+        owned_model_path.as_str()
+    };
+    let key = scene_model_blend_opacity_key(model_path, color_blend_mode);
+    let opacity = context.model_blend_opacity_defaults.get(&key).copied()?;
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-color-blend-opacity-inference",
+    );
+    Some(opacity)
+}
+
+fn scene_blend_properties_from_object(object: &Map<String, Value>) -> Option<Value> {
+    let mut blend = Map::new();
+    for key in ["blend", "blendin", "blendout", "blendtime"] {
+        if let Some(value) = object.get(key) {
+            blend.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(color_blend_mode) = scene_color_blend_mode_from_object(object) {
+        blend.insert("colorBlendMode".to_owned(), json!(color_blend_mode));
+    }
+    (!blend.is_empty()).then_some(Value::Object(blend))
+}
+
+fn scene_color_blend_mode_from_object(object: &Map<String, Value>) -> Option<i64> {
+    ["colorBlendMode", "colorblendmode", "blendMode", "blendmode"]
+        .iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(|value| {
+            value
+                .as_i64()
+                .or_else(|| value.as_str()?.parse().ok())
+                .or_else(|| {
+                    value
+                        .as_object()?
+                        .get("value")
+                        .and_then(scene_color_blend_mode_value)
+                })
+        })
+}
+
+fn scene_color_blend_mode_value(value: &Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str()?.parse().ok())
+}
+
+fn scene_color_property_binding_from_object(
+    object: &Map<String, Value>,
+    keys: &[&str],
+    context: &SceneDocumentBuildContext,
+) -> Option<Value> {
+    for key in keys {
+        let Some(value) = object.get(*key) else {
+            continue;
+        };
+        let Some(binding) = value.as_object() else {
+            continue;
+        };
+        let property = binding
+            .get("user")
+            .and_then(value_to_string)
+            .or_else(|| binding.get("property").and_then(value_to_string))?;
+        let property = property.trim();
+        if property.is_empty() {
+            continue;
+        }
+        let default_color = scene_color_from_value(value).or_else(|| {
+            context
+                .project_property_defaults
+                .get(property)
+                .and_then(scene_color_from_value)
+        })?;
+        return Some(json!({
+            "runtime": "wallpaper-engine-user-color",
+            "property": property,
+            "default": default_color
+        }));
+    }
+    None
 }
 
 fn scene_vector_path_from_object(object: &Map<String, Value>) -> Option<String> {
@@ -7319,6 +7835,81 @@ fn push_unique(items: &mut Vec<String>, value: &str) {
     if !items.iter().any(|item| item == value) {
         items.push(value.to_owned());
     }
+}
+
+fn scene_project_property_defaults(project: &WallpaperEngineProject) -> BTreeMap<String, Value> {
+    let mut defaults = BTreeMap::new();
+    let Some(properties) = project
+        .raw
+        .pointer("/general/properties")
+        .and_then(Value::as_object)
+    else {
+        return defaults;
+    };
+    for (name, spec) in properties {
+        let Some(spec) = spec.as_object() else {
+            continue;
+        };
+        if let Some(value) = spec.get("value").or_else(|| spec.get("default")) {
+            defaults.insert(name.clone(), value.clone());
+        }
+    }
+    defaults
+}
+
+fn scene_model_blend_opacity_defaults(source_scene: Option<&Value>) -> BTreeMap<String, f64> {
+    let mut defaults = BTreeMap::new();
+    let mut conflicts = BTreeSet::new();
+    if let Some(source_scene) = source_scene {
+        scene_collect_model_blend_opacity_defaults(source_scene, &mut defaults, &mut conflicts);
+    }
+    for key in conflicts {
+        defaults.remove(&key);
+    }
+    defaults
+}
+
+fn scene_collect_model_blend_opacity_defaults(
+    value: &Value,
+    defaults: &mut BTreeMap<String, f64>,
+    conflicts: &mut BTreeSet<String>,
+) {
+    match value {
+        Value::Object(object) => {
+            if let (Some(model_path), Some(color_blend_mode), Some(opacity)) = (
+                scene_model_path_from_object(object),
+                scene_color_blend_mode_from_object(object),
+                number_value_field(object, &["opacity", "alpha"]),
+            ) && opacity.is_finite()
+            {
+                let opacity = opacity.clamp(0.0, 1.0);
+                let key = scene_model_blend_opacity_key(&model_path, color_blend_mode);
+                if let Some(existing) = defaults.get(&key) {
+                    if (*existing - opacity).abs() > 0.000_001 {
+                        conflicts.insert(key);
+                    }
+                } else {
+                    defaults.insert(key, opacity);
+                }
+            }
+            for value in object.values() {
+                scene_collect_model_blend_opacity_defaults(value, defaults, conflicts);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                scene_collect_model_blend_opacity_defaults(value, defaults, conflicts);
+            }
+        }
+        Value::String(_) | Value::Number(_) | Value::Bool(_) | Value::Null => {}
+    }
+}
+
+fn scene_model_blend_opacity_key(model_path: &str, color_blend_mode: i64) -> String {
+    format!(
+        "{}\u{1f}{color_blend_mode}",
+        model_path.replace('\\', "/").to_ascii_lowercase()
+    )
 }
 
 fn convert_properties(

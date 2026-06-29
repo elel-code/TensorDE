@@ -34,6 +34,8 @@ pub struct SceneDocument {
     #[serde(default)]
     pub import: SceneImportMetadata,
     #[serde(default)]
+    pub properties: BTreeMap<String, Value>,
+    #[serde(default)]
     pub resources: Vec<SceneResource>,
     #[serde(default)]
     pub nodes: Vec<SceneNode>,
@@ -181,13 +183,15 @@ impl SceneDocument {
         );
     }
 
-    pub fn snapshot_sampled_image_layers_at_with_resolvers<N>(
+    pub fn snapshot_sampled_image_layers_at_with_resolvers<N, T>(
         &self,
         time_ms: u64,
         resolve_property: N,
+        resolve_text_property: T,
         layers: &mut Vec<SceneSnapshotSampledImageLayer>,
     ) where
         N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
     {
         layers.clear();
         let resources = self
@@ -206,6 +210,7 @@ impl SceneDocument {
                 &self.timelines,
                 &self.property_bindings,
                 &resolve_property,
+                &resolve_text_property,
                 None,
                 layers,
             );
@@ -392,6 +397,8 @@ impl SceneDocument {
             kind: SceneNodeKind::Color,
             source: None,
             texture_region: None,
+            effect_motion: SceneNativeEffectMotion::default(),
+            blend_mode: SceneBlendMode::Alpha,
             audio: Vec::new(),
             color: Some(color.to_owned()),
             stroke_color: None,
@@ -741,6 +748,55 @@ impl SceneNode {
         Ok(())
     }
 
+    fn runtime_visibility_matches(
+        &self,
+        resolve_property: &impl Fn(&str) -> Option<f64>,
+        resolve_text_property: &impl Fn(&str) -> Option<String>,
+    ) -> bool {
+        let Some(condition) = self
+            .properties
+            .get("visibility_condition")
+            .and_then(Value::as_object)
+        else {
+            return true;
+        };
+        if condition
+            .get("runtime")
+            .and_then(Value::as_str)
+            .is_some_and(|runtime| runtime != "wallpaper-engine-user-condition")
+        {
+            return true;
+        }
+        let authored_visible = condition
+            .get("authored_value")
+            .and_then(scene_runtime_visibility_value_bool)
+            .unwrap_or(true);
+        let Some(property) = condition
+            .get("property")
+            .and_then(scene_runtime_visibility_value_string)
+        else {
+            return condition
+                .get("default_visible")
+                .and_then(scene_runtime_visibility_value_bool)
+                .unwrap_or(true);
+        };
+        let Some(expected) = condition.get("condition") else {
+            return condition
+                .get("default_visible")
+                .and_then(scene_runtime_visibility_value_bool)
+                .unwrap_or(authored_visible);
+        };
+        let actual_number = resolve_property(&property);
+        let actual_text = resolve_text_property(&property);
+        if actual_number.is_none() && actual_text.is_none() {
+            return condition
+                .get("default_visible")
+                .and_then(scene_runtime_visibility_value_bool)
+                .unwrap_or(authored_visible);
+        }
+        scene_runtime_visibility_condition_matches(expected, actual_number, actual_text.as_deref())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn push_snapshot_layers(
         &self,
@@ -757,7 +813,9 @@ impl SceneNode {
         options: SceneSnapshotBuildOptions,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || !self.runtime_visibility_matches(resolve_property, resolve_text_property)
+        {
             return;
         }
         let mut transform = self.transform;
@@ -839,8 +897,21 @@ impl SceneNode {
 
         if self.kind != SceneNodeKind::Group {
             let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+            let blend_mode = scene_blend_mode_from_properties(&self.properties);
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
+            let color = scene_color_from_properties(
+                &self.properties,
+                "color_binding",
+                resolve_text_property,
+            )
+            .or_else(|| self.color.clone());
+            let stroke_color = scene_color_from_properties(
+                &self.properties,
+                "stroke_color_binding",
+                resolve_text_property,
+            )
+            .or_else(|| self.stroke_color.clone());
             let audio = scene_audio_cues_for_snapshot(&self.audio, resolve_property);
             let layer_effect =
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
@@ -855,9 +926,11 @@ impl SceneNode {
                     .and_then(|resource| resources.get(resource))
                     .map(|resource| resource.source.clone()),
                 texture_region,
+                effect_motion: layer_effect.motion,
+                blend_mode,
                 audio,
-                color: self.color.clone(),
-                stroke_color: self.stroke_color.clone(),
+                color,
+                stroke_color,
                 stroke_width: self.stroke_width,
                 corner_radius,
                 width,
@@ -914,10 +987,13 @@ impl SceneNode {
         timelines: &[SceneTimeline],
         property_bindings: &[ScenePropertyBinding],
         resolve_property: &impl Fn(&str) -> Option<f64>,
+        resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
         output: &mut Vec<SceneSnapshotSampledImageLayer>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || !self.runtime_visibility_matches(resolve_property, resolve_text_property)
+        {
             return;
         }
         let mut transform = self.transform;
@@ -988,6 +1064,7 @@ impl SceneNode {
                     timelines,
                     property_bindings,
                     resolve_property,
+                    resolve_text_property,
                     visibility,
                     output,
                 );
@@ -1000,6 +1077,7 @@ impl SceneNode {
                 .resource
                 .as_deref()
                 .and_then(|resource| resources.get(resource));
+            let blend_mode = scene_blend_mode_from_properties(&self.properties);
             let layer_effect =
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
@@ -1011,6 +1089,7 @@ impl SceneNode {
                 height,
                 mesh: self.mesh.clone(),
                 effect_motion: layer_effect.motion,
+                blend_mode,
                 fit: self.fit,
                 opacity: layer_opacity,
                 transform: layer_transform,
@@ -1029,6 +1108,7 @@ impl SceneNode {
                 timelines,
                 property_bindings,
                 resolve_property,
+                resolve_text_property,
                 visibility,
                 output,
             );
@@ -1050,7 +1130,9 @@ impl SceneNode {
         visibility: Option<SceneSnapshotVisibility>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
-        if !self.visible {
+        if !self.visible
+            || !self.runtime_visibility_matches(resolve_property, resolve_text_property)
+        {
             return;
         }
         let mut transform = self.transform;
@@ -1130,8 +1212,21 @@ impl SceneNode {
         }
 
         if self.subtree_self_has_solid_visual_geometry() {
+            let blend_mode = scene_blend_mode_from_properties(&self.properties);
             let text = scene_text_from_properties(&self.properties, resolve_text_property)
                 .or_else(|| self.text.clone());
+            let color = scene_color_from_properties(
+                &self.properties,
+                "color_binding",
+                resolve_text_property,
+            )
+            .or_else(|| self.color.clone());
+            let stroke_color = scene_color_from_properties(
+                &self.properties,
+                "stroke_color_binding",
+                resolve_text_property,
+            )
+            .or_else(|| self.stroke_color.clone());
             let layer_effect =
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
@@ -1141,9 +1236,11 @@ impl SceneNode {
                 kind: self.kind,
                 source: None,
                 texture_region: None,
+                effect_motion: layer_effect.motion,
+                blend_mode,
                 audio: Vec::new(),
-                color: self.color.clone(),
-                stroke_color: self.stroke_color.clone(),
+                color,
+                stroke_color,
                 stroke_width: self.stroke_width,
                 corner_radius,
                 width,
@@ -1211,6 +1308,7 @@ impl SceneNode {
             .and_then(|resource| resources.get(resource))
             .map(|resource| resource.source.clone());
         let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+        let blend_mode = scene_blend_mode_from_properties(&self.properties);
         let layer_kind = if source.is_some() {
             SceneNodeKind::Image
         } else {
@@ -1263,6 +1361,8 @@ impl SceneNode {
                 kind: layer_kind,
                 source: source.clone(),
                 texture_region,
+                effect_motion: SceneNativeEffectMotion::default(),
+                blend_mode,
                 audio: if index == 0 {
                     self.audio.clone()
                 } else {
@@ -1317,6 +1417,7 @@ impl SceneNode {
             return true;
         }
         let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
+        let blend_mode = scene_blend_mode_from_properties(&self.properties);
         output.reserve(particle_count as usize);
         let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
         for index in 0..particle_count {
@@ -1353,6 +1454,7 @@ impl SceneNode {
                 height: Some(settings.particle_height),
                 mesh: None,
                 effect_motion: SceneNativeEffectMotion::default(),
+                blend_mode,
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: particle_transform,
@@ -1385,6 +1487,7 @@ impl SceneNode {
         if has_source {
             return true;
         }
+        let blend_mode = scene_blend_mode_from_properties(&self.properties);
         output.reserve(particle_count as usize);
         let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
         for index in 0..particle_count {
@@ -1419,6 +1522,8 @@ impl SceneNode {
                 kind: settings.shape,
                 source: None,
                 texture_region: None,
+                effect_motion: SceneNativeEffectMotion::default(),
+                blend_mode,
                 audio: Vec::new(),
                 color: Some(settings.color.clone()),
                 stroke_color: None,
@@ -1526,11 +1631,82 @@ fn push_native_effect_snapshot_layers(
         let file = effect.file.to_ascii_lowercase();
         if file.contains("lightshafts") {
             push_native_lightshaft_snapshot_layers(effect_index, effect, base, time_ms, output);
+        } else if file.contains("watercaustics") {
+            push_native_water_caustics_snapshot_layers(effect_index, effect, base, time_ms, output);
         } else if file.contains("enhanced_simple_audio_bars") {
             push_native_audio_bar_snapshot_layers(effect_index, effect, base, time_ms, output);
         } else if file.contains("tech_circle") {
             push_native_tech_circle_snapshot_layers(effect_index, effect, base, time_ms, output);
         }
+    }
+}
+
+fn push_native_water_caustics_snapshot_layers(
+    effect_index: usize,
+    effect: &SceneEffect,
+    base: &SceneSnapshotLayer,
+    time_ms: u64,
+    output: &mut Vec<SceneSnapshotLayer>,
+) {
+    let Some((width, height)) = base.width.zip(base.height) else {
+        return;
+    };
+    if width <= 0.0 || height <= 0.0 || base.opacity <= 0.0 {
+        return;
+    };
+    let pass = effect.passes.first();
+    let color = pass
+        .and_then(|pass| {
+            scene_effect_pass_color(
+                pass,
+                &[
+                    "ui_editor_properties_color_start",
+                    "ui_editor_properties_color_end",
+                    "color",
+                ],
+            )
+        })
+        .unwrap_or_else(|| "#4fcfff".to_owned());
+    let brightness = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["ui_editor_properties_brightness"], 1.0))
+        .unwrap_or(1.0)
+        .clamp(0.0, 4.0);
+    let speed = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["ui_editor_properties_speed", "speed"], 0.25))
+        .unwrap_or(0.25);
+    let distortion = pass
+        .map(|pass| scene_effect_pass_f64(pass, &["ui_editor_properties_distortion"], 1.0))
+        .unwrap_or(1.0)
+        .abs()
+        .clamp(0.0, 4.0);
+    let time = time_ms as f64 / 1000.0;
+    let phase = time * speed * std::f64::consts::TAU + effect.id.unwrap_or_default() as f64 * 0.11;
+    let base_opacity = (0.045 + brightness * 0.035).clamp(0.035, 0.18) * base.opacity;
+    for index in 0..5 {
+        let t = index as f64 / 4.0;
+        let wave = (phase + index as f64 * 1.37).sin();
+        let cross = (phase * 0.73 + index as f64 * 0.91).cos();
+        let transform = base.transform.compose(SceneTransform {
+            x: (t - 0.5) * width * 0.72 + wave * width * 0.025 * distortion,
+            y: cross * height * 0.08,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_deg: -24.0 + index as f64 * 12.0 + wave * 3.0,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+        });
+        output.push(scene_native_effect_visual_layer(
+            format!("{}::water-caustics-{effect_index}-{index}", base.id),
+            SceneNodeKind::Rectangle,
+            Some(width * (0.28 + t * 0.08)),
+            Some((height * 0.09).max(8.0)),
+            Some(color.clone()),
+            None,
+            None,
+            base_opacity * (1.0 - t * 0.25),
+            transform,
+            base.fit,
+        ));
     }
 }
 
@@ -1708,6 +1884,8 @@ fn scene_native_effect_visual_layer(
         kind,
         source: None,
         texture_region: None,
+        effect_motion: SceneNativeEffectMotion::default(),
+        blend_mode: SceneBlendMode::Alpha,
         audio: Vec::new(),
         color,
         stroke_color,
@@ -1792,6 +1970,7 @@ fn scene_native_effect_adjustment_at(
         let native_motion = file.contains("waterwaves")
             || file.contains("waterripple")
             || file.contains("waterflow")
+            || file.contains("watercaustics")
             || file.contains("cloudmotion")
             || file.contains("foliagesway")
             || file.contains("auto_sway")
@@ -2421,6 +2600,15 @@ pub enum SceneTextAlign {
     End,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneBlendMode {
+    #[default]
+    Alpha,
+    Additive,
+    Max,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneTransform {
     #[serde(default)]
@@ -2871,6 +3059,8 @@ pub struct SceneSnapshotLayer {
     pub kind: SceneNodeKind,
     pub source: Option<PackagePath>,
     pub texture_region: Option<SceneTextureRegion>,
+    pub effect_motion: SceneNativeEffectMotion,
+    pub blend_mode: SceneBlendMode,
     pub audio: Vec<SceneAudioCue>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
@@ -2901,12 +3091,13 @@ pub struct SceneSnapshotSampledImageLayer {
     pub height: Option<f64>,
     pub mesh: Option<Arc<SceneMesh>>,
     pub effect_motion: SceneNativeEffectMotion,
+    pub blend_mode: SceneBlendMode,
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 pub struct SceneNativeEffectMotion {
     pub wave_x: f64,
     pub wave_y: f64,
@@ -3040,6 +3231,99 @@ fn scene_snapshot_transform_point(
         return None;
     }
     Some((scene_x, scene_y))
+}
+
+fn scene_runtime_visibility_condition_matches(
+    expected: &Value,
+    actual_number: Option<f64>,
+    actual_text: Option<&str>,
+) -> bool {
+    let expected = expected.get("value").unwrap_or(expected);
+    if let Some(expected_bool) = scene_runtime_visibility_value_bool(expected) {
+        if let Some(actual_number) = actual_number {
+            return (actual_number.abs() > f64::EPSILON) == expected_bool;
+        }
+        return actual_text
+            .and_then(scene_runtime_visibility_text_bool)
+            .is_some_and(|actual| actual == expected_bool);
+    }
+    if let Some(expected_number) = scene_runtime_visibility_value_number(expected) {
+        if let Some(actual_number) = actual_number {
+            return (actual_number - expected_number).abs() <= 0.000_001;
+        }
+        return actual_text
+            .and_then(scene_runtime_visibility_text_number)
+            .is_some_and(|actual| (actual - expected_number).abs() <= 0.000_001);
+    }
+    let Some(expected_text) = scene_runtime_visibility_value_string(expected) else {
+        return false;
+    };
+    if let Some(actual_text) = actual_text
+        && scene_runtime_visibility_normalized_text(actual_text)
+            == scene_runtime_visibility_normalized_text(&expected_text)
+    {
+        return true;
+    }
+    if let Some(expected_number) = scene_runtime_visibility_text_number(&expected_text)
+        && let Some(actual_number) = actual_number
+    {
+        return (actual_number - expected_number).abs() <= 0.000_001;
+    }
+    false
+}
+
+fn scene_runtime_visibility_value_bool(value: &Value) -> Option<bool> {
+    match value.get("value").unwrap_or(value) {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => scene_runtime_visibility_text_bool(value),
+        _ => None,
+    }
+}
+
+fn scene_runtime_visibility_value_number(value: &Value) -> Option<f64> {
+    let number = match value.get("value").unwrap_or(value) {
+        Value::Bool(value) => {
+            if *value {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(value) => value.as_f64()?,
+        Value::String(value) => scene_runtime_visibility_text_number(value)?,
+        _ => return None,
+    };
+    number.is_finite().then_some(number)
+}
+
+fn scene_runtime_visibility_value_string(value: &Value) -> Option<String> {
+    match value.get("value").unwrap_or(value) {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn scene_runtime_visibility_text_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "on" => Some(true),
+        "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn scene_runtime_visibility_text_number(value: &str) -> Option<f64> {
+    value
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+}
+
+fn scene_runtime_visibility_normalized_text(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -3225,6 +3509,50 @@ fn scene_texture_region_from_properties(
     .validate()
 }
 
+fn scene_blend_mode_from_properties(properties: &BTreeMap<String, Value>) -> SceneBlendMode {
+    properties
+        .get("wallpaper_engine_blend")
+        .and_then(Value::as_object)
+        .and_then(|blend| blend.get("colorBlendMode"))
+        .and_then(scene_blend_mode_from_wallpaper_engine_color_blend_mode)
+        .or_else(|| {
+            properties
+                .get("material")
+                .and_then(Value::as_object)
+                .and_then(scene_blend_mode_from_material)
+        })
+        .unwrap_or_default()
+}
+
+fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
+    value: &Value,
+) -> Option<SceneBlendMode> {
+    let mode = value
+        .as_i64()
+        .or_else(|| value.as_str()?.parse::<i64>().ok())?;
+    match mode {
+        3 => Some(SceneBlendMode::Additive),
+        7 => Some(SceneBlendMode::Max),
+        _ => None,
+    }
+}
+
+fn scene_blend_mode_from_material(
+    material: &serde_json::Map<String, Value>,
+) -> Option<SceneBlendMode> {
+    material
+        .get("passes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|pass| pass.get("blending").and_then(Value::as_str))
+        .find_map(|blending| match blending.to_ascii_lowercase().as_str() {
+            "additive" | "add" => Some(SceneBlendMode::Additive),
+            _ => None,
+        })
+}
+
 fn scene_text_from_properties(
     properties: &BTreeMap<String, Value>,
     resolve_text_property: &impl Fn(&str) -> Option<String>,
@@ -3235,6 +3563,26 @@ fn scene_text_from_properties(
         .and_then(|binding| binding.get("property"))
         .and_then(Value::as_str)?;
     resolve_scene_text_property(resolve_text_property, property)
+}
+
+fn scene_color_from_properties(
+    properties: &BTreeMap<String, Value>,
+    binding_key: &str,
+    resolve_text_property: &impl Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let binding = properties.get(binding_key)?.as_object()?;
+    if binding
+        .get("runtime")
+        .and_then(Value::as_str)
+        .is_some_and(|runtime| runtime != "wallpaper-engine-user-color")
+    {
+        return None;
+    }
+    let property = binding.get("property").and_then(Value::as_str)?;
+    resolve_scene_text_property(resolve_text_property, property)
+        .as_deref()
+        .and_then(scene_effect_color_string)
+        .or_else(|| binding.get("default").and_then(scene_effect_value_color))
 }
 
 fn scene_audio_cues_for_snapshot(
@@ -3598,6 +3946,38 @@ mod tests {
     }
 
     #[test]
+    fn wallpaper_engine_color_blend_mode_max_reaches_snapshot_layer() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-caustic",
+                    "type": "image",
+                    "source": "assets/caustic.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-caustic",
+                    "type": "image",
+                    "resource": "resource-caustic",
+                    "properties": {
+                        "wallpaper_engine_blend": {
+                            "colorBlendMode": 7
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "node-caustic");
+        assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Max);
+    }
+
+    #[test]
     fn text_binding_resolver_overrides_static_snapshot_text() {
         let document: SceneDocument = serde_json::from_value(json!({
             "nodes": [
@@ -3625,6 +4005,97 @@ mod tests {
             |property| (property == "scene.clock.local.strftime:%H:%M").then(|| "23:45".to_owned()),
         );
         assert_eq!(dynamic_snapshot.layers[0].text.as_deref(), Some("23:45"));
+    }
+
+    #[test]
+    fn visibility_condition_uses_runtime_choice_property() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "default-theme",
+                    "type": "rectangle",
+                    "width": 10.0,
+                    "height": 10.0,
+                    "color": "#00b7ff",
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "theme",
+                            "condition": "1",
+                            "default_visible": true,
+                            "authored_value": true
+                        }
+                    }
+                },
+                {
+                    "id": "solid-theme",
+                    "type": "rectangle",
+                    "width": 10.0,
+                    "height": 10.0,
+                    "color": "#ffffff",
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "theme",
+                            "condition": "2",
+                            "default_visible": false,
+                            "authored_value": false
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let default_snapshot = document.snapshot_at_with_resolvers(0, |_| None, |_| None);
+        assert_eq!(default_snapshot.layers.len(), 1);
+        assert_eq!(default_snapshot.layers[0].id, "default-theme");
+
+        let switched_snapshot = document.snapshot_at_with_resolvers(
+            0,
+            |property| (property == "theme").then_some(2.0),
+            |property| (property == "theme").then_some("2".to_owned()),
+        );
+        assert_eq!(switched_snapshot.layers.len(), 1);
+        assert_eq!(switched_snapshot.layers[0].id, "solid-theme");
+    }
+
+    #[test]
+    fn user_color_binding_overrides_static_snapshot_color() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-panel",
+                    "type": "rectangle",
+                    "width": 10.0,
+                    "height": 10.0,
+                    "color": "#ffffff",
+                    "properties": {
+                        "color_binding": {
+                            "runtime": "wallpaper-engine-user-color",
+                            "property": "panel_color",
+                            "default": "#003ca4"
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let default_snapshot = document.snapshot_at_with_resolvers(0, |_| None, |_| None);
+        assert_eq!(default_snapshot.layers[0].color.as_deref(), Some("#003ca4"));
+
+        let switched_snapshot = document.snapshot_at_with_resolvers(
+            0,
+            |_| None,
+            |property| (property == "panel_color").then_some("0 0.59216 0.73725".to_owned()),
+        );
+        assert_eq!(
+            switched_snapshot.layers[0].color.as_deref(),
+            Some("#0097bc")
+        );
     }
 
     #[test]
@@ -3891,7 +4362,12 @@ mod tests {
 
         document.validate().unwrap();
         let mut layers = Vec::new();
-        document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, &mut layers);
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut layers,
+        );
         assert_eq!(layers.len(), 1);
         assert!(layers[0].effect_motion.is_active());
         assert!((layers[0].effect_motion.wave_phase - 1.0).abs() < 0.001);
@@ -3937,11 +4413,64 @@ mod tests {
 
         document.validate().unwrap();
         let mut layers = Vec::new();
-        document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, &mut layers);
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut layers,
+        );
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].transform.x, 25.0);
         assert_eq!(layers[0].transform.y, 50.0);
         assert!(layers[0].effect_motion.is_active());
+    }
+
+    #[test]
+    fn watercaustics_effect_emits_native_visual_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "node-water-layer",
+                    "type": "rectangle",
+                    "width": 400,
+                    "height": 200,
+                    "opacity": 0.8,
+                    "effects": [
+                        {
+                            "file": "effects/watercaustics/effect.json",
+                            "runtime": "native-water-caustics",
+                            "id": 641,
+                            "passes": [
+                                {
+                                    "constant_shader_values": {
+                                        "ui_editor_properties_brightness": 2.48,
+                                        "ui_editor_properties_speed": 0.3,
+                                        "ui_editor_properties_distortion": 1.0,
+                                        "ui_editor_properties_color_start": "0 0.7 1"
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let snapshot = document.snapshot_at_with_property_resolver(1000, |_| None);
+        let caustic_layers = snapshot
+            .layers
+            .iter()
+            .filter(|layer| layer.id.contains("water-caustics"))
+            .collect::<Vec<_>>();
+        assert_eq!(caustic_layers.len(), 5);
+        assert!(caustic_layers.iter().all(|layer| layer.opacity > 0.0));
+        assert!(
+            caustic_layers
+                .iter()
+                .any(|layer| layer.color.as_deref() == Some("#00b3ff"))
+        );
     }
 
     #[test]

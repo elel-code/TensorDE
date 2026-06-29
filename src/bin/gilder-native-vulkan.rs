@@ -257,6 +257,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_video_layer = false;
     let mut scene_root = None::<PathBuf>;
     let mut scene_snapshot_time_ms = 0u64;
+    let mut scene_property_overrides =
+        std::collections::BTreeMap::<String, serde_json::Value>::new();
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
@@ -447,6 +449,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_root = Some(PathBuf::from(
                     args.next().ok_or("--scene-root requires PATH")?,
                 ));
+            }
+            "--scene-property" => {
+                let value = args.next().ok_or("--scene-property requires key=value")?;
+                let (key, value) = parse_scene_property_override(&value)?;
+                scene_property_overrides.insert(key, value);
             }
             "--loop" => {}
             "--no-loop" => {}
@@ -724,6 +731,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_text_font_size,
                 scene_snapshot_time_ms,
                 target_max_fps,
+                &scene_property_overrides,
             )?;
             json!(native_vulkan_scene_runtime_snapshot_from_plan(&plan)?)
         }
@@ -756,6 +764,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_text_font_size,
                 scene_snapshot_time_ms,
                 target_max_fps,
+                &scene_property_overrides,
             )?;
             #[cfg(feature = "native-vulkan-video")]
             let video_bridge = native_vulkan_scene_video_bridge_options_from_plan(
@@ -983,13 +992,19 @@ fn scene_cli_plan(
     text_font_size: Option<f64>,
     snapshot_time_ms: u64,
     target_max_fps: Option<u32>,
+    scene_property_overrides: &std::collections::BTreeMap<String, serde_json::Value>,
 ) -> Result<SceneWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
         if !source_is_video && scene_cli_source_is_gscene(&source) {
             let package_root =
                 scene_root.unwrap_or_else(|| scene_cli_default_gscene_package_root(&source));
-            let (render_properties, cursor_parallax_input_ready) =
+            let (mut render_properties, cursor_parallax_input_ready) =
                 scene_cli_cursor_parallax_properties(&output_name);
+            if !scene_property_overrides.is_empty() {
+                render_properties
+                    .get_or_insert_with(std::collections::BTreeMap::new)
+                    .extend(scene_property_overrides.clone());
+            }
             return Ok(scene_wallpaper_plan_from_gscene_path_with_properties(
                 output_name,
                 &package_root,
@@ -1237,6 +1252,31 @@ fn scene_cli_cursor_parallax_properties_from_override(
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_scene_property_override(
+    value: &str,
+) -> Result<(String, serde_json::Value), Box<dyn std::error::Error>> {
+    let (key, raw_value) = value
+        .split_once('=')
+        .ok_or("--scene-property requires key=value")?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("--scene-property key must not be empty".into());
+    }
+    let raw_value = raw_value.trim();
+    let value = match raw_value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" => serde_json::Value::Bool(true),
+        "false" | "off" | "no" => serde_json::Value::Bool(false),
+        _ => raw_value
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite())
+            .map(serde_json::Value::from)
+            .unwrap_or_else(|| serde_json::Value::String(raw_value.to_owned())),
+    };
+    Ok((key.to_owned(), value))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn scene_cli_default_gscene_package_root(path: &Path) -> PathBuf {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     if parent.file_name().and_then(|name| name.to_str()) == Some("assets")
@@ -1254,6 +1294,8 @@ fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         kind,
         source: None,
         texture_region: None,
+        effect_motion: Default::default(),
+        blend_mode: Default::default(),
         audio: Vec::new(),
         color: None,
         stroke_color: None,
@@ -1337,6 +1379,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &std::collections::BTreeMap::new(),
         )
         .expect("image scene plan");
 
@@ -1403,6 +1446,21 @@ mod tests {
             properties["scene.parallax.y"],
             serde_json::Value::from(-1.0)
         );
+    }
+
+    #[test]
+    fn scene_cli_property_override_parses_values() {
+        let (key, value) = parse_scene_property_override("newproperty=2").unwrap();
+        assert_eq!(key, "newproperty");
+        assert_eq!(value, serde_json::json!(2.0));
+
+        let (key, value) = parse_scene_property_override("logo=false").unwrap();
+        assert_eq!(key, "logo");
+        assert_eq!(value, serde_json::json!(false));
+
+        let (key, value) = parse_scene_property_override("schemecolor=#00b7ff").unwrap();
+        assert_eq!(key, "schemecolor");
+        assert_eq!(value, serde_json::json!("#00b7ff"));
     }
 
     #[test]
@@ -1475,6 +1533,8 @@ mod tests {
         )
         .unwrap();
         let source = assets.join("scene.gscene.json");
+        let mut scene_property_overrides = std::collections::BTreeMap::new();
+        scene_property_overrides.insert("scene_x".to_owned(), serde_json::json!(7.0));
 
         let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),
@@ -1493,6 +1553,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &scene_property_overrides,
         )
         .expect("gscene scene plan");
 
@@ -1502,10 +1563,10 @@ mod tests {
         assert!(!plan.cursor_parallax_input_ready);
         assert_eq!(
             plan.scene_input_properties["scene_x"],
-            serde_json::json!(42.0)
+            serde_json::json!(7.0)
         );
         assert_eq!(plan.audio_cue_count, 1);
-        assert_eq!(plan.layers[0].transform.x, 42.0);
+        assert_eq!(plan.layers[0].transform.x, 7.0);
         assert!(
             plan.layers[0]
                 .source
@@ -1543,6 +1604,7 @@ mod tests {
             None,
             1357,
             None,
+            &std::collections::BTreeMap::new(),
         )
         .expect("color scene plan");
 
@@ -1577,6 +1639,7 @@ mod tests {
             Some(36.0),
             975,
             Some(30),
+            &std::collections::BTreeMap::new(),
         )
         .expect("text scene plan");
 
@@ -1617,6 +1680,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &std::collections::BTreeMap::new(),
         )
         .expect("path scene plan");
 
@@ -1659,6 +1723,7 @@ mod tests {
             None,
             4321,
             Some(240),
+            &std::collections::BTreeMap::new(),
         )
         .expect("video scene plan");
 
@@ -1727,7 +1792,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
-         [--scene-time-ms MS]\n\
+         [--scene-time-ms MS] [--scene-property key=value]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\

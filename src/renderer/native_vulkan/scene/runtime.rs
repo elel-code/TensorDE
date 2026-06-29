@@ -5,8 +5,8 @@ use std::path::PathBuf;
 
 use crate::core::scene::{SceneSnapshotLayer, SceneSnapshotSampledImageLayer};
 use crate::core::{
-    FitMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystemStatus, SceneTextAlign,
-    SceneTextureRegion, SceneTransform,
+    FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystemStatus,
+    SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
 use crate::renderer::SceneRenderLayer;
 
@@ -309,6 +309,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 resource_index: step.resource_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
+                blend_mode: step.blend_mode,
                 fit: Some(step.fit),
                 texture_region: step.texture_region,
             })
@@ -598,6 +599,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 resource_index,
                 first_index: range.first_index,
                 index_count: range.index_count,
+                blend_mode: layer.blend_mode,
                 fit: Some(fit),
                 texture_region,
             });
@@ -738,6 +740,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 resource_index,
                 first_index: range.first_index,
                 index_count: range.index_count,
+                blend_mode: layer.blend_mode,
                 fit: Some(fit),
                 texture_region,
             });
@@ -961,6 +964,8 @@ fn native_vulkan_scene_render_layer_from_snapshot_for_geometry(
         kind: layer.kind,
         source: None,
         texture_region: layer.texture_region,
+        effect_motion: layer.effect_motion,
+        blend_mode: layer.blend_mode,
         audio: Vec::new(),
         color: layer.color.clone(),
         stroke_color: layer.stroke_color.clone(),
@@ -1113,6 +1118,7 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub fit: FitMode,
+    pub blend_mode: SceneBlendMode,
     pub texture_region: Option<SceneTextureRegion>,
     pub opacity: f64,
     pub width: f64,
@@ -1126,6 +1132,7 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub fit: FitMode,
+    pub blend_mode: SceneBlendMode,
     pub texture_region: Option<SceneTextureRegion>,
     pub pipeline: &'static str,
     pub resource_index: u32,
@@ -1327,6 +1334,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_id: quad.layer_id,
                 source: quad.source,
                 fit: quad.fit,
+                blend_mode: quad.blend_mode,
                 texture_region: quad.texture_region,
                 opacity: quad.opacity,
                 width: quad.width,
@@ -1347,6 +1355,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_id: step.layer_id,
                 source: step.source,
                 fit: step.fit,
+                blend_mode: step.blend_mode,
                 texture_region: step.texture_region,
                 pipeline: step.pipeline,
                 resource_index: step.resource_index,
@@ -2038,6 +2047,8 @@ mod tests {
             kind,
             source: None,
             texture_region: None,
+            effect_motion: Default::default(),
+            blend_mode: SceneBlendMode::Alpha,
             audio: Vec::new(),
             color: None,
             stroke_color: None,
@@ -2066,6 +2077,8 @@ mod tests {
             kind,
             source: None,
             texture_region: None,
+            effect_motion: Default::default(),
+            blend_mode: SceneBlendMode::Alpha,
             audio: Vec::new(),
             color: None,
             stroke_color: None,
@@ -3287,7 +3300,9 @@ mod tests {
             snapshot.vulkanalia_draw_pass.pipeline_labels,
             vec![
                 "scene-solid-quad-alpha-blend",
-                "scene-sampled-image-alpha-blend"
+                "scene-sampled-image-alpha-blend",
+                "scene-sampled-image-additive-blend",
+                "scene-sampled-image-max-blend"
             ]
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);

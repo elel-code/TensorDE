@@ -32,22 +32,36 @@ pub(in crate::renderer) fn scene_input_properties_from_sources(
 ) -> BTreeMap<String, Value> {
     let mut properties = BTreeMap::new();
     for binding in &document.property_bindings {
-        if let Some(value) = render_properties.and_then(|source| source.get(&binding.property))
-            && scene_runtime_number(value).is_some()
-        {
+        if let Some(value) = render_properties.and_then(|source| source.get(&binding.property)) {
             properties.insert(binding.property.clone(), value.clone());
             continue;
         }
         if let Some(default) = manifest_properties
             .and_then(|source| source.get(&binding.property))
-            .and_then(scene_manifest_property_default_number)
+            .and_then(scene_manifest_property_default_value)
         {
-            properties.insert(binding.property.clone(), Value::from(default));
+            properties.insert(binding.property.clone(), default);
+            continue;
+        }
+        if let Some(default) = document
+            .properties
+            .get(&binding.property)
+            .and_then(scene_document_property_default_value)
+        {
+            properties.insert(binding.property.clone(), default);
         }
     }
     for node in &document.nodes {
+        scene_collect_bound_input_properties(
+            node,
+            &document.properties,
+            render_properties,
+            manifest_properties,
+            &mut properties,
+        );
         scene_collect_audio_condition_properties(
             node,
+            &document.properties,
             render_properties,
             manifest_properties,
             &mut properties,
@@ -70,8 +84,49 @@ pub(in crate::renderer) fn scene_input_properties_from_sources(
     properties
 }
 
+fn scene_collect_bound_input_properties(
+    node: &SceneNode,
+    document_properties: &BTreeMap<String, Value>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+    manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
+    output: &mut BTreeMap<String, Value>,
+) {
+    for binding_key in [
+        "visibility_condition",
+        "color_binding",
+        "stroke_color_binding",
+        "text_binding",
+    ] {
+        if let Some(property) = node
+            .properties
+            .get(binding_key)
+            .and_then(Value::as_object)
+            .and_then(|binding| binding.get("property"))
+            .and_then(Value::as_str)
+        {
+            scene_collect_input_property(
+                property,
+                document_properties,
+                render_properties,
+                manifest_properties,
+                output,
+            );
+        }
+    }
+    for child in &node.children {
+        scene_collect_bound_input_properties(
+            child,
+            document_properties,
+            render_properties,
+            manifest_properties,
+            output,
+        );
+    }
+}
+
 fn scene_collect_audio_condition_properties(
     node: &SceneNode,
+    document_properties: &BTreeMap<String, Value>,
     render_properties: Option<&BTreeMap<String, Value>>,
     manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
     output: &mut BTreeMap<String, Value>,
@@ -80,6 +135,7 @@ fn scene_collect_audio_condition_properties(
         for condition in &cue.active_conditions {
             scene_collect_input_property(
                 condition.property.trim(),
+                document_properties,
                 render_properties,
                 manifest_properties,
                 output,
@@ -89,6 +145,7 @@ fn scene_collect_audio_condition_properties(
     for child in &node.children {
         scene_collect_audio_condition_properties(
             child,
+            document_properties,
             render_properties,
             manifest_properties,
             output,
@@ -98,6 +155,7 @@ fn scene_collect_audio_condition_properties(
 
 fn scene_collect_input_property(
     property: &str,
+    document_properties: &BTreeMap<String, Value>,
     render_properties: Option<&BTreeMap<String, Value>>,
     manifest_properties: Option<&BTreeMap<String, PropertySpec>>,
     output: &mut BTreeMap<String, Value>,
@@ -105,17 +163,22 @@ fn scene_collect_input_property(
     if property.is_empty() || output.contains_key(property) {
         return;
     }
-    if let Some(value) = render_properties.and_then(|source| source.get(property))
-        && scene_runtime_number(value).is_some()
-    {
+    if let Some(value) = render_properties.and_then(|source| source.get(property)) {
         output.insert(property.to_owned(), value.clone());
         return;
     }
     if let Some(default) = manifest_properties
         .and_then(|source| source.get(property))
-        .and_then(scene_manifest_property_default_number)
+        .and_then(scene_manifest_property_default_value)
     {
-        output.insert(property.to_owned(), Value::from(default));
+        output.insert(property.to_owned(), default);
+        return;
+    }
+    if let Some(default) = document_properties
+        .get(property)
+        .and_then(scene_document_property_default_value)
+    {
+        output.insert(property.to_owned(), default);
     }
 }
 
@@ -183,22 +246,44 @@ pub(in crate::renderer) fn scene_runtime_text_property_value_with_inputs(
     input_properties: &BTreeMap<String, Value>,
 ) -> Option<String> {
     let property = property.trim();
-    let zoned = scene_runtime_clock_zoned(input_properties)?;
+    if let Some(value) = input_properties.get(property).and_then(scene_runtime_text) {
+        return Some(value);
+    }
     match property {
-        "scene.clock.local.time.hm24" => Some(zoned.strftime("%H:%M").to_string()),
-        "scene.clock.local.time.hms24" => Some(zoned.strftime("%H:%M:%S").to_string()),
-        "scene.clock.local.time.hm12" => Some(zoned.strftime("%I:%M").to_string()),
-        "scene.clock.local.time.hms12" => Some(zoned.strftime("%I:%M:%S").to_string()),
+        "scene.clock.local.time.hm24" => Some(
+            scene_runtime_clock_zoned(input_properties)?
+                .strftime("%H:%M")
+                .to_string(),
+        ),
+        "scene.clock.local.time.hms24" => Some(
+            scene_runtime_clock_zoned(input_properties)?
+                .strftime("%H:%M:%S")
+                .to_string(),
+        ),
+        "scene.clock.local.time.hm12" => Some(
+            scene_runtime_clock_zoned(input_properties)?
+                .strftime("%I:%M")
+                .to_string(),
+        ),
+        "scene.clock.local.time.hms12" => Some(
+            scene_runtime_clock_zoned(input_properties)?
+                .strftime("%I:%M:%S")
+                .to_string(),
+        ),
         "scene.clock.local.we-date.vertical-month-abbrev" => {
+            let zoned = scene_runtime_clock_zoned(input_properties)?;
             let day = scene_runtime_vertical_text(&zoned.strftime("%d").to_string());
             let month =
                 scene_runtime_vertical_text(&zoned.strftime("%b").to_string().to_uppercase());
             let year = scene_runtime_vertical_text(&zoned.strftime("%Y").to_string());
             Some(format!("{day}\n\n{month}\n\n{year}"))
         }
-        "scene.clock.local.we-day.vertical-weekday-abbrev-upper" => Some(
-            scene_runtime_vertical_text(&zoned.strftime("%a").to_string().to_uppercase()),
-        ),
+        "scene.clock.local.we-day.vertical-weekday-abbrev-upper" => {
+            let zoned = scene_runtime_clock_zoned(input_properties)?;
+            Some(scene_runtime_vertical_text(
+                &zoned.strftime("%a").to_string().to_uppercase(),
+            ))
+        }
         _ => None,
     }
 }
@@ -366,6 +451,16 @@ fn scene_runtime_number(value: &Value) -> Option<f64> {
     number.is_finite().then_some(number)
 }
 
+fn scene_runtime_text(value: &Value) -> Option<String> {
+    match value {
+        Value::String(value) => Some(value.clone()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Object(object) => object.get("value").and_then(scene_runtime_text),
+        Value::Array(_) | Value::Null => None,
+    }
+}
+
 fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64> {
     let number = match property {
         PropertySpec::Bool { default } => {
@@ -384,9 +479,29 @@ fn scene_manifest_property_default_number(property: &PropertySpec) -> Option<f64
     number.is_finite().then_some(number)
 }
 
+fn scene_manifest_property_default_value(property: &PropertySpec) -> Option<Value> {
+    match property {
+        PropertySpec::Bool { default } => default.map(Value::from),
+        PropertySpec::Number { default } | PropertySpec::Range { default, .. } => {
+            default.map(Value::from)
+        }
+        PropertySpec::Choice { default, .. }
+        | PropertySpec::Color { default }
+        | PropertySpec::Text { default } => default.clone().map(Value::from),
+        PropertySpec::File { default } => default
+            .as_ref()
+            .map(|path| Value::String(path.as_str().to_owned())),
+    }
+}
+
+fn scene_document_property_default_value(property: &Value) -> Option<Value> {
+    property.as_object()?.get("default").cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn scene_clock_text_properties_format_fixed_local_time() {
@@ -419,5 +534,98 @@ mod tests {
             day.chars()
                 .all(|character| { character == '\n' || character.is_ascii_uppercase() })
         );
+    }
+
+    #[test]
+    fn scene_input_properties_use_document_defaults_without_manifest() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "version": 1,
+            "properties": {
+                "newproperty1": {
+                    "type": "range",
+                    "min": 1100.0,
+                    "max": 2500.0,
+                    "default": 2000.0
+                },
+                "newproperty28": {
+                    "type": "bool",
+                    "default": true
+                },
+                "newproperty": {
+                    "type": "choice",
+                    "choices": ["1", "2"],
+                    "default": "1"
+                }
+            },
+            "nodes": [
+                {
+                    "id": "node-character",
+                    "type": "group"
+                },
+                {
+                    "id": "node-default-theme",
+                    "type": "group",
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "newproperty",
+                            "condition": "1",
+                            "default_visible": true,
+                            "authored_value": true
+                        }
+                    }
+                }
+            ],
+            "property_bindings": [
+                {
+                    "property": "newproperty1",
+                    "target_node": "node-character",
+                    "target": "x"
+                },
+                {
+                    "property": "newproperty28",
+                    "target_node": "node-character",
+                    "target": "opacity"
+                }
+            ]
+        }))
+        .unwrap();
+
+        let inputs = scene_input_properties_from_sources(&document, None, None);
+
+        assert_eq!(inputs.get("newproperty1"), Some(&json!(2000.0)));
+        assert_eq!(inputs.get("newproperty28"), Some(&json!(true)));
+        assert_eq!(inputs.get("newproperty"), Some(&json!("1")));
+    }
+
+    #[test]
+    fn scene_input_properties_collect_user_color_binding_defaults() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "version": 1,
+            "properties": {
+                "newproperty5": {
+                    "type": "color",
+                    "default": "#003ca4"
+                }
+            },
+            "nodes": [
+                {
+                    "id": "node-slider",
+                    "type": "rectangle",
+                    "properties": {
+                        "color_binding": {
+                            "runtime": "wallpaper-engine-user-color",
+                            "property": "newproperty5",
+                            "default": "#003ca4"
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let inputs = scene_input_properties_from_sources(&document, None, None);
+
+        assert_eq!(inputs.get("newproperty5"), Some(&json!("#003ca4")));
     }
 }

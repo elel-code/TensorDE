@@ -13,7 +13,7 @@ use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
-use crate::core::{FitMode, SceneSize, SceneTextureRegion};
+use crate::core::{FitMode, SceneBlendMode, SceneSize, SceneTextureRegion};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
@@ -258,6 +258,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
     pub resource_index: u32,
     pub first_index: u32,
     pub index_count: u32,
+    pub blend_mode: SceneBlendMode,
     pub fit: Option<FitMode>,
     pub texture_region: Option<SceneTextureRegion>,
 }
@@ -312,6 +313,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
                 resource_index: 0,
                 first_index: 0,
                 index_count,
+                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
             }],
@@ -5157,6 +5159,7 @@ fn scene_video_layer_geometry_payload(
                 resource_index: step.resource_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
+                blend_mode: SceneBlendMode::Alpha,
                 fit: step.fit,
                 texture_region: None,
             })
@@ -5356,6 +5359,7 @@ fn scene_sampled_image_draw_commands_for_count(
         let command = VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
+            blend_mode: step.blend_mode,
             descriptor_binding,
             first_index: step.first_index,
             index_count: step.index_count,
@@ -5377,6 +5381,7 @@ fn scene_sampled_image_draw_commands_can_merge(
     next: &VulkanaliaSceneSampledImageDrawCommand,
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
+        && previous.blend_mode == next.blend_mode
         && previous.descriptor_binding == next.descriptor_binding
         && previous
             .first_index
@@ -6034,6 +6039,7 @@ mod tests {
                     resource_index: 0,
                     first_index: 0,
                     index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                 },
@@ -6042,6 +6048,7 @@ mod tests {
                     resource_index: 0,
                     first_index: 6,
                     index_count: 12,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                 },
@@ -6055,6 +6062,7 @@ mod tests {
             vec![VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 10,
                 last_layer_index: 11,
+                blend_mode: SceneBlendMode::Alpha,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     resource_index: 0,
                 },
@@ -6073,6 +6081,7 @@ mod tests {
                     resource_index: 0,
                     first_index: 0,
                     index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                 },
@@ -6081,6 +6090,7 @@ mod tests {
                     resource_index: 1,
                     first_index: 6,
                     index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                 },
@@ -6098,6 +6108,38 @@ mod tests {
             commands[1].descriptor_binding,
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index: 1 }
         );
+    }
+
+    #[test]
+    fn sampled_image_draw_commands_keep_different_blend_modes_separate() {
+        let commands = scene_sampled_image_draw_commands_for_count(
+            &[
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 10,
+                    resource_index: 0,
+                    first_index: 0,
+                    index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
+                    fit: None,
+                    texture_region: None,
+                },
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 11,
+                    resource_index: 0,
+                    first_index: 6,
+                    index_count: 6,
+                    blend_mode: SceneBlendMode::Max,
+                    fit: None,
+                    texture_region: None,
+                },
+            ],
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(commands[1].blend_mode, SceneBlendMode::Max);
     }
 
     #[test]
@@ -6444,6 +6486,7 @@ mod tests {
             resource_index: 0,
             first_index: 0,
             index_count: 6,
+            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: Some(SceneTextureRegion {
                 u_min: 0.0,
@@ -6500,6 +6543,7 @@ mod tests {
             resource_index: 0,
             first_index: 0,
             index_count: 6,
+            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: Some(SceneTextureRegion {
                 u_min: 0.0,
@@ -6547,6 +6591,7 @@ mod tests {
             resource_index: 0,
             first_index: 0,
             index_count: 6,
+            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: None,
         }];
@@ -6691,6 +6736,7 @@ mod tests {
                     resource_index: 0,
                     first_index: 0,
                     index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: Some(FitMode::Cover),
                     texture_region: None,
                 },
@@ -6699,6 +6745,7 @@ mod tests {
                     resource_index: 1,
                     first_index: 6,
                     index_count: 6,
+                    blend_mode: SceneBlendMode::Alpha,
                     fit: Some(FitMode::Tile),
                     texture_region: None,
                 },

@@ -21,8 +21,8 @@ pub use package::{
 };
 pub use path::{PackagePath, PackagePathError};
 pub use scene::{
-    SceneAnimatedProperty, SceneAudioCue, SceneCurve, SceneDocument, SceneError, SceneKeyframe,
-    SceneNativeLowering, SceneNode, SceneNodeKind, ScenePathFillRule, SceneProfile,
+    SceneAnimatedProperty, SceneAudioCue, SceneBlendMode, SceneCurve, SceneDocument, SceneError,
+    SceneKeyframe, SceneNativeLowering, SceneNode, SceneNodeKind, ScenePathFillRule, SceneProfile,
     ScenePropertyBinding, SceneResource, SceneResourceKind, SceneSize, SceneSourceMetadata,
     SceneSystemStatus, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTimeline,
     SceneTimelineChannel, SceneTransform, SceneUnsupportedFeature,

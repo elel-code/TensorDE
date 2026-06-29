@@ -910,6 +910,8 @@ mod tests {
             kind,
             source: None,
             texture_region: None,
+            effect_motion: Default::default(),
+            blend_mode: Default::default(),
             audio: Vec::new(),
             color: None,
             stroke_color: None,

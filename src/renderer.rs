@@ -19,14 +19,16 @@ pub use self::scene_runtime::{
 };
 use self::scene_runtime::{
     scene_input_properties_from_sources, scene_property_value, scene_render_property_value,
-    scene_runtime_property_value_with_inputs,
+    scene_runtime_property_value_with_inputs, scene_runtime_text_property_value_with_inputs,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
-use crate::core::scene::{SceneAudioCueCondition, SceneEffect, SceneMesh, SceneSnapshotLayer};
+use crate::core::scene::{
+    SceneAudioCueCondition, SceneEffect, SceneMesh, SceneNativeEffectMotion, SceneSnapshotLayer,
+};
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
+    SceneAudioCue, SceneBlendMode, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
     SceneResourceKind, SceneSize, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTransform,
     Transition, WallpaperEntry, WallpaperPackage,
 };
@@ -145,6 +147,10 @@ pub struct SceneRenderLayer {
     pub source: Option<PathBuf>,
     pub texture_region: Option<SceneTextureRegion>,
     #[serde(default)]
+    pub effect_motion: SceneNativeEffectMotion,
+    #[serde(default)]
+    pub blend_mode: SceneBlendMode,
+    #[serde(default)]
     pub audio: Vec<SceneRenderAudioCue>,
     pub color: Option<String>,
     pub stroke_color: Option<String>,
@@ -253,19 +259,25 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
     let manifest_properties = manifest.as_ref().map(|manifest| &manifest.properties);
     let scene_input_properties =
         scene_input_properties_from_sources(&document, render_properties, manifest_properties);
-    let snapshot = document.snapshot_at_with_property_resolver(snapshot_time_ms, |property| {
-        manifest_properties
-            .and_then(|properties| scene_property_value(property, render_properties, properties))
-            .or_else(|| scene_render_property_value(property, render_properties))
-            .or_else(|| {
-                scene_runtime_property_value_with_inputs(
-                    &document,
-                    snapshot_time_ms,
-                    property,
-                    &scene_input_properties,
-                )
-            })
-    });
+    let snapshot = document.snapshot_at_with_resolvers(
+        snapshot_time_ms,
+        |property| {
+            manifest_properties
+                .and_then(|properties| {
+                    scene_property_value(property, render_properties, properties)
+                })
+                .or_else(|| scene_render_property_value(property, render_properties))
+                .or_else(|| {
+                    scene_runtime_property_value_with_inputs(
+                        &document,
+                        snapshot_time_ms,
+                        property,
+                        &scene_input_properties,
+                    )
+                })
+        },
+        |property| scene_runtime_text_property_value_with_inputs(property, &scene_input_properties),
+    );
     let layers = scene_render_layers_from_snapshot(package_root, &document, snapshot.layers)?;
     let system_metrics = scene_plan_system_metrics(&document);
     let manifest_max_fps = manifest
@@ -1919,6 +1931,8 @@ fn scene_render_layers_from_snapshot_into(
             kind: layer.kind,
             source: layer.source.map(|source| source.join_to(package_root)),
             texture_region: layer.texture_region,
+            effect_motion: layer.effect_motion,
+            blend_mode: layer.blend_mode,
             audio,
             color: layer.color,
             stroke_color: layer.stroke_color,

@@ -12318,6 +12318,8 @@ mod tests {
                     kind: crate::core::SceneNodeKind::Rectangle,
                     source: None,
                     texture_region: None,
+                    effect_motion: Default::default(),
+                    blend_mode: Default::default(),
                     audio: Vec::new(),
                     color: Some("#102030".to_owned()),
                     stroke_color: Some("#ffffff".to_owned()),

@@ -2223,7 +2223,15 @@ fn resolves_scene_model_material_image_texture_to_renderable_resource() {
     );
     source.write_file(
         "materials/renderable.json",
-        r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+        r#"{ "passes": [{
+              "shader": "genericimage2",
+              "blending": "translucent",
+              "cullmode": "nocull",
+              "depthtest": "disabled",
+              "depthwrite": "disabled",
+              "combos": { "LIGHTING": 0, "REFLECTION": 1 },
+              "textures": ["textures/albedo.png"]
+            }] }"#,
     );
     source.write_file("textures/albedo.png", "not real png");
     source.write_file(
@@ -2251,6 +2259,26 @@ fn resolves_scene_model_material_image_texture_to_renderable_resource() {
         scene["nodes"][0]["provenance"]["model"]["texture_resources"][0],
         "resource-3-albedo"
     );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["material"]["runtime"],
+        "wallpaper-engine-material"
+    );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["material"]["passes"][0]["shader"],
+        "genericimage2"
+    );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["material"]["passes"][0]["blending"],
+        "translucent"
+    );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["material"]["passes"][0]["depthtest"],
+        "disabled"
+    );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["material"]["passes"][0]["combos"]["REFLECTION"],
+        1
+    );
     assert_eq!(scene["systems"]["shader_material_graph"], "ready");
     assert!(
         scene["native_lowering"]["completed_boundaries"]
@@ -2274,6 +2302,82 @@ fn resolves_scene_model_material_image_texture_to_renderable_resource() {
         report
             .converted_features
             .contains(&"scene-we-material-graph-runtime".to_owned())
+    );
+}
+
+#[test]
+fn lowers_wallpaper_engine_water_effects_to_native_scene_runtime() {
+    let source = TestDir::new("we-scene-native-water-effect-source");
+    let output = TestDir::new("we-scene-native-water-effect-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Native Water Effect",
+                  "image": "models/renderable.json",
+                  "effects": [
+                    {
+                      "file": "effects/watercaustics/effect.json",
+                      "visible": true,
+                      "passes": [
+                        {
+                          "constantshadervalues": {
+                            "ui_editor_properties_brightness": 2.5,
+                            "ui_editor_properties_speed": 0.3
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        "models/renderable.json",
+        r#"{ "material": "materials/renderable.json" }"#,
+    );
+    source.write_file(
+        "materials/renderable.json",
+        r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+    );
+    source.write_file("textures/albedo.png", "not real png");
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Native Water Effect Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["runtime"],
+        "native-water-caustics"
+    );
+    assert!(
+        !scene["unsupported_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature["feature"] == "we-effect-runtime")
+    );
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"native-water-caustics-effect-runtime".to_owned())
     );
 }
 
@@ -4112,7 +4216,12 @@ fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
         r#"{
               "type": "scene",
               "title": "Text Binding Scene",
-              "file": "scene.json"
+              "file": "scene.json",
+              "general": {
+                "properties": {
+                  "show_title": { "type": "bool", "value": false }
+                }
+              }
             }"#,
     );
 
@@ -4139,6 +4248,8 @@ fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
     assert_eq!(scene["property_bindings"][0]["property"], "show_title");
     assert_eq!(scene["property_bindings"][0]["target_node"], node["id"]);
     assert_eq!(scene["property_bindings"][0]["target"], "opacity");
+    assert_eq!(scene["properties"]["show_title"]["type"], "bool");
+    assert_eq!(scene["properties"]["show_title"]["default"], false);
 
     let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
     document.validate().unwrap();
@@ -4174,6 +4285,272 @@ fn converts_wallpaper_engine_scene_text_and_visible_property_binding() {
             .unwrap()
             .completed_boundaries
             .contains(&"wallpaper-engine-font-resource-lowering".to_owned())
+    );
+}
+
+#[test]
+fn lowers_wallpaper_engine_layer_blend_to_opacity() {
+    let source = TestDir::new("we-scene-layer-blend-source");
+    let output = TestDir::new("we-scene-layer-blend-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 31,
+                  "name": "Blend panel",
+                  "image": "models/util/solidlayer.json",
+                  "size": "320 180",
+                  "color": "1 1 1",
+                  "alpha": 0.5,
+                  "blend": 0.7,
+                  "blendin": false,
+                  "blendout": false,
+                  "blendtime": 0.5
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Layer Blend Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let node = &scene["nodes"][0];
+    assert_eq!(node["opacity"], 0.35);
+    assert_eq!(node["properties"]["wallpaper_engine_blend"]["blend"], 0.7);
+    assert_eq!(
+        node["properties"]["wallpaper_engine_blend"]["blendtime"],
+        0.5
+    );
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"wallpaper-engine-layer-blend-lowering".to_owned())
+    );
+}
+
+#[test]
+fn infers_wallpaper_engine_color_blend_opacity_from_matching_model_instance() {
+    let source = TestDir::new("we-scene-color-blend-opacity-source");
+    let output = TestDir::new("we-scene-color-blend-opacity-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Authored translucent water",
+                  "image": "models/water.json",
+                  "alpha": 0.24,
+                  "colorBlendMode": 7,
+                  "size": "320 180"
+                },
+                {
+                  "id": 11,
+                  "name": "Repeated translucent water",
+                  "image": "models/water.json",
+                  "colorBlendMode": 7,
+                  "size": "320 180"
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        "models/water.json",
+        r#"{ "material": "materials/water.json" }"#,
+    );
+    source.write_file(
+        "materials/water.json",
+        r#"{ "passes": [{
+              "shader": "genericimage2",
+              "blending": "translucent",
+              "textures": ["textures/water.png"]
+            }] }"#,
+    );
+    source.write_file("textures/water.png", "not real png");
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Color Blend Opacity Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(scene["nodes"][0]["opacity"], 0.24);
+    assert_eq!(scene["nodes"][1]["opacity"], 0.24);
+    assert_eq!(
+        scene["nodes"][1]["properties"]["wallpaper_engine_blend"]["colorBlendMode"],
+        7
+    );
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+    assert_eq!(snapshot.layers[1].opacity, 0.24);
+
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"wallpaper-engine-color-blend-opacity-inference".to_owned())
+    );
+}
+
+#[test]
+fn converts_wallpaper_engine_user_color_binding() {
+    let source = TestDir::new("we-scene-user-color-source");
+    let output = TestDir::new("we-scene-user-color-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 41,
+                  "name": "Tinted panel",
+                  "image": "models/util/solidlayer.json",
+                  "size": "320 180",
+                  "color": { "user": "accent", "value": "0.00000 0.59216 0.73725" }
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r##"{
+              "type": "scene",
+              "title": "User Color Scene",
+              "file": "scene.json",
+              "general": {
+                "properties": {
+                  "accent": { "type": "color", "value": "0 0.235294 0.643137" }
+                }
+              }
+            }"##,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let node = &scene["nodes"][0];
+    assert_eq!(node["type"], "rectangle");
+    assert_eq!(node["color"], "#0097bc");
+    assert_eq!(
+        node["properties"]["color_binding"],
+        json!({
+            "runtime": "wallpaper-engine-user-color",
+            "property": "accent",
+            "default": "#0097bc"
+        })
+    );
+    assert_eq!(scene["properties"]["accent"]["type"], "color");
+    assert_eq!(scene["properties"]["accent"]["default"], "#003ca4");
+}
+
+#[test]
+fn converts_wallpaper_engine_conditional_visibility_from_user_property_default() {
+    let source = TestDir::new("we-scene-conditional-visibility-source");
+    let output = TestDir::new("we-scene-conditional-visibility-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 10,
+                  "name": "Default Theme",
+                  "type": "text",
+                  "text": { "value": "default" },
+                  "visible": {
+                    "value": true,
+                    "user": { "name": "newproperty", "condition": "1" }
+                  }
+                },
+                {
+                  "id": 11,
+                  "name": "Solid Theme",
+                  "type": "text",
+                  "text": { "value": "solid" },
+                  "visible": {
+                    "value": false,
+                    "user": { "name": "newproperty", "condition": "2" }
+                  }
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Conditional Visibility Scene",
+              "file": "scene.json",
+              "general": {
+                "properties": {
+                  "newproperty": {
+                    "type": "combo",
+                    "options": [
+                      { "label": "default", "value": "1" },
+                      { "label": "solid", "value": "2" }
+                    ],
+                    "value": "1"
+                  }
+                }
+              }
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(scene["properties"]["newproperty"]["default"], "1");
+    assert_eq!(scene["nodes"][0]["visible"], true);
+    assert_eq!(scene["nodes"][1]["visible"], true);
+    assert_eq!(
+        scene["nodes"][0]["properties"]["visibility_condition"]["property"],
+        "newproperty"
+    );
+    assert_eq!(
+        scene["nodes"][0]["properties"]["visibility_condition"]["default_visible"],
+        true
+    );
+    assert_eq!(
+        scene["nodes"][1]["properties"]["visibility_condition"]["condition"],
+        "2"
+    );
+    assert_eq!(
+        scene["nodes"][1]["properties"]["visibility_condition"]["default_visible"],
+        false
     );
 }
 
@@ -4795,6 +5172,87 @@ fn lowers_wallpaper_engine_embedded_property_keyframes_to_gscene_timelines() {
     assert_eq!(snapshot.layers[0].transform.x, 50.0);
     assert_eq!(snapshot.layers[0].transform.y, 20.0);
     assert_eq!(snapshot.layers[0].opacity, 0.25);
+
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"scene-we-embedded-property-timeline".to_owned())
+    );
+}
+
+#[test]
+fn lowers_wallpaper_engine_embedded_component_animation_to_gscene_timelines() {
+    let source = TestDir::new("we-scene-embedded-component-animation-source");
+    let output = TestDir::new("we-scene-embedded-component-animation-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r##"{
+              "objects": [
+                {
+                  "id": 81,
+                  "shape": "rectangle",
+                  "backgroundcolor": "#203040",
+                  "size": "100 50",
+                  "origin": {
+                    "value": "10 20 0",
+                    "animation": {
+                      "relative": true,
+                      "c0": [
+                        { "frame": 0, "value": 0 },
+                        { "frame": 15, "value": 30 }
+                      ],
+                      "c1": [
+                        { "frame": 0, "value": 0 },
+                        { "frame": 15, "value": -10 }
+                      ],
+                      "options": {
+                        "fps": 30,
+                        "length": 30,
+                        "mode": "loop",
+                        "wraploop": true
+                      }
+                    }
+                  }
+                }
+              ]
+            }"##,
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Embedded Component Animation Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let timeline = scene["timelines"][0].clone();
+    assert_eq!(timeline["channels"][0]["property"], "x");
+    assert_eq!(timeline["channels"][0]["loop"], true);
+    assert_eq!(timeline["channels"][0]["keyframes"][0]["value"], 10.0);
+    assert_eq!(timeline["channels"][0]["keyframes"][1]["time_ms"], 500);
+    assert_eq!(timeline["channels"][0]["keyframes"][1]["value"], 40.0);
+    assert_eq!(timeline["channels"][0]["keyframes"][2]["time_ms"], 1000);
+    assert_eq!(timeline["channels"][0]["keyframes"][2]["value"], 10.0);
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let peak = document.snapshot_at_with_property_resolver(500, |_| None);
+    assert_eq!(peak.layers[0].transform.x, 40.0);
+    assert_eq!(peak.layers[0].transform.y, 10.0);
+    let returning = document.snapshot_at_with_property_resolver(750, |_| None);
+    assert_eq!(returning.layers[0].transform.x, 25.0);
+    assert_eq!(returning.layers[0].transform.y, 15.0);
 
     let report: ConversionReport = serde_json::from_str(
         &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
