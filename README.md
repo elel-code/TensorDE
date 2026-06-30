@@ -25,6 +25,15 @@ as a performance result.
 - Current validated 4K240 gates are recorded in
   `docs/native-vulkan-video.md`.
 
+## Engineering Rule
+
+All implementation work must optimize for the long-term native architecture.
+Do not add short-term substitutes, sample-specific fixes, hidden compatibility
+branches, or temporary render paths to cover missing behavior. When a gap comes
+from an unsupported format, effect, material, interaction, renderer-quality, or
+runtime subsystem, design and implement that first-class subsystem, and document
+any remaining boundary explicitly.
+
 ## Next Work
 
 1. Audio integration: add an FFmpeg-owned audio demux/packet queue and clock
