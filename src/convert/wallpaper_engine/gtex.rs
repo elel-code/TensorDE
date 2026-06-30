@@ -7,6 +7,7 @@ pub(super) const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK: u32 = 1;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK: u32 = 3;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
+pub(super) const GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM: u32 = 9;
 
 const GILDER_SCENE_TEXTURE_MIP_COUNT: u32 = 1;
 const BC_BLOCK_TEXELS: u32 = 4;
@@ -47,6 +48,7 @@ fn read_png_decoder_as_rgba<R: std::io::BufRead + std::io::Seek>(
         width: info.width,
         height: info.height,
         rgba,
+        r8: None,
     })
 }
 
@@ -116,6 +118,40 @@ pub(super) fn write_bc7_payload_gtex(
     )
 }
 
+pub(super) fn write_r8_gtex(
+    path: &Path,
+    width: u32,
+    height: u32,
+    payload: &[u8],
+) -> Result<(), String> {
+    write_uncompressed_payload_gtex(
+        path,
+        width,
+        height,
+        GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM,
+        payload,
+    )
+}
+
+fn write_uncompressed_payload_gtex(
+    path: &Path,
+    width: u32,
+    height: u32,
+    format: u32,
+    payload: &[u8],
+) -> Result<(), String> {
+    let format_label = gtex_format_label(format)?;
+    let expected_len = usize::try_from(uncompressed_payload_len(format, width, height)?)
+        .map_err(|_| format!("{format_label} payload length exceeds usize"))?;
+    if payload.len() != expected_len {
+        return Err(format!(
+            "{format_label} payload has {} bytes, expected {expected_len}",
+            payload.len()
+        ));
+    }
+    write_gtex_payload(path, width, height, format, payload)
+}
+
 pub(super) fn write_bc_payload_gtex(
     path: &Path,
     width: u32,
@@ -132,6 +168,16 @@ pub(super) fn write_bc_payload_gtex(
             payload.len()
         ));
     }
+    write_gtex_payload(path, width, height, format, payload)
+}
+
+fn write_gtex_payload(
+    path: &Path,
+    width: u32,
+    height: u32,
+    format: u32,
+    payload: &[u8],
+) -> Result<(), String> {
     let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
     file.write_all(GILDER_SCENE_TEXTURE_MAGIC)
         .map_err(|err| err.to_string())?;
@@ -146,6 +192,27 @@ pub(super) fn write_bc_payload_gtex(
     file.write_all(&(payload.len() as u64).to_le_bytes())
         .map_err(|err| err.to_string())?;
     file.write_all(&payload).map_err(|err| err.to_string())
+}
+
+fn uncompressed_payload_len(format: u32, width: u32, height: u32) -> Result<u64, String> {
+    let format_label = gtex_format_label(format)?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "{format_label} texture dimensions must be non-zero"
+        ));
+    }
+    let bytes_per_texel = match format {
+        GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM => 1u64,
+        _ => {
+            return Err(format!(
+                "unsupported uncompressed native .gtex format id {format}"
+            ));
+        }
+    };
+    u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|texels| texels.checked_mul(bytes_per_texel))
+        .ok_or_else(|| format!("{format_label} payload size overflowed"))
 }
 
 pub(super) fn bc_payload_len(format: u32, width: u32, height: u32) -> Result<u64, String> {
@@ -173,7 +240,9 @@ pub(super) fn bc_block_bytes(format: u32) -> Result<u32, String> {
         GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK => Ok(BC1_BLOCK_BYTES as u32),
         GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Ok(BC3_BLOCK_BYTES as u32),
         GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Ok(BC7_BLOCK_BYTES as u32),
-        _ => Err(format!("unsupported native .gtex BC format id {format}")),
+        _ => Err(format!(
+            "unsupported native .gtex block-compressed format id {format}"
+        )),
     }
 }
 
@@ -182,7 +251,8 @@ pub(super) fn gtex_format_label(format: u32) -> Result<&'static str, String> {
         GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK => Ok("BC1_RGBA_UNORM_BLOCK"),
         GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Ok("BC3_UNORM_BLOCK"),
         GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Ok("BC7_UNORM_BLOCK"),
-        _ => Err(format!("unsupported native .gtex BC format id {format}")),
+        GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM => Ok("R8_UNORM"),
+        _ => Err(format!("unsupported native .gtex format id {format}")),
     }
 }
 

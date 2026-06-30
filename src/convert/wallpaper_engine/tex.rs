@@ -9,6 +9,7 @@ pub(super) struct SceneWeTexImage {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) rgba: Vec<u8>,
+    pub(super) r8: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -101,6 +102,8 @@ impl SceneWeTexContainer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SceneWeTextureFormat {
     Argb8888,
+    Rg88,
+    R8,
     Dxt5,
     Dxt3,
     Dxt1,
@@ -114,7 +117,7 @@ impl SceneWeTextureFormat {
             Self::Dxt1 => Some(SceneWeTexBlockCompressedFormat::Bc1RgbaUnormBlock),
             Self::Dxt5 => Some(SceneWeTexBlockCompressedFormat::Bc3UnormBlock),
             Self::Bc7 => Some(SceneWeTexBlockCompressedFormat::Bc7UnormBlock),
-            Self::Argb8888 | Self::Dxt3 | Self::Other(_) => None,
+            Self::Argb8888 | Self::Rg88 | Self::R8 | Self::Dxt3 | Self::Other(_) => None,
         }
     }
 }
@@ -243,6 +246,8 @@ fn scene_we_texture_format(value: u32) -> SceneWeTextureFormat {
         4 => SceneWeTextureFormat::Dxt5,
         6 => SceneWeTextureFormat::Dxt3,
         7 => SceneWeTextureFormat::Dxt1,
+        8 => SceneWeTextureFormat::Rg88,
+        9 => SceneWeTextureFormat::R8,
         12 => SceneWeTextureFormat::Bc7,
         other => SceneWeTextureFormat::Other(other),
     }
@@ -352,25 +357,135 @@ fn decode_we_tex_image_payload(
     block: SceneWeTexBlock,
     payload: &[u8],
 ) -> Result<SceneWeTexImage, String> {
-    if block.format != SceneWeTextureFormat::Argb8888 {
-        return Err(format!(
-            "TEXB0004 texture format {:?} is not an RGBA image payload",
-            block.format
-        ));
+    let (mut rgba, mut r8) = match block.format {
+        SceneWeTextureFormat::Argb8888 => {
+            let expected_len = rgba_len(block.width, block.height)?;
+            (
+                decode_we_tex_image_bytes(block, payload, expected_len, "RGBA")?,
+                None,
+            )
+        }
+        SceneWeTextureFormat::R8 => {
+            let expected_len = we_tex_pixel_payload_len(block.width, block.height, 1, "R8")?;
+            let r8 = decode_we_tex_image_bytes(block, payload, expected_len, "R8")?;
+            (expand_we_tex_r8_to_rgba(&r8), Some(r8))
+        }
+        SceneWeTextureFormat::Rg88 => {
+            let expected_len = we_tex_pixel_payload_len(block.width, block.height, 2, "RG88")?;
+            let rg88 = decode_we_tex_image_bytes(block, payload, expected_len, "RG88")?;
+            (expand_we_tex_rg88_to_rgba(&rg88), None)
+        }
+        _ => {
+            return Err(format!(
+                "TEXB0004 texture format {:?} is not an RGBA-compatible image payload",
+                block.format
+            ));
+        }
+    };
+    super::gtex::flip_rgba_rows_vertically(&mut rgba, block.width, block.height)?;
+    if let Some(r8) = &mut r8 {
+        flip_r8_rows_vertically(r8, block.width, block.height)?;
     }
-    let expected_len = rgba_len(block.width, block.height)?;
-    if usize::try_from(block.declared_size).ok() != Some(expected_len) {
-        return Err(format!(
-            "TEXB0004 decoded size {} does not match {}x{} RGBA",
-            block.declared_size, block.width, block.height
-        ));
-    }
-    let rgba = lz4_block_decode(payload, expected_len)?;
     Ok(SceneWeTexImage {
         width: block.width,
         height: block.height,
         rgba,
+        r8,
     })
+}
+
+fn decode_we_tex_image_bytes(
+    block: SceneWeTexBlock,
+    payload: &[u8],
+    expected_len: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    if usize::try_from(block.declared_size).ok() != Some(expected_len) {
+        return Err(format!(
+            "TEXB0004 decoded size {} does not match {}x{} {label}",
+            block.declared_size, block.width, block.height
+        ));
+    }
+    match block.compression {
+        0 => {
+            if payload.len() != expected_len {
+                return Err(format!(
+                    "TEXB0004 {label} payload has {} bytes, expected {expected_len}",
+                    payload.len()
+                ));
+            }
+            Ok(payload.to_vec())
+        }
+        1 => lz4_block_decode(payload, expected_len),
+        other => Err(format!(
+            "TEXB0004 {label} uses unsupported mip compression {other}"
+        )),
+    }
+}
+
+fn we_tex_pixel_payload_len(
+    width: u32,
+    height: u32,
+    bytes_per_pixel: usize,
+    label: &str,
+) -> Result<usize, String> {
+    usize::try_from(width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(height)
+                .ok()
+                .and_then(|height| width.checked_mul(height))
+        })
+        .and_then(|pixels| pixels.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| format!("{label} texture size overflowed"))
+}
+
+fn expand_we_tex_r8_to_rgba(r8: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(r8.len().saturating_mul(4));
+    for value in r8 {
+        rgba.extend_from_slice(&[*value, *value, *value, 255]);
+    }
+    rgba
+}
+
+fn expand_we_tex_rg88_to_rgba(rg88: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(rg88.len().saturating_mul(2));
+    for pixel in rg88.chunks_exact(2) {
+        rgba.extend_from_slice(&[pixel[0], pixel[1], 0, 255]);
+    }
+    rgba
+}
+
+fn flip_r8_rows_vertically(r8: &mut [u8], width: u32, height: u32) -> Result<(), String> {
+    let row_bytes = usize::try_from(width).map_err(|_| "R8 width exceeds usize".to_owned())?;
+    let expected_len = row_bytes
+        .checked_mul(usize::try_from(height).map_err(|_| "R8 height exceeds usize".to_owned())?)
+        .ok_or_else(|| "R8 byte count overflowed".to_owned())?;
+    if r8.len() != expected_len {
+        return Err(format!(
+            "R8 payload has {} bytes, expected {expected_len}",
+            r8.len()
+        ));
+    }
+    if height <= 1 {
+        return Ok(());
+    }
+    let mut scratch = vec![0u8; row_bytes];
+    for top_row in 0..height / 2 {
+        let bottom_row = height - 1 - top_row;
+        let top = usize::try_from(top_row)
+            .ok()
+            .and_then(|row| row.checked_mul(row_bytes))
+            .ok_or_else(|| "R8 top row offset overflowed".to_owned())?;
+        let bottom = usize::try_from(bottom_row)
+            .ok()
+            .and_then(|row| row.checked_mul(row_bytes))
+            .ok_or_else(|| "R8 bottom row offset overflowed".to_owned())?;
+        scratch.copy_from_slice(&r8[top..top + row_bytes]);
+        r8.copy_within(bottom..bottom + row_bytes, top);
+        r8[bottom..bottom + row_bytes].copy_from_slice(&scratch);
+    }
+    Ok(())
 }
 
 fn we_tex_video_extension(payload: &[u8]) -> Option<&'static str> {

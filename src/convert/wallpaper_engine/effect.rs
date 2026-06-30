@@ -4,9 +4,10 @@ use std::path::Path;
 
 use super::{
     ConversionReport, SceneDocumentBuildContext, WallpaperEngineProject, ir::SceneOpacityEffectIr,
-    push_unique, scene_copy_resource_as, scene_i64_map_from_value, scene_next_timeline_id,
-    scene_push_unsupported, scene_record_native_script_lowering, string_field,
-    value_to_bool_unwrapped, value_to_i64, value_to_string,
+    push_unique, scene_copy_resource_as, scene_effect_texture_resource_from_reference,
+    scene_i64_map_from_value, scene_next_timeline_id, scene_push_unsupported,
+    scene_record_native_script_lowering, string_field, value_to_bool_unwrapped, value_to_i64,
+    value_to_string,
 };
 
 pub(super) fn scene_effects_from_object(
@@ -37,7 +38,9 @@ pub(super) fn scene_effects_from_object(
             if let Some(visible) = effect.get("visible") {
                 output.insert("visible".to_owned(), visible.clone());
             }
-            let passes = scene_effect_passes_from_object(effect);
+            let passes = scene_effect_passes_from_object(
+                project, output_dir, effect, report, context, resources,
+            );
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
             }
@@ -309,7 +312,14 @@ fn scene_effect_value_requires_runtime(value: &Value) -> bool {
     }
 }
 
-fn scene_effect_passes_from_object(effect: &Map<String, Value>) -> Vec<Value> {
+fn scene_effect_passes_from_object(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    effect: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Vec<Value> {
     let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -323,6 +333,11 @@ fn scene_effect_passes_from_object(effect: &Map<String, Value>) -> Vec<Value> {
             }
             if let Some(textures) = scene_effect_pass_textures(pass) {
                 output.insert("textures".to_owned(), textures);
+            }
+            if let Some(texture_resources) = scene_effect_pass_texture_resources(
+                project, output_dir, pass, report, context, resources,
+            ) {
+                output.insert("texture_resources".to_owned(), texture_resources);
             }
             if let Some(combos) = pass.get("combos").and_then(scene_i64_map_from_value) {
                 output.insert("combos".to_owned(), combos);
@@ -353,4 +368,32 @@ fn scene_effect_pass_textures(pass: &Map<String, Value>) -> Option<Value> {
             })
             .collect(),
     ))
+}
+
+fn scene_effect_pass_texture_resources(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    pass: &Map<String, Value>,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<Value> {
+    let textures = pass.get("textures")?.as_array()?;
+    let mut has_resource = false;
+    let texture_resources = textures
+        .iter()
+        .map(|texture| {
+            let Some(texture) = value_to_string(texture) else {
+                return Value::Null;
+            };
+            let Some(resource) = scene_effect_texture_resource_from_reference(
+                project, output_dir, &texture, report, context, resources,
+            ) else {
+                return Value::Null;
+            };
+            has_resource = true;
+            Value::String(resource)
+        })
+        .collect::<Vec<_>>();
+    has_resource.then(|| Value::Array(texture_resources))
 }

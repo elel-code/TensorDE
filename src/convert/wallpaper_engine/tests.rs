@@ -2883,6 +2883,219 @@ fn lowers_wallpaper_engine_constant_opacity_effect_to_native_timeline() {
 }
 
 #[test]
+fn lowers_opacity_effect_texture_resources_into_scene_texture_slots() {
+    let source = TestDir::new("we-scene-opacity-effect-texture-source");
+    let output = TestDir::new("we-scene-opacity-effect-texture-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Masked Eye",
+                  "image": "models/eye.json",
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "passes": [
+                        {
+                          "textures": [null, null, null, "masks/opacity_mask"],
+                          "constantshadervalues": { "alpha": 1.0 }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+    );
+    source.write_file("models/eye.json", r#"{ "material": "materials/eye.json" }"#);
+    source.write_file(
+        "materials/eye.json",
+        r#"{ "passes": [{ "textures": ["textures/eye.png"] }] }"#,
+    );
+    source.write_file("textures/eye.png", "not real png");
+    let mask = test_we_tex_image_payload(2, 2, 9, &[255, 0, 128, 64], 1);
+    source.write_bytes("materials/masks/opacity_mask.tex", &mask);
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Opacity Effect Texture Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let pass = &scene["nodes"][0]["effects"][0]["passes"][0];
+    assert_eq!(
+        pass["textures"],
+        json!([null, null, null, "masks/opacity_mask"])
+    );
+    let texture_resources = pass["texture_resources"].as_array().unwrap();
+    assert_eq!(texture_resources.len(), 4);
+    assert!(texture_resources[0].is_null());
+    assert!(texture_resources[1].is_null());
+    assert!(texture_resources[2].is_null());
+    let mask_resource_id = texture_resources[3].as_str().unwrap();
+    let mask_resource = scene["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|resource| resource["id"] == mask_resource_id)
+        .expect("opacity mask resource");
+    assert_eq!(mask_resource["type"], "image");
+    assert_eq!(
+        mask_resource["original_source"],
+        "materials/masks/opacity_mask.tex"
+    );
+    assert_eq!(mask_resource["role"], "we-material-texture-decoded-frame");
+    let mask_source = mask_resource["source"].as_str().unwrap().to_owned();
+    assert!(mask_source.ends_with(".gtex"));
+    assert!(output.path().join(&mask_source).exists());
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+    assert_eq!(snapshot.layers.len(), 1);
+    assert_eq!(snapshot.layers[0].alpha_texture_slot, Some(3));
+    assert_eq!(snapshot.layers[0].texture_slots.len(), 2);
+    assert_eq!(snapshot.layers[0].texture_slots[0].slot, 0);
+    assert_eq!(snapshot.layers[0].texture_slots[1].slot, 3);
+    assert_eq!(
+        snapshot.layers[0].texture_slots[1].source.as_str(),
+        mask_source.as_str()
+    );
+
+    let report: ConversionReport = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report
+            .converted_features
+            .contains(&"scene-we-effect-texture-resource".to_owned())
+    );
+}
+
+#[test]
+fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
+    let source = TestDir::new("we-scene-locked-opacity-mask-composite-source");
+    let output = TestDir::new("we-scene-locked-opacity-mask-composite-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "parent": 100,
+                  "name": "Eye Base",
+                  "image": "models/eye.json",
+                  "attachment": "eye"
+                },
+                {
+                  "id": 2,
+                  "parent": 100,
+                  "name": "Eye Opacity Mask",
+                  "image": "models/eye.json",
+                  "attachment": "eye",
+                  "locktransforms": true,
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "passes": [
+                        {
+                          "textures": [null, "masks/opacity_mask"],
+                          "constantshadervalues": { "alpha": 1.0 }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+    );
+    source.write_file("models/eye.json", r#"{ "material": "materials/eye.json" }"#);
+    source.write_file(
+        "materials/eye.json",
+        r#"{ "passes": [{ "textures": ["eye"] }] }"#,
+    );
+    source.write_bytes(
+        "materials/eye.tex",
+        &test_we_tex_rgba(
+            2,
+            2,
+            &[
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ],
+        ),
+    );
+    let mask = test_we_tex_image_payload(2, 2, 9, &[255, 0, 128, 64], 1);
+    source.write_bytes("materials/masks/opacity_mask.tex", &mask);
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Locked Opacity Mask Composite Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        scene["nodes"][1]["provenance"]["lock_transforms"],
+        Value::Bool(true)
+    );
+    let mask_source = scene["nodes"][1]["effects"][0]["passes"][0]["texture_resources"][1]
+        .as_str()
+        .and_then(|resource_id| {
+            scene["resources"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|resource| resource["id"] == resource_id)
+        })
+        .and_then(|resource| resource["source"].as_str())
+        .unwrap()
+        .to_owned();
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+    assert_eq!(snapshot.layers.len(), 2);
+    assert_eq!(snapshot.layers[0].id, "node-1-models-eye-json");
+    assert_eq!(snapshot.layers[0].alpha_texture_slot, None);
+    assert_eq!(snapshot.layers[0].texture_slots.len(), 1);
+    assert_eq!(snapshot.layers[1].id, "node-2-models-eye-json");
+    assert_eq!(snapshot.layers[1].alpha_texture_slot, Some(1));
+    assert_eq!(snapshot.layers[1].texture_slots.len(), 2);
+    assert_eq!(snapshot.layers[1].texture_slots[1].slot, 1);
+    assert_eq!(
+        snapshot.layers[1].texture_slots[1].source.as_str(),
+        mask_source.as_str()
+    );
+
+    let mut sampled = Vec::new();
+    document.snapshot_sampled_image_layers_at_with_resolvers(0, |_| None, |_| None, &mut sampled);
+    assert_eq!(sampled.len(), 2);
+    assert_eq!(sampled[0].alpha_texture_slot, None);
+    assert_eq!(sampled[0].texture_slots.len(), 1);
+    assert_eq!(sampled[1].alpha_texture_slot, Some(1));
+    assert_eq!(sampled[1].texture_slots.len(), 2);
+    assert_eq!(sampled[1].texture_slots[1].source.as_str(), mask_source);
+}
+
+#[test]
 fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
     let rgba = vec![
         255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255, 0,
@@ -3037,6 +3250,33 @@ fn passes_wallpaper_engine_dxt_textures_to_native_bc_gtex() {
         "bc3",
         "we-material-texture-bc3-passthrough",
         "scene-we-tex-bc3-passthrough",
+    );
+}
+
+#[test]
+fn decodes_wallpaper_engine_r8_and_rg88_scene_tex_to_rgba() {
+    let r8 = test_we_tex_image_payload(2, 2, 9, &[255, 128, 64, 0], 1);
+    let decoded = tex::decode_we_tex_image(&r8).unwrap();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.r8, Some(vec![64, 0, 255, 128]));
+    assert_eq!(
+        decoded.rgba,
+        vec![
+            64, 64, 64, 255, 0, 0, 0, 255, 255, 255, 255, 255, 128, 128, 128, 255
+        ]
+    );
+
+    let rg88 = test_we_tex_image_payload(2, 2, 8, &[255, 0, 128, 64, 32, 16, 8, 4], 1);
+    let decoded = tex::decode_we_tex_image(&rg88).unwrap();
+    assert_eq!(decoded.width, 2);
+    assert_eq!(decoded.height, 2);
+    assert_eq!(decoded.r8, None);
+    assert_eq!(
+        decoded.rgba,
+        vec![
+            32, 16, 0, 255, 8, 4, 0, 255, 255, 0, 0, 255, 128, 64, 0, 255
+        ]
     );
 }
 
@@ -5996,6 +6236,7 @@ fn scene_tex_encoder_writes_native_bc7_gtex_payload() {
         width: 4,
         height: 4,
         rgba: vec![0; tex::rgba_len(4, 4).unwrap()],
+        r8: None,
     };
     let path = output.path().join("transparent.gtex");
 
@@ -6012,6 +6253,25 @@ fn scene_tex_encoder_writes_native_bc7_gtex_payload() {
     assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 16);
     assert_eq!(bytes.len(), 48);
     assert_eq!(bytes[32], 0x40);
+}
+
+#[test]
+fn scene_tex_encoder_writes_native_r8_gtex_payload() {
+    let output = TestDir::new("scene-r8-gtex-output");
+    let path = output.path().join("mask.gtex");
+
+    gtex::write_r8_gtex(&path, 2, 2, &[64, 0, 255, 128]).unwrap();
+    let bytes = fs::read(&path).unwrap();
+
+    assert_eq!(&bytes[0..8], gtex::GILDER_SCENE_TEXTURE_MAGIC);
+    assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(bytes[12..16].try_into().unwrap()), 2);
+    assert_eq!(
+        u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+        gtex::GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM
+    );
+    assert_eq!(u64::from_le_bytes(bytes[24..32].try_into().unwrap()), 4);
+    assert_eq!(&bytes[32..36], &[64, 0, 255, 128]);
 }
 
 #[test]
@@ -6220,6 +6480,38 @@ fn test_we_texb0003_embedded_png(width: u32, height: u32, png: &[u8]) -> Vec<u8>
     test_write_u32_le(&mut bytes, 79, 0);
     test_write_u32_le(&mut bytes, 83, u32::try_from(png.len()).unwrap());
     bytes.extend_from_slice(png);
+    bytes
+}
+
+fn test_we_tex_image_payload(
+    width: u32,
+    height: u32,
+    we_format: u32,
+    payload: &[u8],
+    compression: u32,
+) -> Vec<u8> {
+    let encoded = match compression {
+        0 => payload.to_vec(),
+        1 => test_lz4_literal_block(payload),
+        other => panic!("unsupported test compression {other}"),
+    };
+    let mut bytes = vec![0; 91];
+    bytes[0..8].copy_from_slice(b"TEXV0005");
+    bytes[9..17].copy_from_slice(b"TEXI0001");
+    test_write_u32_le(&mut bytes, 18, we_format);
+    test_write_u32_le(&mut bytes, 26, width);
+    test_write_u32_le(&mut bytes, 30, height);
+    test_write_u32_le(&mut bytes, 34, width);
+    test_write_u32_le(&mut bytes, 38, height);
+    bytes[46..54].copy_from_slice(b"TEXB0004");
+    test_write_u32_le(&mut bytes, 55, 1);
+    test_write_u32_le(&mut bytes, 67, 1);
+    test_write_u32_le(&mut bytes, 71, width);
+    test_write_u32_le(&mut bytes, 75, height);
+    test_write_u32_le(&mut bytes, 79, compression);
+    test_write_u32_le(&mut bytes, 83, u32::try_from(payload.len()).unwrap());
+    test_write_u32_le(&mut bytes, 87, u32::try_from(encoded.len()).unwrap());
+    bytes.extend_from_slice(&encoded);
     bytes
 }
 

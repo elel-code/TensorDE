@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::AtomicUsize;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -14,7 +16,11 @@ use vulkanalia::vk::{
 };
 
 use crate::core::{FitMode, SceneBlendMode, SceneSize, SceneTextureRegion};
+use crate::renderer::SceneRenderAlphaTextureMode;
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
+use crate::renderer::native_vulkan::effect_debug::{
+    native_vulkan_effect_debug_enabled, native_vulkan_effect_debug_log_limited,
+};
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
@@ -43,10 +49,10 @@ use super::scene_draw_pass::{
     NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
-    VulkanaliaSceneDescriptorHeapDrawResources, VulkanaliaSceneSampledImageDescriptorBinding,
-    VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImagePipelineResources,
-    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
-    VulkanaliaSceneSolidQuadPipelineResources,
+    SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, VulkanaliaSceneDescriptorHeapDrawResources,
+    VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
+    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSolidQuadDrawCommand,
+    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -87,7 +93,7 @@ use super::video_session::{
 const SCENE_FULL_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 36;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 44;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES: usize = 8;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES: usize = 8;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
@@ -98,6 +104,7 @@ const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE
 const SCENE_GEOMETRY_POOLED_BYTE_BUFFERS: usize = 2;
 const SCENE_GEOMETRY_MAX_RETAINED_BYTE_CAPACITY: usize = 128 * 1024;
 const SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES: usize = 0;
+static SCENE_PRESENT_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static SCENE_GEOMETRY_BYTE_POOL: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
@@ -168,6 +175,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadVertex {
 pub struct NativeVulkanVulkanaliaSceneSampledImageVertex {
     pub position: [f32; 2],
     pub uv: [f32; 2],
+    pub effect_uv: [f32; 2],
     pub opacity: f32,
     pub tint: [f32; 4],
 }
@@ -178,9 +186,20 @@ impl NativeVulkanVulkanaliaSceneSampledImageVertex {
     }
 
     pub fn new_tinted(position: [f32; 2], uv: [f32; 2], opacity: f32, tint: [f32; 4]) -> Self {
+        Self::new_with_effect_uv(position, uv, uv, opacity, tint)
+    }
+
+    pub fn new_with_effect_uv(
+        position: [f32; 2],
+        uv: [f32; 2],
+        effect_uv: [f32; 2],
+        opacity: f32,
+        tint: [f32; 4],
+    ) -> Self {
         Self {
             position,
             uv,
+            effect_uv,
             opacity,
             tint,
         }
@@ -258,10 +277,13 @@ pub struct NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
     pub source_label: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
     pub layer_index: usize,
     pub resource_index: u32,
+    pub texture_slot_resource_indices: Vec<u32>,
+    pub alpha_texture_slot: Option<u32>,
+    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub first_index: u32,
     pub index_count: u32,
     pub blend_mode: SceneBlendMode,
@@ -318,6 +340,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             draw_steps: vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 0,
                 resource_index: 0,
+                texture_slot_resource_indices: vec![0],
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 first_index: 0,
                 index_count,
                 blend_mode: SceneBlendMode::Alpha,
@@ -736,6 +761,13 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     source_count: u32,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     source_label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneSampledImageDescriptorSlotPlan {
+    descriptor_slots: Vec<u32>,
+    step_group_base_indices: Vec<u32>,
+    group_count: usize,
 }
 
 pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
@@ -1165,55 +1197,11 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .to_owned(),
         );
     }
-    let descriptor_strategy = native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy(
-        present_device.feature_selection.core_features,
-        present_device.feature_selection.vulkan_1_4_properties,
-        present_device.feature_selection.descriptor_heap_properties,
-        sampled_image_sources.len(),
-    );
-    let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
-        NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
-            image_count: sampled_image_sources.len(),
-            properties: present_device.feature_selection.descriptor_heap_properties,
-        },
-    );
-    let use_descriptor_heap_primary_path =
-        descriptor_strategy.uses_descriptor_heap_primary_path && descriptor_heap_plan.backend_ready;
-    if !use_descriptor_heap_primary_path {
-        destroy_scene_solid_quad_frame_resources(device, frame_resources);
-        unsafe {
-            device.destroy_swapchain_khr(swapchain, None);
-            present_device.device.destroy_device(None);
-        }
-        return Err(
-            "scene sampled-image runtime requires VK_EXT_descriptor_heap; descriptor set and push descriptor paths are disabled"
-                .to_owned(),
-        );
-    }
-    let pipeline = match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
-        device,
-        swapchain_plan.format.format,
-        swapchain_plan.extent,
-        &descriptor_heap_plan,
-    ) {
-        Ok(pipeline) => pipeline,
-        Err(err) => {
-            destroy_scene_solid_quad_frame_resources(device, frame_resources);
-            unsafe {
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
-            }
-            return Err(err);
-        }
-    };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
     let native_textures = match scene_sampled_image_load_sources(&sampled_image_sources) {
         Ok(native_textures) => native_textures,
         Err(err) => {
-            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
             destroy_scene_solid_quad_frame_resources(device, frame_resources);
             unsafe {
                 device.destroy_swapchain_khr(swapchain, None);
@@ -1242,9 +1230,61 @@ fn with_vulkanalia_scene_sampled_image_present(
     ) {
         Ok(payload) => payload,
         Err(err) => {
-            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
+    let descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
+        &geometry_payload.draw_steps,
+        sampled_image_sources.len(),
+    ) {
+        Ok(plan) => plan,
+        Err(err) => {
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
+    let descriptor_strategy = native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy(
+        present_device.feature_selection.core_features,
+        present_device.feature_selection.vulkan_1_4_properties,
+        present_device.feature_selection.descriptor_heap_properties,
+        descriptor_slot_plan.descriptor_slots.len(),
+    );
+    let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
+        NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
+            image_count: descriptor_slot_plan.descriptor_slots.len(),
+            properties: present_device.feature_selection.descriptor_heap_properties,
+        },
+    );
+    let use_descriptor_heap_primary_path =
+        descriptor_strategy.uses_descriptor_heap_primary_path && descriptor_heap_plan.backend_ready;
+    if !use_descriptor_heap_primary_path {
+        destroy_scene_solid_quad_frame_resources(device, frame_resources);
+        unsafe {
+            device.destroy_swapchain_khr(swapchain, None);
+            present_device.device.destroy_device(None);
+        }
+        return Err(
+            "scene sampled-image runtime requires VK_EXT_descriptor_heap; descriptor set and push descriptor paths are disabled"
+                .to_owned(),
+        );
+    }
+    let pipeline = match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
+        device,
+        swapchain_plan.format.format,
+        swapchain_plan.extent,
+        &descriptor_heap_plan,
+    ) {
+        Ok(pipeline) => pipeline,
+        Err(err) => {
             destroy_scene_solid_quad_frame_resources(device, frame_resources);
             unsafe {
                 device.destroy_swapchain_khr(swapchain, None);
@@ -1317,6 +1357,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &memory_properties,
             &descriptor_heap_plan,
             &sampled_images,
+            &descriptor_slot_plan.descriptor_slots,
         ) {
             Ok(resources) => Some(resources),
             Err(err) => {
@@ -1340,33 +1381,34 @@ fn with_vulkanalia_scene_sampled_image_present(
     } else {
         None
     };
-    let draw_commands =
-        match scene_sampled_image_draw_commands(&geometry.draw_steps, &sampled_images) {
-            Ok(draw_commands) => draw_commands,
-            Err(err) => {
-                if let Some(descriptor_heap) = descriptor_heap {
-                    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
-                        device,
-                        descriptor_heap,
-                    );
-                }
-                for resource in sampled_images.drain(..) {
-                    native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(
-                        device, resource,
-                    );
-                }
-                destroy_scene_sampled_image_geometry_resources(device, geometry);
-                native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
-                    device, pipeline,
+    let draw_commands = match scene_sampled_image_draw_commands(
+        &geometry.draw_steps,
+        &sampled_images,
+        &descriptor_slot_plan.step_group_base_indices,
+    ) {
+        Ok(draw_commands) => draw_commands,
+        Err(err) => {
+            if let Some(descriptor_heap) = descriptor_heap {
+                native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                    device,
+                    descriptor_heap,
                 );
-                destroy_scene_solid_quad_frame_resources(device, frame_resources);
-                unsafe {
-                    device.destroy_swapchain_khr(swapchain, None);
-                    present_device.device.destroy_device(None);
-                }
-                return Err(err);
             }
-        };
+            for resource in sampled_images.drain(..) {
+                native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
+            }
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
+            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
+                device, pipeline,
+            );
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
     let solid_pipeline = if options.solid_geometry.is_some() {
         match native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources(
             device,
@@ -1672,9 +1714,29 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         .to_owned(),
                 );
             }
+            let native_textures = scene_sampled_image_load_sources(&sampled_image_sources)?;
+            let source_extent = native_textures
+                .first()
+                .map(|texture| vk::Extent2D {
+                    width: texture.width,
+                    height: texture.height,
+                })
+                .ok_or_else(|| "scene video overlay has no sampled image texture".to_owned())?;
+            let geometry_payload = scene_sampled_image_geometry_payload(
+                input.geometry.take(),
+                extent,
+                input.fit,
+                source_extent,
+                input.scene_size,
+                input.scene_fit,
+            )?;
+            let descriptor_slot_plan = scene_sampled_image_descriptor_slot_plan(
+                &geometry_payload.draw_steps,
+                sampled_image_sources.len(),
+            )?;
             let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
                 NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
-                    image_count: sampled_image_sources.len(),
+                    image_count: descriptor_slot_plan.descriptor_slots.len(),
                     properties: descriptor_heap_properties,
                 },
             );
@@ -1692,22 +1754,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     &descriptor_heap_plan,
                 )?,
             );
-            let native_textures = scene_sampled_image_load_sources(&sampled_image_sources)?;
-            let source_extent = native_textures
-                .first()
-                .map(|texture| vk::Extent2D {
-                    width: texture.width,
-                    height: texture.height,
-                })
-                .ok_or_else(|| "scene video overlay has no sampled image texture".to_owned())?;
-            let geometry_payload = scene_sampled_image_geometry_payload(
-                input.geometry.take(),
-                extent,
-                input.fit,
-                source_extent,
-                input.scene_size,
-                input.scene_fit,
-            )?;
             sampled_geometry = Some(create_scene_sampled_image_geometry_resources(
                 device,
                 memory_properties,
@@ -1740,10 +1786,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 memory_properties,
                 &descriptor_heap_plan,
                 &sampled_images,
+                &descriptor_slot_plan.descriptor_slots,
             )?);
             sampled_draw_commands = scene_sampled_image_draw_commands(
                 &sampled_geometry_ref.draw_steps,
                 &sampled_images,
+                &descriptor_slot_plan.step_group_base_indices,
             )?;
         }
 
@@ -3335,6 +3383,7 @@ fn scene_static_transfer_pipeline_snapshot(
         vertex_stride_bytes: 0,
         vertex_position_format: "none",
         vertex_uv_format: "none",
+        vertex_effect_uv_format: "none",
         vertex_opacity_format: "none",
         vertex_tint_format: "none",
         descriptor_set_count: 0,
@@ -4445,6 +4494,7 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
                 position
                     .into_iter()
                     .chain(uv)
+                    .chain(vertex.effect_uv)
                     .chain([vertex.opacity])
                     .chain(vertex.tint)
                     .all(f32::is_finite)
@@ -4452,6 +4502,7 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
             for value in position
                 .into_iter()
                 .chain(uv)
+                .chain(vertex.effect_uv)
                 .chain([vertex.opacity])
                 .chain(vertex.tint)
             {
@@ -4662,6 +4713,18 @@ fn update_scene_sampled_image_geometry_input_for_time(
                     step.resource_index, source_count
                 ));
             }
+            if step.texture_slot_resource_indices.is_empty() {
+                return Err(format!(
+                    "scene dynamic sampled-image draw step {step_index} requires at least one texture slot resource index"
+                ));
+            }
+            for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
+                if *resource_index as usize >= source_count {
+                    return Err(format!(
+                        "scene dynamic sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds source count {source_count}"
+                    ));
+                }
+            }
         }
     }
     let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
@@ -4709,6 +4772,9 @@ fn scene_sampled_image_draw_step_topology_matches(
         && left.iter().zip(right).all(|(left, right)| {
             left.layer_index == right.layer_index
                 && left.resource_index == right.resource_index
+                && left.texture_slot_resource_indices == right.texture_slot_resource_indices
+                && left.alpha_texture_slot == right.alpha_texture_slot
+                && left.alpha_texture_mode == right.alpha_texture_mode
                 && left.first_index == right.first_index
                 && left.index_count == right.index_count
                 && left.fit == right.fit
@@ -5169,6 +5235,9 @@ fn scene_video_layer_geometry_payload(
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: step.layer_index,
                 resource_index: step.resource_index,
+                texture_slot_resource_indices: vec![step.resource_index],
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 first_index: step.first_index,
                 index_count: step.index_count,
                 blend_mode: SceneBlendMode::Alpha,
@@ -5300,9 +5369,20 @@ fn create_scene_sampled_image_descriptor_heap_resources(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     plan: &super::descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     sampled_images: &[VulkanaliaSceneSampledImageResources],
+    descriptor_slots: &[u32],
 ) -> Result<VulkanaliaDescriptorHeapImageSamplerResources, String> {
     if sampled_images.is_empty() {
         return Err("scene descriptor heap requires at least one sampled image".to_owned());
+    }
+    if descriptor_slots.is_empty() {
+        return Err("scene descriptor heap requires at least one descriptor slot".to_owned());
+    }
+    if descriptor_slots.len() != plan.image_count {
+        return Err(format!(
+            "scene descriptor heap slot count {} does not match plan image count {}",
+            descriptor_slots.len(),
+            plan.image_count
+        ));
     }
     let mut descriptor_heap =
         native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
@@ -5321,11 +5401,17 @@ fn create_scene_sampled_image_descriptor_heap_resources(
         "cmd_bind_sampler_heap_ext",
         "draw_with_descriptor_heap_constant_offset_mapping",
     ];
-    for (image_index, resource) in sampled_images.iter().enumerate() {
+    for (descriptor_index, resource_index) in descriptor_slots.iter().enumerate() {
+        let resource = sampled_images.get(*resource_index as usize).ok_or_else(|| {
+            format!(
+                "scene descriptor heap slot {descriptor_index} references sampled image {resource_index}, but only {} sampled images are loaded",
+                sampled_images.len()
+            )
+        })?;
         if let Err(err) = native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
             device,
             &mut descriptor_heap,
-            image_index,
+            descriptor_index,
             &resource.image_view_create_info,
             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
             &resource.sampler_create_info,
@@ -5341,17 +5427,176 @@ fn create_scene_sampled_image_descriptor_heap_resources(
     Ok(descriptor_heap)
 }
 
+fn scene_sampled_image_descriptor_slot_plan(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    sampled_image_count: usize,
+) -> Result<SceneSampledImageDescriptorSlotPlan, String> {
+    if draw_steps.is_empty() {
+        return Err("scene sampled-image descriptor slot plan requires draw steps".to_owned());
+    }
+    let mut group_indices = BTreeMap::<Vec<u32>, u32>::new();
+    let mut descriptor_slots = Vec::new();
+    let mut step_group_base_indices = Vec::with_capacity(draw_steps.len());
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        let group =
+            scene_sampled_image_descriptor_group_slots(step, sampled_image_count, step_index)?;
+        let debug_group =
+            if native_vulkan_effect_debug_enabled() && step.alpha_texture_slot.is_some() {
+                Some(group.clone())
+            } else {
+                None
+            };
+        let group_base_index = if let Some(group_base_index) = group_indices.get(&group) {
+            *group_base_index
+        } else {
+            let group_base_index = descriptor_slots.len().min(u32::MAX as usize) as u32;
+            descriptor_slots.extend(group.iter().copied());
+            group_indices.insert(group, group_base_index);
+            group_base_index
+        };
+        if let Some(group) = debug_group.as_ref() {
+            native_vulkan_scene_present_effect_debug_log(format_args!(
+                "descriptor group step_index={} layer_index={} resource_index={} alpha_slot={:?} mode={} texture_slot_resource_indices={:?} group_base={} descriptor_slots={:?}",
+                step_index,
+                step.layer_index,
+                step.resource_index,
+                step.alpha_texture_slot,
+                step.alpha_texture_mode.as_str(),
+                step.texture_slot_resource_indices,
+                group_base_index,
+                group
+            ));
+        }
+        step_group_base_indices.push(group_base_index);
+    }
+    Ok(SceneSampledImageDescriptorSlotPlan {
+        descriptor_slots,
+        step_group_base_indices,
+        group_count: group_indices.len(),
+    })
+}
+
+fn scene_sampled_image_descriptor_group_slots(
+    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    sampled_image_count: usize,
+    step_index: usize,
+) -> Result<Vec<u32>, String> {
+    if step.texture_slot_resource_indices.is_empty() {
+        return Err(format!(
+            "scene sampled-image draw step {step_index} requires texture slot resource indices"
+        ));
+    }
+    if step.texture_slot_resource_indices.len() > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
+        return Err(format!(
+            "scene sampled-image draw step {step_index} uses {} texture slots, but the Vulkan sampled-image pipeline exposes {}",
+            step.texture_slot_resource_indices.len(),
+            SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+        ));
+    }
+    let mut slots = vec![step.resource_index; SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT];
+    for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
+        if *resource_index as usize >= sampled_image_count {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds sampled image count {sampled_image_count}"
+            ));
+        }
+        slots[slot] = *resource_index;
+    }
+    if let Some(alpha_texture_slot) = step.alpha_texture_slot
+        && alpha_texture_slot as usize >= step.texture_slot_resource_indices.len()
+    {
+        return Err(format!(
+            "scene sampled-image draw step {step_index} alpha texture slot {alpha_texture_slot} has no resource index"
+        ));
+    }
+    Ok(slots)
+}
+
 fn scene_sampled_image_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     sampled_images: &[VulkanaliaSceneSampledImageResources],
+    descriptor_group_base_indices: &[u32],
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
-    scene_sampled_image_draw_commands_for_count(draw_steps, sampled_images.len())
+    if native_vulkan_effect_debug_enabled() {
+        for (step_index, step) in draw_steps.iter().enumerate() {
+            if step.alpha_texture_slot.is_some() {
+                native_vulkan_scene_present_effect_debug_log(format_args!(
+                    "draw step resources step_index={} layer_index={} {}",
+                    step_index,
+                    step.layer_index,
+                    scene_sampled_image_draw_step_resource_debug_label(step, sampled_images)
+                ));
+            }
+        }
+    }
+    scene_sampled_image_draw_commands_for_count(
+        draw_steps,
+        sampled_images.len(),
+        descriptor_group_base_indices,
+    )
+}
+
+fn scene_sampled_image_draw_step_resource_debug_label(
+    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    sampled_images: &[VulkanaliaSceneSampledImageResources],
+) -> String {
+    let mut label = String::new();
+    label.push_str("slots=[");
+    for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
+        if slot > 0 {
+            label.push_str(", ");
+        }
+        if let Some(resource) = sampled_images.get(*resource_index as usize) {
+            label.push_str(&format!(
+                "{}:{}:{}:{}x{}:{}",
+                slot,
+                resource_index,
+                resource.snapshot.image_format,
+                resource.snapshot.extent.0,
+                resource.snapshot.extent.1,
+                resource.snapshot.source_label
+            ));
+        } else {
+            label.push_str(&format!("{}:{}:<missing>", slot, resource_index));
+        }
+    }
+    label.push(']');
+    if let Some(alpha_slot) = step.alpha_texture_slot {
+        let alpha_resource = step
+            .texture_slot_resource_indices
+            .get(alpha_slot as usize)
+            .and_then(|resource_index| sampled_images.get(*resource_index as usize));
+        if let Some(alpha_resource) = alpha_resource {
+            label.push_str(&format!(
+                " alpha_slot={} alpha_format={} alpha_extent={}x{} alpha_source={}",
+                alpha_slot,
+                alpha_resource.snapshot.image_format,
+                alpha_resource.snapshot.extent.0,
+                alpha_resource.snapshot.extent.1,
+                alpha_resource.snapshot.source_label
+            ));
+        } else {
+            label.push_str(&format!(
+                " alpha_slot={} alpha_resource=<missing>",
+                alpha_slot
+            ));
+        }
+    }
+    label
 }
 
 fn scene_sampled_image_draw_commands_for_count(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     sampled_image_count: usize,
+    descriptor_group_base_indices: &[u32],
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
+    if draw_steps.len() != descriptor_group_base_indices.len() {
+        return Err(format!(
+            "scene sampled-image draw command descriptor group count {} does not match draw step count {}",
+            descriptor_group_base_indices.len(),
+            draw_steps.len()
+        ));
+    }
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
     for (step_index, step) in draw_steps.iter().enumerate() {
         if step.resource_index as usize >= sampled_image_count {
@@ -5366,8 +5611,26 @@ fn scene_sampled_image_draw_commands_for_count(
             ));
         }
         let descriptor_binding = VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-            resource_index: step.resource_index,
+            descriptor_group_base_index: descriptor_group_base_indices[step_index],
+            texture_slot_resource_indices: step.texture_slot_resource_indices.clone(),
+            alpha_texture_slot: step.alpha_texture_slot,
+            alpha_texture_mode: step.alpha_texture_mode,
         };
+        if native_vulkan_effect_debug_enabled() && step.alpha_texture_slot.is_some() {
+            native_vulkan_scene_present_effect_debug_log(format_args!(
+                "draw command step_index={} layer_index={} resource_index={} descriptor_group_base={} alpha_slot={:?} mode={} texture_slot_resource_indices={:?} first_index={} index_count={} blend={:?}",
+                step_index,
+                step.layer_index,
+                step.resource_index,
+                descriptor_group_base_indices[step_index],
+                step.alpha_texture_slot,
+                step.alpha_texture_mode.as_str(),
+                step.texture_slot_resource_indices,
+                step.first_index,
+                step.index_count,
+                step.blend_mode
+            ));
+        }
         let command = VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
@@ -5386,6 +5649,15 @@ fn scene_sampled_image_draw_commands_for_count(
         draw_commands.push(command);
     }
     Ok(draw_commands)
+}
+
+fn native_vulkan_scene_present_effect_debug_log(args: std::fmt::Arguments<'_>) {
+    native_vulkan_effect_debug_log_limited(
+        &SCENE_PRESENT_EFFECT_DEBUG_LOG_COUNT,
+        160,
+        "vulkan.sampled-command",
+        args,
+    );
 }
 
 fn scene_sampled_image_draw_commands_can_merge(
@@ -5483,8 +5755,16 @@ fn scene_sampled_image_resource_sampler_mode(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     implicit_fit: Option<FitMode>,
 ) -> NativeVulkanVulkanaliaSceneSampledImageSamplerMode {
+    let resource_index = resource_index.min(u32::MAX as usize) as u32;
     draw_steps
-        .get(resource_index)
+        .iter()
+        .find(|step| {
+            step.resource_index == resource_index
+                || step
+                    .texture_slot_resource_indices
+                    .iter()
+                    .any(|slot_resource_index| *slot_resource_index == resource_index)
+        })
         .and_then(|step| step.fit)
         .or(implicit_fit)
         .map_or(
@@ -5587,6 +5867,18 @@ fn scene_sampled_image_geometry_payload_from_input(
                 step.resource_index, source_count
             ));
         }
+        if step.texture_slot_resource_indices.is_empty() {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} requires at least one texture slot resource index"
+            ));
+        }
+        for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
+            if *resource_index as usize >= source_count {
+                return Err(format!(
+                    "scene sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds source count {source_count}"
+                ));
+            }
+        }
         let end_index = step
             .first_index
             .checked_add(step.index_count)
@@ -5668,6 +5960,7 @@ fn scene_sampled_image_vertex_bytes_for_time(
             .position
             .into_iter()
             .chain(vertex.uv)
+            .chain(vertex.effect_uv)
             .chain([vertex.opacity])
             .chain(vertex.tint)
             .all(f32::is_finite)
@@ -5681,6 +5974,7 @@ fn scene_sampled_image_vertex_bytes_for_time(
             .position
             .into_iter()
             .chain(uv)
+            .chain(vertex.effect_uv)
             .chain([vertex.opacity])
             .chain(vertex.tint)
         {
@@ -6086,6 +6380,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 0,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6095,6 +6392,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 6,
                     index_count: 12,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6103,6 +6403,7 @@ mod tests {
                 },
             ],
             1,
+            &[0, 0],
         )
         .unwrap();
 
@@ -6113,12 +6414,95 @@ mod tests {
                 last_layer_index: 11,
                 blend_mode: SceneBlendMode::Alpha,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                    resource_index: 0,
+                    descriptor_group_base_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 first_index: 0,
                 index_count: 18,
             }]
         );
+    }
+
+    #[test]
+    fn sampled_image_descriptor_slot_plan_preserves_sparse_texture_slots() {
+        let steps = vec![
+            NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: 10,
+                resource_index: 0,
+                texture_slot_resource_indices: vec![0, 0, 0, 1],
+                alpha_texture_slot: Some(3),
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                first_index: 0,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
+                fit: None,
+                texture_region: None,
+            },
+            NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: 11,
+                resource_index: 0,
+                texture_slot_resource_indices: vec![0, 0, 0, 1],
+                alpha_texture_slot: Some(3),
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                first_index: 6,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
+                fit: None,
+                texture_region: None,
+            },
+            NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: 12,
+                resource_index: 2,
+                texture_slot_resource_indices: vec![2, 2, 2, 1],
+                alpha_texture_slot: Some(3),
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                first_index: 12,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
+                fit: None,
+                texture_region: None,
+            },
+        ];
+
+        let plan = scene_sampled_image_descriptor_slot_plan(&steps, 3).unwrap();
+
+        assert_eq!(plan.group_count, 2);
+        assert_eq!(
+            plan.step_group_base_indices,
+            vec![0, 0, SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT as u32]
+        );
+        assert_eq!(
+            &plan.descriptor_slots[..SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT],
+            &[0, 0, 0, 1, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            &plan.descriptor_slots[SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT..],
+            &[2, 2, 2, 1, 2, 2, 2, 2]
+        );
+    }
+
+    #[test]
+    fn sampled_image_descriptor_slot_plan_rejects_missing_alpha_slot_resource() {
+        let err = scene_sampled_image_descriptor_slot_plan(
+            &[NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: 10,
+                resource_index: 0,
+                texture_slot_resource_indices: vec![0, 1],
+                alpha_texture_slot: Some(3),
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                first_index: 0,
+                index_count: 6,
+                blend_mode: SceneBlendMode::Alpha,
+                fit: None,
+                texture_region: None,
+            }],
+            2,
+        )
+        .unwrap_err();
+
+        assert!(err.contains("alpha texture slot 3 has no resource index"));
     }
 
     #[test]
@@ -6128,6 +6512,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 0,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6137,6 +6524,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 1,
+                    texture_slot_resource_indices: vec![1],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 6,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6145,17 +6535,28 @@ mod tests {
                 },
             ],
             2,
+            &[0, 8],
         )
         .unwrap();
 
         assert_eq!(commands.len(), 2);
         assert_eq!(
             commands[0].descriptor_binding,
-            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index: 0 }
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: 0,
+                texture_slot_resource_indices: vec![0],
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            }
         );
         assert_eq!(
             commands[1].descriptor_binding,
-            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index: 1 }
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: 8,
+                texture_slot_resource_indices: vec![1],
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            }
         );
     }
 
@@ -6166,6 +6567,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 0,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6175,6 +6579,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 6,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Max,
@@ -6183,6 +6590,7 @@ mod tests {
                 },
             ],
             1,
+            &[0, 0],
         )
         .unwrap();
 
@@ -6271,7 +6679,7 @@ mod tests {
         assert_eq!(payload.vertex_count, 4);
         assert_eq!(payload.index_count, 6);
         assert_eq!(payload.quad_count, 1);
-        assert_eq!(payload.vertex_bytes.len(), 144);
+        assert_eq!(payload.vertex_bytes.len(), 176);
         assert_eq!(payload.index_bytes.len(), 24);
         let floats = payload
             .vertex_bytes
@@ -6279,12 +6687,12 @@ mod tests {
             .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
         assert_eq!(
-            &floats[0..9],
-            &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            &floats[0..11],
+            &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         );
         assert_eq!(
-            &floats[27..36],
-            &[0.0, 500.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+            &floats[33..44],
+            &[0.0, 500.0, 0.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
         );
     }
 
@@ -6483,12 +6891,15 @@ mod tests {
             .chunks_exact(4)
             .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
+        let stride_floats = SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize / 4;
+        let second = stride_floats;
+        let fourth = stride_floats * 3;
         assert_close(floats[0], 0.0);
         assert_close(floats[1], -53.166668);
-        assert_close(floats[9], 2561.0);
-        assert_close(floats[10], -53.166668);
-        assert_close(floats[27], 2561.0);
-        assert_close(floats[28], 1654.1666);
+        assert_close(floats[second], 2561.0);
+        assert_close(floats[second + 1], -53.166668);
+        assert_close(floats[fourth], 2561.0);
+        assert_close(floats[fourth + 1], 1654.1666);
     }
 
     #[test]
@@ -6539,6 +6950,9 @@ mod tests {
         let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 7,
             resource_index: 0,
+            texture_slot_resource_indices: vec![0],
+            alpha_texture_slot: None,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             first_index: 0,
             index_count: 6,
             blend_mode: SceneBlendMode::Alpha,
@@ -6596,6 +7010,9 @@ mod tests {
         let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 7,
             resource_index: 0,
+            texture_slot_resource_indices: vec![0],
+            alpha_texture_slot: None,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             first_index: 0,
             index_count: 6,
             blend_mode: SceneBlendMode::Alpha,
@@ -6630,21 +7047,25 @@ mod tests {
         assert_close(read_f32(&bytes, 4), 20.0);
         assert_close(read_f32(&bytes, 8), 2.0 / 3.0);
         assert_close(read_f32(&bytes, 12), 0.25);
-        assert_close(read_f32(&bytes, 16), 0.5);
-        assert_close(read_f32(&bytes, 20), 1.0);
-        assert_close(read_f32(&bytes, 24), 1.0);
+        assert_close(read_f32(&bytes, 16), 0.0);
+        assert_close(read_f32(&bytes, 20), 0.0);
+        assert_close(read_f32(&bytes, 24), 0.5);
         assert_close(read_f32(&bytes, 28), 1.0);
         assert_close(read_f32(&bytes, 32), 1.0);
+        assert_close(read_f32(&bytes, 36), 1.0);
+        assert_close(read_f32(&bytes, 40), 1.0);
         let fourth = 3 * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
         assert_close(read_f32(&bytes, fourth), 140.0);
         assert_close(read_f32(&bytes, fourth + 4), 120.0);
         assert_close(read_f32(&bytes, fourth + 8), 1.0);
         assert_close(read_f32(&bytes, fourth + 12), 0.5);
-        assert_close(read_f32(&bytes, fourth + 16), 0.5);
-        assert_close(read_f32(&bytes, fourth + 20), 1.0);
-        assert_close(read_f32(&bytes, fourth + 24), 1.0);
+        assert_close(read_f32(&bytes, fourth + 16), 1.0 / 3.0);
+        assert_close(read_f32(&bytes, fourth + 20), 0.25);
+        assert_close(read_f32(&bytes, fourth + 24), 0.5);
         assert_close(read_f32(&bytes, fourth + 28), 1.0);
         assert_close(read_f32(&bytes, fourth + 32), 1.0);
+        assert_close(read_f32(&bytes, fourth + 36), 1.0);
+        assert_close(read_f32(&bytes, fourth + 40), 1.0);
     }
 
     #[test]
@@ -6652,6 +7073,9 @@ mod tests {
         let static_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 0,
             resource_index: 0,
+            texture_slot_resource_indices: vec![0],
+            alpha_texture_slot: None,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             first_index: 0,
             index_count: 6,
             blend_mode: SceneBlendMode::Alpha,
@@ -6671,7 +7095,7 @@ mod tests {
                 fps: Some(12.0),
                 loop_playback: true,
             }),
-            ..static_steps[0]
+            ..static_steps[0].clone()
         }];
 
         assert_eq!(
@@ -6768,7 +7192,7 @@ mod tests {
         assert_eq!(payload.vertex_count, 4);
         assert_eq!(payload.index_count, 6);
         assert_eq!(payload.quad_count, 1);
-        assert_eq!(payload.vertex_bytes.len(), 144);
+        assert_eq!(payload.vertex_bytes.len(), 176);
         assert_eq!(payload.index_bytes.len(), 24);
         let indices = payload
             .index_bytes
@@ -6812,9 +7236,10 @@ mod tests {
             .map(|chunk| f32::from_ne_bytes(chunk.try_into().unwrap()))
             .collect::<Vec<_>>();
 
-        assert_eq!(payload.vertex_bytes.len(), 108);
-        assert_close(floats[4], 0.3);
-        assert_eq!(&floats[5..9], &[0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(payload.vertex_bytes.len(), 132);
+        assert_eq!(&floats[4..6], &[0.0, 0.0]);
+        assert_close(floats[6], 0.3);
+        assert_eq!(&floats[7..11], &[0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -6836,6 +7261,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 0,
                     resource_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 0,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,
@@ -6845,6 +7273,9 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 1,
                     resource_index: 1,
+                    texture_slot_resource_indices: vec![1],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                     first_index: 6,
                     index_count: 6,
                     blend_mode: SceneBlendMode::Alpha,

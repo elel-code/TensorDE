@@ -428,6 +428,9 @@ impl SceneDocument {
             id: "scene-render-clear-color".to_owned(),
             kind: SceneNodeKind::Color,
             source: None,
+            texture_slots: Vec::new(),
+            alpha_texture_slot: None,
+            composite_key: None,
             texture_region: None,
             effect_motion: SceneNativeEffectMotion::default(),
             blend_mode: SceneBlendMode::Alpha,
@@ -632,6 +635,10 @@ pub struct SceneResource {
     #[serde(rename = "type")]
     pub kind: SceneResourceKind,
     pub source: PackagePath,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     #[serde(default)]
     pub original_source: Option<String>,
     #[serde(default)]
@@ -984,14 +991,23 @@ impl SceneNode {
             let layer_transform = layer_effect.apply_transform(transform);
             let layer_opacity = layer_effect.apply_opacity(opacity);
             let mesh = self.snapshot_mesh_at(time_ms);
+            let source_resource = self
+                .resource
+                .as_deref()
+                .and_then(|resource| resources.get(resource))
+                .copied();
+            let (texture_slots, alpha_texture_slot) =
+                scene_texture_slots_for_node(source_resource, &self.effects, |resource_id| {
+                    resources.get(resource_id).copied()
+                });
+            let composite_key = self.scene_layer_composite_key(source_resource);
             let layer = SceneSnapshotLayer {
                 id: self.id.clone(),
                 kind: self.kind,
-                source: self
-                    .resource
-                    .as_deref()
-                    .and_then(|resource| resources.get(resource))
-                    .map(|resource| resource.source.clone()),
+                source: source_resource.map(|resource| resource.source.clone()),
+                texture_slots,
+                alpha_texture_slot,
+                composite_key,
                 texture_region,
                 effect_motion: layer_effect.motion,
                 blend_mode,
@@ -1172,10 +1188,15 @@ impl SceneNode {
         }
 
         if self.kind == SceneNodeKind::Image {
-            let source = self
+            let source_resource = self
                 .resource
                 .as_deref()
                 .and_then(|resource| build_index.resource(resources, resource));
+            let (texture_slots, alpha_texture_slot) =
+                scene_texture_slots_for_node(source_resource, &self.effects, |resource_id| {
+                    build_index.resource(resources, resource_id)
+                });
+            let composite_key = self.scene_layer_composite_key(source_resource);
             let blend_mode = scene_blend_mode_from_properties(&self.properties);
             let color = scene_color_from_properties(
                 &self.properties,
@@ -1190,7 +1211,10 @@ impl SceneNode {
             let layer_opacity = layer_effect.apply_opacity(opacity);
             let mesh = self.snapshot_mesh_at(time_ms);
             let layer = SceneSnapshotSampledImageLayer {
-                has_source: source.is_some(),
+                has_source: source_resource.is_some(),
+                texture_slots,
+                alpha_texture_slot,
+                composite_key,
                 texture_region: scene_texture_region_from_properties(&self.properties, time_ms),
                 width,
                 height,
@@ -1350,6 +1374,9 @@ impl SceneNode {
                 id: self.id.clone(),
                 kind: self.kind,
                 source: None,
+                texture_slots: Vec::new(),
+                alpha_texture_slot: None,
+                composite_key: None,
                 texture_region: None,
                 effect_motion: layer_effect.motion,
                 blend_mode,
@@ -1476,6 +1503,19 @@ impl SceneNode {
                 id,
                 kind: layer_kind,
                 source: source.clone(),
+                texture_slots: source
+                    .as_ref()
+                    .map(|source| {
+                        vec![SceneTextureSlot {
+                            slot: 0,
+                            source: source.clone(),
+                            width: None,
+                            height: None,
+                        }]
+                    })
+                    .unwrap_or_default(),
+                alpha_texture_slot: None,
+                composite_key: None,
                 texture_region,
                 effect_motion: SceneNativeEffectMotion::default(),
                 blend_mode,
@@ -1525,14 +1565,19 @@ impl SceneNode {
         if particle_count == 0 || opacity <= 0.0 {
             return true;
         }
-        let has_source = self
+        let source_resource = self
             .resource
             .as_deref()
-            .and_then(|resource| build_index.resource(resources, resource))
-            .is_some();
-        if !has_source {
+            .and_then(|resource| build_index.resource(resources, resource));
+        let Some(source_resource) = source_resource else {
             return true;
-        }
+        };
+        let texture_slots = vec![SceneTextureSlot {
+            slot: 0,
+            source: source_resource.source.clone(),
+            width: source_resource.width,
+            height: source_resource.height,
+        }];
         let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
         let blend_mode = scene_blend_mode_from_properties(&self.properties);
         let tint = scene_tint_from_color(Some(&settings.color));
@@ -1567,6 +1612,9 @@ impl SceneNode {
             }
             output.push(SceneSnapshotSampledImageLayer {
                 has_source: true,
+                texture_slots: texture_slots.clone(),
+                alpha_texture_slot: None,
+                composite_key: None,
                 texture_region,
                 width: Some(settings.particle_width),
                 height: Some(settings.particle_height),
@@ -1640,6 +1688,9 @@ impl SceneNode {
                 id: String::new(),
                 kind: settings.shape,
                 source: None,
+                texture_slots: Vec::new(),
+                alpha_texture_slot: None,
+                composite_key: None,
                 texture_region: None,
                 effect_motion: SceneNativeEffectMotion::default(),
                 blend_mode,
@@ -1673,6 +1724,24 @@ impl SceneNode {
             return Some(self);
         }
         self.children.iter().find_map(|child| child.find_by_id(id))
+    }
+
+    fn scene_layer_composite_key(
+        &self,
+        source_resource: Option<&SceneResource>,
+    ) -> Option<SceneLayerCompositeKey> {
+        let provenance = self.provenance.as_ref()?;
+        let attachment = self
+            .puppet_attachment
+            .as_ref()
+            .or(provenance.attachment.as_ref())?;
+        let original_path = provenance.original_path.as_ref()?;
+        Some(SceneLayerCompositeKey {
+            parent_source_id: provenance.parent_id.clone(),
+            puppet_attachment: attachment.clone(),
+            original_path: original_path.clone(),
+            base_source: source_resource?.source.clone(),
+        })
     }
 
     fn snapshot_mesh_at(&self, time_ms: u64) -> Option<Arc<SceneMesh>> {
@@ -1920,6 +1989,8 @@ pub struct SceneNodeProvenance {
     #[serde(default)]
     pub attachment: Option<String>,
     #[serde(default)]
+    pub lock_transforms: Option<bool>,
+    #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub original_type: Option<String>,
@@ -2108,6 +2179,8 @@ pub struct SceneEffectPass {
     #[serde(default)]
     pub textures: Vec<Option<String>>,
     #[serde(default)]
+    pub texture_resources: Vec<Option<String>>,
+    #[serde(default)]
     pub combos: BTreeMap<String, i64>,
     #[serde(default)]
     pub constant_shader_values: BTreeMap<String, Value>,
@@ -2123,6 +2196,12 @@ impl SceneEffectPass {
                     "scene node {node_id:?} effect {effect_file:?} texture reference must not be empty"
                 )));
             }
+        }
+        for texture_resource in self.texture_resources.iter().flatten() {
+            validate_required_text(
+                &format!("scene node {node_id:?} effect {effect_file:?} texture resource"),
+                texture_resource,
+            )?;
         }
         Ok(())
     }
@@ -2691,6 +2770,78 @@ impl SceneSnapshotSampledImageBuildIndex {
     }
 }
 
+fn scene_texture_slots_for_node<'a>(
+    base_resource: Option<&'a SceneResource>,
+    effects: &[SceneEffect],
+    mut resolve_resource: impl FnMut(&str) -> Option<&'a SceneResource>,
+) -> (Vec<SceneTextureSlot>, Option<u32>) {
+    let mut slots = Vec::new();
+    if let Some(resource) = base_resource {
+        scene_push_texture_slot(&mut slots, 0, resource);
+    }
+
+    let mut alpha_texture_slot = None;
+    for effect in effects
+        .iter()
+        .filter(|effect| scene_effect_uses_alpha_texture_slot(effect))
+    {
+        for pass in &effect.passes {
+            for (slot, resource_id) in pass.texture_resources.iter().enumerate().skip(1) {
+                let Some(resource_id) = resource_id.as_deref() else {
+                    continue;
+                };
+                let Some(resource) = resolve_resource(resource_id) else {
+                    continue;
+                };
+                let Ok(slot) = u32::try_from(slot) else {
+                    continue;
+                };
+                scene_push_texture_slot(&mut slots, slot, resource);
+                alpha_texture_slot.get_or_insert(slot);
+            }
+        }
+    }
+
+    (slots, alpha_texture_slot)
+}
+
+fn scene_push_texture_slot(slots: &mut Vec<SceneTextureSlot>, slot: u32, resource: &SceneResource) {
+    let _ = scene_push_texture_slot_value(
+        slots,
+        SceneTextureSlot {
+            slot,
+            source: resource.source.clone(),
+            width: resource.width,
+            height: resource.height,
+        },
+    );
+}
+
+fn scene_push_texture_slot_value(
+    slots: &mut Vec<SceneTextureSlot>,
+    texture_slot: SceneTextureSlot,
+) -> bool {
+    if slots.iter().any(|existing| {
+        existing.slot == texture_slot.slot && existing.source == texture_slot.source
+    }) {
+        return true;
+    }
+    if slots
+        .iter()
+        .any(|existing| existing.slot == texture_slot.slot)
+    {
+        return false;
+    }
+    slots.push(texture_slot);
+    slots.sort_by_key(|slot| slot.slot);
+    true
+}
+
+fn scene_effect_uses_alpha_texture_slot(effect: &SceneEffect) -> bool {
+    let file = effect.file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json")
+}
+
 impl SceneSnapshotVisibility {
     fn from_size(size: Option<SceneSize>) -> Option<Self> {
         let size = size?;
@@ -2741,11 +2892,30 @@ impl SceneSnapshotBounds {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SceneTextureSlot {
+    pub slot: u32,
+    pub source: PackagePath,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneLayerCompositeKey {
+    pub parent_source_id: Option<String>,
+    pub puppet_attachment: String,
+    pub original_path: String,
+    pub base_source: PackagePath,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSnapshotLayer {
     pub id: String,
     pub kind: SceneNodeKind,
     pub source: Option<PackagePath>,
+    pub texture_slots: Vec<SceneTextureSlot>,
+    pub alpha_texture_slot: Option<u32>,
+    pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     pub effect_motion: SceneNativeEffectMotion,
     pub blend_mode: SceneBlendMode,
@@ -2774,6 +2944,9 @@ pub struct SceneSnapshotLayer {
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSnapshotSampledImageLayer {
     pub has_source: bool,
+    pub texture_slots: Vec<SceneTextureSlot>,
+    pub alpha_texture_slot: Option<u32>,
+    pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     pub width: Option<f64>,
     pub height: Option<f64>,

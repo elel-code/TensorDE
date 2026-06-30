@@ -378,11 +378,16 @@ fn write_static_image_audio_scene_document(
         fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
     }
 
-    let mut resources = vec![json!({
+    let mut static_image_resource = json!({
         "id": "static-image",
         "type": "image",
         "source": image_package_path
-    })];
+    });
+    if let Some(dimensions) = dimensions {
+        static_image_resource["width"] = json!(dimensions.width);
+        static_image_resource["height"] = json!(dimensions.height);
+    }
+    let mut resources = vec![static_image_resource];
     let mut cues = Vec::with_capacity(audio_sources.len());
     for (index, source) in audio_sources.iter().enumerate() {
         let copied = copy_project_file(
@@ -5572,6 +5577,9 @@ fn scene_node_provenance_from_object(
     if let Some(attachment) = string_field(object, &["attachment"]) {
         provenance.insert("attachment".to_owned(), Value::String(attachment));
     }
+    if let Some(lock_transforms) = object.get("locktransforms").and_then(Value::as_bool) {
+        provenance.insert("lock_transforms".to_owned(), Value::Bool(lock_transforms));
+    }
     if let Some(dependencies) = scene_dependencies_from_object(object) {
         provenance.insert("dependencies".to_owned(), dependencies);
     }
@@ -5922,6 +5930,86 @@ fn scene_material_texture_path(texture: &str) -> String {
     }
 }
 
+fn scene_effect_texture_resource_from_reference(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    texture: &str,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) -> Option<String> {
+    let texture = scene_material_texture_path(texture);
+    if texture.starts_with("_rt_") {
+        scene_push_unsupported(
+            context,
+            "we-effect-runtime-texture",
+            "Wallpaper Engine effect runtime texture was preserved as a texture reference; it is not a standalone project asset.",
+            Some(&texture),
+        );
+        return None;
+    }
+    if let Some(resource) = scene_generate_builtin_particle_texture_resource(
+        output_dir, &texture, report, context, resources,
+    ) {
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-effect-texture-resource",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "scene-we-effect-texture-resource",
+        );
+        return Some(resource);
+    }
+    if texture.ends_with(".tex") {
+        let decoded = scene_copy_decoded_tex_resource_as(
+            project, output_dir, &texture, None, false, report, context, resources,
+        );
+        if let Some(decoded) = decoded {
+            push_unique(
+                &mut context.converted_features,
+                "scene-we-effect-texture-resource",
+            );
+            push_unique(
+                &mut report.converted_features,
+                "scene-we-effect-texture-resource",
+            );
+            return Some(decoded.resource_id);
+        }
+        scene_push_unsupported(
+            context,
+            "we-effect-tex-decode",
+            "Wallpaper Engine effect .tex texture was preserved as an original source reference but not emitted as a native scene runtime resource.",
+            Some(&texture),
+        );
+        return None;
+    }
+    if is_image_path(&texture) {
+        let resource = scene_copy_resource_as(
+            project,
+            output_dir,
+            &texture,
+            "image",
+            Some("we-effect-texture"),
+            report,
+            context,
+            resources,
+        );
+        if resource.is_some() {
+            push_unique(
+                &mut context.converted_features,
+                "scene-we-effect-texture-resource",
+            );
+            push_unique(
+                &mut report.converted_features,
+                "scene-we-effect-texture-resource",
+            );
+        }
+        return resource;
+    }
+    None
+}
+
 fn read_scene_project_json(
     project: &WallpaperEngineProject,
     source_path: &str,
@@ -6181,6 +6269,8 @@ fn scene_generate_builtin_particle_texture_resource(
         "id": resource_id,
         "type": "image",
         "source": package_path,
+        "width": image.width,
+        "height": image.height,
         "original_source": source_path,
         "role": "we-builtin-particle-texture"
     }));
@@ -6296,6 +6386,7 @@ fn scene_builtin_particle_bubble_image() -> SceneWeTexImage {
         width: SIZE,
         height: SIZE,
         rgba,
+        r8: None,
     }
 }
 
@@ -6386,6 +6477,7 @@ fn scene_builtin_particle_radial_image(
         width: SIZE,
         height: SIZE,
         rgba,
+        r8: None,
     }
 }
 
@@ -6541,9 +6633,14 @@ fn scene_copy_decoded_tex_resource_as(
         return None;
     }
     let dest = dest_dir.join(format!("{resource_id}.gtex"));
-    if let Err(err) = gtex::write_bc7_gtex(&dest, &decoded) {
+    let write_result = if let Some(r8) = decoded.r8.as_deref() {
+        gtex::write_r8_gtex(&dest, decoded.width, decoded.height, r8)
+    } else {
+        gtex::write_bc7_gtex(&dest, &decoded)
+    };
+    if let Err(err) = write_result {
         report.errors.push(format!(
-            "Failed to write native BC7 scene texture {} to {}: {err}.",
+            "Failed to write native scene texture {} to {}: {err}.",
             source.display(),
             dest.display()
         ));
@@ -6555,12 +6652,18 @@ fn scene_copy_decoded_tex_resource_as(
         "id": resource_id,
         "type": "image",
         "source": package_path,
+        "width": decoded.width,
+        "height": decoded.height,
         "original_source": source_path,
         "role": role
     }));
     push_unique(
         &mut context.converted_features,
-        "scene-we-tex-bc7-gpu-texture",
+        if decoded.r8.is_some() {
+            "scene-we-tex-r8-gpu-texture"
+        } else {
+            "scene-we-tex-bc7-gpu-texture"
+        },
     );
     let resource = SceneDecodedTexResource {
         resource_id,
@@ -6623,6 +6726,8 @@ fn scene_copy_block_compressed_tex_resource(
         "id": resource_id,
         "type": "image",
         "source": package_path,
+        "width": decoded.width,
+        "height": decoded.height,
         "original_source": source_path,
         "role": format!("we-material-texture-{}-passthrough", format_suffix)
     }));
@@ -6741,36 +6846,55 @@ fn scene_we_tex_crop_first_frame(
     if layout.frame_width == image.width && layout.frame_height == image.height {
         return Ok(image);
     }
-    let row_bytes = usize::try_from(layout.frame_width)
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .ok_or_else(|| "frame row byte count overflowed".to_owned())?;
-    let stride = usize::try_from(image.width)
-        .ok()
-        .and_then(|width| width.checked_mul(4))
-        .ok_or_else(|| "atlas row byte count overflowed".to_owned())?;
-    let frame_len = tex::rgba_len(layout.frame_width, layout.frame_height)?;
-    let mut rgba = Vec::with_capacity(frame_len);
-    for row in 0..usize::try_from(layout.frame_height)
-        .map_err(|_| "frame height does not fit this platform".to_owned())?
-    {
-        let start = row
-            .checked_mul(stride)
-            .ok_or_else(|| "atlas row offset overflowed".to_owned())?;
-        let end = start
-            .checked_add(row_bytes)
-            .ok_or_else(|| "atlas row range overflowed".to_owned())?;
-        let row = image
-            .rgba
-            .get(start..end)
-            .ok_or_else(|| "decoded atlas is shorter than declared dimensions".to_owned())?;
-        rgba.extend_from_slice(row);
-    }
+    let rgba = scene_we_tex_crop_first_frame_bytes(&image.rgba, image.width, layout, 4, "RGBA")?;
+    let r8 = image
+        .r8
+        .as_deref()
+        .map(|r8| scene_we_tex_crop_first_frame_bytes(r8, image.width, layout, 1, "R8"))
+        .transpose()?;
     Ok(SceneWeTexImage {
         width: layout.frame_width,
         height: layout.frame_height,
         rgba,
+        r8,
     })
+}
+
+fn scene_we_tex_crop_first_frame_bytes(
+    bytes: &[u8],
+    atlas_width: u32,
+    layout: SceneWeTexFrameLayout,
+    bytes_per_pixel: usize,
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let row_bytes = usize::try_from(layout.frame_width)
+        .ok()
+        .and_then(|width| width.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| format!("{label} frame row byte count overflowed"))?;
+    let stride = usize::try_from(atlas_width)
+        .ok()
+        .and_then(|width| width.checked_mul(bytes_per_pixel))
+        .ok_or_else(|| format!("{label} atlas row byte count overflowed"))?;
+    let frame_len = usize::try_from(layout.frame_height)
+        .ok()
+        .and_then(|height| height.checked_mul(row_bytes))
+        .ok_or_else(|| format!("{label} frame byte count overflowed"))?;
+    let mut frame = Vec::with_capacity(frame_len);
+    for row in 0..usize::try_from(layout.frame_height)
+        .map_err(|_| format!("{label} frame height does not fit this platform"))?
+    {
+        let start = row
+            .checked_mul(stride)
+            .ok_or_else(|| format!("{label} atlas row offset overflowed"))?;
+        let end = start
+            .checked_add(row_bytes)
+            .ok_or_else(|| format!("{label} atlas row range overflowed"))?;
+        let row = bytes
+            .get(start..end)
+            .ok_or_else(|| format!("decoded {label} atlas is shorter than declared dimensions"))?;
+        frame.extend_from_slice(row);
+    }
+    Ok(frame)
 }
 
 #[cfg(test)]

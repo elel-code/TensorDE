@@ -24,7 +24,8 @@ use self::scene_runtime::{
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
-    SceneAudioCueCondition, SceneEffect, SceneMesh, SceneNativeEffectMotion, SceneSnapshotLayer,
+    SceneAudioCueCondition, SceneEffect, SceneLayerCompositeKey, SceneMesh,
+    SceneNativeEffectMotion, SceneSnapshotLayer,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
@@ -143,10 +144,52 @@ fn default_scene_fit() -> FitMode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneRenderTextureSlot {
+    pub slot: u32,
+    pub source: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneRenderAlphaTextureMode {
+    #[default]
+    Multiply,
+    Inverse,
+}
+
+impl SceneRenderAlphaTextureMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Multiply => "multiply",
+            Self::Inverse => "inverse",
+        }
+    }
+
+    pub(in crate::renderer) fn shader_code(self) -> u32 {
+        match self {
+            Self::Multiply => 0,
+            Self::Inverse => 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderLayer {
     pub id: String,
     pub kind: SceneNodeKind,
     pub source: Option<PathBuf>,
+    #[serde(default)]
+    pub texture_slots: Vec<SceneRenderTextureSlot>,
+    #[serde(default)]
+    pub alpha_texture_slot: Option<u32>,
+    #[serde(default)]
+    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    #[serde(default)]
+    pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     #[serde(default)]
     pub effect_motion: SceneNativeEffectMotion,
@@ -1934,6 +1977,19 @@ fn scene_render_layers_from_snapshot_into(
             id: layer.id,
             kind: layer.kind,
             source: layer.source.map(|source| source.join_to(package_root)),
+            texture_slots: layer
+                .texture_slots
+                .into_iter()
+                .map(|slot| SceneRenderTextureSlot {
+                    slot: slot.slot,
+                    source: slot.source.join_to(package_root),
+                    width: slot.width,
+                    height: slot.height,
+                })
+                .collect(),
+            alpha_texture_slot: layer.alpha_texture_slot,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            composite_key: layer.composite_key,
             texture_region: layer.texture_region,
             effect_motion: layer.effect_motion,
             blend_mode: layer.blend_mode,

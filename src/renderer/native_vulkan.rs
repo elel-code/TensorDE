@@ -103,6 +103,7 @@ impl fmt::Debug for NativeVulkanEncodedAccessUnitPayload {
 }
 
 mod audio;
+mod effect_debug;
 mod interop;
 mod labels;
 mod pipeline;
@@ -12318,6 +12319,10 @@ mod tests {
                     id: "panel".to_owned(),
                     kind: crate::core::SceneNodeKind::Rectangle,
                     source: None,
+                    texture_slots: Vec::new(),
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: Default::default(),
+                    composite_key: None,
                     texture_region: None,
                     effect_motion: Default::default(),
                     blend_mode: Default::default(),

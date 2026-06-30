@@ -1,23 +1,33 @@
 #![allow(dead_code)]
 
+use std::sync::atomic::AtomicUsize;
+
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
 
 use crate::core::SceneBlendMode;
+use crate::renderer::SceneRenderAlphaTextureMode;
+use crate::renderer::native_vulkan::effect_debug::{
+    native_vulkan_effect_debug_enabled, native_vulkan_effect_debug_log_limited,
+};
 
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     VulkanaliaDescriptorHeapImageSamplerResources,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image,
 };
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 36;
+const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 44;
 const SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES: u32 = 8;
-const SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES: u32 = 8;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES: u32 = 16;
+pub(in crate::renderer::native_vulkan::vulkan) const SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT:
+    usize = 8;
+const SCENE_SAMPLED_IMAGE_ALPHA_TEXTURE_SLOT_DISABLED: u32 = u32::MAX;
+static SCENE_DRAW_PASS_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeVulkanVulkanaliaSceneDrawPassInput {
@@ -139,6 +149,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     pub vertex_stride_bytes: u32,
     pub vertex_position_format: &'static str,
     pub vertex_uv_format: &'static str,
+    pub vertex_effect_uv_format: &'static str,
     pub vertex_opacity_format: &'static str,
     pub vertex_tint_format: &'static str,
     pub descriptor_set_count: u32,
@@ -210,12 +221,17 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
         NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageDescriptorBinding {
-    DescriptorHeap { resource_index: u32 },
+    DescriptorHeap {
+        descriptor_group_base_index: u32,
+        texture_slot_resource_indices: Vec<u32>,
+        alpha_texture_slot: Option<u32>,
+        alpha_texture_mode: SceneRenderAlphaTextureMode,
+    },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImageDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
@@ -920,7 +936,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
 
     let result = (|| -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
         let push_range = vk::PushConstantRange::builder()
-            .stage_flags(vk::ShaderStageFlags::VERTEX)
+            .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
             .offset(0)
             .size(SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES)
             .build();
@@ -1083,12 +1099,21 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     blend_mode: SceneBlendMode,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
-    let descriptor_heap_mapping =
-        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
-            descriptor_heap_plan,
-            0,
-        )?;
-    let descriptor_heap_mappings = [descriptor_heap_mapping];
+    if descriptor_heap_plan.image_count < SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
+        return Err(format!(
+            "scene sampled-image pipeline requires at least {} descriptor heap texture slots, got {}",
+            SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, descriptor_heap_plan.image_count
+        ));
+    }
+    let descriptor_heap_mappings = (0..SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT)
+        .map(|binding| {
+            native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+                descriptor_heap_plan,
+                binding as u32,
+                binding,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut descriptor_heap_mapping_info =
         vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
             .mappings(&descriptor_heap_mappings)
@@ -1127,14 +1152,20 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
         vk::VertexInputAttributeDescription::builder()
             .location(2)
             .binding(0)
-            .format(vk::Format::R32_SFLOAT)
+            .format(vk::Format::R32G32_SFLOAT)
             .offset(16)
             .build(),
         vk::VertexInputAttributeDescription::builder()
             .location(3)
             .binding(0)
+            .format(vk::Format::R32_SFLOAT)
+            .offset(24)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(4)
+            .binding(0)
             .format(vk::Format::R32G32B32A32_SFLOAT)
-            .offset(20)
+            .offset(28)
             .build(),
     ];
     let bindings = [binding];
@@ -1330,10 +1361,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-image-quad",
         vertex_input_binding_count: 1,
-        vertex_input_attribute_count: 4,
+        vertex_input_attribute_count: 5,
         vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
         vertex_position_format: "R32G32_SFLOAT",
         vertex_uv_format: "R32G32_SFLOAT",
+        vertex_effect_uv_format: "R32G32_SFLOAT",
         vertex_opacity_format: "R32_SFLOAT",
         vertex_tint_format: "R32G32B32A32_SFLOAT",
         descriptor_set_count: 0,
@@ -1346,7 +1378,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
         blend_model: "sampled rgba with opacity; alpha/additive/multiply/screen/max blend pipeline selected per draw command",
-        sampled_image_model: "retained native BC sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader",
+        sampled_image_model: "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -1597,18 +1629,44 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         if draw.index_count == 0 {
             return Err("scene sampled-image draw requires at least one index".to_owned());
         }
-        match draw.descriptor_binding {
-            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index } => {
+        match &draw.descriptor_binding {
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index,
+                texture_slot_resource_indices,
+                alpha_texture_slot,
+                ..
+            } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
                         "scene sampled-image descriptor heap draw requires heap resources"
                             .to_owned(),
                     );
                 };
-                if resource_index as usize >= descriptor_heap_draw.resources.plan.image_count {
+                let descriptor_group_end = *descriptor_group_base_index as usize
+                    + SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT;
+                if descriptor_group_end > descriptor_heap_draw.resources.plan.image_count {
                     return Err(format!(
-                        "scene sampled-image descriptor heap resource index {resource_index} exceeds heap image count {}",
+                        "scene sampled-image descriptor heap group {}..{} exceeds heap image count {}",
+                        descriptor_group_base_index,
+                        descriptor_group_end,
                         descriptor_heap_draw.resources.plan.image_count
+                    ));
+                }
+                if texture_slot_resource_indices.is_empty()
+                    || texture_slot_resource_indices.len()
+                        > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                {
+                    return Err(format!(
+                        "scene sampled-image texture slot count {} exceeds descriptor binding count {}",
+                        texture_slot_resource_indices.len(),
+                        SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                    ));
+                }
+                if let Some(alpha_texture_slot) = alpha_texture_slot
+                    && *alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                {
+                    return Err(format!(
+                        "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
                     ));
                 }
             }
@@ -1629,13 +1687,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             solid_push_constants.as_ptr().cast::<u8>(),
             SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
         );
-        let sampled_push_constants = [extent.width as f32, extent.height as f32];
-        let sampled_push_constant_bytes = std::slice::from_raw_parts(
-            sampled_push_constants.as_ptr().cast::<u8>(),
-            SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize,
-        );
         let mut bound_pipeline: Option<VulkanaliaSceneBoundDrawPipeline> = None;
-        let mut bound_descriptor_heap_resource: Option<u32> = None;
+        let mut bound_descriptor_heap_group: Option<u32> = None;
         for draw in &ordered_draws {
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
@@ -1713,29 +1766,33 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             0,
                             vk::IndexType::UINT32,
                         );
-                        device.cmd_push_constants(
-                            command_buffer,
-                            pipeline_resources.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            sampled_push_constant_bytes,
-                        );
                         bound_pipeline = Some(pipeline_key);
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                        resource_index,
-                    } = sampled_draw.descriptor_binding;
-                    if bound_descriptor_heap_resource != Some(resource_index) {
+                        descriptor_group_base_index,
+                        alpha_texture_slot,
+                        alpha_texture_mode,
+                        ..
+                    } = &sampled_draw.descriptor_binding;
+                    if bound_descriptor_heap_group != Some(*descriptor_group_base_index) {
                         let descriptor_heap_draw =
                             descriptor_heap_draw.expect("descriptor heap draw resources present");
-                        bind_scene_sampled_image_descriptor_heap_for_resource(
+                        bind_scene_sampled_image_descriptor_heap_for_descriptor_group(
                             device,
                             command_buffer,
                             descriptor_heap_draw,
-                            resource_index,
+                            *descriptor_group_base_index,
                         )?;
-                        bound_descriptor_heap_resource = Some(resource_index);
+                        bound_descriptor_heap_group = Some(*descriptor_group_base_index);
                     }
+                    push_scene_sampled_image_constants(
+                        device,
+                        command_buffer,
+                        pipeline_resources.pipeline_layout,
+                        extent,
+                        *alpha_texture_slot,
+                        *alpha_texture_mode,
+                    );
                     device.cmd_draw_indexed(
                         command_buffer,
                         sampled_draw.index_count,
@@ -1760,14 +1817,57 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     Ok(solid_quad_index_count.saturating_add(sampled_image_index_count))
 }
 
-fn bind_scene_sampled_image_descriptor_heap_for_resource(
+fn push_scene_sampled_image_constants(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    pipeline_layout: vk::PipelineLayout,
+    extent: vk::Extent2D,
+    alpha_texture_slot: Option<u32>,
+    alpha_texture_mode: SceneRenderAlphaTextureMode,
+) {
+    if native_vulkan_effect_debug_enabled() && alpha_texture_slot.is_some() {
+        native_vulkan_effect_debug_log_limited(
+            &SCENE_DRAW_PASS_EFFECT_DEBUG_LOG_COUNT,
+            48,
+            "vulkan.push-constants",
+            format_args!(
+                "extent={}x{} alpha_slot={:?} mode={} shader_code={}",
+                extent.width,
+                extent.height,
+                alpha_texture_slot,
+                alpha_texture_mode.as_str(),
+                alpha_texture_mode.shader_code()
+            ),
+        );
+    }
+    let alpha_texture_slot =
+        alpha_texture_slot.unwrap_or(SCENE_SAMPLED_IMAGE_ALPHA_TEXTURE_SLOT_DISABLED);
+    let mut push_constant_bytes = [0u8; SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize];
+    push_constant_bytes[0..4].copy_from_slice(&(extent.width as f32).to_ne_bytes());
+    push_constant_bytes[4..8].copy_from_slice(&(extent.height as f32).to_ne_bytes());
+    push_constant_bytes[8..12].copy_from_slice(&alpha_texture_slot.to_ne_bytes());
+    push_constant_bytes[12..16].copy_from_slice(&alpha_texture_mode.shader_code().to_ne_bytes());
+    unsafe {
+        device.cmd_push_constants(
+            command_buffer,
+            pipeline_layout,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+            0,
+            &push_constant_bytes,
+        );
+    }
+}
+
+fn bind_scene_sampled_image_descriptor_heap_for_descriptor_group(
     device: &Device,
     command_buffer: vk::CommandBuffer,
     descriptor_heap_draw: VulkanaliaSceneDescriptorHeapDrawResources<'_>,
-    resource_index: u32,
+    descriptor_group_base_index: u32,
 ) -> Result<(), String> {
-    let image_index = usize::try_from(resource_index).map_err(|_| {
-        format!("scene sampled-image resource index {resource_index} exceeds usize")
+    let image_index = usize::try_from(descriptor_group_base_index).map_err(|_| {
+        format!(
+            "scene sampled-image descriptor group base index {descriptor_group_base_index} exceeds usize"
+        )
     })?;
     let resource_bind = native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
         descriptor_heap_draw.resources,
@@ -1819,18 +1919,44 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         if draw.index_count == 0 {
             return Err("scene sampled-image draw requires at least one index".to_owned());
         }
-        match draw.descriptor_binding {
-            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { resource_index } => {
+        match &draw.descriptor_binding {
+            VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index,
+                texture_slot_resource_indices,
+                alpha_texture_slot,
+                ..
+            } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
                         "scene sampled-image descriptor heap draw requires heap resources"
                             .to_owned(),
                     );
                 };
-                if resource_index as usize >= descriptor_heap_draw.resources.plan.image_count {
+                let descriptor_group_end = *descriptor_group_base_index as usize
+                    + SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT;
+                if descriptor_group_end > descriptor_heap_draw.resources.plan.image_count {
                     return Err(format!(
-                        "scene sampled-image descriptor heap resource index {resource_index} exceeds heap image count {}",
+                        "scene sampled-image descriptor heap group {}..{} exceeds heap image count {}",
+                        descriptor_group_base_index,
+                        descriptor_group_end,
                         descriptor_heap_draw.resources.plan.image_count
+                    ));
+                }
+                if texture_slot_resource_indices.is_empty()
+                    || texture_slot_resource_indices.len()
+                        > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                {
+                    return Err(format!(
+                        "scene sampled-image texture slot count {} exceeds descriptor binding count {}",
+                        texture_slot_resource_indices.len(),
+                        SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                    ));
+                }
+                if let Some(alpha_texture_slot) = alpha_texture_slot
+                    && *alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                {
+                    return Err(format!(
+                        "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
                     ));
                 }
             }
@@ -1906,13 +2032,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             solid_push_constants.as_ptr().cast::<u8>(),
             SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
         );
-        let sampled_push_constants = [extent.width as f32, extent.height as f32];
-        let sampled_push_constant_bytes = std::slice::from_raw_parts(
-            sampled_push_constants.as_ptr().cast::<u8>(),
-            SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize,
-        );
         let mut bound_pipeline: Option<VulkanaliaSceneBoundDrawPipeline> = None;
-        let mut bound_descriptor_heap_resource: Option<u32> = None;
+        let mut bound_descriptor_heap_group: Option<u32> = None;
         for draw in &ordered_draws {
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
@@ -1990,29 +2111,33 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             0,
                             vk::IndexType::UINT32,
                         );
-                        device.cmd_push_constants(
-                            command_buffer,
-                            pipeline_resources.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
-                            0,
-                            sampled_push_constant_bytes,
-                        );
                         bound_pipeline = Some(pipeline_key);
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                        resource_index,
-                    } = sampled_draw.descriptor_binding;
-                    if bound_descriptor_heap_resource != Some(resource_index) {
+                        descriptor_group_base_index,
+                        alpha_texture_slot,
+                        alpha_texture_mode,
+                        ..
+                    } = &sampled_draw.descriptor_binding;
+                    if bound_descriptor_heap_group != Some(*descriptor_group_base_index) {
                         let descriptor_heap_draw =
                             descriptor_heap_draw.expect("descriptor heap draw resources present");
-                        bind_scene_sampled_image_descriptor_heap_for_resource(
+                        bind_scene_sampled_image_descriptor_heap_for_descriptor_group(
                             device,
                             command_buffer,
                             descriptor_heap_draw,
-                            resource_index,
+                            *descriptor_group_base_index,
                         )?;
-                        bound_descriptor_heap_resource = Some(resource_index);
+                        bound_descriptor_heap_group = Some(*descriptor_group_base_index);
                     }
+                    push_scene_sampled_image_constants(
+                        device,
+                        command_buffer,
+                        pipeline_resources.pipeline_layout,
+                        extent,
+                        *alpha_texture_slot,
+                        *alpha_texture_mode,
+                    );
                     device.cmd_draw_indexed(
                         command_buffer,
                         sampled_draw.index_count,
@@ -2265,77 +2390,296 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIR
     20, 1, 327761, 6, 25, 20, 2, 458832, 7, 26, 23, 24, 25, 22, 196670, 9, 26, 65789, 65592,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 444] = [
-    119734787, 65536, 851979, 58, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 851983, 0, 4, 1852399981, 0, 11, 33, 46, 47, 50, 52, 54, 56, 196611, 2, 450,
-    655364, 1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599,
-    1769235301, 25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701,
-    1952671090, 6649449, 262149, 4, 1852399981, 0, 196613, 9, 6513774, 327685, 11, 1885302377,
-    1953067887, 7237481, 262149, 13, 1752397136, 0, 327686, 13, 0, 1702131813, 29806, 196613, 15,
-    25456, 393221, 31, 1348430951, 1700164197, 2019914866, 0, 393222, 31, 0, 1348430951,
-    1953067887, 7237481, 458758, 31, 1, 1348430951, 1953393007, 1702521171, 0, 458758, 31, 2,
-    1130327143, 1148217708, 1635021673, 6644590, 458758, 31, 3, 1130327143, 1147956341, 1635021673,
-    6644590, 196613, 33, 0, 262149, 46, 1601467759, 30325, 262149, 47, 1969188457, 118, 327685, 50,
-    1601467759, 1667330159, 7959657, 327685, 52, 1868525161, 1768120688, 31092, 327685, 54,
-    1601467759, 1953393012, 0, 262149, 56, 1952411241, 7630441, 262215, 11, 30, 0, 196679, 13, 2,
-    327752, 13, 0, 35, 0, 196679, 31, 2, 327752, 31, 0, 11, 0, 327752, 31, 1, 11, 1, 327752, 31, 2,
-    11, 3, 327752, 31, 3, 11, 4, 262215, 46, 30, 0, 262215, 47, 30, 1, 262215, 50, 30, 1, 262215,
-    52, 30, 2, 262215, 54, 30, 2, 262215, 56, 30, 3, 131091, 2, 196641, 3, 2, 196630, 6, 32,
-    262167, 7, 6, 2, 262176, 8, 7, 7, 262176, 10, 1, 7, 262203, 10, 11, 1, 196638, 13, 7, 262176,
-    14, 9, 13, 262203, 14, 15, 9, 262165, 16, 32, 1, 262187, 16, 17, 0, 262176, 18, 9, 7, 262187,
-    6, 22, 1073741824, 262187, 6, 24, 1065353216, 262167, 27, 6, 4, 262165, 28, 32, 0, 262187, 28,
-    29, 1, 262172, 30, 6, 29, 393246, 31, 27, 6, 30, 30, 262176, 32, 3, 31, 262203, 32, 33, 3,
-    262187, 28, 34, 0, 262176, 35, 7, 6, 262187, 6, 41, 0, 262176, 43, 3, 27, 262176, 45, 3, 7,
-    262203, 45, 46, 3, 262203, 10, 47, 1, 262176, 49, 3, 6, 262203, 49, 50, 3, 262176, 51, 1, 6,
-    262203, 51, 52, 1, 262203, 43, 54, 3, 262176, 55, 1, 27, 262203, 55, 56, 1, 327734, 2, 4, 0, 3,
-    131320, 5, 262203, 8, 9, 7, 262205, 7, 12, 11, 327745, 18, 19, 15, 17, 262205, 7, 20, 19,
-    327816, 7, 21, 12, 20, 327822, 7, 23, 21, 22, 327760, 7, 25, 24, 24, 327811, 7, 26, 23, 25,
-    196670, 9, 26, 327745, 35, 36, 9, 34, 262205, 6, 37, 36, 327745, 35, 38, 9, 29, 262205, 6, 39,
-    38, 262271, 6, 40, 39, 458832, 27, 42, 37, 40, 41, 24, 327745, 43, 44, 33, 17, 196670, 44, 42,
-    262205, 7, 48, 47, 196670, 46, 48, 262205, 6, 53, 52, 196670, 50, 53, 262205, 27, 57, 56,
-    196670, 54, 57, 65789, 65592,
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 512] = [
+    0x07230203, 0x00010600, 0x000d000b, 0x0000003d, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x0010000f, 0x00000000, 0x00000004, 0x6e69616d, 0x00000000, 0x0000000b, 0x00000010, 0x0000001c,
+    0x0000002e, 0x0000002f, 0x00000031, 0x00000032, 0x00000035, 0x00000037, 0x00000039, 0x0000003b,
+    0x00030003, 0x00000002, 0x000001c2, 0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70,
+    0x5f656c79, 0x656e696c, 0x7269645f, 0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f,
+    0x6e695f45, 0x64756c63, 0x69645f65, 0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d,
+    0x00000000, 0x00050005, 0x00000009, 0x6d726f6e, 0x7a696c61, 0x00006465, 0x00050005, 0x0000000b,
+    0x705f6e69, 0x7469736f, 0x006e6f69, 0x00050005, 0x0000000e, 0x6e656353, 0x73755065, 0x00000068,
+    0x00050006, 0x0000000e, 0x00000000, 0x65747865, 0x0000746e, 0x00080006, 0x0000000e, 0x00000001,
+    0x68706c61, 0x65745f61, 0x72757478, 0x6c735f65, 0x0000746f, 0x00080006, 0x0000000e, 0x00000002,
+    0x68706c61, 0x65745f61, 0x72757478, 0x6f6d5f65, 0x00006564, 0x00030005, 0x00000010, 0x00006370,
+    0x00060005, 0x0000001a, 0x505f6c67, 0x65567265, 0x78657472, 0x00000000, 0x00060006, 0x0000001a,
+    0x00000000, 0x505f6c67, 0x7469736f, 0x006e6f69, 0x00070006, 0x0000001a, 0x00000001, 0x505f6c67,
+    0x746e696f, 0x657a6953, 0x00000000, 0x00070006, 0x0000001a, 0x00000002, 0x435f6c67, 0x4470696c,
+    0x61747369, 0x0065636e, 0x00070006, 0x0000001a, 0x00000003, 0x435f6c67, 0x446c6c75, 0x61747369,
+    0x0065636e, 0x00030005, 0x0000001c, 0x00000000, 0x00040005, 0x0000002e, 0x76755f76, 0x00000000,
+    0x00040005, 0x0000002f, 0x755f6e69, 0x00000076, 0x00050005, 0x00000031, 0x66655f76, 0x74636566,
+    0x0076755f, 0x00060005, 0x00000032, 0x655f6e69, 0x63656666, 0x76755f74, 0x00000000, 0x00050005,
+    0x00000035, 0x706f5f76, 0x74696361, 0x00000079, 0x00050005, 0x00000037, 0x6f5f6e69, 0x69636170,
+    0x00007974, 0x00040005, 0x00000039, 0x69745f76, 0x0000746e, 0x00040005, 0x0000003b, 0x745f6e69,
+    0x00746e69, 0x00040047, 0x0000000b, 0x0000001e, 0x00000000, 0x00030047, 0x0000000e, 0x00000002,
+    0x00050048, 0x0000000e, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x0000000e, 0x00000001,
+    0x00000023, 0x00000008, 0x00050048, 0x0000000e, 0x00000002, 0x00000023, 0x0000000c, 0x00030047,
+    0x0000001a, 0x00000002, 0x00050048, 0x0000001a, 0x00000000, 0x0000000b, 0x00000000, 0x00050048,
+    0x0000001a, 0x00000001, 0x0000000b, 0x00000001, 0x00050048, 0x0000001a, 0x00000002, 0x0000000b,
+    0x00000003, 0x00050048, 0x0000001a, 0x00000003, 0x0000000b, 0x00000004, 0x00040047, 0x0000002e,
+    0x0000001e, 0x00000000, 0x00040047, 0x0000002f, 0x0000001e, 0x00000001, 0x00040047, 0x00000031,
+    0x0000001e, 0x00000001, 0x00040047, 0x00000032, 0x0000001e, 0x00000002, 0x00040047, 0x00000035,
+    0x0000001e, 0x00000002, 0x00040047, 0x00000037, 0x0000001e, 0x00000003, 0x00040047, 0x00000039,
+    0x0000001e, 0x00000003, 0x00040047, 0x0000003b, 0x0000001e, 0x00000004, 0x00020013, 0x00000002,
+    0x00030021, 0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007,
+    0x00000006, 0x00000002, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00040020, 0x0000000a,
+    0x00000001, 0x00000007, 0x0004003b, 0x0000000a, 0x0000000b, 0x00000001, 0x00040015, 0x0000000d,
+    0x00000020, 0x00000000, 0x0005001e, 0x0000000e, 0x00000007, 0x0000000d, 0x0000000d, 0x00040020,
+    0x0000000f, 0x00000009, 0x0000000e, 0x0004003b, 0x0000000f, 0x00000010, 0x00000009, 0x00040015,
+    0x00000011, 0x00000020, 0x00000001, 0x0004002b, 0x00000011, 0x00000012, 0x00000000, 0x00040020,
+    0x00000013, 0x00000009, 0x00000007, 0x00040017, 0x00000017, 0x00000006, 0x00000004, 0x0004002b,
+    0x0000000d, 0x00000018, 0x00000001, 0x0004001c, 0x00000019, 0x00000006, 0x00000018, 0x0006001e,
+    0x0000001a, 0x00000017, 0x00000006, 0x00000019, 0x00000019, 0x00040020, 0x0000001b, 0x00000003,
+    0x0000001a, 0x0004003b, 0x0000001b, 0x0000001c, 0x00000003, 0x0004002b, 0x0000000d, 0x0000001d,
+    0x00000000, 0x00040020, 0x0000001e, 0x00000007, 0x00000006, 0x0004002b, 0x00000006, 0x00000021,
+    0x40000000, 0x0004002b, 0x00000006, 0x00000023, 0x3f800000, 0x0004002b, 0x00000006, 0x00000029,
+    0x00000000, 0x00040020, 0x0000002b, 0x00000003, 0x00000017, 0x00040020, 0x0000002d, 0x00000003,
+    0x00000007, 0x0004003b, 0x0000002d, 0x0000002e, 0x00000003, 0x0004003b, 0x0000000a, 0x0000002f,
+    0x00000001, 0x0004003b, 0x0000002d, 0x00000031, 0x00000003, 0x0004003b, 0x0000000a, 0x00000032,
+    0x00000001, 0x00040020, 0x00000034, 0x00000003, 0x00000006, 0x0004003b, 0x00000034, 0x00000035,
+    0x00000003, 0x00040020, 0x00000036, 0x00000001, 0x00000006, 0x0004003b, 0x00000036, 0x00000037,
+    0x00000001, 0x0004003b, 0x0000002b, 0x00000039, 0x00000003, 0x00040020, 0x0000003a, 0x00000001,
+    0x00000017, 0x0004003b, 0x0000003a, 0x0000003b, 0x00000001, 0x00050036, 0x00000002, 0x00000004,
+    0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x00000008, 0x00000009, 0x00000007,
+    0x0004003d, 0x00000007, 0x0000000c, 0x0000000b, 0x00050041, 0x00000013, 0x00000014, 0x00000010,
+    0x00000012, 0x0004003d, 0x00000007, 0x00000015, 0x00000014, 0x00050088, 0x00000007, 0x00000016,
+    0x0000000c, 0x00000015, 0x0003003e, 0x00000009, 0x00000016, 0x00050041, 0x0000001e, 0x0000001f,
+    0x00000009, 0x0000001d, 0x0004003d, 0x00000006, 0x00000020, 0x0000001f, 0x00050085, 0x00000006,
+    0x00000022, 0x00000020, 0x00000021, 0x00050083, 0x00000006, 0x00000024, 0x00000022, 0x00000023,
+    0x00050041, 0x0000001e, 0x00000025, 0x00000009, 0x00000018, 0x0004003d, 0x00000006, 0x00000026,
+    0x00000025, 0x00050085, 0x00000006, 0x00000027, 0x00000026, 0x00000021, 0x00050083, 0x00000006,
+    0x00000028, 0x00000023, 0x00000027, 0x00070050, 0x00000017, 0x0000002a, 0x00000024, 0x00000028,
+    0x00000029, 0x00000023, 0x00050041, 0x0000002b, 0x0000002c, 0x0000001c, 0x00000012, 0x0003003e,
+    0x0000002c, 0x0000002a, 0x0004003d, 0x00000007, 0x00000030, 0x0000002f, 0x0003003e, 0x0000002e,
+    0x00000030, 0x0004003d, 0x00000007, 0x00000033, 0x00000032, 0x0003003e, 0x00000031, 0x00000033,
+    0x0004003d, 0x00000006, 0x00000038, 0x00000037, 0x0003003e, 0x00000035, 0x00000038, 0x0004003d,
+    0x00000017, 0x0000003c, 0x0000003b, 0x0003003e, 0x00000039, 0x0000003c, 0x000100fd, 0x00010038,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 285] = [
-    119734787, 65536, 851979, 42, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 589839, 4, 4, 1852399981, 0, 17, 21, 25, 35, 196624, 4, 7, 196611, 2, 450,
-    655364, 1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599,
-    1769235301, 25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701,
-    1952671090, 6649449, 262149, 4, 1852399981, 0, 262149, 9, 1869377379, 114, 327685, 13,
-    1852138355, 1835622245, 6645601, 262149, 17, 1969188457, 118, 262149, 21, 1952411241, 7630441,
-    327685, 25, 1601467759, 1869377379, 114, 327685, 35, 1868525161, 1768120688, 31092, 262215, 13,
-    33, 0, 262215, 13, 34, 0, 262215, 17, 30, 0, 262215, 21, 30, 2, 262215, 25, 30, 0, 262215, 35,
-    30, 1, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 4, 262176, 8, 7, 7, 589849, 10, 6,
-    1, 0, 0, 0, 1, 0, 196635, 11, 10, 262176, 12, 0, 11, 262203, 12, 13, 0, 262167, 15, 6, 2,
-    262176, 16, 1, 15, 262203, 16, 17, 1, 262176, 20, 1, 7, 262203, 20, 21, 1, 262176, 24, 3, 7,
-    262203, 24, 25, 3, 262167, 26, 6, 3, 262165, 29, 32, 0, 262187, 29, 30, 3, 262176, 31, 7, 6,
-    262176, 34, 1, 6, 262203, 34, 35, 1, 327734, 2, 4, 0, 3, 131320, 5, 262203, 8, 9, 7, 262205,
-    11, 14, 13, 262205, 15, 18, 17, 327767, 7, 19, 14, 18, 262205, 7, 22, 21, 327813, 7, 23, 19,
-    22, 196670, 9, 23, 262205, 7, 27, 9, 524367, 26, 28, 27, 27, 0, 1, 2, 327745, 31, 32, 9, 30,
-    262205, 6, 33, 32, 262205, 6, 36, 35, 327813, 6, 37, 33, 36, 327761, 6, 38, 28, 0, 327761, 6,
-    39, 28, 1, 327761, 6, 40, 28, 2, 458832, 7, 41, 38, 39, 40, 37, 196670, 25, 41, 65789, 65592,
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 837] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x00000086, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000a000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x0000006f, 0x00000073, 0x00000077,
+    0x00000083, 0x00000085, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2,
+    0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f,
+    0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65,
+    0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00070005, 0x0000000b,
+    0x5f776172, 0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000a, 0x00007675,
+    0x00060005, 0x0000000e, 0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000d,
+    0x00007675, 0x00050005, 0x00000011, 0x6e656353, 0x73755065, 0x00000068, 0x00050006, 0x00000011,
+    0x00000000, 0x65747865, 0x0000746e, 0x00080006, 0x00000011, 0x00000001, 0x68706c61, 0x65745f61,
+    0x72757478, 0x6c735f65, 0x0000746f, 0x00080006, 0x00000011, 0x00000002, 0x68706c61, 0x65745f61,
+    0x72757478, 0x6f6d5f65, 0x00006564, 0x00030005, 0x00000013, 0x00006370, 0x00050005, 0x00000025,
+    0x65545f67, 0x72757478, 0x00003165, 0x00050005, 0x0000002d, 0x65545f67, 0x72757478, 0x00003265,
+    0x00050005, 0x00000033, 0x65545f67, 0x72757478, 0x00003365, 0x00050005, 0x00000039, 0x65545f67,
+    0x72757478, 0x00003465, 0x00050005, 0x0000003f, 0x65545f67, 0x72757478, 0x00003565, 0x00050005,
+    0x00000045, 0x65545f67, 0x72757478, 0x00003665, 0x00050005, 0x0000004b, 0x65545f67, 0x72757478,
+    0x00003765, 0x00040005, 0x00000056, 0x6b73616d, 0x00000000, 0x00040005, 0x00000057, 0x61726170,
+    0x0000006d, 0x00040005, 0x0000006b, 0x6f6c6f63, 0x00000072, 0x00050005, 0x0000006c, 0x65545f67,
+    0x72757478, 0x00003065, 0x00040005, 0x0000006f, 0x76755f76, 0x00000000, 0x00040005, 0x00000073,
+    0x69745f76, 0x0000746e, 0x00050005, 0x00000077, 0x706f5f76, 0x74696361, 0x00000079, 0x00040005,
+    0x00000079, 0x61726170, 0x0000006d, 0x00050005, 0x00000083, 0x5f74756f, 0x6f6c6f63, 0x00000072,
+    0x00050005, 0x00000085, 0x66655f76, 0x74636566, 0x0076755f, 0x00030047, 0x00000011, 0x00000002,
+    0x00050048, 0x00000011, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000011, 0x00000001,
+    0x00000023, 0x00000008, 0x00050048, 0x00000011, 0x00000002, 0x00000023, 0x0000000c, 0x00040047,
+    0x00000025, 0x00000021, 0x00000001, 0x00040047, 0x00000025, 0x00000022, 0x00000000, 0x00040047,
+    0x0000002d, 0x00000021, 0x00000002, 0x00040047, 0x0000002d, 0x00000022, 0x00000000, 0x00040047,
+    0x00000033, 0x00000021, 0x00000003, 0x00040047, 0x00000033, 0x00000022, 0x00000000, 0x00040047,
+    0x00000039, 0x00000021, 0x00000004, 0x00040047, 0x00000039, 0x00000022, 0x00000000, 0x00040047,
+    0x0000003f, 0x00000021, 0x00000005, 0x00040047, 0x0000003f, 0x00000022, 0x00000000, 0x00040047,
+    0x00000045, 0x00000021, 0x00000006, 0x00040047, 0x00000045, 0x00000022, 0x00000000, 0x00040047,
+    0x0000004b, 0x00000021, 0x00000007, 0x00040047, 0x0000004b, 0x00000022, 0x00000000, 0x00040047,
+    0x0000006c, 0x00000021, 0x00000000, 0x00040047, 0x0000006c, 0x00000022, 0x00000000, 0x00040047,
+    0x0000006f, 0x0000001e, 0x00000000, 0x00040047, 0x00000073, 0x0000001e, 0x00000003, 0x00040047,
+    0x00000077, 0x0000001e, 0x00000002, 0x00040047, 0x00000083, 0x0000001e, 0x00000000, 0x00040047,
+    0x00000085, 0x0000001e, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+    0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002, 0x00040020,
+    0x00000008, 0x00000007, 0x00000007, 0x00040021, 0x00000009, 0x00000006, 0x00000008, 0x00040015,
+    0x00000010, 0x00000020, 0x00000000, 0x0005001e, 0x00000011, 0x00000007, 0x00000010, 0x00000010,
+    0x00040020, 0x00000012, 0x00000009, 0x00000011, 0x0004003b, 0x00000012, 0x00000013, 0x00000009,
+    0x00040015, 0x00000014, 0x00000020, 0x00000001, 0x0004002b, 0x00000014, 0x00000015, 0x00000001,
+    0x00040020, 0x00000016, 0x00000009, 0x00000010, 0x00090019, 0x00000022, 0x00000006, 0x00000001,
+    0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x00000023, 0x00000022,
+    0x00040020, 0x00000024, 0x00000000, 0x00000023, 0x0004003b, 0x00000024, 0x00000025, 0x00000000,
+    0x00040017, 0x00000028, 0x00000006, 0x00000004, 0x0004002b, 0x00000010, 0x0000002a, 0x00000000,
+    0x0004003b, 0x00000024, 0x0000002d, 0x00000000, 0x0004003b, 0x00000024, 0x00000033, 0x00000000,
+    0x0004003b, 0x00000024, 0x00000039, 0x00000000, 0x0004003b, 0x00000024, 0x0000003f, 0x00000000,
+    0x0004003b, 0x00000024, 0x00000045, 0x00000000, 0x0004003b, 0x00000024, 0x0000004b, 0x00000000,
+    0x0004002b, 0x00000006, 0x00000051, 0x3f800000, 0x00040020, 0x00000055, 0x00000007, 0x00000006,
+    0x0004002b, 0x00000014, 0x0000005a, 0x00000002, 0x0004002b, 0x00000010, 0x0000005d, 0x00000001,
+    0x00020014, 0x0000005e, 0x00040020, 0x0000006a, 0x00000007, 0x00000028, 0x0004003b, 0x00000024,
+    0x0000006c, 0x00000000, 0x00040020, 0x0000006e, 0x00000001, 0x00000007, 0x0004003b, 0x0000006e,
+    0x0000006f, 0x00000001, 0x00040020, 0x00000072, 0x00000001, 0x00000028, 0x0004003b, 0x00000072,
+    0x00000073, 0x00000001, 0x00040020, 0x00000076, 0x00000001, 0x00000006, 0x0004003b, 0x00000076,
+    0x00000077, 0x00000001, 0x0004002b, 0x00000010, 0x0000007d, 0x00000003, 0x00040020, 0x00000082,
+    0x00000003, 0x00000028, 0x0004003b, 0x00000082, 0x00000083, 0x00000003, 0x0004003b, 0x0000006e,
+    0x00000085, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+    0x00000005, 0x0004003b, 0x0000006a, 0x0000006b, 0x00000007, 0x0004003b, 0x00000008, 0x00000079,
+    0x00000007, 0x0004003d, 0x00000023, 0x0000006d, 0x0000006c, 0x0004003d, 0x00000007, 0x00000070,
+    0x0000006f, 0x00050057, 0x00000028, 0x00000071, 0x0000006d, 0x00000070, 0x0004003d, 0x00000028,
+    0x00000074, 0x00000073, 0x00050085, 0x00000028, 0x00000075, 0x00000071, 0x00000074, 0x0003003e,
+    0x0000006b, 0x00000075, 0x0004003d, 0x00000006, 0x00000078, 0x00000077, 0x0004003d, 0x00000007,
+    0x0000007a, 0x00000085, 0x0003003e, 0x00000079, 0x0000007a, 0x00050039, 0x00000006, 0x0000007b,
+    0x0000000e, 0x00000079, 0x00050085, 0x00000006, 0x0000007c, 0x00000078, 0x0000007b, 0x00050041,
+    0x00000055, 0x0000007e, 0x0000006b, 0x0000007d, 0x0004003d, 0x00000006, 0x0000007f, 0x0000007e,
+    0x00050085, 0x00000006, 0x00000080, 0x0000007f, 0x0000007c, 0x00050041, 0x00000055, 0x00000081,
+    0x0000006b, 0x0000007d, 0x0003003e, 0x00000081, 0x00000080, 0x0004003d, 0x00000028, 0x00000084,
+    0x0000006b, 0x0003003e, 0x00000083, 0x00000084, 0x000100fd, 0x00010038, 0x00050036, 0x00000006,
+    0x0000000b, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000a, 0x000200f8, 0x0000000c,
+    0x00050041, 0x00000016, 0x00000017, 0x00000013, 0x00000015, 0x0004003d, 0x00000010, 0x00000018,
+    0x00000017, 0x000300f7, 0x00000021, 0x00000000, 0x001100fb, 0x00000018, 0x00000020, 0x00000001,
+    0x00000019, 0x00000002, 0x0000001a, 0x00000003, 0x0000001b, 0x00000004, 0x0000001c, 0x00000005,
+    0x0000001d, 0x00000006, 0x0000001e, 0x00000007, 0x0000001f, 0x000200f8, 0x00000020, 0x000200fe,
+    0x00000051, 0x000200f8, 0x00000019, 0x0004003d, 0x00000023, 0x00000026, 0x00000025, 0x0004003d,
+    0x00000007, 0x00000027, 0x0000000a, 0x00050057, 0x00000028, 0x00000029, 0x00000026, 0x00000027,
+    0x00050051, 0x00000006, 0x0000002b, 0x00000029, 0x00000000, 0x000200fe, 0x0000002b, 0x000200f8,
+    0x0000001a, 0x0004003d, 0x00000023, 0x0000002e, 0x0000002d, 0x0004003d, 0x00000007, 0x0000002f,
+    0x0000000a, 0x00050057, 0x00000028, 0x00000030, 0x0000002e, 0x0000002f, 0x00050051, 0x00000006,
+    0x00000031, 0x00000030, 0x00000000, 0x000200fe, 0x00000031, 0x000200f8, 0x0000001b, 0x0004003d,
+    0x00000023, 0x00000034, 0x00000033, 0x0004003d, 0x00000007, 0x00000035, 0x0000000a, 0x00050057,
+    0x00000028, 0x00000036, 0x00000034, 0x00000035, 0x00050051, 0x00000006, 0x00000037, 0x00000036,
+    0x00000000, 0x000200fe, 0x00000037, 0x000200f8, 0x0000001c, 0x0004003d, 0x00000023, 0x0000003a,
+    0x00000039, 0x0004003d, 0x00000007, 0x0000003b, 0x0000000a, 0x00050057, 0x00000028, 0x0000003c,
+    0x0000003a, 0x0000003b, 0x00050051, 0x00000006, 0x0000003d, 0x0000003c, 0x00000000, 0x000200fe,
+    0x0000003d, 0x000200f8, 0x0000001d, 0x0004003d, 0x00000023, 0x00000040, 0x0000003f, 0x0004003d,
+    0x00000007, 0x00000041, 0x0000000a, 0x00050057, 0x00000028, 0x00000042, 0x00000040, 0x00000041,
+    0x00050051, 0x00000006, 0x00000043, 0x00000042, 0x00000000, 0x000200fe, 0x00000043, 0x000200f8,
+    0x0000001e, 0x0004003d, 0x00000023, 0x00000046, 0x00000045, 0x0004003d, 0x00000007, 0x00000047,
+    0x0000000a, 0x00050057, 0x00000028, 0x00000048, 0x00000046, 0x00000047, 0x00050051, 0x00000006,
+    0x00000049, 0x00000048, 0x00000000, 0x000200fe, 0x00000049, 0x000200f8, 0x0000001f, 0x0004003d,
+    0x00000023, 0x0000004c, 0x0000004b, 0x0004003d, 0x00000007, 0x0000004d, 0x0000000a, 0x00050057,
+    0x00000028, 0x0000004e, 0x0000004c, 0x0000004d, 0x00050051, 0x00000006, 0x0000004f, 0x0000004e,
+    0x00000000, 0x000200fe, 0x0000004f, 0x000200f8, 0x00000021, 0x000100ff, 0x00010038, 0x00050036,
+    0x00000006, 0x0000000e, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000d, 0x000200f8,
+    0x0000000f, 0x0004003b, 0x00000055, 0x00000056, 0x00000007, 0x0004003b, 0x00000008, 0x00000057,
+    0x00000007, 0x0004003b, 0x00000055, 0x00000060, 0x00000007, 0x0004003d, 0x00000007, 0x00000058,
+    0x0000000d, 0x0003003e, 0x00000057, 0x00000058, 0x00050039, 0x00000006, 0x00000059, 0x0000000b,
+    0x00000057, 0x0003003e, 0x00000056, 0x00000059, 0x00050041, 0x00000016, 0x0000005b, 0x00000013,
+    0x0000005a, 0x0004003d, 0x00000010, 0x0000005c, 0x0000005b, 0x000500aa, 0x0000005e, 0x0000005f,
+    0x0000005c, 0x0000005d, 0x000300f7, 0x00000062, 0x00000000, 0x000400fa, 0x0000005f, 0x00000061,
+    0x00000065, 0x000200f8, 0x00000061, 0x0004003d, 0x00000006, 0x00000063, 0x00000056, 0x00050083,
+    0x00000006, 0x00000064, 0x00000051, 0x00000063, 0x0003003e, 0x00000060, 0x00000064, 0x000200f9,
+    0x00000062, 0x000200f8, 0x00000065, 0x0004003d, 0x00000006, 0x00000066, 0x00000056, 0x0003003e,
+    0x00000060, 0x00000066, 0x000200f9, 0x00000062, 0x000200f8, 0x00000062, 0x0004003d, 0x00000006,
+    0x00000067, 0x00000060, 0x000200fe, 0x00000067, 0x00010038,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 309] = [
-    119734787, 65536, 851979, 46, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 589839, 4, 4, 1852399981, 0, 17, 21, 31, 35, 196624, 4, 7, 196611, 2, 450,
-    655364, 1197427783, 1279741775, 1885560645, 1953718128, 1600482425, 1701734764, 1919509599,
-    1769235301, 25974, 524292, 1197427783, 1279741775, 1852399429, 1685417059, 1768185701,
-    1952671090, 6649449, 262149, 4, 1852399981, 0, 262149, 9, 1869377379, 114, 327685, 13,
-    1852138355, 1835622245, 6645601, 262149, 17, 1969188457, 118, 262149, 21, 1952411241, 7630441,
-    262149, 25, 1752198241, 97, 327685, 31, 1868525161, 1768120688, 31092, 327685, 35, 1601467759,
-    1869377379, 114, 262215, 13, 33, 0, 262215, 13, 34, 0, 262215, 17, 30, 0, 262215, 21, 30, 2,
-    262215, 31, 30, 1, 262215, 35, 30, 0, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 4,
-    262176, 8, 7, 7, 589849, 10, 6, 1, 0, 0, 0, 1, 0, 196635, 11, 10, 262176, 12, 0, 11, 262203,
-    12, 13, 0, 262167, 15, 6, 2, 262176, 16, 1, 15, 262203, 16, 17, 1, 262176, 20, 1, 7, 262203,
-    20, 21, 1, 262176, 24, 7, 6, 262165, 26, 32, 0, 262187, 26, 27, 3, 262176, 30, 1, 6, 262203,
-    30, 31, 1, 262176, 34, 3, 7, 262203, 34, 35, 3, 262167, 36, 6, 3, 327734, 2, 4, 0, 3, 131320,
-    5, 262203, 8, 9, 7, 262203, 24, 25, 7, 262205, 11, 14, 13, 262205, 15, 18, 17, 327767, 7, 19,
-    14, 18, 262205, 7, 22, 21, 327813, 7, 23, 19, 22, 196670, 9, 23, 327745, 24, 28, 9, 27, 262205,
-    6, 29, 28, 262205, 6, 32, 31, 327813, 6, 33, 29, 32, 196670, 25, 33, 262205, 7, 37, 9, 524367,
-    36, 38, 37, 37, 0, 1, 2, 262205, 6, 39, 25, 327822, 36, 40, 38, 39, 262205, 6, 41, 25, 327761,
-    6, 42, 40, 0, 327761, 6, 43, 40, 1, 327761, 6, 44, 40, 2, 458832, 7, 45, 42, 43, 44, 41,
-    196670, 35, 45, 65789, 65592,
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 910] = [
+    0x07230203, 0x00010000, 0x000d000b, 0x00000093, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
+    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
+    0x000a000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x0000006f, 0x00000073, 0x00000077,
+    0x00000090, 0x00000092, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2,
+    0x000a0004, 0x475f4c47, 0x4c474f4f, 0x70635f45, 0x74735f70, 0x5f656c79, 0x656e696c, 0x7269645f,
+    0x69746365, 0x00006576, 0x00080004, 0x475f4c47, 0x4c474f4f, 0x6e695f45, 0x64756c63, 0x69645f65,
+    0x74636572, 0x00657669, 0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00070005, 0x0000000b,
+    0x5f776172, 0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000a, 0x00007675,
+    0x00060005, 0x0000000e, 0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000d,
+    0x00007675, 0x00050005, 0x00000011, 0x6e656353, 0x73755065, 0x00000068, 0x00050006, 0x00000011,
+    0x00000000, 0x65747865, 0x0000746e, 0x00080006, 0x00000011, 0x00000001, 0x68706c61, 0x65745f61,
+    0x72757478, 0x6c735f65, 0x0000746f, 0x00080006, 0x00000011, 0x00000002, 0x68706c61, 0x65745f61,
+    0x72757478, 0x6f6d5f65, 0x00006564, 0x00030005, 0x00000013, 0x00006370, 0x00050005, 0x00000025,
+    0x65545f67, 0x72757478, 0x00003165, 0x00050005, 0x0000002d, 0x65545f67, 0x72757478, 0x00003265,
+    0x00050005, 0x00000033, 0x65545f67, 0x72757478, 0x00003365, 0x00050005, 0x00000039, 0x65545f67,
+    0x72757478, 0x00003465, 0x00050005, 0x0000003f, 0x65545f67, 0x72757478, 0x00003565, 0x00050005,
+    0x00000045, 0x65545f67, 0x72757478, 0x00003665, 0x00050005, 0x0000004b, 0x65545f67, 0x72757478,
+    0x00003765, 0x00040005, 0x00000056, 0x6b73616d, 0x00000000, 0x00040005, 0x00000057, 0x61726170,
+    0x0000006d, 0x00040005, 0x0000006b, 0x6f6c6f63, 0x00000072, 0x00050005, 0x0000006c, 0x65545f67,
+    0x72757478, 0x00003065, 0x00040005, 0x0000006f, 0x76755f76, 0x00000000, 0x00040005, 0x00000073,
+    0x69745f76, 0x0000746e, 0x00050005, 0x00000077, 0x706f5f76, 0x74696361, 0x00000079, 0x00040005,
+    0x00000079, 0x61726170, 0x0000006d, 0x00050005, 0x00000090, 0x5f74756f, 0x6f6c6f63, 0x00000072,
+    0x00050005, 0x00000092, 0x66655f76, 0x74636566, 0x0076755f, 0x00030047, 0x00000011, 0x00000002,
+    0x00050048, 0x00000011, 0x00000000, 0x00000023, 0x00000000, 0x00050048, 0x00000011, 0x00000001,
+    0x00000023, 0x00000008, 0x00050048, 0x00000011, 0x00000002, 0x00000023, 0x0000000c, 0x00040047,
+    0x00000025, 0x00000021, 0x00000001, 0x00040047, 0x00000025, 0x00000022, 0x00000000, 0x00040047,
+    0x0000002d, 0x00000021, 0x00000002, 0x00040047, 0x0000002d, 0x00000022, 0x00000000, 0x00040047,
+    0x00000033, 0x00000021, 0x00000003, 0x00040047, 0x00000033, 0x00000022, 0x00000000, 0x00040047,
+    0x00000039, 0x00000021, 0x00000004, 0x00040047, 0x00000039, 0x00000022, 0x00000000, 0x00040047,
+    0x0000003f, 0x00000021, 0x00000005, 0x00040047, 0x0000003f, 0x00000022, 0x00000000, 0x00040047,
+    0x00000045, 0x00000021, 0x00000006, 0x00040047, 0x00000045, 0x00000022, 0x00000000, 0x00040047,
+    0x0000004b, 0x00000021, 0x00000007, 0x00040047, 0x0000004b, 0x00000022, 0x00000000, 0x00040047,
+    0x0000006c, 0x00000021, 0x00000000, 0x00040047, 0x0000006c, 0x00000022, 0x00000000, 0x00040047,
+    0x0000006f, 0x0000001e, 0x00000000, 0x00040047, 0x00000073, 0x0000001e, 0x00000003, 0x00040047,
+    0x00000077, 0x0000001e, 0x00000002, 0x00040047, 0x00000090, 0x0000001e, 0x00000000, 0x00040047,
+    0x00000092, 0x0000001e, 0x00000001, 0x00020013, 0x00000002, 0x00030021, 0x00000003, 0x00000002,
+    0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006, 0x00000002, 0x00040020,
+    0x00000008, 0x00000007, 0x00000007, 0x00040021, 0x00000009, 0x00000006, 0x00000008, 0x00040015,
+    0x00000010, 0x00000020, 0x00000000, 0x0005001e, 0x00000011, 0x00000007, 0x00000010, 0x00000010,
+    0x00040020, 0x00000012, 0x00000009, 0x00000011, 0x0004003b, 0x00000012, 0x00000013, 0x00000009,
+    0x00040015, 0x00000014, 0x00000020, 0x00000001, 0x0004002b, 0x00000014, 0x00000015, 0x00000001,
+    0x00040020, 0x00000016, 0x00000009, 0x00000010, 0x00090019, 0x00000022, 0x00000006, 0x00000001,
+    0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000, 0x0003001b, 0x00000023, 0x00000022,
+    0x00040020, 0x00000024, 0x00000000, 0x00000023, 0x0004003b, 0x00000024, 0x00000025, 0x00000000,
+    0x00040017, 0x00000028, 0x00000006, 0x00000004, 0x0004002b, 0x00000010, 0x0000002a, 0x00000000,
+    0x0004003b, 0x00000024, 0x0000002d, 0x00000000, 0x0004003b, 0x00000024, 0x00000033, 0x00000000,
+    0x0004003b, 0x00000024, 0x00000039, 0x00000000, 0x0004003b, 0x00000024, 0x0000003f, 0x00000000,
+    0x0004003b, 0x00000024, 0x00000045, 0x00000000, 0x0004003b, 0x00000024, 0x0000004b, 0x00000000,
+    0x0004002b, 0x00000006, 0x00000051, 0x3f800000, 0x00040020, 0x00000055, 0x00000007, 0x00000006,
+    0x0004002b, 0x00000014, 0x0000005a, 0x00000002, 0x0004002b, 0x00000010, 0x0000005d, 0x00000001,
+    0x00020014, 0x0000005e, 0x00040020, 0x0000006a, 0x00000007, 0x00000028, 0x0004003b, 0x00000024,
+    0x0000006c, 0x00000000, 0x00040020, 0x0000006e, 0x00000001, 0x00000007, 0x0004003b, 0x0000006e,
+    0x0000006f, 0x00000001, 0x00040020, 0x00000072, 0x00000001, 0x00000028, 0x0004003b, 0x00000072,
+    0x00000073, 0x00000001, 0x00040020, 0x00000076, 0x00000001, 0x00000006, 0x0004003b, 0x00000076,
+    0x00000077, 0x00000001, 0x0004002b, 0x00000010, 0x0000007d, 0x00000003, 0x00040017, 0x00000084,
+    0x00000006, 0x00000003, 0x0004002b, 0x00000010, 0x0000008c, 0x00000002, 0x00040020, 0x0000008f,
+    0x00000003, 0x00000028, 0x0004003b, 0x0000008f, 0x00000090, 0x00000003, 0x0004003b, 0x0000006e,
+    0x00000092, 0x00000001, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8,
+    0x00000005, 0x0004003b, 0x0000006a, 0x0000006b, 0x00000007, 0x0004003b, 0x00000008, 0x00000079,
+    0x00000007, 0x0004003d, 0x00000023, 0x0000006d, 0x0000006c, 0x0004003d, 0x00000007, 0x00000070,
+    0x0000006f, 0x00050057, 0x00000028, 0x00000071, 0x0000006d, 0x00000070, 0x0004003d, 0x00000028,
+    0x00000074, 0x00000073, 0x00050085, 0x00000028, 0x00000075, 0x00000071, 0x00000074, 0x0003003e,
+    0x0000006b, 0x00000075, 0x0004003d, 0x00000006, 0x00000078, 0x00000077, 0x0004003d, 0x00000007,
+    0x0000007a, 0x00000092, 0x0003003e, 0x00000079, 0x0000007a, 0x00050039, 0x00000006, 0x0000007b,
+    0x0000000e, 0x00000079, 0x00050085, 0x00000006, 0x0000007c, 0x00000078, 0x0000007b, 0x00050041,
+    0x00000055, 0x0000007e, 0x0000006b, 0x0000007d, 0x0004003d, 0x00000006, 0x0000007f, 0x0000007e,
+    0x00050085, 0x00000006, 0x00000080, 0x0000007f, 0x0000007c, 0x00050041, 0x00000055, 0x00000081,
+    0x0000006b, 0x0000007d, 0x0003003e, 0x00000081, 0x00000080, 0x00050041, 0x00000055, 0x00000082,
+    0x0000006b, 0x0000007d, 0x0004003d, 0x00000006, 0x00000083, 0x00000082, 0x0004003d, 0x00000028,
+    0x00000085, 0x0000006b, 0x0008004f, 0x00000084, 0x00000086, 0x00000085, 0x00000085, 0x00000000,
+    0x00000001, 0x00000002, 0x0005008e, 0x00000084, 0x00000087, 0x00000086, 0x00000083, 0x00050041,
+    0x00000055, 0x00000088, 0x0000006b, 0x0000002a, 0x00050051, 0x00000006, 0x00000089, 0x00000087,
+    0x00000000, 0x0003003e, 0x00000088, 0x00000089, 0x00050041, 0x00000055, 0x0000008a, 0x0000006b,
+    0x0000005d, 0x00050051, 0x00000006, 0x0000008b, 0x00000087, 0x00000001, 0x0003003e, 0x0000008a,
+    0x0000008b, 0x00050041, 0x00000055, 0x0000008d, 0x0000006b, 0x0000008c, 0x00050051, 0x00000006,
+    0x0000008e, 0x00000087, 0x00000002, 0x0003003e, 0x0000008d, 0x0000008e, 0x0004003d, 0x00000028,
+    0x00000091, 0x0000006b, 0x0003003e, 0x00000090, 0x00000091, 0x000100fd, 0x00010038, 0x00050036,
+    0x00000006, 0x0000000b, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000a, 0x000200f8,
+    0x0000000c, 0x00050041, 0x00000016, 0x00000017, 0x00000013, 0x00000015, 0x0004003d, 0x00000010,
+    0x00000018, 0x00000017, 0x000300f7, 0x00000021, 0x00000000, 0x001100fb, 0x00000018, 0x00000020,
+    0x00000001, 0x00000019, 0x00000002, 0x0000001a, 0x00000003, 0x0000001b, 0x00000004, 0x0000001c,
+    0x00000005, 0x0000001d, 0x00000006, 0x0000001e, 0x00000007, 0x0000001f, 0x000200f8, 0x00000020,
+    0x000200fe, 0x00000051, 0x000200f8, 0x00000019, 0x0004003d, 0x00000023, 0x00000026, 0x00000025,
+    0x0004003d, 0x00000007, 0x00000027, 0x0000000a, 0x00050057, 0x00000028, 0x00000029, 0x00000026,
+    0x00000027, 0x00050051, 0x00000006, 0x0000002b, 0x00000029, 0x00000000, 0x000200fe, 0x0000002b,
+    0x000200f8, 0x0000001a, 0x0004003d, 0x00000023, 0x0000002e, 0x0000002d, 0x0004003d, 0x00000007,
+    0x0000002f, 0x0000000a, 0x00050057, 0x00000028, 0x00000030, 0x0000002e, 0x0000002f, 0x00050051,
+    0x00000006, 0x00000031, 0x00000030, 0x00000000, 0x000200fe, 0x00000031, 0x000200f8, 0x0000001b,
+    0x0004003d, 0x00000023, 0x00000034, 0x00000033, 0x0004003d, 0x00000007, 0x00000035, 0x0000000a,
+    0x00050057, 0x00000028, 0x00000036, 0x00000034, 0x00000035, 0x00050051, 0x00000006, 0x00000037,
+    0x00000036, 0x00000000, 0x000200fe, 0x00000037, 0x000200f8, 0x0000001c, 0x0004003d, 0x00000023,
+    0x0000003a, 0x00000039, 0x0004003d, 0x00000007, 0x0000003b, 0x0000000a, 0x00050057, 0x00000028,
+    0x0000003c, 0x0000003a, 0x0000003b, 0x00050051, 0x00000006, 0x0000003d, 0x0000003c, 0x00000000,
+    0x000200fe, 0x0000003d, 0x000200f8, 0x0000001d, 0x0004003d, 0x00000023, 0x00000040, 0x0000003f,
+    0x0004003d, 0x00000007, 0x00000041, 0x0000000a, 0x00050057, 0x00000028, 0x00000042, 0x00000040,
+    0x00000041, 0x00050051, 0x00000006, 0x00000043, 0x00000042, 0x00000000, 0x000200fe, 0x00000043,
+    0x000200f8, 0x0000001e, 0x0004003d, 0x00000023, 0x00000046, 0x00000045, 0x0004003d, 0x00000007,
+    0x00000047, 0x0000000a, 0x00050057, 0x00000028, 0x00000048, 0x00000046, 0x00000047, 0x00050051,
+    0x00000006, 0x00000049, 0x00000048, 0x00000000, 0x000200fe, 0x00000049, 0x000200f8, 0x0000001f,
+    0x0004003d, 0x00000023, 0x0000004c, 0x0000004b, 0x0004003d, 0x00000007, 0x0000004d, 0x0000000a,
+    0x00050057, 0x00000028, 0x0000004e, 0x0000004c, 0x0000004d, 0x00050051, 0x00000006, 0x0000004f,
+    0x0000004e, 0x00000000, 0x000200fe, 0x0000004f, 0x000200f8, 0x00000021, 0x000100ff, 0x00010038,
+    0x00050036, 0x00000006, 0x0000000e, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000d,
+    0x000200f8, 0x0000000f, 0x0004003b, 0x00000055, 0x00000056, 0x00000007, 0x0004003b, 0x00000008,
+    0x00000057, 0x00000007, 0x0004003b, 0x00000055, 0x00000060, 0x00000007, 0x0004003d, 0x00000007,
+    0x00000058, 0x0000000d, 0x0003003e, 0x00000057, 0x00000058, 0x00050039, 0x00000006, 0x00000059,
+    0x0000000b, 0x00000057, 0x0003003e, 0x00000056, 0x00000059, 0x00050041, 0x00000016, 0x0000005b,
+    0x00000013, 0x0000005a, 0x0004003d, 0x00000010, 0x0000005c, 0x0000005b, 0x000500aa, 0x0000005e,
+    0x0000005f, 0x0000005c, 0x0000005d, 0x000300f7, 0x00000062, 0x00000000, 0x000400fa, 0x0000005f,
+    0x00000061, 0x00000065, 0x000200f8, 0x00000061, 0x0004003d, 0x00000006, 0x00000063, 0x00000056,
+    0x00050083, 0x00000006, 0x00000064, 0x00000051, 0x00000063, 0x0003003e, 0x00000060, 0x00000064,
+    0x000200f9, 0x00000062, 0x000200f8, 0x00000065, 0x0004003d, 0x00000006, 0x00000066, 0x00000056,
+    0x0003003e, 0x00000060, 0x00000066, 0x000200f9, 0x00000062, 0x000200f8, 0x00000062, 0x0004003d,
+    0x00000006, 0x00000067, 0x00000060, 0x000200fe, 0x00000067, 0x00010038,
 ];
 
 #[cfg(test)]
@@ -2419,7 +2763,7 @@ mod tests {
         input.sampled_image_recording_ready = true;
         input.sampled_image_op_count = 1;
         input.sampled_image_recording_step_count = 1;
-        input.sampled_image_vertex_buffer_bytes = 144;
+        input.sampled_image_vertex_buffer_bytes = 176;
         input.sampled_image_index_buffer_bytes = 24;
         input.vector_shape_op_count = 0;
 
@@ -2593,17 +2937,18 @@ mod tests {
         assert!(!snapshot.descriptor_set_layout_created);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
         assert_eq!(snapshot.descriptor_binding, 0);
-        assert_eq!(snapshot.vertex_input_attribute_count, 4);
+        assert_eq!(snapshot.vertex_input_attribute_count, 5);
         assert_eq!(
             snapshot.vertex_stride_bytes,
             SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES
         );
         assert_eq!(snapshot.vertex_uv_format, "R32G32_SFLOAT");
+        assert_eq!(snapshot.vertex_effect_uv_format, "R32G32_SFLOAT");
         assert_eq!(snapshot.vertex_opacity_format, "R32_SFLOAT");
         assert_eq!(snapshot.vertex_tint_format, "R32G32B32A32_SFLOAT");
         assert_eq!(
             snapshot.sampled_image_model,
-            "retained native BC sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader"
+            "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> fragment shader"
         );
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
@@ -2744,7 +3089,10 @@ mod tests {
                 last_layer_index: 1,
                 blend_mode: SceneBlendMode::Alpha,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                    resource_index: 0,
+                    descriptor_group_base_index: 0,
+                    texture_slot_resource_indices: vec![0],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 first_index: 0,
                 index_count: 6,
@@ -2754,7 +3102,11 @@ mod tests {
                 last_layer_index: 3,
                 blend_mode: SceneBlendMode::Alpha,
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
-                    resource_index: 1,
+                    descriptor_group_base_index: SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                        as u32,
+                    texture_slot_resource_indices: vec![1],
+                    alpha_texture_slot: None,
+                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 first_index: 6,
                 index_count: 6,
@@ -2826,20 +3178,138 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV
             ),
-            1776
+            2040
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV
             ),
-            1140
+            2888
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV
             ),
-            1236
+            3196
         );
+    }
+
+    #[test]
+    fn sampled_image_fragment_shader_samples_alpha_mask_from_effect_uv() {
+        assert!(spirv_function_argument_loads_named_input(
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV,
+            "alpha_mask",
+            "v_effect_uv"
+        ));
+        assert!(spirv_function_argument_loads_named_input(
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV,
+            "alpha_mask",
+            "v_effect_uv"
+        ));
+    }
+
+    fn spirv_function_argument_loads_named_input(
+        words: &[u32],
+        function_name_prefix: &str,
+        input_name: &str,
+    ) -> bool {
+        let Some(function_id) = spirv_named_id(words, function_name_prefix, true) else {
+            return false;
+        };
+        let Some(input_id) = spirv_named_id(words, input_name, false) else {
+            return false;
+        };
+        let offsets = spirv_instruction_offsets(words);
+        for (call_position, offset) in offsets.iter().enumerate() {
+            let word_count = spirv_word_count(words[*offset]) as usize;
+            if spirv_opcode(words[*offset]) != 57
+                || word_count < 5
+                || words[*offset + 3] != function_id
+            {
+                continue;
+            }
+            let argument_id = words[*offset + 4];
+            let Some(loaded_id) =
+                spirv_latest_store_object(words, &offsets[..call_position], argument_id)
+            else {
+                continue;
+            };
+            if spirv_loads_input_before(words, &offsets[..call_position], loaded_id, input_id) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn spirv_latest_store_object(words: &[u32], offsets: &[usize], pointer_id: u32) -> Option<u32> {
+        offsets.iter().rev().find_map(|offset| {
+            (spirv_opcode(words[*offset]) == 62
+                && spirv_word_count(words[*offset]) == 3
+                && words[*offset + 1] == pointer_id)
+                .then_some(words[*offset + 2])
+        })
+    }
+
+    fn spirv_loads_input_before(
+        words: &[u32],
+        offsets: &[usize],
+        loaded_id: u32,
+        input_id: u32,
+    ) -> bool {
+        offsets.iter().rev().any(|offset| {
+            spirv_opcode(words[*offset]) == 61
+                && spirv_word_count(words[*offset]) >= 4
+                && words[*offset + 2] == loaded_id
+                && words[*offset + 3] == input_id
+        })
+    }
+
+    fn spirv_named_id(words: &[u32], name: &str, prefix: bool) -> Option<u32> {
+        for offset in spirv_instruction_offsets(words) {
+            let word_count = spirv_word_count(words[offset]) as usize;
+            if spirv_opcode(words[offset]) != 5 || word_count < 3 {
+                continue;
+            }
+            let decoded = spirv_string(&words[offset + 2..offset + word_count]);
+            if decoded == name || (prefix && decoded.starts_with(name)) {
+                return Some(words[offset + 1]);
+            }
+        }
+        None
+    }
+
+    fn spirv_instruction_offsets(words: &[u32]) -> Vec<usize> {
+        let mut offsets = Vec::new();
+        let mut offset = 5usize;
+        while offset < words.len() {
+            let word_count = spirv_word_count(words[offset]) as usize;
+            if word_count == 0 || offset.saturating_add(word_count) > words.len() {
+                break;
+            }
+            offsets.push(offset);
+            offset += word_count;
+        }
+        offsets
+    }
+
+    fn spirv_word_count(word: u32) -> u16 {
+        (word >> 16) as u16
+    }
+
+    fn spirv_opcode(word: u32) -> u16 {
+        (word & 0xffff) as u16
+    }
+
+    fn spirv_string(words: &[u32]) -> String {
+        let mut bytes = Vec::with_capacity(words.len().saturating_mul(4));
+        for word in words {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..end]).into_owned()
     }
 
     #[test]
