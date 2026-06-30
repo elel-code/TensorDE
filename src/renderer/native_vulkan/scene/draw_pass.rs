@@ -31,10 +31,21 @@ const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 36;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
 const SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS: usize = 12;
+const SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_SUBDIVISION: usize = 4;
+const SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_VERTICES: usize = 4096;
+const SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD: f64 = 4.0;
 const SCENE_SAMPLED_IMAGE_DEFAULT_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanSceneSampledImageGridCorner {
+    x: f64,
+    y: f64,
+    u: f64,
+    v: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanSceneSampledImageMeshPoint {
     x: f64,
     y: f64,
     u: f64,
@@ -2408,6 +2419,20 @@ fn native_vulkan_scene_sampled_image_geometry(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
     if let Some(mesh) = &quad.mesh {
+        if quad.effect_motion.is_active() {
+            if let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh) {
+                let mut vertices = Vec::new();
+                native_vulkan_scene_append_sampled_image_effect_grid_vertices(
+                    quad,
+                    corners,
+                    &mut vertices,
+                )?;
+                let mut indices = Vec::new();
+                native_vulkan_scene_append_sampled_image_effect_grid_indices(0, &mut indices)?;
+                return Some((vertices, indices));
+            }
+            return native_vulkan_scene_sampled_image_subdivided_mesh_geometry(quad, mesh);
+        }
         return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
     }
     let vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
@@ -2454,20 +2479,38 @@ fn native_vulkan_scene_append_sampled_image_geometry(
         }
         let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
         let before_vertices = vertices.len();
-        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
+        let before_indices = indices.len();
+        let subdivided_index_count = if quad.effect_motion.is_active() {
+            native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
+                quad,
+                mesh,
+                first_vertex,
+                vertices,
+                indices,
+            )?
+        } else {
+            native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
+            0
+        };
         let mesh_vertices = &vertices[before_vertices..];
         if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(&mesh_vertices, scene_size)
         {
             vertices.truncate(before_vertices);
+            indices.truncate(before_indices);
             return None;
         }
         let vertex_count = mesh_vertices.len().min(u32::MAX as usize) as u32;
-        let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
-        indices.extend(
-            mesh_indices
-                .iter()
-                .map(|index| first_vertex.saturating_add(*index)),
-        );
+        let index_count = if subdivided_index_count > 0 {
+            subdivided_index_count
+        } else {
+            let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+            indices.extend(
+                mesh_indices
+                    .iter()
+                    .map(|index| first_vertex.saturating_add(*index)),
+            );
+            index_count
+        };
         return Some(NativeVulkanSceneSampledImageGeometryRange {
             first_vertex,
             vertex_count,
@@ -2529,6 +2572,11 @@ fn native_vulkan_scene_append_sampled_image_vertices(
         {
             return native_vulkan_scene_append_sampled_image_effect_grid_vertices(
                 quad, corners, vertices,
+            );
+        }
+        if quad.effect_motion.is_active() {
+            return native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices(
+                quad, mesh, vertices,
             );
         }
         native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
@@ -2823,6 +2871,388 @@ fn native_vulkan_scene_sampled_image_mesh_geometry(
     let mut vertices = Vec::with_capacity(mesh.vertices.len());
     native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, &mut vertices)?;
     Some((vertices, mesh_indices.to_vec()))
+}
+
+fn native_vulkan_scene_sampled_image_subdivided_mesh_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
+    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let subdivision = native_vulkan_scene_sampled_image_effect_mesh_subdivision(quad, mesh)?;
+    if subdivision <= 1 {
+        return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
+    }
+    let triangle_count = mesh.indices.len() / 3;
+    let vertices_per_triangle = native_vulkan_scene_subdivided_triangle_vertex_count(subdivision)?;
+    let mut vertices = Vec::with_capacity(triangle_count.saturating_mul(vertices_per_triangle));
+    let mut indices =
+        Vec::with_capacity(triangle_count.saturating_mul(subdivision * subdivision * 3));
+    native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
+        quad,
+        mesh,
+        0,
+        &mut vertices,
+        &mut indices,
+    )?;
+    Some((vertices, indices))
+}
+
+fn native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+    first_vertex: u32,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<u32> {
+    let subdivision = native_vulkan_scene_sampled_image_effect_mesh_subdivision(quad, mesh)?;
+    if subdivision <= 1 {
+        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
+        let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+        let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+        indices.extend(
+            mesh_indices
+                .iter()
+                .map(|index| first_vertex.saturating_add(*index)),
+        );
+        return Some(index_count);
+    }
+    let first_generated_vertex = vertices.len().min(u32::MAX as usize) as u32;
+    native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
+        quad,
+        mesh,
+        subdivision,
+        vertices,
+    )?;
+    native_vulkan_scene_append_subdivided_mesh_indices(
+        first_generated_vertex,
+        mesh.indices.len() / 3,
+        subdivision,
+        indices,
+    )
+}
+
+fn native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let subdivision = native_vulkan_scene_sampled_image_effect_mesh_subdivision(quad, mesh)?;
+    if subdivision <= 1 {
+        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
+        return Some(mesh.vertices.len().min(u32::MAX as usize) as u32);
+    }
+    let before_vertices = vertices.len();
+    native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
+        quad,
+        mesh,
+        subdivision,
+        vertices,
+    )?;
+    Some(
+        vertices
+            .len()
+            .saturating_sub(before_vertices)
+            .min(u32::MAX as usize) as u32,
+    )
+}
+
+fn native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+    subdivision: usize,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    if subdivision == 0
+        || mesh.vertices.len() < 3
+        || mesh.indices.len() < 3
+        || mesh.indices.len() % 3 != 0
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let u_scale = region.u_max - region.u_min;
+    let v_scale = region.v_max - region.v_min;
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
+    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
+    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
+    let rotation = quad.transform.rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    let vertices_per_triangle = native_vulkan_scene_subdivided_triangle_vertex_count(subdivision)?;
+    vertices.reserve((mesh.indices.len() / 3).saturating_mul(vertices_per_triangle));
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = native_vulkan_scene_sampled_image_mesh_point(
+            mesh,
+            triangle[0],
+            local_offset_x,
+            local_offset_y,
+            region.u_min,
+            region.v_min,
+            u_scale,
+            v_scale,
+        )?;
+        let b = native_vulkan_scene_sampled_image_mesh_point(
+            mesh,
+            triangle[1],
+            local_offset_x,
+            local_offset_y,
+            region.u_min,
+            region.v_min,
+            u_scale,
+            v_scale,
+        )?;
+        let c = native_vulkan_scene_sampled_image_mesh_point(
+            mesh,
+            triangle[2],
+            local_offset_x,
+            local_offset_y,
+            region.u_min,
+            region.v_min,
+            u_scale,
+            v_scale,
+        )?;
+        for row in 0..=subdivision {
+            for column in 0..=subdivision - row {
+                let b_weight = row as f64 / subdivision as f64;
+                let c_weight = column as f64 / subdivision as f64;
+                let a_weight = 1.0 - b_weight - c_weight;
+                let point = NativeVulkanSceneSampledImageMeshPoint {
+                    x: a.x.mul_add(a_weight, b.x.mul_add(b_weight, c.x * c_weight)),
+                    y: a.y.mul_add(a_weight, b.y.mul_add(b_weight, c.y * c_weight)),
+                    u: a.u.mul_add(a_weight, b.u.mul_add(b_weight, c.u * c_weight)),
+                    v: a.v.mul_add(a_weight, b.v.mul_add(b_weight, c.v * c_weight)),
+                };
+                native_vulkan_scene_push_sampled_image_mesh_vertex(
+                    quad, point, opacity, tint, cos, sin, vertices,
+                )?;
+            }
+        }
+    }
+    Some(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_scene_sampled_image_mesh_point(
+    mesh: &SceneMesh,
+    index: u32,
+    local_offset_x: f64,
+    local_offset_y: f64,
+    u_min: f64,
+    v_min: f64,
+    u_scale: f64,
+    v_scale: f64,
+) -> Option<NativeVulkanSceneSampledImageMeshPoint> {
+    let vertex = mesh.vertices.get(usize::try_from(index).ok()?)?;
+    if !vertex.x.is_finite()
+        || !vertex.y.is_finite()
+        || !vertex.u.is_finite()
+        || !vertex.v.is_finite()
+    {
+        return None;
+    }
+    Some(NativeVulkanSceneSampledImageMeshPoint {
+        x: vertex.x + local_offset_x,
+        y: vertex.y + local_offset_y,
+        u: u_min + vertex.u * u_scale,
+        v: v_min + vertex.v * v_scale,
+    })
+}
+
+fn native_vulkan_scene_push_sampled_image_mesh_vertex(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    point: NativeVulkanSceneSampledImageMeshPoint,
+    opacity: f32,
+    tint: [f32; 4],
+    cos: f64,
+    sin: f64,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    let (x, y) = native_vulkan_scene_apply_sampled_image_effect_motion(
+        point.x,
+        point.y,
+        quad.width,
+        quad.height,
+        quad.effect_motion,
+    );
+    vertices.push(NativeVulkanSceneSampledImageVertex {
+        position: native_vulkan_scene_transform_point_with_rotation(
+            x,
+            y,
+            quad.transform,
+            cos,
+            sin,
+        )?,
+        uv: [point.u as f32, point.v as f32],
+        opacity,
+        tint,
+    });
+    Some(())
+}
+
+fn native_vulkan_scene_sampled_image_effect_mesh_subdivision(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+) -> Option<usize> {
+    if !quad.effect_motion.is_active() {
+        return Some(1);
+    }
+    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let triangle_count = mesh.indices.len() / 3;
+    if triangle_count == 0 {
+        return Some(1);
+    }
+    let max_edge = native_vulkan_scene_sampled_image_mesh_max_triangle_edge(mesh)?;
+    if max_edge <= f64::EPSILON {
+        return Some(1);
+    }
+    let motion_frequency = quad
+        .effect_motion
+        .wave_spatial_frequency
+        .abs()
+        .max(quad.effect_motion.sway_spatial_frequency.abs());
+    let target_edge = if motion_frequency > f64::EPSILON {
+        (std::f64::consts::TAU
+            / motion_frequency
+            / SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD)
+            .clamp(24.0, 128.0)
+    } else {
+        (quad.width.abs().min(quad.height.abs()) / 8.0).clamp(48.0, 128.0)
+    };
+    let mut subdivision = (max_edge / target_edge)
+        .ceil()
+        .clamp(1.0, SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_SUBDIVISION as f64)
+        as usize;
+    while subdivision > 1 {
+        let vertices_per_triangle =
+            native_vulkan_scene_subdivided_triangle_vertex_count(subdivision)?;
+        if triangle_count.saturating_mul(vertices_per_triangle)
+            <= SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_VERTICES
+        {
+            break;
+        }
+        subdivision -= 1;
+    }
+    Some(subdivision.max(1))
+}
+
+fn native_vulkan_scene_sampled_image_mesh_max_triangle_edge(mesh: &SceneMesh) -> Option<f64> {
+    let mut max_edge: f64 = 0.0;
+    for triangle in mesh.indices.chunks_exact(3) {
+        let a = mesh.vertices.get(usize::try_from(triangle[0]).ok()?)?;
+        let b = mesh.vertices.get(usize::try_from(triangle[1]).ok()?)?;
+        let c = mesh.vertices.get(usize::try_from(triangle[2]).ok()?)?;
+        if !a.x.is_finite()
+            || !a.y.is_finite()
+            || !b.x.is_finite()
+            || !b.y.is_finite()
+            || !c.x.is_finite()
+            || !c.y.is_finite()
+        {
+            return None;
+        }
+        max_edge = max_edge
+            .max(native_vulkan_scene_distance(a.x, a.y, b.x, b.y))
+            .max(native_vulkan_scene_distance(b.x, b.y, c.x, c.y))
+            .max(native_vulkan_scene_distance(c.x, c.y, a.x, a.y));
+    }
+    Some(max_edge)
+}
+
+fn native_vulkan_scene_distance(ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    (ax - bx).hypot(ay - by)
+}
+
+fn native_vulkan_scene_subdivided_triangle_vertex_count(subdivision: usize) -> Option<usize> {
+    subdivision
+        .checked_add(1)?
+        .checked_mul(subdivision.checked_add(2)?)?
+        .checked_div(2)
+}
+
+fn native_vulkan_scene_subdivided_triangle_vertex_offset(
+    subdivision: usize,
+    row: usize,
+    column: usize,
+) -> Option<usize> {
+    if row > subdivision || column > subdivision.saturating_sub(row) {
+        return None;
+    }
+    row.checked_mul(subdivision.checked_add(1)?)?
+        .checked_sub(row.checked_mul(row.saturating_sub(1))?.checked_div(2)?)?
+        .checked_add(column)
+}
+
+fn native_vulkan_scene_append_subdivided_mesh_indices(
+    first_vertex: u32,
+    triangle_count: usize,
+    subdivision: usize,
+    indices: &mut Vec<u32>,
+) -> Option<u32> {
+    if subdivision == 0 {
+        return None;
+    }
+    let vertices_per_triangle = native_vulkan_scene_subdivided_triangle_vertex_count(subdivision)?;
+    let index_count = triangle_count
+        .checked_mul(subdivision)?
+        .checked_mul(subdivision)?
+        .checked_mul(3)?;
+    indices.reserve(index_count);
+    for triangle_index in 0..triangle_count {
+        let triangle_base = first_vertex.checked_add(
+            triangle_index
+                .checked_mul(vertices_per_triangle)?
+                .min(u32::MAX as usize) as u32,
+        )?;
+        for row in 0..subdivision {
+            for column in 0..subdivision - row {
+                let top = triangle_base.checked_add(
+                    native_vulkan_scene_subdivided_triangle_vertex_offset(subdivision, row, column)?
+                        as u32,
+                )?;
+                let left = triangle_base.checked_add(
+                    native_vulkan_scene_subdivided_triangle_vertex_offset(
+                        subdivision,
+                        row + 1,
+                        column,
+                    )? as u32,
+                )?;
+                let right = triangle_base.checked_add(
+                    native_vulkan_scene_subdivided_triangle_vertex_offset(
+                        subdivision,
+                        row,
+                        column + 1,
+                    )? as u32,
+                )?;
+                indices.extend_from_slice(&[top, left, right]);
+                if column < subdivision - row - 1 {
+                    let lower_right = triangle_base.checked_add(
+                        native_vulkan_scene_subdivided_triangle_vertex_offset(
+                            subdivision,
+                            row + 1,
+                            column + 1,
+                        )? as u32,
+                    )?;
+                    indices.extend_from_slice(&[left, lower_right, right]);
+                }
+            }
+        }
+    }
+    Some(index_count.min(u32::MAX as usize) as u32)
 }
 
 fn native_vulkan_scene_append_sampled_image_mesh_vertices(
@@ -4700,7 +5130,7 @@ mod tests {
             scene_size: None,
             scene_fit: FitMode::Cover,
             dynamic_topology_required: false,
-            draw_ops: vec![image],
+            draw_ops: vec![image.clone()],
             unsupported_layers: Vec::new(),
             runtime_display_available: false,
         };
@@ -4708,12 +5138,31 @@ mod tests {
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
         assert!(pass_plan.backend_ready);
-        assert_eq!(pass_plan.sampled_image_vertices.len(), 5);
-        assert_eq!(pass_plan.sampled_image_indices.len(), 12);
-        assert_eq!(pass_plan.sampled_image_recording_steps[0].vertex_count, 5);
-        assert_eq!(pass_plan.sampled_image_recording_steps[0].index_count, 12);
+        assert_eq!(pass_plan.sampled_image_vertices.len(), 60);
+        assert_eq!(pass_plan.sampled_image_indices.len(), 192);
+        assert_eq!(pass_plan.sampled_image_recording_steps[0].vertex_count, 60);
+        assert_eq!(pass_plan.sampled_image_recording_steps[0].index_count, 192);
         assert_ne!(pass_plan.sampled_image_vertices[0].position, [-50.0, -50.0]);
         assert_eq!(pass_plan.sampled_image_vertices[4].position, [0.0, 0.0]);
+
+        let mut dynamic_vertices = Vec::new();
+        let quad = native_vulkan_scene_sampled_image_quad(&image).expect("sampled image quad");
+        let dynamic_vertex_count =
+            native_vulkan_scene_append_sampled_image_vertices(&quad, &mut dynamic_vertices)
+                .expect("dynamic sampled mesh vertices");
+        assert_eq!(dynamic_vertex_count, 60);
+        assert_eq!(
+            dynamic_vertices.len(),
+            pass_plan.sampled_image_vertices.len()
+        );
+        assert_eq!(
+            dynamic_vertices[0].position,
+            pass_plan.sampled_image_vertices[0].position
+        );
+        assert_eq!(
+            dynamic_vertices[4].position,
+            pass_plan.sampled_image_vertices[4].position
+        );
     }
 
     #[test]
