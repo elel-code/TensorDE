@@ -2795,25 +2795,51 @@ pub struct SceneNativeEffectMotion {
     pub wave_spatial_frequency: f64,
     pub wave_phase: f64,
     pub wave_count: u32,
+    pub wave2_x: f64,
+    pub wave2_y: f64,
+    pub wave2_direction_x: f64,
+    pub wave2_direction_y: f64,
+    pub wave2_spatial_frequency: f64,
+    pub wave2_phase: f64,
+    pub wave2_count: u32,
     pub sway_amplitude: f64,
+    pub sway_direction_x: f64,
+    pub sway_direction_y: f64,
     pub sway_spatial_frequency: f64,
     pub sway_phase: f64,
+    pub sway_power: f64,
+    pub sway_count: u32,
 }
 
 impl SceneNativeEffectMotion {
     pub fn is_active(self) -> bool {
-        self.wave_count > 0 || self.sway_amplitude.abs() > f64::EPSILON
+        self.wave_count > 0
+            || self.wave2_count > 0
+            || (self.sway_count > 0 && self.sway_amplitude.abs() > f64::EPSILON)
     }
 
     fn normalize(&mut self) {
-        if self.wave_count == 0 {
-            return;
+        if self.wave_count > 0 {
+            let count = f64::from(self.wave_count);
+            self.wave_direction_x /= count;
+            self.wave_direction_y /= count;
+            self.wave_spatial_frequency /= count;
+            self.wave_phase /= count;
         }
-        let count = f64::from(self.wave_count);
-        self.wave_direction_x /= count;
-        self.wave_direction_y /= count;
-        self.wave_spatial_frequency /= count;
-        self.wave_phase /= count;
+        if self.wave2_count > 0 {
+            let count = f64::from(self.wave2_count);
+            self.wave2_direction_x /= count;
+            self.wave2_direction_y /= count;
+            self.wave2_spatial_frequency /= count;
+            self.wave2_phase /= count;
+        }
+        if self.sway_count > 0 {
+            let count = f64::from(self.sway_count);
+            self.sway_direction_x /= count;
+            self.sway_direction_y /= count;
+            self.sway_spatial_frequency /= count;
+            self.sway_phase /= count;
+        }
     }
 }
 
@@ -5098,6 +5124,123 @@ mod tests {
         assert_eq!(layers.len(), 1);
         assert!(layers[0].effect_motion.is_active());
         assert!((layers[0].effect_motion.wave_phase - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn waterwave_effect_preserves_wallpaper_engine_secondary_wave_parameters() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-image",
+                    "type": "image",
+                    "source": "assets/image.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-water",
+                    "type": "image",
+                    "resource": "resource-image",
+                    "width": 100,
+                    "height": 100,
+                    "effects": [
+                        {
+                            "file": "effects/waterwaves/effect.json",
+                            "passes": [
+                                {
+                                    "constant_shader_values": {
+                                        "speed": 2.0,
+                                        "speed2": 3.0,
+                                        "strength": 0.1,
+                                        "direction": 0.0,
+                                        "direction2": 1.57079632679,
+                                        "scale": 12.0,
+                                        "scale2": 6.0,
+                                        "offset2": 0.25
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut layers = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut layers,
+        );
+        let motion = layers[0].effect_motion;
+        assert_eq!(motion.wave_count, 1);
+        assert_eq!(motion.wave2_count, 1);
+        assert!((motion.wave_phase - 2.0).abs() < 0.001);
+        assert!((motion.wave2_phase - 3.25).abs() < 0.001);
+        assert!(motion.wave_x > 0.19);
+        assert!(motion.wave2_y > 0.14);
+        assert!(motion.wave_spatial_frequency > motion.wave2_spatial_frequency);
+    }
+
+    #[test]
+    fn foliage_sway_effect_uses_wallpaper_engine_motion_parameters() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                {
+                    "id": "resource-image",
+                    "type": "image",
+                    "source": "assets/image.gtex"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "node-skirt",
+                    "type": "image",
+                    "resource": "resource-image",
+                    "width": 100,
+                    "height": 100,
+                    "effects": [
+                        {
+                            "file": "effects/workshop/2790231929/foliagesway/effect.json",
+                            "passes": [
+                                {
+                                    "constant_shader_values": {
+                                        "phase": 2.0,
+                                        "power": 2.0,
+                                        "ratio": 2.0,
+                                        "scale": 0.05,
+                                        "scrolldirection": 0.0,
+                                        "speeduv": 5.0,
+                                        "strength": 0.5
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut layers = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut layers,
+        );
+        let motion = layers[0].effect_motion;
+        assert_eq!(motion.sway_count, 1);
+        assert!((motion.sway_phase - 7.0).abs() < 0.001);
+        assert!((motion.sway_power - 2.0).abs() < 0.001);
+        assert!(motion.sway_amplitude > 0.99);
+        assert!(motion.sway_direction_x > 0.99);
+        assert!(motion.sway_direction_y.abs() < 0.001);
+        assert!((motion.sway_spatial_frequency - std::f64::consts::TAU / 100.0).abs() < 0.001);
     }
 
     #[test]

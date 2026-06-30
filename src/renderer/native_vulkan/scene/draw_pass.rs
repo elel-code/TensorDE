@@ -30,7 +30,8 @@ const SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT: u32 = 4;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 36;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
-const SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS: usize = 12;
+const SCENE_SAMPLED_IMAGE_EFFECT_GRID_MIN_SEGMENTS: usize = 12;
+const SCENE_SAMPLED_IMAGE_EFFECT_GRID_MAX_SEGMENTS: usize = 20;
 const SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_SUBDIVISION: usize = 4;
 const SCENE_SAMPLED_IMAGE_EFFECT_MESH_MAX_VERTICES: usize = 4096;
 const SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD: f64 = 4.0;
@@ -2422,18 +2423,38 @@ fn native_vulkan_scene_sampled_image_geometry(
         if quad.effect_motion.is_active() {
             if let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh) {
                 let mut vertices = Vec::new();
+                let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
                 native_vulkan_scene_append_sampled_image_effect_grid_vertices(
                     quad,
                     corners,
+                    segments,
                     &mut vertices,
                 )?;
                 let mut indices = Vec::new();
-                native_vulkan_scene_append_sampled_image_effect_grid_indices(0, &mut indices)?;
+                native_vulkan_scene_append_sampled_image_effect_grid_indices(
+                    0,
+                    segments,
+                    &mut indices,
+                )?;
                 return Some((vertices, indices));
             }
             return native_vulkan_scene_sampled_image_subdivided_mesh_geometry(quad, mesh);
         }
         return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
+    }
+    if quad.effect_motion.is_active() {
+        let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
+        let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
+        let mut vertices = Vec::new();
+        native_vulkan_scene_append_sampled_image_effect_grid_vertices(
+            quad,
+            corners,
+            segments,
+            &mut vertices,
+        )?;
+        let mut indices = Vec::new();
+        native_vulkan_scene_append_sampled_image_effect_grid_indices(0, segments, &mut indices)?;
+        return Some((vertices, indices));
     }
     let vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
     Some((vertices.to_vec(), vec![0, 1, 2, 2, 1, 3]))
@@ -2454,9 +2475,10 @@ fn native_vulkan_scene_append_sampled_image_geometry(
         if quad.effect_motion.is_active()
             && let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh)
         {
+            let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
             let before_vertices = vertices.len();
             let vertex_count = native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-                quad, corners, vertices,
+                quad, corners, segments, vertices,
             )?;
             let grid_vertices = &vertices[before_vertices..];
             if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
@@ -2468,6 +2490,7 @@ fn native_vulkan_scene_append_sampled_image_geometry(
             }
             let index_count = native_vulkan_scene_append_sampled_image_effect_grid_indices(
                 first_vertex,
+                segments,
                 indices,
             )?;
             return Some(NativeVulkanSceneSampledImageGeometryRange {
@@ -2520,16 +2543,21 @@ fn native_vulkan_scene_append_sampled_image_geometry(
     }
     if quad.effect_motion.is_active() {
         let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
+        let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
         let before_vertices = vertices.len();
-        let vertex_count =
-            native_vulkan_scene_append_sampled_image_effect_grid_vertices(quad, corners, vertices)?;
+        let vertex_count = native_vulkan_scene_append_sampled_image_effect_grid_vertices(
+            quad, corners, segments, vertices,
+        )?;
         let grid_vertices = &vertices[before_vertices..];
         if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(grid_vertices, scene_size) {
             vertices.truncate(before_vertices);
             return None;
         }
-        let index_count =
-            native_vulkan_scene_append_sampled_image_effect_grid_indices(first_vertex, indices)?;
+        let index_count = native_vulkan_scene_append_sampled_image_effect_grid_indices(
+            first_vertex,
+            segments,
+            indices,
+        )?;
         return Some(NativeVulkanSceneSampledImageGeometryRange {
             first_vertex,
             vertex_count,
@@ -2570,8 +2598,9 @@ fn native_vulkan_scene_append_sampled_image_vertices(
         if quad.effect_motion.is_active()
             && let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh)
         {
+            let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
             return native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-                quad, corners, vertices,
+                quad, corners, segments, vertices,
             );
         }
         if quad.effect_motion.is_active() {
@@ -2588,8 +2617,9 @@ fn native_vulkan_scene_append_sampled_image_vertices(
     }
     if quad.effect_motion.is_active() {
         let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
+        let segments = native_vulkan_scene_sampled_image_effect_grid_segments(quad);
         return native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-            quad, corners, vertices,
+            quad, corners, segments, vertices,
         );
     }
     let quad_vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
@@ -2600,9 +2630,12 @@ fn native_vulkan_scene_append_sampled_image_vertices(
 fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(
     quad: &NativeVulkanSceneSampledImageQuad,
     corners: [NativeVulkanSceneSampledImageGridCorner; 4],
+    segments: usize,
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<u32> {
-    let segments = SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS;
+    if segments == 0 {
+        return None;
+    }
     let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
     let tint = quad.tint;
     let rotation = quad.transform.rotation_deg.to_radians();
@@ -2643,9 +2676,12 @@ fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(
 
 fn native_vulkan_scene_append_sampled_image_effect_grid_indices(
     first_vertex: u32,
+    segments: usize,
     indices: &mut Vec<u32>,
 ) -> Option<u32> {
-    let segments = SCENE_SAMPLED_IMAGE_EFFECT_GRID_SEGMENTS;
+    if segments == 0 {
+        return None;
+    }
     let stride = segments + 1;
     let index_count = segments.checked_mul(segments)?.checked_mul(6)?;
     indices.reserve(index_count);
@@ -2666,6 +2702,38 @@ fn native_vulkan_scene_append_sampled_image_effect_grid_indices(
         }
     }
     Some(index_count.min(u32::MAX as usize) as u32)
+}
+
+fn native_vulkan_scene_sampled_image_effect_grid_segments(
+    quad: &NativeVulkanSceneSampledImageQuad,
+) -> usize {
+    let motion_frequency =
+        native_vulkan_scene_sampled_image_effect_motion_max_frequency(quad.effect_motion);
+    if motion_frequency <= f64::EPSILON {
+        return SCENE_SAMPLED_IMAGE_EFFECT_GRID_MIN_SEGMENTS;
+    }
+    let motion_amplitude =
+        native_vulkan_scene_sampled_image_effect_motion_max_amplitude(quad.effect_motion);
+    if motion_amplitude < 0.75 {
+        return SCENE_SAMPLED_IMAGE_EFFECT_GRID_MIN_SEGMENTS;
+    }
+    let max_extent = quad.width.abs().max(quad.height.abs());
+    if !max_extent.is_finite() || max_extent <= f64::EPSILON {
+        return SCENE_SAMPLED_IMAGE_EFFECT_GRID_MIN_SEGMENTS;
+    }
+    let samples_per_period = SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD
+        * (motion_amplitude / 4.0).clamp(0.5, 1.0);
+    let target_edge =
+        (std::f64::consts::TAU / motion_frequency / samples_per_period).clamp(12.0, 128.0);
+    let max_segments = if motion_amplitude < 2.0 {
+        16
+    } else {
+        SCENE_SAMPLED_IMAGE_EFFECT_GRID_MAX_SEGMENTS
+    };
+    (max_extent / target_edge).ceil().clamp(
+        SCENE_SAMPLED_IMAGE_EFFECT_GRID_MIN_SEGMENTS as f64,
+        max_segments as f64,
+    ) as usize
 }
 
 fn native_vulkan_scene_sampled_image_grid_lerp(
@@ -3120,16 +3188,14 @@ fn native_vulkan_scene_sampled_image_effect_mesh_subdivision(
     if max_edge <= f64::EPSILON {
         return Some(1);
     }
-    let motion_frequency = quad
-        .effect_motion
-        .wave_spatial_frequency
-        .abs()
-        .max(quad.effect_motion.sway_spatial_frequency.abs());
+    let motion_frequency =
+        native_vulkan_scene_sampled_image_effect_motion_max_frequency(quad.effect_motion);
+    let motion_amplitude =
+        native_vulkan_scene_sampled_image_effect_motion_max_amplitude(quad.effect_motion);
+    let samples_per_period = SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD
+        * (motion_amplitude / 4.0).clamp(0.5, 1.0);
     let target_edge = if motion_frequency > f64::EPSILON {
-        (std::f64::consts::TAU
-            / motion_frequency
-            / SCENE_SAMPLED_IMAGE_EFFECT_MESH_SAMPLES_PER_PERIOD)
-            .clamp(24.0, 128.0)
+        (std::f64::consts::TAU / motion_frequency / samples_per_period).clamp(24.0, 128.0)
     } else {
         (quad.width.abs().min(quad.height.abs()) / 8.0).clamp(48.0, 128.0)
     };
@@ -3148,6 +3214,38 @@ fn native_vulkan_scene_sampled_image_effect_mesh_subdivision(
         subdivision -= 1;
     }
     Some(subdivision.max(1))
+}
+
+fn native_vulkan_scene_sampled_image_effect_motion_max_frequency(
+    motion: SceneNativeEffectMotion,
+) -> f64 {
+    let mut frequency: f64 = 0.0;
+    if motion.wave_count > 0 {
+        frequency = frequency.max(motion.wave_spatial_frequency.abs());
+    }
+    if motion.wave2_count > 0 {
+        frequency = frequency.max(motion.wave2_spatial_frequency.abs());
+    }
+    if motion.sway_count > 0 {
+        frequency = frequency.max(motion.sway_spatial_frequency.abs());
+    }
+    frequency
+}
+
+fn native_vulkan_scene_sampled_image_effect_motion_max_amplitude(
+    motion: SceneNativeEffectMotion,
+) -> f64 {
+    let mut amplitude: f64 = 0.0;
+    if motion.wave_count > 0 {
+        amplitude = amplitude.max(motion.wave_x.hypot(motion.wave_y));
+    }
+    if motion.wave2_count > 0 {
+        amplitude = amplitude.max(motion.wave2_x.hypot(motion.wave2_y));
+    }
+    if motion.sway_count > 0 {
+        amplitude = amplitude.max(motion.sway_amplitude.abs());
+    }
+    amplitude
 }
 
 fn native_vulkan_scene_sampled_image_mesh_max_triangle_edge(mesh: &SceneMesh) -> Option<f64> {
@@ -3367,14 +3465,32 @@ fn native_vulkan_scene_sampled_image_effect_motion_delta(
     let original_x = x;
     let original_y = y;
     if motion.wave_count > 0 {
-        let wave = native_vulkan_scene_fast_sin(
-            x.mul_add(
-                motion.wave_direction_x * motion.wave_spatial_frequency,
-                y * motion.wave_direction_y * motion.wave_spatial_frequency,
-            ) + motion.wave_phase,
+        let (dx, dy) = native_vulkan_scene_sampled_image_wave_delta(
+            x,
+            y,
+            motion.wave_x,
+            motion.wave_y,
+            motion.wave_direction_x,
+            motion.wave_direction_y,
+            motion.wave_spatial_frequency,
+            motion.wave_phase,
         );
-        x += motion.wave_x * wave;
-        y += motion.wave_y * wave;
+        x += dx;
+        y += dy;
+    }
+    if motion.wave2_count > 0 {
+        let (dx, dy) = native_vulkan_scene_sampled_image_wave_delta(
+            x,
+            y,
+            motion.wave2_x,
+            motion.wave2_y,
+            motion.wave2_direction_x,
+            motion.wave2_direction_y,
+            motion.wave2_spatial_frequency,
+            motion.wave2_phase,
+        );
+        x += dx;
+        y += dy;
     }
     if motion.sway_amplitude.abs() > f64::EPSILON {
         let vertical = if height.abs() > f64::EPSILON {
@@ -3387,14 +3503,49 @@ fn native_vulkan_scene_sampled_image_effect_motion_delta(
         } else {
             0.0
         };
+        let direction_length = motion
+            .sway_direction_x
+            .hypot(motion.sway_direction_y)
+            .max(f64::EPSILON);
+        let direction_x = if direction_length > f64::EPSILON {
+            motion.sway_direction_x / direction_length
+        } else {
+            1.0
+        };
+        let direction_y = if direction_length > f64::EPSILON {
+            motion.sway_direction_y / direction_length
+        } else {
+            0.0
+        };
+        let tip_weight = vertical.powf(motion.sway_power.max(1.0));
         let sway =
             native_vulkan_scene_fast_sin(y * motion.sway_spatial_frequency + motion.sway_phase)
                 * motion.sway_amplitude
-                * vertical;
-        x += sway;
-        y += sway * horizontal * 0.25;
+                * tip_weight;
+        x += direction_x * sway;
+        y += direction_y * sway + sway * horizontal * 0.12;
     }
     (x - original_x, y - original_y)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_scene_sampled_image_wave_delta(
+    x: f64,
+    y: f64,
+    wave_x: f64,
+    wave_y: f64,
+    direction_x: f64,
+    direction_y: f64,
+    spatial_frequency: f64,
+    phase: f64,
+) -> (f64, f64) {
+    let wave = native_vulkan_scene_fast_sin(
+        x.mul_add(
+            direction_x * spatial_frequency,
+            y * direction_y * spatial_frequency,
+        ) + phase,
+    );
+    (wave_x * wave, wave_y * wave)
 }
 
 fn native_vulkan_scene_fast_sin(value: f64) -> f64 {
@@ -5051,6 +5202,7 @@ mod tests {
             sway_amplitude: 8.0,
             sway_spatial_frequency: 0.02,
             sway_phase: 1.0,
+            sway_count: 1,
             ..Default::default()
         };
         let draw_plan = NativeVulkanSceneDrawPlan {

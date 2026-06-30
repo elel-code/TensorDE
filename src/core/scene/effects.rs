@@ -357,72 +357,346 @@ pub(super) fn scene_native_effect_adjustment_at(
                     scene_effect_pass_f64(pass, &["alpha", "opacity"], 1.0).clamp(0.0, 1.0);
             }
         }
-        let native_motion = file.contains("waterwaves")
-            || file.contains("waterripple")
-            || file.contains("waterflow")
-            || file.contains("watercaustics")
-            || file.contains("cloudmotion")
-            || file.contains("foliagesway")
-            || file.contains("auto_sway")
-            || file.contains("shake")
-            || file.contains("skew");
-        if !native_motion {
-            continue;
-        }
         let phase_seed = effect.id.unwrap_or_default() as f64 * 0.017;
         for pass in &effect.passes {
-            let speed = scene_effect_pass_f64(
-                pass,
-                &[
-                    "speed",
-                    "animationspeed",
-                    "scrollspeed",
-                    "speeduv",
-                    "speed_uv",
-                ],
-                1.0,
-            );
-            let strength = scene_effect_pass_f64(
-                pass,
-                &["strength", "ripplestrength", "ripple_strength", "power"],
-                0.0,
-            )
-            .abs();
-            if strength <= 0.0 {
-                continue;
-            }
-            let direction = scene_effect_pass_f64(pass, &["direction", "scrolldirection"], 0.0);
-            let phase_radians = time_seconds.mul_add(speed.max(0.0), phase_seed);
-            let (wave, cross_wave) = phase_radians.sin_cos();
-            let amplitude = (extent * strength * 0.012).clamp(0.0, 18.0);
-            let (direction_sin, direction_cos) = direction.sin_cos();
             if file.contains("shake") {
-                adjustment.translate_x += direction_cos * wave * amplitude;
-                adjustment.translate_y += direction_sin * cross_wave * amplitude;
-            }
-            let scale = scene_effect_pass_f64(pass, &["scale", "scale1"], 8.0)
-                .abs()
-                .max(0.001);
-            let spatial_period = (extent / scale).clamp(8.0, extent.max(8.0));
-            adjustment.motion.wave_x += direction_cos * amplitude * 0.75;
-            adjustment.motion.wave_y += direction_sin * amplitude * 0.75;
-            adjustment.motion.wave_direction_x += direction_cos;
-            adjustment.motion.wave_direction_y += direction_sin;
-            adjustment.motion.wave_spatial_frequency += std::f64::consts::TAU / spatial_period;
-            adjustment.motion.wave_phase += phase_radians + phase_seed;
-            adjustment.motion.wave_count = adjustment.motion.wave_count.saturating_add(1);
-            if file.contains("auto_sway") || file.contains("foliagesway") || file.contains("shake")
-            {
-                adjustment.rotation_deg += wave * strength.min(1.0) * 0.35;
-                adjustment.motion.sway_amplitude += (extent * strength * 0.02).clamp(0.0, 16.0);
-                adjustment.motion.sway_phase += phase_radians;
-                adjustment.motion.sway_spatial_frequency +=
-                    std::f64::consts::TAU / (extent * 0.75).clamp(8.0, extent.max(8.0));
+                scene_native_effect_apply_shake(
+                    &mut adjustment,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("foliagesway") {
+                scene_native_effect_apply_foliage_sway(
+                    &mut adjustment,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("auto_sway") {
+                scene_native_effect_apply_auto_sway(
+                    &mut adjustment,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("waterwaves") {
+                scene_native_effect_apply_waterwaves(
+                    &mut adjustment.motion,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("waterripple") {
+                scene_native_effect_apply_waterripple(
+                    &mut adjustment.motion,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("waterflow") {
+                scene_native_effect_apply_waterflow(
+                    &mut adjustment.motion,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
+            } else if file.contains("cloudmotion") {
+                scene_native_effect_apply_cloudmotion(
+                    &mut adjustment.motion,
+                    pass,
+                    extent,
+                    time_seconds,
+                    phase_seed,
+                );
             }
         }
     }
     adjustment.motion.normalize();
     adjustment
+}
+
+fn scene_native_effect_apply_waterwaves(
+    motion: &mut SceneNativeEffectMotion,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(pass, &["strength"], 0.0).abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["speed"], 1.0).max(0.0);
+    let direction = scene_effect_pass_f64(pass, &["direction"], 0.0);
+    let scale = scene_effect_pass_f64(pass, &["scale", "scale1"], 8.0);
+    let exponent = scene_effect_pass_f64(pass, &["exponent"], 1.0)
+        .abs()
+        .clamp(0.25, 4.0);
+    let phase = time_seconds.mul_add(speed, phase_seed);
+    let base_amplitude = extent * strength * 0.02;
+    let amplitude = (base_amplitude / exponent.sqrt()).clamp(0.0, 10.0);
+    scene_native_effect_add_wave(motion, false, direction, scale, amplitude, phase, extent);
+
+    let has_second_wave = pass.constant_shader_values.contains_key("direction2")
+        || pass.constant_shader_values.contains_key("scale2")
+        || pass.constant_shader_values.contains_key("speed2");
+    if has_second_wave {
+        let speed = scene_effect_pass_f64(pass, &["speed2"], speed).max(0.0);
+        let direction = scene_effect_pass_f64(pass, &["direction2"], direction);
+        let scale = scene_effect_pass_f64(pass, &["scale2"], scale);
+        let exponent = scene_effect_pass_f64(pass, &["exponent2"], exponent)
+            .abs()
+            .clamp(0.25, 4.0);
+        let offset = scene_effect_pass_f64(pass, &["offset2"], 0.0);
+        let phase = time_seconds.mul_add(speed, phase_seed + offset);
+        scene_native_effect_add_wave(
+            motion,
+            true,
+            direction,
+            scale,
+            (base_amplitude * 0.75 / exponent.sqrt()).clamp(0.0, 8.0),
+            phase,
+            extent,
+        );
+    }
+}
+
+fn scene_native_effect_apply_waterripple(
+    motion: &mut SceneNativeEffectMotion,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(
+        pass,
+        &["ripplestrength", "ripple_strength", "strength"],
+        0.0,
+    )
+    .abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["animationspeed", "scrollspeed"], 0.1).max(0.0);
+    let direction = scene_effect_pass_f64(pass, &["scrolldirection", "direction"], 0.0);
+    let scale = scene_effect_pass_f64(pass, &["scale"], 1.0)
+        .abs()
+        .max(0.001)
+        * 10.0;
+    let ratio = scene_effect_pass_f64(pass, &["ratio"], 1.0)
+        .abs()
+        .clamp(0.25, 4.0);
+    let amplitude = (extent * strength * ratio * 0.006).clamp(0.0, 5.0);
+    let phase = time_seconds.mul_add(speed, phase_seed);
+    scene_native_effect_add_wave(motion, true, direction, scale, amplitude, phase, extent);
+}
+
+fn scene_native_effect_apply_waterflow(
+    motion: &mut SceneNativeEffectMotion,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(pass, &["strength"], 0.0).abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["speed"], 0.03).max(0.0);
+    let scale = scene_effect_pass_f64(pass, &["phasescale", "scale"], 2.0)
+        .abs()
+        .max(0.001);
+    let amplitude = (extent * strength * 0.0009).clamp(0.0, 4.0);
+    let phase = time_seconds.mul_add(speed, phase_seed);
+    scene_native_effect_add_wave(motion, true, 0.0, scale, amplitude, phase, extent);
+}
+
+fn scene_native_effect_apply_cloudmotion(
+    motion: &mut SceneNativeEffectMotion,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let amount = scene_effect_pass_f64(pass, &["ui_editor_properties_amount", "amount"], 0.0).abs();
+    if amount <= 0.0 {
+        return;
+    }
+    let speed =
+        scene_effect_pass_f64(pass, &["ui_editor_properties_speed", "speed"], 0.015).max(0.0);
+    let direction =
+        scene_effect_pass_f64(pass, &["ui_editor_properties_direction", "direction"], 0.0);
+    let granularity = scene_effect_pass_f64(
+        pass,
+        &["ui_editor_properties_granularity", "granularity"],
+        1.0,
+    )
+    .abs()
+    .max(0.001);
+    let amplitude = (extent * amount * 0.0015).clamp(0.0, 3.0);
+    let phase = time_seconds.mul_add(speed, phase_seed);
+    scene_native_effect_add_wave(
+        motion,
+        true,
+        direction,
+        granularity,
+        amplitude,
+        phase,
+        extent,
+    );
+}
+
+fn scene_native_effect_apply_foliage_sway(
+    adjustment: &mut SceneNativeEffectAdjustment,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(pass, &["strength"], 0.0).abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["speeduv", "speed", "speed_uv"], 1.0).max(0.0);
+    let phase = scene_effect_pass_f64(pass, &["phase", "timeoffset"], 0.0);
+    let direction = scene_effect_pass_f64(pass, &["scrolldirection", "direction"], 0.0);
+    let scale = scene_effect_pass_f64(pass, &["scale"], 1.0)
+        .abs()
+        .max(0.001);
+    let ratio = scene_effect_pass_f64(pass, &["ratio"], 1.0)
+        .abs()
+        .clamp(0.25, 4.0);
+    let power = scene_effect_pass_f64(pass, &["power"], 1.5).clamp(0.25, 4.0);
+    let phase_radians = time_seconds.mul_add(speed, phase_seed + phase);
+    let wave = phase_radians.sin();
+    let (direction_sin, direction_cos) = direction.sin_cos();
+    let amplitude = (extent * strength * ratio * 0.01).clamp(0.0, 12.0);
+
+    adjustment.rotation_deg += wave * strength.min(1.0) * 0.08;
+    adjustment.motion.sway_amplitude += amplitude;
+    adjustment.motion.sway_direction_x += direction_cos;
+    adjustment.motion.sway_direction_y += direction_sin;
+    adjustment.motion.sway_phase += phase_radians;
+    adjustment.motion.sway_power = adjustment.motion.sway_power.max(power);
+    adjustment.motion.sway_count = adjustment.motion.sway_count.saturating_add(1);
+    adjustment.motion.sway_spatial_frequency +=
+        std::f64::consts::TAU / (extent / scale).clamp(16.0, extent.max(16.0));
+}
+
+fn scene_native_effect_apply_auto_sway(
+    adjustment: &mut SceneNativeEffectAdjustment,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(pass, &["strength"], 0.0).abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["speed"], 0.2).max(0.0);
+    let phase = scene_effect_pass_f64(pass, &["timeoffset", "phase"], 0.0);
+    let damping = scene_effect_pass_f64(pass, &["末端阻尼"], 0.0).clamp(0.0, 1.0);
+    let direction = scene_effect_pass_f64(pass, &["windDirectionOffset", "direction"], 0.0)
+        + scene_native_effect_average_segment_angle(pass);
+    let (direction_sin, direction_cos) = direction.sin_cos();
+    let phase_radians = time_seconds.mul_add(speed, phase_seed + phase);
+    let amplitude = (extent * strength * (1.0 - damping * 0.5) * 0.028).clamp(0.0, 8.0);
+    let segment_count = scene_effect_pass_f64(pass, &["sigment", "segment"], 1.0)
+        .abs()
+        .max(1.0);
+
+    adjustment.motion.sway_amplitude += amplitude;
+    adjustment.motion.sway_direction_x += direction_cos;
+    adjustment.motion.sway_direction_y += direction_sin;
+    adjustment.motion.sway_phase += phase_radians;
+    adjustment.motion.sway_power = adjustment.motion.sway_power.max(1.0 + damping * 2.0);
+    adjustment.motion.sway_count = adjustment.motion.sway_count.saturating_add(1);
+    adjustment.motion.sway_spatial_frequency +=
+        std::f64::consts::TAU / (extent / segment_count).clamp(32.0, extent.max(32.0));
+}
+
+fn scene_native_effect_apply_shake(
+    adjustment: &mut SceneNativeEffectAdjustment,
+    pass: &SceneEffectPass,
+    extent: f64,
+    time_seconds: f64,
+    phase_seed: f64,
+) {
+    let strength = scene_effect_pass_f64(pass, &["strength"], 0.0).abs();
+    if strength <= 0.0 {
+        return;
+    }
+    let speed = scene_effect_pass_f64(pass, &["speed"], 1.0).max(0.0);
+    let direction = scene_effect_pass_f64(pass, &["direction"], 0.0);
+    let phase_radians = time_seconds.mul_add(speed, phase_seed);
+    let (wave, cross_wave) = phase_radians.sin_cos();
+    let (direction_sin, direction_cos) = direction.sin_cos();
+    let amplitude = (extent * strength * 0.003).clamp(0.0, 6.0);
+    adjustment.translate_x += direction_cos * wave * amplitude;
+    adjustment.translate_y += direction_sin * cross_wave * amplitude;
+}
+
+fn scene_native_effect_average_segment_angle(pass: &SceneEffectPass) -> f64 {
+    let mut total = 0.0;
+    let mut count = 0.0;
+    for key in [
+        "angle1", "angle2", "angle3", "angle4", "angle5", "angle6", "angle7", "angle8",
+    ] {
+        if let Some(value) = pass
+            .constant_shader_values
+            .get(key)
+            .and_then(scene_effect_value_f64)
+            .filter(|value| value.is_finite())
+        {
+            total += value;
+            count += 1.0;
+        }
+    }
+    if count > 0.0 { total / count } else { 0.0 }
+}
+
+fn scene_native_effect_add_wave(
+    motion: &mut SceneNativeEffectMotion,
+    prefer_secondary: bool,
+    direction: f64,
+    scale: f64,
+    amplitude: f64,
+    phase: f64,
+    extent: f64,
+) {
+    if amplitude <= 0.0 {
+        return;
+    }
+    let (direction_sin, direction_cos) = direction.sin_cos();
+    let scale = scale.abs().max(0.001);
+    let spatial_period = (extent / scale).clamp(8.0, extent.max(8.0));
+    let spatial_frequency = std::f64::consts::TAU / spatial_period;
+    let use_secondary = prefer_secondary || motion.wave_count > 0;
+    if use_secondary {
+        motion.wave2_x += direction_cos * amplitude;
+        motion.wave2_y += direction_sin * amplitude;
+        motion.wave2_direction_x += direction_cos;
+        motion.wave2_direction_y += direction_sin;
+        motion.wave2_spatial_frequency += spatial_frequency;
+        motion.wave2_phase += phase;
+        motion.wave2_count = motion.wave2_count.saturating_add(1);
+    } else {
+        motion.wave_x += direction_cos * amplitude;
+        motion.wave_y += direction_sin * amplitude;
+        motion.wave_direction_x += direction_cos;
+        motion.wave_direction_y += direction_sin;
+        motion.wave_spatial_frequency += spatial_frequency;
+        motion.wave_phase += phase;
+        motion.wave_count = motion.wave_count.saturating_add(1);
+    }
 }
 
 fn scene_effect_is_visible(effect: &SceneEffect) -> bool {
