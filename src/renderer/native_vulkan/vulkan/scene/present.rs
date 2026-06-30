@@ -4441,17 +4441,14 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
             let position = viewport_transform
                 .map(|transform| scene_viewport_transform_position(vertex.position, transform))
                 .unwrap_or(vertex.position);
-            if !position
-                .into_iter()
-                .chain(uv)
-                .chain([vertex.opacity])
-                .chain(vertex.tint)
-                .all(f32::is_finite)
-            {
-                return Err(format!(
-                    "scene sampled-image vertex {index} contains a non-finite value"
-                ));
-            }
+            debug_assert!(
+                position
+                    .into_iter()
+                    .chain(uv)
+                    .chain([vertex.opacity])
+                    .chain(vertex.tint)
+                    .all(f32::is_finite)
+            );
             for value in position
                 .into_iter()
                 .chain(uv)

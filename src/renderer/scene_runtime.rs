@@ -7,7 +7,9 @@ pub(super) use self::input::{
     scene_runtime_property_value_with_inputs, scene_runtime_text_property_value_with_inputs,
 };
 
-use crate::core::scene::{SceneSnapshotLayer, SceneSnapshotSampledImageLayer};
+use crate::core::scene::{
+    SceneSnapshotLayer, SceneSnapshotSampledImageBuildIndex, SceneSnapshotSampledImageLayer,
+};
 use crate::core::{FitMode, SceneDocument, SceneSize};
 use crate::renderer::{
     RendererPlanError, SceneRenderLayer, SceneWallpaperPlan, load_scene_document,
@@ -30,6 +32,7 @@ pub struct SceneWallpaperRuntimeSampler {
     cursor_parallax_input_ready: bool,
     input_properties: BTreeMap<String, Value>,
     document: SceneDocument,
+    sampled_image_build_index: SceneSnapshotSampledImageBuildIndex,
     snapshot_layers_scratch: Vec<SceneSnapshotLayer>,
     sampled_image_layers_scratch: Vec<SceneSnapshotSampledImageLayer>,
     render_layers_scratch: Vec<SceneRenderLayer>,
@@ -65,6 +68,7 @@ impl SceneWallpaperRuntimeSampler {
             return Ok(None);
         };
         let document = load_scene_document(&source_path)?;
+        let sampled_image_build_index = document.sampled_image_build_index();
         Ok(Some(Self {
             output_name: plan.output_name.clone(),
             package_root: scene_default_gscene_package_root(&source_path),
@@ -74,6 +78,7 @@ impl SceneWallpaperRuntimeSampler {
             cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
             input_properties: plan.scene_input_properties.clone(),
             document,
+            sampled_image_build_index,
             snapshot_layers_scratch: Vec::new(),
             sampled_image_layers_scratch: Vec::new(),
             render_layers_scratch: Vec::new(),
@@ -214,7 +219,7 @@ impl SceneWallpaperRuntimeSampler {
         time_ms: u64,
     ) -> Result<SceneWallpaperRuntimeSampledImageFrame, RendererPlanError> {
         self.document
-            .snapshot_sampled_image_layers_at_with_resolvers(
+            .snapshot_sampled_image_layers_at_with_resolvers_and_index(
                 time_ms,
                 |property| {
                     scene_runtime_property_value_with_inputs(
@@ -227,6 +232,7 @@ impl SceneWallpaperRuntimeSampler {
                 |property| {
                     scene_runtime_text_property_value_with_inputs(property, &self.input_properties)
                 },
+                &self.sampled_image_build_index,
                 &mut self.sampled_image_layers_scratch,
             );
         Ok(SceneWallpaperRuntimeSampledImageFrame {

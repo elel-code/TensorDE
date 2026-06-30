@@ -19,6 +19,7 @@ const SCENE_PARTICLE_MAX_COUNT: u32 = 4096;
 const SCENE_PARTICLE_DEFAULT_LIFETIME_MS: u64 = 2_000;
 const SCENE_PARTICLE_DEFAULT_SIZE: f64 = 6.0;
 const SCENE_PARTICLE_DEFAULT_SPEED: f64 = 24.0;
+const SCENE_SAMPLED_IMAGE_DEFAULT_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
@@ -200,12 +201,32 @@ impl SceneDocument {
         N: Fn(&str) -> Option<f64>,
         T: Fn(&str) -> Option<String>,
     {
+        let build_index = self.sampled_image_build_index();
+        self.snapshot_sampled_image_layers_at_with_resolvers_and_index(
+            time_ms,
+            resolve_property,
+            resolve_text_property,
+            &build_index,
+            layers,
+        );
+    }
+
+    pub(crate) fn sampled_image_build_index(&self) -> SceneSnapshotSampledImageBuildIndex {
+        SceneSnapshotSampledImageBuildIndex::from_document(self)
+    }
+
+    pub(crate) fn snapshot_sampled_image_layers_at_with_resolvers_and_index<N, T>(
+        &self,
+        time_ms: u64,
+        resolve_property: N,
+        resolve_text_property: T,
+        build_index: &SceneSnapshotSampledImageBuildIndex,
+        layers: &mut Vec<SceneSnapshotSampledImageLayer>,
+    ) where
+        N: Fn(&str) -> Option<f64>,
+        T: Fn(&str) -> Option<String>,
+    {
         layers.clear();
-        let resources = self
-            .resources
-            .iter()
-            .map(|resource| (resource.id.as_str(), resource))
-            .collect::<BTreeMap<_, _>>();
         let parallax = self.parallax_offset(&resolve_property);
         for node in &self.nodes {
             node.push_sampled_image_snapshot_layers(
@@ -213,9 +234,10 @@ impl SceneDocument {
                 SceneTransform::default(),
                 1.0,
                 parallax,
-                &resources,
+                &self.resources,
                 &self.timelines,
                 &self.property_bindings,
+                build_index,
                 &resolve_property,
                 &resolve_text_property,
                 None,
@@ -1029,9 +1051,10 @@ impl SceneNode {
         parent_transform: SceneTransform,
         parent_opacity: f64,
         parallax: SceneParallaxOffset,
-        resources: &BTreeMap<&str, &SceneResource>,
+        resources: &[SceneResource],
         timelines: &[SceneTimeline],
         property_bindings: &[ScenePropertyBinding],
+        build_index: &SceneSnapshotSampledImageBuildIndex,
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
@@ -1048,10 +1071,10 @@ impl SceneNode {
         let mut width = self.width;
         let mut height = self.height;
         let mut corner_radius = self.corner_radius;
-        for timeline in timelines
-            .iter()
-            .filter(|timeline| timeline.target_node.as_deref() == Some(self.id.as_str()))
-        {
+        for &timeline_index in build_index.timeline_indices_for_node(&self.id) {
+            let Some(timeline) = timelines.get(timeline_index) else {
+                continue;
+            };
             for channel in &timeline.channels {
                 let value = channel.value_at(time_ms);
                 apply_scene_animated_value(
@@ -1065,12 +1088,30 @@ impl SceneNode {
                 );
             }
         }
-        for binding in property_bindings.iter().filter(|binding| {
-            binding
-                .target_node
-                .as_deref()
-                .is_none_or(|target| target == self.id)
-        }) {
+        for &binding_index in build_index.global_property_binding_indices() {
+            let Some(binding) = property_bindings.get(binding_index) else {
+                continue;
+            };
+            let Some(raw_value) = resolve_property(&binding.property) else {
+                continue;
+            };
+            let value = raw_value * binding.scale.unwrap_or(1.0) + binding.offset.unwrap_or(0.0);
+            if value.is_finite() {
+                apply_scene_animated_value(
+                    &mut transform,
+                    &mut opacity,
+                    &mut width,
+                    &mut height,
+                    &mut corner_radius,
+                    binding.target,
+                    value,
+                );
+            }
+        }
+        for &binding_index in build_index.property_binding_indices_for_node(&self.id) {
+            let Some(binding) = property_bindings.get(binding_index) else {
+                continue;
+            };
             let Some(raw_value) = resolve_property(&binding.property) else {
                 continue;
             };
@@ -1101,7 +1142,13 @@ impl SceneNode {
         let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_sampled_image_snapshot_layers(
-                time_ms, transform, opacity, resources, visibility, output,
+                time_ms,
+                transform,
+                opacity,
+                resources,
+                build_index,
+                visibility,
+                output,
             )
         {
             for child in &self.children {
@@ -1113,6 +1160,7 @@ impl SceneNode {
                     resources,
                     timelines,
                     property_bindings,
+                    build_index,
                     resolve_property,
                     resolve_text_property,
                     visibility,
@@ -1127,7 +1175,7 @@ impl SceneNode {
             let source = self
                 .resource
                 .as_deref()
-                .and_then(|resource| resources.get(resource));
+                .and_then(|resource| build_index.resource(resources, resource));
             let blend_mode = scene_blend_mode_from_properties(&self.properties);
             let color = scene_color_from_properties(
                 &self.properties,
@@ -1135,6 +1183,7 @@ impl SceneNode {
                 resolve_text_property,
             )
             .or_else(|| self.color.clone());
+            let tint = scene_tint_from_color(color.as_deref());
             let layer_effect =
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
@@ -1148,7 +1197,7 @@ impl SceneNode {
                 mesh,
                 effect_motion: layer_effect.motion,
                 blend_mode,
-                color,
+                tint,
                 fit: self.fit,
                 opacity: layer_opacity,
                 transform: layer_transform,
@@ -1166,6 +1215,7 @@ impl SceneNode {
                 resources,
                 timelines,
                 property_bindings,
+                build_index,
                 resolve_property,
                 resolve_text_property,
                 visibility,
@@ -1463,7 +1513,8 @@ impl SceneNode {
         time_ms: u64,
         transform: SceneTransform,
         opacity: f64,
-        resources: &BTreeMap<&str, &SceneResource>,
+        resources: &[SceneResource],
+        build_index: &SceneSnapshotSampledImageBuildIndex,
         visibility: Option<SceneSnapshotVisibility>,
         output: &mut Vec<SceneSnapshotSampledImageLayer>,
     ) -> bool {
@@ -1477,13 +1528,14 @@ impl SceneNode {
         let has_source = self
             .resource
             .as_deref()
-            .and_then(|resource| resources.get(resource))
+            .and_then(|resource| build_index.resource(resources, resource))
             .is_some();
         if !has_source {
             return true;
         }
         let texture_region = scene_texture_region_from_properties(&self.properties, time_ms);
         let blend_mode = scene_blend_mode_from_properties(&self.properties);
+        let tint = scene_tint_from_color(Some(&settings.color));
         output.reserve(particle_count as usize);
         let (parent_sin, parent_cos) = transform.rotation_deg.to_radians().sin_cos();
         for index in 0..particle_count {
@@ -1521,7 +1573,7 @@ impl SceneNode {
                 mesh: None,
                 effect_motion: SceneNativeEffectMotion::default(),
                 blend_mode,
-                color: Some(settings.color.clone()),
+                tint,
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: particle_transform,
@@ -2565,6 +2617,80 @@ struct SceneSnapshotBuildOptions {
     compact_particle_ids: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SceneSnapshotSampledImageBuildIndex {
+    resources_by_id: BTreeMap<String, usize>,
+    timelines_by_node: BTreeMap<String, Vec<usize>>,
+    global_property_bindings: Vec<usize>,
+    property_bindings_by_node: BTreeMap<String, Vec<usize>>,
+}
+
+impl SceneSnapshotSampledImageBuildIndex {
+    fn from_document(document: &SceneDocument) -> Self {
+        let mut resources_by_id = BTreeMap::new();
+        for (index, resource) in document.resources.iter().enumerate() {
+            resources_by_id.insert(resource.id.clone(), index);
+        }
+
+        let mut timelines_by_node: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, timeline) in document.timelines.iter().enumerate() {
+            if let Some(target_node) = timeline.target_node.as_deref() {
+                timelines_by_node
+                    .entry(target_node.to_owned())
+                    .or_default()
+                    .push(index);
+            }
+        }
+
+        let mut global_property_bindings = Vec::new();
+        let mut property_bindings_by_node: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, binding) in document.property_bindings.iter().enumerate() {
+            if let Some(target_node) = binding.target_node.as_deref() {
+                property_bindings_by_node
+                    .entry(target_node.to_owned())
+                    .or_default()
+                    .push(index);
+            } else {
+                global_property_bindings.push(index);
+            }
+        }
+
+        Self {
+            resources_by_id,
+            timelines_by_node,
+            global_property_bindings,
+            property_bindings_by_node,
+        }
+    }
+
+    fn resource<'a>(
+        &self,
+        resources: &'a [SceneResource],
+        resource_id: &str,
+    ) -> Option<&'a SceneResource> {
+        let resource = resources.get(*self.resources_by_id.get(resource_id)?)?;
+        (resource.id == resource_id).then_some(resource)
+    }
+
+    fn timeline_indices_for_node(&self, node_id: &str) -> &[usize] {
+        self.timelines_by_node
+            .get(node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    fn global_property_binding_indices(&self) -> &[usize] {
+        &self.global_property_bindings
+    }
+
+    fn property_binding_indices_for_node(&self, node_id: &str) -> &[usize] {
+        self.property_bindings_by_node
+            .get(node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+}
+
 impl SceneSnapshotVisibility {
     fn from_size(size: Option<SceneSize>) -> Option<Self> {
         let size = size?;
@@ -2654,7 +2780,7 @@ pub struct SceneSnapshotSampledImageLayer {
     pub mesh: Option<Arc<SceneMesh>>,
     pub effect_motion: SceneNativeEffectMotion,
     pub blend_mode: SceneBlendMode,
-    pub color: Option<String>,
+    pub tint: [f32; 4],
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
@@ -3834,6 +3960,24 @@ fn scene_color_from_properties(
         .or_else(|| binding.get("default").and_then(scene_effect_value_color))
 }
 
+fn scene_tint_from_color(color: Option<&str>) -> [f32; 4] {
+    color
+        .filter(|color| !color.is_empty())
+        .and_then(scene_rgba_from_hex)
+        .unwrap_or(SCENE_SAMPLED_IMAGE_DEFAULT_TINT)
+}
+
+fn scene_rgba_from_hex(color: &str) -> Option<[f32; 4]> {
+    let hex = color.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+    Some([r, g, b, 1.0])
+}
+
 fn scene_audio_cues_for_snapshot(
     cues: &[SceneAudioCue],
     resolve_property: &impl Fn(&str) -> Option<f64>,
@@ -4388,7 +4532,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_image_snapshot_preserves_static_and_bound_color() {
+    fn sampled_image_snapshot_resolves_static_and_bound_tint() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "resource-shadow", "type": "image", "source": "assets/shadow.gtex" },
@@ -4426,8 +4570,11 @@ mod tests {
             |_| None,
             &mut default_snapshot,
         );
-        assert_eq!(default_snapshot[0].color.as_deref(), Some("#000000"));
-        assert_eq!(default_snapshot[1].color.as_deref(), Some("#003ca4"));
+        assert_eq!(default_snapshot[0].tint, [0.0, 0.0, 0.0, 1.0]);
+        assert_eq!(
+            default_snapshot[1].tint,
+            [0.0, 60.0_f32 / 255.0, 164.0_f32 / 255.0, 1.0]
+        );
 
         let mut switched_snapshot = Vec::new();
         document.snapshot_sampled_image_layers_at_with_resolvers(
@@ -4436,7 +4583,7 @@ mod tests {
             |property| (property == "tint_color").then_some("0 0 0".to_owned()),
             &mut switched_snapshot,
         );
-        assert_eq!(switched_snapshot[1].color.as_deref(), Some("#000000"));
+        assert_eq!(switched_snapshot[1].tint, [0.0, 0.0, 0.0, 1.0]);
     }
 
     #[test]

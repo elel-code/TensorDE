@@ -854,7 +854,7 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         layer.mesh.clone(),
         layer.effect_motion,
         layer.blend_mode,
-        native_vulkan_scene_tint_from_color(layer.color.as_deref()),
+        layer.tint,
         layer.texture_region,
         layer.transform,
         vertices,

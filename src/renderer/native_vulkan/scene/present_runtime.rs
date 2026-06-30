@@ -53,6 +53,8 @@ use super::runtime::{
     native_vulkan_scene_solid_quad_geometry_input_from_snapshot_layers,
 };
 
+const SCENE_DYNAMIC_GEOMETRY_HEAP_TRIM_INTERVAL_MS: u64 = 1_000;
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneAudioCueRuntimeSnapshot {
     pub route: &'static str,
@@ -131,6 +133,7 @@ struct NativeVulkanSceneDynamicGeometryCache {
     base_time_ms: u64,
     include_solid_geometry: bool,
     cached: Option<NativeVulkanSceneDynamicGeometryFrame>,
+    last_heap_trim_elapsed_ms: Option<u64>,
 }
 
 impl NativeVulkanSceneDynamicGeometryCache {
@@ -144,6 +147,7 @@ impl NativeVulkanSceneDynamicGeometryCache {
             base_time_ms,
             include_solid_geometry,
             cached: None,
+            last_heap_trim_elapsed_ms: None,
         }
     }
 
@@ -223,18 +227,30 @@ impl NativeVulkanSceneDynamicGeometryCache {
             solid_geometry,
             sampled_geometry: Some(sampled_geometry),
         });
-        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        self.trim_heap_if_due(elapsed_ms);
         Ok(())
     }
 
     fn drop_consumed_frame(&mut self) {
-        if self
+        let consumed_elapsed_ms = self
             .cached
             .as_ref()
-            .is_some_and(|frame| frame.sampled_geometry.is_none() && frame.solid_geometry.is_none())
-        {
+            .filter(|frame| frame.sampled_geometry.is_none() && frame.solid_geometry.is_none())
+            .map(|frame| frame.elapsed_ms);
+        if consumed_elapsed_ms.is_some() {
             self.cached = None;
+        }
+        if let Some(elapsed_ms) = consumed_elapsed_ms {
+            self.trim_heap_if_due(elapsed_ms);
+        }
+    }
+
+    fn trim_heap_if_due(&mut self, elapsed_ms: u64) {
+        if self.last_heap_trim_elapsed_ms.is_none_or(|last| {
+            elapsed_ms.saturating_sub(last) >= SCENE_DYNAMIC_GEOMETRY_HEAP_TRIM_INTERVAL_MS
+        }) {
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+            self.last_heap_trim_elapsed_ms = Some(elapsed_ms);
         }
     }
 }
