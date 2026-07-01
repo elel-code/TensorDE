@@ -39,7 +39,7 @@ use crate::core::scene::{
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
-    SceneTextureRegion, SceneTransform,
+    SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
 use crate::renderer::{
     RendererPlanError, SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderLayer,
@@ -525,24 +525,43 @@ fn binary_scene_render_layers(
         SCENE_BINARY_NODE_RECORD_SIZE,
         decode_node_record,
     )?;
+    let mut node_geometries = Vec::with_capacity(node_records.len());
+    let mut node_states = Vec::with_capacity(node_records.len());
+    for node in &node_records {
+        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
+            None
+        } else {
+            Some(reader.record_at(
+                SceneBinaryChunkKind::Geometry,
+                SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+                node.geometry_index,
+                decode_geometry_record,
+            )?)
+        };
+        let local_state = binary_scene_node_state(reader, *node, geometry, snapshot_time_ms)?;
+        let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
+        node_states.push(binary_scene_effective_node_state(
+            *node,
+            local_state,
+            parent_state,
+        ));
+        node_geometries.push(geometry);
+    }
     let mut layers = Vec::with_capacity(node_records.len());
-    for node in node_records {
-        if node.flags & BINARY_NODE_FLAG_VISIBLE == 0 || node.geometry_index == SCENE_BINARY_NONE_ID
-        {
+    for (node, (geometry, node_state)) in node_records
+        .into_iter()
+        .zip(node_geometries.into_iter().zip(node_states.into_iter()))
+    {
+        if !node_state.visible {
             continue;
         }
+        let Some(geometry) = geometry else { continue };
         let Some(kind) = binary_scene_node_kind(node.kind) else {
             continue;
         };
         if !binary_scene_node_kind_is_renderable(kind) {
             continue;
         }
-        let geometry = reader.record_at(
-            SceneBinaryChunkKind::Geometry,
-            SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-            node.geometry_index,
-            decode_geometry_record,
-        )?;
         let material = if node.material_index == SCENE_BINARY_NONE_ID {
             None
         } else {
@@ -561,6 +580,7 @@ fn binary_scene_render_layers(
             geometry,
             material,
             kind,
+            node_state.state,
             snapshot_time_ms,
         )?;
         layers.push(layer);
@@ -576,6 +596,7 @@ fn binary_scene_render_layer(
     geometry: SceneBinaryGeometryRecord,
     material: Option<SceneBinaryMaterialPassRecord>,
     kind: SceneNodeKind,
+    node_state: BinarySceneNodeState,
     snapshot_time_ms: u64,
 ) -> Result<SceneRenderLayer, RendererPlanError> {
     let material_texture_slots = if let Some(material) = material {
@@ -597,8 +618,6 @@ fn binary_scene_render_layer(
                 .find(|slot| slot.slot == 0)
                 .map(|slot| slot.source.clone())
         });
-    let node_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
-
     Ok(SceneRenderLayer {
         id: binary_name(names, node.id_name)
             .unwrap_or("binary-node")
@@ -630,12 +649,13 @@ fn binary_scene_render_layer(
         width: node_state.width,
         height: node_state.height,
         mesh: binary_scene_mesh(reader, geometry, node.puppet_index, snapshot_time_ms)?,
-        text: None,
-        font_size: None,
-        font_family: None,
-        font_source: None,
-        font_weight: None,
-        text_align: None,
+        text: binary_name(names, node.text_name).map(str::to_owned),
+        font_size: (node.font_size > 0.0).then_some(f64::from(node.font_size)),
+        font_family: binary_name(names, node.font_family_name).map(str::to_owned),
+        font_source: binary_resource_by_name(resources, node.font_resource_name)
+            .and_then(|resource| resource.source.clone()),
+        font_weight: binary_name(names, node.font_weight_name).map(str::to_owned),
+        text_align: binary_scene_text_align(node.text_align),
         path_data: None,
         path_fill_rule: ScenePathFillRule::default(),
         fit: binary_scene_fit(node.fit),
@@ -954,17 +974,25 @@ struct BinarySceneNodeState {
     corner_radius: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BinarySceneEffectiveNodeState {
+    visible: bool,
+    state: BinarySceneNodeState,
+}
+
 fn binary_scene_node_state(
     reader: &mut BinarySceneReader,
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
-    geometry: SceneBinaryGeometryRecord,
+    geometry: Option<SceneBinaryGeometryRecord>,
     snapshot_time_ms: u64,
 ) -> Result<BinarySceneNodeState, RendererPlanError> {
     let mut state = BinarySceneNodeState {
         transform: SceneTransform::default(),
         opacity: f64::from(node.opacity),
-        width: (geometry.width > 0.0).then_some(f64::from(geometry.width)),
-        height: (geometry.height > 0.0).then_some(f64::from(geometry.height)),
+        width: geometry
+            .and_then(|geometry| (geometry.width > 0.0).then_some(f64::from(geometry.width))),
+        height: geometry
+            .and_then(|geometry| (geometry.height > 0.0).then_some(f64::from(geometry.height))),
         corner_radius: (node.flags & BINARY_NODE_FLAG_CORNER_RADIUS != 0)
             .then_some(f64::from(node.corner_radius)),
     };
@@ -990,6 +1018,63 @@ fn binary_scene_node_state(
         binary_scene_apply_timeline_value(&mut state, record.property, value);
     }
     Ok(state)
+}
+
+fn binary_scene_parent_node_state(
+    states: &[BinarySceneEffectiveNodeState],
+    parent_index: u32,
+) -> Result<Option<BinarySceneEffectiveNodeState>, RendererPlanError> {
+    if parent_index == SCENE_BINARY_NONE_ID {
+        return Ok(None);
+    }
+    let Some(state) = states.get(parent_index as usize).copied() else {
+        return Err(RendererPlanError::PackageLoad(format!(
+            "binary scene node parent index {parent_index} is not before its child"
+        )));
+    };
+    Ok(Some(state))
+}
+
+fn binary_scene_effective_node_state(
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    local: BinarySceneNodeState,
+    parent: Option<BinarySceneEffectiveNodeState>,
+) -> BinarySceneEffectiveNodeState {
+    let visible =
+        node.flags & BINARY_NODE_FLAG_VISIBLE != 0 && parent.is_none_or(|parent| parent.visible);
+    let Some(parent) = parent else {
+        return BinarySceneEffectiveNodeState {
+            visible,
+            state: local,
+        };
+    };
+    BinarySceneEffectiveNodeState {
+        visible,
+        state: BinarySceneNodeState {
+            transform: binary_scene_compose_transform(parent.state.transform, local.transform),
+            opacity: (parent.state.opacity * local.opacity).clamp(0.0, 1.0),
+            width: local.width,
+            height: local.height,
+            corner_radius: local.corner_radius,
+        },
+    }
+}
+
+fn binary_scene_compose_transform(parent: SceneTransform, child: SceneTransform) -> SceneTransform {
+    let rotation = parent.rotation_deg.to_radians();
+    let child_x = child.x * parent.scale_x;
+    let child_y = child.y * parent.scale_y;
+    let rotated_child_x = child_x.mul_add(rotation.cos(), -child_y * rotation.sin());
+    let rotated_child_y = child_x.mul_add(rotation.sin(), child_y * rotation.cos());
+    SceneTransform {
+        x: parent.x + rotated_child_x,
+        y: parent.y + rotated_child_y,
+        scale_x: parent.scale_x * child.scale_x,
+        scale_y: parent.scale_y * child.scale_y,
+        rotation_deg: parent.rotation_deg + child.rotation_deg,
+        anchor_x: child.anchor_x,
+        anchor_y: child.anchor_y,
+    }
 }
 
 fn binary_scene_default_transform(
@@ -1165,6 +1250,15 @@ fn binary_scene_fit(code: u16) -> FitMode {
         4 => FitMode::Tile,
         5 => FitMode::Center,
         _ => FitMode::Cover,
+    }
+}
+
+fn binary_scene_text_align(code: u16) -> Option<SceneTextAlign> {
+    match code {
+        2 => Some(SceneTextAlign::Middle),
+        3 => Some(SceneTextAlign::End),
+        1 => Some(SceneTextAlign::Start),
+        _ => None,
     }
 }
 

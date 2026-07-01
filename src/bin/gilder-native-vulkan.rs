@@ -1748,6 +1748,170 @@ mod tests {
     }
 
     #[test]
+    fn scene_cli_gscn_binary_source_composes_parent_transforms() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-vulkan-cli-gscn-parent-{}-{nonce}",
+            std::process::id()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let document: gilder::core::SceneDocument = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {
+                    "id": "parent",
+                    "type": "group",
+                    "opacity": 0.5,
+                    "transform": {
+                        "x": 100.0,
+                        "y": 50.0,
+                        "scale_x": 2.0,
+                        "scale_y": 2.0,
+                        "rotation_deg": 90.0
+                    },
+                    "children": [
+                        {
+                            "id": "child",
+                            "type": "rectangle",
+                            "opacity": 0.4,
+                            "width": 20.0,
+                            "height": 30.0,
+                            "color": "#ffffff",
+                            "transform": {
+                                "x": 10.0,
+                                "y": 5.0,
+                                "scale_x": 3.0,
+                                "scale_y": 4.0,
+                                "rotation_deg": 15.0
+                            }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+        let bytes = gilder::core::scene::binary::encode_scene_binary_document(0, &document)
+            .expect("binary scene");
+        let source = assets.join("scene.gscn");
+        std::fs::write(&source, bytes).unwrap();
+
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(source),
+            false,
+            None,
+            FitMode::Contain,
+            None,
+            None,
+            None,
+            ScenePathFillRule::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("gscn scene plan");
+
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].id, "child");
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Rectangle);
+        assert!((plan.layers[0].transform.x - 90.0).abs() < 0.001);
+        assert!((plan.layers[0].transform.y - 70.0).abs() < 0.001);
+        assert!((plan.layers[0].transform.scale_x - 6.0).abs() < 0.001);
+        assert!((plan.layers[0].transform.scale_y - 8.0).abs() < 0.001);
+        assert!((plan.layers[0].transform.rotation_deg - 105.0).abs() < 0.001);
+        assert!((plan.layers[0].opacity - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn scene_cli_gscn_binary_source_carries_text_payload() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-vulkan-cli-gscn-text-{}-{nonce}",
+            std::process::id()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let document: gilder::core::SceneDocument = serde_json::from_value(serde_json::json!({
+            "resources": [
+                { "id": "font-resource", "type": "font", "source": "assets/font.otf" }
+            ],
+            "nodes": [
+                {
+                    "id": "title",
+                    "type": "text",
+                    "text": "DREAMLIKE",
+                    "font_size": 24.0,
+                    "font_family": "fonts/SourceHanSans-Heavy.otf",
+                    "font_resource": "font-resource",
+                    "font_weight": "700",
+                    "text_align": "middle",
+                    "width": 300.0,
+                    "height": 80.0,
+                    "color": "#ffffff"
+                }
+            ]
+        }))
+        .unwrap();
+        let bytes = gilder::core::scene::binary::encode_scene_binary_document(0, &document)
+            .expect("binary scene");
+        let source = assets.join("scene.gscn");
+        std::fs::write(&source, bytes).unwrap();
+
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(source),
+            false,
+            None,
+            FitMode::Contain,
+            None,
+            None,
+            None,
+            ScenePathFillRule::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            None,
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("gscn scene plan");
+
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Text);
+        assert_eq!(plan.layers[0].text.as_deref(), Some("DREAMLIKE"));
+        assert_eq!(plan.layers[0].font_size, Some(24.0));
+        assert_eq!(
+            plan.layers[0].font_family.as_deref(),
+            Some("fonts/SourceHanSans-Heavy.otf")
+        );
+        assert!(
+            plan.layers[0]
+                .font_source
+                .as_ref()
+                .unwrap()
+                .ends_with("assets/font.otf")
+        );
+        assert_eq!(plan.layers[0].font_weight.as_deref(), Some("700"));
+        assert_eq!(
+            plan.layers[0].text_align,
+            Some(gilder::core::SceneTextAlign::Middle)
+        );
+    }
+
+    #[test]
     fn scene_cli_gscn_binary_source_samples_puppet_mesh() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

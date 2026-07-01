@@ -6,7 +6,7 @@ use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
     SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
     SceneNode, SceneNodeKind, ScenePuppetTransform, SceneResource, SceneResourceKind,
-    SceneTimelineChannel,
+    SceneTextAlign, SceneTimelineChannel,
 };
 use crate::core::FitMode;
 
@@ -66,13 +66,13 @@ pub(crate) use self::puppet::{
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 10;
+pub const SCENE_BINARY_VERSION: u16 = 11;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 96;
+pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 112;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
@@ -1158,7 +1158,13 @@ pub struct SceneBinaryNodeRecord {
     pub stroke_color_rgba: u32,
     pub stroke_width: f32,
     pub corner_radius: f32,
+    pub font_size: f32,
+    pub text_name: u32,
+    pub font_family_name: u32,
+    pub font_resource_name: u32,
+    pub font_weight_name: u32,
     pub fit: u16,
+    pub text_align: u16,
 }
 
 impl SceneBinaryNodeRecord {
@@ -1186,10 +1192,14 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.stroke_color_rgba);
         write_f32(out, self.stroke_width);
         write_f32(out, self.corner_radius);
+        write_f32(out, self.font_size);
+        write_u32(out, self.text_name);
+        write_u32(out, self.font_family_name);
+        write_u32(out, self.font_resource_name);
+        write_u32(out, self.font_weight_name);
         write_u16(out, self.fit);
-        write_u16(out, 0);
-        write_u32(out, 0);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 96);
+        write_u16(out, self.text_align);
+        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 112);
     }
 }
 
@@ -1657,9 +1667,13 @@ impl SceneBinaryDocumentShape {
     fn include_node(&mut self, node: &SceneNode) {
         self.node_table_records = self.node_table_records.saturating_add(1);
         self.transform_timeline_records = self.transform_timeline_records.saturating_add(1);
-        self.debug_name_records = self
-            .debug_name_records
-            .saturating_add(1 + u32::from(node.name.is_some()));
+        self.debug_name_records = self.debug_name_records.saturating_add(
+            1 + u32::from(node.name.is_some())
+                + u32::from(node.text.is_some())
+                + u32::from(node.font_family.is_some())
+                + u32::from(node.font_resource.is_some())
+                + u32::from(node.font_weight.is_some()),
+        );
         if node.resource.is_some() {
             self.texture_slot_records = self.texture_slot_records.saturating_add(1);
         }
@@ -1824,6 +1838,8 @@ enum SceneBinaryNameKind {
     PuppetClip,
     PuppetLayer,
     PuppetAttachment,
+    Text,
+    Font,
 }
 
 impl SceneBinaryNameKind {
@@ -1843,6 +1859,8 @@ impl SceneBinaryNameKind {
             Self::PuppetClip => 12,
             Self::PuppetLayer => 13,
             Self::PuppetAttachment => 14,
+            Self::Text => 15,
+            Self::Font => 16,
         }
     }
 }
@@ -2028,7 +2046,6 @@ struct SceneBinaryMaterialState<'a> {
     depth_test: u16,
     depth_write: u16,
     cull_mode: u16,
-    flags: u16,
 }
 
 impl<'a> SceneBinaryMaterialState<'a> {
@@ -2079,7 +2096,6 @@ impl<'a> SceneBinaryMaterialState<'a> {
             depth_test: material_flag_code(first_pass.and_then(|pass| pass.depthtest.as_deref())),
             depth_write: material_flag_code(first_pass.and_then(|pass| pass.depthwrite.as_deref())),
             cull_mode: cull_mode_code(first_pass.and_then(|pass| pass.cullmode.as_deref())),
-            flags: material_flags(node, base_resource, alpha_texture_slot, effect_pass_count),
         }
     }
 
@@ -2114,6 +2130,8 @@ impl SceneBinaryPayloadBuilder {
                 &mut draw_order,
                 &resource_index,
                 &timeline_index,
+                document,
+                true,
             );
         }
         for channel in &timeline_index.untargeted {
@@ -2178,6 +2196,8 @@ impl SceneBinaryPayloadBuilder {
         draw_order: &mut u32,
         resource_index: &SceneBinaryResourceIndex<'_>,
         timeline_index: &SceneBinaryTimelineIndex<'_>,
+        document: &SceneDocument,
+        parent_visible: bool,
     ) {
         let node_index = self.node_table.record_count;
         let id_name = self.names.intern(SceneBinaryNameKind::NodeId, &node.id);
@@ -2187,12 +2207,26 @@ impl SceneBinaryPayloadBuilder {
         let resource_name = self
             .names
             .intern_optional(SceneBinaryNameKind::ResourceId, node.resource.as_deref());
+        let text_name = self
+            .names
+            .intern_optional(SceneBinaryNameKind::Text, node.text.as_deref());
+        let font_family_name = self
+            .names
+            .intern_optional(SceneBinaryNameKind::Font, node.font_family.as_deref());
+        let font_resource_name = self.names.intern_optional(
+            SceneBinaryNameKind::ResourceId,
+            node.font_resource.as_deref(),
+        );
+        let font_weight_name = self
+            .names
+            .intern_optional(SceneBinaryNameKind::Font, node.font_weight.as_deref());
         let base_resource = node
             .resource
             .as_deref()
             .and_then(|resource| resource_index.binding(resource));
         let material_state =
             SceneBinaryMaterialState::from_node(node, base_resource, resource_index);
+        let effective_visible = parent_visible && node_binary_default_visible(node, document);
         let texture_start = if material_state.texture_slot_count > 0 {
             self.texture_slots.record_count
         } else {
@@ -2260,7 +2294,13 @@ impl SceneBinaryPayloadBuilder {
                     depth_test: material_state.depth_test,
                     depth_write: material_state.depth_write,
                     cull_mode: material_state.cull_mode,
-                    flags: material_state.flags,
+                    flags: material_flags(
+                        node,
+                        effective_visible,
+                        base_resource,
+                        material_state.alpha_texture_slot,
+                        material_state.effect_pass_count,
+                    ),
                 }
                 .encode(out)
             });
@@ -2290,7 +2330,7 @@ impl SceneBinaryPayloadBuilder {
                 parent_index: parent_index.unwrap_or(SCENE_BINARY_NONE_ID),
                 resource_name,
                 kind: node_kind_code(node.kind),
-                flags: node_flags(node),
+                flags: node_flags(node, effective_visible),
                 draw_order: *draw_order,
                 child_count: saturating_u32(node.children.len()),
                 first_child_index: if node.children.is_empty() {
@@ -2312,7 +2352,13 @@ impl SceneBinaryPayloadBuilder {
                 stroke_color_rgba: scene_binary_color_rgba(node.stroke_color.as_deref()),
                 stroke_width: node.stroke_width.unwrap_or(0.0) as f32,
                 corner_radius: node.corner_radius.unwrap_or(0.0) as f32,
+                font_size: node.font_size.unwrap_or(0.0) as f32,
+                text_name,
+                font_family_name,
+                font_resource_name,
+                font_weight_name,
                 fit: fit_code(node.fit),
+                text_align: text_align_code(node.text_align),
             }
             .encode(out)
         });
@@ -2334,6 +2380,8 @@ impl SceneBinaryPayloadBuilder {
                 draw_order,
                 resource_index,
                 timeline_index,
+                document,
+                effective_visible,
             );
         }
     }
@@ -3662,8 +3710,8 @@ fn curve_code(curve: SceneCurve) -> u16 {
     }
 }
 
-fn node_flags(node: &SceneNode) -> u16 {
-    u16::from(node.visible)
+fn node_flags(node: &SceneNode, effective_visible: bool) -> u16 {
+    u16::from(effective_visible)
         | (u16::from(node.resource.is_some()) << 1)
         | (u16::from(!node.effects.is_empty()) << 2)
         | (u16::from(!node.children.is_empty()) << 3)
@@ -3675,6 +3723,62 @@ fn node_flags(node: &SceneNode) -> u16 {
         | (u16::from(node.stroke_width.is_some()) << 9)
         | (u16::from(node.corner_radius.is_some()) << 10)
         | (u16::from(node.fit != FitMode::Cover) << 11)
+}
+
+fn node_binary_default_visible(node: &SceneNode, document: &SceneDocument) -> bool {
+    if !node.visible {
+        return false;
+    }
+    let Some(condition) = node
+        .properties
+        .get("visibility_condition")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return true;
+    };
+    if condition
+        .get("runtime")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|runtime| runtime != "wallpaper-engine-user-condition")
+    {
+        return true;
+    }
+    let authored_visible = condition
+        .get("authored_value")
+        .and_then(super::scene_runtime_visibility_value_bool)
+        .unwrap_or(true);
+    let Some(property) = condition
+        .get("property")
+        .and_then(super::scene_runtime_visibility_value_string)
+    else {
+        return condition
+            .get("default_visible")
+            .and_then(super::scene_runtime_visibility_value_bool)
+            .unwrap_or(true);
+    };
+    let Some(expected) = condition.get("condition") else {
+        return condition
+            .get("default_visible")
+            .and_then(super::scene_runtime_visibility_value_bool)
+            .unwrap_or(authored_visible);
+    };
+    let actual = document
+        .properties
+        .get(&property)
+        .and_then(|property| property.get("default"));
+    let actual_number = actual.and_then(super::scene_runtime_visibility_value_number);
+    let actual_text = actual.and_then(super::scene_runtime_visibility_value_string);
+    if actual_number.is_none() && actual_text.is_none() {
+        return condition
+            .get("default_visible")
+            .and_then(super::scene_runtime_visibility_value_bool)
+            .unwrap_or(authored_visible);
+    }
+    super::scene_runtime_visibility_condition_matches(
+        expected,
+        actual_number,
+        actual_text.as_deref(),
+    )
 }
 
 fn node_subtree_count(node: &SceneNode) -> u32 {
@@ -3690,6 +3794,14 @@ fn fit_code(fit: FitMode) -> u16 {
         FitMode::Stretch => 3,
         FitMode::Tile => 4,
         FitMode::Center => 5,
+    }
+}
+
+fn text_align_code(align: Option<SceneTextAlign>) -> u16 {
+    match align.unwrap_or_default() {
+        SceneTextAlign::Start => 1,
+        SceneTextAlign::Middle => 2,
+        SceneTextAlign::End => 3,
     }
 }
 
@@ -3714,11 +3826,12 @@ fn scene_binary_hex_color_rgb(color: &str) -> Option<[u8; 3]> {
 
 fn material_flags(
     node: &SceneNode,
+    effective_visible: bool,
     base_resource: Option<SceneBinaryResourceBinding<'_>>,
     alpha_texture_slot: Option<u32>,
     effect_pass_count: u32,
 ) -> u16 {
-    u16::from(node.visible)
+    u16::from(effective_visible)
         | (u16::from(base_resource.is_some()) << 1)
         | (u16::from(effect_pass_count > 0) << 2)
         | (u16::from(alpha_texture_slot.is_some()) << 3)
@@ -4161,7 +4274,13 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         stroke_color_rgba: read_u32(bytes, 76)?,
         stroke_width: read_f32(bytes, 80)?,
         corner_radius: read_f32(bytes, 84)?,
-        fit: read_u16(bytes, 88)?,
+        font_size: read_f32(bytes, 88)?,
+        text_name: read_u32(bytes, 92)?,
+        font_family_name: read_u32(bytes, 96)?,
+        font_resource_name: read_u32(bytes, 100)?,
+        font_weight_name: read_u32(bytes, 104)?,
+        fit: read_u16(bytes, 108)?,
+        text_align: read_u16(bytes, 110)?,
     })
 }
 
@@ -5213,6 +5332,104 @@ mod tests {
                 .vertex_count,
             3
         );
+    }
+
+    #[test]
+    fn binary_node_flags_resolve_default_visibility_conditions() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "properties": {
+                "theme": {
+                    "type": "choice",
+                    "default": "1"
+                }
+            },
+            "nodes": [
+                {
+                    "id": "hidden-theme",
+                    "type": "rectangle",
+                    "visible": true,
+                    "width": 16.0,
+                    "height": 16.0,
+                    "color": "#00b7ff",
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "theme",
+                            "condition": "2",
+                            "authored_value": false,
+                            "default_visible": false
+                        }
+                    }
+                },
+                {
+                    "id": "active-theme",
+                    "type": "rectangle",
+                    "visible": true,
+                    "width": 16.0,
+                    "height": 16.0,
+                    "color": "#ffffff",
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "theme",
+                            "condition": "1",
+                            "authored_value": false,
+                            "default_visible": true
+                        }
+                    }
+                },
+                {
+                    "id": "hidden-parent",
+                    "type": "group",
+                    "visible": true,
+                    "properties": {
+                        "visibility_condition": {
+                            "runtime": "wallpaper-engine-user-condition",
+                            "property": "theme",
+                            "condition": "2",
+                            "authored_value": false,
+                            "default_visible": false
+                        }
+                    },
+                    "children": [
+                        {
+                            "id": "hidden-child",
+                            "type": "rectangle",
+                            "visible": true,
+                            "width": 8.0,
+                            "height": 8.0,
+                            "color": "#ff00ff"
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let bytes = scene_binary_payloads_from_document(&document)
+            .encode_container(0)
+            .expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let names = layout.debug_names(&bytes).expect("debug names");
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("node records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded node records");
+        let visible_by_id = nodes
+            .iter()
+            .map(|node| {
+                (
+                    names.name(node.id_name).unwrap().unwrap().to_owned(),
+                    node.flags & 1 != 0,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(visible_by_id.get("hidden-theme"), Some(&false));
+        assert_eq!(visible_by_id.get("active-theme"), Some(&true));
+        assert_eq!(visible_by_id.get("hidden-parent"), Some(&false));
+        assert_eq!(visible_by_id.get("hidden-child"), Some(&false));
     }
 
     #[test]
