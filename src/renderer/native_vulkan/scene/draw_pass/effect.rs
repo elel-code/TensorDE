@@ -13,6 +13,12 @@ use super::{
     NativeVulkanSceneTextureSlot,
 };
 
+mod iris;
+mod motion;
+mod opacity_mask;
+mod utility;
+mod water;
+
 pub(super) fn native_vulkan_scene_effect_passes_from_render_passes(
     passes: &[SceneRenderImageEffectPass],
 ) -> Vec<NativeVulkanSceneEffectRecord> {
@@ -108,20 +114,15 @@ pub(super) fn native_vulkan_scene_effect_pass_uses_first_class_target(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> bool {
-    matches!(
-        native_vulkan_scene_effect_kind(runtime, effect_file),
-        NativeVulkanSceneEffectKind::Iris
-    )
+    iris::uses_first_class_target(runtime, effect_file)
 }
 
 pub(super) fn native_vulkan_scene_effect_pass_is_iris(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> bool {
-    matches!(
-        native_vulkan_scene_effect_kind(runtime, effect_file),
-        NativeVulkanSceneEffectKind::Iris
-    )
+    let normalized = native_vulkan_scene_normalized_effect_file(effect_file);
+    iris::matches(runtime, &normalized)
 }
 
 pub(super) fn native_vulkan_scene_effect_records_label(
@@ -171,41 +172,24 @@ fn native_vulkan_scene_effect_kind(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> NativeVulkanSceneEffectKind {
-    match runtime {
-        Some("native-opacity-mask") => return NativeVulkanSceneEffectKind::OpacityMask,
-        Some("native-iris-mask") => return NativeVulkanSceneEffectKind::Iris,
-        Some("native-water-caustics") => return NativeVulkanSceneEffectKind::WaterCaustics,
-        _ => {}
-    }
-
-    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
-    if file.contains("opacity") {
+    let file = native_vulkan_scene_normalized_effect_file(effect_file);
+    if opacity_mask::matches(runtime, &file) {
         NativeVulkanSceneEffectKind::OpacityMask
-    } else if file.contains("iris") {
+    } else if iris::matches(runtime, &file) {
         NativeVulkanSceneEffectKind::Iris
-    } else if file.contains("waterripple") || file.contains("water_ripple") {
-        NativeVulkanSceneEffectKind::WaterRipple
-    } else if file.contains("waterwaves") || file.contains("water_waves") {
-        NativeVulkanSceneEffectKind::WaterWaves
-    } else if file.contains("waterflow") || file.contains("water_flow") {
-        NativeVulkanSceneEffectKind::WaterFlow
-    } else if file.contains("watercaustics") || file.contains("water_caustics") {
-        NativeVulkanSceneEffectKind::WaterCaustics
-    } else if file.contains("blur") {
-        NativeVulkanSceneEffectKind::Blur
-    } else if file.contains("sway") || file.contains("shake") {
-        NativeVulkanSceneEffectKind::SwayShake
-    } else if file.contains("flutter") {
-        NativeVulkanSceneEffectKind::Flutter
-    } else if file.contains("drift") {
-        NativeVulkanSceneEffectKind::Drift
-    } else if file.contains("composelayer") || file.contains("fullscreenlayer") {
-        NativeVulkanSceneEffectKind::CompositeLayer
-    } else if file.contains("newproperty") || file.contains("user") {
-        NativeVulkanSceneEffectKind::UserBindings
+    } else if let Some(kind) = water::classify(runtime, &file) {
+        kind
+    } else if let Some(kind) = motion::classify(&file) {
+        kind
+    } else if let Some(kind) = utility::classify(&file) {
+        kind
     } else {
         NativeVulkanSceneEffectKind::ShaderMaterial
     }
+}
+
+fn native_vulkan_scene_normalized_effect_file(effect_file: &str) -> String {
+    effect_file.replace('\\', "/").to_ascii_lowercase()
 }
 
 fn native_vulkan_scene_effect_kind_list(
@@ -247,6 +231,95 @@ fn native_vulkan_scene_effect_kind_label(kinds: &[NativeVulkanSceneEffectKind]) 
     }
     label.push(']');
     label
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effect_family_modules_classify_core_native_effects() {
+        let cases = [
+            (
+                Some("native-opacity-mask"),
+                "effects/anything/effect.json",
+                NativeVulkanSceneEffectKind::OpacityMask,
+            ),
+            (
+                Some("native-iris-mask"),
+                "effects/anything/effect.json",
+                NativeVulkanSceneEffectKind::Iris,
+            ),
+            (
+                Some("native-water-caustics"),
+                "effects/anything/effect.json",
+                NativeVulkanSceneEffectKind::WaterCaustics,
+            ),
+            (
+                None,
+                "effects/waterripple/effect.json",
+                NativeVulkanSceneEffectKind::WaterRipple,
+            ),
+            (
+                None,
+                "effects/water_waves/effect.json",
+                NativeVulkanSceneEffectKind::WaterWaves,
+            ),
+            (
+                None,
+                "effects/waterflow/effect.json",
+                NativeVulkanSceneEffectKind::WaterFlow,
+            ),
+            (
+                None,
+                "effects/flutter/effect.json",
+                NativeVulkanSceneEffectKind::Flutter,
+            ),
+            (
+                None,
+                "effects/drift/effect.json",
+                NativeVulkanSceneEffectKind::Drift,
+            ),
+            (
+                None,
+                "effects/sway/effect.json",
+                NativeVulkanSceneEffectKind::SwayShake,
+            ),
+            (
+                None,
+                "effects/fullscreenlayer/effect.json",
+                NativeVulkanSceneEffectKind::CompositeLayer,
+            ),
+            (
+                None,
+                "effects/newproperty5/effect.json",
+                NativeVulkanSceneEffectKind::UserBindings,
+            ),
+        ];
+        for (runtime, effect_file, expected) in cases {
+            assert_eq!(
+                native_vulkan_scene_effect_kind(runtime, effect_file),
+                expected,
+                "{effect_file}"
+            );
+        }
+    }
+
+    #[test]
+    fn iris_family_owns_first_class_target_policy() {
+        assert!(native_vulkan_scene_effect_pass_uses_first_class_target(
+            Some("native-iris-mask"),
+            "effects/other/effect.json"
+        ));
+        assert!(native_vulkan_scene_effect_pass_uses_first_class_target(
+            None,
+            "materials/effects/iris/effect.json"
+        ));
+        assert!(!native_vulkan_scene_effect_pass_uses_first_class_target(
+            Some("native-opacity-mask"),
+            "effects/opacity/effect.json"
+        ));
+    }
 }
 
 fn native_vulkan_scene_material_flag_from_optional(
