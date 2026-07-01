@@ -5,6 +5,7 @@ use crate::core::scene::binary::{
 
 mod flutter;
 mod material;
+mod retained;
 
 pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
 use self::flutter::native_vulkan_scene_binary_flutter_records;
@@ -12,6 +13,11 @@ use self::material::native_vulkan_scene_binary_material_records;
 pub(in crate::renderer::native_vulkan::scene) use self::material::{
     NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryMaterialRecord,
     NativeVulkanSceneBinaryTextureSlotRecord,
+};
+pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
+use self::retained::{
+    native_vulkan_scene_binary_retained_dirty_range_count,
+    native_vulkan_scene_binary_retained_gpu_records,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,6 +40,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) flutter_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
         Vec<NativeVulkanSceneBinaryDrawRecord>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots:
@@ -42,6 +49,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryMaterialRecord>,
     pub(in crate::renderer::native_vulkan::scene) effect_records:
         Vec<NativeVulkanSceneBinaryEffectRecord>,
+    pub(in crate::renderer::native_vulkan::scene) retained_records:
+        Vec<NativeVulkanSceneBinaryRetainedGpuRecord>,
     pub(in crate::renderer::native_vulkan::scene) flutter_records:
         Vec<NativeVulkanSceneBinaryFlutterRecord>,
 }
@@ -86,8 +95,11 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
     let effect_parameter_count = record_len(layout.effect_parameter_records(container)?);
     let puppet_count = record_len(layout.puppet_records(container)?);
-    let retained_gpu_state_count = record_len(layout.retained_gpu_state_records(container)?);
     let material_records = native_vulkan_scene_binary_material_records(container, layout)?;
+    let retained_records = native_vulkan_scene_binary_retained_gpu_records(container, layout)?;
+    let retained_gpu_state_count = record_len_from_usize(retained_records.len());
+    let retained_dirty_range_count =
+        native_vulkan_scene_binary_retained_dirty_range_count(&retained_records);
     let flutter_records = native_vulkan_scene_binary_flutter_records(container, layout)?;
     let flutter_state_count = record_len_from_usize(flutter_records.len());
 
@@ -185,10 +197,12 @@ fn native_vulkan_scene_binary_plan_from_layout(
         flutter_state_count,
         puppet_count,
         retained_gpu_state_count,
+        retained_dirty_range_count,
         draw_records,
         texture_slots: material_records.texture_slots,
         material_records: material_records.materials,
         effect_records: material_records.effects,
+        retained_records,
         flutter_records,
     })
 }
@@ -294,6 +308,19 @@ mod tests {
                 + plan.effect_parameter_count
         );
         assert_eq!(
+            plan.retained_records.len() as u32,
+            plan.retained_gpu_state_count
+        );
+        assert_eq!(
+            plan.retained_dirty_range_count,
+            plan.retained_gpu_state_count
+        );
+        assert!(
+            plan.retained_records
+                .iter()
+                .all(|record| record.stable_id != 0 && record.dirty_range_count > 0)
+        );
+        assert_eq!(
             plan.draw_records[0].primitive_kind,
             SCENE_BINARY_GEOMETRY_PRIMITIVE_QUAD
         );
@@ -369,6 +396,10 @@ mod tests {
         assert_eq!(plan.material_records.len(), 1);
         assert_eq!(plan.effect_records.len(), 1);
         assert_eq!(plan.effect_records[0].parameters.record_count, 3);
+        assert_eq!(
+            plan.retained_records.len() as u32,
+            plan.retained_gpu_state_count
+        );
     }
 
     #[test]
