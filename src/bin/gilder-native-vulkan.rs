@@ -1626,7 +1626,8 @@ mod tests {
         let document: gilder::core::SceneDocument = serde_json::from_value(serde_json::json!({
             "size": { "width": 320, "height": 180 },
             "resources": [
-                { "id": "background-resource", "type": "image", "source": "assets/background.svg" }
+                { "id": "background-resource", "type": "image", "source": "assets/background.svg" },
+                { "id": "mask-resource", "type": "image", "source": "assets/mask.gtex", "width": 320, "height": 180 }
             ],
             "nodes": [
                 {
@@ -1634,7 +1635,43 @@ mod tests {
                     "type": "image",
                     "resource": "background-resource",
                     "width": 320,
-                    "height": 180
+                    "height": 180,
+                    "effects": [
+                        {
+                            "file": "effects/opacity/effect.json",
+                            "passes": [
+                                {
+                                    "shader": "effects/opacity",
+                                    "texture_resources": ["background-resource", "mask-resource"],
+                                    "effect_uv_transform": {
+                                        "mapping": "texture-resolution",
+                                        "source_slot": 0,
+                                        "mask_slot": 1,
+                                        "scale": [1.0, 1.0],
+                                        "offset": [0.0, 0.0],
+                                        "input_extent": { "width": 320, "height": 180 },
+                                        "mask_extent": { "width": 320, "height": 180 },
+                                        "mask_backing_extent": { "width": 320, "height": 180 }
+                                    }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "background-x",
+                    "target_node": "background",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 4000, "value": 40.0 }
+                            ]
+                        }
+                    ]
                 }
             ]
         }))
@@ -1675,8 +1712,39 @@ mod tests {
                 height: 180
             })
         );
-        assert_eq!(plan.scene_material_graph_resource_count, 1);
-        assert!(plan.layers.is_empty());
+        assert_eq!(plan.scene_material_graph_resource_count, 2);
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].id, "background");
+        assert_eq!(plan.layers[0].kind, SceneNodeKind::Image);
+        assert_eq!(plan.layers[0].width, Some(320.0));
+        assert_eq!(plan.layers[0].height, Some(180.0));
+        assert!((plan.layers[0].transform.x - 24.68).abs() < 0.001);
+        assert_eq!(plan.timeline_animation_count, 1);
+        assert_eq!(plan.timeline_animated_layer_count, 1);
+        assert_eq!(plan.layers[0].texture_slots.len(), 1);
+        assert_eq!(plan.layers[0].alpha_texture_slot, Some(1));
+        assert_eq!(
+            plan.layers[0].alpha_texture_mode,
+            gilder::renderer::SceneRenderAlphaTextureMode::Multiply
+        );
+        assert_eq!(plan.layers[0].image_effect_passes.len(), 1);
+        assert_eq!(
+            plan.layers[0].image_effect_passes[0].runtime.as_deref(),
+            Some("native-opacity-mask")
+        );
+        assert_eq!(plan.layers[0].image_effect_passes[0].texture_slots.len(), 2);
+        assert!(
+            plan.layers[0].image_effect_passes[0]
+                .effect_uv_transform
+                .is_some()
+        );
+        assert!(
+            plan.layers[0]
+                .source
+                .as_ref()
+                .unwrap()
+                .ends_with("assets/background.svg")
+        );
     }
 
     #[test]

@@ -3051,6 +3051,13 @@ pub fn encode_scene_binary_container(
 pub fn decode_scene_binary_container(
     bytes: &[u8],
 ) -> Result<SceneBinaryLayoutPlan, SceneBinaryError> {
+    decode_scene_binary_header_table(bytes, bytes.len())
+}
+
+pub fn decode_scene_binary_header_table(
+    bytes: &[u8],
+    container_len: usize,
+) -> Result<SceneBinaryLayoutPlan, SceneBinaryError> {
     if bytes.len() < SCENE_BINARY_HEADER_SIZE {
         return Err(SceneBinaryError::BufferTooSmall {
             needed: SCENE_BINARY_HEADER_SIZE,
@@ -3080,7 +3087,7 @@ pub fn decode_scene_binary_container(
         SceneBinaryError::ChunkTableOutOfBounds {
             offset: chunk_table_offset,
             count: chunk_count,
-            container_len: bytes.len(),
+            container_len,
         }
     })?;
     let table_size = usize::try_from(chunk_count)
@@ -3089,7 +3096,7 @@ pub fn decode_scene_binary_container(
         .ok_or(SceneBinaryError::ChunkTableOutOfBounds {
             offset: chunk_table_offset,
             count: chunk_count,
-            container_len: bytes.len(),
+            container_len,
         })?;
     let table_end =
         table_start
@@ -3097,13 +3104,13 @@ pub fn decode_scene_binary_container(
             .ok_or(SceneBinaryError::ChunkTableOutOfBounds {
                 offset: chunk_table_offset,
                 count: chunk_count,
-                container_len: bytes.len(),
+                container_len,
             })?;
-    if table_end > bytes.len() {
+    if table_end > bytes.len() || table_end > container_len {
         return Err(SceneBinaryError::ChunkTableOutOfBounds {
             offset: chunk_table_offset,
             count: chunk_count,
-            container_len: bytes.len(),
+            container_len,
         });
     }
 
@@ -3130,7 +3137,7 @@ pub fn decode_scene_binary_container(
         if !seen.insert(chunk.kind) {
             return Err(SceneBinaryError::DuplicateChunk { kind: chunk.kind });
         }
-        validate_chunk_bounds(bytes, alignment, table_end, chunks.last(), &chunk)?;
+        validate_chunk_bounds(container_len, alignment, table_end, chunks.last(), &chunk)?;
         chunks.push(chunk);
     }
     if chunks.len() != SceneBinaryChunkKind::REQUIRED_ORDER.len() {
@@ -4007,7 +4014,7 @@ fn read_chunk_descriptor(
 }
 
 fn validate_chunk_bounds(
-    bytes: &[u8],
+    container_len: usize,
     alignment: u8,
     payload_min_offset: usize,
     previous: Option<&SceneBinaryChunkDescriptor>,
@@ -4024,13 +4031,13 @@ fn validate_chunk_bounds(
         kind: chunk.kind,
         offset: chunk.offset,
         length: chunk.length,
-        container_len: bytes.len(),
+        container_len,
     })?;
     let length = usize::try_from(chunk.length).map_err(|_| SceneBinaryError::ChunkOutOfBounds {
         kind: chunk.kind,
         offset: chunk.offset,
         length: chunk.length,
-        container_len: bytes.len(),
+        container_len,
     })?;
     let end = start
         .checked_add(length)
@@ -4038,14 +4045,14 @@ fn validate_chunk_bounds(
             kind: chunk.kind,
             offset: chunk.offset,
             length: chunk.length,
-            container_len: bytes.len(),
+            container_len,
         })?;
-    if start < payload_min_offset || end > bytes.len() {
+    if start < payload_min_offset || end > container_len {
         return Err(SceneBinaryError::ChunkOutOfBounds {
             kind: chunk.kind,
             offset: chunk.offset,
             length: chunk.length,
-            container_len: bytes.len(),
+            container_len,
         });
     }
     if let Some(previous) = previous {
@@ -4056,7 +4063,7 @@ fn validate_chunk_bounds(
                 kind: previous.kind,
                 offset: previous.offset,
                 length: previous.length,
-                container_len: bytes.len(),
+                container_len,
             })?;
         if start < previous_end {
             return Err(SceneBinaryError::ChunkOverlap {
