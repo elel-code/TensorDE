@@ -10,27 +10,29 @@ use crate::core::scene::binary::{
     SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE, SCENE_BINARY_DEBUG_NAME_RECORD_SIZE,
     SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, SCENE_BINARY_EFFECT_UV_MAPPING_TEXTURE_RESOLUTION,
     SCENE_BINARY_EFFECT_UV_TRANSFORM_RECORD_SIZE, SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
-    SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH, SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-    SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
+    SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH, SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES,
+    SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_HEADER_SIZE,
     SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE, SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS,
-    SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
-    SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-    SceneBinaryChunkKind, SceneBinaryEffectPassRecord, SceneBinaryEffectUvTransformRecord,
-    SceneBinaryError, SceneBinaryGeometryRecord, SceneBinaryLayoutPlan,
-    SceneBinaryMaterialPassRecord, SceneBinaryResourceRecord, SceneBinaryTextureSlotRecord,
-    decode_debug_name_record, decode_effect_pass_record, decode_effect_uv_transform_record,
-    decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
-    decode_material_pass_record, decode_node_record, decode_puppet_clip_record,
+    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
+    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
+    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryEffectPassRecord,
+    SceneBinaryEffectUvTransformRecord, SceneBinaryError, SceneBinaryGeometryRecord,
+    SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord, SceneBinaryParticleEmitterRecord,
+    SceneBinaryResourceRecord, SceneBinaryTextureSlotRecord, decode_debug_name_record,
+    decode_effect_pass_record, decode_effect_uv_transform_record, decode_geometry_index_record,
+    decode_geometry_record, decode_geometry_vertex_record, decode_material_pass_record,
+    decode_node_record, decode_particle_emitter_record, decode_puppet_clip_record,
     decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_record,
     decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record, decode_render_state_record,
     decode_resource_record, decode_scene_binary_header_table, decode_texture_slot_record,
     decode_transform_keyframe_record, decode_transform_timeline_record,
+    scene_binary_particle_shape_kind, scene_binary_particle_transform,
 };
 use crate::core::scene::{
     SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh, SceneMeshSkin,
@@ -572,6 +574,29 @@ fn binary_scene_render_layers(
                 decode_material_pass_record,
             )?)
         };
+        if kind == SceneNodeKind::ParticleEmitter
+            || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
+        {
+            if node.particle_index != SCENE_BINARY_NONE_ID {
+                let particle = reader.record_at(
+                    SceneBinaryChunkKind::ParticleEmitter,
+                    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+                    node.particle_index,
+                    decode_particle_emitter_record,
+                )?;
+                binary_scene_particle_render_layers(
+                    reader,
+                    resources,
+                    node,
+                    particle,
+                    material,
+                    node_state.state,
+                    snapshot_time_ms,
+                    &mut layers,
+                )?;
+            }
+            continue;
+        }
         let layer = binary_scene_render_layer(
             reader,
             names,
@@ -586,6 +611,115 @@ fn binary_scene_render_layers(
         layers.push(layer);
     }
     Ok(layers)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn binary_scene_particle_render_layers(
+    reader: &mut BinarySceneReader,
+    resources: &[BinarySceneResource],
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    particle: SceneBinaryParticleEmitterRecord,
+    material: Option<SceneBinaryMaterialPassRecord>,
+    node_state: BinarySceneNodeState,
+    snapshot_time_ms: u64,
+    layers: &mut Vec<SceneRenderLayer>,
+) -> Result<(), RendererPlanError> {
+    let particle_count = particle.particle_count();
+    if particle_count == 0 || node_state.opacity <= 0.0 {
+        return Ok(());
+    }
+
+    let node_resource = binary_resource_by_name(resources, node.resource_name);
+    let source = node_resource.and_then(|resource| resource.source.clone());
+    let texture_slots = if let Some(material) = material {
+        let slots = binary_scene_material_texture_slots(reader, material, resources)?;
+        if slots.is_empty() {
+            binary_scene_particle_base_texture_slot(node_resource)
+        } else {
+            slots
+        }
+    } else {
+        binary_scene_particle_base_texture_slot(node_resource)
+    };
+    let layer_kind = if source.is_some() {
+        SceneNodeKind::Image
+    } else {
+        scene_binary_particle_shape_kind(particle.shape)
+    };
+    let blend_mode = material
+        .map(|material| binary_scene_blend_mode(material.blend_mode))
+        .unwrap_or_default();
+    let color = Some(binary_scene_rgba_hex(particle.color_rgba));
+    let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
+    layers.reserve(particle_count as usize);
+    for index in 0..particle_count {
+        let Some((particle_opacity, x, y, rotation_deg)) =
+            particle.opacity_and_transform_at(snapshot_time_ms, index)
+        else {
+            continue;
+        };
+        let opacity = node_state.opacity * particle_opacity;
+        if opacity <= 0.0 {
+            continue;
+        }
+        layers.push(SceneRenderLayer {
+            id: String::new(),
+            kind: layer_kind,
+            source: source.clone(),
+            texture_slots: texture_slots.clone(),
+            alpha_texture_slot: None,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            image_effect_passes: Vec::new(),
+            composite_key: None,
+            texture_region: None::<SceneTextureRegion>,
+            effect_motion: Default::default(),
+            blend_mode,
+            audio: Vec::new(),
+            color: color.clone(),
+            stroke_color: None,
+            stroke_width: None,
+            corner_radius: None,
+            width: Some(f64::from(particle.particle_width)),
+            height: Some(f64::from(particle.particle_height)),
+            mesh: None,
+            text: None,
+            font_size: None,
+            font_family: None,
+            font_source: None,
+            font_weight: None,
+            text_align: None,
+            path_data: None,
+            path_fill_rule: ScenePathFillRule::default(),
+            fit: binary_scene_fit(node.fit),
+            opacity: opacity.clamp(0.0, 1.0),
+            transform: scene_binary_particle_transform(
+                node_state.transform,
+                parent_sin,
+                parent_cos,
+                x,
+                y,
+                rotation_deg,
+            ),
+        });
+    }
+    Ok(())
+}
+
+fn binary_scene_particle_base_texture_slot(
+    resource: Option<&BinarySceneResource>,
+) -> Vec<SceneRenderTextureSlot> {
+    let Some(resource) = resource else {
+        return Vec::new();
+    };
+    let Some(source) = resource.source.clone() else {
+        return Vec::new();
+    };
+    vec![SceneRenderTextureSlot {
+        slot: 0,
+        source,
+        width: resource.width,
+        height: resource.height,
+    }]
 }
 
 fn binary_scene_render_layer(
@@ -1421,4 +1555,94 @@ fn binary_scene_read_u64(bytes: &[u8], offset: usize) -> Result<u64, SceneBinary
     Ok(u64::from_le_bytes([
         slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
     ]))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::core::scene::SceneDocument;
+    use crate::core::scene::binary::encode_scene_binary_document;
+
+    #[test]
+    fn gscn_direct_ingest_expands_particle_emitters_from_binary_payload() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "parent",
+                    "type": "group",
+                    "opacity": 0.5,
+                    "transform": { "x": 100.0, "y": 50.0 },
+                    "children": [
+                        {
+                            "id": "spark-emitter",
+                            "type": "particle-emitter",
+                            "resource": "spark",
+                            "opacity": 0.8,
+                            "transform": { "x": 10.0, "y": 20.0 },
+                            "properties": {
+                                "particle": {
+                                    "count": 3,
+                                    "seed": 1,
+                                    "lifetime_ms": 1000,
+                                    "loop": true,
+                                    "spawn_width": 0.0,
+                                    "spawn_height": 0.0,
+                                    "width": 6.0,
+                                    "height": 8.0,
+                                    "speed": 0.0,
+                                    "spread_deg": 0.0,
+                                    "gravity_x": 0.0,
+                                    "gravity_y": 0.0,
+                                    "fade": false,
+                                    "color": "#aabbcc"
+                                }
+                            }
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-particle-plan");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 250, None)
+                .expect("binary scene plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        assert_eq!(plan.layers.len(), 3);
+        for layer in &plan.layers {
+            assert_eq!(layer.id, "");
+            assert_eq!(layer.kind, SceneNodeKind::Image);
+            assert_eq!(layer.texture_slots.len(), 1);
+            assert_eq!(layer.color.as_deref(), Some("#aabbcc"));
+            assert_eq!(layer.width, Some(6.0));
+            assert_eq!(layer.height, Some(8.0));
+            assert!((layer.opacity - 0.4).abs() < 1e-6);
+            assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
+            assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
+        }
+    }
+
+    fn unique_test_dir(prefix: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
 }

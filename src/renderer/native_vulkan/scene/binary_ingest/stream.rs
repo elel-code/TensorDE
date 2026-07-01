@@ -8,17 +8,18 @@ use crate::core::scene::binary::{
     SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
     SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
     SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MAGIC, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
-    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
-    SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-    SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor, SceneBinaryChunkKind, SceneBinaryError,
-    SceneBinaryLayoutPlan, decode_effect_parameter_record, decode_geometry_record,
-    decode_node_record, decode_puppet_record, decode_retained_gpu_state_record,
-    decode_transform_keyframe_record, decode_transform_timeline_record,
+    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+    SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE,
+    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor,
+    SceneBinaryChunkKind, SceneBinaryError, SceneBinaryLayoutPlan, decode_effect_parameter_record,
+    decode_geometry_record, decode_node_record, decode_puppet_record,
+    decode_retained_gpu_state_record, decode_transform_keyframe_record,
+    decode_transform_timeline_record,
 };
 
 use super::{
@@ -60,6 +61,9 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
             .record_count;
     let puppet_record_count =
         native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::Puppet)?
+            .record_count;
+    let particle_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::ParticleEmitter)?
             .record_count;
     let puppet_skin_bone_record_count =
         native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetSkinBones)?
@@ -110,6 +114,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
                             node_record_count,
                             transform_timeline_record_count,
                             puppet_record_count,
+                            particle_record_count,
                             material_pass_record_count,
                             geometry_record_count,
                         )?;
@@ -223,6 +228,13 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
                     SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE,
                 )?;
                 summary.flutter_state_count = descriptor.record_count;
+            }
+            SceneBinaryChunkKind::ParticleEmitter => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+                )?;
+                summary.particle_emitter_count = descriptor.record_count;
             }
             SceneBinaryChunkKind::Puppet => {
                 native_vulkan_scene_binary_stream_records(

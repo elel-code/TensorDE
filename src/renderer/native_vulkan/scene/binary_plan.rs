@@ -71,6 +71,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) flutter_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) particle_emitter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
@@ -147,6 +148,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let effect_parameter_count = effect_parameter_ingest_plan.record_count;
     let puppet_records = native_vulkan_scene_binary_puppet_records(container, layout)?;
     let puppet_count = record_len_from_usize(puppet_records.len());
+    let particle_emitter_count = record_len(layout.particle_emitter_records(container)?);
     let render_state_records = native_vulkan_scene_binary_render_state_records(container, layout)?;
     let render_state_count = record_len_from_usize(render_state_records.len());
     let material_records = native_vulkan_scene_binary_material_records(container, layout)?;
@@ -172,6 +174,9 @@ fn native_vulkan_scene_binary_plan_from_layout(
             for clip in layout.puppet_clip_record_range(container, puppet)? {
                 let _ = layout.puppet_frame_record_range(container, clip?)?;
             }
+        }
+        if node.particle_index != SCENE_BINARY_NONE_ID {
+            let _ = layout.particle_emitter_record_at(container, node.particle_index)?;
         }
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
@@ -209,6 +214,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         effect_parameter_count,
         flutter_state_count,
         puppet_count,
+        particle_emitter_count,
         render_state_count,
         retained_gpu_state_count,
         retained_dirty_range_count,

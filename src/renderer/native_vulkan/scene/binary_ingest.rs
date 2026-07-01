@@ -5,11 +5,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT, SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
     SCENE_BINARY_RETAINED_EFFECT_PASS, SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM,
     SCENE_BINARY_RETAINED_GEOMETRY, SCENE_BINARY_RETAINED_MATERIAL_PASS,
-    SCENE_BINARY_RETAINED_PUPPET, SCENE_BINARY_RETAINED_RESOURCE,
-    SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor, SceneBinaryChunkKind,
-    SceneBinaryEffectParameterRecord, SceneBinaryError, SceneBinaryGeometryRecord,
-    SceneBinaryLayoutPlan, SceneBinaryNodeRecord, SceneBinaryPuppetRecord,
-    SceneBinaryRetainedGpuStateRecord, SceneBinaryTransformTimelineRecord,
+    SCENE_BINARY_RETAINED_PARTICLE_EMITTER, SCENE_BINARY_RETAINED_PUPPET,
+    SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor,
+    SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryError,
+    SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryNodeRecord,
+    SceneBinaryPuppetRecord, SceneBinaryRetainedGpuStateRecord, SceneBinaryTransformTimelineRecord,
     decode_scene_binary_container,
 };
 
@@ -55,6 +55,10 @@ fn native_vulkan_scene_binary_ingest_from_layout(
     )?;
     let puppet_record_count =
         native_vulkan_scene_binary_ingest_chunk_record_count(layout, SceneBinaryChunkKind::Puppet)?;
+    let particle_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::ParticleEmitter,
+    )?;
     let puppet_skin_bone_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
         layout,
         SceneBinaryChunkKind::PuppetSkinBones,
@@ -96,6 +100,7 @@ fn native_vulkan_scene_binary_ingest_from_layout(
             node_record_count,
             transform_timeline_record_count,
             puppet_record_count,
+            particle_record_count,
             material_pass_record_count,
             geometry_record_count,
         )?;
@@ -165,6 +170,11 @@ fn native_vulkan_scene_binary_ingest_from_layout(
         summary.flutter_state_count = summary.flutter_state_count.saturating_add(1);
     }
 
+    for particle in layout.particle_emitter_records(container)? {
+        let _ = particle?;
+        summary.particle_emitter_count = summary.particle_emitter_count.saturating_add(1);
+    }
+
     for puppet in layout.puppet_records(container)? {
         native_vulkan_scene_binary_ingest_puppet_record(
             &mut summary,
@@ -205,6 +215,7 @@ pub(super) fn native_vulkan_scene_binary_ingest_node_record(
     node_record_count: u32,
     transform_timeline_record_count: u32,
     puppet_record_count: u32,
+    particle_record_count: u32,
     material_pass_record_count: u32,
     geometry_record_count: u32,
 ) -> Result<(), SceneBinaryError> {
@@ -244,6 +255,14 @@ pub(super) fn native_vulkan_scene_binary_ingest_node_record(
             node.puppet_index,
             1,
             puppet_record_count,
+        )?;
+    }
+    if node.particle_index != SCENE_BINARY_NONE_ID {
+        native_vulkan_scene_binary_ingest_validate_record_range(
+            SceneBinaryChunkKind::ParticleEmitter,
+            node.particle_index,
+            1,
+            particle_record_count,
         )?;
     }
     if node.material_index != SCENE_BINARY_NONE_ID {
@@ -452,6 +471,10 @@ pub(super) fn native_vulkan_scene_binary_ingest_retained_record(
         }
         SCENE_BINARY_RETAINED_PUPPET => {
             summary.retained.puppet_count = summary.retained.puppet_count.saturating_add(1);
+        }
+        SCENE_BINARY_RETAINED_PARTICLE_EMITTER => {
+            summary.retained.particle_emitter_count =
+                summary.retained.particle_emitter_count.saturating_add(1);
         }
         owner_kind => {
             return Err(SceneBinaryError::UnknownRetainedOwnerKind { owner_kind });

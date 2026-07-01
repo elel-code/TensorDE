@@ -5,14 +5,15 @@ use std::fmt;
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
     SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
-    SceneNode, SceneNodeKind, ScenePuppetTransform, SceneResource, SceneResourceKind,
-    SceneTextAlign, SceneTimelineChannel,
+    SceneNode, SceneNodeKind, SceneParticleEmitterSettings, ScenePuppetTransform, SceneResource,
+    SceneResourceKind, SceneTextAlign, SceneTimelineChannel,
 };
 use crate::core::FitMode;
 
 mod effect_uv;
 mod flutter;
 mod geometry;
+mod particle;
 mod puppet;
 
 pub(crate) use self::effect_uv::decode_effect_uv_transform_record;
@@ -45,6 +46,14 @@ pub(crate) use self::geometry::{
 use self::geometry::{
     geometry_flags, geometry_has_uv, geometry_ranges, geometry_stream_shape, node_has_geometry,
 };
+pub(crate) use self::particle::decode_particle_emitter_record;
+use self::particle::particle_emitter_record_from_node;
+pub use self::particle::{
+    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_PARTICLE_FLAG_FADE,
+    SCENE_BINARY_PARTICLE_FLAG_LOOP, SCENE_BINARY_PARTICLE_SHAPE_ELLIPSE,
+    SCENE_BINARY_PARTICLE_SHAPE_RECTANGLE, SceneBinaryParticleEmitterRecord,
+    scene_binary_particle_shape_kind, scene_binary_particle_transform,
+};
 pub use self::puppet::{
     SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING,
     SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS,
@@ -66,13 +75,13 @@ pub(crate) use self::puppet::{
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 11;
+pub const SCENE_BINARY_VERSION: u16 = 12;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 112;
+pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 116;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
@@ -93,6 +102,7 @@ pub const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
 pub const SCENE_BINARY_RETAINED_GEOMETRY: u16 = 6;
 pub const SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM: u16 = 7;
 pub const SCENE_BINARY_RETAINED_PUPPET: u16 = 8;
+pub const SCENE_BINARY_RETAINED_PARTICLE_EMITTER: u16 = 9;
 
 const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
 const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
@@ -120,6 +130,7 @@ pub enum SceneBinaryChunkKind {
     Geometry,
     GeometryVertices,
     GeometryIndices,
+    ParticleEmitter,
     TextureSlots,
     MaterialPass,
     EffectPass,
@@ -139,7 +150,7 @@ pub enum SceneBinaryChunkKind {
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 23] = [
+    pub const REQUIRED_ORDER: [Self; 24] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
@@ -147,6 +158,7 @@ impl SceneBinaryChunkKind {
         Self::Geometry,
         Self::GeometryVertices,
         Self::GeometryIndices,
+        Self::ParticleEmitter,
         Self::TextureSlots,
         Self::MaterialPass,
         Self::EffectPass,
@@ -174,6 +186,7 @@ impl SceneBinaryChunkKind {
             Self::Geometry => u32::from_le_bytes(*b"GEOM"),
             Self::GeometryVertices => u32::from_le_bytes(*b"GVTX"),
             Self::GeometryIndices => u32::from_le_bytes(*b"GIDX"),
+            Self::ParticleEmitter => u32::from_le_bytes(*b"PART"),
             Self::TextureSlots => u32::from_le_bytes(*b"TEXS"),
             Self::MaterialPass => u32::from_le_bytes(*b"MATP"),
             Self::EffectPass => u32::from_le_bytes(*b"EFTP"),
@@ -209,6 +222,7 @@ impl SceneBinaryChunkKind {
             Self::Geometry => "geometry",
             Self::GeometryVertices => "geometry_vertices",
             Self::GeometryIndices => "geometry_indices",
+            Self::ParticleEmitter => "particle_emitter",
             Self::TextureSlots => "texture_slots",
             Self::MaterialPass => "material_pass",
             Self::EffectPass => "effect_pass",
@@ -507,6 +521,32 @@ impl SceneBinaryLayoutPlan {
             first_record,
             record_count,
             decode_geometry_index_record,
+        )
+    }
+
+    pub fn particle_emitter_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryParticleEmitterRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::ParticleEmitter,
+            SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+            decode_particle_emitter_record,
+        )
+    }
+
+    pub fn particle_emitter_record_at(
+        &self,
+        container: &[u8],
+        record_index: u32,
+    ) -> Result<SceneBinaryParticleEmitterRecord, SceneBinaryError> {
+        self.record_at(
+            container,
+            SceneBinaryChunkKind::ParticleEmitter,
+            SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+            record_index,
+            decode_particle_emitter_record,
         )
     }
 
@@ -1153,6 +1193,7 @@ pub struct SceneBinaryNodeRecord {
     pub first_transform: u32,
     pub transform_count: u32,
     pub puppet_index: u32,
+    pub particle_index: u32,
     pub opacity: f32,
     pub color_rgba: u32,
     pub stroke_color_rgba: u32,
@@ -1187,6 +1228,7 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.first_transform);
         write_u32(out, self.transform_count);
         write_u32(out, self.puppet_index);
+        write_u32(out, self.particle_index);
         write_f32(out, self.opacity);
         write_u32(out, self.color_rgba);
         write_u32(out, self.stroke_color_rgba);
@@ -1199,7 +1241,7 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.font_weight_name);
         write_u16(out, self.fit);
         write_u16(out, self.text_align);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 112);
+        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 116);
     }
 }
 
@@ -1580,6 +1622,7 @@ pub struct SceneBinaryDocumentShape {
     pub geometry_records: u32,
     pub geometry_vertex_records: u32,
     pub geometry_index_records: u32,
+    pub particle_emitter_records: u32,
     pub texture_slot_records: u32,
     pub material_pass_records: u32,
     pub effect_pass_records: u32,
@@ -1627,6 +1670,7 @@ impl SceneBinaryDocumentShape {
         shape.retained_gpu_state_records = shape
             .resource_table_records
             .saturating_add(shape.geometry_records)
+            .saturating_add(shape.particle_emitter_records)
             .saturating_add(shape.texture_slot_records)
             .saturating_add(shape.material_pass_records)
             .saturating_add(shape.effect_pass_records)
@@ -1645,6 +1689,7 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::Geometry => self.geometry_records,
             SceneBinaryChunkKind::GeometryVertices => self.geometry_vertex_records,
             SceneBinaryChunkKind::GeometryIndices => self.geometry_index_records,
+            SceneBinaryChunkKind::ParticleEmitter => self.particle_emitter_records,
             SceneBinaryChunkKind::TextureSlots => self.texture_slot_records,
             SceneBinaryChunkKind::MaterialPass => self.material_pass_records,
             SceneBinaryChunkKind::EffectPass => self.effect_pass_records,
@@ -1687,6 +1732,11 @@ impl SceneBinaryDocumentShape {
                     .geometry_index_records
                     .saturating_add(saturating_u32(mesh.indices.len()));
             }
+        }
+        if node.kind == SceneNodeKind::ParticleEmitter
+            && SceneParticleEmitterSettings::from_node(node).is_some()
+        {
+            self.particle_emitter_records = self.particle_emitter_records.saturating_add(1);
         }
         if node_has_material(node) {
             self.material_pass_records = self.material_pass_records.saturating_add(1);
@@ -1923,6 +1973,7 @@ struct SceneBinaryPayloadBuilder {
     geometry: SceneBinaryChunkWriter,
     geometry_vertices: SceneBinaryChunkWriter,
     geometry_indices: SceneBinaryChunkWriter,
+    particle_emitter: SceneBinaryChunkWriter,
     texture_slots: SceneBinaryChunkWriter,
     material_pass: SceneBinaryChunkWriter,
     effect_pass: SceneBinaryChunkWriter,
@@ -2323,6 +2374,9 @@ impl SceneBinaryPayloadBuilder {
         } else {
             SCENE_BINARY_NONE_ID
         };
+        let particle_index = particle_emitter_record_from_node(id_name, node)
+            .map(|record| self.push_particle_emitter(record))
+            .unwrap_or(SCENE_BINARY_NONE_ID);
         self.node_table.push_record(|out| {
             SceneBinaryNodeRecord {
                 id_name,
@@ -2347,6 +2401,7 @@ impl SceneBinaryPayloadBuilder {
                 first_transform,
                 transform_count,
                 puppet_index,
+                particle_index,
                 opacity: node.opacity as f32,
                 color_rgba: scene_binary_color_rgba(node.color.as_deref()),
                 stroke_color_rgba: scene_binary_color_rgba(node.stroke_color.as_deref()),
@@ -2384,6 +2439,17 @@ impl SceneBinaryPayloadBuilder {
                 effective_visible,
             );
         }
+    }
+
+    fn push_particle_emitter(&mut self, record: SceneBinaryParticleEmitterRecord) -> u32 {
+        let owner_name = record.owner_name;
+        let record_index = self.particle_emitter.push_record(|out| record.encode(out));
+        self.push_retained(
+            SCENE_BINARY_RETAINED_PARTICLE_EMITTER,
+            owner_name,
+            record_index,
+        );
+        record_index
     }
 
     fn include_effect(
@@ -3148,6 +3214,7 @@ impl SceneBinaryPayloadBuilder {
             geometry_records: self.geometry.record_count,
             geometry_vertex_records: self.geometry_vertices.record_count,
             geometry_index_records: self.geometry_indices.record_count,
+            particle_emitter_records: self.particle_emitter.record_count,
             texture_slot_records: self.texture_slots.record_count,
             material_pass_records: self.material_pass.record_count,
             effect_pass_records: self.effect_pass.record_count,
@@ -3181,6 +3248,8 @@ impl SceneBinaryPayloadBuilder {
                     .into_payload(SceneBinaryChunkKind::GeometryVertices),
                 self.geometry_indices
                     .into_payload(SceneBinaryChunkKind::GeometryIndices),
+                self.particle_emitter
+                    .into_payload(SceneBinaryChunkKind::ParticleEmitter),
                 self.texture_slots
                     .into_payload(SceneBinaryChunkKind::TextureSlots),
                 self.material_pass
@@ -4269,18 +4338,19 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         first_transform: read_u32(bytes, 56)?,
         transform_count: read_u32(bytes, 60)?,
         puppet_index: read_u32(bytes, 64)?,
-        opacity: read_f32(bytes, 68)?,
-        color_rgba: read_u32(bytes, 72)?,
-        stroke_color_rgba: read_u32(bytes, 76)?,
-        stroke_width: read_f32(bytes, 80)?,
-        corner_radius: read_f32(bytes, 84)?,
-        font_size: read_f32(bytes, 88)?,
-        text_name: read_u32(bytes, 92)?,
-        font_family_name: read_u32(bytes, 96)?,
-        font_resource_name: read_u32(bytes, 100)?,
-        font_weight_name: read_u32(bytes, 104)?,
-        fit: read_u16(bytes, 108)?,
-        text_align: read_u16(bytes, 110)?,
+        particle_index: read_u32(bytes, 68)?,
+        opacity: read_f32(bytes, 72)?,
+        color_rgba: read_u32(bytes, 76)?,
+        stroke_color_rgba: read_u32(bytes, 80)?,
+        stroke_width: read_f32(bytes, 84)?,
+        corner_radius: read_f32(bytes, 88)?,
+        font_size: read_f32(bytes, 92)?,
+        text_name: read_u32(bytes, 96)?,
+        font_family_name: read_u32(bytes, 100)?,
+        font_resource_name: read_u32(bytes, 104)?,
+        font_weight_name: read_u32(bytes, 108)?,
+        fit: read_u16(bytes, 112)?,
+        text_align: read_u16(bytes, 114)?,
     })
 }
 
@@ -5527,6 +5597,92 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![2, 1, 0]
         );
+    }
+
+    #[test]
+    fn binary_particle_emitter_payload_carries_runtime_fields() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "spark-emitter",
+                    "type": "particle-emitter",
+                    "resource": "spark",
+                    "properties": {
+                        "particle": {
+                            "count": 12,
+                            "seed": 77,
+                            "lifetime_ms": 1500,
+                            "loop": false,
+                            "spawn_width": 100.0,
+                            "spawn_height": 50.0,
+                            "width": 6.0,
+                            "height": 8.0,
+                            "speed_min": 2.0,
+                            "speed_max": 5.0,
+                            "direction_deg": -45.0,
+                            "spread_deg": 30.0,
+                            "gravity_x": 0.5,
+                            "gravity_y": -1.5,
+                            "fade": true,
+                            "color": "#123456",
+                            "shape": "ellipse"
+                        }
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let payloads = scene_binary_payloads_from_document(&document);
+        assert_eq!(payloads.shape.particle_emitter_records, 1);
+        assert_eq!(
+            payloads
+                .chunk(SceneBinaryChunkKind::ParticleEmitter)
+                .expect("particle payload")
+                .bytes
+                .len(),
+            SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE
+        );
+
+        let bytes = payloads.encode_container(0).expect("encode");
+        assert!(
+            !bytes
+                .windows("spawn_width".len())
+                .any(|window| window == b"spawn_width")
+        );
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("node records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded nodes");
+        assert_eq!(nodes[0].particle_index, 0);
+        let particles = layout
+            .particle_emitter_records(&bytes)
+            .expect("particle records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded particles");
+        assert_eq!(particles.len(), 1);
+        assert_eq!(particles[0].count, 12);
+        assert_eq!(particles[0].seed, 77);
+        assert_eq!(particles[0].lifetime_ms, 1500);
+        assert_eq!(particles[0].spawn_width, 100.0);
+        assert_eq!(particles[0].spawn_height, 50.0);
+        assert_eq!(particles[0].particle_width, 6.0);
+        assert_eq!(particles[0].particle_height, 8.0);
+        assert_eq!(particles[0].speed_min, 2.0);
+        assert_eq!(particles[0].speed_max, 5.0);
+        assert_eq!(particles[0].direction_deg, -45.0);
+        assert_eq!(particles[0].spread_deg, 30.0);
+        assert_eq!(particles[0].gravity_x, 0.5);
+        assert_eq!(particles[0].gravity_y, -1.5);
+        assert_eq!(particles[0].color_rgba, 0x123456ff);
+        assert_eq!(particles[0].flags, SCENE_BINARY_PARTICLE_FLAG_FADE);
+        assert_eq!(particles[0].shape, SCENE_BINARY_PARTICLE_SHAPE_ELLIPSE);
+        assert!(particles[0].opacity_and_transform_at(2_000, 0).is_some());
     }
 
     #[test]
