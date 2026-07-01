@@ -1,0 +1,1566 @@
+{
+  "generated_at": "2026-06-30T16:11:43.009379+00:00",
+  "source_roots": [
+    "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+    "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+    "/tmp/gilder-we-3742497499-extracted/effects/iris/effect.json",
+    "/tmp/gilder-we-3742497499-extracted/effects/opacity/effect.json",
+    "/tmp/gilder-we-3742497499-extracted/effects/waterripple/effect.json",
+    "/tmp/gilder-we-3742497499-extracted/effects/workshop/2790231929/waterripple/effect.json",
+    "/tmp/gilder-we-3742497499-extracted/materials/effects/iris.json",
+    "/tmp/gilder-we-3742497499-extracted/materials/effects/opacity.json",
+    "/tmp/gilder-we-3742497499-extracted/materials/effects/waterripple.json",
+    "/tmp/gilder-we-3742497499-extracted/materials/workshop/2790231929/effects/waterripple.json",
+    "/tmp/gilder-we-3742497499-extracted/materials/眼睛.json",
+    "/tmp/gilder-we-3742497499-extracted/models/眼睛.json"
+  ],
+  "script_count": 65,
+  "unique_script_count": 11,
+  "load_errors": [],
+  "scripts": [
+    {
+      "index": 1,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        14,
+        "effects",
+        0,
+        "passes",
+        0,
+        "constant_shader_values",
+        "ui_editor_properties_5_sector_1_width",
+        "script"
+      ],
+      "metadata": {
+        "id": 261
+      },
+      "property": "ui_editor_properties_5_sector_1_width",
+      "sha256": "ae51d52fe2a343dc77f6384bdb8fa4d3aa9a33a48e831d1b58e29f89f05068b1",
+      "bytes_utf8": 1429,
+      "chars": 1429,
+      "lines": 64,
+      "output_file": "artifacts/we-3742497499-js/scripts/001__source-261__prop-ui_editor_properties_5_sector_1___unknown__ae51d52fe2a3.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 2,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        18,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        1,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1146,
+        "name": "胳膊外腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/002__source-1146__prop-visible__胳膊外腿__a0d8243be2ac.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 3,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        18,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        2,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1148,
+        "name": "内腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/003__source-1148__prop-visible__内腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 4,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        18,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        3,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1150,
+        "name": "尾巴"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/004__source-1150__prop-visible__尾巴__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 5,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        19,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        1,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 947,
+        "name": "胳膊外腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/005__source-947__prop-visible__胳膊外腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 6,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        19,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        2,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 951,
+        "name": "内腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/006__source-951__prop-visible__内腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 7,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/assets/scene.gscene.json",
+      "json_path": [
+        "nodes",
+        19,
+        "children",
+        0,
+        "provenance",
+        "animation_layers",
+        3,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 953,
+        "name": "尾巴"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/007__source-953__prop-visible__尾巴__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 8,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        0,
+        "parallaxDepth",
+        "script"
+      ],
+      "metadata": {
+        "id": 1090,
+        "name": ""
+      },
+      "property": "parallaxDepth",
+      "sha256": "e7aae0317461f4ede5b48beca842357ee9d85909d8578b761b637091ebdd69e8",
+      "bytes_utf8": 1800,
+      "chars": 1784,
+      "lines": 76,
+      "output_file": "artifacts/we-3742497499-js/scripts/008__source-1090__prop-parallaxDepth__unknown__e7aae0317461.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 9,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        0,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1090,
+        "name": ""
+      },
+      "property": "visible",
+      "sha256": "905088f5a51ceed3a92a4dedd4f2dbe90181eccf4c42947bbb593374141307e9",
+      "bytes_utf8": 1710,
+      "chars": 1448,
+      "lines": 9,
+      "output_file": "artifacts/we-3742497499-js/scripts/009__source-1090__prop-visible__unknown__905088f5a51c.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 10,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        10,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 107,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/010__source-107__prop-angles__x1__a7105e20413c.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 11,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        10,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 107,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/011__source-107__prop-origin__x1__dfa2f1c8ddcc.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 12,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        100,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 985,
+        "name": "Time and Date",
+        "parent": 967
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/012__source-985__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 13,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        101,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 602,
+        "name": ""
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/013__source-602__prop-angles__unknown__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 14,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        101,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 602,
+        "name": ""
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/014__source-602__prop-origin__unknown__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 15,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        104,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 601,
+        "name": ""
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/015__source-601__prop-angles__unknown__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 16,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        104,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 601,
+        "name": ""
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/016__source-601__prop-origin__unknown__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 17,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        11,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 96,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/017__source-96__prop-angles__x1__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 18,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        11,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 96,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/018__source-96__prop-origin__x1__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 19,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        111,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 3465,
+        "name": "",
+        "parent": 735
+      },
+      "property": "text",
+      "sha256": "d604402eacf939df5b7404b119118995ad43648c7314ca34d5debd4ec58f065f",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/019__source-3465__prop-text__unknown__d604402eacf9.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 20,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        116,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 955,
+        "name": "",
+        "parent": 736
+      },
+      "property": "text",
+      "sha256": "d604402eacf939df5b7404b119118995ad43648c7314ca34d5debd4ec58f065f",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/020__source-955__prop-text__unknown__d604402eacf9.js",
+      "duplicate_of_index": 19
+    },
+    {
+      "index": 21,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        12,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 99,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/021__source-99__prop-angles__x1__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 22,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        12,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 99,
+        "name": "x1",
+        "image": "models/x1.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/022__source-99__prop-origin__x1__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 23,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        13,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 110,
+        "name": "x2",
+        "image": "models/x2.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/023__source-110__prop-angles__x2__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 24,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        13,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 110,
+        "name": "x2",
+        "image": "models/x2.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/024__source-110__prop-origin__x2__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 25,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        14,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 97,
+        "name": "x2",
+        "image": "models/x2.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/025__source-97__prop-angles__x2__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 26,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        14,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 97,
+        "name": "x2",
+        "image": "models/x2.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/026__source-97__prop-origin__x2__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 27,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        15,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 113,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/027__source-113__prop-angles__x3__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 28,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        15,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 113,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/028__source-113__prop-origin__x3__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 29,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        16,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 98,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/029__source-98__prop-angles__x3__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 30,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        16,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 98,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/030__source-98__prop-origin__x3__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 31,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        17,
+        "angles",
+        "script"
+      ],
+      "metadata": {
+        "id": 100,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "angles",
+      "sha256": "a7105e20413ca74874a850a05ec86b5a57f38dd61262de70bf4bd77c1705f4cb",
+      "bytes_utf8": 557,
+      "chars": 557,
+      "lines": 33,
+      "output_file": "artifacts/we-3742497499-js/scripts/031__source-100__prop-angles__x3__a7105e20413c.js",
+      "duplicate_of_index": 10
+    },
+    {
+      "index": 32,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        17,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 100,
+        "name": "x3",
+        "image": "models/x3.json",
+        "parent": 95
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/032__source-100__prop-origin__x3__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 33,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        19,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 298,
+        "name": "水珠2",
+        "image": "models/水珠2.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/033__source-298__prop-origin__水珠2__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 34,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        20,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 321,
+        "name": "水珠2",
+        "image": "models/水珠2.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/034__source-321__prop-origin__水珠2__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 35,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        21,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 345,
+        "name": "水珠3",
+        "image": "models/水珠3.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/035__source-345__prop-origin__水珠3__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 36,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        22,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 309,
+        "name": "水珠",
+        "image": "models/水珠.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/036__source-309__prop-origin__水珠__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 37,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        23,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 365,
+        "name": "水珠",
+        "image": "models/水珠.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/037__source-365__prop-origin__水珠__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 38,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        24,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 368,
+        "name": "水珠4",
+        "image": "models/水珠4.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/038__source-368__prop-origin__水珠4__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 39,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        25,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 1310,
+        "name": "水珠5",
+        "image": "models/水珠5.json",
+        "parent": 667
+      },
+      "property": "origin",
+      "sha256": "dfa2f1c8ddcc463ed97618dfa6b8d12e047c7924d6b2eba9906bc3c5a570a24f",
+      "bytes_utf8": 985,
+      "chars": 985,
+      "lines": 58,
+      "output_file": "artifacts/we-3742497499-js/scripts/039__source-1310__prop-origin__水珠5__dfa2f1c8ddcc.js",
+      "duplicate_of_index": 11
+    },
+    {
+      "index": 40,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        27,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 652,
+        "name": "小文字",
+        "parent": 603
+      },
+      "property": "text",
+      "sha256": "4a3a5615a69279bd898782d66e9015b0c0d93bfbc204159e48bde98981894604",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/040__source-652__prop-text__小文字__4a3a5615a692.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 41,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        28,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 2998,
+        "name": "默认主题大字",
+        "parent": 603
+      },
+      "property": "text",
+      "sha256": "88b98570c441992ba9a3f1054226a4f6fbf64bb273337f8f9fafb5484016f54c",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/041__source-2998__prop-text__默认主题大字__88b98570c441.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 42,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        29,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 2578,
+        "name": "默认主题大字",
+        "parent": 603
+      },
+      "property": "text",
+      "sha256": "88b98570c441992ba9a3f1054226a4f6fbf64bb273337f8f9fafb5484016f54c",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/042__source-2578__prop-text__默认主题大字__88b98570c441.js",
+      "duplicate_of_index": 41
+    },
+    {
+      "index": 43,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        30,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 914,
+        "name": "纯色主题大字",
+        "parent": 603
+      },
+      "property": "text",
+      "sha256": "88b98570c441992ba9a3f1054226a4f6fbf64bb273337f8f9fafb5484016f54c",
+      "bytes_utf8": 5155,
+      "chars": 5007,
+      "lines": 147,
+      "output_file": "artifacts/we-3742497499-js/scripts/043__source-914__prop-text__纯色主题大字__88b98570c441.js",
+      "duplicate_of_index": 41
+    },
+    {
+      "index": 44,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        33,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 252,
+        "name": "Time and Date",
+        "parent": 1416
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/044__source-252__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 45,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        34,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 257,
+        "name": "Time and Date",
+        "parent": 1416
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/045__source-257__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 46,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        37,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 997,
+        "name": "Time and Date",
+        "parent": 991
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/046__source-997__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 47,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        38,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 1003,
+        "name": "Time and Date",
+        "parent": 991
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/047__source-1003__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 48,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        39,
+        "effects",
+        0,
+        "passes",
+        0,
+        "constantshadervalues",
+        "ui_editor_properties_5_sector_1_width",
+        "script"
+      ],
+      "metadata": {
+        "id": 261
+      },
+      "property": "ui_editor_properties_5_sector_1_width",
+      "sha256": "ae51d52fe2a343dc77f6384bdb8fa4d3aa9a33a48e831d1b58e29f89f05068b1",
+      "bytes_utf8": 1429,
+      "chars": 1429,
+      "lines": 64,
+      "output_file": "artifacts/we-3742497499-js/scripts/048__source-261__prop-ui_editor_properties_5_sector_1___unknown__ae51d52fe2a3.js",
+      "duplicate_of_index": 1
+    },
+    {
+      "index": 49,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        40,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 687,
+        "name": "角色后 影子"
+      },
+      "property": "origin",
+      "sha256": "5143dcdbc5072615b21ee00e2039eefa0e694efa09740cab039e75faf7826207",
+      "bytes_utf8": 389,
+      "chars": 389,
+      "lines": 22,
+      "output_file": "artifacts/we-3742497499-js/scripts/049__source-687__prop-origin__角色后-影子__5143dcdbc507.js",
+      "duplicate_of_index": null
+    },
+    {
+      "index": 50,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        48,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 785,
+        "name": "角色后"
+      },
+      "property": "origin",
+      "sha256": "5143dcdbc5072615b21ee00e2039eefa0e694efa09740cab039e75faf7826207",
+      "bytes_utf8": 389,
+      "chars": 389,
+      "lines": 22,
+      "output_file": "artifacts/we-3742497499-js/scripts/050__source-785__prop-origin__角色后__5143dcdbc507.js",
+      "duplicate_of_index": 49
+    },
+    {
+      "index": 51,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        57,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 1141,
+        "name": "角色主影子"
+      },
+      "property": "origin",
+      "sha256": "5143dcdbc5072615b21ee00e2039eefa0e694efa09740cab039e75faf7826207",
+      "bytes_utf8": 389,
+      "chars": 389,
+      "lines": 22,
+      "output_file": "artifacts/we-3742497499-js/scripts/051__source-1141__prop-origin__角色主影子__5143dcdbc507.js",
+      "duplicate_of_index": 49
+    },
+    {
+      "index": 52,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        58,
+        "animationlayers",
+        1,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1146,
+        "name": "胳膊外腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/052__source-1146__prop-visible__胳膊外腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 53,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        58,
+        "animationlayers",
+        2,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1148,
+        "name": "内腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/053__source-1148__prop-visible__内腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 54,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        58,
+        "animationlayers",
+        3,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 1150,
+        "name": "尾巴"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/054__source-1150__prop-visible__尾巴__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 55,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        65,
+        "origin",
+        "script"
+      ],
+      "metadata": {
+        "id": 579,
+        "name": "角色主"
+      },
+      "property": "origin",
+      "sha256": "5143dcdbc5072615b21ee00e2039eefa0e694efa09740cab039e75faf7826207",
+      "bytes_utf8": 389,
+      "chars": 389,
+      "lines": 22,
+      "output_file": "artifacts/we-3742497499-js/scripts/055__source-579__prop-origin__角色主__5143dcdbc507.js",
+      "duplicate_of_index": 49
+    },
+    {
+      "index": 56,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        66,
+        "animationlayers",
+        1,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 947,
+        "name": "胳膊外腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/056__source-947__prop-visible__胳膊外腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 57,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        66,
+        "animationlayers",
+        2,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 951,
+        "name": "内腿"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/057__source-951__prop-visible__内腿__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 58,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        66,
+        "animationlayers",
+        3,
+        "visible",
+        "script"
+      ],
+      "metadata": {
+        "id": 953,
+        "name": "尾巴"
+      },
+      "property": "visible",
+      "sha256": "a0d8243be2ac4b63002528076322846d937740aaa79ce2e20ead498fe173ee33",
+      "bytes_utf8": 463,
+      "chars": 463,
+      "lines": 19,
+      "output_file": "artifacts/we-3742497499-js/scripts/058__source-953__prop-visible__尾巴__a0d8243be2ac.js",
+      "duplicate_of_index": 2
+    },
+    {
+      "index": 59,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        91,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 249,
+        "name": "Time and Date",
+        "parent": 1419
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/059__source-249__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 60,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        92,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 258,
+        "name": "Time and Date",
+        "parent": 1419
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/060__source-258__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 61,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        93,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 250,
+        "name": "Time and Date",
+        "parent": 1419
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/061__source-250__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 62,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        94,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 259,
+        "name": "Time and Date",
+        "parent": 1419
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/062__source-259__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 63,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        97,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 973,
+        "name": "Time and Date",
+        "parent": 967
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/063__source-973__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 64,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        98,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 981,
+        "name": "Time and Date",
+        "parent": 967
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/064__source-981__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    },
+    {
+      "index": 65,
+      "kind": "script-key",
+      "source_file": "/tmp/gilder-we-3742497499-output-current/metadata/source-scene.json",
+      "json_path": [
+        "objects",
+        99,
+        "text",
+        "script"
+      ],
+      "metadata": {
+        "id": 982,
+        "name": "Time and Date",
+        "parent": 967
+      },
+      "property": "text",
+      "sha256": "671726fc05e875965f50a52a61038411c6f8864056a062f619c7c25b6ad9d675",
+      "bytes_utf8": 5302,
+      "chars": 5100,
+      "lines": 4,
+      "output_file": "artifacts/we-3742497499-js/scripts/065__source-982__prop-text__Time-and-Date__671726fc05e8.js",
+      "duplicate_of_index": 12
+    }
+  ]
+}
