@@ -4,11 +4,12 @@ use std::fmt;
 
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneDocument, SceneEffect,
-    SceneEffectPass, SceneNode, SceneNodeKind, SceneResourceKind, SceneTimelineChannel,
+    SceneEffectPass, SceneNode, SceneNodeKind, SceneResource, SceneResourceKind,
+    SceneTimelineChannel,
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 1;
+pub const SCENE_BINARY_VERSION: u16 = 2;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -18,8 +19,8 @@ pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 72;
 pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 40;
+pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
+pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 24;
@@ -46,6 +47,11 @@ const SCENE_BINARY_PARAMETER_VALUE_VEC4: u16 = 7;
 const SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY: u16 = 1;
 const SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT: u16 = 2;
 const SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO: u16 = 4;
+
+const SCENE_BINARY_TEXTURE_ROLE_BASE_COLOR: u16 = 1;
+const SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT: u16 = 2;
+const SCENE_BINARY_TEXTURE_ROLE_ALPHA_MASK: u16 = 4;
+const SCENE_BINARY_TEXTURE_ROLE_FIRST_CLASS_TARGET: u16 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SceneBinaryChunkKind {
@@ -290,6 +296,21 @@ impl SceneBinaryLayoutPlan {
             material.first_texture_slot,
             material.texture_slot_count,
             decode_texture_slot_record,
+        )
+    }
+
+    pub fn material_effect_pass_records<'a>(
+        &self,
+        container: &'a [u8],
+        material: SceneBinaryMaterialPassRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryEffectPassRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::EffectPass,
+            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            material.first_effect_pass,
+            material.effect_pass_count,
+            decode_effect_pass_record,
         )
     }
 
@@ -756,8 +777,8 @@ impl SceneBinaryGeometryRecord {
 pub struct SceneBinaryTextureSlotRecord {
     pub owner_name: u32,
     pub pass_name: u32,
-    pub resource_name: u32,
     pub texture_name: u32,
+    pub resource_index: u32,
     pub slot: u32,
     pub width: u32,
     pub height: u32,
@@ -769,8 +790,8 @@ impl SceneBinaryTextureSlotRecord {
     fn encode(self, out: &mut Vec<u8>) {
         write_u32(out, self.owner_name);
         write_u32(out, self.pass_name);
-        write_u32(out, self.resource_name);
         write_u32(out, self.texture_name);
+        write_u32(out, self.resource_index);
         write_u32(out, self.slot);
         write_u32(out, self.width);
         write_u32(out, self.height);
@@ -785,12 +806,21 @@ pub struct SceneBinaryMaterialPassRecord {
     pub owner_name: u32,
     pub shader_name: u32,
     pub blending_name: u32,
-    pub flags: u32,
+    pub first_texture_slot: u32,
+    pub alpha_texture_slot: u32,
+    pub first_effect_pass: u32,
+    pub pipeline_key: u32,
     pub texture_slot_count: u32,
     pub effect_pass_count: u32,
-    pub first_texture_slot: u32,
+    pub effect_kind_flags: u32,
+    pub material_kind: u16,
+    pub descriptor_layout: u16,
     pub blend_mode: u16,
     pub alpha_texture_mode: u16,
+    pub depth_test: u16,
+    pub depth_write: u16,
+    pub cull_mode: u16,
+    pub flags: u16,
 }
 
 impl SceneBinaryMaterialPassRecord {
@@ -798,13 +828,22 @@ impl SceneBinaryMaterialPassRecord {
         write_u32(out, self.owner_name);
         write_u32(out, self.shader_name);
         write_u32(out, self.blending_name);
-        write_u32(out, self.flags);
+        write_u32(out, self.first_texture_slot);
+        write_u32(out, self.alpha_texture_slot);
+        write_u32(out, self.first_effect_pass);
+        write_u32(out, self.pipeline_key);
         write_u32(out, self.texture_slot_count);
         write_u32(out, self.effect_pass_count);
-        write_u32(out, self.first_texture_slot);
+        write_u32(out, self.effect_kind_flags);
+        write_u16(out, self.material_kind);
+        write_u16(out, self.descriptor_layout);
         write_u16(out, self.blend_mode);
         write_u16(out, self.alpha_texture_mode);
-        debug_assert_eq!(SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, 32);
+        write_u16(out, self.depth_test);
+        write_u16(out, self.depth_write);
+        write_u16(out, self.cull_mode);
+        write_u16(out, self.flags);
+        debug_assert_eq!(SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, 56);
     }
 }
 
@@ -820,6 +859,10 @@ pub struct SceneBinaryEffectPassRecord {
     pub first_parameter: u32,
     pub parameter_count: u32,
     pub kind: u16,
+    pub evaluation_boundary: u16,
+    pub depth_test: u16,
+    pub depth_write: u16,
+    pub cull_mode: u16,
     pub flags: u16,
 }
 
@@ -835,8 +878,12 @@ impl SceneBinaryEffectPassRecord {
         write_u32(out, self.first_parameter);
         write_u32(out, self.parameter_count);
         write_u16(out, self.kind);
+        write_u16(out, self.evaluation_boundary);
+        write_u16(out, self.depth_test);
+        write_u16(out, self.depth_write);
+        write_u16(out, self.cull_mode);
         write_u16(out, self.flags);
-        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 40);
+        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 48);
     }
 }
 
@@ -1159,6 +1206,9 @@ impl SceneBinaryDocumentShape {
         for effect in &node.effects {
             self.include_effect(effect);
         }
+        if node_first_effect_pass_reuses_base_resource(node) {
+            self.texture_slot_records = self.texture_slot_records.saturating_sub(1);
+        }
         for child in &node.children {
             self.include_node(child);
         }
@@ -1324,18 +1374,140 @@ struct SceneBinaryPayloadBuilder {
     retained_gpu_state: SceneBinaryChunkWriter,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryResourceBinding<'a> {
+    index: u32,
+    resource: &'a SceneResource,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryBaseTextureSlot {
+    record_index: u32,
+    resource_index: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryTextureSlotRange {
+    first_record: u32,
+    record_count: u32,
+}
+
+#[derive(Debug)]
+struct SceneBinaryResourceIndex<'a> {
+    bindings: BTreeMap<&'a str, SceneBinaryResourceBinding<'a>>,
+}
+
+impl<'a> SceneBinaryResourceIndex<'a> {
+    fn from_document(document: &'a SceneDocument) -> Self {
+        let bindings = document
+            .resources
+            .iter()
+            .enumerate()
+            .map(|(index, resource)| {
+                (
+                    resource.id.as_str(),
+                    SceneBinaryResourceBinding {
+                        index: index.min(u32::MAX as usize) as u32,
+                        resource,
+                    },
+                )
+            })
+            .collect();
+        Self { bindings }
+    }
+
+    fn binding(&self, resource_id: &str) -> Option<SceneBinaryResourceBinding<'a>> {
+        self.bindings.get(resource_id).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryMaterialState<'a> {
+    shader: Option<&'a str>,
+    blending: Option<&'a str>,
+    blend_mode: SceneBlendMode,
+    alpha_texture_slot: Option<u32>,
+    alpha_texture_mode: SceneAlphaTextureMode,
+    texture_slot_count: u32,
+    effect_pass_count: u32,
+    effect_kind_flags: u32,
+    material_kind: u16,
+    descriptor_layout: u16,
+    depth_test: u16,
+    depth_write: u16,
+    cull_mode: u16,
+    flags: u16,
+}
+
+impl<'a> SceneBinaryMaterialState<'a> {
+    fn from_node(
+        node: &'a SceneNode,
+        base_resource: Option<SceneBinaryResourceBinding<'_>>,
+        resource_index: &SceneBinaryResourceIndex<'_>,
+    ) -> Self {
+        let first_pass = node
+            .effects
+            .iter()
+            .flat_map(|effect| effect.passes.iter())
+            .next();
+        let effect_pass_count = node_effect_pass_count(&node.effects);
+        let effect_texture_slot_count =
+            node_effect_texture_slot_count(&node.effects, base_resource, resource_index);
+        let texture_slot_count =
+            u32::from(base_resource.is_some()).saturating_add(effect_texture_slot_count);
+        let (alpha_texture_slot, alpha_texture_mode) =
+            node_alpha_texture_state(&node.effects, resource_index);
+        let effect_kind_flags = effect_kind_flags(&node.effects);
+        let material_kind = material_kind_code(node, effect_pass_count);
+        let descriptor_layout = descriptor_layout_code(
+            base_resource.is_some(),
+            texture_slot_count,
+            alpha_texture_slot.is_some(),
+            effect_pass_count,
+        );
+        Self {
+            shader: first_pass.and_then(|pass| pass.shader.as_deref()),
+            blending: first_pass.and_then(|pass| pass.blending.as_deref()),
+            blend_mode: super::scene_blend_mode_from_properties(&node.properties),
+            alpha_texture_slot,
+            alpha_texture_mode,
+            texture_slot_count,
+            effect_pass_count,
+            effect_kind_flags,
+            material_kind,
+            descriptor_layout,
+            depth_test: material_flag_code(first_pass.and_then(|pass| pass.depthtest.as_deref())),
+            depth_write: material_flag_code(first_pass.and_then(|pass| pass.depthwrite.as_deref())),
+            cull_mode: cull_mode_code(first_pass.and_then(|pass| pass.cullmode.as_deref())),
+            flags: material_flags(node, base_resource, alpha_texture_slot, effect_pass_count),
+        }
+    }
+
+    fn pipeline_key(self) -> u32 {
+        u32::from(self.material_kind & 0x0f)
+            | (u32::from(self.descriptor_layout & 0x0f) << 4)
+            | (u32::from(blend_mode_code(self.blend_mode) & 0x0f) << 8)
+            | (u32::from(alpha_texture_mode_code(self.alpha_texture_mode) & 0x0f) << 12)
+            | (u32::from(self.depth_test & 0x03) << 16)
+            | (u32::from(self.depth_write & 0x03) << 18)
+            | (u32::from(self.cull_mode & 0x0f) << 20)
+            | ((self.effect_kind_flags & 0xff) << 24)
+    }
+}
+
 impl SceneBinaryPayloadBuilder {
     fn new() -> Self {
         Self::default()
     }
 
     fn include_document(&mut self, document: &SceneDocument) {
+        let resource_index = SceneBinaryResourceIndex::from_document(document);
         for resource in &document.resources {
             self.include_resource(resource_id_fields(resource));
         }
         let mut draw_order = 0;
         for node in &document.nodes {
-            self.include_node(node, None, &mut draw_order);
+            self.include_node(node, None, &mut draw_order, &resource_index);
         }
         for timeline in &document.timelines {
             let timeline_name = self
@@ -1425,7 +1597,13 @@ impl SceneBinaryPayloadBuilder {
         self.push_retained(SCENE_BINARY_RETAINED_RESOURCE, id_name, record_index);
     }
 
-    fn include_node(&mut self, node: &SceneNode, parent_index: Option<u32>, draw_order: &mut u32) {
+    fn include_node(
+        &mut self,
+        node: &SceneNode,
+        parent_index: Option<u32>,
+        draw_order: &mut u32,
+        resource_index: &SceneBinaryResourceIndex<'_>,
+    ) {
         let node_index = self.node_table.record_count;
         let id_name = self.names.intern(SceneBinaryNameKind::NodeId, &node.id);
         let display_name = self
@@ -1434,22 +1612,39 @@ impl SceneBinaryPayloadBuilder {
         let resource_name = self
             .names
             .intern_optional(SceneBinaryNameKind::ResourceId, node.resource.as_deref());
-        let base_texture_start = if node.resource.is_some() {
-            let first = self.texture_slots.record_count;
+        let base_resource = node
+            .resource
+            .as_deref()
+            .and_then(|resource| resource_index.binding(resource));
+        let material_state =
+            SceneBinaryMaterialState::from_node(node, base_resource, resource_index);
+        let texture_start = if material_state.texture_slot_count > 0 {
+            self.texture_slots.record_count
+        } else {
+            SCENE_BINARY_NONE_ID
+        };
+        let base_texture_slot = base_resource.map(|resource| SceneBinaryBaseTextureSlot {
+            record_index: texture_start,
+            resource_index: resource.index,
+        });
+        let base_role_flags = SCENE_BINARY_TEXTURE_ROLE_BASE_COLOR
+            | if node_first_effect_pass_reuses_base_resource(node) {
+                SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT
+            } else {
+                0
+            };
+        if let Some(base_resource) = base_resource {
             self.push_texture_slot(SceneBinaryTextureSlotRecord {
                 owner_name: id_name,
                 pass_name: SCENE_BINARY_NONE_ID,
-                resource_name,
                 texture_name: SCENE_BINARY_NONE_ID,
+                resource_index: base_resource.index,
                 slot: 0,
-                width: 0,
-                height: 0,
-                role_flags: 1,
+                width: base_resource.resource.width.unwrap_or(0),
+                height: base_resource.resource.height.unwrap_or(0),
+                role_flags: base_role_flags,
                 sampler_flags: 0,
             });
-            first
-        } else {
-            SCENE_BINARY_NONE_ID
         };
         let geometry_index = if node_has_geometry(node) {
             self.push_geometry(id_name, node)
@@ -1457,21 +1652,40 @@ impl SceneBinaryPayloadBuilder {
             SCENE_BINARY_NONE_ID
         };
         let material_index = if node_has_material(node) {
-            let effect_count = node_effect_pass_count(&node.effects);
-            let texture_count = u32::from(node.resource.is_some());
             let index = self.material_pass.record_count;
+            let shader_name = self
+                .names
+                .intern_optional(SceneBinaryNameKind::Shader, material_state.shader);
+            let blending_name = self
+                .names
+                .intern_optional(SceneBinaryNameKind::Material, material_state.blending);
+            let first_effect_pass = if material_state.effect_pass_count > 0 {
+                self.effect_pass.record_count
+            } else {
+                SCENE_BINARY_NONE_ID
+            };
             self.material_pass.push_record(|out| {
                 SceneBinaryMaterialPassRecord {
                     owner_name: id_name,
-                    shader_name: SCENE_BINARY_NONE_ID,
-                    blending_name: SCENE_BINARY_NONE_ID,
-                    flags: u32::from(node.resource.is_some())
-                        | (u32::from(!node.effects.is_empty()) << 1),
-                    texture_slot_count: texture_count,
-                    effect_pass_count: effect_count,
-                    first_texture_slot: base_texture_start,
-                    blend_mode: blend_mode_code(SceneBlendMode::Alpha),
-                    alpha_texture_mode: alpha_texture_mode_code(SceneAlphaTextureMode::Multiply),
+                    shader_name,
+                    blending_name,
+                    first_texture_slot: texture_start,
+                    alpha_texture_slot: material_state
+                        .alpha_texture_slot
+                        .unwrap_or(SCENE_BINARY_NONE_ID),
+                    first_effect_pass,
+                    pipeline_key: material_state.pipeline_key(),
+                    texture_slot_count: material_state.texture_slot_count,
+                    effect_pass_count: material_state.effect_pass_count,
+                    effect_kind_flags: material_state.effect_kind_flags,
+                    material_kind: material_state.material_kind,
+                    descriptor_layout: material_state.descriptor_layout,
+                    blend_mode: blend_mode_code(material_state.blend_mode),
+                    alpha_texture_mode: alpha_texture_mode_code(material_state.alpha_texture_mode),
+                    depth_test: material_state.depth_test,
+                    depth_write: material_state.depth_write,
+                    cull_mode: material_state.cull_mode,
+                    flags: material_state.flags,
                 }
                 .encode(out)
             });
@@ -1503,15 +1717,29 @@ impl SceneBinaryPayloadBuilder {
             self.push_puppet(id_name, node);
         }
         *draw_order = draw_order.saturating_add(1);
+        let mut base_texture_reuse_available = base_texture_slot.is_some();
         for effect in &node.effects {
-            self.include_effect(id_name, effect);
+            self.include_effect(
+                id_name,
+                effect,
+                resource_index,
+                base_texture_slot,
+                &mut base_texture_reuse_available,
+            );
         }
         for child in &node.children {
-            self.include_node(child, Some(node_index), draw_order);
+            self.include_node(child, Some(node_index), draw_order, resource_index);
         }
     }
 
-    fn include_effect(&mut self, owner_name: u32, effect: &SceneEffect) {
+    fn include_effect(
+        &mut self,
+        owner_name: u32,
+        effect: &SceneEffect,
+        resource_index: &SceneBinaryResourceIndex<'_>,
+        base_texture_slot: Option<SceneBinaryBaseTextureSlot>,
+        base_texture_reuse_available: &mut bool,
+    ) {
         let effect_name = self
             .names
             .intern(SceneBinaryNameKind::EffectFile, &effect.file);
@@ -1531,9 +1759,22 @@ impl SceneBinaryPayloadBuilder {
             );
         } else {
             for (pass_index, pass) in effect.passes.iter().enumerate() {
-                let first_texture_slot = self.texture_slots.record_count;
-                let texture_slot_count =
-                    self.push_effect_texture_slots(owner_name, effect_name, pass);
+                let reusable_base_texture_slot = if *base_texture_reuse_available {
+                    base_texture_slot
+                } else {
+                    None
+                };
+                let texture_slot_range = self.push_effect_texture_slots(
+                    owner_name,
+                    effect_name,
+                    effect,
+                    pass,
+                    resource_index,
+                    reusable_base_texture_slot,
+                );
+                if *base_texture_reuse_available {
+                    *base_texture_reuse_available = false;
+                }
                 let first_parameter = self.effect_parameter.record_count;
                 let parameter_count =
                     self.push_effect_pass_parameters(owner_name, effect_name, pass_index, pass);
@@ -1543,8 +1784,8 @@ impl SceneBinaryPayloadBuilder {
                     effect,
                     Some(pass),
                     pass_index,
-                    first_texture_slot,
-                    texture_slot_count,
+                    texture_slot_range.first_record,
+                    texture_slot_range.record_count,
                     first_parameter,
                     parameter_count,
                 );
@@ -1606,6 +1847,10 @@ impl SceneBinaryPayloadBuilder {
                 first_parameter,
                 parameter_count,
                 kind: effect_kind_code(effect),
+                evaluation_boundary: effect_evaluation_boundary_code(effect),
+                depth_test: material_flag_code(pass.and_then(|pass| pass.depthtest.as_deref())),
+                depth_write: material_flag_code(pass.and_then(|pass| pass.depthwrite.as_deref())),
+                cull_mode: cull_mode_code(pass.and_then(|pass| pass.cullmode.as_deref())),
                 flags: effect_flags(effect, pass),
             }
             .encode(out)
@@ -1738,11 +1983,22 @@ impl SceneBinaryPayloadBuilder {
         &mut self,
         owner_name: u32,
         effect_name: u32,
+        effect: &SceneEffect,
         pass: &SceneEffectPass,
-    ) -> u32 {
+        resource_index: &SceneBinaryResourceIndex<'_>,
+        reusable_base_texture_slot: Option<SceneBinaryBaseTextureSlot>,
+    ) -> SceneBinaryTextureSlotRange {
         let before = self.texture_slots.record_count;
+        let reused_base_texture_slot = reusable_base_texture_slot
+            .filter(|base| pass_reuses_base_texture_slot(pass, *base, resource_index));
+        let first_record = reused_base_texture_slot.map_or(before, |base| base.record_index);
         let slot_count = pass.textures.len().max(pass.texture_resources.len());
+        let alpha_texture_mode = super::scene_effect_alpha_texture_mode(effect);
+        let first_class_target = effect_is_first_class_target(effect);
         for slot in 0..slot_count {
+            if reused_base_texture_slot.is_some() && slot == 0 {
+                continue;
+            }
             let texture_name = pass
                 .textures
                 .get(slot)
@@ -1751,29 +2007,52 @@ impl SceneBinaryPayloadBuilder {
                     self.names
                         .intern(SceneBinaryNameKind::ResourcePath, texture)
                 });
-            let resource_name = pass
+            let resource = pass
                 .texture_resources
                 .get(slot)
                 .and_then(|value| value.as_deref())
-                .map_or(SCENE_BINARY_NONE_ID, |resource| {
-                    self.names.intern(SceneBinaryNameKind::ResourceId, resource)
-                });
-            if texture_name == SCENE_BINARY_NONE_ID && resource_name == SCENE_BINARY_NONE_ID {
+                .and_then(|resource| resource_index.binding(resource));
+            if texture_name == SCENE_BINARY_NONE_ID && resource.is_none() {
                 continue;
             }
+            let role_flags = SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT
+                | if alpha_texture_mode.is_some() && slot > 0 {
+                    SCENE_BINARY_TEXTURE_ROLE_ALPHA_MASK
+                } else {
+                    0
+                }
+                | if first_class_target && slot > 0 {
+                    SCENE_BINARY_TEXTURE_ROLE_FIRST_CLASS_TARGET
+                } else {
+                    0
+                };
             self.push_texture_slot(SceneBinaryTextureSlotRecord {
                 owner_name,
                 pass_name: effect_name,
-                resource_name,
                 texture_name,
+                resource_index: resource.map_or(SCENE_BINARY_NONE_ID, |resource| resource.index),
                 slot: slot.min(u32::MAX as usize) as u32,
-                width: 0,
-                height: 0,
-                role_flags: 2,
+                width: resource
+                    .and_then(|resource| resource.resource.width)
+                    .unwrap_or(0),
+                height: resource
+                    .and_then(|resource| resource.resource.height)
+                    .unwrap_or(0),
+                role_flags,
                 sampler_flags: 0,
             });
         }
-        self.texture_slots.record_count.saturating_sub(before)
+        let pushed_count = self.texture_slots.record_count.saturating_sub(before);
+        let record_count =
+            pushed_count.saturating_add(u32::from(reused_base_texture_slot.is_some()));
+        SceneBinaryTextureSlotRange {
+            first_record: if record_count == 0 {
+                SCENE_BINARY_NONE_ID
+            } else {
+                first_record
+            },
+            record_count,
+        }
     }
 
     fn push_texture_slot(&mut self, record: SceneBinaryTextureSlotRecord) {
@@ -2398,6 +2677,21 @@ fn geometry_flags(node: &SceneNode) -> u16 {
         | (u16::from(node.text.is_some()) << 4)
 }
 
+fn material_flags(
+    node: &SceneNode,
+    base_resource: Option<SceneBinaryResourceBinding<'_>>,
+    alpha_texture_slot: Option<u32>,
+    effect_pass_count: u32,
+) -> u16 {
+    u16::from(node.visible)
+        | (u16::from(base_resource.is_some()) << 1)
+        | (u16::from(effect_pass_count > 0) << 2)
+        | (u16::from(alpha_texture_slot.is_some()) << 3)
+        | (u16::from(node.mesh.is_some()) << 4)
+        | (u16::from(!node.puppet_animation_layers.is_empty()) << 5)
+        | (u16::from(!node.properties.is_empty()) << 6)
+}
+
 fn effect_flags(effect: &SceneEffect, pass: Option<&SceneEffectPass>) -> u16 {
     u16::from(effect.resource.is_some())
         | (u16::from(effect.runtime.is_some()) << 1)
@@ -2411,6 +2705,41 @@ fn render_state_flags(document: &SceneDocument) -> u32 {
         | (u32::from(document.render.clear_color.is_some()) << 1)
         | (u32::from(document.render.clear_enabled.unwrap_or(false)) << 2)
         | (u32::from(document.render.hdr.unwrap_or(false)) << 3)
+}
+
+fn material_kind_code(node: &SceneNode, effect_pass_count: u32) -> u16 {
+    if node.mesh.is_some() || !node.puppet_animation_layers.is_empty() {
+        4
+    } else if matches!(node.kind, SceneNodeKind::Image | SceneNodeKind::Video)
+        && effect_pass_count > 0
+    {
+        3
+    } else if matches!(node.kind, SceneNodeKind::Image | SceneNodeKind::Video) {
+        2
+    } else if node_has_geometry(node) {
+        1
+    } else {
+        5
+    }
+}
+
+fn descriptor_layout_code(
+    has_base_resource: bool,
+    texture_slot_count: u32,
+    has_alpha_texture: bool,
+    effect_pass_count: u32,
+) -> u16 {
+    if texture_slot_count == 0 {
+        1
+    } else if has_alpha_texture {
+        3
+    } else if effect_pass_count > 0 && has_base_resource {
+        4
+    } else if effect_pass_count > 0 {
+        5
+    } else {
+        2
+    }
 }
 
 fn effect_kind_code(effect: &SceneEffect) -> u16 {
@@ -2439,9 +2768,72 @@ fn effect_kind_code(effect: &SceneEffect) -> u16 {
         9
     } else if file.contains("blur") {
         10
-    } else {
+    } else if file.contains("composelayer") || file.contains("fullscreenlayer") {
         11
+    } else if file.contains("newproperty5")
+        || file.contains("newproperty6")
+        || file.contains("userbinding")
+        || file.contains("user_binding")
+    {
+        12
+    } else {
+        13
     }
+}
+
+fn effect_kind_flags(effects: &[SceneEffect]) -> u32 {
+    let mut flags = 0u32;
+    for effect in effects {
+        let kind = effect_kind_code(effect);
+        if (1..=32).contains(&kind) {
+            flags |= 1u32 << u32::from(kind - 1);
+        }
+    }
+    flags
+}
+
+fn effect_evaluation_boundary_code(effect: &SceneEffect) -> u16 {
+    match effect_kind_code(effect) {
+        2 => 2,
+        7 => 3,
+        8 | 9 => 4,
+        10 | 11 => 5,
+        _ => 1,
+    }
+}
+
+fn material_flag_code(value: Option<&str>) -> u16 {
+    match value.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if matches!(value.as_str(), "1" | "true" | "enabled" | "enable" | "on") => 1,
+        Some(value)
+            if matches!(
+                value.as_str(),
+                "0" | "false" | "disabled" | "disable" | "off"
+            ) =>
+        {
+            2
+        }
+        Some(_) | None => 0,
+    }
+}
+
+fn cull_mode_code(value: Option<&str>) -> u16 {
+    match value.map(|value| value.trim().to_ascii_lowercase()) {
+        Some(value) if matches!(value.as_str(), "none" | "off" | "disabled" | "disable") => 1,
+        Some(value) if value == "back" => 2,
+        Some(value) if value == "front" => 3,
+        Some(value) if matches!(value.as_str(), "frontandback" | "front-and-back") => 4,
+        Some(value) if value.is_empty() => 0,
+        Some(_) => 5,
+        None => 0,
+    }
+}
+
+fn effect_is_first_class_target(effect: &SceneEffect) -> bool {
+    let file = effect.file.replace('\\', "/").to_ascii_lowercase();
+    effect.runtime.as_deref() == Some("native-iris-mask")
+        || file == "effects/iris/effect.json"
+        || file.ends_with("/effects/iris/effect.json")
 }
 
 fn effect_motion_family_flags(effect: &SceneEffect) -> u32 {
@@ -2566,6 +2958,98 @@ fn node_effect_pass_count(effects: &[SceneEffect]) -> u32 {
     )
 }
 
+fn node_effect_texture_slot_count(
+    effects: &[SceneEffect],
+    base_resource: Option<SceneBinaryResourceBinding<'_>>,
+    resource_index: &SceneBinaryResourceIndex<'_>,
+) -> u32 {
+    let total = effects
+        .iter()
+        .flat_map(|effect| effect.passes.iter())
+        .map(|pass| scene_binary_effect_pass_texture_slot_count(pass, resource_index))
+        .fold(0u32, u32::saturating_add);
+    let Some(base_resource) = base_resource else {
+        return total;
+    };
+    let Some(first_pass) = effects
+        .iter()
+        .flat_map(|effect| effect.passes.iter())
+        .next()
+    else {
+        return total;
+    };
+    total.saturating_sub(u32::from(pass_reuses_base_texture_slot(
+        first_pass,
+        SceneBinaryBaseTextureSlot {
+            record_index: 0,
+            resource_index: base_resource.index,
+        },
+        resource_index,
+    )))
+}
+
+fn scene_binary_effect_pass_texture_slot_count(
+    pass: &SceneEffectPass,
+    resource_index: &SceneBinaryResourceIndex<'_>,
+) -> u32 {
+    let slot_count = pass.textures.len().max(pass.texture_resources.len());
+    let mut count = 0u32;
+    for slot in 0..slot_count {
+        let has_texture_name = pass
+            .textures
+            .get(slot)
+            .and_then(|value| value.as_ref())
+            .is_some();
+        let has_resource = pass
+            .texture_resources
+            .get(slot)
+            .and_then(|value| value.as_deref())
+            .is_some_and(|resource| resource_index.binding(resource).is_some());
+        if has_texture_name || has_resource {
+            count = count.saturating_add(1);
+        }
+    }
+    count
+}
+
+fn pass_reuses_base_texture_slot(
+    pass: &SceneEffectPass,
+    base_texture_slot: SceneBinaryBaseTextureSlot,
+    resource_index: &SceneBinaryResourceIndex<'_>,
+) -> bool {
+    pass.texture_resources
+        .first()
+        .and_then(|value| value.as_deref())
+        .and_then(|resource| resource_index.binding(resource))
+        .is_some_and(|resource| resource.index == base_texture_slot.resource_index)
+}
+
+fn node_alpha_texture_state(
+    effects: &[SceneEffect],
+    resource_index: &SceneBinaryResourceIndex<'_>,
+) -> (Option<u32>, SceneAlphaTextureMode) {
+    for effect in effects {
+        let Some(effect_mode) = super::scene_effect_alpha_texture_mode(effect) else {
+            continue;
+        };
+        for pass in &effect.passes {
+            for (slot, resource_id) in pass.texture_resources.iter().enumerate().skip(1) {
+                let Some(resource_id) = resource_id.as_deref() else {
+                    continue;
+                };
+                if resource_index.binding(resource_id).is_none() {
+                    continue;
+                }
+                let Ok(slot) = u32::try_from(slot) else {
+                    continue;
+                };
+                return (Some(slot), effect_mode);
+            }
+        }
+    }
+    (None, SceneAlphaTextureMode::Multiply)
+}
+
 fn effect_pass_texture_slot_count(pass: &SceneEffectPass) -> u32 {
     let slot_count = pass.textures.len().max(pass.texture_resources.len());
     let mut count = 0u32;
@@ -2676,8 +3160,8 @@ fn decode_texture_slot_record(
     Ok(SceneBinaryTextureSlotRecord {
         owner_name: read_u32(bytes, 0)?,
         pass_name: read_u32(bytes, 4)?,
-        resource_name: read_u32(bytes, 8)?,
-        texture_name: read_u32(bytes, 12)?,
+        texture_name: read_u32(bytes, 8)?,
+        resource_index: read_u32(bytes, 12)?,
         slot: read_u32(bytes, 16)?,
         width: read_u32(bytes, 20)?,
         height: read_u32(bytes, 24)?,
@@ -2693,12 +3177,21 @@ fn decode_material_pass_record(
         owner_name: read_u32(bytes, 0)?,
         shader_name: read_u32(bytes, 4)?,
         blending_name: read_u32(bytes, 8)?,
-        flags: read_u32(bytes, 12)?,
-        texture_slot_count: read_u32(bytes, 16)?,
-        effect_pass_count: read_u32(bytes, 20)?,
-        first_texture_slot: read_u32(bytes, 24)?,
-        blend_mode: read_u16(bytes, 28)?,
-        alpha_texture_mode: read_u16(bytes, 30)?,
+        first_texture_slot: read_u32(bytes, 12)?,
+        alpha_texture_slot: read_u32(bytes, 16)?,
+        first_effect_pass: read_u32(bytes, 20)?,
+        pipeline_key: read_u32(bytes, 24)?,
+        texture_slot_count: read_u32(bytes, 28)?,
+        effect_pass_count: read_u32(bytes, 32)?,
+        effect_kind_flags: read_u32(bytes, 36)?,
+        material_kind: read_u16(bytes, 40)?,
+        descriptor_layout: read_u16(bytes, 42)?,
+        blend_mode: read_u16(bytes, 44)?,
+        alpha_texture_mode: read_u16(bytes, 46)?,
+        depth_test: read_u16(bytes, 48)?,
+        depth_write: read_u16(bytes, 50)?,
+        cull_mode: read_u16(bytes, 52)?,
+        flags: read_u16(bytes, 54)?,
     })
 }
 
@@ -2716,7 +3209,11 @@ fn decode_effect_pass_record(
         first_parameter: read_u32(bytes, 28)?,
         parameter_count: read_u32(bytes, 32)?,
         kind: read_u16(bytes, 36)?,
-        flags: read_u16(bytes, 38)?,
+        evaluation_boundary: read_u16(bytes, 38)?,
+        depth_test: read_u16(bytes, 40)?,
+        depth_write: read_u16(bytes, 42)?,
+        cull_mode: read_u16(bytes, 44)?,
+        flags: read_u16(bytes, 46)?,
     })
 }
 
@@ -3030,6 +3527,19 @@ fn node_has_material(node: &SceneNode) -> bool {
     node_has_geometry(node) || node.resource.is_some() || !node.effects.is_empty()
 }
 
+fn node_first_effect_pass_reuses_base_resource(node: &SceneNode) -> bool {
+    let Some(base_resource) = node.resource.as_deref() else {
+        return false;
+    };
+    node.effects
+        .iter()
+        .flat_map(|effect| effect.passes.iter())
+        .next()
+        .and_then(|pass| pass.texture_resources.first())
+        .and_then(|value| value.as_deref())
+        == Some(base_resource)
+}
+
 fn effect_is_motion_family(effect: &SceneEffect) -> bool {
     let file = effect.file.to_ascii_lowercase();
     let runtime = effect.runtime.as_deref().unwrap_or_default();
@@ -3164,6 +3674,11 @@ mod tests {
                     resource: Some("effect".to_owned()),
                     properties: BTreeMap::from([("phase".to_owned(), json!(0.25))]),
                     passes: vec![SceneEffectPass {
+                        shader: Some("effects/flutter".to_owned()),
+                        blending: Some("additive".to_owned()),
+                        depthtest: Some("false".to_owned()),
+                        depthwrite: Some("false".to_owned()),
+                        cullmode: Some("none".to_owned()),
                         textures: vec![Some("g_Texture0".to_owned())],
                         texture_resources: vec![Some("image".to_owned())],
                         combos: BTreeMap::from([("WIND_MODE".to_owned(), 2)]),
@@ -3195,7 +3710,10 @@ mod tests {
                 path_data: None,
                 path_fill_rule: ScenePathFillRule::default(),
                 fit: FitMode::Cover,
-                properties: BTreeMap::new(),
+                properties: BTreeMap::from([(
+                    "wallpaper_engine_blend".to_owned(),
+                    json!({ "colorBlendMode": 7 }),
+                )]),
                 children: Vec::new(),
             }],
             timelines: vec![SceneTimeline {
@@ -3224,7 +3742,7 @@ mod tests {
         assert_eq!(shape.node_table_records, 1);
         assert_eq!(shape.transform_timeline_records, 2);
         assert_eq!(shape.geometry_records, 1);
-        assert_eq!(shape.texture_slot_records, 2);
+        assert_eq!(shape.texture_slot_records, 1);
         assert_eq!(shape.material_pass_records, 1);
         assert_eq!(shape.effect_pass_records, 1);
         assert_eq!(shape.effect_parameter_records, 4);
@@ -3244,7 +3762,7 @@ mod tests {
                 .expect("texture slot payload")
                 .bytes
                 .len(),
-            2 * SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE
+            SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE
         );
         assert!(
             payloads
@@ -3269,7 +3787,7 @@ mod tests {
                 .chunk(SceneBinaryChunkKind::TextureSlots)
                 .expect("texture slot chunk")
                 .record_count,
-            2
+            1
         );
         let debug_names = layout.debug_names(&bytes).expect("debug names");
         let resources = layout
@@ -3318,12 +3836,43 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded material texture slot range");
         assert_eq!(material_texture_slots.len(), 1);
+        assert_eq!(material_texture_slots[0].resource_index, 0);
         assert_eq!(
             debug_names
-                .name(material_texture_slots[0].resource_name)
+                .name(resources[material_texture_slots[0].resource_index as usize].id_name)
                 .expect("material texture resource"),
             Some("image")
         );
+        assert_eq!(
+            debug_names
+                .name(materials[0].shader_name)
+                .expect("material shader"),
+            Some("effects/flutter")
+        );
+        assert_eq!(
+            debug_names
+                .name(materials[0].blending_name)
+                .expect("material blending"),
+            Some("additive")
+        );
+        assert_eq!(materials[0].texture_slot_count, 1);
+        assert_eq!(materials[0].effect_pass_count, 1);
+        assert_eq!(materials[0].first_effect_pass, 0);
+        assert_eq!(
+            materials[0].blend_mode,
+            blend_mode_code(SceneBlendMode::Max)
+        );
+        assert_eq!(materials[0].depth_test, material_flag_code(Some("false")));
+        assert_eq!(materials[0].depth_write, material_flag_code(Some("false")));
+        assert_eq!(materials[0].cull_mode, cull_mode_code(Some("none")));
+        assert_eq!(materials[0].effect_kind_flags, 1 << (8 - 1));
+        assert_ne!(materials[0].pipeline_key, 0);
+        let material_effect_passes = layout
+            .material_effect_pass_records(&bytes, materials[0])
+            .expect("material effect pass range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material effect pass range");
+        assert_eq!(material_effect_passes.len(), 1);
 
         let transforms = layout
             .transform_timeline_records(&bytes)
@@ -3347,21 +3896,9 @@ mod tests {
             .expect("texture slot records")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded texture slot records");
-        assert_eq!(texture_slots.len(), 2);
+        assert_eq!(texture_slots.len(), 1);
         assert_eq!(texture_slots[0].slot, 0);
-        assert_eq!(
-            debug_names
-                .name(texture_slots[0].resource_name)
-                .expect("base slot resource"),
-            Some("image")
-        );
-        assert_eq!(texture_slots[1].slot, 0);
-        assert_eq!(
-            debug_names
-                .name(texture_slots[1].pass_name)
-                .expect("effect pass name"),
-            Some("effects/flutter/effect.json")
-        );
+        assert_eq!(texture_slots[0].resource_index, 0);
 
         let effect_passes = layout
             .effect_pass_records(&bytes)
@@ -3369,25 +3906,32 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded effect pass records");
         assert_eq!(effect_passes.len(), 1);
+        assert_eq!(material_effect_passes[0], effect_passes[0]);
         assert_eq!(effect_passes[0].texture_slot_count, 1);
+        assert_eq!(effect_passes[0].first_texture_slot, 0);
         assert_eq!(effect_passes[0].first_parameter, 1);
         assert_eq!(effect_passes[0].parameter_count, 3);
         assert_eq!(
             effect_passes[0].kind,
             effect_kind_code(&document.nodes[0].effects[0])
         );
+        assert_eq!(effect_passes[0].evaluation_boundary, 4);
+        assert_eq!(
+            effect_passes[0].depth_test,
+            material_flag_code(Some("false"))
+        );
+        assert_eq!(
+            effect_passes[0].depth_write,
+            material_flag_code(Some("false"))
+        );
+        assert_eq!(effect_passes[0].cull_mode, cull_mode_code(Some("none")));
         let effect_texture_slots = layout
             .effect_texture_slot_records(&bytes, effect_passes[0])
             .expect("effect texture slot range")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded effect texture slot range");
         assert_eq!(effect_texture_slots.len(), 1);
-        assert_eq!(
-            debug_names
-                .name(effect_texture_slots[0].pass_name)
-                .expect("effect texture pass name"),
-            Some("effects/flutter/effect.json")
-        );
+        assert_eq!(effect_texture_slots[0].resource_index, 0);
 
         let parameters = layout
             .effect_parameter_records(&bytes)
@@ -3474,7 +4018,7 @@ mod tests {
         assert_eq!(render_state[0].resource_count, 2);
         assert_eq!(render_state[0].node_count, 1);
         assert_eq!(render_state[0].effect_count, 1);
-        assert_eq!(render_state[0].texture_slot_count, 2);
+        assert_eq!(render_state[0].texture_slot_count, 1);
 
         let retained = layout
             .retained_gpu_state_records(&bytes)
@@ -3487,5 +4031,92 @@ mod tests {
                 .iter()
                 .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_EFFECT_PASS)
         );
+    }
+
+    #[test]
+    fn binary_material_pass_carries_alpha_mask_render_state_and_resource_indices() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "base", "type": "image", "source": "assets/base.gtex", "width": 128, "height": 64 },
+                { "id": "mask", "type": "image", "source": "assets/mask.gtex", "width": 128, "height": 64 }
+            ],
+            "nodes": [
+                {
+                    "id": "panel",
+                    "type": "image",
+                    "resource": "base",
+                    "properties": { "wallpaper_engine_blend": { "colorBlendMode": 2 } },
+                    "effects": [
+                        {
+                            "file": "effects/opacity/effect.json",
+                            "passes": [
+                                {
+                                    "shader": "effects/opacity",
+                                    "blending": "normal",
+                                    "depthtest": "false",
+                                    "depthwrite": "false",
+                                    "cullmode": "none",
+                                    "texture_resources": ["base", "mask"]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let payloads = scene_binary_payloads_from_document(&document);
+        assert_eq!(payloads.shape.texture_slot_records, 2);
+        let bytes = payloads.encode_container(0).expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+
+        let materials = layout
+            .material_pass_records(&bytes)
+            .expect("material records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material records");
+        assert_eq!(materials.len(), 1);
+        assert_eq!(materials[0].texture_slot_count, 2);
+        assert_eq!(materials[0].alpha_texture_slot, 1);
+        assert_eq!(
+            materials[0].alpha_texture_mode,
+            alpha_texture_mode_code(SceneAlphaTextureMode::Multiply)
+        );
+        assert_eq!(
+            materials[0].blend_mode,
+            blend_mode_code(SceneBlendMode::Multiply)
+        );
+        assert_eq!(materials[0].depth_test, material_flag_code(Some("false")));
+        assert_eq!(materials[0].depth_write, material_flag_code(Some("false")));
+        assert_eq!(materials[0].cull_mode, cull_mode_code(Some("none")));
+        assert_eq!(materials[0].descriptor_layout, 3);
+
+        let texture_slots = layout
+            .material_texture_slot_records(&bytes, materials[0])
+            .expect("material texture slots")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material texture slots");
+        assert_eq!(texture_slots.len(), 2);
+        assert_eq!(texture_slots[0].resource_index, 0);
+        assert_eq!(texture_slots[1].resource_index, 1);
+        assert_eq!(
+            texture_slots[0].role_flags,
+            SCENE_BINARY_TEXTURE_ROLE_BASE_COLOR | SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT
+        );
+        assert_eq!(
+            texture_slots[1].role_flags,
+            SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT | SCENE_BINARY_TEXTURE_ROLE_ALPHA_MASK
+        );
+
+        let effect_passes = layout
+            .material_effect_pass_records(&bytes, materials[0])
+            .expect("material effect range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material effect range");
+        assert_eq!(effect_passes.len(), 1);
+        assert_eq!(effect_passes[0].first_texture_slot, 0);
+        assert_eq!(effect_passes[0].texture_slot_count, 2);
+        assert_eq!(effect_passes[0].evaluation_boundary, 1);
     }
 }
