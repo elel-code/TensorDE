@@ -199,7 +199,228 @@ impl SceneBinaryLayoutPlan {
     pub fn chunk(&self, kind: SceneBinaryChunkKind) -> Option<&SceneBinaryChunkDescriptor> {
         self.chunks.iter().find(|chunk| chunk.kind == kind)
     }
+
+    pub fn resource_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryResourceRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::ResourceTable,
+            SCENE_BINARY_RESOURCE_RECORD_SIZE,
+            decode_resource_record,
+        )
+    }
+
+    pub fn node_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryNodeRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::NodeTable,
+            SCENE_BINARY_NODE_RECORD_SIZE,
+            decode_node_record,
+        )
+    }
+
+    pub fn transform_timeline_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTransformTimelineRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::TransformTimeline,
+            SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+            decode_transform_timeline_record,
+        )
+    }
+
+    pub fn geometry_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryGeometryRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::Geometry,
+            SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            decode_geometry_record,
+        )
+    }
+
+    pub fn texture_slot_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTextureSlotRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::TextureSlots,
+            SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+            decode_texture_slot_record,
+        )
+    }
+
+    pub fn material_pass_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryMaterialPassRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::MaterialPass,
+            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            decode_material_pass_record,
+        )
+    }
+
+    pub fn effect_pass_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryEffectPassRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::EffectPass,
+            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            decode_effect_pass_record,
+        )
+    }
+
+    pub fn flutter_state_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryFlutterStateRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::FlutterState,
+            SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE,
+            decode_flutter_state_record,
+        )
+    }
+
+    pub fn puppet_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::Puppet,
+            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            decode_puppet_record,
+        )
+    }
+
+    pub fn render_state_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryRenderStateRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::RenderState,
+            SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+            decode_render_state_record,
+        )
+    }
+
+    pub fn retained_gpu_state_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryRetainedGpuStateRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::RetainedGpuState,
+            SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE,
+            decode_retained_gpu_state_record,
+        )
+    }
+
+    pub fn debug_names<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryDebugNames<'a>, SceneBinaryError> {
+        let descriptor =
+            self.chunk(SceneBinaryChunkKind::DebugNames)
+                .ok_or(SceneBinaryError::MissingChunk {
+                    kind: SceneBinaryChunkKind::DebugNames,
+                })?;
+        let payload = descriptor.payload(container)?;
+        SceneBinaryDebugNames::new(descriptor.record_count, payload)
+    }
+
+    fn records<'a, T>(
+        &self,
+        container: &'a [u8],
+        kind: SceneBinaryChunkKind,
+        record_size: usize,
+        decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
+    ) -> Result<SceneBinaryRecords<'a, T>, SceneBinaryError> {
+        let descriptor = self
+            .chunk(kind)
+            .ok_or(SceneBinaryError::MissingChunk { kind })?;
+        let payload = descriptor.payload(container)?;
+        let expected = usize::try_from(descriptor.record_count)
+            .ok()
+            .and_then(|count| count.checked_mul(record_size))
+            .ok_or(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            })?;
+        if payload.len() != expected {
+            return Err(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            });
+        }
+        Ok(SceneBinaryRecords {
+            bytes: payload,
+            record_size,
+            index: 0,
+            record_count: descriptor.record_count as usize,
+            decode,
+        })
+    }
 }
+
+pub struct SceneBinaryRecords<'a, T> {
+    bytes: &'a [u8],
+    record_size: usize,
+    index: usize,
+    record_count: usize,
+    decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
+}
+
+impl<'a, T> SceneBinaryRecords<'a, T> {
+    pub fn len(&self) -> usize {
+        self.record_count.saturating_sub(self.index)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl<T> Iterator for SceneBinaryRecords<'_, T> {
+    type Item = Result<T, SceneBinaryError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.record_count {
+            return None;
+        }
+        let start = self.index.checked_mul(self.record_size)?;
+        let end = start.checked_add(self.record_size)?;
+        self.index += 1;
+        Some((self.decode)(&self.bytes[start..end]))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.len();
+        (len, Some(len))
+    }
+}
+
+impl<T> ExactSizeIterator for SceneBinaryRecords<'_, T> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneBinaryResourceRecord {
@@ -511,6 +732,112 @@ impl SceneBinaryRetainedGpuStateRecord {
         write_u32(out, self.record_index);
         write_u32(out, self.reserved);
         debug_assert_eq!(SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, 24);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneBinaryDebugNameRecord {
+    pub id: u32,
+    pub kind: u32,
+    pub offset: u32,
+    pub length: u32,
+}
+
+pub struct SceneBinaryDebugNames<'a> {
+    records: &'a [u8],
+    strings: &'a [u8],
+    record_count: usize,
+}
+
+impl<'a> SceneBinaryDebugNames<'a> {
+    fn new(record_count: u32, payload: &'a [u8]) -> Result<Self, SceneBinaryError> {
+        let record_bytes = usize::try_from(record_count)
+            .ok()
+            .and_then(|count| count.checked_mul(SCENE_BINARY_DEBUG_NAME_RECORD_SIZE))
+            .ok_or(SceneBinaryError::InvalidRecordPayload {
+                kind: SceneBinaryChunkKind::DebugNames,
+                record_size: SCENE_BINARY_DEBUG_NAME_RECORD_SIZE,
+                record_count,
+                length: payload.len(),
+            })?;
+        if payload.len() < record_bytes {
+            return Err(SceneBinaryError::InvalidRecordPayload {
+                kind: SceneBinaryChunkKind::DebugNames,
+                record_size: SCENE_BINARY_DEBUG_NAME_RECORD_SIZE,
+                record_count,
+                length: payload.len(),
+            });
+        }
+        let (records, strings) = payload.split_at(record_bytes);
+        Ok(Self {
+            records,
+            strings,
+            record_count: record_count as usize,
+        })
+    }
+
+    pub fn len(&self) -> usize {
+        self.record_count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.record_count == 0
+    }
+
+    pub fn record(&self, id: u32) -> Result<Option<SceneBinaryDebugNameRecord>, SceneBinaryError> {
+        let Some(start) = usize::try_from(id)
+            .ok()
+            .and_then(|index| index.checked_mul(SCENE_BINARY_DEBUG_NAME_RECORD_SIZE))
+        else {
+            return Ok(None);
+        };
+        let Some(end) = start.checked_add(SCENE_BINARY_DEBUG_NAME_RECORD_SIZE) else {
+            return Ok(None);
+        };
+        let Some(bytes) = self.records.get(start..end) else {
+            return Ok(None);
+        };
+        let record = decode_debug_name_record(bytes)?;
+        Ok(Some(record))
+    }
+
+    pub fn name(&self, id: u32) -> Result<Option<&'a str>, SceneBinaryError> {
+        let Some(record) = self.record(id)? else {
+            return Ok(None);
+        };
+        let start =
+            usize::try_from(record.offset).map_err(|_| SceneBinaryError::NameOutOfBounds {
+                id,
+                offset: record.offset,
+                length: record.length,
+                string_table_len: self.strings.len(),
+            })?;
+        let length =
+            usize::try_from(record.length).map_err(|_| SceneBinaryError::NameOutOfBounds {
+                id,
+                offset: record.offset,
+                length: record.length,
+                string_table_len: self.strings.len(),
+            })?;
+        let end = start
+            .checked_add(length)
+            .ok_or(SceneBinaryError::NameOutOfBounds {
+                id,
+                offset: record.offset,
+                length: record.length,
+                string_table_len: self.strings.len(),
+            })?;
+        let Some(bytes) = self.strings.get(start..end) else {
+            return Err(SceneBinaryError::NameOutOfBounds {
+                id,
+                offset: record.offset,
+                length: record.length,
+                string_table_len: self.strings.len(),
+            });
+        };
+        std::str::from_utf8(bytes)
+            .map(Some)
+            .map_err(|_| SceneBinaryError::InvalidNameUtf8 { id })
     }
 }
 
@@ -1258,8 +1585,26 @@ pub enum SceneBinaryError {
     DuplicateChunk {
         kind: SceneBinaryChunkKind,
     },
+    MissingChunk {
+        kind: SceneBinaryChunkKind,
+    },
     UnknownChunk {
         code: u32,
+    },
+    InvalidRecordPayload {
+        kind: SceneBinaryChunkKind,
+        record_size: usize,
+        record_count: u32,
+        length: usize,
+    },
+    NameOutOfBounds {
+        id: u32,
+        offset: u32,
+        length: u32,
+        string_table_len: usize,
+    },
+    InvalidNameUtf8 {
+        id: u32,
     },
     ChunkTableOutOfBounds {
         offset: u64,
@@ -1316,7 +1661,33 @@ impl fmt::Display for SceneBinaryError {
             Self::DuplicateChunk { kind } => {
                 write!(f, "duplicate scene binary chunk {}", kind.label())
             }
+            Self::MissingChunk { kind } => {
+                write!(f, "missing scene binary chunk {}", kind.label())
+            }
             Self::UnknownChunk { code } => write!(f, "unknown scene binary chunk code {code:#x}"),
+            Self::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count,
+                length,
+            } => write!(
+                f,
+                "scene binary chunk {} has {length} payload bytes; expected {} records of {record_size} bytes",
+                kind.label(),
+                record_count
+            ),
+            Self::NameOutOfBounds {
+                id,
+                offset,
+                length,
+                string_table_len,
+            } => write!(
+                f,
+                "scene binary debug name {id} offset {offset} length {length} exceeds {string_table_len} string bytes"
+            ),
+            Self::InvalidNameUtf8 { id } => {
+                write!(f, "scene binary debug name {id} is not valid UTF-8")
+            }
             Self::ChunkTableOutOfBounds {
                 offset,
                 count,
@@ -1732,6 +2103,185 @@ fn retained_stable_id(owner_kind: u16, owner_name: u32, record_index: u32) -> u6
     (u64::from(owner_kind) << 48) | (u64::from(owner_name) << 16) | u64::from(record_index)
 }
 
+fn decode_resource_record(bytes: &[u8]) -> Result<SceneBinaryResourceRecord, SceneBinaryError> {
+    Ok(SceneBinaryResourceRecord {
+        id_name: read_u32(bytes, 0)?,
+        source_name: read_u32(bytes, 4)?,
+        original_source_name: read_u32(bytes, 8)?,
+        role_name: read_u32(bytes, 12)?,
+        kind: read_u16(bytes, 16)?,
+        flags: read_u16(bytes, 18)?,
+        width: read_u32(bytes, 20)?,
+        height: read_u32(bytes, 24)?,
+        upload_hints: read_u32(bytes, 28)?,
+    })
+}
+
+fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, SceneBinaryError> {
+    Ok(SceneBinaryNodeRecord {
+        id_name: read_u32(bytes, 0)?,
+        display_name: read_u32(bytes, 4)?,
+        parent_index: read_u32(bytes, 8)?,
+        resource_name: read_u32(bytes, 12)?,
+        kind: read_u16(bytes, 16)?,
+        flags: read_u16(bytes, 18)?,
+        draw_order: read_u32(bytes, 20)?,
+        child_count: read_u32(bytes, 24)?,
+        effect_count: read_u32(bytes, 28)?,
+        audio_count: read_u32(bytes, 32)?,
+        property_count: read_u32(bytes, 36)?,
+        material_index: read_u32(bytes, 40)?,
+        geometry_index: read_u32(bytes, 44)?,
+    })
+}
+
+fn decode_transform_timeline_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryTransformTimelineRecord, SceneBinaryError> {
+    Ok(SceneBinaryTransformTimelineRecord {
+        owner_name: read_u32(bytes, 0)?,
+        timeline_name: read_u32(bytes, 4)?,
+        property: read_u16(bytes, 8)?,
+        flags: read_u16(bytes, 10)?,
+        keyframe_count: read_u32(bytes, 12)?,
+        time_offset_ms: read_u64(bytes, 16)?,
+        first_time_ms: read_u64(bytes, 24)?,
+        last_time_ms: read_u64(bytes, 32)?,
+        value0: read_f32(bytes, 40)?,
+        value1: read_f32(bytes, 44)?,
+        value2: read_f32(bytes, 48)?,
+        value3: read_f32(bytes, 52)?,
+        value4: read_f32(bytes, 56)?,
+        value5: read_f32(bytes, 60)?,
+        value6: read_f32(bytes, 64)?,
+    })
+}
+
+fn decode_geometry_record(bytes: &[u8]) -> Result<SceneBinaryGeometryRecord, SceneBinaryError> {
+    Ok(SceneBinaryGeometryRecord {
+        owner_name: read_u32(bytes, 0)?,
+        kind: read_u16(bytes, 4)?,
+        flags: read_u16(bytes, 6)?,
+        width: read_f32(bytes, 8)?,
+        height: read_f32(bytes, 12)?,
+        vertex_count: read_u32(bytes, 16)?,
+        index_count: read_u32(bytes, 20)?,
+        material_uv_count: read_u32(bytes, 24)?,
+        topology_id: read_u32(bytes, 28)?,
+    })
+}
+
+fn decode_texture_slot_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryTextureSlotRecord, SceneBinaryError> {
+    Ok(SceneBinaryTextureSlotRecord {
+        owner_name: read_u32(bytes, 0)?,
+        pass_name: read_u32(bytes, 4)?,
+        resource_name: read_u32(bytes, 8)?,
+        texture_name: read_u32(bytes, 12)?,
+        slot: read_u32(bytes, 16)?,
+        width: read_u32(bytes, 20)?,
+        height: read_u32(bytes, 24)?,
+        role_flags: read_u16(bytes, 28)?,
+        sampler_flags: read_u16(bytes, 30)?,
+    })
+}
+
+fn decode_material_pass_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryMaterialPassRecord, SceneBinaryError> {
+    Ok(SceneBinaryMaterialPassRecord {
+        owner_name: read_u32(bytes, 0)?,
+        shader_name: read_u32(bytes, 4)?,
+        blending_name: read_u32(bytes, 8)?,
+        flags: read_u32(bytes, 12)?,
+        texture_slot_count: read_u32(bytes, 16)?,
+        effect_pass_count: read_u32(bytes, 20)?,
+        first_texture_slot: read_u32(bytes, 24)?,
+        blend_mode: read_u16(bytes, 28)?,
+        alpha_texture_mode: read_u16(bytes, 30)?,
+    })
+}
+
+fn decode_effect_pass_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryEffectPassRecord, SceneBinaryError> {
+    Ok(SceneBinaryEffectPassRecord {
+        owner_name: read_u32(bytes, 0)?,
+        effect_name: read_u32(bytes, 4)?,
+        shader_name: read_u32(bytes, 8)?,
+        blending_name: read_u32(bytes, 12)?,
+        pass_index: read_u32(bytes, 16)?,
+        first_texture_slot: read_u32(bytes, 20)?,
+        texture_slot_count: read_u32(bytes, 24)?,
+        combo_count: read_u32(bytes, 28)?,
+        parameter_count: read_u32(bytes, 32)?,
+        kind: read_u16(bytes, 36)?,
+        flags: read_u16(bytes, 38)?,
+    })
+}
+
+fn decode_flutter_state_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryFlutterStateRecord, SceneBinaryError> {
+    Ok(SceneBinaryFlutterStateRecord {
+        owner_name: read_u32(bytes, 0)?,
+        effect_name: read_u32(bytes, 4)?,
+        pass_count: read_u32(bytes, 8)?,
+        parameter_count: read_u32(bytes, 12)?,
+        family_flags: read_u32(bytes, 16)?,
+        reserved: read_u32(bytes, 20)?,
+    })
+}
+
+fn decode_puppet_record(bytes: &[u8]) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
+    Ok(SceneBinaryPuppetRecord {
+        owner_name: read_u32(bytes, 0)?,
+        vertex_count: read_u32(bytes, 4)?,
+        index_count: read_u32(bytes, 8)?,
+        animation_layer_count: read_u32(bytes, 12)?,
+        flags: read_u32(bytes, 16)?,
+        reserved: read_u32(bytes, 20)?,
+    })
+}
+
+fn decode_render_state_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryRenderStateRecord, SceneBinaryError> {
+    Ok(SceneBinaryRenderStateRecord {
+        width: read_u32(bytes, 0)?,
+        height: read_u32(bytes, 4)?,
+        resource_count: read_u32(bytes, 8)?,
+        node_count: read_u32(bytes, 12)?,
+        material_count: read_u32(bytes, 16)?,
+        effect_count: read_u32(bytes, 20)?,
+        flags: read_u32(bytes, 24)?,
+        reserved: read_u32(bytes, 28)?,
+    })
+}
+
+fn decode_retained_gpu_state_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryRetainedGpuStateRecord, SceneBinaryError> {
+    Ok(SceneBinaryRetainedGpuStateRecord {
+        owner_kind: read_u16(bytes, 0)?,
+        flags: read_u16(bytes, 2)?,
+        owner_name: read_u32(bytes, 4)?,
+        stable_id: read_u64(bytes, 8)?,
+        record_index: read_u32(bytes, 16)?,
+        reserved: read_u32(bytes, 20)?,
+    })
+}
+
+fn decode_debug_name_record(bytes: &[u8]) -> Result<SceneBinaryDebugNameRecord, SceneBinaryError> {
+    Ok(SceneBinaryDebugNameRecord {
+        id: read_u32(bytes, 0)?,
+        kind: read_u32(bytes, 4)?,
+        offset: read_u32(bytes, 8)?,
+        length: read_u32(bytes, 12)?,
+    })
+}
+
 fn validate_required_payload_order(
     payloads: &[SceneBinaryChunkPayload<'_>],
 ) -> Result<(), SceneBinaryError> {
@@ -1908,6 +2458,16 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, SceneBinaryError> {
     Ok(u64::from_le_bytes([
         slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
     ]))
+}
+
+fn read_f32(bytes: &[u8], offset: usize) -> Result<f32, SceneBinaryError> {
+    let slice = bytes
+        .get(offset..offset + 4)
+        .ok_or(SceneBinaryError::BufferTooSmall {
+            needed: offset + 4,
+            actual: bytes.len(),
+        })?;
+    Ok(f32::from_le_bytes([slice[0], slice[1], slice[2], slice[3]]))
 }
 
 fn align_usize(value: usize, alignment: usize) -> usize {
@@ -2168,6 +2728,122 @@ mod tests {
                 .expect("texture slot chunk")
                 .record_count,
             2
+        );
+        let debug_names = layout.debug_names(&bytes).expect("debug names");
+        let resources = layout
+            .resource_records(&bytes)
+            .expect("resource records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded resource records");
+        assert_eq!(resources.len(), 2);
+        assert_eq!(
+            resources[0].kind,
+            resource_kind_code(SceneResourceKind::Image)
+        );
+        assert_eq!(resources[0].width, 64);
+        assert_eq!(resources[0].height, 64);
+        assert_eq!(
+            debug_names.name(resources[0].id_name).expect("image id"),
+            Some("image")
+        );
+        assert_eq!(
+            debug_names
+                .name(resources[1].source_name)
+                .expect("effect source"),
+            Some("effects/flutter/effect.json")
+        );
+
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("node records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded node records");
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(debug_names.name(nodes[0].id_name).unwrap(), Some("hair"));
+        assert_eq!(nodes[0].effect_count, 1);
+        assert_ne!(nodes[0].material_index, SCENE_BINARY_NONE_ID);
+        assert_ne!(nodes[0].geometry_index, SCENE_BINARY_NONE_ID);
+
+        let transforms = layout
+            .transform_timeline_records(&bytes)
+            .expect("transform records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded transform records");
+        assert_eq!(transforms.len(), 2);
+        assert!(
+            transforms
+                .iter()
+                .any(|record| record.property == SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY)
+        );
+        assert!(
+            transforms
+                .iter()
+                .any(|record| record.property == animated_property_code(SceneAnimatedProperty::X))
+        );
+
+        let texture_slots = layout
+            .texture_slot_records(&bytes)
+            .expect("texture slot records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded texture slot records");
+        assert_eq!(texture_slots.len(), 2);
+        assert_eq!(texture_slots[0].slot, 0);
+        assert_eq!(
+            debug_names
+                .name(texture_slots[0].resource_name)
+                .expect("base slot resource"),
+            Some("image")
+        );
+        assert_eq!(texture_slots[1].slot, 0);
+        assert_eq!(
+            debug_names
+                .name(texture_slots[1].pass_name)
+                .expect("effect pass name"),
+            Some("effects/flutter/effect.json")
+        );
+
+        let effect_passes = layout
+            .effect_pass_records(&bytes)
+            .expect("effect pass records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded effect pass records");
+        assert_eq!(effect_passes.len(), 1);
+        assert_eq!(effect_passes[0].texture_slot_count, 1);
+        assert_eq!(effect_passes[0].parameter_count, 1);
+        assert_eq!(
+            effect_passes[0].kind,
+            effect_kind_code(&document.nodes[0].effects[0])
+        );
+
+        let flutter = layout
+            .flutter_state_records(&bytes)
+            .expect("flutter records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded flutter records");
+        assert_eq!(flutter.len(), 1);
+        assert_eq!(flutter[0].pass_count, 1);
+        assert_eq!(flutter[0].parameter_count, 1);
+
+        let render_state = layout
+            .render_state_records(&bytes)
+            .expect("render state records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded render records");
+        assert_eq!(render_state.len(), 1);
+        assert_eq!(render_state[0].resource_count, 2);
+        assert_eq!(render_state[0].node_count, 1);
+        assert_eq!(render_state[0].effect_count, 1);
+
+        let retained = layout
+            .retained_gpu_state_records(&bytes)
+            .expect("retained records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded retained records");
+        assert_eq!(retained.len() as u32, shape.retained_gpu_state_records);
+        assert!(
+            retained
+                .iter()
+                .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_EFFECT_PASS)
         );
     }
 }
