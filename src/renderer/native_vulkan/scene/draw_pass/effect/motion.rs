@@ -1,6 +1,7 @@
 use crate::core::scene::{SceneMesh, SceneNativeEffectMotion};
 
 use super::NativeVulkanSceneEffectKind;
+use super::{drift, flutter, sway_shake, water_waves};
 
 const GRID_MIN_SEGMENTS: usize = 12;
 const GRID_MAX_SEGMENTS: usize = 20;
@@ -9,11 +10,11 @@ const MESH_MAX_VERTICES: usize = 4096;
 const MESH_SAMPLES_PER_PERIOD: f64 = 4.0;
 
 pub(super) fn classify(normalized_effect_file: &str) -> Option<NativeVulkanSceneEffectKind> {
-    if normalized_effect_file.contains("sway") || normalized_effect_file.contains("shake") {
+    if sway_shake::matches(normalized_effect_file) {
         Some(NativeVulkanSceneEffectKind::SwayShake)
-    } else if normalized_effect_file.contains("flutter") {
+    } else if flutter::matches(normalized_effect_file) {
         Some(NativeVulkanSceneEffectKind::Flutter)
-    } else if normalized_effect_file.contains("drift") {
+    } else if drift::matches(normalized_effect_file) {
         Some(NativeVulkanSceneEffectKind::Drift)
     } else {
         None
@@ -167,31 +168,11 @@ pub(in crate::renderer::native_vulkan::scene::draw_pass) fn apply(
 }
 
 fn max_frequency(motion: SceneNativeEffectMotion) -> f64 {
-    let mut frequency: f64 = 0.0;
-    if motion.wave_count > 0 {
-        frequency = frequency.max(motion.wave_spatial_frequency.abs());
-    }
-    if motion.wave2_count > 0 {
-        frequency = frequency.max(motion.wave2_spatial_frequency.abs());
-    }
-    if motion.sway_count > 0 {
-        frequency = frequency.max(motion.sway_spatial_frequency.abs());
-    }
-    frequency
+    water_waves::max_frequency(motion).max(sway_shake::max_frequency(motion))
 }
 
 fn max_amplitude(motion: SceneNativeEffectMotion) -> f64 {
-    let mut amplitude: f64 = 0.0;
-    if motion.wave_count > 0 {
-        amplitude = amplitude.max(motion.wave_x.hypot(motion.wave_y));
-    }
-    if motion.wave2_count > 0 {
-        amplitude = amplitude.max(motion.wave2_x.hypot(motion.wave2_y));
-    }
-    if motion.sway_count > 0 {
-        amplitude = amplitude.max(motion.sway_amplitude.abs());
-    }
-    amplitude
+    water_waves::max_amplitude(motion).max(sway_shake::max_amplitude(motion))
 }
 
 fn mesh_max_triangle_edge(mesh: &SceneMesh) -> Option<f64> {
@@ -239,90 +220,16 @@ fn delta(x: f64, y: f64, width: f64, height: f64, motion: SceneNativeEffectMotio
     let mut y = y;
     let original_x = x;
     let original_y = y;
-    if motion.wave_count > 0 {
-        let (dx, dy) = wave_delta(
-            x,
-            y,
-            motion.wave_x,
-            motion.wave_y,
-            motion.wave_direction_x,
-            motion.wave_direction_y,
-            motion.wave_spatial_frequency,
-            motion.wave_phase,
-        );
-        x += dx;
-        y += dy;
-    }
-    if motion.wave2_count > 0 {
-        let (dx, dy) = wave_delta(
-            x,
-            y,
-            motion.wave2_x,
-            motion.wave2_y,
-            motion.wave2_direction_x,
-            motion.wave2_direction_y,
-            motion.wave2_spatial_frequency,
-            motion.wave2_phase,
-        );
-        x += dx;
-        y += dy;
-    }
-    if motion.sway_amplitude.abs() > f64::EPSILON {
-        let vertical = if height.abs() > f64::EPSILON {
-            ((y / height) + 0.5).clamp(0.0, 1.0)
-        } else {
-            0.5
-        };
-        let horizontal = if width.abs() > f64::EPSILON {
-            (x / width).clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
-        let direction_length = motion
-            .sway_direction_x
-            .hypot(motion.sway_direction_y)
-            .max(f64::EPSILON);
-        let direction_x = if direction_length > f64::EPSILON {
-            motion.sway_direction_x / direction_length
-        } else {
-            1.0
-        };
-        let direction_y = if direction_length > f64::EPSILON {
-            motion.sway_direction_y / direction_length
-        } else {
-            0.0
-        };
-        let tip_weight = vertical.powf(motion.sway_power.max(1.0));
-        let sway = fast_sin(y * motion.sway_spatial_frequency + motion.sway_phase)
-            * motion.sway_amplitude
-            * tip_weight;
-        x += direction_x * sway;
-        y += direction_y * sway + sway * horizontal * 0.12;
-    }
+    let (dx, dy) = water_waves::delta(x, y, motion);
+    x += dx;
+    y += dy;
+    let (dx, dy) = sway_shake::delta(x, y, width, height, motion);
+    x += dx;
+    y += dy;
     (x - original_x, y - original_y)
 }
 
-#[allow(clippy::too_many_arguments)]
-fn wave_delta(
-    x: f64,
-    y: f64,
-    wave_x: f64,
-    wave_y: f64,
-    direction_x: f64,
-    direction_y: f64,
-    spatial_frequency: f64,
-    phase: f64,
-) -> (f64, f64) {
-    let wave = fast_sin(
-        x.mul_add(
-            direction_x * spatial_frequency,
-            y * direction_y * spatial_frequency,
-        ) + phase,
-    );
-    (wave_x * wave, wave_y * wave)
-}
-
-fn fast_sin(value: f64) -> f64 {
+pub(super) fn fast_sin(value: f64) -> f64 {
     let value =
         (value + std::f64::consts::PI).rem_euclid(std::f64::consts::TAU) - std::f64::consts::PI;
     let sine = 1.273_239_544_735_162_8 * value - 0.405_284_734_569_351_1 * value * value.abs();

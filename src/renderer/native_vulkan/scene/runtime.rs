@@ -2610,6 +2610,7 @@ pub struct NativeVulkanSceneRenderStateSnapshot {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub kind: &'static str,
+    pub evaluation_boundary: &'static str,
     pub effect_file: String,
     pub runtime: Option<String>,
     pub pass_index: usize,
@@ -2708,6 +2709,7 @@ fn native_vulkan_scene_effect_record_snapshot(
 ) -> NativeVulkanSceneEffectRecordSnapshot {
     NativeVulkanSceneEffectRecordSnapshot {
         kind: effect.kind.as_str(),
+        evaluation_boundary: effect.evaluation_boundary.as_str(),
         effect_file: effect.effect_file.clone(),
         runtime: effect.runtime.clone(),
         pass_index: effect.pass_index,

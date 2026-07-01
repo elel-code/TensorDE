@@ -126,6 +126,27 @@ impl NativeVulkanSceneEffectKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneEffectEvaluationBoundary {
+    MaterialPass,
+    FirstClassTarget,
+    FinalFrameTransform,
+    FinalFrameVertex,
+    UtilityPass,
+}
+
+impl NativeVulkanSceneEffectEvaluationBoundary {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::MaterialPass => "material-pass",
+            Self::FirstClassTarget => "first-class-target",
+            Self::FinalFrameTransform => "final-frame-transform",
+            Self::FinalFrameVertex => "final-frame-vertex",
+            Self::UtilityPass => "utility-pass",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneMaterialKind {
     SampledImage,
     SampledImageEffectBase,
@@ -185,6 +206,8 @@ impl NativeVulkanSceneCullMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectRecord {
     pub(in crate::renderer::native_vulkan::scene) kind: NativeVulkanSceneEffectKind,
+    pub(in crate::renderer::native_vulkan::scene) evaluation_boundary:
+        NativeVulkanSceneEffectEvaluationBoundary,
     pub(in crate::renderer::native_vulkan::scene) effect_file: String,
     pub(in crate::renderer::native_vulkan::scene) runtime: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) pass_index: usize,

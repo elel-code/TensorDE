@@ -11,46 +11,60 @@ use super::blend::{
     native_vulkan_scene_sampled_image_pipeline_label,
 };
 use super::{
-    NativeVulkanSceneCullMode, NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord,
-    NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
+    NativeVulkanSceneCullMode, NativeVulkanSceneEffectEvaluationBoundary,
+    NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
+    NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneTextureSlot,
 };
 
+mod drift;
+mod flutter;
 mod iris;
 pub(super) mod motion;
 mod opacity_mask;
+mod sway_shake;
 mod utility;
-mod water;
+mod water_caustics;
+mod water_flow;
+mod water_ripple;
+mod water_waves;
 
 pub(super) fn native_vulkan_scene_effect_passes_from_render_passes(
     passes: &[SceneRenderImageEffectPass],
 ) -> Vec<NativeVulkanSceneEffectRecord> {
     passes
         .iter()
-        .map(|pass| NativeVulkanSceneEffectRecord {
-            kind: native_vulkan_scene_effect_kind(pass.runtime.as_deref(), &pass.effect_file),
-            effect_file: pass.effect_file.clone(),
-            runtime: pass.runtime.clone(),
-            pass_index: pass.pass_index,
-            shader: pass.shader.clone(),
-            blending: pass.blending.clone(),
-            texture_slots: pass
-                .texture_slots
-                .iter()
-                .map(|slot| NativeVulkanSceneTextureSlot {
-                    slot: slot.slot,
-                    source: slot.source.clone(),
-                    width: slot.width,
-                    height: slot.height,
-                })
-                .collect(),
-            parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
-            combo_keys: pass.combos.keys().cloned().collect(),
-            depth_test: native_vulkan_scene_material_flag_from_optional(pass.depthtest.as_deref()),
-            depth_write: native_vulkan_scene_material_flag_from_optional(
-                pass.depthwrite.as_deref(),
-            ),
-            cull_mode: native_vulkan_scene_cull_mode_from_optional(pass.cullmode.as_deref()),
+        .map(|pass| {
+            let semantics =
+                native_vulkan_scene_effect_semantics(pass.runtime.as_deref(), &pass.effect_file);
+            NativeVulkanSceneEffectRecord {
+                kind: semantics.kind,
+                evaluation_boundary: semantics.evaluation_boundary,
+                effect_file: pass.effect_file.clone(),
+                runtime: pass.runtime.clone(),
+                pass_index: pass.pass_index,
+                shader: pass.shader.clone(),
+                blending: pass.blending.clone(),
+                texture_slots: pass
+                    .texture_slots
+                    .iter()
+                    .map(|slot| NativeVulkanSceneTextureSlot {
+                        slot: slot.slot,
+                        source: slot.source.clone(),
+                        width: slot.width,
+                        height: slot.height,
+                    })
+                    .collect(),
+                parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
+                combo_keys: pass.combos.keys().cloned().collect(),
+                depth_test: native_vulkan_scene_material_flag_from_optional(
+                    pass.depthtest.as_deref(),
+                ),
+                depth_write: native_vulkan_scene_material_flag_from_optional(
+                    pass.depthwrite.as_deref(),
+                ),
+                cull_mode: native_vulkan_scene_cull_mode_from_optional(pass.cullmode.as_deref()),
+            }
         })
         .collect()
 }
@@ -60,21 +74,30 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
 ) -> Vec<NativeVulkanSceneEffectRecord> {
     passes
         .iter()
-        .map(|pass| NativeVulkanSceneEffectRecord {
-            kind: native_vulkan_scene_effect_kind(pass.runtime.as_deref(), &pass.effect_file),
-            effect_file: pass.effect_file.clone(),
-            runtime: pass.runtime.clone(),
-            pass_index: pass.pass_index,
-            shader: pass.shader.clone(),
-            blending: pass.blending.clone(),
-            texture_slots: native_vulkan_scene_texture_slots_from_scene_slots(&pass.texture_slots),
-            parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
-            combo_keys: pass.combos.keys().cloned().collect(),
-            depth_test: native_vulkan_scene_material_flag_from_optional(pass.depthtest.as_deref()),
-            depth_write: native_vulkan_scene_material_flag_from_optional(
-                pass.depthwrite.as_deref(),
-            ),
-            cull_mode: native_vulkan_scene_cull_mode_from_optional(pass.cullmode.as_deref()),
+        .map(|pass| {
+            let semantics =
+                native_vulkan_scene_effect_semantics(pass.runtime.as_deref(), &pass.effect_file);
+            NativeVulkanSceneEffectRecord {
+                kind: semantics.kind,
+                evaluation_boundary: semantics.evaluation_boundary,
+                effect_file: pass.effect_file.clone(),
+                runtime: pass.runtime.clone(),
+                pass_index: pass.pass_index,
+                shader: pass.shader.clone(),
+                blending: pass.blending.clone(),
+                texture_slots: native_vulkan_scene_texture_slots_from_scene_slots(
+                    &pass.texture_slots,
+                ),
+                parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
+                combo_keys: pass.combos.keys().cloned().collect(),
+                depth_test: native_vulkan_scene_material_flag_from_optional(
+                    pass.depthtest.as_deref(),
+                ),
+                depth_write: native_vulkan_scene_material_flag_from_optional(
+                    pass.depthwrite.as_deref(),
+                ),
+                cull_mode: native_vulkan_scene_cull_mode_from_optional(pass.cullmode.as_deref()),
+            }
         })
         .collect()
 }
@@ -161,6 +184,8 @@ pub(super) fn native_vulkan_scene_effect_records_label(
         label.push_str(record.shader.as_deref().unwrap_or("<none>"));
         label.push_str(":blend=");
         label.push_str(record.blending.as_deref().unwrap_or("<none>"));
+        label.push_str(":boundary=");
+        label.push_str(record.evaluation_boundary.as_str());
     }
     label.push(']');
     label
@@ -191,19 +216,69 @@ fn native_vulkan_scene_effect_kind(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> NativeVulkanSceneEffectKind {
+    native_vulkan_scene_effect_semantics(runtime, effect_file).kind
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NativeVulkanSceneEffectSemantics {
+    kind: NativeVulkanSceneEffectKind,
+    evaluation_boundary: NativeVulkanSceneEffectEvaluationBoundary,
+}
+
+fn native_vulkan_scene_effect_semantics(
+    runtime: Option<&str>,
+    effect_file: &str,
+) -> NativeVulkanSceneEffectSemantics {
     let file = native_vulkan_scene_normalized_effect_file(effect_file);
-    if opacity_mask::matches(runtime, &file) {
+    let kind = if opacity_mask::matches(runtime, &file) {
         NativeVulkanSceneEffectKind::OpacityMask
     } else if iris::matches(runtime, &file) {
         NativeVulkanSceneEffectKind::Iris
-    } else if let Some(kind) = water::classify(runtime, &file) {
-        kind
+    } else if water_caustics::matches(runtime, &file) {
+        NativeVulkanSceneEffectKind::WaterCaustics
+    } else if water_ripple::matches(&file) {
+        NativeVulkanSceneEffectKind::WaterRipple
+    } else if water_waves::matches(&file) {
+        NativeVulkanSceneEffectKind::WaterWaves
+    } else if water_flow::matches(&file) {
+        NativeVulkanSceneEffectKind::WaterFlow
     } else if let Some(kind) = motion::classify(&file) {
         kind
     } else if let Some(kind) = utility::classify(&file) {
         kind
     } else {
         NativeVulkanSceneEffectKind::ShaderMaterial
+    };
+    NativeVulkanSceneEffectSemantics {
+        kind,
+        evaluation_boundary: native_vulkan_scene_effect_evaluation_boundary(kind),
+    }
+}
+
+fn native_vulkan_scene_effect_evaluation_boundary(
+    kind: NativeVulkanSceneEffectKind,
+) -> NativeVulkanSceneEffectEvaluationBoundary {
+    match kind {
+        NativeVulkanSceneEffectKind::Iris => {
+            NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget
+        }
+        NativeVulkanSceneEffectKind::SwayShake => {
+            NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform
+        }
+        NativeVulkanSceneEffectKind::Flutter => flutter::evaluation_boundary(),
+        NativeVulkanSceneEffectKind::Drift => drift::evaluation_boundary(),
+        NativeVulkanSceneEffectKind::Blur | NativeVulkanSceneEffectKind::CompositeLayer => {
+            NativeVulkanSceneEffectEvaluationBoundary::UtilityPass
+        }
+        NativeVulkanSceneEffectKind::OpacityMask
+        | NativeVulkanSceneEffectKind::WaterRipple
+        | NativeVulkanSceneEffectKind::WaterWaves
+        | NativeVulkanSceneEffectKind::WaterFlow
+        | NativeVulkanSceneEffectKind::WaterCaustics
+        | NativeVulkanSceneEffectKind::UserBindings
+        | NativeVulkanSceneEffectKind::ShaderMaterial => {
+            NativeVulkanSceneEffectEvaluationBoundary::MaterialPass
+        }
     }
 }
 
@@ -280,62 +355,74 @@ mod tests {
                 Some("native-opacity-mask"),
                 "effects/anything/effect.json",
                 NativeVulkanSceneEffectKind::OpacityMask,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 Some("native-iris-mask"),
                 "effects/anything/effect.json",
                 NativeVulkanSceneEffectKind::Iris,
+                NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget,
             ),
             (
                 Some("native-water-caustics"),
                 "effects/anything/effect.json",
                 NativeVulkanSceneEffectKind::WaterCaustics,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
                 "effects/waterripple/effect.json",
                 NativeVulkanSceneEffectKind::WaterRipple,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
                 "effects/water_waves/effect.json",
                 NativeVulkanSceneEffectKind::WaterWaves,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
                 "effects/waterflow/effect.json",
                 NativeVulkanSceneEffectKind::WaterFlow,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
                 "effects/flutter/effect.json",
                 NativeVulkanSceneEffectKind::Flutter,
+                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameVertex,
             ),
             (
                 None,
                 "effects/drift/effect.json",
                 NativeVulkanSceneEffectKind::Drift,
+                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameVertex,
             ),
             (
                 None,
                 "effects/sway/effect.json",
                 NativeVulkanSceneEffectKind::SwayShake,
+                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform,
             ),
             (
                 None,
                 "effects/fullscreenlayer/effect.json",
                 NativeVulkanSceneEffectKind::CompositeLayer,
+                NativeVulkanSceneEffectEvaluationBoundary::UtilityPass,
             ),
             (
                 None,
                 "effects/newproperty5/effect.json",
                 NativeVulkanSceneEffectKind::UserBindings,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
         ];
-        for (runtime, effect_file, expected) in cases {
+        for (runtime, effect_file, expected_kind, expected_boundary) in cases {
+            let semantics = native_vulkan_scene_effect_semantics(runtime, effect_file);
+            assert_eq!(semantics.kind, expected_kind, "{effect_file}");
             assert_eq!(
-                native_vulkan_scene_effect_kind(runtime, effect_file),
-                expected,
+                semantics.evaluation_boundary, expected_boundary,
                 "{effect_file}"
             );
         }

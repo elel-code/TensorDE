@@ -61,9 +61,9 @@ use self::texture_slots::{
 pub(super) use self::types::{
     NativeVulkanSceneBlendEquation, NativeVulkanSceneBlendFactor, NativeVulkanSceneBlendOp,
     NativeVulkanSceneBlendState, NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan,
-    NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
-    NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
-    NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
+    NativeVulkanSceneEffectEvaluationBoundary, NativeVulkanSceneEffectKind,
+    NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind,
+    NativeVulkanSceneMaterialPass, NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
     NativeVulkanSceneRecordableQuad, NativeVulkanSceneRenderState,
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageGeometryRange, NativeVulkanSceneSampledImageQuad,
