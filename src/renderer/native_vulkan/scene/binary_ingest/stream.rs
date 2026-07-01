@@ -11,10 +11,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
     SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
     SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor,
-    SceneBinaryChunkKind, SceneBinaryError, SceneBinaryLayoutPlan, decode_effect_parameter_record,
-    decode_geometry_record, decode_node_record, decode_puppet_record,
-    decode_retained_gpu_state_record,
+    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+    SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor, SceneBinaryChunkKind, SceneBinaryError,
+    SceneBinaryLayoutPlan, decode_effect_parameter_record, decode_geometry_record,
+    decode_node_record, decode_puppet_record, decode_retained_gpu_state_record,
+    decode_transform_keyframe_record, decode_transform_timeline_record,
 };
 
 use super::{
@@ -23,6 +24,7 @@ use super::{
     native_vulkan_scene_binary_ingest_geometry_record,
     native_vulkan_scene_binary_ingest_node_record, native_vulkan_scene_binary_ingest_puppet_record,
     native_vulkan_scene_binary_ingest_retained_record,
+    native_vulkan_scene_binary_ingest_transform_record,
     native_vulkan_scene_binary_ingest_validate_record_payload, scene_binary_ingest_usize_for_error,
 };
 
@@ -44,6 +46,24 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
     let geometry_index_record_count =
         native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::GeometryIndices)?
             .record_count;
+    let node_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::NodeTable)?
+            .record_count;
+    let transform_timeline_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::TransformTimeline)?
+            .record_count;
+    let transform_keyframe_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::TransformKeyframes)?
+            .record_count;
+    let puppet_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::Puppet)?
+            .record_count;
+    let material_pass_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::MaterialPass)?
+            .record_count;
+    let geometry_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::Geometry)?
+            .record_count;
 
     for descriptor in &layout.chunks {
         match descriptor.kind {
@@ -55,22 +75,55 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
                 summary.resource_count = descriptor.record_count;
             }
             SceneBinaryChunkKind::NodeTable => {
+                let mut node_index = 0u32;
                 native_vulkan_scene_binary_stream_records(
                     reader,
                     descriptor,
                     SCENE_BINARY_NODE_RECORD_SIZE,
                     |bytes| {
                         let node = decode_node_record(bytes)?;
-                        native_vulkan_scene_binary_ingest_node_record(&mut summary, node)
+                        native_vulkan_scene_binary_ingest_node_record(
+                            &mut summary,
+                            node,
+                            node_index,
+                            node_record_count,
+                            transform_timeline_record_count,
+                            puppet_record_count,
+                            material_pass_record_count,
+                            geometry_record_count,
+                        )?;
+                        node_index = node_index.saturating_add(1);
+                        Ok(())
                     },
                 )?;
             }
             SceneBinaryChunkKind::TransformTimeline => {
-                native_vulkan_scene_binary_ingest_validate_record_payload(
+                native_vulkan_scene_binary_stream_records(
+                    reader,
                     descriptor,
                     SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+                    |bytes| {
+                        let transform = decode_transform_timeline_record(bytes)?;
+                        native_vulkan_scene_binary_ingest_transform_record(
+                            &mut summary,
+                            transform,
+                            transform_keyframe_record_count,
+                        )
+                    },
                 )?;
-                summary.transform_timeline_count = descriptor.record_count;
+            }
+            SceneBinaryChunkKind::TransformKeyframes => {
+                native_vulkan_scene_binary_stream_records(
+                    reader,
+                    descriptor,
+                    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+                    |bytes| {
+                        let _ = decode_transform_keyframe_record(bytes)?;
+                        summary.transform_keyframe_count =
+                            summary.transform_keyframe_count.saturating_add(1);
+                        Ok(())
+                    },
+                )?;
             }
             SceneBinaryChunkKind::Geometry => {
                 native_vulkan_scene_binary_stream_records(

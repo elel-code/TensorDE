@@ -41,8 +41,13 @@ use self::retained::native_vulkan_scene_binary_retained_ingest_plan;
 pub(in crate::renderer::native_vulkan::scene) use self::retained::{
     NativeVulkanSceneBinaryRetainedIngestPlan, NativeVulkanSceneBinaryRetainedUpdatePlan,
 };
-pub(in crate::renderer::native_vulkan::scene) use self::transform::NativeVulkanSceneBinaryTransformRecord;
-use self::transform::native_vulkan_scene_binary_transform_records;
+pub(in crate::renderer::native_vulkan::scene) use self::transform::{
+    NativeVulkanSceneBinaryTransformKeyframeRecord, NativeVulkanSceneBinaryTransformRecord,
+};
+use self::transform::{
+    native_vulkan_scene_binary_transform_keyframe_records,
+    native_vulkan_scene_binary_transform_records,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan {
@@ -52,6 +57,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) draw_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) transform_timeline_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) transform_keyframe_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_index_count: u32,
     pub(in crate::renderer::native_vulkan::scene) mesh_vertex_count: u32,
@@ -83,6 +89,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryNodeRecord>,
     pub(in crate::renderer::native_vulkan::scene) transform_records:
         Vec<NativeVulkanSceneBinaryTransformRecord>,
+    pub(in crate::renderer::native_vulkan::scene) transform_keyframe_records:
+        Vec<NativeVulkanSceneBinaryTransformKeyframeRecord>,
     pub(in crate::renderer::native_vulkan::scene) geometry_records:
         Vec<NativeVulkanSceneBinaryGeometryRecord>,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
@@ -125,6 +133,9 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let node_count = record_len_from_usize(node_records.len());
     let transform_records = native_vulkan_scene_binary_transform_records(container, layout)?;
     let transform_timeline_count = record_len_from_usize(transform_records.len());
+    let transform_keyframe_records =
+        native_vulkan_scene_binary_transform_keyframe_records(container, layout)?;
+    let transform_keyframe_count = record_len_from_usize(transform_keyframe_records.len());
     let geometry_records = native_vulkan_scene_binary_geometry_records(container, layout)?;
     let geometry_record_count = record_len_from_usize(geometry_records.records.len());
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
@@ -150,6 +161,11 @@ fn native_vulkan_scene_binary_plan_from_layout(
 
     let mut draw_records = Vec::with_capacity(node_records.len());
     for (node_index, node) in node_records.iter().enumerate() {
+        let source_node = layout.node_record_at(container, record_len_from_usize(node_index))?;
+        let _ = layout.node_transform_records(container, source_node)?;
+        if node.puppet_index != SCENE_BINARY_NONE_ID {
+            let _ = layout.puppet_record_at(container, node.puppet_index)?;
+        }
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
         }
@@ -170,6 +186,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         draw_record_count: record_len_from_usize(draw_records.len()),
         geometry_record_count,
         transform_timeline_count,
+        transform_keyframe_count,
         generated_vertex_count: geometry_records.generated_vertex_count,
         generated_index_count: geometry_records.generated_index_count,
         mesh_vertex_count: geometry_records.mesh_vertex_count,
@@ -196,6 +213,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         resource_records,
         node_records,
         transform_records,
+        transform_keyframe_records,
         geometry_records: geometry_records.records,
         draw_records,
         texture_slots: material_records.texture_slots,
@@ -268,6 +286,22 @@ mod tests {
                         }
                     ]
                 }
+            ],
+            "timelines": [
+                {
+                    "id": "layer-x",
+                    "target_node": "layer",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "loop": true,
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 1000, "value": 5.0, "curve": "ease-out" }
+                            ]
+                        }
+                    ]
+                }
             ]
         }))
         .expect("scene document");
@@ -289,7 +323,8 @@ mod tests {
         assert_eq!(plan.resource_records[1].height, 64);
         assert_eq!(plan.node_count, 1);
         assert_eq!(plan.draw_record_count, 1);
-        assert_eq!(plan.transform_timeline_count, 1);
+        assert_eq!(plan.transform_timeline_count, 2);
+        assert_eq!(plan.transform_keyframe_count, 2);
         assert_eq!(
             plan.generated_vertex_count,
             SCENE_BINARY_GEOMETRY_QUAD_VERTEX_COUNT
@@ -301,11 +336,19 @@ mod tests {
         assert_eq!(plan.mesh_vertex_count, 0);
         assert_eq!(plan.mesh_index_count, 0);
         assert_eq!(plan.node_records.len(), 1);
-        assert_eq!(plan.transform_records.len(), 1);
+        assert_eq!(plan.transform_records.len(), 2);
+        assert_eq!(plan.transform_keyframe_records.len(), 2);
         assert_eq!(
             plan.transform_records[0].owner_name,
             plan.node_records[0].id_name
         );
+        assert_eq!(plan.node_records[0].first_transform, 0);
+        assert_eq!(plan.node_records[0].transform_count, 2);
+        assert_eq!(plan.transform_records[1].first_keyframe, 0);
+        assert_eq!(plan.transform_records[1].keyframe_count, 2);
+        assert_eq!(plan.transform_keyframe_records[1].time_ms, 1000);
+        assert_eq!(plan.transform_keyframe_records[1].value, 5.0);
+        assert_ne!(plan.transform_keyframe_records[1].curve, 0);
         assert_eq!(plan.geometry_records.len(), 1);
         assert_eq!(plan.draw_records[0].node_index, 0);
         let node = plan.node_records[plan.draw_records[0].node_index as usize];
@@ -476,6 +519,7 @@ mod tests {
         assert_eq!(plan.resource_records.len(), 1);
         assert_eq!(plan.resource_records[0].height, 256);
         assert_eq!(plan.transform_timeline_count, 1);
+        assert_eq!(plan.transform_keyframe_count, 0);
         assert_eq!(plan.effect_parameter_count, 4);
         assert_eq!(plan.effect_parameter_ingest_plan.record_count, 4);
         assert_eq!(plan.effect_parameter_ingest_plan.effect_property_count, 1);
@@ -530,6 +574,7 @@ mod tests {
 
         assert_eq!(plan.draw_record_count, 1);
         assert_eq!(plan.transform_timeline_count, 1);
+        assert_eq!(plan.transform_keyframe_count, 0);
         assert_eq!(plan.generated_vertex_count, 0);
         assert_eq!(plan.generated_index_count, 0);
         assert_eq!(plan.mesh_vertex_count, 3);

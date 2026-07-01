@@ -21,6 +21,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryInge
     pub(in crate::renderer::native_vulkan::scene) node_count: u32,
     pub(in crate::renderer::native_vulkan::scene) draw_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) transform_timeline_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) transform_keyframe_count: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_index_count: u32,

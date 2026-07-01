@@ -3,9 +3,9 @@ use std::error::Error;
 use std::fmt;
 
 use super::{
-    SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneDocument, SceneEffect,
-    SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneNode, SceneNodeKind,
-    SceneResource, SceneResourceKind, SceneTimelineChannel,
+    SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
+    SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
+    SceneNode, SceneNodeKind, SceneResource, SceneResourceKind, SceneTimelineChannel,
 };
 
 mod effect_uv;
@@ -44,14 +44,15 @@ use self::geometry::{
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 7;
+pub const SCENE_BINARY_VERSION: u16 = 8;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 48;
-pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 72;
+pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 72;
+pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
+pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 56;
@@ -93,6 +94,7 @@ pub enum SceneBinaryChunkKind {
     ResourceTable,
     NodeTable,
     TransformTimeline,
+    TransformKeyframes,
     Geometry,
     GeometryVertices,
     GeometryIndices,
@@ -109,10 +111,11 @@ pub enum SceneBinaryChunkKind {
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 16] = [
+    pub const REQUIRED_ORDER: [Self; 17] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
+        Self::TransformKeyframes,
         Self::Geometry,
         Self::GeometryVertices,
         Self::GeometryIndices,
@@ -133,6 +136,7 @@ impl SceneBinaryChunkKind {
             Self::ResourceTable => u32::from_le_bytes(*b"REST"),
             Self::NodeTable => u32::from_le_bytes(*b"NODE"),
             Self::TransformTimeline => u32::from_le_bytes(*b"XFRM"),
+            Self::TransformKeyframes => u32::from_le_bytes(*b"XKEY"),
             Self::Geometry => u32::from_le_bytes(*b"GEOM"),
             Self::GeometryVertices => u32::from_le_bytes(*b"GVTX"),
             Self::GeometryIndices => u32::from_le_bytes(*b"GIDX"),
@@ -161,6 +165,7 @@ impl SceneBinaryChunkKind {
             Self::ResourceTable => "resource_table",
             Self::NodeTable => "node_table",
             Self::TransformTimeline => "transform_timeline",
+            Self::TransformKeyframes => "transform_keyframes",
             Self::Geometry => "geometry",
             Self::GeometryVertices => "geometry_vertices",
             Self::GeometryIndices => "geometry_indices",
@@ -318,6 +323,54 @@ impl SceneBinaryLayoutPlan {
             SceneBinaryChunkKind::TransformTimeline,
             SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
             decode_transform_timeline_record,
+        )
+    }
+
+    pub fn node_transform_records<'a>(
+        &self,
+        container: &'a [u8],
+        node: SceneBinaryNodeRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTransformTimelineRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::TransformTimeline,
+            SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+            node.first_transform,
+            node.transform_count,
+            decode_transform_timeline_record,
+        )
+    }
+
+    pub fn transform_keyframe_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTransformKeyframeRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::TransformKeyframes,
+            SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+            decode_transform_keyframe_record,
+        )
+    }
+
+    pub fn transform_keyframe_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        transform: SceneBinaryTransformTimelineRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTransformKeyframeRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            if transform.first_keyframe == SCENE_BINARY_NONE_ID && transform.keyframe_count == 0 {
+                (0, 0)
+            } else {
+                (transform.first_keyframe, transform.keyframe_count)
+            };
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::TransformKeyframes,
+            SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_transform_keyframe_record,
         )
     }
 
@@ -595,6 +648,20 @@ impl SceneBinaryLayoutPlan {
             container,
             SceneBinaryChunkKind::Puppet,
             SCENE_BINARY_PUPPET_RECORD_SIZE,
+            decode_puppet_record,
+        )
+    }
+
+    pub fn puppet_record_at(
+        &self,
+        container: &[u8],
+        record_index: u32,
+    ) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
+        self.record_at(
+            container,
+            SceneBinaryChunkKind::Puppet,
+            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            record_index,
             decode_puppet_record,
         )
     }
@@ -916,11 +983,16 @@ pub struct SceneBinaryNodeRecord {
     pub flags: u16,
     pub draw_order: u32,
     pub child_count: u32,
+    pub first_child_index: u32,
+    pub subtree_node_count: u32,
     pub effect_count: u32,
     pub audio_count: u32,
     pub property_count: u32,
     pub material_index: u32,
     pub geometry_index: u32,
+    pub first_transform: u32,
+    pub transform_count: u32,
+    pub puppet_index: u32,
 }
 
 impl SceneBinaryNodeRecord {
@@ -933,12 +1005,18 @@ impl SceneBinaryNodeRecord {
         write_u16(out, self.flags);
         write_u32(out, self.draw_order);
         write_u32(out, self.child_count);
+        write_u32(out, self.first_child_index);
+        write_u32(out, self.subtree_node_count);
         write_u32(out, self.effect_count);
         write_u32(out, self.audio_count);
         write_u32(out, self.property_count);
         write_u32(out, self.material_index);
         write_u32(out, self.geometry_index);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 48);
+        write_u32(out, self.first_transform);
+        write_u32(out, self.transform_count);
+        write_u32(out, self.puppet_index);
+        write_u32(out, 0);
+        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 72);
     }
 }
 
@@ -949,6 +1027,7 @@ pub struct SceneBinaryTransformTimelineRecord {
     pub property: u16,
     pub flags: u16,
     pub keyframe_count: u32,
+    pub first_keyframe: u32,
     pub time_offset_ms: u64,
     pub first_time_ms: u64,
     pub last_time_ms: u64,
@@ -968,6 +1047,8 @@ impl SceneBinaryTransformTimelineRecord {
         write_u16(out, self.property);
         write_u16(out, self.flags);
         write_u32(out, self.keyframe_count);
+        write_u32(out, self.first_keyframe);
+        write_u32(out, 0);
         write_u64(out, self.time_offset_ms);
         write_u64(out, self.first_time_ms);
         write_u64(out, self.last_time_ms);
@@ -979,7 +1060,25 @@ impl SceneBinaryTransformTimelineRecord {
         write_f32(out, self.value5);
         write_f32(out, self.value6);
         write_u32(out, 0);
-        debug_assert_eq!(SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, 72);
+        debug_assert_eq!(SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, 80);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBinaryTransformKeyframeRecord {
+    pub time_ms: u64,
+    pub value: f32,
+    pub curve: u16,
+    pub flags: u16,
+}
+
+impl SceneBinaryTransformKeyframeRecord {
+    fn encode(self, out: &mut Vec<u8>) {
+        write_u64(out, self.time_ms);
+        write_f32(out, self.value);
+        write_u16(out, self.curve);
+        write_u16(out, self.flags);
+        debug_assert_eq!(SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, 16);
     }
 }
 
@@ -1316,6 +1415,7 @@ pub struct SceneBinaryDocumentShape {
     pub resource_table_records: u32,
     pub node_table_records: u32,
     pub transform_timeline_records: u32,
+    pub transform_keyframe_records: u32,
     pub geometry_records: u32,
     pub geometry_vertex_records: u32,
     pub geometry_index_records: u32,
@@ -1342,6 +1442,14 @@ impl SceneBinaryDocumentShape {
                     .map(|timeline| timeline.channels.len())
                     .sum::<usize>(),
             ),
+            transform_keyframe_records: saturating_u32(
+                document
+                    .timelines
+                    .iter()
+                    .flat_map(|timeline| timeline.channels.iter())
+                    .map(|channel| channel.keyframes.len())
+                    .sum::<usize>(),
+            ),
             render_state_records: 1,
             debug_name_records: saturating_u32(document.resources.len()),
             ..Default::default()
@@ -1365,6 +1473,7 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::ResourceTable => self.resource_table_records,
             SceneBinaryChunkKind::NodeTable => self.node_table_records,
             SceneBinaryChunkKind::TransformTimeline => self.transform_timeline_records,
+            SceneBinaryChunkKind::TransformKeyframes => self.transform_keyframe_records,
             SceneBinaryChunkKind::Geometry => self.geometry_records,
             SceneBinaryChunkKind::GeometryVertices => self.geometry_vertex_records,
             SceneBinaryChunkKind::GeometryIndices => self.geometry_index_records,
@@ -1570,6 +1679,7 @@ struct SceneBinaryPayloadBuilder {
     resource_table: SceneBinaryChunkWriter,
     node_table: SceneBinaryChunkWriter,
     transform_timeline: SceneBinaryChunkWriter,
+    transform_keyframes: SceneBinaryChunkWriter,
     geometry: SceneBinaryChunkWriter,
     geometry_vertices: SceneBinaryChunkWriter,
     geometry_indices: SceneBinaryChunkWriter,
@@ -1628,6 +1738,50 @@ impl<'a> SceneBinaryResourceIndex<'a> {
 
     fn binding(&self, resource_id: &str) -> Option<SceneBinaryResourceBinding<'a>> {
         self.bindings.get(resource_id).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryTimelineChannelBinding<'a> {
+    timeline_id: &'a str,
+    channel: &'a SceneTimelineChannel,
+}
+
+#[derive(Debug)]
+struct SceneBinaryTimelineIndex<'a> {
+    by_target: BTreeMap<&'a str, Vec<SceneBinaryTimelineChannelBinding<'a>>>,
+    untargeted: Vec<SceneBinaryTimelineChannelBinding<'a>>,
+}
+
+impl<'a> SceneBinaryTimelineIndex<'a> {
+    fn from_document(document: &'a SceneDocument) -> Self {
+        let mut by_target: BTreeMap<&'a str, Vec<SceneBinaryTimelineChannelBinding<'a>>> =
+            BTreeMap::new();
+        let mut untargeted = Vec::new();
+        for timeline in &document.timelines {
+            for channel in &timeline.channels {
+                let binding = SceneBinaryTimelineChannelBinding {
+                    timeline_id: &timeline.id,
+                    channel,
+                };
+                if let Some(target_node) = timeline.target_node.as_deref() {
+                    by_target.entry(target_node).or_default().push(binding);
+                } else {
+                    untargeted.push(binding);
+                }
+            }
+        }
+        Self {
+            by_target,
+            untargeted,
+        }
+    }
+
+    fn channels_for_node(&self, node_id: &str) -> &[SceneBinaryTimelineChannelBinding<'a>] {
+        self.by_target
+            .get(node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 }
 
@@ -1720,48 +1874,22 @@ impl SceneBinaryPayloadBuilder {
 
     fn include_document(&mut self, document: &SceneDocument) {
         let resource_index = SceneBinaryResourceIndex::from_document(document);
+        let timeline_index = SceneBinaryTimelineIndex::from_document(document);
         for resource in &document.resources {
             self.include_resource(resource_id_fields(resource));
         }
         let mut draw_order = 0;
         for node in &document.nodes {
-            self.include_node(node, None, &mut draw_order, &resource_index);
+            self.include_node(
+                node,
+                None,
+                &mut draw_order,
+                &resource_index,
+                &timeline_index,
+            );
         }
-        for timeline in &document.timelines {
-            let timeline_name = self
-                .names
-                .intern(SceneBinaryNameKind::Timeline, &timeline.id);
-            let owner_name = self
-                .names
-                .intern_optional(SceneBinaryNameKind::NodeId, timeline.target_node.as_deref());
-            for channel in &timeline.channels {
-                let (first_time_ms, last_time_ms, first_value, last_value) =
-                    timeline_channel_bounds(channel);
-                let property_name = self.names.intern(
-                    SceneBinaryNameKind::Property,
-                    animated_property_label(channel.property),
-                );
-                self.transform_timeline.push_record(|out| {
-                    SceneBinaryTransformTimelineRecord {
-                        owner_name,
-                        timeline_name,
-                        property: animated_property_code(channel.property),
-                        flags: u16::from(channel.loop_playback),
-                        keyframe_count: saturating_u32(channel.keyframes.len()),
-                        time_offset_ms: channel.time_offset_ms,
-                        first_time_ms,
-                        last_time_ms,
-                        value0: first_value,
-                        value1: last_value,
-                        value2: property_name as f32,
-                        value3: 0.0,
-                        value4: 0.0,
-                        value5: 0.0,
-                        value6: 0.0,
-                    }
-                    .encode(out)
-                });
-            }
+        for channel in &timeline_index.untargeted {
+            self.push_timeline_channel(SCENE_BINARY_NONE_ID, *channel);
         }
         let (width, height) = document
             .size
@@ -1821,6 +1949,7 @@ impl SceneBinaryPayloadBuilder {
         parent_index: Option<u32>,
         draw_order: &mut u32,
         resource_index: &SceneBinaryResourceIndex<'_>,
+        timeline_index: &SceneBinaryTimelineIndex<'_>,
     ) {
         let node_index = self.node_table.record_count;
         let id_name = self.names.intern(SceneBinaryNameKind::NodeId, &node.id);
@@ -1912,6 +2041,20 @@ impl SceneBinaryPayloadBuilder {
         } else {
             SCENE_BINARY_NONE_ID
         };
+        let first_transform = self.transform_timeline.record_count;
+        self.push_default_transform(id_name, node);
+        for channel in timeline_index.channels_for_node(&node.id) {
+            self.push_timeline_channel(id_name, *channel);
+        }
+        let transform_count = self
+            .transform_timeline
+            .record_count
+            .saturating_sub(first_transform);
+        let puppet_index = if node.mesh.is_some() || !node.puppet_animation_layers.is_empty() {
+            self.push_puppet(id_name, node)
+        } else {
+            SCENE_BINARY_NONE_ID
+        };
         self.node_table.push_record(|out| {
             SceneBinaryNodeRecord {
                 id_name,
@@ -1922,18 +2065,23 @@ impl SceneBinaryPayloadBuilder {
                 flags: node_flags(node),
                 draw_order: *draw_order,
                 child_count: saturating_u32(node.children.len()),
+                first_child_index: if node.children.is_empty() {
+                    SCENE_BINARY_NONE_ID
+                } else {
+                    node_index.saturating_add(1)
+                },
+                subtree_node_count: node_subtree_count(node),
                 effect_count: saturating_u32(node.effects.len()),
                 audio_count: saturating_u32(node.audio.len()),
                 property_count: saturating_u32(node.properties.len()),
                 material_index,
                 geometry_index,
+                first_transform,
+                transform_count,
+                puppet_index,
             }
             .encode(out)
         });
-        self.push_default_transform(id_name, node);
-        if node.mesh.is_some() || !node.puppet_animation_layers.is_empty() {
-            self.push_puppet(id_name, node);
-        }
         *draw_order = draw_order.saturating_add(1);
         let mut base_texture_reuse_available = base_texture_slot.is_some();
         for effect in &node.effects {
@@ -1946,7 +2094,13 @@ impl SceneBinaryPayloadBuilder {
             );
         }
         for child in &node.children {
-            self.include_node(child, Some(node_index), draw_order, resource_index);
+            self.include_node(
+                child,
+                Some(node_index),
+                draw_order,
+                resource_index,
+                timeline_index,
+            );
         }
     }
 
@@ -2419,6 +2573,7 @@ impl SceneBinaryPayloadBuilder {
                 property: SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY,
                 flags: 0,
                 keyframe_count: 0,
+                first_keyframe: SCENE_BINARY_NONE_ID,
                 time_offset_ms: 0,
                 first_time_ms: 0,
                 last_time_ms: 0,
@@ -2434,7 +2589,65 @@ impl SceneBinaryPayloadBuilder {
         });
     }
 
-    fn push_puppet(&mut self, owner_name: u32, node: &SceneNode) {
+    fn push_timeline_channel(
+        &mut self,
+        owner_name: u32,
+        binding: SceneBinaryTimelineChannelBinding<'_>,
+    ) {
+        let timeline_name = self
+            .names
+            .intern(SceneBinaryNameKind::Timeline, binding.timeline_id);
+        let channel = binding.channel;
+        let first_keyframe = if channel.keyframes.is_empty() {
+            SCENE_BINARY_NONE_ID
+        } else {
+            self.transform_keyframes.record_count
+        };
+        for keyframe in &channel.keyframes {
+            self.push_transform_keyframe(keyframe);
+        }
+        let (first_time_ms, last_time_ms, first_value, last_value) =
+            timeline_channel_bounds(channel);
+        let property_name = self.names.intern(
+            SceneBinaryNameKind::Property,
+            animated_property_label(channel.property),
+        );
+        self.transform_timeline.push_record(|out| {
+            SceneBinaryTransformTimelineRecord {
+                owner_name,
+                timeline_name,
+                property: animated_property_code(channel.property),
+                flags: u16::from(channel.loop_playback),
+                keyframe_count: saturating_u32(channel.keyframes.len()),
+                first_keyframe,
+                time_offset_ms: channel.time_offset_ms,
+                first_time_ms,
+                last_time_ms,
+                value0: first_value,
+                value1: last_value,
+                value2: property_name as f32,
+                value3: 0.0,
+                value4: 0.0,
+                value5: 0.0,
+                value6: 0.0,
+            }
+            .encode(out)
+        });
+    }
+
+    fn push_transform_keyframe(&mut self, keyframe: &SceneKeyframe) {
+        self.transform_keyframes.push_record(|out| {
+            SceneBinaryTransformKeyframeRecord {
+                time_ms: keyframe.time_ms,
+                value: keyframe.value as f32,
+                curve: curve_code(keyframe.curve),
+                flags: 0,
+            }
+            .encode(out)
+        });
+    }
+
+    fn push_puppet(&mut self, owner_name: u32, node: &SceneNode) -> u32 {
         self.puppet.push_record(|out| {
             let (vertex_count, index_count) = node.mesh.as_ref().map_or((0, 0), |mesh| {
                 (
@@ -2453,7 +2666,7 @@ impl SceneBinaryPayloadBuilder {
                     + saturating_u32(node.puppet_animation_layers.len()),
             }
             .encode(out)
-        });
+        })
     }
 
     fn push_retained(&mut self, owner_kind: u16, owner_name: u32, record_index: u32) {
@@ -2481,6 +2694,7 @@ impl SceneBinaryPayloadBuilder {
             resource_table_records: self.resource_table.record_count,
             node_table_records: self.node_table.record_count,
             transform_timeline_records: self.transform_timeline.record_count,
+            transform_keyframe_records: self.transform_keyframes.record_count,
             geometry_records: self.geometry.record_count,
             geometry_vertex_records: self.geometry_vertices.record_count,
             geometry_index_records: self.geometry_indices.record_count,
@@ -2504,6 +2718,8 @@ impl SceneBinaryPayloadBuilder {
                     .into_payload(SceneBinaryChunkKind::NodeTable),
                 self.transform_timeline
                     .into_payload(SceneBinaryChunkKind::TransformTimeline),
+                self.transform_keyframes
+                    .into_payload(SceneBinaryChunkKind::TransformKeyframes),
                 self.geometry.into_payload(SceneBinaryChunkKind::Geometry),
                 self.geometry_vertices
                     .into_payload(SceneBinaryChunkKind::GeometryVertices),
@@ -3009,6 +3225,16 @@ fn animated_property_label(property: SceneAnimatedProperty) -> &'static str {
     }
 }
 
+fn curve_code(curve: SceneCurve) -> u16 {
+    match curve {
+        SceneCurve::Linear => 1,
+        SceneCurve::Step => 2,
+        SceneCurve::EaseIn => 3,
+        SceneCurve::EaseOut => 4,
+        SceneCurve::EaseInOut => 5,
+    }
+}
+
 fn node_flags(node: &SceneNode) -> u16 {
     u16::from(node.visible)
         | (u16::from(node.resource.is_some()) << 1)
@@ -3017,6 +3243,12 @@ fn node_flags(node: &SceneNode) -> u16 {
         | (u16::from(node.mesh.is_some()) << 4)
         | (u16::from(!node.puppet_animation_layers.is_empty()) << 5)
         | (u16::from(!node.audio.is_empty()) << 6)
+}
+
+fn node_subtree_count(node: &SceneNode) -> u32 {
+    node.children.iter().fold(1u32, |count, child| {
+        count.saturating_add(node_subtree_count(child))
+    })
 }
 
 fn material_flags(
@@ -3453,11 +3685,16 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         flags: read_u16(bytes, 18)?,
         draw_order: read_u32(bytes, 20)?,
         child_count: read_u32(bytes, 24)?,
-        effect_count: read_u32(bytes, 28)?,
-        audio_count: read_u32(bytes, 32)?,
-        property_count: read_u32(bytes, 36)?,
-        material_index: read_u32(bytes, 40)?,
-        geometry_index: read_u32(bytes, 44)?,
+        first_child_index: read_u32(bytes, 28)?,
+        subtree_node_count: read_u32(bytes, 32)?,
+        effect_count: read_u32(bytes, 36)?,
+        audio_count: read_u32(bytes, 40)?,
+        property_count: read_u32(bytes, 44)?,
+        material_index: read_u32(bytes, 48)?,
+        geometry_index: read_u32(bytes, 52)?,
+        first_transform: read_u32(bytes, 56)?,
+        transform_count: read_u32(bytes, 60)?,
+        puppet_index: read_u32(bytes, 64)?,
     })
 }
 
@@ -3470,16 +3707,28 @@ pub(crate) fn decode_transform_timeline_record(
         property: read_u16(bytes, 8)?,
         flags: read_u16(bytes, 10)?,
         keyframe_count: read_u32(bytes, 12)?,
-        time_offset_ms: read_u64(bytes, 16)?,
-        first_time_ms: read_u64(bytes, 24)?,
-        last_time_ms: read_u64(bytes, 32)?,
-        value0: read_f32(bytes, 40)?,
-        value1: read_f32(bytes, 44)?,
-        value2: read_f32(bytes, 48)?,
-        value3: read_f32(bytes, 52)?,
-        value4: read_f32(bytes, 56)?,
-        value5: read_f32(bytes, 60)?,
-        value6: read_f32(bytes, 64)?,
+        first_keyframe: read_u32(bytes, 16)?,
+        time_offset_ms: read_u64(bytes, 24)?,
+        first_time_ms: read_u64(bytes, 32)?,
+        last_time_ms: read_u64(bytes, 40)?,
+        value0: read_f32(bytes, 48)?,
+        value1: read_f32(bytes, 52)?,
+        value2: read_f32(bytes, 56)?,
+        value3: read_f32(bytes, 60)?,
+        value4: read_f32(bytes, 64)?,
+        value5: read_f32(bytes, 68)?,
+        value6: read_f32(bytes, 72)?,
+    })
+}
+
+pub(crate) fn decode_transform_keyframe_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryTransformKeyframeRecord, SceneBinaryError> {
+    Ok(SceneBinaryTransformKeyframeRecord {
+        time_ms: read_u64(bytes, 0)?,
+        value: read_f32(bytes, 8)?,
+        curve: read_u16(bytes, 12)?,
+        flags: read_u16(bytes, 14)?,
     })
 }
 
@@ -4033,6 +4282,7 @@ mod tests {
         assert_eq!(shape.resource_table_records, 2);
         assert_eq!(shape.node_table_records, 1);
         assert_eq!(shape.transform_timeline_records, 2);
+        assert_eq!(shape.transform_keyframe_records, 1);
         assert_eq!(shape.geometry_records, 1);
         assert_eq!(shape.geometry_vertex_records, 0);
         assert_eq!(shape.geometry_index_records, 0);
@@ -4114,9 +4364,42 @@ mod tests {
             .expect("decoded node records");
         assert_eq!(nodes.len(), 1);
         assert_eq!(debug_names.name(nodes[0].id_name).unwrap(), Some("hair"));
+        assert_eq!(nodes[0].child_count, 0);
+        assert_eq!(nodes[0].first_child_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(nodes[0].subtree_node_count, 1);
+        assert_eq!(nodes[0].first_transform, 0);
+        assert_eq!(nodes[0].transform_count, 2);
         assert_eq!(nodes[0].effect_count, 1);
         assert_ne!(nodes[0].material_index, SCENE_BINARY_NONE_ID);
         assert_ne!(nodes[0].geometry_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(nodes[0].puppet_index, SCENE_BINARY_NONE_ID);
+
+        let transforms = layout
+            .node_transform_records(&bytes, nodes[0])
+            .expect("node transform range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded node transforms");
+        assert_eq!(transforms.len(), 2);
+        assert_eq!(
+            transforms[0].property,
+            SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY
+        );
+        assert_eq!(transforms[0].first_keyframe, SCENE_BINARY_NONE_ID);
+        assert_eq!(
+            transforms[1].property,
+            animated_property_code(SceneAnimatedProperty::X)
+        );
+        assert_eq!(transforms[1].first_keyframe, 0);
+        assert_eq!(transforms[1].keyframe_count, 1);
+        let keyframes = layout
+            .transform_keyframe_record_range(&bytes, transforms[1])
+            .expect("transform keyframe range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded transform keyframes");
+        assert_eq!(keyframes.len(), 1);
+        assert_eq!(keyframes[0].time_ms, 0);
+        assert_eq!(keyframes[0].value, 0.0);
+        assert_eq!(keyframes[0].curve, curve_code(Default::default()));
 
         let geometry = layout
             .geometry_records(&bytes)
@@ -4381,6 +4664,80 @@ mod tests {
             retained
                 .iter()
                 .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_GEOMETRY)
+        );
+    }
+
+    #[test]
+    fn binary_node_table_carries_subtree_and_runtime_record_indices() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "root",
+                    "type": "group",
+                    "children": [
+                        {
+                            "id": "mesh-child",
+                            "type": "image",
+                            "mesh": {
+                                "vertices": [
+                                    { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                                    { "x": 1.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                                    { "x": 0.0, "y": 1.0, "u": 0.0, "v": 1.0 }
+                                ],
+                                "indices": [0, 1, 2]
+                            },
+                            "children": [
+                                { "id": "grandchild", "type": "rectangle", "width": 4.0, "height": 8.0 }
+                            ]
+                        },
+                        { "id": "sibling", "type": "rectangle", "width": 2.0, "height": 2.0 }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let bytes = scene_binary_payloads_from_document(&document)
+            .encode_container(0)
+            .expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("node records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded node records");
+
+        assert_eq!(nodes.len(), 4);
+        assert_eq!(nodes[0].parent_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(nodes[0].child_count, 2);
+        assert_eq!(nodes[0].first_child_index, 1);
+        assert_eq!(nodes[0].subtree_node_count, 4);
+        assert_eq!(nodes[1].parent_index, 0);
+        assert_eq!(nodes[1].child_count, 1);
+        assert_eq!(nodes[1].first_child_index, 2);
+        assert_eq!(nodes[1].subtree_node_count, 2);
+        assert_ne!(nodes[1].geometry_index, SCENE_BINARY_NONE_ID);
+        assert_ne!(nodes[1].material_index, SCENE_BINARY_NONE_ID);
+        assert_ne!(nodes[1].puppet_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(nodes[2].parent_index, 1);
+        assert_eq!(nodes[3].parent_index, 0);
+        for node in &nodes {
+            assert_ne!(node.first_transform, SCENE_BINARY_NONE_ID);
+            assert_eq!(node.transform_count, 1);
+            assert_eq!(
+                layout
+                    .node_transform_records(&bytes, *node)
+                    .expect("node transform range")
+                    .len(),
+                1
+            );
+        }
+        assert_eq!(
+            layout
+                .puppet_record_at(&bytes, nodes[1].puppet_index)
+                .expect("puppet record")
+                .vertex_count,
+            3
         );
     }
 

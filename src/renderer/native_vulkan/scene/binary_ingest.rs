@@ -8,7 +8,8 @@ use crate::core::scene::binary::{
     SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor,
     SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryError,
     SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryNodeRecord,
-    SceneBinaryPuppetRecord, SceneBinaryRetainedGpuStateRecord, decode_scene_binary_container,
+    SceneBinaryPuppetRecord, SceneBinaryRetainedGpuStateRecord, SceneBinaryTransformTimelineRecord,
+    decode_scene_binary_container,
 };
 
 mod stream;
@@ -39,13 +40,53 @@ fn native_vulkan_scene_binary_ingest_from_layout(
         summary.resource_count = summary.resource_count.saturating_add(1);
     }
 
-    for node in layout.node_records(container)? {
-        native_vulkan_scene_binary_ingest_node_record(&mut summary, node?)?;
+    let node_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::NodeTable,
+    )?;
+    let transform_timeline_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::TransformTimeline,
+    )?;
+    let transform_keyframe_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::TransformKeyframes,
+    )?;
+    let puppet_record_count =
+        native_vulkan_scene_binary_ingest_chunk_record_count(layout, SceneBinaryChunkKind::Puppet)?;
+    let material_pass_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::MaterialPass,
+    )?;
+    let geometry_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::Geometry,
+    )?;
+
+    for (node_index, node) in layout.node_records(container)?.enumerate() {
+        native_vulkan_scene_binary_ingest_node_record(
+            &mut summary,
+            node?,
+            node_index.min(u32::MAX as usize) as u32,
+            node_record_count,
+            transform_timeline_record_count,
+            puppet_record_count,
+            material_pass_record_count,
+            geometry_record_count,
+        )?;
     }
 
     for transform in layout.transform_timeline_records(container)? {
-        let _ = transform?;
-        summary.transform_timeline_count = summary.transform_timeline_count.saturating_add(1);
+        native_vulkan_scene_binary_ingest_transform_record(
+            &mut summary,
+            transform?,
+            transform_keyframe_record_count,
+        )?;
+    }
+
+    for keyframe in layout.transform_keyframe_records(container)? {
+        let _ = keyframe?;
+        summary.transform_keyframe_count = summary.transform_keyframe_count.saturating_add(1);
     }
 
     let geometry_vertex_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
@@ -126,12 +167,96 @@ fn native_vulkan_scene_binary_ingest_from_layout(
 pub(super) fn native_vulkan_scene_binary_ingest_node_record(
     summary: &mut NativeVulkanSceneBinaryIngestSummary,
     node: SceneBinaryNodeRecord,
+    node_index: u32,
+    node_record_count: u32,
+    transform_timeline_record_count: u32,
+    puppet_record_count: u32,
+    material_pass_record_count: u32,
+    geometry_record_count: u32,
 ) -> Result<(), SceneBinaryError> {
     summary.node_count = summary.node_count.saturating_add(1);
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::NodeTable,
+        node_index,
+        node.subtree_node_count,
+        node_record_count,
+    )?;
+    if node.child_count == 0 {
+        if node.first_child_index != SCENE_BINARY_NONE_ID {
+            return Err(SceneBinaryError::RecordRangeOutOfBounds {
+                kind: SceneBinaryChunkKind::NodeTable,
+                first_record: node.first_child_index,
+                record_count: 1,
+                chunk_record_count: node_record_count,
+            });
+        }
+    } else {
+        native_vulkan_scene_binary_ingest_validate_record_range(
+            SceneBinaryChunkKind::NodeTable,
+            node.first_child_index,
+            1,
+            node_record_count,
+        )?;
+    }
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::TransformTimeline,
+        node.first_transform,
+        node.transform_count,
+        transform_timeline_record_count,
+    )?;
+    if node.puppet_index != SCENE_BINARY_NONE_ID {
+        native_vulkan_scene_binary_ingest_validate_record_range(
+            SceneBinaryChunkKind::Puppet,
+            node.puppet_index,
+            1,
+            puppet_record_count,
+        )?;
+    }
+    if node.material_index != SCENE_BINARY_NONE_ID {
+        native_vulkan_scene_binary_ingest_validate_record_range(
+            SceneBinaryChunkKind::MaterialPass,
+            node.material_index,
+            1,
+            material_pass_record_count,
+        )?;
+    }
     if node.geometry_index != SCENE_BINARY_NONE_ID {
+        native_vulkan_scene_binary_ingest_validate_record_range(
+            SceneBinaryChunkKind::Geometry,
+            node.geometry_index,
+            1,
+            geometry_record_count,
+        )?;
         summary.draw_record_count = summary.draw_record_count.saturating_add(1);
     }
     Ok(())
+}
+
+pub(super) fn native_vulkan_scene_binary_ingest_transform_record(
+    summary: &mut NativeVulkanSceneBinaryIngestSummary,
+    transform: SceneBinaryTransformTimelineRecord,
+    transform_keyframe_record_count: u32,
+) -> Result<(), SceneBinaryError> {
+    summary.transform_timeline_count = summary.transform_timeline_count.saturating_add(1);
+    let (first_keyframe, keyframe_count) = if transform.first_keyframe == SCENE_BINARY_NONE_ID {
+        if transform.keyframe_count != 0 {
+            return Err(SceneBinaryError::RecordRangeOutOfBounds {
+                kind: SceneBinaryChunkKind::TransformKeyframes,
+                first_record: transform.first_keyframe,
+                record_count: transform.keyframe_count,
+                chunk_record_count: transform_keyframe_record_count,
+            });
+        }
+        (0, 0)
+    } else {
+        (transform.first_keyframe, transform.keyframe_count)
+    };
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::TransformKeyframes,
+        first_keyframe,
+        keyframe_count,
+        transform_keyframe_record_count,
+    )
 }
 
 pub(super) fn native_vulkan_scene_binary_ingest_geometry_record(
@@ -367,7 +492,8 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneDocument;
     use crate::core::scene::binary::{
-        SCENE_BINARY_GEOMETRY_RECORD_SIZE, scene_binary_payloads_from_document,
+        SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+        scene_binary_payloads_from_document,
     };
 
     fn binary_ingest_test_bytes() -> Vec<u8> {
@@ -414,6 +540,21 @@ mod tests {
                         }
                     ]
                 }
+            ],
+            "timelines": [
+                {
+                    "id": "mesh-x",
+                    "target_node": "mesh-node",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 500, "value": 3.0, "curve": "ease-in" }
+                            ]
+                        }
+                    ]
+                }
             ]
         }))
         .expect("scene document");
@@ -456,6 +597,8 @@ mod tests {
         assert_eq!(ingest.resource_count, 2);
         assert_eq!(ingest.node_count, 1);
         assert_eq!(ingest.draw_record_count, 1);
+        assert_eq!(ingest.transform_timeline_count, 2);
+        assert_eq!(ingest.transform_keyframe_count, 2);
         assert_eq!(ingest.mesh_vertex_count, 3);
         assert_eq!(ingest.mesh_index_count, 3);
         assert_eq!(ingest.texture_slot_count, 2);
@@ -494,7 +637,8 @@ mod tests {
             native_vulkan_scene_binary_ingest_from_container(&bytes).expect("container ingest");
         let mut reader = RecordBoundReadCursor {
             inner: Cursor::new(bytes),
-            max_read_len: SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            max_read_len: SCENE_BINARY_GEOMETRY_RECORD_SIZE
+                .max(SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE),
         };
 
         let stream_ingest =

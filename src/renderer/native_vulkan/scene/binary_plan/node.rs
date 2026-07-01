@@ -10,11 +10,16 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryNode
     pub(in crate::renderer::native_vulkan::scene) flags: u16,
     pub(in crate::renderer::native_vulkan::scene) draw_order: u32,
     pub(in crate::renderer::native_vulkan::scene) child_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) first_child_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) subtree_node_count: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_count: u32,
     pub(in crate::renderer::native_vulkan::scene) audio_count: u32,
     pub(in crate::renderer::native_vulkan::scene) property_count: u32,
     pub(in crate::renderer::native_vulkan::scene) material_index: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) first_transform: u32,
+    pub(in crate::renderer::native_vulkan::scene) transform_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_index: u32,
 }
 
 pub(super) fn native_vulkan_scene_binary_node_records(
@@ -34,11 +39,16 @@ pub(super) fn native_vulkan_scene_binary_node_records(
             flags: node.flags,
             draw_order: node.draw_order,
             child_count: node.child_count,
+            first_child_index: node.first_child_index,
+            subtree_node_count: node.subtree_node_count,
             effect_count: node.effect_count,
             audio_count: node.audio_count,
             property_count: node.property_count,
             material_index: node.material_index,
             geometry_index: node.geometry_index,
+            first_transform: node.first_transform,
+            transform_count: node.transform_count,
+            puppet_index: node.puppet_index,
         });
     }
     Ok(nodes)
