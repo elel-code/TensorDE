@@ -492,8 +492,8 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneDocument;
     use crate::core::scene::binary::{
-        SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-        scene_binary_payloads_from_document,
+        SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE,
+        SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, scene_binary_payloads_from_document,
     };
 
     fn binary_ingest_test_bytes() -> Vec<u8> {
@@ -638,7 +638,8 @@ mod tests {
         let mut reader = RecordBoundReadCursor {
             inner: Cursor::new(bytes),
             max_read_len: SCENE_BINARY_GEOMETRY_RECORD_SIZE
-                .max(SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE),
+                .max(SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE)
+                .max(SCENE_BINARY_NODE_RECORD_SIZE),
         };
 
         let stream_ingest =

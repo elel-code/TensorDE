@@ -1,4 +1,5 @@
-use crate::core::{FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, load_gwpdir};
+use crate::core::scene::binary::encode_scene_binary_document;
+use crate::core::{FORMAT_NAME, FORMAT_VERSION, MANIFEST_FILE, SceneDocument, load_gwpdir};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -441,6 +442,7 @@ fn write_static_image_audio_scene_document(
         );
     }
     write_json_pretty(&scene_path, &document)?;
+    write_scene_binary_document(output_dir, package_path, &document, report)?;
     let package_path = path_to_package_string(Path::new(package_path));
     report.generated_assets.push(package_path.clone());
     Ok(package_path)
@@ -1217,9 +1219,49 @@ fn write_scene_document_to(
         serde_json::to_vec_pretty(&document).map_err(ConversionError::Serialize)?,
     )
     .map_err(ConversionError::WriteFile)?;
+    write_scene_binary_document(output_dir, package_path, &document, report)?;
     let package_path = path_to_package_string(Path::new(package_path));
     report.generated_assets.push(package_path.clone());
     Ok(package_path)
+}
+
+fn write_scene_binary_document(
+    output_dir: &Path,
+    json_package_path: &str,
+    document: &Value,
+    report: &mut ConversionReport,
+) -> Result<(), ConversionError> {
+    let binary_package_path = scene_binary_package_path(json_package_path);
+    let binary_path = output_dir.join(&binary_package_path);
+    if let Some(parent) = binary_path.parent() {
+        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
+    }
+    let document: SceneDocument = serde_json::from_value(document.clone()).map_err(|err| {
+        ConversionError::InvalidProject(format!(
+            "generated scene document cannot be encoded as binary scene: {err}"
+        ))
+    })?;
+    document.validate().map_err(|err| {
+        ConversionError::InvalidProject(format!(
+            "generated scene document is invalid binary scene input: {err}"
+        ))
+    })?;
+    let bytes = encode_scene_binary_document(0, &document).map_err(|err| {
+        ConversionError::InvalidProject(format!("failed to encode binary scene: {err}"))
+    })?;
+    fs::write(&binary_path, bytes).map_err(ConversionError::WriteFile)?;
+    push_unique(&mut report.converted_features, "binary-scene-format");
+    report
+        .generated_assets
+        .push(path_to_package_string(Path::new(&binary_package_path)));
+    Ok(())
+}
+
+fn scene_binary_package_path(json_package_path: &str) -> String {
+    json_package_path
+        .strip_suffix(".gscene.json")
+        .map(|prefix| format!("{prefix}.gscn"))
+        .unwrap_or_else(|| format!("{json_package_path}.gscn"))
 }
 
 fn scene_document_size(source_scene: Option<&Value>) -> Value {

@@ -23,6 +23,10 @@ use self::scene_runtime::{
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
+#[cfg(feature = "native-vulkan-renderer")]
+use crate::core::scene::binary::{
+    SceneBinaryChunkKind, SceneBinaryError, decode_scene_binary_container,
+};
 use crate::core::scene::{
     SceneAudioCueCondition, SceneEffect, SceneEffectUvTransform, SceneImageEffectPass,
     SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion, ScenePuppetAnimationClip,
@@ -415,6 +419,79 @@ pub fn scene_wallpaper_plan_from_gscene_path_with_properties(
         display,
         layers,
     })
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+pub fn scene_wallpaper_plan_from_gscn_path(
+    output_name: String,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    snapshot_time_ms: u64,
+    fit_override: Option<FitMode>,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    let bytes = fs::read(&source_path).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to read binary scene {}: {err}",
+            source_path.display()
+        ))
+    })?;
+    let layout = decode_scene_binary_container(&bytes).map_err(scene_binary_plan_error)?;
+    let render_state = layout
+        .render_state_records(&bytes)
+        .map_err(scene_binary_plan_error)?
+        .next()
+        .transpose()
+        .map_err(scene_binary_plan_error)?;
+    let scene_size = render_state.and_then(|state| {
+        (state.width > 0 && state.height > 0).then_some(SceneSize {
+            width: state.width,
+            height: state.height,
+        })
+    });
+    let node_count = layout
+        .chunk(SceneBinaryChunkKind::NodeTable)
+        .map_or(0, |chunk| chunk.record_count as usize);
+    let effect_count = layout
+        .chunk(SceneBinaryChunkKind::EffectPass)
+        .map_or(0, |chunk| chunk.record_count as usize);
+    let material_count = layout
+        .chunk(SceneBinaryChunkKind::MaterialPass)
+        .map_or(0, |chunk| chunk.record_count as usize);
+    let resource_count = layout
+        .chunk(SceneBinaryChunkKind::ResourceTable)
+        .map_or(0, |chunk| chunk.record_count as usize);
+
+    Ok(SceneWallpaperPlan {
+        output_name,
+        source: Some(source_path),
+        manifest_max_fps: None,
+        target_max_fps,
+        snapshot_time_ms,
+        scene_size,
+        scene_fit: fit_override.unwrap_or(FitMode::Cover),
+        scene_systems: SceneSystems::default(),
+        audio_cue_count: 0,
+        bound_properties: Vec::new(),
+        timeline_animation_count: 0,
+        timeline_animated_layer_count: 0,
+        puppet_animation_layer_count: 0,
+        property_binding_count: 0,
+        cursor_parallax_input_ready: false,
+        scene_input_properties: BTreeMap::new(),
+        scene_scenescript_binding_count: 0,
+        scene_material_graph_count: material_count,
+        scene_material_graph_resource_count: resource_count,
+        scene_effect_graph_count: effect_count,
+        scene_audio_response_binding_count: 0,
+        unsupported_scene_features: Vec::new(),
+        display: None,
+        layers: Vec::with_capacity(node_count),
+    })
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_binary_plan_error(err: SceneBinaryError) -> RendererPlanError {
+    RendererPlanError::PackageLoad(format!("failed to read binary scene: {err}"))
 }
 
 fn load_optional_scene_package_manifest(

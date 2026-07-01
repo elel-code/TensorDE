@@ -1,6 +1,6 @@
 use crate::core::scene::binary::{SceneBinaryError, SceneBinaryLayoutPlan};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryNodeRecord {
     pub(in crate::renderer::native_vulkan::scene) id_name: u32,
     pub(in crate::renderer::native_vulkan::scene) display_name: u32,
@@ -20,6 +20,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryNode
     pub(in crate::renderer::native_vulkan::scene) first_transform: u32,
     pub(in crate::renderer::native_vulkan::scene) transform_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) opacity: f32,
+    pub(in crate::renderer::native_vulkan::scene) color_rgba: u32,
+    pub(in crate::renderer::native_vulkan::scene) stroke_color_rgba: u32,
+    pub(in crate::renderer::native_vulkan::scene) stroke_width: f32,
+    pub(in crate::renderer::native_vulkan::scene) corner_radius: f32,
+    pub(in crate::renderer::native_vulkan::scene) fit: u16,
 }
 
 pub(super) fn native_vulkan_scene_binary_node_records(
@@ -49,6 +55,12 @@ pub(super) fn native_vulkan_scene_binary_node_records(
             first_transform: node.first_transform,
             transform_count: node.transform_count,
             puppet_index: node.puppet_index,
+            opacity: node.opacity,
+            color_rgba: node.color_rgba,
+            stroke_color_rgba: node.stroke_color_rgba,
+            stroke_width: node.stroke_width,
+            corner_radius: node.corner_radius,
+            fit: node.fit,
         });
     }
     Ok(nodes)

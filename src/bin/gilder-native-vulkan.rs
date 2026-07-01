@@ -13,7 +13,7 @@ use gilder::renderer::native_vulkan::{
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan,
-    scene_wallpaper_plan_from_gscene_path_with_properties,
+    scene_wallpaper_plan_from_gscene_path_with_properties, scene_wallpaper_plan_from_gscn_path,
 };
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::{Path, PathBuf};
@@ -996,6 +996,15 @@ fn scene_cli_plan(
 ) -> Result<SceneWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
         if !source_is_video && scene_cli_source_is_gscene(&source) {
+            if scene_cli_source_is_gscn(&source) {
+                return Ok(scene_wallpaper_plan_from_gscn_path(
+                    output_name,
+                    source,
+                    target_max_fps,
+                    snapshot_time_ms,
+                    Some(fit),
+                )?);
+            }
             let package_root =
                 scene_root.unwrap_or_else(|| scene_cli_default_gscene_package_root(&source));
             let (mut render_properties, cursor_parallax_input_ready) =
@@ -1211,7 +1220,14 @@ fn scene_cli_plan(
 fn scene_cli_source_is_gscene(path: &Path) -> bool {
     path.file_name()
         .and_then(|file_name| file_name.to_str())
-        .is_some_and(|file_name| file_name.ends_with(".gscene.json"))
+        .is_some_and(|file_name| {
+            file_name.ends_with(".gscene.json") || file_name.ends_with(".gscn")
+        })
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_cli_source_is_gscn(path: &Path) -> bool {
+    path.extension().and_then(|extension| extension.to_str()) == Some("gscn")
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
@@ -1593,6 +1609,74 @@ mod tests {
             plan.layers[0].audio[0].playback_mode.as_deref(),
             Some("loop")
         );
+    }
+
+    #[test]
+    fn scene_cli_plan_loads_gscn_binary_source() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-vulkan-cli-gscn-{}-{nonce}",
+            std::process::id()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let document: gilder::core::SceneDocument = serde_json::from_value(serde_json::json!({
+            "size": { "width": 320, "height": 180 },
+            "resources": [
+                { "id": "background-resource", "type": "image", "source": "assets/background.svg" }
+            ],
+            "nodes": [
+                {
+                    "id": "background",
+                    "type": "image",
+                    "resource": "background-resource",
+                    "width": 320,
+                    "height": 180
+                }
+            ]
+        }))
+        .unwrap();
+        let bytes = gilder::core::scene::binary::encode_scene_binary_document(0, &document)
+            .expect("binary scene");
+        let source = assets.join("scene.gscn");
+        std::fs::write(&source, bytes).unwrap();
+
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(source.clone()),
+            false,
+            None,
+            FitMode::Contain,
+            None,
+            None,
+            None,
+            ScenePathFillRule::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            2468,
+            Some(30),
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("gscn scene plan");
+
+        assert_eq!(plan.source, Some(source));
+        assert_eq!(plan.target_max_fps, Some(30));
+        assert_eq!(plan.snapshot_time_ms, 2468);
+        assert_eq!(
+            plan.scene_size,
+            Some(gilder::core::SceneSize {
+                width: 320,
+                height: 180
+            })
+        );
+        assert_eq!(plan.scene_material_graph_resource_count, 1);
+        assert!(plan.layers.is_empty());
     }
 
     #[test]

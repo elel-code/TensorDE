@@ -7,6 +7,7 @@ use super::{
     SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
     SceneNode, SceneNodeKind, SceneResource, SceneResourceKind, SceneTimelineChannel,
 };
+use crate::core::FitMode;
 
 mod effect_uv;
 mod flutter;
@@ -44,13 +45,13 @@ use self::geometry::{
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 8;
+pub const SCENE_BINARY_VERSION: u16 = 9;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 72;
+pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 96;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
@@ -973,7 +974,7 @@ impl SceneBinaryResourceRecord {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneBinaryNodeRecord {
     pub id_name: u32,
     pub display_name: u32,
@@ -993,6 +994,12 @@ pub struct SceneBinaryNodeRecord {
     pub first_transform: u32,
     pub transform_count: u32,
     pub puppet_index: u32,
+    pub opacity: f32,
+    pub color_rgba: u32,
+    pub stroke_color_rgba: u32,
+    pub stroke_width: f32,
+    pub corner_radius: f32,
+    pub fit: u16,
 }
 
 impl SceneBinaryNodeRecord {
@@ -1015,8 +1022,15 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.first_transform);
         write_u32(out, self.transform_count);
         write_u32(out, self.puppet_index);
+        write_f32(out, self.opacity);
+        write_u32(out, self.color_rgba);
+        write_u32(out, self.stroke_color_rgba);
+        write_f32(out, self.stroke_width);
+        write_f32(out, self.corner_radius);
+        write_u16(out, self.fit);
+        write_u16(out, 0);
         write_u32(out, 0);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 72);
+        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 96);
     }
 }
 
@@ -2079,6 +2093,12 @@ impl SceneBinaryPayloadBuilder {
                 first_transform,
                 transform_count,
                 puppet_index,
+                opacity: node.opacity as f32,
+                color_rgba: scene_binary_color_rgba(node.color.as_deref()),
+                stroke_color_rgba: scene_binary_color_rgba(node.stroke_color.as_deref()),
+                stroke_width: node.stroke_width.unwrap_or(0.0) as f32,
+                corner_radius: node.corner_radius.unwrap_or(0.0) as f32,
+                fit: fit_code(node.fit),
             }
             .encode(out)
         });
@@ -3243,12 +3263,46 @@ fn node_flags(node: &SceneNode) -> u16 {
         | (u16::from(node.mesh.is_some()) << 4)
         | (u16::from(!node.puppet_animation_layers.is_empty()) << 5)
         | (u16::from(!node.audio.is_empty()) << 6)
+        | (u16::from(node.color.is_some()) << 7)
+        | (u16::from(node.stroke_color.is_some()) << 8)
+        | (u16::from(node.stroke_width.is_some()) << 9)
+        | (u16::from(node.corner_radius.is_some()) << 10)
+        | (u16::from(node.fit != FitMode::Cover) << 11)
 }
 
 fn node_subtree_count(node: &SceneNode) -> u32 {
     node.children.iter().fold(1u32, |count, child| {
         count.saturating_add(node_subtree_count(child))
     })
+}
+
+fn fit_code(fit: FitMode) -> u16 {
+    match fit {
+        FitMode::Cover => 1,
+        FitMode::Contain => 2,
+        FitMode::Stretch => 3,
+        FitMode::Tile => 4,
+        FitMode::Center => 5,
+    }
+}
+
+fn scene_binary_color_rgba(color: Option<&str>) -> u32 {
+    let Some(color) = color.and_then(scene_binary_hex_color_rgb) else {
+        return 0;
+    };
+    (u32::from(color[0]) << 24) | (u32::from(color[1]) << 16) | (u32::from(color[2]) << 8) | 0xff
+}
+
+fn scene_binary_hex_color_rgb(color: &str) -> Option<[u8; 3]> {
+    let hex = color.trim().strip_prefix('#')?;
+    if hex.len() != 6 {
+        return None;
+    }
+    Some([
+        u8::from_str_radix(&hex[0..2], 16).ok()?,
+        u8::from_str_radix(&hex[2..4], 16).ok()?,
+        u8::from_str_radix(&hex[4..6], 16).ok()?,
+    ])
 }
 
 fn material_flags(
@@ -3695,6 +3749,12 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         first_transform: read_u32(bytes, 56)?,
         transform_count: read_u32(bytes, 60)?,
         puppet_index: read_u32(bytes, 64)?,
+        opacity: read_f32(bytes, 68)?,
+        color_rgba: read_u32(bytes, 72)?,
+        stroke_color_rgba: read_u32(bytes, 76)?,
+        stroke_width: read_f32(bytes, 80)?,
+        corner_radius: read_f32(bytes, 84)?,
+        fit: read_u16(bytes, 88)?,
     })
 }
 
@@ -4678,6 +4738,12 @@ mod tests {
                         {
                             "id": "mesh-child",
                             "type": "image",
+                            "opacity": 0.5,
+                            "color": "#112233",
+                            "stroke_color": "#445566",
+                            "stroke_width": 2.5,
+                            "corner_radius": 3.5,
+                            "fit": "contain",
                             "mesh": {
                                 "vertices": [
                                     { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
@@ -4719,6 +4785,12 @@ mod tests {
         assert_ne!(nodes[1].geometry_index, SCENE_BINARY_NONE_ID);
         assert_ne!(nodes[1].material_index, SCENE_BINARY_NONE_ID);
         assert_ne!(nodes[1].puppet_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(nodes[1].opacity, 0.5);
+        assert_eq!(nodes[1].color_rgba, 0x112233ff);
+        assert_eq!(nodes[1].stroke_color_rgba, 0x445566ff);
+        assert_eq!(nodes[1].stroke_width, 2.5);
+        assert_eq!(nodes[1].corner_radius, 3.5);
+        assert_eq!(nodes[1].fit, fit_code(FitMode::Contain));
         assert_eq!(nodes[2].parent_index, 1);
         assert_eq!(nodes[3].parent_index, 0);
         for node in &nodes {

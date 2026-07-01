@@ -262,6 +262,12 @@ mod tests {
                     "resource": "base",
                     "width": 128,
                     "height": 64,
+                    "opacity": 0.75,
+                    "color": "#abcdef",
+                    "stroke_color": "#010203",
+                    "stroke_width": 1.5,
+                    "corner_radius": 2.5,
+                    "fit": "contain",
                     "effects": [
                         {
                             "file": "effects/opacity/effect.json",
@@ -355,6 +361,12 @@ mod tests {
         assert_eq!(node.geometry_index, 0);
         assert_eq!(node.material_index, 0);
         assert_eq!(node.draw_order, 0);
+        assert_eq!(node.opacity, 0.75);
+        assert_eq!(node.color_rgba, 0xabcdefff);
+        assert_eq!(node.stroke_color_rgba, 0x010203ff);
+        assert_eq!(node.stroke_width, 1.5);
+        assert_eq!(node.corner_radius, 2.5);
+        assert_eq!(node.fit, 2);
         let geometry = plan.geometry_records[node.geometry_index as usize];
         assert_eq!(
             geometry.primitive_kind,

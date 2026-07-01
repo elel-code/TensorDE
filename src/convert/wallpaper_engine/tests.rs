@@ -1,4 +1,5 @@
 use super::*;
+use crate::core::scene::binary::decode_scene_binary_container;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn write_test_png(path: &Path) {
@@ -756,6 +757,15 @@ fn converts_scene_project_to_native_scene_document() {
         scene["resources"][0]["source"],
         "assets/scene-resources/scene/resource-1-background.png"
     );
+    let binary_scene = fs::read(output.path().join("assets/scene.gscn")).unwrap();
+    let binary_layout = decode_scene_binary_container(&binary_scene).unwrap();
+    assert_eq!(
+        binary_layout
+            .chunk(crate::core::scene::binary::SceneBinaryChunkKind::NodeTable)
+            .unwrap()
+            .record_count,
+        1
+    );
     assert!(scene["native_lowering"].get("fallback").is_none());
     assert!(output.path().join("previews/poster.svg").exists());
     assert!(output.path().join("previews/thumbnail.svg").exists());
@@ -764,6 +774,16 @@ fn converts_scene_project_to_native_scene_document() {
     )
     .unwrap();
     assert!(report.converted_features.contains(&"scene".to_owned()));
+    assert!(
+        report
+            .converted_features
+            .contains(&"binary-scene-format".to_owned())
+    );
+    assert!(
+        report
+            .generated_assets
+            .contains(&"assets/scene.gscn".to_owned())
+    );
     let full_scene = report.full_scene.as_ref().expect("full scene status");
     assert_eq!(full_scene.target_runtime, "native-vulkan-full-scene");
     assert_eq!(full_scene.current_runtime, "native-vulkan-scene-runtime");
