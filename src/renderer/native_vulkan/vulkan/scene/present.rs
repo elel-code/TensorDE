@@ -580,6 +580,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub texture_slot_count: usize,
+    pub uses_elapsed_push_constants: bool,
     pub effect_kinds: Vec<NativeVulkanVulkanaliaSceneEffectKind>,
     pub combo_keys: Vec<String>,
 }
@@ -604,6 +605,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             alpha_texture_slot,
             alpha_texture_mode,
             texture_slot_count,
+            uses_elapsed_push_constants: false,
             effect_kinds: Vec::new(),
             combo_keys: Vec::new(),
         }
@@ -624,7 +626,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             label
         };
         format!(
-            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} effects={} pipeline={}",
+            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} elapsed_push_constants={} effects={} pipeline={}",
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
@@ -641,6 +643,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             self.render_state.depth_write.as_str(),
             self.render_state.cull_mode.label(),
             self.texture_slot_count,
+            self.uses_elapsed_push_constants,
             effect_kinds,
             self.render_state.sampled_image_pipeline_label(),
         )
@@ -2875,7 +2878,8 @@ fn run_scene_sampled_image_present_loop(
             geometry.effect_targets.len()
         ));
     }
-    let reuse_recorded_commands = geometry.effect_targets.is_empty();
+    let reuse_recorded_commands =
+        scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands);
     let mut recorded_commands = vec![None; swapchain_images.len()];
 
     while Instant::now() < deadline {
@@ -6430,6 +6434,14 @@ fn scene_sampled_image_draw_commands_can_merge(
             .is_some_and(|next_first_index| next_first_index == next.first_index)
 }
 
+fn scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(
+    draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+) -> bool {
+    !draw_commands
+        .iter()
+        .any(|draw| draw.material.uses_elapsed_push_constants)
+}
+
 fn scene_video_layer_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
 ) -> Result<Vec<VulkanaliaSceneVideoLayerDrawCommand>, String> {
@@ -7335,6 +7347,57 @@ mod tests {
                 index_count: 18,
             }]
         );
+    }
+
+    #[test]
+    fn sampled_image_command_buffer_reuse_allows_static_effect_targets() {
+        let commands = vec![VulkanaliaSceneSampledImageDrawCommand {
+            layer_index: 10,
+            last_layer_index: 10,
+            material: sampled_image_material(
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Multiply,
+                1,
+            ),
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: 0,
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::EffectTarget {
+                target_index: 0,
+                clear: true,
+            },
+            first_index: 0,
+            index_count: 6,
+        }];
+
+        assert!(scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(&commands));
+    }
+
+    #[test]
+    fn sampled_image_command_buffer_reuse_blocks_elapsed_fragment_uniforms() {
+        let mut material = sampled_image_material(
+            SceneBlendMode::Alpha,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            1,
+        );
+        material.uses_elapsed_push_constants = true;
+        let commands = vec![VulkanaliaSceneSampledImageDrawCommand {
+            layer_index: 10,
+            last_layer_index: 10,
+            material,
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: 0,
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
+            first_index: 0,
+            index_count: 6,
+        }];
+
+        assert!(!scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(&commands));
     }
 
     #[test]

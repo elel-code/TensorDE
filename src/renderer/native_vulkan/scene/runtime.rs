@@ -3717,6 +3717,7 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         alpha_texture_slot: material.alpha_texture_slot,
         alpha_texture_mode: material.alpha_texture_mode,
         texture_slot_count: material.texture_slot_count,
+        uses_elapsed_push_constants: false,
         effect_kinds: material
             .effect_kinds
             .into_iter()
