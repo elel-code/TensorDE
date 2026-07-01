@@ -3439,11 +3439,12 @@ impl SceneMesh {
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<SceneMesh> {
-        let (skin, local_pose) = self.sample_puppet_local_pose(layers, time_ms)?;
-        let pose_world = scene_puppet_world_matrices(
-            skin.bones.iter().map(|bone| bone.parent),
-            local_pose.iter().map(|transform| transform.matrix()),
-        )?;
+        let (skin, local_pose, bind_world, pose_world) =
+            self.sample_puppet_pose_world(layers, time_ms)?;
+        let inverse_bind_world = bind_world
+            .iter()
+            .map(|matrix| scene_puppet_inverse_affine_matrix(*matrix))
+            .collect::<Option<Vec<_>>>()?;
 
         let mut vertices = Vec::with_capacity(self.vertices.len());
         for (vertex, skin_vertex) in self.vertices.iter().zip(&skin.vertices) {
@@ -3457,10 +3458,8 @@ impl SceneMesh {
                     continue;
                 }
                 let bone_index = skin_vertex.bone_indices[slot];
-                let skin_matrix = scene_puppet_matrix_mul(
-                    pose_world[bone_index],
-                    skin.bones[bone_index].inverse_bind,
-                );
+                let skin_matrix =
+                    scene_puppet_matrix_mul(pose_world[bone_index], inverse_bind_world[bone_index]);
                 let point = scene_puppet_transform_point_3d(skin_matrix, vertex.x, vertex.y, 0.0);
                 x += point[0] * weight;
                 y += point[1] * weight;
@@ -3768,7 +3767,6 @@ pub struct SceneMeshSkinBone {
     pub parent: Option<usize>,
     #[serde(default)]
     pub bind: ScenePuppetTransform,
-    pub inverse_bind: [f64; 16],
 }
 
 impl SceneMeshSkinBone {
@@ -3780,15 +3778,7 @@ impl SceneMeshSkinBone {
                 "scene node {node_id:?} mesh skin bone {index} parent {parent} is outside the bone array"
             )));
         }
-        self.bind.validate(node_id, "mesh skin bind transform")?;
-        for (component, value) in self.inverse_bind.iter().enumerate() {
-            if !value.is_finite() {
-                return Err(SceneError::invalid(format!(
-                    "scene node {node_id:?} mesh skin bone {index} inverse_bind[{component}] must be finite"
-                )));
-            }
-        }
-        Ok(())
+        self.bind.validate(node_id, "mesh skin bind transform")
     }
 }
 
@@ -4202,6 +4192,54 @@ fn scene_puppet_matrix_mul(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
         }
     }
     output
+}
+
+fn scene_puppet_inverse_affine_matrix(matrix: [f64; 16]) -> Option<[f64; 16]> {
+    let a00 = matrix[0];
+    let a01 = matrix[4];
+    let a02 = matrix[8];
+    let a10 = matrix[1];
+    let a11 = matrix[5];
+    let a12 = matrix[9];
+    let a20 = matrix[2];
+    let a21 = matrix[6];
+    let a22 = matrix[10];
+    let det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+        + a02 * (a10 * a21 - a11 * a20);
+    if !det.is_finite() || det.abs() <= f64::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let b00 = (a11 * a22 - a12 * a21) * inv_det;
+    let b01 = (a02 * a21 - a01 * a22) * inv_det;
+    let b02 = (a01 * a12 - a02 * a11) * inv_det;
+    let b10 = (a12 * a20 - a10 * a22) * inv_det;
+    let b11 = (a00 * a22 - a02 * a20) * inv_det;
+    let b12 = (a02 * a10 - a00 * a12) * inv_det;
+    let b20 = (a10 * a21 - a11 * a20) * inv_det;
+    let b21 = (a01 * a20 - a00 * a21) * inv_det;
+    let b22 = (a00 * a11 - a01 * a10) * inv_det;
+    let tx = matrix[12];
+    let ty = matrix[13];
+    let tz = matrix[14];
+    Some([
+        b00,
+        b10,
+        b20,
+        0.0,
+        b01,
+        b11,
+        b21,
+        0.0,
+        b02,
+        b12,
+        b22,
+        0.0,
+        -(b00 * tx + b01 * ty + b02 * tz),
+        -(b10 * tx + b11 * ty + b12 * tz),
+        -(b20 * tx + b21 * ty + b22 * tz),
+        1.0,
+    ])
 }
 
 fn scene_puppet_transform_point_3d(matrix: [f64; 16], x: f64, y: f64, z: f64) -> [f64; 3] {
@@ -4705,12 +4743,6 @@ const fn default_anchor() -> f64 {
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn test_inverse_bind(tx: f64, ty: f64, tz: f64) -> [f64; 16] {
-        [
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, tz, 1.0,
-        ]
-    }
 
     #[test]
     fn validates_full_scene_document_with_resources_and_native_lowering() {
@@ -5313,8 +5345,7 @@ mod tests {
                                         "translation": [0.0, 0.0, 0.0],
                                         "rotation": [0.0, 0.0, 0.0],
                                         "scale": [1.0, 1.0, 1.0]
-                                    },
-                                    "inverse_bind": test_inverse_bind(0.0, 0.0, 0.0)
+                                    }
                                 },
                                 {
                                     "parent": 0,
@@ -5322,8 +5353,7 @@ mod tests {
                                         "translation": [10.0, 0.0, 0.0],
                                         "rotation": [0.0, 0.0, 0.0],
                                         "scale": [1.0, 1.0, 1.0]
-                                    },
-                                    "inverse_bind": test_inverse_bind(-10.0, 0.0, 0.0)
+                                    }
                                 }
                             ],
                             "vertices": [
@@ -5423,8 +5453,7 @@ mod tests {
                                         "translation": [0.0, 0.0, 0.0],
                                         "rotation": [0.0, 0.0, 0.0],
                                         "scale": [1.0, 1.0, 1.0]
-                                    },
-                                    "inverse_bind": test_inverse_bind(0.0, 0.0, 0.0)
+                                    }
                                 },
                                 {
                                     "parent": 0,
@@ -5432,8 +5461,7 @@ mod tests {
                                         "translation": [10.0, 0.0, 0.0],
                                         "rotation": [0.0, 0.0, 0.0],
                                         "scale": [1.0, 1.0, 1.0]
-                                    },
-                                    "inverse_bind": test_inverse_bind(-10.0, 0.0, 0.0)
+                                    }
                                 }
                             ],
                             "vertices": [

@@ -4529,8 +4529,6 @@ fn lowers_wallpaper_engine_puppet_animation_layers_to_sampled_skinning() {
     .unwrap();
     let node = &scene["nodes"][0];
     assert_eq!(node["mesh"]["skin"]["bones"].as_array().unwrap().len(), 2);
-    assert_eq!(node["mesh"]["skin"]["bones"][0]["inverse_bind"][12], 0.0);
-    assert_eq!(node["mesh"]["skin"]["bones"][1]["inverse_bind"][12], -10.0);
     assert_eq!(node["mesh"]["puppet_clips"][0]["id"], 7);
     assert_eq!(node["puppet_animation_layers"][0]["clip_id"], 7);
     assert_eq!(node["puppet_animation_layers"][0]["name"], "turn");
@@ -4578,66 +4576,6 @@ fn lowers_wallpaper_engine_puppet_animation_layers_to_sampled_skinning() {
             .unsupported_features
             .contains(&"we-animation-layer-blending".to_owned())
     );
-}
-
-#[test]
-fn lowers_wallpaper_engine_puppet_mdle_to_first_class_inverse_bind() {
-    let source = TestDir::new("we-scene-puppet-mdle-source");
-    let output = TestDir::new("we-scene-puppet-mdle-output");
-    output.remove();
-    source.write_file(
-        "scene.json",
-        r#"{
-              "objects": [{
-                "id": 10,
-                "name": "MDLE Puppet",
-                "image": "models/body.json",
-                "origin": [0, 0, 0],
-                "size": [32, 32, 0]
-              }]
-            }"#,
-    );
-    source.write_file(
-        "models/body.json",
-        r#"{
-              "width": 32,
-              "height": 32,
-              "puppet": "models/body_puppet.mdl"
-            }"#,
-    );
-    let mut root_inverse = test_mdl_identity_matrix();
-    root_inverse[12] = -2.0;
-    let mut child_inverse = test_mdl_identity_matrix();
-    child_inverse[12] = -20.0;
-    child_inverse[13] = 5.0;
-    source.write_bytes(
-        "models/body_puppet.mdl",
-        &test_we_mdl_with_skinned_animation_and_mdle(&[root_inverse, child_inverse]),
-    );
-    source.write_file(
-        PROJECT_FILE,
-        r#"{
-              "type": "scene",
-              "title": "Puppet MDLE Scene",
-              "file": "scene.json"
-            }"#,
-    );
-
-    convert_project(source.path(), output.path()).unwrap();
-    let scene: Value = serde_json::from_str(
-        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
-    )
-    .unwrap();
-    let bones = scene["nodes"][0]["mesh"]["skin"]["bones"]
-        .as_array()
-        .unwrap();
-    assert_eq!(bones.len(), 2);
-    assert_eq!(bones[0]["inverse_bind"][12], -2.0);
-    assert_eq!(bones[1]["inverse_bind"][12], -20.0);
-    assert_eq!(bones[1]["inverse_bind"][13], 5.0);
-
-    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
-    document.validate().unwrap();
 }
 
 #[test]
@@ -6789,27 +6727,6 @@ fn test_we_mdl_with_skinned_animation() -> Vec<u8> {
     assert!(bytes[mdls_offset..].starts_with(b"MDLS"));
     assert!(bytes[mdla_offset..].starts_with(b"MDLA"));
     bytes
-}
-
-fn test_we_mdl_with_skinned_animation_and_mdle(inverse_binds: &[[f32; 16]]) -> Vec<u8> {
-    let mut bytes = test_we_mdl_with_skinned_animation();
-    test_push_mdl_mdle_section(&mut bytes, inverse_binds);
-    bytes
-}
-
-fn test_push_mdl_mdle_section(bytes: &mut Vec<u8>, inverse_binds: &[[f32; 16]]) {
-    let mdle_offset = bytes.len();
-    bytes.extend_from_slice(b"MDLE0002");
-    bytes.push(0);
-    let mdle_end_offset = bytes.len();
-    bytes.extend_from_slice(&0u32.to_le_bytes());
-    bytes.extend_from_slice(&u32::try_from(inverse_binds.len()).unwrap().to_le_bytes());
-    for matrix in inverse_binds {
-        test_push_mdl_matrix(bytes, *matrix);
-    }
-    let mdle_end = u32::try_from(bytes.len()).unwrap();
-    bytes[mdle_end_offset..mdle_end_offset + 4].copy_from_slice(&mdle_end.to_le_bytes());
-    assert!(bytes[mdle_offset..].starts_with(b"MDLE"));
 }
 
 fn test_we_mdl_with_skinned_animation_and_attachment(
