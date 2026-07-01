@@ -9,6 +9,7 @@ mod material;
 mod node;
 mod resource;
 mod retained;
+mod transform;
 
 pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
 use self::flutter::native_vulkan_scene_binary_flutter_records;
@@ -28,6 +29,8 @@ use self::retained::{
     native_vulkan_scene_binary_retained_dirty_range_count,
     native_vulkan_scene_binary_retained_gpu_records,
 };
+pub(in crate::renderer::native_vulkan::scene) use self::transform::NativeVulkanSceneBinaryTransformRecord;
+use self::transform::native_vulkan_scene_binary_transform_records;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan {
@@ -36,6 +39,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) node_count: u32,
     pub(in crate::renderer::native_vulkan::scene) draw_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) transform_timeline_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) generated_index_count: u32,
     pub(in crate::renderer::native_vulkan::scene) mesh_vertex_count: u32,
@@ -54,6 +58,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryResourceRecord>,
     pub(in crate::renderer::native_vulkan::scene) node_records:
         Vec<NativeVulkanSceneBinaryNodeRecord>,
+    pub(in crate::renderer::native_vulkan::scene) transform_records:
+        Vec<NativeVulkanSceneBinaryTransformRecord>,
     pub(in crate::renderer::native_vulkan::scene) geometry_records:
         Vec<NativeVulkanSceneBinaryGeometryRecord>,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
@@ -90,6 +96,8 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let resource_count = record_len_from_usize(resource_records.len());
     let node_records = native_vulkan_scene_binary_node_records(container, layout)?;
     let node_count = record_len_from_usize(node_records.len());
+    let transform_records = native_vulkan_scene_binary_transform_records(container, layout)?;
+    let transform_timeline_count = record_len_from_usize(transform_records.len());
     let geometry_records = native_vulkan_scene_binary_geometry_records(container, layout)?;
     let geometry_record_count = record_len_from_usize(geometry_records.records.len());
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
@@ -126,6 +134,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         node_count,
         draw_record_count: record_len_from_usize(draw_records.len()),
         geometry_record_count,
+        transform_timeline_count,
         generated_vertex_count: geometry_records.generated_vertex_count,
         generated_index_count: geometry_records.generated_index_count,
         mesh_vertex_count: geometry_records.mesh_vertex_count,
@@ -144,6 +153,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         retained_dirty_range_count,
         resource_records,
         node_records,
+        transform_records,
         geometry_records: geometry_records.records,
         draw_records,
         texture_slots: material_records.texture_slots,
@@ -222,6 +232,7 @@ mod tests {
         assert_eq!(plan.resource_records[1].height, 64);
         assert_eq!(plan.node_count, 1);
         assert_eq!(plan.draw_record_count, 1);
+        assert_eq!(plan.transform_timeline_count, 1);
         assert_eq!(
             plan.generated_vertex_count,
             SCENE_BINARY_GEOMETRY_QUAD_VERTEX_COUNT
@@ -233,6 +244,11 @@ mod tests {
         assert_eq!(plan.mesh_vertex_count, 0);
         assert_eq!(plan.mesh_index_count, 0);
         assert_eq!(plan.node_records.len(), 1);
+        assert_eq!(plan.transform_records.len(), 1);
+        assert_eq!(
+            plan.transform_records[0].owner_name,
+            plan.node_records[0].id_name
+        );
         assert_eq!(plan.geometry_records.len(), 1);
         assert_eq!(plan.draw_records[0].node_index, 0);
         let node = plan.node_records[plan.draw_records[0].node_index as usize];
@@ -348,6 +364,7 @@ mod tests {
         assert_eq!(plan.flutter_state_count, 1);
         assert_eq!(plan.resource_records.len(), 1);
         assert_eq!(plan.resource_records[0].height, 256);
+        assert_eq!(plan.transform_timeline_count, 1);
         assert_eq!(plan.effect_parameter_count, 4);
         assert_eq!(plan.flutter_records.len(), 1);
         assert_eq!(
@@ -397,6 +414,7 @@ mod tests {
         let plan = native_vulkan_scene_binary_plan_from_container(&bytes).expect("binary plan");
 
         assert_eq!(plan.draw_record_count, 1);
+        assert_eq!(plan.transform_timeline_count, 1);
         assert_eq!(plan.generated_vertex_count, 0);
         assert_eq!(plan.generated_index_count, 0);
         assert_eq!(plan.mesh_vertex_count, 3);
