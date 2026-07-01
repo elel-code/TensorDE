@@ -7,6 +7,8 @@ mod flutter;
 mod geometry;
 mod material;
 mod node;
+mod puppet;
+mod render_state;
 mod resource;
 mod retained;
 mod transform;
@@ -22,6 +24,10 @@ pub(in crate::renderer::native_vulkan::scene) use self::material::{
 };
 pub(in crate::renderer::native_vulkan::scene) use self::node::NativeVulkanSceneBinaryNodeRecord;
 use self::node::native_vulkan_scene_binary_node_records;
+pub(in crate::renderer::native_vulkan::scene) use self::puppet::NativeVulkanSceneBinaryPuppetRecord;
+use self::puppet::native_vulkan_scene_binary_puppet_records;
+pub(in crate::renderer::native_vulkan::scene) use self::render_state::NativeVulkanSceneBinaryRenderStateRecord;
+use self::render_state::native_vulkan_scene_binary_render_state_records;
 pub(in crate::renderer::native_vulkan::scene) use self::resource::NativeVulkanSceneBinaryResourceRecord;
 use self::resource::native_vulkan_scene_binary_resource_records;
 pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
@@ -52,6 +58,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) flutter_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
     pub(in crate::renderer::native_vulkan::scene) resource_records:
@@ -74,6 +81,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryRetainedGpuRecord>,
     pub(in crate::renderer::native_vulkan::scene) flutter_records:
         Vec<NativeVulkanSceneBinaryFlutterRecord>,
+    pub(in crate::renderer::native_vulkan::scene) puppet_records:
+        Vec<NativeVulkanSceneBinaryPuppetRecord>,
+    pub(in crate::renderer::native_vulkan::scene) render_state_records:
+        Vec<NativeVulkanSceneBinaryRenderStateRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -104,7 +115,10 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let material_pass_count = record_len(layout.material_pass_records(container)?);
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
     let effect_parameter_count = record_len(layout.effect_parameter_records(container)?);
-    let puppet_count = record_len(layout.puppet_records(container)?);
+    let puppet_records = native_vulkan_scene_binary_puppet_records(container, layout)?;
+    let puppet_count = record_len_from_usize(puppet_records.len());
+    let render_state_records = native_vulkan_scene_binary_render_state_records(container, layout)?;
+    let render_state_count = record_len_from_usize(render_state_records.len());
     let material_records = native_vulkan_scene_binary_material_records(container, layout)?;
     let retained_records = native_vulkan_scene_binary_retained_gpu_records(container, layout)?;
     let retained_gpu_state_count = record_len_from_usize(retained_records.len());
@@ -149,6 +163,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         effect_parameter_count,
         flutter_state_count,
         puppet_count,
+        render_state_count,
         retained_gpu_state_count,
         retained_dirty_range_count,
         resource_records,
@@ -161,6 +176,8 @@ fn native_vulkan_scene_binary_plan_from_layout(
         effect_records: material_records.effects,
         retained_records,
         flutter_records,
+        puppet_records,
+        render_state_records,
     })
 }
 
@@ -278,6 +295,26 @@ mod tests {
         assert_eq!(plan.effect_pass_count, 1);
         assert_eq!(plan.effect_parameter_count, 2);
         assert_eq!(plan.texture_slot_count, 2);
+        assert_eq!(plan.render_state_count, 1);
+        assert_eq!(plan.render_state_records.len(), 1);
+        assert_eq!(
+            plan.render_state_records[0].resource_count,
+            plan.resource_count
+        );
+        assert_eq!(plan.render_state_records[0].node_count, plan.node_count);
+        assert_eq!(
+            plan.render_state_records[0].material_count,
+            plan.material_pass_count
+        );
+        assert_eq!(
+            plan.render_state_records[0].effect_count,
+            plan.effect_pass_count
+        );
+        assert_eq!(
+            plan.render_state_records[0].texture_slot_count,
+            plan.texture_slot_count
+        );
+        assert!(plan.puppet_records.is_empty());
         assert!(plan.flutter_records.is_empty());
         assert_eq!(plan.texture_slots.len(), 2);
         assert_eq!(plan.texture_slots[0].resource_index, 0);
@@ -419,6 +456,16 @@ mod tests {
         assert_eq!(plan.generated_index_count, 0);
         assert_eq!(plan.mesh_vertex_count, 3);
         assert_eq!(plan.mesh_index_count, 3);
+        assert_eq!(plan.puppet_count, 1);
+        assert_eq!(plan.puppet_records.len(), 1);
+        assert_eq!(
+            plan.puppet_records[0].owner_name,
+            plan.node_records[plan.draw_records[0].node_index as usize].id_name
+        );
+        assert_eq!(plan.puppet_records[0].vertex_count, 3);
+        assert_eq!(plan.puppet_records[0].index_count, 3);
+        assert_eq!(plan.puppet_records[0].animation_layer_count, 0);
+        assert_eq!(plan.puppet_records[0].dirty_range_count, 1);
         assert_eq!(plan.geometry_records.len(), 1);
         let node = plan.node_records[plan.draw_records[0].node_index as usize];
         let geometry = plan.geometry_records[node.geometry_index as usize];
