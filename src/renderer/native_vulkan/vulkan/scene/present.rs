@@ -906,6 +906,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
     pub descriptor_heap: Option<NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot>,
     pub pipeline: NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
     pub last_command: Option<NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot>,
+    pub present_loop_timing: Option<NativeVulkanVulkanaliaScenePresentLoopTimingSnapshot>,
     pub command_submit_model: &'static str,
     pub present_sync_model: &'static str,
     pub wait_idle_after_present: bool,
@@ -921,6 +922,20 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
     pub uses_submit2: bool,
     pub zero_copy_scope: &'static str,
     pub primary_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaScenePresentLoopTimingSnapshot {
+    pub command_buffer_reuse_enabled: bool,
+    pub command_buffer_record_count: u64,
+    pub command_buffer_reuse_count: u64,
+    pub fence_wait_reset_micros: u64,
+    pub acquire_next_image_micros: u64,
+    pub geometry_update_micros: u64,
+    pub command_record_micros: u64,
+    pub queue_submit_micros: u64,
+    pub queue_present_micros: u64,
+    pub fps_sleep_micros: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2881,12 +2896,22 @@ fn run_scene_sampled_image_present_loop(
     let reuse_recorded_commands =
         scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands);
     let mut recorded_commands = vec![None; swapchain_images.len()];
+    let mut command_buffer_record_count = 0u64;
+    let mut command_buffer_reuse_count = 0u64;
+    let mut fence_wait_reset_micros = 0u64;
+    let mut acquire_next_image_micros = 0u64;
+    let mut geometry_update_micros = 0u64;
+    let mut command_record_micros = 0u64;
+    let mut queue_submit_micros = 0u64;
+    let mut queue_present_micros = 0u64;
+    let mut fps_sleep_micros = 0u64;
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
         let image_available = frame_resources.image_available[present_frame_slot];
         let render_finished = frame_resources.render_finished[present_frame_slot];
         let in_flight = frame_resources.in_flight[present_frame_slot];
+        let fence_started_at = Instant::now();
         unsafe {
             device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
@@ -2897,13 +2922,18 @@ fn run_scene_sampled_image_present_loop(
                 format!("vkResetFences(vulkanalia scene sampled image present): {err:?}")
             })?;
         }
+        fence_wait_reset_micros = fence_wait_reset_micros
+            .saturating_add(scene_duration_micros(fence_started_at.elapsed()));
 
+        let acquire_started_at = Instant::now();
         let (image_index, _) = unsafe {
             device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
         }
         .map_err(|err| {
             format!("vkAcquireNextImageKHR(vulkanalia scene sampled image present): {err:?}")
         })?;
+        acquire_next_image_micros = acquire_next_image_micros
+            .saturating_add(scene_duration_micros(acquire_started_at.elapsed()));
         let image_index_usize = image_index as usize;
         let command_buffer = frame_resources
             .command_buffers
@@ -2922,6 +2952,7 @@ fn run_scene_sampled_image_present_loop(
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let geometry_frame_slot = image_index_usize;
+        let geometry_started_at = Instant::now();
         let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
             update_scene_sampled_image_geometry_input_for_time(
                 device,
@@ -2976,6 +3007,8 @@ fn run_scene_sampled_image_present_loop(
             }
             _ => None,
         };
+        geometry_update_micros = geometry_update_micros
+            .saturating_add(scene_duration_micros(geometry_started_at.elapsed()));
 
         let command = if reuse_recorded_commands
             && let Some(command) = recorded_commands
@@ -2983,8 +3016,10 @@ fn run_scene_sampled_image_present_loop(
                 .and_then(Option::as_ref)
                 .cloned()
         {
+            command_buffer_reuse_count = command_buffer_reuse_count.saturating_add(1);
             command
         } else {
+            let command_record_started_at = Instant::now();
             let command = native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
                 device,
                 command_buffer,
@@ -3006,6 +3041,9 @@ fn run_scene_sampled_image_present_loop(
                 ],
                 elapsed_ms,
             )?;
+            command_record_micros = command_record_micros
+                .saturating_add(scene_duration_micros(command_record_started_at.elapsed()));
+            command_buffer_record_count = command_buffer_record_count.saturating_add(1);
             if reuse_recorded_commands
                 && let Some(slot) = recorded_commands.get_mut(image_index_usize)
             {
@@ -3013,6 +3051,7 @@ fn run_scene_sampled_image_present_loop(
             }
             command
         };
+        let submit_started_at = Instant::now();
         submit_scene_solid_quad_command_buffer2(
             device,
             queue,
@@ -3021,6 +3060,8 @@ fn run_scene_sampled_image_present_loop(
             render_finished,
             in_flight,
         )?;
+        queue_submit_micros =
+            queue_submit_micros.saturating_add(scene_duration_micros(submit_started_at.elapsed()));
 
         let swapchains = [swapchain];
         let image_indices = [image_index];
@@ -3041,6 +3082,7 @@ fn run_scene_sampled_image_present_loop(
                 present_info = present_info.push_next(present_id2_info);
             }
         }
+        let present_started_at = Instant::now();
         unsafe {
             device
                 .queue_present_khr(queue, &present_info)
@@ -3048,6 +3090,8 @@ fn run_scene_sampled_image_present_loop(
                     format!("vkQueuePresentKHR(vulkanalia scene sampled image present): {err:?}")
                 })?;
         }
+        queue_present_micros = queue_present_micros
+            .saturating_add(scene_duration_micros(present_started_at.elapsed()));
         present_wait_after_present |= present_timing.wait_after_queue_present(
             device,
             swapchain,
@@ -3063,7 +3107,10 @@ fn run_scene_sampled_image_present_loop(
             next_frame += interval;
             let now = Instant::now();
             if next_frame > now {
-                thread::sleep(next_frame - now);
+                let sleep_duration = next_frame - now;
+                fps_sleep_micros =
+                    fps_sleep_micros.saturating_add(scene_duration_micros(sleep_duration));
+                thread::sleep(sleep_duration);
             } else {
                 next_frame = now;
             }
@@ -3137,6 +3184,18 @@ fn run_scene_sampled_image_present_loop(
         descriptor_heap: descriptor_heap.map(|resources| resources.snapshot.clone()),
         pipeline: pipeline.snapshot.clone(),
         last_command,
+        present_loop_timing: Some(NativeVulkanVulkanaliaScenePresentLoopTimingSnapshot {
+            command_buffer_reuse_enabled: reuse_recorded_commands,
+            command_buffer_record_count,
+            command_buffer_reuse_count,
+            fence_wait_reset_micros,
+            acquire_next_image_micros,
+            geometry_update_micros,
+            command_record_micros,
+            queue_submit_micros,
+            queue_present_micros,
+            fps_sleep_micros,
+        }),
         command_submit_model: scene_present_submit_model(
             solid_quad_draw.is_some(),
             present_wait_after_present,
@@ -3520,6 +3579,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
         descriptor_heap: None,
         pipeline: scene_static_transfer_pipeline_snapshot(swapchain_plan.format.format, extent),
         last_command,
+        present_loop_timing: None,
         command_submit_model: "acquire_next_image_khr -> cmd_blit_image2 static BC transfer image into swapchain -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source transfer image -> sleep until duration",
         present_sync_model: "static first-present transfer source release; swapchain/display owns the visible result after submit fence",
         wait_idle_after_present: false,
@@ -4280,6 +4340,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         descriptor_heap: descriptor_heap_snapshot,
         pipeline: pipeline_snapshot,
         last_command,
+        present_loop_timing: None,
         command_submit_model: "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr -> wait render fence -> destroy source sampled images/descriptors -> sleep until duration",
         present_sync_model: "static first-present source release; swapchain/display owns the visible result after render fence",
         wait_idle_after_present: false,
@@ -4316,6 +4377,10 @@ fn scene_present_submit_model(
             "acquire_next_image_khr -> cmd_begin_rendering sampled image quad -> queue_submit2 -> queue_present_khr"
         }
     }
+}
+
+fn scene_duration_micros(duration: Duration) -> u64 {
+    duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
 fn create_scene_solid_quad_frame_resources(

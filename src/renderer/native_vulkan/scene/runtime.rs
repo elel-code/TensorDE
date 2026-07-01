@@ -1476,47 +1476,38 @@ fn native_vulkan_scene_sampled_layer_uses_first_class_effect_target(
 fn native_vulkan_scene_render_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneRenderLayer,
 ) -> bool {
-    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
-        && !layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_uses_first_class_target(
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
-        })
+    !layer.image_effect_passes.iter().any(|pass| {
+        native_vulkan_scene_effect_pass_uses_first_class_target(
+            pass.runtime.as_deref(),
+            &pass.effect_file,
+        )
+    }) && layer
+        .image_effect_passes
+        .iter()
+        .any(|pass| native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file))
 }
 
 fn native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneSnapshotLayer,
 ) -> bool {
-    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
-        && !layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_uses_first_class_target(
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
-        })
+    !layer.image_effect_passes.iter().any(|pass| {
+        native_vulkan_scene_effect_pass_uses_first_class_target(
+            pass.runtime.as_deref(),
+            &pass.effect_file,
+        )
+    }) && layer
+        .image_effect_passes
+        .iter()
+        .any(|pass| native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file))
 }
 
 fn native_vulkan_scene_sampled_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneSnapshotSampledImageLayer,
 ) -> bool {
-    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
-        && !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
+    !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
         && layer.image_effect_passes.iter().any(|pass| {
             native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
         })
-}
-
-fn native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(
-    blend_mode: SceneBlendMode,
-) -> bool {
-    !matches!(blend_mode, SceneBlendMode::Alpha | SceneBlendMode::Normal)
 }
 
 fn native_vulkan_scene_effect_pass_uses_first_class_target(

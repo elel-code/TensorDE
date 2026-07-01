@@ -4604,6 +4604,7 @@ fn scene_blend_mode_from_material(
 
 pub(crate) fn scene_blend_mode_from_material_blending(blending: &str) -> Option<SceneBlendMode> {
     match blending.to_ascii_lowercase().as_str() {
+        "translucent" | "alpha" => Some(SceneBlendMode::Alpha),
         "normal" => Some(SceneBlendMode::Normal),
         "additive" | "add" => Some(SceneBlendMode::Additive),
         "multiply" => Some(SceneBlendMode::Multiply),

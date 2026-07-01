@@ -300,15 +300,14 @@ fn native_vulkan_scene_we_image_pass_chain_allows_temporary_raw_composite(
     if quad.effect_target_pass.is_some() {
         return true;
     }
-    !native_vulkan_scene_we_image_pass_chain_uses_color_blend_passthrough(quad.base_blend_mode)
-        || !quad.effect_passes.iter().any(|pass| {
-            matches!(
-                pass.kind,
-                NativeVulkanSceneEffectKind::WaterRipple
-                    | NativeVulkanSceneEffectKind::WaterFlow
-                    | NativeVulkanSceneEffectKind::WaterCaustics
-            )
-        })
+    !quad.effect_passes.iter().any(|pass| {
+        matches!(
+            pass.kind,
+            NativeVulkanSceneEffectKind::WaterRipple
+                | NativeVulkanSceneEffectKind::WaterFlow
+                | NativeVulkanSceneEffectKind::WaterCaustics
+        )
+    })
 }
 
 fn native_vulkan_scene_we_image_graph_targets(

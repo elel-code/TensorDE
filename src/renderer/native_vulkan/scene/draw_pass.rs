@@ -1249,7 +1249,6 @@ fn native_vulkan_scene_sampled_image_recording_step(
             NativeVulkanSceneMaterialKind::SampledImage
         }
     };
-    let use_effect_blend = !native_vulkan_scene_sampled_image_needs_we_effect_chain(quad);
     let material_pass = native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
         material_kind,
         blend_mode,
@@ -1257,7 +1256,7 @@ fn native_vulkan_scene_sampled_image_recording_step(
         alpha_texture_mode,
         texture_slot_bindings.len(),
         &quad.effect_passes,
-        use_effect_blend,
+        false,
     );
     NativeVulkanSceneSampledImageRecordingStep {
         layer_index: quad.layer_index,
@@ -6739,6 +6738,92 @@ mod tests {
     }
 
     #[test]
+    fn draw_pass_plan_suppresses_plain_unimplemented_water_ripple_source_quad() {
+        let mut water = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        water.layer_id = "plain-water-ripple-carrier".to_owned();
+        water.source = Some(PathBuf::from("/tmp/plain-water-source.gtex"));
+        water.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/plain-water-source.gtex"),
+            width: Some(1024),
+            height: Some(512),
+        }];
+        water.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/waterripple/effect.json".to_owned(),
+            runtime: Some("native-effect-motion".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/waterripple".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: vec![SceneRenderTextureSlot {
+                slot: 2,
+                source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                width: Some(512),
+                height: Some(512),
+            }],
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+        water.blend_mode = SceneBlendMode::Alpha;
+        water.width = Some(1024.0);
+        water.height = Some(512.0);
+
+        let mut hero = draw_op(1, NativeVulkanSceneDrawOpKind::Image);
+        hero.layer_id = "hero".to_owned();
+        hero.source = Some(PathBuf::from("/tmp/hero.gtex"));
+        hero.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/hero.gtex"),
+            width: Some(512),
+            height: Some(512),
+        }];
+        hero.width = Some(512.0);
+        hero.height = Some(512.0);
+
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![water, hero],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+        let chain = native_vulkan_scene_we_image_pass_chain(&pass_plan.sampled_image_quads[0])
+            .expect("plain water ripple carrier should have a WE image pass chain");
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.sampled_image_recording_steps[0].layer_id, "hero");
+        assert_eq!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
+        );
+        assert!(!chain.color_blend_passthrough);
+        assert!(!chain.raw_direct_composite_allowed);
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.suppressed_chain_count,
+            1
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .temporary_raw_fallback_chain_count,
+            0
+        );
+    }
+
+    #[test]
     fn draw_pass_plan_keeps_alpha_waterwaves_character_quad() {
         let mut hair = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         hair.layer_id = "character-hair-waterwaves".to_owned();
@@ -6796,6 +6881,22 @@ mod tests {
         assert_eq!(
             pass_plan.sampled_image_recording_steps[0].layer_id,
             "character-hair-waterwaves"
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[0]
+                .material_pass
+                .render_state
+                .blend
+                .mode,
+            SceneBlendMode::Alpha
+        );
+        assert_eq!(
+            super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                &pass_plan.sampled_image_recording_steps[0]
+                    .material_pass
+                    .render_state
+            ),
+            "sampled-image-alpha-blend"
         );
         assert_eq!(
             pass_plan.sampled_image_sources,

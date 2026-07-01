@@ -2115,6 +2115,15 @@ struct SceneBinaryMaterialState<'a> {
     cull_mode: u16,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryMaterialPassSource<'a> {
+    shader: Option<&'a str>,
+    blending: Option<&'a str>,
+    depthtest: Option<&'a str>,
+    depthwrite: Option<&'a str>,
+    cullmode: Option<&'a str>,
+}
+
 impl<'a> SceneBinaryMaterialState<'a> {
     fn from_node(
         node: &'a SceneNode,
@@ -2126,6 +2135,8 @@ impl<'a> SceneBinaryMaterialState<'a> {
             .iter()
             .flat_map(|effect| effect.passes.iter())
             .next();
+        let material_source = scene_binary_base_material_pass_source(node)
+            .or_else(|| first_pass.map(scene_binary_effect_material_pass_source));
         let effect_pass_count = node_effect_pass_count(&node.effects);
         let effect_texture_slot_count =
             node_effect_texture_slot_count(&node.effects, base_resource, resource_index);
@@ -2141,17 +2152,10 @@ impl<'a> SceneBinaryMaterialState<'a> {
             alpha_texture_slot.is_some(),
             effect_pass_count,
         );
-        let property_blend_mode = super::scene_blend_mode_from_properties(&node.properties);
-        let blend_mode = match property_blend_mode {
-            SceneBlendMode::Alpha => first_pass
-                .and_then(|pass| pass.blending.as_deref())
-                .and_then(super::scene_blend_mode_from_material_blending)
-                .unwrap_or(property_blend_mode),
-            _ => property_blend_mode,
-        };
+        let blend_mode = super::scene_blend_mode_from_properties(&node.properties);
         Self {
-            shader: first_pass.and_then(|pass| pass.shader.as_deref()),
-            blending: first_pass.and_then(|pass| pass.blending.as_deref()),
+            shader: material_source.and_then(|source| source.shader),
+            blending: material_source.and_then(|source| source.blending),
             blend_mode,
             alpha_texture_slot,
             alpha_texture_mode,
@@ -2160,9 +2164,9 @@ impl<'a> SceneBinaryMaterialState<'a> {
             effect_kind_flags,
             material_kind,
             descriptor_layout,
-            depth_test: material_flag_code(first_pass.and_then(|pass| pass.depthtest.as_deref())),
-            depth_write: material_flag_code(first_pass.and_then(|pass| pass.depthwrite.as_deref())),
-            cull_mode: cull_mode_code(first_pass.and_then(|pass| pass.cullmode.as_deref())),
+            depth_test: material_flag_code(material_source.and_then(|source| source.depthtest)),
+            depth_write: material_flag_code(material_source.and_then(|source| source.depthwrite)),
+            cull_mode: cull_mode_code(material_source.and_then(|source| source.cullmode)),
         }
     }
 
@@ -2175,6 +2179,38 @@ impl<'a> SceneBinaryMaterialState<'a> {
             | (u32::from(self.depth_write & 0x03) << 18)
             | (u32::from(self.cull_mode & 0x0f) << 20)
             | ((self.effect_kind_flags & 0xff) << 24)
+    }
+}
+
+fn scene_binary_base_material_pass_source(
+    node: &SceneNode,
+) -> Option<SceneBinaryMaterialPassSource<'_>> {
+    let pass = node
+        .properties
+        .get("material")?
+        .as_object()?
+        .get("passes")?
+        .as_array()?
+        .iter()
+        .find_map(serde_json::Value::as_object)?;
+    Some(SceneBinaryMaterialPassSource {
+        shader: pass.get("shader").and_then(serde_json::Value::as_str),
+        blending: pass.get("blending").and_then(serde_json::Value::as_str),
+        depthtest: pass.get("depthtest").and_then(serde_json::Value::as_str),
+        depthwrite: pass.get("depthwrite").and_then(serde_json::Value::as_str),
+        cullmode: pass.get("cullmode").and_then(serde_json::Value::as_str),
+    })
+}
+
+fn scene_binary_effect_material_pass_source(
+    pass: &SceneEffectPass,
+) -> SceneBinaryMaterialPassSource<'_> {
+    SceneBinaryMaterialPassSource {
+        shader: pass.shader.as_deref(),
+        blending: pass.blending.as_deref(),
+        depthtest: pass.depthtest.as_deref(),
+        depthwrite: pass.depthwrite.as_deref(),
+        cullmode: pass.cullmode.as_deref(),
     }
 }
 
@@ -6219,7 +6255,7 @@ mod tests {
     }
 
     #[test]
-    fn binary_material_pass_maps_effect_normal_blend_to_overwrite_mode() {
+    fn binary_material_pass_keeps_scene_alpha_when_effect_material_blends_normal() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 100, "height": 50 },
@@ -6230,6 +6266,17 @@ mod tests {
                     "id": "eye-node",
                     "type": "image",
                     "resource": "eye",
+                    "properties": {
+                        "material": {
+                            "passes": [{
+                                "shader": "genericimage4",
+                                "blending": "translucent",
+                                "depthtest": "disabled",
+                                "depthwrite": "disabled",
+                                "cullmode": "nocull"
+                            }]
+                        }
+                    },
                     "effects": [
                         {
                             "file": "effects/iris/effect.json",
@@ -6261,7 +6308,23 @@ mod tests {
         assert_eq!(materials.len(), 1);
         assert_eq!(
             materials[0].blend_mode,
-            blend_mode_code(SceneBlendMode::Normal)
+            blend_mode_code(SceneBlendMode::Alpha)
+        );
+        assert_eq!(
+            layout
+                .debug_names(&bytes)
+                .expect("debug names")
+                .name(materials[0].shader_name)
+                .expect("shader name"),
+            Some("genericimage4")
+        );
+        assert_eq!(
+            layout
+                .debug_names(&bytes)
+                .expect("debug names")
+                .name(materials[0].blending_name)
+                .expect("blending name"),
+            Some("translucent")
         );
     }
 }

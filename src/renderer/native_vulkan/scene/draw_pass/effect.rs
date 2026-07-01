@@ -130,7 +130,7 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass(
         alpha_texture_mode,
         texture_slot_count,
         effect_passes,
-        true,
+        false,
     )
 }
 
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn material_pass_lowers_normal_blending_to_overwrite_render_state() {
+    fn material_pass_keeps_scene_alpha_when_effect_material_blends_normal() {
         let effect_pass = NativeVulkanSceneEffectRecord {
             kind: NativeVulkanSceneEffectKind::Iris,
             evaluation_boundary: NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget,
@@ -690,14 +690,14 @@ mod tests {
             &[effect_pass],
         );
 
-        assert_eq!(material.render_state.blend.mode, SceneBlendMode::Normal);
+        assert_eq!(material.render_state.blend.mode, SceneBlendMode::Alpha);
         assert_eq!(
             native_vulkan_scene_sampled_image_pipeline_label(&material.render_state),
-            "sampled-image-normal-blend"
+            "sampled-image-alpha-blend"
         );
         assert_eq!(
             native_vulkan_scene_blend_equation_label(material.render_state.blend),
-            "color=one*src add zero*dst alpha=one*src add zero*dst"
+            "color=src-alpha*src add one-minus-src-alpha*dst alpha=src-alpha*src add one-minus-src-alpha*dst"
         );
     }
 }
