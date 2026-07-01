@@ -112,13 +112,34 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass(
     texture_slot_count: usize,
     effect_passes: &[NativeVulkanSceneEffectRecord],
 ) -> NativeVulkanSceneMaterialPass {
+    native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
+        kind,
+        blend_mode,
+        alpha_texture_slot,
+        alpha_texture_mode,
+        texture_slot_count,
+        effect_passes,
+        true,
+    )
+}
+
+pub(super) fn native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
+    kind: NativeVulkanSceneMaterialKind,
+    blend_mode: SceneBlendMode,
+    alpha_texture_slot: Option<u32>,
+    alpha_texture_mode: SceneRenderAlphaTextureMode,
+    texture_slot_count: usize,
+    effect_passes: &[NativeVulkanSceneEffectRecord],
+    use_effect_blend: bool,
+) -> NativeVulkanSceneMaterialPass {
     let material_source = effect_passes.first();
-    let material_blend_mode = match blend_mode {
-        SceneBlendMode::Alpha => material_source
+    let material_blend_mode = match (use_effect_blend, blend_mode) {
+        (false, blend_mode) => blend_mode,
+        (true, SceneBlendMode::Alpha) => material_source
             .and_then(|pass| pass.blending.as_deref())
             .and_then(scene_blend_mode_from_material_blending)
             .unwrap_or(blend_mode),
-        _ => blend_mode,
+        (true, blend_mode) => blend_mode,
     };
     let render_state = native_vulkan_scene_render_state(
         material_blend_mode,
@@ -150,7 +171,12 @@ pub(super) fn native_vulkan_scene_render_first_class_effect_target_pass(
 ) -> Option<NativeVulkanSceneSampledImageEffectPass> {
     passes
         .iter()
-        .find(|pass| iris::uses_first_class_target(pass.runtime.as_deref(), &pass.effect_file))
+        .find(|pass| {
+            native_vulkan_scene_effect_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
         .and_then(|pass| {
             native_vulkan_scene_first_class_effect_target_pass_from_slots(
                 native_vulkan_scene_texture_slots_from_render_slots(&pass.texture_slots),
@@ -166,7 +192,12 @@ pub(super) fn native_vulkan_scene_snapshot_first_class_effect_target_pass(
 ) -> Option<NativeVulkanSceneSampledImageEffectPass> {
     passes
         .iter()
-        .find(|pass| iris::uses_first_class_target(pass.runtime.as_deref(), &pass.effect_file))
+        .find(|pass| {
+            native_vulkan_scene_effect_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
         .and_then(|pass| {
             native_vulkan_scene_first_class_effect_target_pass_from_slots(
                 native_vulkan_scene_texture_slots_from_scene_slots(&pass.texture_slots),
@@ -270,7 +301,7 @@ fn native_vulkan_scene_effect_evaluation_boundary(
     kind: NativeVulkanSceneEffectKind,
 ) -> NativeVulkanSceneEffectEvaluationBoundary {
     match kind {
-        NativeVulkanSceneEffectKind::Iris => {
+        NativeVulkanSceneEffectKind::OpacityMask | NativeVulkanSceneEffectKind::Iris => {
             NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget
         }
         NativeVulkanSceneEffectKind::SwayShake => {
@@ -281,8 +312,7 @@ fn native_vulkan_scene_effect_evaluation_boundary(
         NativeVulkanSceneEffectKind::Blur | NativeVulkanSceneEffectKind::CompositeLayer => {
             NativeVulkanSceneEffectEvaluationBoundary::UtilityPass
         }
-        NativeVulkanSceneEffectKind::OpacityMask
-        | NativeVulkanSceneEffectKind::WaterRipple
+        NativeVulkanSceneEffectKind::WaterRipple
         | NativeVulkanSceneEffectKind::WaterWaves
         | NativeVulkanSceneEffectKind::WaterFlow
         | NativeVulkanSceneEffectKind::WaterCaustics
@@ -297,6 +327,14 @@ fn native_vulkan_scene_normalized_effect_file(effect_file: &str) -> String {
     effect_file.replace('\\', "/").to_ascii_lowercase()
 }
 
+fn native_vulkan_scene_effect_uses_first_class_target(
+    runtime: Option<&str>,
+    effect_file: &str,
+) -> bool {
+    iris::uses_first_class_target(runtime, effect_file)
+        || opacity_mask::uses_first_class_target(runtime, effect_file)
+}
+
 fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
     texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     runtime: Option<&str>,
@@ -304,16 +342,25 @@ fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
     effect_uv_transform: Option<crate::core::scene::SceneEffectUvTransform>,
 ) -> Option<NativeVulkanSceneSampledImageEffectPass> {
     let normalized = native_vulkan_scene_normalized_effect_file(effect_file);
-    if !iris::matches(runtime, &normalized) {
-        return None;
+    if iris::matches(runtime, &normalized) {
+        let alpha_texture_slot = iris::alpha_texture_slot(&texture_slots)?;
+        return Some(NativeVulkanSceneSampledImageEffectPass {
+            texture_slots,
+            alpha_texture_slot: Some(alpha_texture_slot),
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
+            effect_uv_transform,
+        });
     }
-    let alpha_texture_slot = iris::alpha_texture_slot(&texture_slots)?;
-    Some(NativeVulkanSceneSampledImageEffectPass {
-        texture_slots,
-        alpha_texture_slot: Some(alpha_texture_slot),
-        alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
-        effect_uv_transform,
-    })
+    if opacity_mask::matches(runtime, &normalized) {
+        let alpha_texture_slot = opacity_mask::alpha_texture_slot(&texture_slots)?;
+        return Some(NativeVulkanSceneSampledImageEffectPass {
+            texture_slots,
+            alpha_texture_slot: Some(alpha_texture_slot),
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Coverage,
+            effect_uv_transform,
+        });
+    }
+    None
 }
 
 fn native_vulkan_scene_effect_kind_list(
@@ -368,7 +415,7 @@ mod tests {
                 Some("native-opacity-mask"),
                 "effects/anything/effect.json",
                 NativeVulkanSceneEffectKind::OpacityMask,
-                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+                NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget,
             ),
             (
                 Some("native-iris-mask"),
@@ -502,8 +549,12 @@ mod tests {
             combos: Default::default(),
             constant_shader_values: Default::default(),
         };
-        assert!(
-            native_vulkan_scene_render_first_class_effect_target_pass(&[opacity_pass]).is_none()
+        let target = native_vulkan_scene_render_first_class_effect_target_pass(&[opacity_pass])
+            .expect("opacity effect should own a first-class target pass");
+        assert_eq!(target.alpha_texture_slot, Some(1));
+        assert_eq!(
+            target.alpha_texture_mode,
+            SceneRenderAlphaTextureMode::Coverage
         );
     }
 

@@ -3151,6 +3151,82 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
 }
 
 #[test]
+fn binary_opacity_mask_uv_transform_uses_mask_over_base_extent_without_resolution_constant() {
+    let source = TestDir::new("we-scene-opacity-mask-binary-uv-source");
+    let output = TestDir::new("we-scene-opacity-mask-binary-uv-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "parent": 100,
+                  "name": "Eye Opacity Mask",
+                  "image": "models/eye.json",
+                  "attachment": "eye",
+                  "effects": [
+                    {
+                      "file": "effects/opacity/effect.json",
+                      "passes": [
+                        {
+                          "textures": [null, "masks/opacity_mask"],
+                          "constantshadervalues": { "alpha": 1.0 }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        "models/eye.json",
+        r#"{ "width": 663, "height": 230, "material": "materials/eye.json" }"#,
+    );
+    source.write_file(
+        "materials/eye.json",
+        r#"{ "passes": [{ "textures": ["eye"] }] }"#,
+    );
+    source.write_bytes(
+        "materials/eye.tex",
+        &test_we_tex_rgba(663, 230, &vec![255; tex::rgba_len(663, 230).unwrap()]),
+    );
+    source.write_bytes(
+        "materials/masks/opacity_mask.tex",
+        &test_we_tex_image_payload(331, 115, 9, &vec![255; 331 * 115], 1),
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Opacity Mask Binary UV Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+
+    let binary_scene = fs::read(output.path().join("assets/scene.gscn")).unwrap();
+    let binary_layout = decode_scene_binary_container(&binary_scene).unwrap();
+    let transforms = binary_layout
+        .effect_uv_transform_records(&binary_scene)
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(transforms.len(), 1);
+    let transform = transforms[0];
+    assert_eq!(transform.input_width, 663);
+    assert_eq!(transform.input_height, 230);
+    assert_eq!(transform.mask_width, 331);
+    assert_eq!(transform.mask_height, 115);
+    assert!((transform.scale_u - (331.0 / 663.0) as f32).abs() < f32::EPSILON);
+    assert_eq!(transform.scale_v, 0.5);
+    assert_ne!(transform.scale_u, 2.0);
+    assert_ne!(transform.scale_v, 2.0);
+}
+
+#[test]
 fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
     let rgba = vec![
         255, 0, 0, 255, 0, 255, 0, 255, 1, 1, 1, 255, 2, 2, 2, 255, 0, 0, 255, 255, 255, 255, 0,

@@ -107,7 +107,7 @@ install -m 0644 docs/man/*.1 "$stage_dir/share/man/man1/"
 install -m 0644 completions/bash/* "$stage_dir/share/bash-completion/completions/"
 install -m 0644 completions/zsh/* "$stage_dir/share/zsh/site-functions/"
 install -m 0644 packaging/systemd/gilder.service "$stage_dir/lib/systemd/user/gilder.service"
-install -m 0644 README.md README.zh-CN.md docs/packaging.md docs/native-vulkan-video.md "$stage_dir/share/doc/gilder/"
+install -m 0644 README.md README.zh-CN.md docs/packaging.md docs/native-vulkan-scene-refactor-goals.md "$stage_dir/share/doc/gilder/"
 install -m 0755 scripts/native-vulkan-h264-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h264-ready-prefix-video-smoke.sh"
 install -m 0755 scripts/native-vulkan-av1-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-av1-ready-prefix-video-smoke.sh"
 install -m 0755 scripts/native-vulkan-h265-ready-prefix-video-smoke.sh "$stage_dir/share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh"
@@ -139,7 +139,7 @@ contents:
   share/doc/gilder/README.md
   share/doc/gilder/README.zh-CN.md
   share/doc/gilder/packaging.md
-  share/doc/gilder/native-vulkan-video.md
+  share/doc/gilder/native-vulkan-scene-refactor-goals.md
   share/doc/gilder/scripts/native-vulkan-h264-ready-prefix-video-smoke.sh
   share/doc/gilder/scripts/native-vulkan-av1-ready-prefix-video-smoke.sh
   share/doc/gilder/scripts/native-vulkan-h265-ready-prefix-video-smoke.sh

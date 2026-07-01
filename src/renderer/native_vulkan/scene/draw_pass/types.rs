@@ -295,6 +295,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) effect_target_pass:
         Option<NativeVulkanSceneSampledImageEffectPass>,
     pub(in crate::renderer::native_vulkan::scene) material_pass: NativeVulkanSceneMaterialPass,
+    pub(in crate::renderer::native_vulkan::scene) base_blend_mode: SceneBlendMode,
     pub(in crate::renderer::native_vulkan::scene) effect_passes: Vec<NativeVulkanSceneEffectRecord>,
     pub(in crate::renderer::native_vulkan::scene) composite_key: Option<SceneLayerCompositeKey>,
     pub(in crate::renderer::native_vulkan::scene) fit: FitMode,

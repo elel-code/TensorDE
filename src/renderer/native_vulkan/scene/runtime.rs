@@ -1433,11 +1433,14 @@ fn native_vulkan_scene_effect_pass_uses_first_class_target(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> bool {
-    if runtime == Some("native-iris-mask") {
+    if runtime == Some("native-iris-mask") || runtime == Some("native-opacity-mask") {
         return true;
     }
     let file = effect_file.replace('\\', "/").to_ascii_lowercase();
-    file == "effects/iris/effect.json" || file.ends_with("/effects/iris/effect.json")
+    file == "effects/iris/effect.json"
+        || file.ends_with("/effects/iris/effect.json")
+        || file == "effects/opacity/effect.json"
+        || file.ends_with("/effects/opacity/effect.json")
 }
 
 fn native_vulkan_scene_runtime_eye_contribution_debug(
@@ -2130,7 +2133,9 @@ fn native_vulkan_scene_sampled_layer_effect_mask_slot(
             .iter()
             .filter(|pass| {
                 pass.runtime.as_deref() == Some("native-iris-mask")
+                    || pass.runtime.as_deref() == Some("native-opacity-mask")
                     || native_vulkan_scene_effect_file_is_iris_mask(&pass.effect_file)
+                    || native_vulkan_scene_effect_file_is_opacity_mask(&pass.effect_file)
             })
             .flat_map(|pass| pass.texture_slots.iter())
             .filter(|slot| slot.slot > 0)
@@ -2146,6 +2151,12 @@ fn native_vulkan_scene_sampled_layer_effect_mode(
             || native_vulkan_scene_effect_file_is_iris_mask(&pass.effect_file)
     }) {
         return SceneRenderAlphaTextureMode::Iris;
+    }
+    if layer.image_effect_passes.iter().any(|pass| {
+        pass.runtime.as_deref() == Some("native-opacity-mask")
+            || native_vulkan_scene_effect_file_is_opacity_mask(&pass.effect_file)
+    }) {
+        return SceneRenderAlphaTextureMode::Coverage;
     }
     layer.alpha_texture_mode.into()
 }
@@ -2170,6 +2181,12 @@ fn native_vulkan_scene_sampled_layer_eye_effect_label(
     }) {
         return Some("iris-base-eye");
     }
+    if layer.image_effect_passes.iter().any(|pass| {
+        pass.runtime.as_deref() == Some("native-opacity-mask")
+            || native_vulkan_scene_effect_file_is_opacity_mask(&pass.effect_file)
+    }) {
+        return Some("opacity-duplicate-overlay");
+    }
     None
 }
 
@@ -2189,6 +2206,11 @@ fn native_vulkan_scene_effect_file_is_iris_mask(effect_file: &str) -> bool {
     file == "effects/iris/effect.json" || file.ends_with("/effects/iris/effect.json")
 }
 
+fn native_vulkan_scene_effect_file_is_opacity_mask(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json")
+}
+
 fn native_vulkan_scene_sampled_layer_effect_geometry_semantics_label(
     layer: &SceneSnapshotSampledImageLayer,
     vertices: &[NativeVulkanSceneSampledImageVertex],
@@ -2196,7 +2218,10 @@ fn native_vulkan_scene_sampled_layer_effect_geometry_semantics_label(
     let mode = native_vulkan_scene_sampled_layer_effect_mode(layer);
     if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer) && vertices.len() > 4
     {
-        if matches!(mode, SceneRenderAlphaTextureMode::Multiply) {
+        if matches!(
+            mode,
+            SceneRenderAlphaTextureMode::Multiply | SceneRenderAlphaTextureMode::Coverage
+        ) {
             return "we-opacity-effect-local-target-base-plus-final-quad";
         }
         if matches!(mode, SceneRenderAlphaTextureMode::Iris) {
@@ -6217,7 +6242,7 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_sampled_vertices_keep_opacity_effect_direct_material_uv() {
+    fn dynamic_sampled_vertices_route_opacity_effect_through_first_class_target() {
         let base_source = PackagePath::new("assets/eye-base.gtex").unwrap();
         let mask_source = PackagePath::new("assets/eye-mask.gtex").unwrap();
         let mesh = Arc::new(SceneMesh {
@@ -6301,20 +6326,18 @@ mod tests {
         };
 
         let geometry = native_vulkan_scene_sampled_vertex_input_from_sampled_layers(&[carrier])
-            .expect("dynamic opacity effect direct vertices");
+            .expect("dynamic opacity effect target vertices");
 
-        assert_eq!(geometry.vertices.len(), 3);
+        assert_eq!(geometry.vertices.len(), 7);
         assert!(geometry.indices.is_empty());
         assert!(geometry.draw_steps.is_empty());
-        assert_eq!(geometry.vertices[0].position, [-10.0, -20.0]);
-        assert_eq!(geometry.vertices[1].position, [10.0, -20.0]);
-        assert_eq!(geometry.vertices[2].position, [-10.0, 20.0]);
-        assert_eq!(geometry.vertices[0].uv, [0.0, 0.0]);
-        assert_eq!(geometry.vertices[1].uv, [1.0, 0.0]);
-        assert_eq!(geometry.vertices[2].uv, [0.0, 1.0]);
-        assert_eq!(geometry.vertices[0].effect_uv, [0.0, 0.0]);
-        assert_eq!(geometry.vertices[1].effect_uv, [1.0, 0.0]);
-        assert_eq!(geometry.vertices[2].effect_uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[0].position, [40.0, 70.0]);
+        assert_eq!(geometry.vertices[0].uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[2].uv, [0.0, 0.0]);
+        assert_eq!(geometry.vertices[3].uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[6].uv, [1.0, 0.0]);
+        assert_eq!(geometry.vertices[3].effect_uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[6].effect_uv, [1.0, 0.0]);
     }
 
     #[test]

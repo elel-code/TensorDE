@@ -14,6 +14,7 @@ pub(super) fn scene_effects_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
     object: &Map<String, Value>,
+    node: &Map<String, Value>,
     node_id: &str,
     report: &mut ConversionReport,
     context: &mut SceneDocumentBuildContext,
@@ -39,7 +40,7 @@ pub(super) fn scene_effects_from_object(
                 output.insert("visible".to_owned(), visible.clone());
             }
             let passes = scene_effect_passes_from_object(
-                project, output_dir, object, &file, effect, report, context, resources,
+                project, output_dir, node, &file, effect, report, context, resources,
             );
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
@@ -493,7 +494,17 @@ fn scene_effect_pass_uv_transform(
         .enumerate()
         .skip(1)
         .find_map(|(slot, resource)| value_to_string(resource).map(|resource| (slot, resource)))?;
-    let (scale, offset) = scene_effect_pass_uv_transform_values(pass);
+    let input_extent = scene_effect_node_extent(node);
+    let mask_extent = scene_effect_resource_extent(resources, &mask_resource);
+    let (mut scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
+    if !has_explicit_scale
+        && let (Some(input_extent), Some(mask_extent)) =
+            (input_extent.as_ref(), mask_extent.as_ref())
+        && let Some(extent_scale) =
+            scene_effect_uv_transform_scale_from_extents(input_extent, mask_extent)
+    {
+        scale = extent_scale;
+    }
     let mut transform = Map::new();
     transform.insert(
         "mapping".to_owned(),
@@ -506,10 +517,10 @@ fn scene_effect_pass_uv_transform(
     );
     transform.insert("scale".to_owned(), json!([scale[0], scale[1]]));
     transform.insert("offset".to_owned(), json!([offset[0], offset[1]]));
-    if let Some(extent) = scene_effect_node_extent(node) {
+    if let Some(extent) = input_extent {
         transform.insert("input_extent".to_owned(), extent);
     }
-    if let Some(extent) = scene_effect_resource_extent(resources, &mask_resource) {
+    if let Some(extent) = mask_extent {
         transform.insert("mask_extent".to_owned(), extent.clone());
         transform.insert("mask_backing_extent".to_owned(), extent);
     }
@@ -524,9 +535,10 @@ fn scene_effect_file_uses_mask_uv(effect_file: &str) -> bool {
         || file.ends_with("/effects/iris/effect.json")
 }
 
-fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2], [f64; 2]) {
+fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2], [f64; 2], bool) {
     let mut scale = [1.0, 1.0];
     let mut offset = [0.0, 0.0];
+    let mut has_explicit_scale = false;
     if let Some(values) = pass
         .get("constantshadervalues")
         .or_else(|| pass.get("constant_shader_values"))
@@ -536,10 +548,12 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
             .get("g_Texture1Resolution")
             .or_else(|| values.get("Texture1Resolution"))
             .and_then(scene_effect_vec4)
-            && resolution[0].abs() > f64::EPSILON
-            && resolution[1].abs() > f64::EPSILON
+            && resolution[2].abs() > f64::EPSILON
+            && resolution[3].abs() > f64::EPSILON
         {
-            scale = [resolution[2] / resolution[0], resolution[3] / resolution[1]];
+            // Wallpaper Engine stores the mask extent in xy and the pass/base extent in zw.
+            scale = [resolution[0] / resolution[2], resolution[1] / resolution[3]];
+            has_explicit_scale = true;
         }
     }
     if let Some(value) = pass
@@ -548,6 +562,7 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
         .and_then(scene_effect_vec2)
     {
         scale = value;
+        has_explicit_scale = true;
     }
     if let Some(value) = pass
         .get("effect_uv_offset")
@@ -556,7 +571,7 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
     {
         offset = value;
     }
-    (scale, offset)
+    (scale, offset, has_explicit_scale)
 }
 
 fn scene_effect_vec2(value: &Value) -> Option<[f64; 2]> {
@@ -629,4 +644,74 @@ fn scene_effect_resource_extent(resources: &[Value], resource_id: &str) -> Optio
             }
             Some(json!({ "width": width, "height": height }))
         })
+}
+
+fn scene_effect_uv_transform_scale_from_extents(
+    input_extent: &Value,
+    mask_extent: &Value,
+) -> Option<[f64; 2]> {
+    let input = input_extent.as_object()?;
+    let mask = mask_extent.as_object()?;
+    let input_width = f64::from(input.get("width").and_then(value_to_u32)?);
+    let input_height = f64::from(input.get("height").and_then(value_to_u32)?);
+    let mask_width = f64::from(mask.get("width").and_then(value_to_u32)?);
+    let mask_height = f64::from(mask.get("height").and_then(value_to_u32)?);
+    if input_width <= f64::EPSILON || input_height <= f64::EPSILON {
+        return None;
+    }
+    Some([mask_width / input_width, mask_height / input_height])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uv_transform_resolution_scale_uses_mask_over_pass_extent() {
+        let pass = json!({
+            "constantshadervalues": {
+                "g_Texture1Resolution": [331.0, 115.0, 663.0, 230.0]
+            }
+        });
+        let pass = pass.as_object().expect("pass object");
+
+        let (scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
+
+        assert!((scale[0] - (331.0 / 663.0)).abs() < f64::EPSILON);
+        assert_eq!(scale[1], 0.5);
+        assert_eq!(offset, [0.0, 0.0]);
+        assert!(has_explicit_scale);
+    }
+
+    #[test]
+    fn uv_transform_fills_missing_resolution_scale_from_extents() {
+        let node = json!({ "width": 663.0, "height": 230.0 });
+        let node = node.as_object().expect("node object");
+        let pass = json!({
+            "textures": [null, "masks/opacity_mask"],
+            "constantshadervalues": { "alpha": 1.0 }
+        });
+        let pass = pass.as_object().expect("pass object");
+        let texture_resources = json!([null, "mask-resource"]);
+        let resources = json!([
+            {
+                "id": "mask-resource",
+                "width": 331,
+                "height": 115
+            }
+        ]);
+        let resources = resources.as_array().expect("resources array");
+
+        let transform = scene_effect_pass_uv_transform(
+            node,
+            "effects/opacity/effect.json",
+            pass,
+            Some(&texture_resources),
+            resources,
+        )
+        .expect("effect uv transform");
+
+        assert_eq!(transform["scale"][0].as_f64(), Some(331.0 / 663.0));
+        assert_eq!(transform["scale"][1].as_f64(), Some(0.5));
+    }
 }

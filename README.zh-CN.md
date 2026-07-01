@@ -17,7 +17,8 @@ zero-copy 状态。
 - 原生 Vulkan video 支持 H.264、H.265 Main8/Main10、AV1 Main8/Main10。
 - 当前渲染路径通过 `VK_EXT_descriptor_heap` 采样 GPU Y/UV plane descriptor，并通过
   Wayland present，不保留 decoded-frame CPU copy。
-- 4K240 当前达标门槛和证据记录在 `docs/native-vulkan-video.md`。
+- 当前 4K240 video 性能门槛是 `average_present_fps >= 239.999` 和
+  `performance_max_private_dirty_kib < 25000`。
 
 ## 下一步计划
 
@@ -50,7 +51,7 @@ zero-copy 状态。
 - `src/renderer/native_vulkan/scene/`：scene-lite runtime 规划和原生 Vulkan present 入口。
 - `src/renderer/native_vulkan/audio/`：下一步 FFmpeg clock/output 集成使用的 audio policy
   边界。
-- `docs/native-vulkan-video.md`：当前 FFmpeg/Vulkan Video 门槛、证据和验证规则。
+- `docs/native-vulkan-scene-refactor-goals.md`：当前原生 scene renderer 架构计划和证据门槛。
 - `docs/packaging.md`：安装和发行说明。
 - `docs/man/`：man pages。
 - `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`：当前三种格式证据脚本。

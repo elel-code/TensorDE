@@ -3705,7 +3705,7 @@ fn scene_node_from_object(
         }
     }
     let effects = effect::scene_effects_from_object(
-        project, output_dir, object, &node_id, report, context, resources,
+        project, output_dir, object, &node, &node_id, report, context, resources,
     );
     if !effects.is_empty() {
         node.insert("effects".to_owned(), Value::Array(effects));

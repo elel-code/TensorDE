@@ -22,8 +22,8 @@ as a performance result.
 - The active render path samples GPU Y/UV plane descriptors through
   `VK_EXT_descriptor_heap` and presents through Wayland without decoded-frame
   CPU copies.
-- Current validated 4K240 gates are recorded in
-  `docs/native-vulkan-video.md`.
+- Current 4K240 video performance gates are `average_present_fps >= 239.999`
+  and `performance_max_private_dirty_kib < 25000`.
 
 ## Engineering Rule
 
@@ -72,8 +72,8 @@ any remaining boundary explicitly.
   Vulkan present entry points.
 - `src/renderer/native_vulkan/audio/`: audio policy surface for the next FFmpeg
   clock/output integration step.
-- `docs/native-vulkan-video.md`: current FFmpeg/Vulkan Video gates, evidence,
-  and next validation rules.
+- `docs/native-vulkan-scene-refactor-goals.md`: active native scene renderer
+  architecture plan and evidence gates.
 - `docs/packaging.md`: install and distribution notes.
 - `docs/man/`: man pages.
 - `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`: current
