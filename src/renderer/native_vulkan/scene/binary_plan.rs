@@ -4,12 +4,15 @@ use crate::core::scene::binary::{
 };
 
 mod flutter;
+mod geometry;
 mod material;
 mod resource;
 mod retained;
 
 pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
 use self::flutter::native_vulkan_scene_binary_flutter_records;
+pub(in crate::renderer::native_vulkan::scene) use self::geometry::NativeVulkanSceneBinaryGeometryRecord;
+use self::geometry::native_vulkan_scene_binary_geometry_records;
 use self::material::native_vulkan_scene_binary_material_records;
 pub(in crate::renderer::native_vulkan::scene) use self::material::{
     NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryMaterialRecord,
@@ -23,7 +26,7 @@ use self::retained::{
     native_vulkan_scene_binary_retained_gpu_records,
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan {
     pub(in crate::renderer::native_vulkan::scene) feature_flags: u32,
     pub(in crate::renderer::native_vulkan::scene) resource_count: u32,
@@ -46,6 +49,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
     pub(in crate::renderer::native_vulkan::scene) resource_records:
         Vec<NativeVulkanSceneBinaryResourceRecord>,
+    pub(in crate::renderer::native_vulkan::scene) geometry_records:
+        Vec<NativeVulkanSceneBinaryGeometryRecord>,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
         Vec<NativeVulkanSceneBinaryDrawRecord>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots:
@@ -65,19 +70,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryDraw
     pub(in crate::renderer::native_vulkan::scene) node_name: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_index: u32,
     pub(in crate::renderer::native_vulkan::scene) material_index: u32,
-    pub(in crate::renderer::native_vulkan::scene) primitive_kind: u16,
-    pub(in crate::renderer::native_vulkan::scene) vertex_layout: u16,
-    pub(in crate::renderer::native_vulkan::scene) first_vertex: u32,
-    pub(in crate::renderer::native_vulkan::scene) vertex_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) first_index: u32,
-    pub(in crate::renderer::native_vulkan::scene) index_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) material_texture_slot_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) effect_pass_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) effect_texture_slot_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) descriptor_layout: u16,
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: u16,
-    pub(in crate::renderer::native_vulkan::scene) effect_kind_flags: u32,
 }
 
 pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_plan_from_container(
@@ -95,7 +87,8 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let resource_count = record_len_from_usize(resource_records.len());
     let node_records = layout.node_records(container)?;
     let node_count = record_len_from_usize(node_records.len());
-    let geometry_record_count = record_len(layout.geometry_records(container)?);
+    let geometry_records = native_vulkan_scene_binary_geometry_records(container, layout)?;
+    let geometry_record_count = record_len_from_usize(geometry_records.records.len());
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
     let material_pass_count = record_len(layout.material_pass_records(container)?);
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
@@ -110,75 +103,20 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let flutter_state_count = record_len_from_usize(flutter_records.len());
 
     let mut draw_records = Vec::with_capacity(node_records.len());
-    let mut generated_vertex_count = 0u32;
-    let mut generated_index_count = 0u32;
-    let mut mesh_vertex_count = 0u32;
-    let mut mesh_index_count = 0u32;
     for node in node_records {
         let node = node?;
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
         }
-        let geometry = layout.geometry_record_at(container, node.geometry_index)?;
-        let material = if node.material_index == SCENE_BINARY_NONE_ID {
-            None
-        } else {
-            Some(layout.material_pass_record_at(container, node.material_index)?)
-        };
-
-        if geometry.first_vertex == SCENE_BINARY_NONE_ID {
-            generated_vertex_count = generated_vertex_count.saturating_add(geometry.vertex_count);
-            generated_index_count = generated_index_count.saturating_add(geometry.index_count);
-        } else {
-            let vertex_count =
-                record_len(layout.geometry_vertex_record_range(container, geometry)?);
-            let index_count = record_len(layout.geometry_index_record_range(container, geometry)?);
-            mesh_vertex_count = mesh_vertex_count.saturating_add(vertex_count);
-            mesh_index_count = mesh_index_count.saturating_add(index_count);
-        }
-
-        let mut material_texture_slot_count = 0u32;
-        let mut material_effect_pass_count = 0u32;
-        let mut effect_texture_slot_count = 0u32;
-        let mut draw_effect_parameter_count = 0u32;
-        let mut descriptor_layout = 0u16;
-        let mut blend_mode = 0u16;
-        let mut effect_kind_flags = 0u32;
-        if let Some(material) = material {
-            material_texture_slot_count =
-                record_len(layout.material_texture_slot_records(container, material)?);
-            descriptor_layout = material.descriptor_layout;
-            blend_mode = material.blend_mode;
-            effect_kind_flags = material.effect_kind_flags;
-            for effect_pass in layout.material_effect_pass_records(container, material)? {
-                let effect_pass = effect_pass?;
-                material_effect_pass_count = material_effect_pass_count.saturating_add(1);
-                effect_texture_slot_count = effect_texture_slot_count.saturating_add(record_len(
-                    layout.effect_texture_slot_records(container, effect_pass)?,
-                ));
-                draw_effect_parameter_count = draw_effect_parameter_count.saturating_add(
-                    record_len(layout.effect_parameter_record_range(container, effect_pass)?),
-                );
-            }
+        let _ = layout.geometry_record_at(container, node.geometry_index)?;
+        if node.material_index != SCENE_BINARY_NONE_ID {
+            let _ = layout.material_pass_record_at(container, node.material_index)?;
         }
 
         draw_records.push(NativeVulkanSceneBinaryDrawRecord {
             node_name: node.id_name,
             geometry_index: node.geometry_index,
             material_index: node.material_index,
-            primitive_kind: geometry.primitive_kind,
-            vertex_layout: geometry.vertex_layout,
-            first_vertex: geometry.first_vertex,
-            vertex_count: geometry.vertex_count,
-            first_index: geometry.first_index,
-            index_count: geometry.index_count,
-            material_texture_slot_count,
-            effect_pass_count: material_effect_pass_count,
-            effect_texture_slot_count,
-            effect_parameter_count: draw_effect_parameter_count,
-            descriptor_layout,
-            blend_mode,
-            effect_kind_flags,
         });
     }
 
@@ -188,13 +126,13 @@ fn native_vulkan_scene_binary_plan_from_layout(
         node_count,
         draw_record_count: record_len_from_usize(draw_records.len()),
         geometry_record_count,
-        generated_vertex_count,
-        generated_index_count,
-        mesh_vertex_count,
-        mesh_index_count,
-        mesh_vertex_stream_bytes: u64::from(mesh_vertex_count)
+        generated_vertex_count: geometry_records.generated_vertex_count,
+        generated_index_count: geometry_records.generated_index_count,
+        mesh_vertex_count: geometry_records.mesh_vertex_count,
+        mesh_index_count: geometry_records.mesh_index_count,
+        mesh_vertex_stream_bytes: u64::from(geometry_records.mesh_vertex_count)
             .saturating_mul(SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE as u64),
-        mesh_index_stream_bytes: u64::from(mesh_index_count)
+        mesh_index_stream_bytes: u64::from(geometry_records.mesh_index_count)
             .saturating_mul(SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE as u64),
         texture_slot_count,
         material_pass_count,
@@ -205,6 +143,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         retained_gpu_state_count,
         retained_dirty_range_count,
         resource_records,
+        geometry_records: geometry_records.records,
         draw_records,
         texture_slots: material_records.texture_slots,
         material_records: material_records.materials,
@@ -292,6 +231,28 @@ mod tests {
         );
         assert_eq!(plan.mesh_vertex_count, 0);
         assert_eq!(plan.mesh_index_count, 0);
+        assert_eq!(plan.geometry_records.len(), 1);
+        assert_eq!(plan.draw_records[0].geometry_index, 0);
+        assert_eq!(plan.draw_records[0].material_index, 0);
+        let geometry = plan.geometry_records[plan.draw_records[0].geometry_index as usize];
+        assert_eq!(
+            geometry.primitive_kind,
+            SCENE_BINARY_GEOMETRY_PRIMITIVE_QUAD
+        );
+        assert_eq!(
+            geometry.vertex_layout,
+            SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_GENERATED
+        );
+        assert_eq!(geometry.vertices.first_record, SCENE_BINARY_NONE_ID);
+        assert_eq!(
+            geometry.vertices.record_count,
+            SCENE_BINARY_GEOMETRY_QUAD_VERTEX_COUNT
+        );
+        assert_eq!(geometry.indices.first_record, SCENE_BINARY_NONE_ID);
+        assert_eq!(
+            geometry.indices.record_count,
+            SCENE_BINARY_GEOMETRY_QUAD_INDEX_COUNT
+        );
         assert_eq!(plan.material_pass_count, 1);
         assert_eq!(plan.effect_pass_count, 1);
         assert_eq!(plan.effect_parameter_count, 2);
@@ -336,22 +297,7 @@ mod tests {
                 .iter()
                 .all(|record| record.stable_id != 0 && record.dirty_range_count > 0)
         );
-        assert_eq!(
-            plan.draw_records[0].primitive_kind,
-            SCENE_BINARY_GEOMETRY_PRIMITIVE_QUAD
-        );
-        assert_eq!(
-            plan.draw_records[0].vertex_layout,
-            SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_GENERATED
-        );
-        assert_eq!(plan.draw_records[0].material_texture_slot_count, 2);
-        assert_eq!(plan.draw_records[0].effect_pass_count, 1);
-        assert_eq!(plan.draw_records[0].effect_texture_slot_count, 2);
-        assert_eq!(plan.draw_records[0].effect_parameter_count, 2);
-        assert_eq!(
-            plan.draw_records[0].descriptor_layout,
-            plan.material_records[0].descriptor_layout
-        );
+        assert_ne!(plan.material_records[0].descriptor_layout, 0);
     }
 
     #[test]
@@ -450,6 +396,20 @@ mod tests {
         assert_eq!(plan.generated_index_count, 0);
         assert_eq!(plan.mesh_vertex_count, 3);
         assert_eq!(plan.mesh_index_count, 3);
+        assert_eq!(plan.geometry_records.len(), 1);
+        let geometry = plan.geometry_records[plan.draw_records[0].geometry_index as usize];
+        assert_eq!(
+            geometry.primitive_kind,
+            SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH
+        );
+        assert_eq!(
+            geometry.vertex_layout,
+            SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY
+        );
+        assert_eq!(geometry.vertices.first_record, 0);
+        assert_eq!(geometry.vertices.record_count, 3);
+        assert_eq!(geometry.indices.first_record, 0);
+        assert_eq!(geometry.indices.record_count, 3);
         assert_eq!(plan.material_records.len(), 1);
         assert_eq!(plan.material_records[0].texture_slots.record_count, 0);
         assert_eq!(plan.material_records[0].effect_passes.record_count, 0);
@@ -461,15 +421,5 @@ mod tests {
             plan.mesh_index_stream_bytes,
             3 * SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE as u64
         );
-        assert_eq!(
-            plan.draw_records[0].primitive_kind,
-            SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH
-        );
-        assert_eq!(
-            plan.draw_records[0].vertex_layout,
-            SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY
-        );
-        assert_eq!(plan.draw_records[0].vertex_count, 3);
-        assert_eq!(plan.draw_records[0].index_count, 3);
     }
 }
