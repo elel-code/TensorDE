@@ -5,6 +5,7 @@ use crate::core::scene::binary::{
 
 mod flutter;
 mod material;
+mod resource;
 mod retained;
 
 pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
@@ -14,6 +15,8 @@ pub(in crate::renderer::native_vulkan::scene) use self::material::{
     NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryMaterialRecord,
     NativeVulkanSceneBinaryTextureSlotRecord,
 };
+pub(in crate::renderer::native_vulkan::scene) use self::resource::NativeVulkanSceneBinaryResourceRecord;
+use self::resource::native_vulkan_scene_binary_resource_records;
 pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
 use self::retained::{
     native_vulkan_scene_binary_retained_dirty_range_count,
@@ -41,6 +44,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) resource_records:
+        Vec<NativeVulkanSceneBinaryResourceRecord>,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
         Vec<NativeVulkanSceneBinaryDrawRecord>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots:
@@ -86,7 +91,8 @@ fn native_vulkan_scene_binary_plan_from_layout(
     container: &[u8],
     layout: &SceneBinaryLayoutPlan,
 ) -> Result<NativeVulkanSceneBinaryPlan, SceneBinaryError> {
-    let resource_count = record_len(layout.resource_records(container)?);
+    let resource_records = native_vulkan_scene_binary_resource_records(container, layout)?;
+    let resource_count = record_len_from_usize(resource_records.len());
     let node_records = layout.node_records(container)?;
     let node_count = record_len_from_usize(node_records.len());
     let geometry_record_count = record_len(layout.geometry_records(container)?);
@@ -198,6 +204,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         puppet_count,
         retained_gpu_state_count,
         retained_dirty_range_count,
+        resource_records,
         draw_records,
         texture_slots: material_records.texture_slots,
         material_records: material_records.materials,
@@ -268,6 +275,11 @@ mod tests {
 
         assert_eq!(plan.feature_flags, 0x40);
         assert_eq!(plan.resource_count, 2);
+        assert_eq!(plan.resource_records.len(), 2);
+        assert_eq!(plan.resource_records[0].width, 128);
+        assert_eq!(plan.resource_records[0].height, 64);
+        assert_eq!(plan.resource_records[1].width, 128);
+        assert_eq!(plan.resource_records[1].height, 64);
         assert_eq!(plan.node_count, 1);
         assert_eq!(plan.draw_record_count, 1);
         assert_eq!(
@@ -288,6 +300,10 @@ mod tests {
         assert_eq!(plan.texture_slots.len(), 2);
         assert_eq!(plan.texture_slots[0].resource_index, 0);
         assert_eq!(plan.texture_slots[1].resource_index, 1);
+        assert_eq!(
+            plan.resource_records[plan.texture_slots[1].resource_index as usize].source_name,
+            plan.resource_records[1].source_name
+        );
         assert_eq!(plan.material_records.len(), 1);
         assert_eq!(plan.material_records[0].texture_slots.first_record, 0);
         assert_eq!(plan.material_records[0].texture_slots.record_count, 2);
@@ -379,6 +395,8 @@ mod tests {
         let plan = native_vulkan_scene_binary_plan_from_container(&bytes).expect("binary plan");
 
         assert_eq!(plan.flutter_state_count, 1);
+        assert_eq!(plan.resource_records.len(), 1);
+        assert_eq!(plan.resource_records[0].height, 256);
         assert_eq!(plan.effect_parameter_count, 4);
         assert_eq!(plan.flutter_records.len(), 1);
         assert_eq!(
