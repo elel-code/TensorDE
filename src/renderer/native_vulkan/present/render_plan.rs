@@ -840,12 +840,16 @@ mod tests {
             pass_index: 0,
             shader: Some("effects/opacity".to_owned()),
             blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
             texture_slots: vec![SceneRenderTextureSlot {
                 slot: 1,
                 source: PathBuf::from("/tmp/eye-mask.gtex"),
                 width: Some(331),
                 height: Some(115),
             }],
+            combos: Default::default(),
             constant_shader_values: Default::default(),
         }];
         carrier.mesh = base.mesh.clone();

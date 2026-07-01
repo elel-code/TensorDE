@@ -25,7 +25,7 @@ use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPo
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
     SceneAudioCueCondition, SceneEffect, SceneImageEffectPass, SceneLayerCompositeKey, SceneMesh,
-    SceneNativeEffectMotion, SceneSnapshotLayer,
+    SceneNativeEffectMotion, ScenePuppetAnimationClip, SceneSnapshotLayer,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
@@ -163,8 +163,16 @@ pub struct SceneRenderImageEffectPass {
     pub shader: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blending: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depthtest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depthwrite: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cullmode: Option<String>,
     #[serde(default)]
     pub texture_slots: Vec<SceneRenderTextureSlot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub combos: BTreeMap<String, i64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub constant_shader_values: BTreeMap<String, Value>,
 }
@@ -2070,6 +2078,9 @@ fn scene_render_image_effect_pass(
         pass_index: pass.pass_index,
         shader: pass.shader,
         blending: pass.blending,
+        depthtest: pass.depthtest,
+        depthwrite: pass.depthwrite,
+        cullmode: pass.cullmode,
         texture_slots: pass
             .texture_slots
             .into_iter()
@@ -2080,6 +2091,7 @@ fn scene_render_image_effect_pass(
                 height: slot.height,
             })
             .collect(),
+        combos: pass.combos,
         constant_shader_values: pass.constant_shader_values,
     }
 }
@@ -2183,16 +2195,316 @@ fn load_scene_document(path: &Path) -> Result<SceneDocument, RendererPlanError> 
             path.display()
         ))
     })?;
-    let document: SceneDocument = serde_json::from_str(&contents).map_err(|err| {
+    let mut document: SceneDocument = serde_json::from_str(&contents).map_err(|err| {
         RendererPlanError::PackageLoad(format!(
             "failed to parse scene document {}: {err}",
             path.display()
         ))
     })?;
+    backfill_scene_puppet_opacity_tracks(&mut document, &scene_default_gscene_package_root(path));
     document.validate().map_err(|err| {
         RendererPlanError::PackageLoad(format!("invalid scene document {}: {err}", path.display()))
     })?;
     Ok(document)
+}
+
+#[derive(Clone)]
+struct ScenePuppetOpacityResource {
+    source: PackagePath,
+    original_source: Option<String>,
+    role: Option<String>,
+}
+
+struct ScenePuppetOpacityClip {
+    id: u32,
+    bone_frames: Vec<Vec<f64>>,
+}
+
+fn backfill_scene_puppet_opacity_tracks(document: &mut SceneDocument, package_root: &Path) {
+    let resources = document
+        .resources
+        .iter()
+        .map(|resource| {
+            (
+                resource.id.clone(),
+                ScenePuppetOpacityResource {
+                    source: resource.source.clone(),
+                    original_source: resource.original_source.clone(),
+                    role: resource.role.clone(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut parsed_puppet_cache = BTreeMap::<String, Option<Vec<ScenePuppetOpacityClip>>>::new();
+    for node in &mut document.nodes {
+        backfill_scene_node_puppet_opacity_tracks(
+            node,
+            &resources,
+            package_root,
+            &mut parsed_puppet_cache,
+        );
+    }
+}
+
+fn backfill_scene_node_puppet_opacity_tracks(
+    node: &mut crate::core::SceneNode,
+    resources: &BTreeMap<String, ScenePuppetOpacityResource>,
+    package_root: &Path,
+    parsed_puppet_cache: &mut BTreeMap<String, Option<Vec<ScenePuppetOpacityClip>>>,
+) {
+    let resource_id = node
+        .mesh
+        .as_ref()
+        .filter(|mesh| !scene_mesh_has_non_default_puppet_opacity(mesh))
+        .and_then(|_| scene_node_puppet_mdl_resource_id(node, resources));
+    if let Some(resource_id) = resource_id
+        && let Some(mesh) = node.mesh.as_mut()
+    {
+        let clips = parsed_puppet_cache
+            .entry(resource_id.clone())
+            .or_insert_with(|| {
+                resources
+                    .get(&resource_id)
+                    .and_then(|resource| fs::read(resource.source.join_to(package_root)).ok())
+                    .and_then(|bytes| scene_mdl_puppet_opacity_clips(&bytes))
+            });
+        if let Some(clips) = clips.as_ref() {
+            let mesh = Arc::make_mut(mesh);
+            backfill_scene_mesh_puppet_opacity_tracks(mesh, clips);
+        }
+    }
+    for child in &mut node.children {
+        backfill_scene_node_puppet_opacity_tracks(
+            child,
+            resources,
+            package_root,
+            parsed_puppet_cache,
+        );
+    }
+}
+
+fn scene_node_puppet_mdl_resource_id(
+    node: &crate::core::SceneNode,
+    resources: &BTreeMap<String, ScenePuppetOpacityResource>,
+) -> Option<String> {
+    let model = node.provenance.as_ref()?.model.as_ref()?;
+    let puppet = model.puppet.as_deref()?;
+    resources
+        .iter()
+        .find(|(_, resource)| {
+            resource.role.as_deref() == Some("we-puppet-mdl")
+                && resource.original_source.as_deref() == Some(puppet)
+        })
+        .map(|(resource_id, _)| resource_id.clone())
+}
+
+fn scene_mesh_has_non_default_puppet_opacity(mesh: &SceneMesh) -> bool {
+    mesh.puppet_clips.iter().any(|clip| {
+        clip.bones.iter().any(|bone| {
+            bone.frames
+                .iter()
+                .any(|frame| (frame.opacity - 1.0).abs() > 0.000_001)
+        })
+    })
+}
+
+fn backfill_scene_mesh_puppet_opacity_tracks(
+    mesh: &mut SceneMesh,
+    source_clips: &[ScenePuppetOpacityClip],
+) {
+    for clip in &mut mesh.puppet_clips {
+        let Some(source_clip) = source_clips
+            .iter()
+            .find(|source_clip| source_clip.id == clip.id)
+        else {
+            continue;
+        };
+        backfill_scene_puppet_clip_opacity_tracks(clip, source_clip);
+    }
+}
+
+fn backfill_scene_puppet_clip_opacity_tracks(
+    clip: &mut ScenePuppetAnimationClip,
+    source_clip: &ScenePuppetOpacityClip,
+) {
+    if clip.bones.len() != source_clip.bone_frames.len() {
+        return;
+    }
+    for (bone, source_frames) in clip.bones.iter_mut().zip(&source_clip.bone_frames) {
+        if bone.frames.len() != source_frames.len() {
+            continue;
+        }
+        for (frame, opacity) in bone.frames.iter_mut().zip(source_frames) {
+            frame.opacity = opacity.clamp(0.0, 1.0);
+        }
+    }
+}
+
+fn scene_mdl_puppet_opacity_clips(bytes: &[u8]) -> Option<Vec<ScenePuppetOpacityClip>> {
+    let mdls_offset = scene_find_bytes_after(bytes, b"MDLS", 0)?;
+    let mdla_offset = scene_find_bytes_after(bytes, b"MDLA", mdls_offset + 4)?;
+    let (mdla_end, clip_count, mut position) =
+        scene_mdl_section_end_count_start(bytes, mdla_offset)?;
+    let mut clips = Vec::with_capacity(clip_count);
+    for _ in 0..clip_count {
+        while position < mdla_end && bytes.get(position) == Some(&0) {
+            position += 1;
+        }
+        let clip_id = scene_take_u32_le(bytes, &mut position, mdla_end)?;
+        scene_skip_bytes(bytes, &mut position, mdla_end, 4)?;
+        let _name = scene_take_mdl_c_string(bytes, &mut position, mdla_end)?;
+        let _playback = scene_take_mdl_c_string(bytes, &mut position, mdla_end)?;
+        let _fps = scene_take_f32_le(bytes, &mut position, mdla_end)?;
+        let frame_count = scene_take_u32_le(bytes, &mut position, mdla_end)?;
+        scene_skip_bytes(bytes, &mut position, mdla_end, 4)?;
+        let bone_count =
+            usize::try_from(scene_take_u32_le(bytes, &mut position, mdla_end)?).ok()?;
+        let sample_count = usize::try_from(frame_count).ok()?.checked_add(1)?;
+        for _ in 0..bone_count {
+            scene_skip_bytes(bytes, &mut position, mdla_end, 4)?;
+            let byte_count =
+                usize::try_from(scene_take_u32_le(bytes, &mut position, mdla_end)?).ok()?;
+            if byte_count % 36 != 0 || byte_count / 36 != sample_count {
+                return None;
+            }
+            scene_skip_bytes(bytes, &mut position, mdla_end, byte_count)?;
+        }
+        if let Some(bone_frames) = scene_parse_mdl_puppet_opacity_tracks(
+            bytes,
+            &mut position,
+            mdla_end,
+            bone_count,
+            sample_count,
+        ) {
+            clips.push(ScenePuppetOpacityClip {
+                id: clip_id,
+                bone_frames,
+            });
+        }
+    }
+    (!clips.is_empty()).then_some(clips)
+}
+
+fn scene_parse_mdl_puppet_opacity_tracks(
+    bytes: &[u8],
+    position: &mut usize,
+    mdla_end: usize,
+    bone_count: usize,
+    sample_count: usize,
+) -> Option<Vec<Vec<f64>>> {
+    let track_bytes = sample_count.checked_mul(4)?;
+    let block_bytes = track_bytes.checked_add(8)?;
+    let start = *position;
+    for preamble_bytes in 0..=16usize {
+        let base = start.checked_add(preamble_bytes)?;
+        let total_bytes = bone_count.checked_mul(block_bytes)?;
+        let end = base.checked_add(total_bytes)?;
+        if end > mdla_end || end > bytes.len() {
+            continue;
+        }
+        let mut tracks = Vec::with_capacity(bone_count);
+        let mut valid = true;
+        for bone_index in 0..bone_count {
+            let block = base + bone_index * block_bytes;
+            let byte_count = usize::try_from(scene_read_u32_le_at(bytes, block + 4)?).ok()?;
+            if byte_count != track_bytes {
+                valid = false;
+                break;
+            }
+            let mut frames = Vec::with_capacity(sample_count);
+            for frame_index in 0..sample_count {
+                let offset = block + 8 + frame_index * 4;
+                let value = f64::from(scene_read_f32_le_at(bytes, offset)?);
+                if !value.is_finite() {
+                    valid = false;
+                    break;
+                }
+                frames.push(value.clamp(0.0, 1.0));
+            }
+            if !valid {
+                break;
+            }
+            tracks.push(frames);
+        }
+        if valid {
+            *position = end;
+            return Some(tracks);
+        }
+    }
+    None
+}
+
+fn scene_mdl_section_end_count_start(
+    bytes: &[u8],
+    section_offset: usize,
+) -> Option<(usize, usize, usize)> {
+    let mut position = section_offset.checked_add(8)?;
+    scene_skip_bytes(bytes, &mut position, bytes.len(), 1)?;
+    let end = usize::try_from(scene_take_u32_le(bytes, &mut position, bytes.len())?).ok()?;
+    let count = usize::try_from(scene_take_u32_le(bytes, &mut position, bytes.len())?).ok()?;
+    if end < position || end > bytes.len() {
+        return None;
+    }
+    Some((end, count, position))
+}
+
+fn scene_find_bytes_after(bytes: &[u8], needle: &[u8], after: usize) -> Option<usize> {
+    if needle.is_empty() || after >= bytes.len() {
+        return None;
+    }
+    bytes[after..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|position| after + position)
+}
+
+fn scene_take_mdl_c_string(bytes: &[u8], position: &mut usize, end: usize) -> Option<String> {
+    let start = *position;
+    let relative_end = bytes.get(start..end)?.iter().position(|byte| *byte == 0)?;
+    let string_end = start + relative_end;
+    *position = string_end.checked_add(1)?;
+    std::str::from_utf8(bytes.get(start..string_end)?)
+        .ok()
+        .map(str::to_owned)
+}
+
+fn scene_take_u32_le(bytes: &[u8], position: &mut usize, end: usize) -> Option<u32> {
+    let value = scene_read_u32_le_at(bytes, *position)?;
+    scene_skip_bytes(bytes, position, end, 4)?;
+    Some(value)
+}
+
+fn scene_take_f32_le(bytes: &[u8], position: &mut usize, end: usize) -> Option<f32> {
+    let value = scene_read_f32_le_at(bytes, *position)?;
+    scene_skip_bytes(bytes, position, end, 4)?;
+    Some(value)
+}
+
+fn scene_read_u32_le_at(bytes: &[u8], position: usize) -> Option<u32> {
+    Some(u32::from_le_bytes(
+        bytes
+            .get(position..position.checked_add(4)?)?
+            .try_into()
+            .ok()?,
+    ))
+}
+
+fn scene_read_f32_le_at(bytes: &[u8], position: usize) -> Option<f32> {
+    Some(f32::from_le_bytes(
+        bytes
+            .get(position..position.checked_add(4)?)?
+            .try_into()
+            .ok()?,
+    ))
+}
+
+fn scene_skip_bytes(bytes: &[u8], position: &mut usize, end: usize, count: usize) -> Option<()> {
+    let next = position.checked_add(count)?;
+    if next > end || next > bytes.len() {
+        return None;
+    }
+    *position = next;
+    Some(())
 }
 
 fn scene_display_plan(
@@ -5715,6 +6027,85 @@ exit 0
     }
 
     #[test]
+    fn load_scene_document_backfills_we_puppet_opacity_tracks_from_resource() {
+        let test_dir = TestDir::new("gilder-scene-puppet-opacity-backfill");
+        let assets = test_dir.path.join("assets");
+        fs::create_dir_all(&assets).unwrap();
+        fs::write(
+            assets.join("eye_puppet.mdl"),
+            test_we_puppet_mdl_with_opacity_tail(),
+        )
+        .unwrap();
+        fs::write(
+            assets.join("scene.gscene.json"),
+            serde_json::to_vec_pretty(&json!({
+                "version": 1,
+                "resources": [
+                    {
+                        "id": "eye-puppet",
+                        "type": "model",
+                        "source": "assets/eye_puppet.mdl",
+                        "role": "we-puppet-mdl",
+                        "original_source": "models/eye_puppet.mdl"
+                    }
+                ],
+                "nodes": [
+                    {
+                        "id": "eye",
+                        "type": "image",
+                        "resource": null,
+                        "provenance": {
+                            "model": {
+                                "puppet": "models/eye_puppet.mdl"
+                            }
+                        },
+                        "mesh": {
+                            "vertices": [
+                                { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                                { "x": 1.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                                { "x": 0.0, "y": 1.0, "u": 0.0, "v": 1.0 }
+                            ],
+                            "indices": [0, 1, 2],
+                            "skin": {
+                                "bones": [
+                                    {},
+                                    { "parent": 0 }
+                                ],
+                                "vertices": [
+                                    { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                    { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                    { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                                ]
+                            },
+                            "puppet_clips": [
+                                {
+                                    "id": 7,
+                                    "fps": 1.0,
+                                    "frame_count": 1,
+                                    "looping": true,
+                                    "bones": [
+                                        { "frames": [{}, {}] },
+                                        { "frames": [{}, {}] }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let document = load_scene_document(&assets.join("scene.gscene.json")).unwrap();
+        let mesh = document.nodes[0].mesh.as_ref().unwrap();
+        let clip = &mesh.puppet_clips[0];
+
+        assert!((clip.bones[0].frames[1].opacity - 1.0).abs() < 0.000_001);
+        assert!((clip.bones[1].frames[1].opacity - 0.25).abs() < 0.000_001);
+    }
+
+    #[test]
     fn scene_runtime_sampler_resamples_native_idle_controller_bindings() {
         let test_dir = TestDir::new("gilder-scene-controller-sampler");
         let package_dir = test_dir.path.join("scene-controller.gwpdir");
@@ -7968,6 +8359,58 @@ void main() {}
             "allow_audio": true
         });
         fs::write(manifest_path, serde_json::to_vec_pretty(&manifest).unwrap()).unwrap();
+    }
+
+    fn test_we_puppet_mdl_with_opacity_tail() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MDLV0023");
+        bytes.extend_from_slice(b"MDLS0004");
+        bytes.push(0);
+        let mdls_end_offset = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        let mdls_end = u32::try_from(bytes.len()).unwrap();
+        bytes[mdls_end_offset..mdls_end_offset + 4].copy_from_slice(&mdls_end.to_le_bytes());
+
+        bytes.extend_from_slice(b"MDLA0006");
+        bytes.push(0);
+        let mdla_end_offset = bytes.len();
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&7u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(b"blink\0");
+        bytes.extend_from_slice(b"loop\0");
+        bytes.extend_from_slice(&1.0f32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        test_push_we_puppet_mdl_transform_track(&mut bytes);
+        test_push_we_puppet_mdl_transform_track(&mut bytes);
+        bytes.extend_from_slice(&[0, 0, 0, 0, 1]);
+        test_push_we_puppet_mdl_opacity_track(&mut bytes, [1.0, 1.0]);
+        test_push_we_puppet_mdl_opacity_track(&mut bytes, [1.0, 0.25]);
+        let mdla_end = u32::try_from(bytes.len()).unwrap();
+        bytes[mdla_end_offset..mdla_end_offset + 4].copy_from_slice(&mdla_end.to_le_bytes());
+        bytes
+    }
+
+    fn test_push_we_puppet_mdl_transform_track(bytes: &mut Vec<u8>) {
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&72u32.to_le_bytes());
+        for _ in 0..2 {
+            for value in [0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0] {
+                bytes.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+    }
+
+    fn test_push_we_puppet_mdl_opacity_track(bytes: &mut Vec<u8>, frames: [f32; 2]) {
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&8u32.to_le_bytes());
+        for value in frames {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
     }
 
     fn active_performance_decision() -> PerformanceDecision {

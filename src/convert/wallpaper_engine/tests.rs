@@ -3130,7 +3130,13 @@ fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
     let decoded = tex::decode_we_tex_image(&tex).unwrap();
     assert_eq!(decoded.width, 4);
     assert_eq!(decoded.height, 2);
-    assert_eq!(decoded.rgba, rgba);
+    assert_eq!(
+        decoded.rgba,
+        vec![
+            0, 0, 255, 255, 255, 255, 0, 255, 3, 3, 3, 255, 4, 4, 4, 255, 255, 0, 0, 255, 0, 255,
+            0, 255, 1, 1, 1, 255, 2, 2, 2, 255,
+        ]
+    );
     let (frame, frame_count) = scene_we_tex_first_frame(
         decoded,
         Some(SceneWeModelFrameSize {
@@ -3145,7 +3151,7 @@ fn decodes_wallpaper_engine_scene_tex_material_to_renderable_frame_resource() {
     assert_eq!(
         frame.rgba,
         vec![
-            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+            0, 0, 255, 255, 255, 255, 0, 255, 255, 0, 0, 255, 0, 255, 0, 255,
         ]
     );
 

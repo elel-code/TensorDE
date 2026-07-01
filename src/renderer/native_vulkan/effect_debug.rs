@@ -109,6 +109,27 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_bc7_mode6_g
     ))
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_read_r8_gtex_cached(
+    path: &Path,
+) -> Result<Arc<NativeVulkanEffectDebugR8Texture>, String> {
+    static CACHE: OnceLock<
+        Mutex<std::collections::BTreeMap<PathBuf, Arc<NativeVulkanEffectDebugR8Texture>>>,
+    > = OnceLock::new();
+    let key = path.to_path_buf();
+    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
+    if let Ok(cache) = cache.lock()
+        && let Some(texture) = cache.get(&key)
+    {
+        return Ok(Arc::clone(texture));
+    }
+
+    let texture = Arc::new(native_vulkan_effect_debug_read_r8_gtex(path)?);
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, Arc::clone(&texture));
+    }
+    Ok(texture)
+}
+
 fn native_vulkan_effect_debug_read_r8_gtex(
     path: &Path,
 ) -> Result<NativeVulkanEffectDebugR8Texture, String> {
@@ -161,7 +182,7 @@ fn native_vulkan_effect_debug_read_r8_gtex(
     })
 }
 
-fn native_vulkan_effect_debug_read_bc7_mode6_gtex_cached(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_read_bc7_mode6_gtex_cached(
     path: &Path,
 ) -> Result<Arc<NativeVulkanEffectDebugRgbaTexture>, String> {
     static CACHE: OnceLock<
@@ -985,7 +1006,7 @@ struct NativeVulkanEffectDebugBbox {
     initialized: bool,
 }
 
-struct NativeVulkanEffectDebugR8Texture {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanEffectDebugR8Texture {
     width: u32,
     height: u32,
     bytes: Vec<u8>,
@@ -995,9 +1016,13 @@ impl NativeVulkanEffectDebugR8Texture {
     fn payload(&self) -> &[u8] {
         &self.bytes[GILDER_SCENE_TEXTURE_HEADER_BYTES..]
     }
+
+    pub(in crate::renderer::native_vulkan) fn sample_linear(&self, uv: [f32; 2]) -> f64 {
+        native_vulkan_effect_debug_sample_r8_linear(self.width, self.height, self.payload(), uv)
+    }
 }
 
-struct NativeVulkanEffectDebugRgbaTexture {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanEffectDebugRgbaTexture {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
@@ -1006,6 +1031,10 @@ struct NativeVulkanEffectDebugRgbaTexture {
 impl NativeVulkanEffectDebugRgbaTexture {
     fn payload(&self) -> &[u8] {
         &self.rgba
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sample_linear(&self, uv: [f32; 2]) -> [f64; 4] {
+        native_vulkan_effect_debug_sample_rgba_linear(self.width, self.height, self.payload(), uv)
     }
 }
 

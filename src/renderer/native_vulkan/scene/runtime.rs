@@ -18,6 +18,8 @@ use crate::renderer::native_vulkan::effect_debug::{
     native_vulkan_effect_debug_bc7_mode6_gtex_group_report, native_vulkan_effect_debug_enabled,
     native_vulkan_effect_debug_log, native_vulkan_effect_debug_log_limited,
     native_vulkan_effect_debug_r8_gtex_group_report,
+    native_vulkan_effect_debug_read_bc7_mode6_gtex_cached,
+    native_vulkan_effect_debug_read_r8_gtex_cached,
 };
 use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderLayer};
 
@@ -43,8 +45,9 @@ use super::super::vulkan::{
     native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec,
 };
 use super::draw_pass::{
+    NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneSampledImageEffectTarget, NativeVulkanSceneSampledImageRenderTarget,
-    NativeVulkanSceneSampledImageVertex,
+    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneTextureSlot,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain,
@@ -56,6 +59,9 @@ use super::draw_pass::{
 
 const SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_RETAINED: usize = 3;
 const SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_CAPACITY: usize = 128 * 1024;
+const SCENE_RUNTIME_EYE_DARK_LUMA_THRESHOLD: f64 = 48.0;
+const SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD: f64 = 16.0;
+const SCENE_RUNTIME_EYE_ALIGNMENT_EPSILON_PX: f64 = 1.0;
 static SCENE_RUNTIME_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
@@ -1021,6 +1027,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         .count();
     let mut sampled_scene_vertices =
         native_vulkan_scene_take_sampled_vertex_vec(folded_layers.len().saturating_mul(4));
+    let mut eye_debug_layers = Vec::new();
 
     for folded_index in 0..folded_layers.len() {
         let folded = &folded_layers[folded_index];
@@ -1052,10 +1059,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             )
         }
         .map_err(|reason| format!("dynamic scene is not sampled-image recordable: {reason}"))?;
-        if native_vulkan_effect_debug_enabled() && folded.layer.alpha_texture_slot.is_some() {
+        if native_vulkan_effect_debug_enabled()
+            && native_vulkan_scene_sampled_layer_is_eye_debug_target(layer)
+        {
             let after_vertices = sampled_scene_vertices.len();
             native_vulkan_scene_runtime_effect_debug_log(format_args!(
-                "time_ms={} alpha layer built index={} alpha_slot={:?} vertices_added={} effect_uv_range={} slots={} geometry={} effect_uv_space={}",
+                "time_ms={} eye layer built index={} alpha_slot={:?} vertices_added={} effect_uv_range={} slots={} geometry={} effect_uv_space={}",
                 snapshot_time_ms
                     .map(|time| time.to_string())
                     .unwrap_or_else(|| "<unknown>".to_owned()),
@@ -1076,7 +1085,23 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
                 &sampled_scene_vertices[before_vertices..after_vertices],
                 package_root,
             );
+            if native_vulkan_scene_runtime_should_log_eye_frame(snapshot_time_ms) {
+                eye_debug_layers.push(NativeVulkanSceneRuntimeEyeLayerRecord {
+                    layer_index: folded.layer_index,
+                    layer: folded.layer,
+                    vertices: sampled_scene_vertices[before_vertices..after_vertices].to_vec(),
+                });
+            }
         }
+    }
+    if native_vulkan_effect_debug_enabled()
+        && native_vulkan_scene_runtime_should_log_eye_frame(snapshot_time_ms)
+    {
+        native_vulkan_scene_runtime_eye_overlap_debug(
+            snapshot_time_ms,
+            &eye_debug_layers,
+            package_root,
+        );
     }
 
     if sampled_scene_vertices.is_empty() {
@@ -1126,6 +1151,12 @@ struct NativeVulkanSceneFoldedSampledImageLayer<'a> {
     layer: &'a SceneSnapshotSampledImageLayer,
     opacity: f64,
     effect_uv_space: Option<NativeVulkanSceneEffectUvSpace>,
+}
+
+struct NativeVulkanSceneRuntimeEyeLayerRecord<'a> {
+    layer_index: usize,
+    layer: &'a SceneSnapshotSampledImageLayer,
+    vertices: Vec<NativeVulkanSceneSampledImageVertex>,
 }
 
 fn native_vulkan_scene_prepare_sampled_image_alpha_effect_layers(
@@ -1229,26 +1260,23 @@ fn native_vulkan_scene_runtime_effect_debug_log(args: std::fmt::Arguments<'_>) {
 fn native_vulkan_scene_sampled_layer_uses_first_class_effect_target(
     layer: &SceneSnapshotSampledImageLayer,
 ) -> bool {
-    layer.alpha_texture_slot.is_some()
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_uses_first_class_target(
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
+    layer.image_effect_passes.iter().any(|pass| {
+        native_vulkan_scene_effect_pass_uses_first_class_target(
+            pass.runtime.as_deref(),
+            &pass.effect_file,
+        )
+    })
 }
 
 fn native_vulkan_scene_effect_pass_uses_first_class_target(
     runtime: Option<&str>,
     effect_file: &str,
 ) -> bool {
-    let _ = (runtime, effect_file);
-    false
-}
-
-fn native_vulkan_scene_effect_file_is_opacity_mask(effect_file: &str) -> bool {
+    if runtime == Some("native-iris-mask") {
+        return true;
+    }
     let file = effect_file.replace('\\', "/").to_ascii_lowercase();
-    file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json")
+    file == "effects/iris/effect.json" || file.ends_with("/effects/iris/effect.json")
 }
 
 fn native_vulkan_scene_runtime_eye_contribution_debug(
@@ -1258,16 +1286,14 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
     vertices: &[NativeVulkanSceneSampledImageVertex],
     package_root: Option<&Path>,
 ) {
-    let Some(mask_slot) = native_vulkan_scene_sampled_layer_alpha_slot(layer) else {
-        return;
-    };
-    let Some(effect_label) = native_vulkan_scene_eye_effect_label(mask_slot.source.as_str()) else {
+    let Some(effect_label) = native_vulkan_scene_sampled_layer_eye_effect_label(layer) else {
         return;
     };
     if !native_vulkan_scene_runtime_should_log_eye_frame(snapshot_time_ms) {
         return;
     }
-    let mode: SceneRenderAlphaTextureMode = layer.alpha_texture_mode.into();
+    let mask_slot = native_vulkan_scene_sampled_layer_effect_mask_slot(layer);
+    let mode = native_vulkan_scene_sampled_layer_effect_mode(layer);
     let split = if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
         && vertices.len() > 4
     {
@@ -1280,18 +1306,22 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
         &layer.texture_slots,
         layer.alpha_texture_slot,
     );
-    let mask_report = native_vulkan_scene_runtime_eye_mask_report(
-        package_root,
-        mask_slot,
-        base_vertices,
-        final_vertices,
-    );
+    let mask_report = mask_slot
+        .map(|mask_slot| {
+            native_vulkan_scene_runtime_eye_mask_report(
+                package_root,
+                mask_slot,
+                base_vertices,
+                final_vertices,
+            )
+        })
+        .unwrap_or_else(|| "<none>".to_owned());
     let base_texture_report =
         native_vulkan_scene_runtime_eye_base_texture_report(package_root, layer, base_vertices);
     native_vulkan_effect_debug_log(
         "runtime.eye-contribution",
         format_args!(
-            "time_ms={} layer_index={} layer_id={} effect={} mode={} opacity={:.3} alpha_slot={:?} base_slot={} mask_source={} mask_extent={} we_mask_uv_scale={:.6}/{:.6} puppet_frame={} passes={} vertices={} base_pos_range={} base_uv_range={} base_effect_uv_range={} base_opacity_range={} final_pos_range={} final_uv_range={} final_effect_uv_range={} final_opacity_range={} alpha_zero_reason={} alpha_semantics={} base_texture_report={} mask_report={}",
+            "time_ms={} layer_index={} layer_id={} effect={} mode={} opacity={:.3} alpha_slot={:?} base_slot={} mask_source={} mask_extent={} we_mask_uv_scale={:.6}/{:.6} puppet_frame={} passes={} vertices={} geometry_semantics={} base_pos_range={} base_uv_range={} base_effect_uv_range={} base_opacity_range={} final_pos_range={} final_uv_range={} final_effect_uv_range={} final_opacity_range={} alpha_zero_reason={} alpha_semantics={} base_texture_report={} mask_report={}",
             snapshot_time_ms
                 .map(|time| time.to_string())
                 .unwrap_or_else(|| "<unknown>".to_owned()),
@@ -1300,15 +1330,20 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
             effect_label,
             mode.as_str(),
             layer.opacity,
-            layer.alpha_texture_slot,
+            mask_slot.map(|slot| slot.slot),
             native_vulkan_scene_sampled_layer_base_slot_label(layer),
-            mask_slot.source,
-            native_vulkan_scene_texture_slot_extent_label(mask_slot.width, mask_slot.height),
+            mask_slot
+                .map(|slot| slot.source.as_str())
+                .unwrap_or("<none>"),
+            mask_slot
+                .map(|slot| native_vulkan_scene_texture_slot_extent_label(slot.width, slot.height))
+                .unwrap_or_else(|| "<none>".to_owned()),
             scale_u,
             scale_v,
             native_vulkan_scene_puppet_animation_frames_label(&layer.puppet_animation_frames),
             native_vulkan_scene_sampled_image_effect_passes_label(&layer.image_effect_passes),
             vertices.len(),
+            native_vulkan_scene_sampled_layer_effect_geometry_semantics_label(layer, vertices),
             native_vulkan_scene_sampled_vertices_position_range_label(base_vertices),
             native_vulkan_scene_sampled_vertices_uv_range_label(base_vertices),
             native_vulkan_scene_sampled_vertices_effect_uv_range_label(base_vertices),
@@ -1317,12 +1352,389 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
             native_vulkan_scene_sampled_vertices_uv_range_label(final_vertices),
             native_vulkan_scene_sampled_vertices_effect_uv_range_label(final_vertices),
             native_vulkan_scene_sampled_vertices_opacity_range_label(final_vertices),
-            native_vulkan_scene_eye_alpha_zero_reason_label(mode),
+            native_vulkan_scene_eye_alpha_zero_reason_label(mask_slot.map(|slot| slot.slot), mode),
             native_vulkan_scene_eye_alpha_semantics_label(mode),
             base_texture_report,
             mask_report,
         ),
     );
+}
+
+fn native_vulkan_scene_runtime_eye_overlap_debug(
+    snapshot_time_ms: Option<u64>,
+    records: &[NativeVulkanSceneRuntimeEyeLayerRecord<'_>],
+    package_root: Option<&Path>,
+) {
+    let Some(base) = records.iter().find(|record| {
+        native_vulkan_scene_sampled_layer_eye_effect_label(record.layer) == Some("iris-base-eye")
+    }) else {
+        return;
+    };
+    let Some(overlay) = records.iter().find(|record| {
+        native_vulkan_scene_sampled_layer_eye_effect_label(record.layer)
+            == Some("opacity-duplicate-overlay")
+    }) else {
+        return;
+    };
+    let report = native_vulkan_scene_runtime_eye_overlap_report(base, overlay, package_root)
+        .unwrap_or_else(|err| format!("error={err}"));
+    native_vulkan_effect_debug_log(
+        "runtime.eye-overlap",
+        format_args!(
+            "time_ms={} base_layer_index={} base_layer_id={} overlay_layer_index={} overlay_layer_id={} {}",
+            snapshot_time_ms
+                .map(|time| time.to_string())
+                .unwrap_or_else(|| "<unknown>".to_owned()),
+            base.layer_index,
+            base.layer.id,
+            overlay.layer_index,
+            overlay.layer.id,
+            report,
+        ),
+    );
+}
+
+fn native_vulkan_scene_runtime_eye_overlap_report(
+    base: &NativeVulkanSceneRuntimeEyeLayerRecord<'_>,
+    overlay: &NativeVulkanSceneRuntimeEyeLayerRecord<'_>,
+    package_root: Option<&Path>,
+) -> Result<String, String> {
+    if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(base.layer) {
+        let base_vertices =
+            native_vulkan_scene_runtime_eye_base_vertices(base.layer, &base.vertices);
+        let final_vertex_count = base.vertices.len().saturating_sub(base_vertices.len());
+        return Ok(format!(
+            "direct_base_swapchain=false base_layer_rendering=effect-target-local-pass-then-final-quad base_target_vertices={} final_quad_vertices={} overlay_vertices={} note=base pupil mesh is no longer emitted directly to swapchain; opacity duplicate remains an independent later draw",
+            base_vertices.len(),
+            final_vertex_count,
+            overlay.vertices.len()
+        ));
+    }
+    let base_slot = base
+        .layer
+        .texture_slots
+        .iter()
+        .find(|slot| slot.slot == 0)
+        .ok_or_else(|| "base eye has no texture slot 0".to_owned())?;
+    let mask_slot = native_vulkan_scene_sampled_layer_alpha_slot(overlay.layer)
+        .ok_or_else(|| "opacity overlay has no alpha texture slot".to_owned())?;
+    let base_path =
+        native_vulkan_scene_runtime_texture_slot_path(package_root, base_slot.source.as_str());
+    let mask_path =
+        native_vulkan_scene_runtime_texture_slot_path(package_root, mask_slot.source.as_str());
+    let base_texture = native_vulkan_effect_debug_read_bc7_mode6_gtex_cached(&base_path)?;
+    let mask_texture = native_vulkan_effect_debug_read_r8_gtex_cached(&mask_path)?;
+    let base_mesh = base
+        .layer
+        .mesh
+        .as_ref()
+        .ok_or_else(|| "base eye has no mesh".to_owned())?;
+    let overlay_mesh = overlay
+        .layer
+        .mesh
+        .as_ref()
+        .ok_or_else(|| "opacity overlay has no mesh".to_owned())?;
+    let base_vertices = native_vulkan_scene_runtime_eye_base_vertices(base.layer, &base.vertices);
+    let overlay_vertices =
+        native_vulkan_scene_runtime_eye_base_vertices(overlay.layer, &overlay.vertices);
+    let paired_triangles = (base_mesh.indices.len().min(overlay_mesh.indices.len())) / 3;
+    if paired_triangles == 0 {
+        return Ok(format!(
+            "paired_triangles=0 base_vertices={} overlay_vertices={} base_indices={} overlay_indices={}",
+            base_vertices.len(),
+            overlay_vertices.len(),
+            base_mesh.indices.len(),
+            overlay_mesh.indices.len()
+        ));
+    }
+
+    let mut same_index_triangles = 0usize;
+    let mut valid_pairs = 0usize;
+    let mut aligned_pairs = 0usize;
+    let mut delta_sum = 0.0;
+    let mut delta_max = 0.0_f64;
+    let mut dark = NativeVulkanSceneRuntimeEyeOverlapDarkStats::default();
+    let mut dark_uv_range = NativeVulkanSceneRuntimeEyeOverlapRange2::default();
+    let mut dark_pos_range = NativeVulkanSceneRuntimeEyeOverlapRange2::default();
+    let mut dark_mask_uv_range = NativeVulkanSceneRuntimeEyeOverlapRange2::default();
+
+    for triangle_index in 0..paired_triangles {
+        let base_triangle = &base_mesh.indices[triangle_index * 3..triangle_index * 3 + 3];
+        let overlay_triangle = &overlay_mesh.indices[triangle_index * 3..triangle_index * 3 + 3];
+        if base_triangle == overlay_triangle {
+            same_index_triangles += 1;
+        }
+        let Some(base_centroid) =
+            native_vulkan_scene_runtime_eye_triangle_centroid(base_vertices, base_triangle)
+        else {
+            continue;
+        };
+        let Some(overlay_centroid) =
+            native_vulkan_scene_runtime_eye_triangle_centroid(overlay_vertices, overlay_triangle)
+        else {
+            continue;
+        };
+        valid_pairs += 1;
+        let delta = native_vulkan_scene_runtime_eye_position_delta(
+            base_centroid.position,
+            overlay_centroid.position,
+        );
+        delta_sum += delta;
+        delta_max = delta_max.max(delta);
+        let aligned = delta <= SCENE_RUNTIME_EYE_ALIGNMENT_EPSILON_PX;
+        if aligned {
+            aligned_pairs += 1;
+        }
+
+        let base_color = base_texture.sample_linear(base_centroid.uv);
+        let base_luma = native_vulkan_scene_runtime_eye_luma(base_color);
+        let base_output_alpha =
+            base_color[3] * f64::from(base_centroid.opacity) * f64::from(base_centroid.tint_alpha);
+        if base_output_alpha <= SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD
+            || base_luma >= SCENE_RUNTIME_EYE_DARK_LUMA_THRESHOLD
+        {
+            continue;
+        }
+
+        let mask_value = mask_texture.sample_linear(overlay_centroid.effect_uv);
+        let overlay_color = base_texture.sample_linear(overlay_centroid.uv);
+        let overlay_luma = native_vulkan_scene_runtime_eye_luma(overlay_color);
+        let overlay_output_alpha = overlay_color[3]
+            * f64::from(overlay_centroid.opacity)
+            * f64::from(overlay_centroid.tint_alpha)
+            * (mask_value / 255.0);
+        dark.include(
+            aligned,
+            base_centroid.opacity,
+            mask_value,
+            overlay_output_alpha,
+            overlay_luma,
+        );
+        dark_uv_range.include(base_centroid.uv);
+        dark_pos_range.include(base_centroid.position);
+        dark_mask_uv_range.include(overlay_centroid.effect_uv);
+    }
+
+    let delta_mean = if valid_pairs > 0 {
+        delta_sum / valid_pairs as f64
+    } else {
+        0.0
+    };
+    Ok(format!(
+        "paired_triangles={} valid_pairs={} same_index_triangles={}/{} vertex_counts={}/{} index_counts={}/{} screen_delta_px_mean={:.4} screen_delta_px_max={:.4} aligned_le{:.1}px={}/{} base_dark_output_alpha_gt{:.0}_luma_lt{:.0}={} dark_base_opacity_below_one={} dark_aligned={}/{} dark_mask_zero={} dark_mask_gt0={} dark_mask_gt127={} dark_mask_full={} dark_overlay_alpha_gt{:.0}={} dark_aligned_overlay_alpha_gt{:.0}={} dark_overlay_still_dark_alpha_gt{:.0}={} dark_uncovered_by_aligned_overlay_alpha={} dark_mask_value={} dark_base_uv={} dark_mask_uv={} dark_pos={}",
+        paired_triangles,
+        valid_pairs,
+        same_index_triangles,
+        paired_triangles,
+        base_vertices.len(),
+        overlay_vertices.len(),
+        base_mesh.indices.len(),
+        overlay_mesh.indices.len(),
+        delta_mean,
+        delta_max,
+        SCENE_RUNTIME_EYE_ALIGNMENT_EPSILON_PX,
+        aligned_pairs,
+        valid_pairs,
+        SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD,
+        SCENE_RUNTIME_EYE_DARK_LUMA_THRESHOLD,
+        dark.total,
+        dark.base_opacity_below_one,
+        dark.aligned,
+        dark.total,
+        dark.mask_zero,
+        dark.mask_gt0,
+        dark.mask_gt127,
+        dark.mask_full,
+        SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD,
+        dark.overlay_alpha_gt_visible,
+        SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD,
+        dark.aligned_overlay_alpha_gt_visible,
+        SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD,
+        dark.overlay_dark_alpha_gt_visible,
+        dark.total
+            .saturating_sub(dark.aligned_overlay_alpha_gt_visible),
+        dark.mask_value_label(),
+        dark_uv_range.label(),
+        dark_mask_uv_range.label(),
+        dark_pos_range.label(),
+    ))
+}
+
+fn native_vulkan_scene_runtime_eye_base_vertices<'a>(
+    layer: &SceneSnapshotSampledImageLayer,
+    vertices: &'a [NativeVulkanSceneSampledImageVertex],
+) -> &'a [NativeVulkanSceneSampledImageVertex] {
+    if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer) && vertices.len() > 4
+    {
+        &vertices[..vertices.len().saturating_sub(4)]
+    } else {
+        vertices
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NativeVulkanSceneRuntimeEyeTriangleCentroid {
+    position: [f32; 2],
+    uv: [f32; 2],
+    effect_uv: [f32; 2],
+    opacity: f32,
+    tint_alpha: f32,
+}
+
+fn native_vulkan_scene_runtime_eye_triangle_centroid(
+    vertices: &[NativeVulkanSceneSampledImageVertex],
+    triangle: &[u32],
+) -> Option<NativeVulkanSceneRuntimeEyeTriangleCentroid> {
+    if triangle.len() != 3 {
+        return None;
+    }
+    let a = vertices.get(usize::try_from(triangle[0]).ok()?)?;
+    let b = vertices.get(usize::try_from(triangle[1]).ok()?)?;
+    let c = vertices.get(usize::try_from(triangle[2]).ok()?)?;
+    Some(NativeVulkanSceneRuntimeEyeTriangleCentroid {
+        position: [
+            (a.position[0] + b.position[0] + c.position[0]) / 3.0,
+            (a.position[1] + b.position[1] + c.position[1]) / 3.0,
+        ],
+        uv: [
+            (a.uv[0] + b.uv[0] + c.uv[0]) / 3.0,
+            (a.uv[1] + b.uv[1] + c.uv[1]) / 3.0,
+        ],
+        effect_uv: [
+            (a.effect_uv[0] + b.effect_uv[0] + c.effect_uv[0]) / 3.0,
+            (a.effect_uv[1] + b.effect_uv[1] + c.effect_uv[1]) / 3.0,
+        ],
+        opacity: (a.opacity + b.opacity + c.opacity) / 3.0,
+        tint_alpha: (a.tint[3] + b.tint[3] + c.tint[3]) / 3.0,
+    })
+}
+
+fn native_vulkan_scene_runtime_eye_position_delta(a: [f32; 2], b: [f32; 2]) -> f64 {
+    let dx = f64::from(a[0]) - f64::from(b[0]);
+    let dy = f64::from(a[1]) - f64::from(b[1]);
+    dx.hypot(dy)
+}
+
+fn native_vulkan_scene_runtime_eye_luma(color: [f64; 4]) -> f64 {
+    color[0] * 0.2126 + color[1] * 0.7152 + color[2] * 0.0722
+}
+
+#[derive(Default)]
+struct NativeVulkanSceneRuntimeEyeOverlapDarkStats {
+    total: usize,
+    aligned: usize,
+    base_opacity_below_one: usize,
+    mask_zero: usize,
+    mask_gt0: usize,
+    mask_gt127: usize,
+    mask_full: usize,
+    overlay_alpha_gt_visible: usize,
+    aligned_overlay_alpha_gt_visible: usize,
+    overlay_dark_alpha_gt_visible: usize,
+    mask_min: f64,
+    mask_max: f64,
+    mask_sum: f64,
+    has_mask_value: bool,
+}
+
+impl NativeVulkanSceneRuntimeEyeOverlapDarkStats {
+    fn include(
+        &mut self,
+        aligned: bool,
+        base_opacity: f32,
+        mask_value: f64,
+        overlay_output_alpha: f64,
+        overlay_luma: f64,
+    ) {
+        self.total += 1;
+        if aligned {
+            self.aligned += 1;
+        }
+        if base_opacity < 0.999 {
+            self.base_opacity_below_one += 1;
+        }
+        if mask_value <= 0.5 {
+            self.mask_zero += 1;
+        }
+        if mask_value > 0.0 {
+            self.mask_gt0 += 1;
+        }
+        if mask_value > 127.0 {
+            self.mask_gt127 += 1;
+        }
+        if mask_value >= 254.5 {
+            self.mask_full += 1;
+        }
+        if overlay_output_alpha > SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD {
+            self.overlay_alpha_gt_visible += 1;
+            if aligned {
+                self.aligned_overlay_alpha_gt_visible += 1;
+            }
+            if overlay_luma < SCENE_RUNTIME_EYE_DARK_LUMA_THRESHOLD {
+                self.overlay_dark_alpha_gt_visible += 1;
+            }
+        }
+        if self.has_mask_value {
+            self.mask_min = self.mask_min.min(mask_value);
+            self.mask_max = self.mask_max.max(mask_value);
+        } else {
+            self.mask_min = mask_value;
+            self.mask_max = mask_value;
+            self.has_mask_value = true;
+        }
+        self.mask_sum += mask_value;
+    }
+
+    fn mask_value_label(&self) -> String {
+        if self.total == 0 || !self.has_mask_value {
+            return "<none>".to_owned();
+        }
+        format!(
+            "{:.1}..{:.1}/mean={:.1}",
+            self.mask_min,
+            self.mask_max,
+            self.mask_sum / self.total as f64
+        )
+    }
+}
+
+#[derive(Default)]
+struct NativeVulkanSceneRuntimeEyeOverlapRange2 {
+    min_x: f32,
+    min_y: f32,
+    max_x: f32,
+    max_y: f32,
+    initialized: bool,
+}
+
+impl NativeVulkanSceneRuntimeEyeOverlapRange2 {
+    fn include(&mut self, value: [f32; 2]) {
+        if !value[0].is_finite() || !value[1].is_finite() {
+            return;
+        }
+        if self.initialized {
+            self.min_x = self.min_x.min(value[0]);
+            self.min_y = self.min_y.min(value[1]);
+            self.max_x = self.max_x.max(value[0]);
+            self.max_y = self.max_y.max(value[1]);
+        } else {
+            self.min_x = value[0];
+            self.min_y = value[1];
+            self.max_x = value[0];
+            self.max_y = value[1];
+            self.initialized = true;
+        }
+    }
+
+    fn label(&self) -> String {
+        if !self.initialized {
+            return "<none>".to_owned();
+        }
+        format!(
+            "x={:.3}..{:.3} y={:.3}..{:.3}",
+            self.min_x, self.max_x, self.min_y, self.max_y
+        )
+    }
 }
 
 fn native_vulkan_scene_runtime_should_log_eye_frame(snapshot_time_ms: Option<u64>) -> bool {
@@ -1550,6 +1962,58 @@ fn native_vulkan_scene_sampled_layer_alpha_slot(
         .find(|slot| slot.slot == alpha_slot)
 }
 
+fn native_vulkan_scene_sampled_layer_effect_mask_slot(
+    layer: &SceneSnapshotSampledImageLayer,
+) -> Option<&SceneTextureSlot> {
+    native_vulkan_scene_sampled_layer_alpha_slot(layer).or_else(|| {
+        layer
+            .image_effect_passes
+            .iter()
+            .filter(|pass| {
+                pass.runtime.as_deref() == Some("native-iris-mask")
+                    || native_vulkan_scene_effect_file_is_iris_mask(&pass.effect_file)
+            })
+            .flat_map(|pass| pass.texture_slots.iter())
+            .filter(|slot| slot.slot > 0)
+            .min_by_key(|slot| slot.slot)
+    })
+}
+
+fn native_vulkan_scene_sampled_layer_effect_mode(
+    layer: &SceneSnapshotSampledImageLayer,
+) -> SceneRenderAlphaTextureMode {
+    if layer.image_effect_passes.iter().any(|pass| {
+        pass.runtime.as_deref() == Some("native-iris-mask")
+            || native_vulkan_scene_effect_file_is_iris_mask(&pass.effect_file)
+    }) {
+        return SceneRenderAlphaTextureMode::Iris;
+    }
+    layer.alpha_texture_mode.into()
+}
+
+fn native_vulkan_scene_sampled_layer_is_eye_debug_target(
+    layer: &SceneSnapshotSampledImageLayer,
+) -> bool {
+    native_vulkan_scene_sampled_layer_eye_effect_label(layer).is_some()
+}
+
+fn native_vulkan_scene_sampled_layer_eye_effect_label(
+    layer: &SceneSnapshotSampledImageLayer,
+) -> Option<&'static str> {
+    if let Some(mask_slot) = native_vulkan_scene_sampled_layer_alpha_slot(layer)
+        && let Some(label) = native_vulkan_scene_eye_effect_label(mask_slot.source.as_str())
+    {
+        return Some(label);
+    }
+    if layer.image_effect_passes.iter().any(|pass| {
+        pass.runtime.as_deref() == Some("native-iris-mask")
+            || native_vulkan_scene_effect_file_is_iris_mask(&pass.effect_file)
+    }) {
+        return Some("iris-base-eye");
+    }
+    None
+}
+
 fn native_vulkan_scene_eye_effect_label(mask_source: &str) -> Option<&'static str> {
     let normalized = mask_source.to_ascii_lowercase();
     if normalized.contains("opacity_mask") || normalized.contains("opacity-mask") {
@@ -1561,9 +2025,52 @@ fn native_vulkan_scene_eye_effect_label(mask_source: &str) -> Option<&'static st
     None
 }
 
+fn native_vulkan_scene_effect_file_is_iris_mask(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/iris/effect.json" || file.ends_with("/effects/iris/effect.json")
+}
+
+fn native_vulkan_scene_sampled_layer_effect_geometry_semantics_label(
+    layer: &SceneSnapshotSampledImageLayer,
+    vertices: &[NativeVulkanSceneSampledImageVertex],
+) -> &'static str {
+    let mode = native_vulkan_scene_sampled_layer_effect_mode(layer);
+    if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer) && vertices.len() > 4
+    {
+        if matches!(mode, SceneRenderAlphaTextureMode::Multiply) {
+            return "we-opacity-effect-local-target-base-plus-final-quad";
+        }
+        if matches!(mode, SceneRenderAlphaTextureMode::Iris) {
+            return "we-iris-effect-local-target-base-plus-final-quad";
+        }
+        return "we-image-effect-local-target-base-plus-final-quad";
+    }
+    if layer.alpha_texture_slot.is_some()
+        && layer.mesh.is_some()
+        && matches!(mode, SceneRenderAlphaTextureMode::Multiply)
+    {
+        return "we-opacity-effect-direct-puppet-mesh-material-uv";
+    }
+    if layer.alpha_texture_slot.is_some()
+        && layer.mesh.is_some()
+        && matches!(mode, SceneRenderAlphaTextureMode::Iris)
+    {
+        return "we-iris-effect-direct-puppet-mesh-pass-space-raw-v";
+    }
+    if layer.mesh.is_some() {
+        "direct-puppet-mesh"
+    } else {
+        "direct-scene-quad"
+    }
+}
+
 fn native_vulkan_scene_eye_alpha_zero_reason_label(
+    alpha_texture_slot: Option<u32>,
     mode: SceneRenderAlphaTextureMode,
 ) -> &'static str {
+    if alpha_texture_slot.is_none() {
+        return "no-alpha-texture-on-this-draw; this layer cannot zero pixels by mask";
+    }
     match mode {
         SceneRenderAlphaTextureMode::Multiply => {
             "opacity-mask-directly-multiplies-this-image-alpha"
@@ -2041,6 +2548,99 @@ fn native_vulkan_scene_snapshot_layer_is_clear(layer: &SceneSnapshotLayer) -> bo
 pub struct NativeVulkanSceneTextureSlotSnapshot {
     pub slot: u32,
     pub source: PathBuf,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneEffectRecordSnapshot {
+    pub kind: &'static str,
+    pub effect_file: String,
+    pub runtime: Option<String>,
+    pub pass_index: usize,
+    pub shader: Option<String>,
+    pub blending: Option<String>,
+    pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
+    pub parameter_keys: Vec<String>,
+    pub combo_keys: Vec<String>,
+    pub depth_test: &'static str,
+    pub depth_write: &'static str,
+    pub cull_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneMaterialPassSnapshot {
+    pub kind: &'static str,
+    pub shader: Option<String>,
+    pub blending: Option<String>,
+    pub blend_mode: SceneBlendMode,
+    pub alpha_texture_slot: Option<u32>,
+    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub depth_test: &'static str,
+    pub depth_write: &'static str,
+    pub cull_mode: String,
+    pub texture_slot_count: usize,
+    pub effect_kinds: Vec<&'static str>,
+    pub combo_keys: Vec<String>,
+    pub pipeline: &'static str,
+}
+
+fn native_vulkan_scene_texture_slot_snapshot(
+    slot: &NativeVulkanSceneTextureSlot,
+) -> NativeVulkanSceneTextureSlotSnapshot {
+    NativeVulkanSceneTextureSlotSnapshot {
+        slot: slot.slot,
+        source: slot.source.clone(),
+        width: slot.width,
+        height: slot.height,
+    }
+}
+
+fn native_vulkan_scene_material_pass_snapshot(
+    material: &NativeVulkanSceneMaterialPass,
+) -> NativeVulkanSceneMaterialPassSnapshot {
+    NativeVulkanSceneMaterialPassSnapshot {
+        kind: material.kind.as_str(),
+        shader: material.shader.clone(),
+        blending: material.blending.clone(),
+        blend_mode: material.blend_mode,
+        alpha_texture_slot: material.alpha_texture_slot,
+        alpha_texture_mode: material.alpha_texture_mode,
+        depth_test: material.depth_test.as_str(),
+        depth_write: material.depth_write.as_str(),
+        cull_mode: material.cull_mode.label().to_owned(),
+        texture_slot_count: material.texture_slot_count,
+        effect_kinds: material
+            .effect_kinds
+            .iter()
+            .map(|kind| kind.as_str())
+            .collect(),
+        combo_keys: material.combo_keys.clone(),
+        pipeline: material.pipeline,
+    }
+}
+
+fn native_vulkan_scene_effect_record_snapshot(
+    effect: &NativeVulkanSceneEffectRecord,
+) -> NativeVulkanSceneEffectRecordSnapshot {
+    NativeVulkanSceneEffectRecordSnapshot {
+        kind: effect.kind.as_str(),
+        effect_file: effect.effect_file.clone(),
+        runtime: effect.runtime.clone(),
+        pass_index: effect.pass_index,
+        shader: effect.shader.clone(),
+        blending: effect.blending.clone(),
+        texture_slots: effect
+            .texture_slots
+            .iter()
+            .map(native_vulkan_scene_texture_slot_snapshot)
+            .collect(),
+        parameter_keys: effect.parameter_keys.clone(),
+        combo_keys: effect.combo_keys.clone(),
+        depth_test: effect.depth_test.as_str(),
+        depth_write: effect.depth_write.as_str(),
+        cull_mode: effect.cull_mode.label().to_owned(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2129,6 +2729,8 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub image_effect_pass_count: usize,
+    pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
+    pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub fit: FitMode,
     pub blend_mode: SceneBlendMode,
@@ -2152,6 +2754,8 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub texture_slot_resource_indices: Vec<u32>,
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
+    pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub render_target: NativeVulkanSceneSampledImageRenderTargetSnapshot,
     pub first_vertex: u32,
@@ -2415,15 +3019,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 source: quad.source,
                 texture_slots: quad
                     .texture_slots
-                    .into_iter()
-                    .map(|slot| NativeVulkanSceneTextureSlotSnapshot {
-                        slot: slot.slot,
-                        source: slot.source,
-                    })
+                    .iter()
+                    .map(native_vulkan_scene_texture_slot_snapshot)
                     .collect(),
                 alpha_texture_slot: quad.alpha_texture_slot,
                 alpha_texture_mode: quad.alpha_texture_mode,
                 image_effect_pass_count: quad.image_effect_pass_count,
+                material_pass: native_vulkan_scene_material_pass_snapshot(&quad.material_pass),
+                effect_passes: quad
+                    .effect_passes
+                    .iter()
+                    .map(native_vulkan_scene_effect_record_snapshot)
+                    .collect(),
                 composite_key: quad.composite_key,
                 fit: quad.fit,
                 blend_mode: quad.blend_mode,
@@ -2459,6 +3066,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 texture_slot_resource_indices: step.texture_slot_resource_indices,
                 alpha_texture_slot: step.alpha_texture_slot,
                 alpha_texture_mode: step.alpha_texture_mode,
+                material_pass: native_vulkan_scene_material_pass_snapshot(&step.material_pass),
+                effect_passes: step
+                    .effect_passes
+                    .iter()
+                    .map(native_vulkan_scene_effect_record_snapshot)
+                    .collect(),
                 composite_key: step.composite_key,
                 render_target: native_vulkan_scene_sampled_image_render_target_snapshot(
                     step.render_target,
@@ -2576,6 +3189,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                     .map(|slot| NativeVulkanSceneTextureSlotSnapshot {
                         slot: slot.slot,
                         source: slot.source,
+                        width: slot.width,
+                        height: slot.height,
                     })
                     .collect(),
                 alpha_texture_slot: op.alpha_texture_slot,
@@ -5143,6 +5758,196 @@ mod tests {
         assert_eq!(geometry.vertices[3].effect_uv, [0.0, 0.0]);
         assert_eq!(geometry.vertices[4].effect_uv, [1.0, 0.0]);
         assert_eq!(geometry.vertices[5].effect_uv, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn dynamic_sampled_vertices_keep_opacity_effect_direct_material_uv() {
+        let base_source = PackagePath::new("assets/eye-base.gtex").unwrap();
+        let mask_source = PackagePath::new("assets/eye-mask.gtex").unwrap();
+        let mesh = Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: -20.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 10.0,
+                    y: -20.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: 20.0,
+                    u: 0.0,
+                    v: 1.0,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+        });
+        let carrier = SceneSnapshotSampledImageLayer {
+            id: "opacity-eye".to_owned(),
+            has_source: true,
+            texture_slots: vec![
+                SceneTextureSlot {
+                    slot: 0,
+                    source: base_source.clone(),
+                    width: Some(100),
+                    height: Some(100),
+                },
+                SceneTextureSlot {
+                    slot: 1,
+                    source: mask_source.clone(),
+                    width: Some(50),
+                    height: Some(50),
+                },
+            ],
+            alpha_texture_slot: Some(1),
+            alpha_texture_mode: crate::core::SceneAlphaTextureMode::Multiply,
+            image_effect_passes: vec![crate::core::scene::SceneImageEffectPass {
+                effect_file: "effects/opacity/effect.json".to_owned(),
+                runtime: Some("native-opacity-mask".to_owned()),
+                pass_index: 0,
+                shader: Some("effects/opacity".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                texture_slots: vec![SceneTextureSlot {
+                    slot: 1,
+                    source: mask_source,
+                    width: Some(50),
+                    height: Some(50),
+                }],
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            }],
+            composite_key: None,
+            texture_region: None,
+            width: Some(100.0),
+            height: Some(100.0),
+            mesh: Some(mesh),
+            effect_motion: Default::default(),
+            blend_mode: SceneBlendMode::Alpha,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            transform: SceneTransform::default(),
+            puppet_animation_frames: Vec::new(),
+        };
+
+        let geometry = native_vulkan_scene_sampled_vertex_input_from_sampled_layers(&[carrier])
+            .expect("dynamic opacity effect direct vertices");
+
+        assert_eq!(geometry.vertices.len(), 3);
+        assert!(geometry.indices.is_empty());
+        assert!(geometry.draw_steps.is_empty());
+        assert_eq!(geometry.vertices[0].position, [-10.0, -20.0]);
+        assert_eq!(geometry.vertices[1].position, [10.0, -20.0]);
+        assert_eq!(geometry.vertices[2].position, [-10.0, 20.0]);
+        assert_eq!(geometry.vertices[0].uv, [0.0, 0.0]);
+        assert_eq!(geometry.vertices[1].uv, [1.0, 0.0]);
+        assert_eq!(geometry.vertices[2].uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[0].effect_uv, [0.0, 0.0]);
+        assert_eq!(geometry.vertices[1].effect_uv, [1.0, 0.0]);
+        assert_eq!(geometry.vertices[2].effect_uv, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn dynamic_sampled_vertices_route_iris_effect_through_first_class_target() {
+        let base_source = PackagePath::new("assets/eye-base.gtex").unwrap();
+        let mask_source = PackagePath::new("assets/iris-mask.gtex").unwrap();
+        let mesh = Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: -20.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 10.0,
+                    y: -20.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: 20.0,
+                    u: 0.0,
+                    v: 1.0,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+        });
+        let layer = SceneSnapshotSampledImageLayer {
+            id: "iris-eye".to_owned(),
+            has_source: true,
+            texture_slots: vec![SceneTextureSlot {
+                slot: 0,
+                source: base_source,
+                width: Some(100),
+                height: Some(100),
+            }],
+            alpha_texture_slot: None,
+            alpha_texture_mode: Default::default(),
+            image_effect_passes: vec![crate::core::scene::SceneImageEffectPass {
+                effect_file: "effects/iris/effect.json".to_owned(),
+                runtime: Some("native-iris-mask".to_owned()),
+                pass_index: 0,
+                shader: Some("effects/iris".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                texture_slots: vec![SceneTextureSlot {
+                    slot: 1,
+                    source: mask_source,
+                    width: Some(50),
+                    height: Some(50),
+                }],
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            }],
+            composite_key: None,
+            texture_region: None,
+            width: Some(100.0),
+            height: Some(100.0),
+            mesh: Some(mesh),
+            effect_motion: Default::default(),
+            blend_mode: SceneBlendMode::Alpha,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            transform: SceneTransform::default(),
+            puppet_animation_frames: Vec::new(),
+        };
+
+        let geometry = native_vulkan_scene_sampled_vertex_input_from_sampled_layers(&[layer])
+            .expect("dynamic iris effect target vertices");
+
+        assert_eq!(geometry.vertices.len(), 7);
+        assert!(geometry.indices.is_empty());
+        assert!(geometry.draw_steps.is_empty());
+        assert_eq!(geometry.vertices[0].position, [40.0, 70.0]);
+        assert_eq!(geometry.vertices[0].uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[2].uv, [0.0, 0.0]);
+        assert_eq!(geometry.vertices[3].uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[6].uv, [1.0, 0.0]);
+        assert_eq!(geometry.vertices[3].effect_uv, [0.0, 1.0]);
+        assert_eq!(geometry.vertices[6].effect_uv, [1.0, 0.0]);
     }
 
     #[test]

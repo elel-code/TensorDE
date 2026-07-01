@@ -2593,6 +2593,7 @@ fn run_scene_sampled_image_present_loop(
                     options.clear_color.b,
                     options.clear_color.a,
                 ],
+                elapsed_ms,
             )?;
             if reuse_recorded_commands
                 && let Some(slot) = recorded_commands.get_mut(image_index_usize)
@@ -3689,6 +3690,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                 options.clear_color.b,
                 options.clear_color.a,
             ],
+            0,
         )?;
         submit_scene_solid_quad_command_buffer2(
             device,

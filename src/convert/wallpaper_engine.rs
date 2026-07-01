@@ -1445,7 +1445,7 @@ struct SceneDocumentBuildContext {
     unsupported_features: Vec<Value>,
     puppet_attachments_by_source_id: BTreeMap<String, ScenePuppetAttachmentMap>,
     puppet_attachments_by_model_path: BTreeMap<String, ScenePuppetAttachmentMap>,
-    puppet_resource_ids: BTreeMap<String, String>,
+    copied_puppet_mdl_ids: BTreeMap<String, String>,
     decoded_tex_resources: BTreeMap<SceneDecodedTexResourceKey, SceneDecodedTexResource>,
     builtin_particle_texture_resources: BTreeMap<String, String>,
 }
@@ -4560,11 +4560,7 @@ fn scene_insert_puppet_model_conversion(
     resources: &mut Vec<Value>,
 ) -> Option<ScenePuppetMesh> {
     model.insert("puppet".to_owned(), Value::String(puppet.to_owned()));
-    if let Some(resource) =
-        scene_copy_puppet_resource(project, output_dir, puppet, report, context, resources)
-    {
-        model.insert("puppet_resource".to_owned(), Value::String(resource));
-    }
+    let _ = scene_copy_puppet_mdl(project, output_dir, puppet, report, context, resources);
     if let Some(frame_size) = frame_size
         && let Some(attachments) =
             scene_puppet_attachment_map_for_model_path(project, model_path, frame_size, context)
@@ -4641,7 +4637,7 @@ fn scene_puppet_attachment_map_for_puppet_path(
     scene_parse_puppet_attachment_map(&bytes, frame_size).ok()
 }
 
-fn scene_copy_puppet_resource(
+fn scene_copy_puppet_mdl(
     project: &WallpaperEngineProject,
     output_dir: &Path,
     puppet: &str,
@@ -4649,7 +4645,7 @@ fn scene_copy_puppet_resource(
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
 ) -> Option<String> {
-    if let Some(resource_id) = context.puppet_resource_ids.get(puppet) {
+    if let Some(resource_id) = context.copied_puppet_mdl_ids.get(puppet) {
         push_unique(
             &mut context.converted_features,
             "wallpaper-engine-puppet-resource-dedup",
@@ -4667,7 +4663,7 @@ fn scene_copy_puppet_resource(
         resources,
     )?;
     context
-        .puppet_resource_ids
+        .copied_puppet_mdl_ids
         .insert(puppet.to_owned(), resource_id.clone());
     push_unique(
         &mut context.converted_features,

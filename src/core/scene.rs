@@ -2922,7 +2922,11 @@ fn scene_image_effect_passes_for_node<'a>(
                 pass_index,
                 shader: pass.shader.clone(),
                 blending: pass.blending.clone(),
+                depthtest: pass.depthtest.clone(),
+                depthwrite: pass.depthwrite.clone(),
+                cullmode: pass.cullmode.clone(),
                 texture_slots,
+                combos: pass.combos.clone(),
                 constant_shader_values: pass.constant_shader_values.clone(),
             });
         }
@@ -3046,7 +3050,11 @@ pub struct SceneImageEffectPass {
     pub pass_index: usize,
     pub shader: Option<String>,
     pub blending: Option<String>,
+    pub depthtest: Option<String>,
+    pub depthwrite: Option<String>,
+    pub cullmode: Option<String>,
     pub texture_slots: Vec<SceneTextureSlot>,
+    pub combos: BTreeMap<String, i64>,
     pub constant_shader_values: BTreeMap<String, Value>,
 }
 
@@ -4908,7 +4916,7 @@ mod tests {
     }
 
     #[test]
-    fn iris_effect_mask_stays_effect_metadata_not_alpha_texture_shortcut() {
+    fn iris_effect_mask_stays_effect_metadata_without_alpha_slot() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "resource-eye", "type": "image", "source": "assets/eye.gtex", "width": 663, "height": 230 },
@@ -4954,6 +4962,11 @@ mod tests {
             SceneAlphaTextureMode::Multiply
         );
         assert_eq!(layers[0].texture_slots.len(), 1);
+        assert_eq!(layers[0].texture_slots[0].slot, 0);
+        assert_eq!(
+            layers[0].texture_slots[0].source.as_str(),
+            "assets/eye.gtex"
+        );
         assert_eq!(layers[0].image_effect_passes.len(), 1);
         let pass = &layers[0].image_effect_passes[0];
         assert_eq!(pass.effect_file, "effects/iris/effect.json");
