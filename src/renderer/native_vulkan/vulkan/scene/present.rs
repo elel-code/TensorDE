@@ -510,11 +510,32 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+    pub slot: u32,
+    pub resource_index: u32,
+}
+
+fn scene_texture_slot_resource_bindings(
+    resource_indices: impl IntoIterator<Item = u32>,
+) -> Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding> {
+    resource_indices
+        .into_iter()
+        .enumerate()
+        .map(
+            |(slot, resource_index)| NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                slot: slot.min(u32::MAX as usize) as u32,
+                resource_index,
+            },
+        )
+        .collect()
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
     pub layer_index: usize,
     pub resource_index: u32,
-    pub texture_slot_resource_indices: Vec<u32>,
+    pub texture_slot_bindings: Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding>,
     pub material: NativeVulkanVulkanaliaSceneSampledImageMaterial,
     pub first_index: u32,
     pub index_count: u32,
@@ -573,7 +594,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             draw_steps: vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 0,
                 resource_index: 0,
-                texture_slot_resource_indices: vec![0],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     SceneBlendMode::Alpha,
                     None,
@@ -5070,15 +5091,16 @@ fn update_scene_sampled_image_geometry_input_for_time(
                     step.resource_index, resource_count
                 ));
             }
-            if step.texture_slot_resource_indices.is_empty() {
+            if step.texture_slot_bindings.is_empty() {
                 return Err(format!(
-                    "scene dynamic sampled-image draw step {step_index} requires at least one texture slot resource index"
+                    "scene dynamic sampled-image draw step {step_index} requires at least one texture slot binding"
                 ));
             }
-            for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
-                if *resource_index as usize >= resource_count {
+            for binding in &step.texture_slot_bindings {
+                if binding.resource_index as usize >= resource_count {
                     return Err(format!(
-                        "scene dynamic sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds resource count {resource_count}"
+                        "scene dynamic sampled-image draw step {step_index} texture slot {} resource index {} exceeds resource count {resource_count}",
+                        binding.slot, binding.resource_index
                     ));
                 }
             }
@@ -5147,7 +5169,7 @@ fn scene_sampled_image_draw_step_topology_matches(
         && left.iter().zip(right).all(|(left, right)| {
             left.layer_index == right.layer_index
                 && left.resource_index == right.resource_index
-                && left.texture_slot_resource_indices == right.texture_slot_resource_indices
+                && left.texture_slot_bindings == right.texture_slot_bindings
                 && left.material == right.material
                 && left.first_index == right.first_index
                 && left.index_count == right.index_count
@@ -5611,7 +5633,7 @@ fn scene_video_layer_geometry_payload(
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: step.layer_index,
                 resource_index: step.resource_index,
-                texture_slot_resource_indices: vec![step.resource_index],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([step.resource_index]),
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     SceneBlendMode::Alpha,
                     None,
@@ -5909,13 +5931,13 @@ fn scene_sampled_image_descriptor_slot_plan(
         };
         if let Some(group) = debug_group.as_ref() {
             native_vulkan_scene_present_effect_debug_log(format_args!(
-                "descriptor group step_index={} layer_index={} resource_index={} alpha_slot={:?} mode={} texture_slot_resource_indices={:?} group_base={} descriptor_slots={:?}",
+                "descriptor group step_index={} layer_index={} resource_index={} alpha_slot={:?} mode={} texture_slot_bindings={:?} group_base={} descriptor_slots={:?}",
                 step_index,
                 step.layer_index,
                 step.resource_index,
                 step.material.alpha_texture_slot,
                 step.material.alpha_texture_mode.as_str(),
-                step.texture_slot_resource_indices,
+                &step.texture_slot_bindings,
                 group_base_index,
                 group
             ));
@@ -5934,29 +5956,39 @@ fn scene_sampled_image_descriptor_group_slots(
     sampled_image_count: usize,
     step_index: usize,
 ) -> Result<Vec<u32>, String> {
-    if step.texture_slot_resource_indices.is_empty() {
+    if step.texture_slot_bindings.is_empty() {
         return Err(format!(
-            "scene sampled-image draw step {step_index} requires texture slot resource indices"
+            "scene sampled-image draw step {step_index} requires texture slot bindings"
         ));
     }
-    if step.texture_slot_resource_indices.len() > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
+    if step.texture_slot_bindings.len() > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
         return Err(format!(
             "scene sampled-image draw step {step_index} uses {} texture slots, but the Vulkan sampled-image pipeline exposes {}",
-            step.texture_slot_resource_indices.len(),
+            step.texture_slot_bindings.len(),
             SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
         ));
     }
     let mut slots = vec![step.resource_index; SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT];
-    for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
-        if *resource_index as usize >= sampled_image_count {
+    for binding in &step.texture_slot_bindings {
+        if binding.slot as usize >= SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
             return Err(format!(
-                "scene sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds sampled image count {sampled_image_count}"
+                "scene sampled-image draw step {step_index} texture slot {} exceeds descriptor binding count {}",
+                binding.slot, SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
             ));
         }
-        slots[slot] = *resource_index;
+        if binding.resource_index as usize >= sampled_image_count {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} texture slot {} resource index {} exceeds sampled image count {sampled_image_count}",
+                binding.slot, binding.resource_index
+            ));
+        }
+        slots[binding.slot as usize] = binding.resource_index;
     }
     if let Some(alpha_texture_slot) = step.material.alpha_texture_slot
-        && alpha_texture_slot as usize >= step.texture_slot_resource_indices.len()
+        && !step
+            .texture_slot_bindings
+            .iter()
+            .any(|binding| binding.slot == alpha_texture_slot)
     {
         return Err(format!(
             "scene sampled-image draw step {step_index} alpha texture slot {alpha_texture_slot} has no resource index"
@@ -6000,22 +6032,25 @@ fn scene_sampled_image_draw_step_resource_debug_label(
 ) -> String {
     let mut label = String::new();
     label.push_str("slots=[");
-    for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
-        if slot > 0 {
+    for (index, binding) in step.texture_slot_bindings.iter().enumerate() {
+        if index > 0 {
             label.push_str(", ");
         }
-        if let Some(resource) = sampled_images.get(*resource_index as usize) {
+        if let Some(resource) = sampled_images.get(binding.resource_index as usize) {
             label.push_str(&format!(
                 "{}:{}:{}:{}x{}:{}",
-                slot,
-                resource_index,
+                binding.slot,
+                binding.resource_index,
                 resource.snapshot.image_format,
                 resource.snapshot.extent.0,
                 resource.snapshot.extent.1,
                 resource.snapshot.source_label
             ));
         } else {
-            label.push_str(&format!("{}:{}:<missing>", slot, resource_index));
+            label.push_str(&format!(
+                "{}:{}:<missing>",
+                binding.slot, binding.resource_index
+            ));
         }
     }
     label.push(']');
@@ -6026,9 +6061,10 @@ fn scene_sampled_image_draw_step_resource_debug_label(
     ));
     if let Some(alpha_slot) = step.material.alpha_texture_slot {
         let alpha_resource = step
-            .texture_slot_resource_indices
-            .get(alpha_slot as usize)
-            .and_then(|resource_index| sampled_images.get(*resource_index as usize));
+            .texture_slot_bindings
+            .iter()
+            .find(|binding| binding.slot == alpha_slot)
+            .and_then(|binding| sampled_images.get(binding.resource_index as usize));
         if let Some(alpha_resource) = alpha_resource {
             label.push_str(&format!(
                 " alpha_slot={} alpha_format={} alpha_extent={}x{} alpha_source={}",
@@ -6104,7 +6140,7 @@ fn scene_sampled_image_draw_commands_for_count(
         }
         let descriptor_binding = VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
             descriptor_group_base_index: descriptor_group_base_indices[step_index],
-            texture_slot_resource_indices: step.texture_slot_resource_indices.clone(),
+            texture_slot_bindings: step.texture_slot_bindings.clone(),
         };
         if native_vulkan_effect_debug_enabled()
             && (step.material.alpha_texture_slot.is_some()
@@ -6114,13 +6150,13 @@ fn scene_sampled_image_draw_commands_for_count(
                 ))
         {
             native_vulkan_scene_present_effect_debug_log(format_args!(
-                "draw command step_index={} layer_index={} resource_index={} descriptor_group_base={} material={} texture_slot_resource_indices={:?} first_index={} index_count={} target={}",
+                "draw command step_index={} layer_index={} resource_index={} descriptor_group_base={} material={} texture_slot_bindings={:?} first_index={} index_count={} target={}",
                 step_index,
                 step.layer_index,
                 step.resource_index,
                 descriptor_group_base_indices[step_index],
                 step.material.debug_label(),
-                step.texture_slot_resource_indices,
+                &step.texture_slot_bindings,
                 step.first_index,
                 step.index_count,
                 scene_sampled_image_render_target_debug_label(step.render_target)
@@ -6258,9 +6294,9 @@ fn scene_sampled_image_resource_sampler_mode(
         .find(|step| {
             step.resource_index == resource_index
                 || step
-                    .texture_slot_resource_indices
+                    .texture_slot_bindings
                     .iter()
-                    .any(|slot_resource_index| *slot_resource_index == resource_index)
+                    .any(|binding| binding.resource_index == resource_index)
         })
         .and_then(|step| step.fit)
         .or(implicit_fit)
@@ -6365,15 +6401,16 @@ fn scene_sampled_image_geometry_payload_from_input(
                 step.resource_index, resource_count
             ));
         }
-        if step.texture_slot_resource_indices.is_empty() {
+        if step.texture_slot_bindings.is_empty() {
             return Err(format!(
-                "scene sampled-image draw step {step_index} requires at least one texture slot resource index"
+                "scene sampled-image draw step {step_index} requires at least one texture slot binding"
             ));
         }
-        for (slot, resource_index) in step.texture_slot_resource_indices.iter().enumerate() {
-            if *resource_index as usize >= resource_count {
+        for binding in &step.texture_slot_bindings {
+            if binding.resource_index as usize >= resource_count {
                 return Err(format!(
-                    "scene sampled-image draw step {step_index} texture slot {slot} resource index {resource_index} exceeds resource count {resource_count}"
+                    "scene sampled-image draw step {step_index} texture slot {} resource index {} exceeds resource count {resource_count}",
+                    binding.slot, binding.resource_index
                 ));
             }
         }
@@ -6914,7 +6951,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -6930,7 +6967,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -6962,7 +6999,7 @@ mod tests {
                 ),
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 0,
@@ -6977,7 +7014,7 @@ mod tests {
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 10,
                 resource_index: 0,
-                texture_slot_resource_indices: vec![0, 0, 0, 1],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0, 0, 0, 1]),
                 material: sampled_image_material(
                     SceneBlendMode::Alpha,
                     Some(3),
@@ -6993,7 +7030,7 @@ mod tests {
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 11,
                 resource_index: 0,
-                texture_slot_resource_indices: vec![0, 0, 0, 1],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0, 0, 0, 1]),
                 material: sampled_image_material(
                     SceneBlendMode::Alpha,
                     Some(3),
@@ -7009,7 +7046,7 @@ mod tests {
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 12,
                 resource_index: 2,
-                texture_slot_resource_indices: vec![2, 2, 2, 1],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([2, 2, 2, 1]),
                 material: sampled_image_material(
                     SceneBlendMode::Alpha,
                     Some(3),
@@ -7047,7 +7084,7 @@ mod tests {
             &[NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 10,
                 resource_index: 0,
-                texture_slot_resource_indices: vec![0, 1],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0, 1]),
                 material: sampled_image_material(
                     SceneBlendMode::Alpha,
                     Some(3),
@@ -7074,7 +7111,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -7090,7 +7127,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 1,
-                    texture_slot_resource_indices: vec![1],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([1]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -7114,14 +7151,14 @@ mod tests {
             commands[0].descriptor_binding,
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index: 0,
-                texture_slot_resource_indices: vec![0],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
             }
         );
         assert_eq!(
             commands[1].descriptor_binding,
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index: 8,
-                texture_slot_resource_indices: vec![1],
+                texture_slot_bindings: scene_texture_slot_resource_bindings([1]),
             }
         );
     }
@@ -7133,7 +7170,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 10,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -7149,7 +7186,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 11,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Max,
                         None,
@@ -7519,7 +7556,7 @@ mod tests {
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                         layer_index: 7,
                         resource_index: 0,
-                        texture_slot_resource_indices: vec![0],
+                        texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                         material: sampled_image_material(
                             SceneBlendMode::Alpha,
                             None,
@@ -7539,7 +7576,7 @@ mod tests {
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                         layer_index: 7,
                         resource_index: 1,
-                        texture_slot_resource_indices: vec![1],
+                        texture_slot_bindings: scene_texture_slot_resource_bindings([1]),
                         material: sampled_image_material(
                             SceneBlendMode::Alpha,
                             None,
@@ -7650,7 +7687,7 @@ mod tests {
         let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 7,
             resource_index: 0,
-            texture_slot_resource_indices: vec![0],
+            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
             material: sampled_image_material(
                 SceneBlendMode::Alpha,
                 None,
@@ -7714,7 +7751,7 @@ mod tests {
         let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 7,
             resource_index: 0,
-            texture_slot_resource_indices: vec![0],
+            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
             material: sampled_image_material(
                 SceneBlendMode::Alpha,
                 None,
@@ -7781,7 +7818,7 @@ mod tests {
         let static_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 0,
             resource_index: 0,
-            texture_slot_resource_indices: vec![0],
+            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
             material: sampled_image_material(
                 SceneBlendMode::Alpha,
                 None,
@@ -7973,7 +8010,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 0,
                     resource_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,
@@ -7989,7 +8026,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: 1,
                     resource_index: 1,
-                    texture_slot_resource_indices: vec![1],
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([1]),
                     material: sampled_image_material(
                         SceneBlendMode::Alpha,
                         None,

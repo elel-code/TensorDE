@@ -41,6 +41,7 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneSampledImageRenderTarget,
     NativeVulkanVulkanaliaSceneSampledImageVertex, NativeVulkanVulkanaliaSceneSolidQuadDrawStep,
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, NativeVulkanVulkanaliaSceneSolidQuadVertex,
+    NativeVulkanVulkanaliaSceneTextureSlotResourceBinding,
     NativeVulkanVulkanaliaSceneVideoLayerDrawStep,
     NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
@@ -51,6 +52,7 @@ use super::draw_pass::{
     NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneSampledImageEffectTarget, NativeVulkanSceneSampledImageRenderTarget,
     NativeVulkanSceneSampledImageVertex, NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneTextureSlotResourceBinding,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain,
@@ -340,7 +342,11 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: step.layer_index,
                     resource_index: step.resource_index,
-                    texture_slot_resource_indices: step.texture_slot_resource_indices,
+                    texture_slot_bindings: step
+                        .texture_slot_bindings
+                        .into_iter()
+                        .map(native_vulkan_scene_vulkanalia_texture_slot_resource_binding)
+                        .collect(),
                     material: native_vulkan_scene_vulkanalia_sampled_image_material(
                         step.material_pass,
                         pipeline_label,
@@ -650,13 +656,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             } else {
                 native_vulkan_scene_sampled_source_index(&mut sampled_sources, source.clone())
             };
-            let texture_slot_resource_indices =
-                native_vulkan_scene_render_layer_texture_slot_resource_indices(
-                    layer,
-                    resource_index,
-                    sampled_source_indices,
-                    &mut sampled_sources,
-                )?;
+            let texture_slot_bindings = native_vulkan_scene_render_layer_texture_slot_bindings(
+                layer,
+                resource_index,
+                sampled_source_indices,
+                &mut sampled_sources,
+            )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
                 resource_index,
@@ -664,10 +669,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                     layer.blend_mode,
                     layer.alpha_texture_slot,
                     layer.alpha_texture_mode,
-                    texture_slot_resource_indices.len(),
+                    texture_slot_bindings.len(),
                     native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
                 ),
-                texture_slot_resource_indices,
+                texture_slot_bindings,
                 first_index: range.first_index,
                 index_count: range.index_count,
                 fit: Some(fit),
@@ -809,12 +814,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                     source.as_str()
                 )
             })?;
-            let texture_slot_resource_indices =
-                native_vulkan_scene_snapshot_layer_texture_slot_resource_indices(
-                    layer,
-                    resource_index,
-                    sampled_source_indices,
-                )?;
+            let texture_slot_bindings = native_vulkan_scene_snapshot_layer_texture_slot_bindings(
+                layer,
+                resource_index,
+                sampled_source_indices,
+            )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
                 resource_index,
@@ -822,10 +826,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                     layer.blend_mode,
                     layer.alpha_texture_slot,
                     layer.alpha_texture_mode.into(),
-                    texture_slot_resource_indices.len(),
+                    texture_slot_bindings.len(),
                     native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
                 ),
-                texture_slot_resource_indices,
+                texture_slot_bindings,
                 first_index: range.first_index,
                 index_count: range.index_count,
                 fit: Some(fit),
@@ -2463,20 +2467,20 @@ fn native_vulkan_scene_sampled_source_index(sources: &mut Vec<PathBuf>, source: 
     index
 }
 
-fn native_vulkan_scene_render_layer_texture_slot_resource_indices(
+fn native_vulkan_scene_render_layer_texture_slot_bindings(
     layer: &SceneRenderLayer,
     base_resource_index: u32,
     sampled_source_indices: Option<&BTreeMap<PathBuf, u32>>,
     sampled_sources: &mut Vec<PathBuf>,
-) -> Result<Vec<u32>, String> {
-    let mut indices = vec![base_resource_index];
+) -> Result<Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding>, String> {
+    let mut resources = vec![base_resource_index];
     for slot in layer.texture_slots.iter().filter(|slot| slot.slot > 0) {
         let slot_index = usize::try_from(slot.slot)
             .map_err(|_| format!("scene texture slot {} exceeds usize", slot.slot))?;
-        if indices.len() <= slot_index {
-            indices.resize(slot_index + 1, base_resource_index);
+        if resources.len() <= slot_index {
+            resources.resize(slot_index + 1, base_resource_index);
         }
-        indices[slot_index] = if let Some(source_indices) = sampled_source_indices {
+        resources[slot_index] = if let Some(source_indices) = sampled_source_indices {
             *source_indices.get(&slot.source).ok_or_else(|| {
                 format!(
                     "dynamic scene sampled slot source {} is absent from retained sampled image topology",
@@ -2487,22 +2491,22 @@ fn native_vulkan_scene_render_layer_texture_slot_resource_indices(
             native_vulkan_scene_sampled_source_index(sampled_sources, slot.source.clone())
         };
     }
-    Ok(indices)
+    Ok(native_vulkan_scene_vulkanalia_texture_slot_bindings_from_resources(resources))
 }
 
-fn native_vulkan_scene_snapshot_layer_texture_slot_resource_indices(
+fn native_vulkan_scene_snapshot_layer_texture_slot_bindings(
     layer: &SceneSnapshotLayer,
     base_resource_index: u32,
     sampled_source_indices: &BTreeMap<String, u32>,
-) -> Result<Vec<u32>, String> {
-    let mut indices = vec![base_resource_index];
+) -> Result<Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding>, String> {
+    let mut resources = vec![base_resource_index];
     for slot in layer.texture_slots.iter().filter(|slot| slot.slot > 0) {
         let slot_index = usize::try_from(slot.slot)
             .map_err(|_| format!("scene texture slot {} exceeds usize", slot.slot))?;
-        if indices.len() <= slot_index {
-            indices.resize(slot_index + 1, base_resource_index);
+        if resources.len() <= slot_index {
+            resources.resize(slot_index + 1, base_resource_index);
         }
-        indices[slot_index] = *sampled_source_indices
+        resources[slot_index] = *sampled_source_indices
             .get(slot.source.as_str())
             .ok_or_else(|| {
                 format!(
@@ -2511,7 +2515,22 @@ fn native_vulkan_scene_snapshot_layer_texture_slot_resource_indices(
                 )
             })?;
     }
-    Ok(indices)
+    Ok(native_vulkan_scene_vulkanalia_texture_slot_bindings_from_resources(resources))
+}
+
+fn native_vulkan_scene_vulkanalia_texture_slot_bindings_from_resources(
+    resources: Vec<u32>,
+) -> Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding> {
+    resources
+        .into_iter()
+        .enumerate()
+        .map(
+            |(slot, resource_index)| NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                slot: slot.min(u32::MAX as usize) as u32,
+                resource_index,
+            },
+        )
+        .collect()
 }
 
 fn native_vulkan_scene_render_layer_has_no_visual_geometry(layer: &SceneRenderLayer) -> bool {
@@ -2567,6 +2586,12 @@ pub struct NativeVulkanSceneTextureSlotSnapshot {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneTextureSlotResourceBindingSnapshot {
+    pub slot: u32,
+    pub resource_index: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub kind: &'static str,
@@ -2608,6 +2633,15 @@ fn native_vulkan_scene_texture_slot_snapshot(
         source: slot.source.clone(),
         width: slot.width,
         height: slot.height,
+    }
+}
+
+fn native_vulkan_scene_texture_slot_resource_binding_snapshot(
+    binding: NativeVulkanSceneTextureSlotResourceBinding,
+) -> NativeVulkanSceneTextureSlotResourceBindingSnapshot {
+    NativeVulkanSceneTextureSlotResourceBindingSnapshot {
+        slot: binding.slot,
+        resource_index: binding.resource_index,
     }
 }
 
@@ -2761,7 +2795,7 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub fit: FitMode,
     pub texture_region: Option<SceneTextureRegion>,
     pub resource_index: u32,
-    pub texture_slot_resource_indices: Vec<u32>,
+    pub texture_slot_bindings: Vec<NativeVulkanSceneTextureSlotResourceBindingSnapshot>,
     pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
@@ -2843,6 +2877,15 @@ fn native_vulkan_scene_vulkanalia_sampled_image_render_target(
             target_index,
             clear,
         },
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_texture_slot_resource_binding(
+    binding: NativeVulkanSceneTextureSlotResourceBindingSnapshot,
+) -> NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+    NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+        slot: binding.slot,
+        resource_index: binding.resource_index,
     }
 }
 
@@ -3103,7 +3146,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 fit: step.fit,
                 texture_region: step.texture_region,
                 resource_index: step.resource_index,
-                texture_slot_resource_indices: step.texture_slot_resource_indices,
+                texture_slot_bindings: step
+                    .texture_slot_bindings
+                    .into_iter()
+                    .map(native_vulkan_scene_texture_slot_resource_binding_snapshot)
+                    .collect(),
                 material_pass: native_vulkan_scene_material_pass_snapshot(&step.material_pass),
                 effect_passes: step
                     .effect_passes
@@ -3821,6 +3868,38 @@ mod tests {
     };
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
+
+    fn texture_slot_binding_snapshots(
+        resources: &[u32],
+    ) -> Vec<NativeVulkanSceneTextureSlotResourceBindingSnapshot> {
+        resources
+            .iter()
+            .copied()
+            .enumerate()
+            .map(
+                |(slot, resource_index)| NativeVulkanSceneTextureSlotResourceBindingSnapshot {
+                    slot: slot.min(u32::MAX as usize) as u32,
+                    resource_index,
+                },
+            )
+            .collect()
+    }
+
+    fn vulkanalia_texture_slot_bindings(
+        resources: &[u32],
+    ) -> Vec<NativeVulkanVulkanaliaSceneTextureSlotResourceBinding> {
+        resources
+            .iter()
+            .copied()
+            .enumerate()
+            .map(
+                |(slot, resource_index)| NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: slot.min(u32::MAX as usize) as u32,
+                    resource_index,
+                },
+            )
+            .collect()
+    }
 
     fn scene_test_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
         SceneRenderLayer {
@@ -5544,8 +5623,8 @@ mod tests {
             composite_key
         );
         assert_eq!(
-            snapshot.draw_pass_sampled_image_recording_steps[0].texture_slot_resource_indices,
-            vec![0, 0, 0, 1]
+            snapshot.draw_pass_sampled_image_recording_steps[0].texture_slot_bindings,
+            texture_slot_binding_snapshots(&[0, 0, 0, 1])
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_recording_steps[0]
@@ -5570,8 +5649,8 @@ mod tests {
             ]
         );
         assert_eq!(
-            sampled_geometry.draw_steps[0].texture_slot_resource_indices,
-            vec![0, 0, 0, 1]
+            sampled_geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0, 0, 0, 1])
         );
         assert_eq!(
             sampled_geometry.draw_steps[0].material.alpha_texture_slot,

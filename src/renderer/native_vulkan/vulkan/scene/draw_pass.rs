@@ -226,7 +226,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageDescriptorBinding {
     DescriptorHeap {
         descriptor_group_base_index: u32,
-        texture_slot_resource_indices: Vec<u32>,
+        texture_slot_bindings:
+            Vec<super::present::NativeVulkanVulkanaliaSceneTextureSlotResourceBinding>,
     },
 }
 
@@ -1651,7 +1652,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         match &draw.descriptor_binding {
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index,
-                texture_slot_resource_indices,
+                texture_slot_bindings,
             } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
@@ -1669,18 +1670,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         descriptor_heap_draw.resources.plan.image_count
                     ));
                 }
-                if texture_slot_resource_indices.is_empty()
-                    || texture_slot_resource_indices.len()
-                        > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                if texture_slot_bindings.is_empty()
+                    || texture_slot_bindings.len() > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                 {
                     return Err(format!(
                         "scene sampled-image texture slot count {} exceeds descriptor binding count {}",
-                        texture_slot_resource_indices.len(),
+                        texture_slot_bindings.len(),
                         SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                     ));
                 }
                 if let Some(alpha_texture_slot) = draw.material.alpha_texture_slot
-                    && alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                    && !texture_slot_bindings
+                        .iter()
+                        .any(|binding| binding.slot == alpha_texture_slot)
                 {
                     return Err(format!(
                         "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
@@ -2058,7 +2060,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         match &draw.descriptor_binding {
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index,
-                texture_slot_resource_indices,
+                texture_slot_bindings,
             } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
@@ -2076,18 +2078,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         descriptor_heap_draw.resources.plan.image_count
                     ));
                 }
-                if texture_slot_resource_indices.is_empty()
-                    || texture_slot_resource_indices.len()
-                        > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
+                if texture_slot_bindings.is_empty()
+                    || texture_slot_bindings.len() > SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                 {
                     return Err(format!(
                         "scene sampled-image texture slot count {} exceeds descriptor binding count {}",
-                        texture_slot_resource_indices.len(),
+                        texture_slot_bindings.len(),
                         SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                     ));
                 }
                 if let Some(alpha_texture_slot) = draw.material.alpha_texture_slot
-                    && alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                    && !texture_slot_bindings
+                        .iter()
+                        .any(|binding| binding.slot == alpha_texture_slot)
                 {
                     return Err(format!(
                         "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
@@ -3226,6 +3229,22 @@ mod tests {
         )
     }
 
+    fn texture_slot_bindings(
+        resources: &[u32],
+    ) -> Vec<super::super::present::NativeVulkanVulkanaliaSceneTextureSlotResourceBinding> {
+        resources
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(slot, resource_index)| {
+                super::super::present::NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: slot.min(u32::MAX as usize) as u32,
+                    resource_index,
+                }
+            })
+            .collect()
+    }
+
     fn input() -> NativeVulkanVulkanaliaSceneDrawPassInput {
         NativeVulkanVulkanaliaSceneDrawPassInput {
             plan_ready: true,
@@ -3635,7 +3654,7 @@ mod tests {
                 material: sampled_image_material(SceneBlendMode::Alpha),
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: 0,
-                    texture_slot_resource_indices: vec![0],
+                    texture_slot_bindings: texture_slot_bindings(&[0]),
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 0,
@@ -3648,7 +3667,7 @@ mod tests {
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                         as u32,
-                    texture_slot_resource_indices: vec![1],
+                    texture_slot_bindings: texture_slot_bindings(&[1]),
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 6,

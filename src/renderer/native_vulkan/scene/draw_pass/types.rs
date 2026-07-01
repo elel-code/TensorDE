@@ -15,6 +15,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneTextureSlo
     pub(in crate::renderer::native_vulkan::scene) height: Option<u32>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneTextureSlotResourceBinding {
+    pub(in crate::renderer::native_vulkan::scene) slot: u32,
+    pub(in crate::renderer::native_vulkan::scene) resource_index: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageEffectPass {
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
@@ -228,7 +234,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) fit: FitMode,
     pub(in crate::renderer::native_vulkan::scene) texture_region: Option<SceneTextureRegion>,
     pub(in crate::renderer::native_vulkan::scene) resource_index: u32,
-    pub(in crate::renderer::native_vulkan::scene) texture_slot_resource_indices: Vec<u32>,
+    pub(in crate::renderer::native_vulkan::scene) texture_slot_bindings:
+        Vec<NativeVulkanSceneTextureSlotResourceBinding>,
     pub(in crate::renderer::native_vulkan::scene) material_pass: NativeVulkanSceneMaterialPass,
     pub(in crate::renderer::native_vulkan::scene) effect_passes: Vec<NativeVulkanSceneEffectRecord>,
     pub(in crate::renderer::native_vulkan::scene) composite_key: Option<SceneLayerCompositeKey>,
