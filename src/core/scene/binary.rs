@@ -9,7 +9,7 @@ use super::{
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 3;
+pub const SCENE_BINARY_VERSION: u16 = 4;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -17,7 +17,9 @@ pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 72;
-pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 64;
+pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 72;
+pub const SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE: usize = 20;
+pub const SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE: usize = 4;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 48;
@@ -35,6 +37,7 @@ const SCENE_BINARY_RETAINED_TEXTURE_SLOT: u16 = 2;
 const SCENE_BINARY_RETAINED_MATERIAL_PASS: u16 = 3;
 const SCENE_BINARY_RETAINED_EFFECT_PASS: u16 = 4;
 const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
+const SCENE_BINARY_RETAINED_GEOMETRY: u16 = 6;
 
 const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
 const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
@@ -59,6 +62,8 @@ pub enum SceneBinaryChunkKind {
     NodeTable,
     TransformTimeline,
     Geometry,
+    GeometryVertices,
+    GeometryIndices,
     TextureSlots,
     MaterialPass,
     EffectPass,
@@ -71,11 +76,13 @@ pub enum SceneBinaryChunkKind {
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 13] = [
+    pub const REQUIRED_ORDER: [Self; 15] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
         Self::Geometry,
+        Self::GeometryVertices,
+        Self::GeometryIndices,
         Self::TextureSlots,
         Self::MaterialPass,
         Self::EffectPass,
@@ -93,6 +100,8 @@ impl SceneBinaryChunkKind {
             Self::NodeTable => u32::from_le_bytes(*b"NODE"),
             Self::TransformTimeline => u32::from_le_bytes(*b"XFRM"),
             Self::Geometry => u32::from_le_bytes(*b"GEOM"),
+            Self::GeometryVertices => u32::from_le_bytes(*b"GVTX"),
+            Self::GeometryIndices => u32::from_le_bytes(*b"GIDX"),
             Self::TextureSlots => u32::from_le_bytes(*b"TEXS"),
             Self::MaterialPass => u32::from_le_bytes(*b"MATP"),
             Self::EffectPass => u32::from_le_bytes(*b"EFTP"),
@@ -118,6 +127,8 @@ impl SceneBinaryChunkKind {
             Self::NodeTable => "node_table",
             Self::TransformTimeline => "transform_timeline",
             Self::Geometry => "geometry",
+            Self::GeometryVertices => "geometry_vertices",
+            Self::GeometryIndices => "geometry_indices",
             Self::TextureSlots => "texture_slots",
             Self::MaterialPass => "material_pass",
             Self::EffectPass => "effect_pass",
@@ -269,6 +280,60 @@ impl SceneBinaryLayoutPlan {
             SceneBinaryChunkKind::Geometry,
             SCENE_BINARY_GEOMETRY_RECORD_SIZE,
             decode_geometry_record,
+        )
+    }
+
+    pub fn geometry_vertex_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryGeometryVertexRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::GeometryVertices,
+            SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
+            decode_geometry_vertex_record,
+        )
+    }
+
+    pub fn geometry_index_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryGeometryIndexRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::GeometryIndices,
+            SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
+            decode_geometry_index_record,
+        )
+    }
+
+    pub fn geometry_vertex_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        geometry: SceneBinaryGeometryRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryGeometryVertexRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::GeometryVertices,
+            SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
+            geometry.first_vertex,
+            geometry.vertex_count,
+            decode_geometry_vertex_record,
+        )
+    }
+
+    pub fn geometry_index_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        geometry: SceneBinaryGeometryRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryGeometryIndexRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::GeometryIndices,
+            SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
+            geometry.first_index,
+            geometry.index_count,
+            decode_geometry_index_record,
         )
     }
 
@@ -752,7 +817,9 @@ pub struct SceneBinaryGeometryRecord {
     pub flags: u16,
     pub width: f32,
     pub height: f32,
+    pub first_vertex: u32,
     pub vertex_count: u32,
+    pub first_index: u32,
     pub index_count: u32,
     pub material_uv_count: u32,
     pub topology_id: u32,
@@ -773,7 +840,9 @@ impl SceneBinaryGeometryRecord {
         write_u16(out, self.flags);
         write_f32(out, self.width);
         write_f32(out, self.height);
+        write_u32(out, self.first_vertex);
         write_u32(out, self.vertex_count);
+        write_u32(out, self.first_index);
         write_u32(out, self.index_count);
         write_u32(out, self.material_uv_count);
         write_u32(out, self.topology_id);
@@ -785,7 +854,39 @@ impl SceneBinaryGeometryRecord {
         write_f32(out, self.uv_min_v);
         write_f32(out, self.uv_max_u);
         write_f32(out, self.uv_max_v);
-        debug_assert_eq!(SCENE_BINARY_GEOMETRY_RECORD_SIZE, 64);
+        debug_assert_eq!(SCENE_BINARY_GEOMETRY_RECORD_SIZE, 72);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBinaryGeometryVertexRecord {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub opacity: f32,
+}
+
+impl SceneBinaryGeometryVertexRecord {
+    fn encode(self, out: &mut Vec<u8>) {
+        write_f32(out, self.x);
+        write_f32(out, self.y);
+        write_f32(out, self.u);
+        write_f32(out, self.v);
+        write_f32(out, self.opacity);
+        debug_assert_eq!(SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, 20);
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SceneBinaryGeometryIndexRecord {
+    pub index: u32,
+}
+
+impl SceneBinaryGeometryIndexRecord {
+    fn encode(self, out: &mut Vec<u8>) {
+        write_u32(out, self.index);
+        debug_assert_eq!(SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE, 4);
     }
 }
 
@@ -1145,6 +1246,8 @@ pub struct SceneBinaryDocumentShape {
     pub node_table_records: u32,
     pub transform_timeline_records: u32,
     pub geometry_records: u32,
+    pub geometry_vertex_records: u32,
+    pub geometry_index_records: u32,
     pub texture_slot_records: u32,
     pub material_pass_records: u32,
     pub effect_pass_records: u32,
@@ -1176,6 +1279,7 @@ impl SceneBinaryDocumentShape {
         }
         shape.retained_gpu_state_records = shape
             .resource_table_records
+            .saturating_add(shape.geometry_records)
             .saturating_add(shape.texture_slot_records)
             .saturating_add(shape.material_pass_records)
             .saturating_add(shape.effect_pass_records)
@@ -1189,6 +1293,8 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::NodeTable => self.node_table_records,
             SceneBinaryChunkKind::TransformTimeline => self.transform_timeline_records,
             SceneBinaryChunkKind::Geometry => self.geometry_records,
+            SceneBinaryChunkKind::GeometryVertices => self.geometry_vertex_records,
+            SceneBinaryChunkKind::GeometryIndices => self.geometry_index_records,
             SceneBinaryChunkKind::TextureSlots => self.texture_slot_records,
             SceneBinaryChunkKind::MaterialPass => self.material_pass_records,
             SceneBinaryChunkKind::EffectPass => self.effect_pass_records,
@@ -1212,6 +1318,14 @@ impl SceneBinaryDocumentShape {
         }
         if node_has_geometry(node) {
             self.geometry_records = self.geometry_records.saturating_add(1);
+            if let Some(mesh) = node.mesh.as_ref() {
+                self.geometry_vertex_records = self
+                    .geometry_vertex_records
+                    .saturating_add(saturating_u32(mesh.vertices.len()));
+                self.geometry_index_records = self
+                    .geometry_index_records
+                    .saturating_add(saturating_u32(mesh.indices.len()));
+            }
         }
         if node_has_material(node) {
             self.material_pass_records = self.material_pass_records.saturating_add(1);
@@ -1380,6 +1494,8 @@ struct SceneBinaryPayloadBuilder {
     node_table: SceneBinaryChunkWriter,
     transform_timeline: SceneBinaryChunkWriter,
     geometry: SceneBinaryChunkWriter,
+    geometry_vertices: SceneBinaryChunkWriter,
+    geometry_indices: SceneBinaryChunkWriter,
     texture_slots: SceneBinaryChunkWriter,
     material_pass: SceneBinaryChunkWriter,
     effect_pass: SceneBinaryChunkWriter,
@@ -2078,13 +2194,18 @@ impl SceneBinaryPayloadBuilder {
     }
 
     fn push_geometry(&mut self, owner_name: u32, node: &SceneNode) -> u32 {
-        self.geometry.push_record(|out| {
-            let (vertex_count, index_count) = node.mesh.as_ref().map_or((0, 0), |mesh| {
-                (
-                    saturating_u32(mesh.vertices.len()),
-                    saturating_u32(mesh.indices.len()),
-                )
-            });
+        let (first_vertex, vertex_count, first_index, index_count) =
+            node.mesh
+                .as_ref()
+                .map_or((SCENE_BINARY_NONE_ID, 0, SCENE_BINARY_NONE_ID, 0), |mesh| {
+                    (
+                        self.geometry_vertices.record_count,
+                        saturating_u32(mesh.vertices.len()),
+                        self.geometry_indices.record_count,
+                        saturating_u32(mesh.indices.len()),
+                    )
+                });
+        let record_index = self.geometry.push_record(|out| {
             let ranges = geometry_ranges(node);
             SceneBinaryGeometryRecord {
                 owner_name,
@@ -2092,7 +2213,9 @@ impl SceneBinaryPayloadBuilder {
                 flags: geometry_flags(node),
                 width: node.width.unwrap_or(0.0) as f32,
                 height: node.height.unwrap_or(0.0) as f32,
+                first_vertex,
                 vertex_count,
+                first_index,
                 index_count,
                 material_uv_count: u32::from(geometry_has_uv(node)),
                 topology_id: vertex_count ^ index_count.rotate_left(16),
@@ -2106,7 +2229,31 @@ impl SceneBinaryPayloadBuilder {
                 uv_max_v: ranges.uv_max_v,
             }
             .encode(out)
-        })
+        });
+        if let Some(mesh) = node.mesh.as_ref() {
+            self.push_geometry_streams(mesh);
+        }
+        self.push_retained(SCENE_BINARY_RETAINED_GEOMETRY, owner_name, record_index);
+        record_index
+    }
+
+    fn push_geometry_streams(&mut self, mesh: &super::SceneMesh) {
+        for vertex in &mesh.vertices {
+            self.geometry_vertices.push_record(|out| {
+                SceneBinaryGeometryVertexRecord {
+                    x: vertex.x as f32,
+                    y: vertex.y as f32,
+                    u: vertex.u as f32,
+                    v: vertex.v as f32,
+                    opacity: vertex.opacity as f32,
+                }
+                .encode(out)
+            });
+        }
+        for &index in &mesh.indices {
+            self.geometry_indices
+                .push_record(|out| SceneBinaryGeometryIndexRecord { index }.encode(out));
+        }
     }
 
     fn push_default_transform(&mut self, owner_name: u32, node: &SceneNode) {
@@ -2180,6 +2327,8 @@ impl SceneBinaryPayloadBuilder {
             node_table_records: self.node_table.record_count,
             transform_timeline_records: self.transform_timeline.record_count,
             geometry_records: self.geometry.record_count,
+            geometry_vertex_records: self.geometry_vertices.record_count,
+            geometry_index_records: self.geometry_indices.record_count,
             texture_slot_records: self.texture_slots.record_count,
             material_pass_records: self.material_pass.record_count,
             effect_pass_records: self.effect_pass.record_count,
@@ -2200,6 +2349,10 @@ impl SceneBinaryPayloadBuilder {
                 self.transform_timeline
                     .into_payload(SceneBinaryChunkKind::TransformTimeline),
                 self.geometry.into_payload(SceneBinaryChunkKind::Geometry),
+                self.geometry_vertices
+                    .into_payload(SceneBinaryChunkKind::GeometryVertices),
+                self.geometry_indices
+                    .into_payload(SceneBinaryChunkKind::GeometryIndices),
                 self.texture_slots
                     .into_payload(SceneBinaryChunkKind::TextureSlots),
                 self.material_pass
@@ -3253,18 +3406,40 @@ fn decode_geometry_record(bytes: &[u8]) -> Result<SceneBinaryGeometryRecord, Sce
         flags: read_u16(bytes, 6)?,
         width: read_f32(bytes, 8)?,
         height: read_f32(bytes, 12)?,
-        vertex_count: read_u32(bytes, 16)?,
-        index_count: read_u32(bytes, 20)?,
-        material_uv_count: read_u32(bytes, 24)?,
-        topology_id: read_u32(bytes, 28)?,
-        bounds_min_x: read_f32(bytes, 32)?,
-        bounds_min_y: read_f32(bytes, 36)?,
-        bounds_max_x: read_f32(bytes, 40)?,
-        bounds_max_y: read_f32(bytes, 44)?,
-        uv_min_u: read_f32(bytes, 48)?,
-        uv_min_v: read_f32(bytes, 52)?,
-        uv_max_u: read_f32(bytes, 56)?,
-        uv_max_v: read_f32(bytes, 60)?,
+        first_vertex: read_u32(bytes, 16)?,
+        vertex_count: read_u32(bytes, 20)?,
+        first_index: read_u32(bytes, 24)?,
+        index_count: read_u32(bytes, 28)?,
+        material_uv_count: read_u32(bytes, 32)?,
+        topology_id: read_u32(bytes, 36)?,
+        bounds_min_x: read_f32(bytes, 40)?,
+        bounds_min_y: read_f32(bytes, 44)?,
+        bounds_max_x: read_f32(bytes, 48)?,
+        bounds_max_y: read_f32(bytes, 52)?,
+        uv_min_u: read_f32(bytes, 56)?,
+        uv_min_v: read_f32(bytes, 60)?,
+        uv_max_u: read_f32(bytes, 64)?,
+        uv_max_v: read_f32(bytes, 68)?,
+    })
+}
+
+fn decode_geometry_vertex_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryGeometryVertexRecord, SceneBinaryError> {
+    Ok(SceneBinaryGeometryVertexRecord {
+        x: read_f32(bytes, 0)?,
+        y: read_f32(bytes, 4)?,
+        u: read_f32(bytes, 8)?,
+        v: read_f32(bytes, 12)?,
+        opacity: read_f32(bytes, 16)?,
+    })
+}
+
+fn decode_geometry_index_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryGeometryIndexRecord, SceneBinaryError> {
+    Ok(SceneBinaryGeometryIndexRecord {
+        index: read_u32(bytes, 0)?,
     })
 }
 
@@ -3856,6 +4031,8 @@ mod tests {
         assert_eq!(shape.node_table_records, 1);
         assert_eq!(shape.transform_timeline_records, 2);
         assert_eq!(shape.geometry_records, 1);
+        assert_eq!(shape.geometry_vertex_records, 0);
+        assert_eq!(shape.geometry_index_records, 0);
         assert_eq!(shape.texture_slot_records, 1);
         assert_eq!(shape.material_pass_records, 1);
         assert_eq!(shape.effect_pass_records, 1);
@@ -3944,7 +4121,9 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded geometry records");
         assert_eq!(geometry.len(), 1);
+        assert_eq!(geometry[0].first_vertex, SCENE_BINARY_NONE_ID);
         assert_eq!(geometry[0].vertex_count, 0);
+        assert_eq!(geometry[0].first_index, SCENE_BINARY_NONE_ID);
         assert_eq!(geometry[0].index_count, 0);
         assert_eq!(geometry[0].material_uv_count, 1);
         assert_eq!(geometry[0].bounds_min_x, 0.0);
@@ -3955,6 +4134,20 @@ mod tests {
         assert_eq!(geometry[0].uv_min_v, 0.0);
         assert_eq!(geometry[0].uv_max_u, 1.0);
         assert_eq!(geometry[0].uv_max_v, 1.0);
+        assert_eq!(
+            layout
+                .geometry_vertex_record_range(&bytes, geometry[0])
+                .expect("empty geometry vertex range")
+                .len(),
+            0
+        );
+        assert_eq!(
+            layout
+                .geometry_index_record_range(&bytes, geometry[0])
+                .expect("empty geometry index range")
+                .len(),
+            0
+        );
 
         let materials = layout
             .material_pass_records(&bytes)
@@ -4162,6 +4355,100 @@ mod tests {
             retained
                 .iter()
                 .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_EFFECT_PASS)
+        );
+        assert!(
+            retained
+                .iter()
+                .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_GEOMETRY)
+        );
+    }
+
+    #[test]
+    fn binary_geometry_streams_carry_mesh_vertices_and_indices() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "mesh-node",
+                    "type": "image",
+                    "mesh": {
+                        "vertices": [
+                            { "x": -2.0, "y": 1.0, "u": 0.25, "v": 0.75, "opacity": 0.5 },
+                            { "x": 4.0, "y": -3.0, "u": 1.0, "v": 0.0 },
+                            { "x": 2.0, "y": 5.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [2, 1, 0]
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let payloads = scene_binary_payloads_from_document(&document);
+        assert_eq!(payloads.shape.geometry_records, 1);
+        assert_eq!(payloads.shape.geometry_vertex_records, 3);
+        assert_eq!(payloads.shape.geometry_index_records, 3);
+        assert_eq!(
+            payloads
+                .chunk(SceneBinaryChunkKind::GeometryVertices)
+                .expect("geometry vertex payload")
+                .bytes
+                .len(),
+            3 * SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE
+        );
+        assert_eq!(
+            payloads
+                .chunk(SceneBinaryChunkKind::GeometryIndices)
+                .expect("geometry index payload")
+                .bytes
+                .len(),
+            3 * SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE
+        );
+
+        let bytes = payloads.encode_container(0).expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let geometry = layout
+            .geometry_records(&bytes)
+            .expect("geometry records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded geometry");
+        assert_eq!(geometry.len(), 1);
+        assert_eq!(geometry[0].first_vertex, 0);
+        assert_eq!(geometry[0].vertex_count, 3);
+        assert_eq!(geometry[0].first_index, 0);
+        assert_eq!(geometry[0].index_count, 3);
+        assert_eq!(geometry[0].bounds_min_x, -2.0);
+        assert_eq!(geometry[0].bounds_min_y, -3.0);
+        assert_eq!(geometry[0].bounds_max_x, 4.0);
+        assert_eq!(geometry[0].bounds_max_y, 5.0);
+        assert_eq!(geometry[0].uv_min_u, 0.0);
+        assert_eq!(geometry[0].uv_min_v, 0.0);
+        assert_eq!(geometry[0].uv_max_u, 1.0);
+        assert_eq!(geometry[0].uv_max_v, 1.0);
+
+        let vertices = layout
+            .geometry_vertex_record_range(&bytes, geometry[0])
+            .expect("geometry vertex range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded geometry vertices");
+        assert_eq!(vertices.len(), 3);
+        assert_eq!(vertices[0].x, -2.0);
+        assert_eq!(vertices[0].y, 1.0);
+        assert_eq!(vertices[0].u, 0.25);
+        assert_eq!(vertices[0].v, 0.75);
+        assert_eq!(vertices[0].opacity, 0.5);
+        assert_eq!(vertices[1].opacity, 1.0);
+
+        let indices = layout
+            .geometry_index_record_range(&bytes, geometry[0])
+            .expect("geometry index range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded geometry indices");
+        assert_eq!(
+            indices
+                .iter()
+                .map(|record| record.index)
+                .collect::<Vec<_>>(),
+            vec![2, 1, 0]
         );
     }
 
