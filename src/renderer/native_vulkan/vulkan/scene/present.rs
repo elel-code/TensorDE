@@ -293,16 +293,231 @@ pub enum NativeVulkanVulkanaliaSceneSampledImageRenderTarget {
     EffectTarget { target_index: u32, clear: bool },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneSampledImageMaterialKind {
+    SampledImage,
+    SampledImageEffectBase,
+    SampledImageEffectComposite,
+}
+
+impl NativeVulkanVulkanaliaSceneSampledImageMaterialKind {
+    pub fn sampled_image() -> Self {
+        Self::SampledImage
+    }
+
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "sampled-image-effect-base" => Self::SampledImageEffectBase,
+            "sampled-image-effect-composite" => Self::SampledImageEffectComposite,
+            _ => Self::SampledImage,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SampledImage => "sampled-image",
+            Self::SampledImageEffectBase => "sampled-image-effect-base",
+            Self::SampledImageEffectComposite => "sampled-image-effect-composite",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneMaterialFlag {
+    Unspecified,
+    Enabled,
+    Disabled,
+}
+
+impl NativeVulkanVulkanaliaSceneMaterialFlag {
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "enabled" => Self::Enabled,
+            "disabled" => Self::Disabled,
+            _ => Self::Unspecified,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::Enabled => "enabled",
+            Self::Disabled => "disabled",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneCullMode {
+    Unspecified,
+    None,
+    Back,
+    Front,
+    FrontAndBack,
+    Named(String),
+}
+
+impl NativeVulkanVulkanaliaSceneCullMode {
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "none" => Self::None,
+            "back" => Self::Back,
+            "front" => Self::Front,
+            "front-and-back" => Self::FrontAndBack,
+            "unspecified" | "" => Self::Unspecified,
+            value => Self::Named(value.to_owned()),
+        }
+    }
+
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Unspecified => "unspecified",
+            Self::None => "none",
+            Self::Back => "back",
+            Self::Front => "front",
+            Self::FrontAndBack => "front-and-back",
+            Self::Named(value) => value.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneEffectKind {
+    OpacityMask,
+    Iris,
+    WaterRipple,
+    WaterWaves,
+    WaterFlow,
+    WaterCaustics,
+    Blur,
+    SwayShake,
+    Flutter,
+    Drift,
+    CompositeLayer,
+    UserBindings,
+    ShaderMaterial,
+}
+
+impl NativeVulkanVulkanaliaSceneEffectKind {
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "opacity-mask" => Self::OpacityMask,
+            "iris" => Self::Iris,
+            "water-ripple" => Self::WaterRipple,
+            "water-waves" => Self::WaterWaves,
+            "water-flow" => Self::WaterFlow,
+            "water-caustics" => Self::WaterCaustics,
+            "blur" => Self::Blur,
+            "sway-shake" => Self::SwayShake,
+            "flutter" => Self::Flutter,
+            "drift" => Self::Drift,
+            "composite-layer" => Self::CompositeLayer,
+            "user-bindings" => Self::UserBindings,
+            _ => Self::ShaderMaterial,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OpacityMask => "opacity-mask",
+            Self::Iris => "iris",
+            Self::WaterRipple => "water-ripple",
+            Self::WaterWaves => "water-waves",
+            Self::WaterFlow => "water-flow",
+            Self::WaterCaustics => "water-caustics",
+            Self::Blur => "blur",
+            Self::SwayShake => "sway-shake",
+            Self::Flutter => "flutter",
+            Self::Drift => "drift",
+            Self::CompositeLayer => "composite-layer",
+            Self::UserBindings => "user-bindings",
+            Self::ShaderMaterial => "shader-material",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
+    pub kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind,
+    pub shader: Option<String>,
+    pub blending: Option<String>,
+    pub blend_mode: SceneBlendMode,
+    pub alpha_texture_slot: Option<u32>,
+    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub depth_test: NativeVulkanVulkanaliaSceneMaterialFlag,
+    pub depth_write: NativeVulkanVulkanaliaSceneMaterialFlag,
+    pub cull_mode: NativeVulkanVulkanaliaSceneCullMode,
+    pub texture_slot_count: usize,
+    pub effect_kinds: Vec<NativeVulkanVulkanaliaSceneEffectKind>,
+    pub combo_keys: Vec<String>,
+    pub pipeline_label: &'static str,
+}
+
+impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
+    pub fn sampled_image(
+        blend_mode: SceneBlendMode,
+        alpha_texture_slot: Option<u32>,
+        alpha_texture_mode: SceneRenderAlphaTextureMode,
+        texture_slot_count: usize,
+        pipeline_label: &'static str,
+    ) -> Self {
+        Self {
+            kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind::SampledImage,
+            shader: None,
+            blending: None,
+            blend_mode,
+            alpha_texture_slot,
+            alpha_texture_mode,
+            depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
+            depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
+            cull_mode: NativeVulkanVulkanaliaSceneCullMode::Unspecified,
+            texture_slot_count,
+            effect_kinds: Vec::new(),
+            combo_keys: Vec::new(),
+            pipeline_label,
+        }
+    }
+
+    fn debug_label(&self) -> String {
+        let effect_kinds = if self.effect_kinds.is_empty() {
+            "[]".to_owned()
+        } else {
+            let mut label = String::from("[");
+            for (index, kind) in self.effect_kinds.iter().enumerate() {
+                if index > 0 {
+                    label.push(',');
+                }
+                label.push_str(kind.as_str());
+            }
+            label.push(']');
+            label
+        };
+        format!(
+            "kind={} shader={} blending={} blend={:?} alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} effects={} pipeline={}",
+            self.kind.as_str(),
+            self.shader.as_deref().unwrap_or("<none>"),
+            self.blending.as_deref().unwrap_or("<none>"),
+            self.blend_mode,
+            self.alpha_texture_slot,
+            self.alpha_texture_mode.as_str(),
+            self.depth_test.as_str(),
+            self.depth_write.as_str(),
+            self.cull_mode.label(),
+            self.texture_slot_count,
+            effect_kinds,
+            self.pipeline_label,
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
     pub layer_index: usize,
     pub resource_index: u32,
     pub texture_slot_resource_indices: Vec<u32>,
-    pub alpha_texture_slot: Option<u32>,
-    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub material: NativeVulkanVulkanaliaSceneSampledImageMaterial,
     pub first_index: u32,
     pub index_count: u32,
-    pub blend_mode: SceneBlendMode,
     pub fit: Option<FitMode>,
     pub texture_region: Option<SceneTextureRegion>,
     pub render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget,
@@ -359,11 +574,15 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
                 layer_index: 0,
                 resource_index: 0,
                 texture_slot_resource_indices: vec![0],
-                alpha_texture_slot: None,
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+                    SceneBlendMode::Alpha,
+                    None,
+                    SceneRenderAlphaTextureMode::Multiply,
+                    1,
+                    "sampled-image-alpha-blend",
+                ),
                 first_index: 0,
                 index_count,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -4929,11 +5148,9 @@ fn scene_sampled_image_draw_step_topology_matches(
             left.layer_index == right.layer_index
                 && left.resource_index == right.resource_index
                 && left.texture_slot_resource_indices == right.texture_slot_resource_indices
-                && left.alpha_texture_slot == right.alpha_texture_slot
-                && left.alpha_texture_mode == right.alpha_texture_mode
+                && left.material == right.material
                 && left.first_index == right.first_index
                 && left.index_count == right.index_count
-                && left.blend_mode == right.blend_mode
                 && left.fit == right.fit
                 && left.texture_region == right.texture_region
                 && left.render_target == right.render_target
@@ -5395,11 +5612,15 @@ fn scene_video_layer_geometry_payload(
                 layer_index: step.layer_index,
                 resource_index: step.resource_index,
                 texture_slot_resource_indices: vec![step.resource_index],
-                alpha_texture_slot: None,
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+                    SceneBlendMode::Alpha,
+                    None,
+                    SceneRenderAlphaTextureMode::Multiply,
+                    1,
+                    "sampled-image-alpha-blend",
+                ),
                 first_index: step.first_index,
                 index_count: step.index_count,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: step.fit,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -5673,7 +5894,7 @@ fn scene_sampled_image_descriptor_slot_plan(
         let group =
             scene_sampled_image_descriptor_group_slots(step, sampled_image_count, step_index)?;
         let debug_group =
-            if native_vulkan_effect_debug_enabled() && step.alpha_texture_slot.is_some() {
+            if native_vulkan_effect_debug_enabled() && step.material.alpha_texture_slot.is_some() {
                 Some(group.clone())
             } else {
                 None
@@ -5692,8 +5913,8 @@ fn scene_sampled_image_descriptor_slot_plan(
                 step_index,
                 step.layer_index,
                 step.resource_index,
-                step.alpha_texture_slot,
-                step.alpha_texture_mode.as_str(),
+                step.material.alpha_texture_slot,
+                step.material.alpha_texture_mode.as_str(),
                 step.texture_slot_resource_indices,
                 group_base_index,
                 group
@@ -5734,7 +5955,7 @@ fn scene_sampled_image_descriptor_group_slots(
         }
         slots[slot] = *resource_index;
     }
-    if let Some(alpha_texture_slot) = step.alpha_texture_slot
+    if let Some(alpha_texture_slot) = step.material.alpha_texture_slot
         && alpha_texture_slot as usize >= step.texture_slot_resource_indices.len()
     {
         return Err(format!(
@@ -5751,7 +5972,7 @@ fn scene_sampled_image_draw_commands(
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
     if native_vulkan_effect_debug_enabled() {
         for (step_index, step) in draw_steps.iter().enumerate() {
-            if step.alpha_texture_slot.is_some()
+            if step.material.alpha_texture_slot.is_some()
                 || matches!(
                     step.render_target,
                     NativeVulkanVulkanaliaSceneSampledImageRenderTarget::EffectTarget { .. }
@@ -5799,10 +6020,11 @@ fn scene_sampled_image_draw_step_resource_debug_label(
     }
     label.push(']');
     label.push_str(&format!(
-        " target={}",
-        scene_sampled_image_render_target_debug_label(step.render_target)
+        " target={} material={}",
+        scene_sampled_image_render_target_debug_label(step.render_target),
+        step.material.debug_label()
     ));
-    if let Some(alpha_slot) = step.alpha_texture_slot {
+    if let Some(alpha_slot) = step.material.alpha_texture_slot {
         let alpha_resource = step
             .texture_slot_resource_indices
             .get(alpha_slot as usize)
@@ -5883,35 +6105,31 @@ fn scene_sampled_image_draw_commands_for_count(
         let descriptor_binding = VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
             descriptor_group_base_index: descriptor_group_base_indices[step_index],
             texture_slot_resource_indices: step.texture_slot_resource_indices.clone(),
-            alpha_texture_slot: step.alpha_texture_slot,
-            alpha_texture_mode: step.alpha_texture_mode,
         };
         if native_vulkan_effect_debug_enabled()
-            && (step.alpha_texture_slot.is_some()
+            && (step.material.alpha_texture_slot.is_some()
                 || matches!(
                     step.render_target,
                     NativeVulkanVulkanaliaSceneSampledImageRenderTarget::EffectTarget { .. }
                 ))
         {
             native_vulkan_scene_present_effect_debug_log(format_args!(
-                "draw command step_index={} layer_index={} resource_index={} descriptor_group_base={} alpha_slot={:?} mode={} texture_slot_resource_indices={:?} first_index={} index_count={} blend={:?} target={}",
+                "draw command step_index={} layer_index={} resource_index={} descriptor_group_base={} material={} texture_slot_resource_indices={:?} first_index={} index_count={} target={}",
                 step_index,
                 step.layer_index,
                 step.resource_index,
                 descriptor_group_base_indices[step_index],
-                step.alpha_texture_slot,
-                step.alpha_texture_mode.as_str(),
+                step.material.debug_label(),
                 step.texture_slot_resource_indices,
                 step.first_index,
                 step.index_count,
-                step.blend_mode,
                 scene_sampled_image_render_target_debug_label(step.render_target)
             ));
         }
         let command = VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
-            blend_mode: step.blend_mode,
+            material: step.material.clone(),
             descriptor_binding,
             render_target: scene_sampled_image_draw_command_render_target(step.render_target),
             first_index: step.first_index,
@@ -5943,7 +6161,7 @@ fn scene_sampled_image_draw_commands_can_merge(
     next: &VulkanaliaSceneSampledImageDrawCommand,
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
-        && previous.blend_mode == next.blend_mode
+        && previous.material == next.material
         && previous.descriptor_binding == next.descriptor_binding
         && previous.render_target == next.render_target
         && previous
@@ -6486,6 +6704,27 @@ fn memory_property_flag_labels(flags: u32) -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    fn sampled_image_material(
+        blend_mode: SceneBlendMode,
+        alpha_texture_slot: Option<u32>,
+        alpha_texture_mode: SceneRenderAlphaTextureMode,
+        texture_slot_count: usize,
+    ) -> NativeVulkanVulkanaliaSceneSampledImageMaterial {
+        NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+            blend_mode,
+            alpha_texture_slot,
+            alpha_texture_mode,
+            texture_slot_count,
+            match blend_mode {
+                SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+                SceneBlendMode::Additive => "sampled-image-additive-blend",
+                SceneBlendMode::Multiply => "sampled-image-multiply-blend",
+                SceneBlendMode::Screen => "sampled-image-screen-blend",
+                SceneBlendMode::Max => "sampled-image-max-blend",
+            },
+        )
+    }
+
     #[test]
     fn scene_present_id_telemetry_retains_no_frame_ids_by_default() {
         let mut telemetry = ScenePresentIdTelemetry::new();
@@ -6676,11 +6915,14 @@ mod tests {
                     layer_index: 10,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 0,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6689,11 +6931,14 @@ mod tests {
                     layer_index: 11,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 6,
                     index_count: 12,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6709,12 +6954,15 @@ mod tests {
             vec![VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 10,
                 last_layer_index: 11,
-                blend_mode: SceneBlendMode::Alpha,
+                material: sampled_image_material(
+                    SceneBlendMode::Alpha,
+                    None,
+                    SceneRenderAlphaTextureMode::Multiply,
+                    1,
+                ),
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 0,
@@ -6730,11 +6978,14 @@ mod tests {
                 layer_index: 10,
                 resource_index: 0,
                 texture_slot_resource_indices: vec![0, 0, 0, 1],
-                alpha_texture_slot: Some(3),
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: sampled_image_material(
+                    SceneBlendMode::Alpha,
+                    Some(3),
+                    SceneRenderAlphaTextureMode::Multiply,
+                    4,
+                ),
                 first_index: 0,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6743,11 +6994,14 @@ mod tests {
                 layer_index: 11,
                 resource_index: 0,
                 texture_slot_resource_indices: vec![0, 0, 0, 1],
-                alpha_texture_slot: Some(3),
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: sampled_image_material(
+                    SceneBlendMode::Alpha,
+                    Some(3),
+                    SceneRenderAlphaTextureMode::Multiply,
+                    4,
+                ),
                 first_index: 6,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6756,11 +7010,14 @@ mod tests {
                 layer_index: 12,
                 resource_index: 2,
                 texture_slot_resource_indices: vec![2, 2, 2, 1],
-                alpha_texture_slot: Some(3),
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: sampled_image_material(
+                    SceneBlendMode::Alpha,
+                    Some(3),
+                    SceneRenderAlphaTextureMode::Multiply,
+                    4,
+                ),
                 first_index: 12,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6791,11 +7048,14 @@ mod tests {
                 layer_index: 10,
                 resource_index: 0,
                 texture_slot_resource_indices: vec![0, 1],
-                alpha_texture_slot: Some(3),
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                material: sampled_image_material(
+                    SceneBlendMode::Alpha,
+                    Some(3),
+                    SceneRenderAlphaTextureMode::Multiply,
+                    2,
+                ),
                 first_index: 0,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
                 fit: None,
                 texture_region: None,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6815,11 +7075,14 @@ mod tests {
                     layer_index: 10,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 0,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6828,11 +7091,14 @@ mod tests {
                     layer_index: 11,
                     resource_index: 1,
                     texture_slot_resource_indices: vec![1],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 6,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6849,8 +7115,6 @@ mod tests {
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index: 0,
                 texture_slot_resource_indices: vec![0],
-                alpha_texture_slot: None,
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             }
         );
         assert_eq!(
@@ -6858,8 +7122,6 @@ mod tests {
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index: 8,
                 texture_slot_resource_indices: vec![1],
-                alpha_texture_slot: None,
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             }
         );
     }
@@ -6872,11 +7134,14 @@ mod tests {
                     layer_index: 10,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 0,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6885,11 +7150,14 @@ mod tests {
                     layer_index: 11,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Max,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 6,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Max,
                     fit: None,
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -6901,8 +7169,8 @@ mod tests {
         .unwrap();
 
         assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].blend_mode, SceneBlendMode::Alpha);
-        assert_eq!(commands[1].blend_mode, SceneBlendMode::Max);
+        assert_eq!(commands[0].material.blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(commands[1].material.blend_mode, SceneBlendMode::Max);
     }
 
     #[test]
@@ -7252,11 +7520,14 @@ mod tests {
                         layer_index: 7,
                         resource_index: 0,
                         texture_slot_resource_indices: vec![0],
-                        alpha_texture_slot: None,
-                        alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                        material: sampled_image_material(
+                            SceneBlendMode::Alpha,
+                            None,
+                            SceneRenderAlphaTextureMode::Multiply,
+                            1,
+                        ),
                         first_index: 0,
                         index_count: 3,
-                        blend_mode: SceneBlendMode::Alpha,
                         fit: None,
                         texture_region: None,
                         render_target:
@@ -7269,11 +7540,14 @@ mod tests {
                         layer_index: 7,
                         resource_index: 1,
                         texture_slot_resource_indices: vec![1],
-                        alpha_texture_slot: None,
-                        alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                        material: sampled_image_material(
+                            SceneBlendMode::Alpha,
+                            None,
+                            SceneRenderAlphaTextureMode::Multiply,
+                            1,
+                        ),
                         first_index: 3,
                         index_count: 3,
-                        blend_mode: SceneBlendMode::Alpha,
                         fit: None,
                         texture_region: None,
                         render_target:
@@ -7377,11 +7651,14 @@ mod tests {
             layer_index: 7,
             resource_index: 0,
             texture_slot_resource_indices: vec![0],
-            alpha_texture_slot: None,
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            material: sampled_image_material(
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Multiply,
+                1,
+            ),
             first_index: 0,
             index_count: 6,
-            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: Some(SceneTextureRegion {
                 u_min: 0.0,
@@ -7438,11 +7715,14 @@ mod tests {
             layer_index: 7,
             resource_index: 0,
             texture_slot_resource_indices: vec![0],
-            alpha_texture_slot: None,
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            material: sampled_image_material(
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Multiply,
+                1,
+            ),
             first_index: 0,
             index_count: 6,
-            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: Some(SceneTextureRegion {
                 u_min: 0.0,
@@ -7502,11 +7782,14 @@ mod tests {
             layer_index: 0,
             resource_index: 0,
             texture_slot_resource_indices: vec![0],
-            alpha_texture_slot: None,
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            material: sampled_image_material(
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Multiply,
+                1,
+            ),
             first_index: 0,
             index_count: 6,
-            blend_mode: SceneBlendMode::Alpha,
             fit: Some(FitMode::Cover),
             texture_region: None,
             render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -7691,11 +7974,14 @@ mod tests {
                     layer_index: 0,
                     resource_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 0,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: Some(FitMode::Cover),
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -7704,11 +7990,14 @@ mod tests {
                     layer_index: 1,
                     resource_index: 1,
                     texture_slot_resource_indices: vec![1],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                    material: sampled_image_material(
+                        SceneBlendMode::Alpha,
+                        None,
+                        SceneRenderAlphaTextureMode::Multiply,
+                        1,
+                    ),
                     first_index: 6,
                     index_count: 6,
-                    blend_mode: SceneBlendMode::Alpha,
                     fit: Some(FitMode::Tile),
                     texture_region: None,
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,

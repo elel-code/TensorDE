@@ -29,10 +29,13 @@ use super::super::present::render_plan::{
     native_vulkan_scene_draw_plan, native_vulkan_scene_opacity_effect_material_uv_scale,
 };
 use super::super::vulkan::{
-    NativeVulkanVulkanaliaSceneDrawPassInput, NativeVulkanVulkanaliaSceneDrawPassSnapshot,
-    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
+    NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
+    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
+    NativeVulkanVulkanaliaSceneSampledImageMaterial,
+    NativeVulkanVulkanaliaSceneSampledImageMaterialKind,
     NativeVulkanVulkanaliaSceneSampledImagePlanInput,
     NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot,
     NativeVulkanVulkanaliaSceneSampledImageRenderTarget,
@@ -332,20 +335,24 @@ impl NativeVulkanSceneRuntimeSnapshot {
         let source = sources.first().cloned()?;
         let draw_steps = std::mem::take(&mut self.draw_pass_sampled_image_recording_steps)
             .into_iter()
-            .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-                layer_index: step.layer_index,
-                resource_index: step.resource_index,
-                texture_slot_resource_indices: step.texture_slot_resource_indices,
-                alpha_texture_slot: step.alpha_texture_slot,
-                alpha_texture_mode: step.alpha_texture_mode,
-                first_index: step.first_index,
-                index_count: step.index_count,
-                blend_mode: step.blend_mode,
-                fit: Some(step.fit),
-                texture_region: step.texture_region,
-                render_target: native_vulkan_scene_vulkanalia_sampled_image_render_target(
-                    step.render_target,
-                ),
+            .map(|step| {
+                let pipeline_label = step.material_pass.pipeline;
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: step.layer_index,
+                    resource_index: step.resource_index,
+                    texture_slot_resource_indices: step.texture_slot_resource_indices,
+                    material: native_vulkan_scene_vulkanalia_sampled_image_material(
+                        step.material_pass,
+                        pipeline_label,
+                    ),
+                    first_index: step.first_index,
+                    index_count: step.index_count,
+                    fit: Some(step.fit),
+                    texture_region: step.texture_region,
+                    render_target: native_vulkan_scene_vulkanalia_sampled_image_render_target(
+                        step.render_target,
+                    ),
+                }
             })
             .collect::<Vec<_>>();
         let effect_targets = std::mem::take(&mut self.draw_pass_sampled_image_effect_targets)
@@ -653,12 +660,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
                 resource_index,
+                material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+                    layer.blend_mode,
+                    layer.alpha_texture_slot,
+                    layer.alpha_texture_mode,
+                    texture_slot_resource_indices.len(),
+                    native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
+                ),
                 texture_slot_resource_indices,
-                alpha_texture_slot: layer.alpha_texture_slot,
-                alpha_texture_mode: layer.alpha_texture_mode,
                 first_index: range.first_index,
                 index_count: range.index_count,
-                blend_mode: layer.blend_mode,
                 fit: Some(fit),
                 texture_region,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -807,12 +818,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
                 resource_index,
+                material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+                    layer.blend_mode,
+                    layer.alpha_texture_slot,
+                    layer.alpha_texture_mode.into(),
+                    texture_slot_resource_indices.len(),
+                    native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
+                ),
                 texture_slot_resource_indices,
-                alpha_texture_slot: layer.alpha_texture_slot,
-                alpha_texture_mode: layer.alpha_texture_mode.into(),
                 first_index: range.first_index,
                 index_count: range.index_count,
-                blend_mode: layer.blend_mode,
                 fit: Some(fit),
                 texture_region,
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
@@ -2747,13 +2762,9 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub fit: FitMode,
-    pub blend_mode: SceneBlendMode,
     pub texture_region: Option<SceneTextureRegion>,
-    pub pipeline: &'static str,
     pub resource_index: u32,
     pub texture_slot_resource_indices: Vec<u32>,
-    pub alpha_texture_slot: Option<u32>,
-    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
@@ -2835,6 +2846,43 @@ fn native_vulkan_scene_vulkanalia_sampled_image_render_target(
             target_index,
             clear,
         },
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_sampled_image_material(
+    material: NativeVulkanSceneMaterialPassSnapshot,
+    pipeline_label: &'static str,
+) -> NativeVulkanVulkanaliaSceneSampledImageMaterial {
+    NativeVulkanVulkanaliaSceneSampledImageMaterial {
+        kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind::from_label(material.kind),
+        shader: material.shader,
+        blending: material.blending,
+        blend_mode: material.blend_mode,
+        alpha_texture_slot: material.alpha_texture_slot,
+        alpha_texture_mode: material.alpha_texture_mode,
+        depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(material.depth_test),
+        depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(material.depth_write),
+        cull_mode: NativeVulkanVulkanaliaSceneCullMode::from_label(&material.cull_mode),
+        texture_slot_count: material.texture_slot_count,
+        effect_kinds: material
+            .effect_kinds
+            .into_iter()
+            .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
+            .collect(),
+        combo_keys: material.combo_keys,
+        pipeline_label,
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(
+    blend_mode: SceneBlendMode,
+) -> &'static str {
+    match blend_mode {
+        SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+        SceneBlendMode::Additive => "sampled-image-additive-blend",
+        SceneBlendMode::Multiply => "sampled-image-multiply-blend",
+        SceneBlendMode::Screen => "sampled-image-screen-blend",
+        SceneBlendMode::Max => "sampled-image-max-blend",
     }
 }
 
@@ -3059,13 +3107,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_id: step.layer_id,
                 source: step.source,
                 fit: step.fit,
-                blend_mode: step.blend_mode,
                 texture_region: step.texture_region,
-                pipeline: step.pipeline,
                 resource_index: step.resource_index,
                 texture_slot_resource_indices: step.texture_slot_resource_indices,
-                alpha_texture_slot: step.alpha_texture_slot,
-                alpha_texture_mode: step.alpha_texture_mode,
                 material_pass: native_vulkan_scene_material_pass_snapshot(&step.material_pass),
                 effect_passes: step
                     .effect_passes
@@ -4945,7 +4989,9 @@ mod tests {
         );
         assert_eq!(snapshot.draw_pass_sampled_image_quads[0].opacity, 0.5);
         assert_eq!(
-            snapshot.draw_pass_sampled_image_recording_steps[0].pipeline,
+            snapshot.draw_pass_sampled_image_recording_steps[0]
+                .material_pass
+                .pipeline,
             "sampled-image-alpha-blend"
         );
         assert_eq!(
@@ -5506,7 +5552,9 @@ mod tests {
             vec![0, 0, 0, 1]
         );
         assert_eq!(
-            snapshot.draw_pass_sampled_image_recording_steps[0].alpha_texture_slot,
+            snapshot.draw_pass_sampled_image_recording_steps[0]
+                .material_pass
+                .alpha_texture_slot,
             Some(3)
         );
         assert_eq!(
@@ -5529,7 +5577,10 @@ mod tests {
             sampled_geometry.draw_steps[0].texture_slot_resource_indices,
             vec![0, 0, 0, 1]
         );
-        assert_eq!(sampled_geometry.draw_steps[0].alpha_texture_slot, Some(3));
+        assert_eq!(
+            sampled_geometry.draw_steps[0].material.alpha_texture_slot,
+            Some(3)
+        );
     }
 
     #[test]

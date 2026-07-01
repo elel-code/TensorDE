@@ -1247,12 +1247,8 @@ fn native_vulkan_scene_sampled_image_recording_step(
         source: quad.source.clone(),
         fit: quad.fit,
         texture_region: quad.texture_region,
-        blend_mode,
-        pipeline: native_vulkan_scene_sampled_image_pipeline_label(blend_mode),
         resource_index,
         texture_slot_resource_indices,
-        alpha_texture_slot,
-        alpha_texture_mode,
         material_pass,
         effect_passes: quad.effect_passes.clone(),
         composite_key: quad.composite_key.clone(),
@@ -1304,9 +1300,9 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
                 )
                 .unwrap_or_else(|| "[]".to_owned()),
             step.texture_slot_resource_indices,
-            step.alpha_texture_slot,
-            step.alpha_texture_mode.as_str(),
-            step.blend_mode,
+            step.material_pass.alpha_texture_slot,
+            step.material_pass.alpha_texture_mode.as_str(),
+            step.material_pass.blend_mode,
             native_vulkan_scene_material_pass_label(&step.material_pass),
             native_vulkan_scene_effect_records_label(&step.effect_passes),
             native_vulkan_scene_sampled_image_render_target_label(step.render_target),
@@ -5758,8 +5754,8 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 24);
         assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2, 2, 1, 3]);
         let step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(step.pipeline, "sampled-image-alpha-blend");
-        assert_eq!(step.blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(step.material_pass.pipeline, "sampled-image-alpha-blend");
+        assert_eq!(step.material_pass.blend_mode, SceneBlendMode::Alpha);
         assert_eq!(step.source, PathBuf::from("/tmp/hero.png"));
         assert_eq!(step.fit, FitMode::Contain);
         assert_eq!(step.resource_index, 0);
@@ -5803,8 +5799,8 @@ mod tests {
 
         assert!(pass_plan.sampled_image_recording_ready);
         let step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(step.blend_mode, SceneBlendMode::Max);
-        assert_eq!(step.pipeline, "sampled-image-max-blend");
+        assert_eq!(step.material_pass.blend_mode, SceneBlendMode::Max);
+        assert_eq!(step.material_pass.pipeline, "sampled-image-max-blend");
     }
 
     #[test]
@@ -5836,7 +5832,7 @@ mod tests {
             pass_plan
                 .sampled_image_recording_steps
                 .iter()
-                .map(|step| (step.blend_mode, step.pipeline))
+                .map(|step| (step.material_pass.blend_mode, step.material_pass.pipeline))
                 .collect::<Vec<_>>(),
             vec![
                 (SceneBlendMode::Multiply, "sampled-image-multiply-blend"),
@@ -6213,7 +6209,7 @@ mod tests {
         );
         assert_eq!(final_step.resource_index, 0);
         assert_eq!(final_step.texture_slot_resource_indices, vec![0, 1]);
-        assert_eq!(final_step.alpha_texture_slot, Some(1));
+        assert_eq!(final_step.material_pass.alpha_texture_slot, Some(1));
         assert_eq!(final_step.vertex_count, 3);
         assert_eq!(final_step.index_count, 3);
         assert_eq!(pass_plan.sampled_image_vertices[0].uv, [0.0, 0.0]);
@@ -6316,7 +6312,7 @@ mod tests {
         );
         assert_eq!(base_step.resource_index, 0);
         assert_eq!(base_step.texture_slot_resource_indices, vec![0]);
-        assert_eq!(base_step.alpha_texture_slot, None);
+        assert_eq!(base_step.material_pass.alpha_texture_slot, None);
         assert_eq!(base_step.vertex_count, 3);
         assert_eq!(base_step.index_count, 3);
         let final_step = &pass_plan.sampled_image_recording_steps[1];
@@ -6326,9 +6322,9 @@ mod tests {
         );
         assert_eq!(final_step.resource_index, 2);
         assert_eq!(final_step.texture_slot_resource_indices, vec![2, 1]);
-        assert_eq!(final_step.alpha_texture_slot, Some(1));
+        assert_eq!(final_step.material_pass.alpha_texture_slot, Some(1));
         assert_eq!(
-            final_step.alpha_texture_mode,
+            final_step.material_pass.alpha_texture_mode,
             SceneRenderAlphaTextureMode::Iris
         );
         assert_eq!(final_step.vertex_count, 4);

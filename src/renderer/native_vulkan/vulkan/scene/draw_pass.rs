@@ -227,8 +227,6 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageD
     DescriptorHeap {
         descriptor_group_base_index: u32,
         texture_slot_resource_indices: Vec<u32>,
-        alpha_texture_slot: Option<u32>,
-        alpha_texture_mode: SceneRenderAlphaTextureMode,
     },
 }
 
@@ -242,7 +240,8 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageR
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImageDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
-    pub(in crate::renderer::native_vulkan::vulkan) blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::vulkan) material:
+        super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
     pub(in crate::renderer::native_vulkan::vulkan) descriptor_binding:
         VulkanaliaSceneSampledImageDescriptorBinding,
     pub(in crate::renderer::native_vulkan::vulkan) render_target:
@@ -354,7 +353,7 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
         }
         VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
             VulkanaliaSceneBoundDrawPipeline::SampledImage(
-                sampled_commands[draw.command_index].blend_mode,
+                sampled_commands[draw.command_index].material.blend_mode,
             )
         }
     }
@@ -1653,8 +1652,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index,
                 texture_slot_resource_indices,
-                alpha_texture_slot,
-                ..
             } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
@@ -1682,8 +1679,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                     ));
                 }
-                if let Some(alpha_texture_slot) = alpha_texture_slot
-                    && *alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                if let Some(alpha_texture_slot) = draw.material.alpha_texture_slot
+                    && alpha_texture_slot as usize >= texture_slot_resource_indices.len()
                 {
                     return Err(format!(
                         "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
@@ -1762,15 +1759,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 }
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
                     let sampled_draw = &draw_commands[draw.command_index];
-                    let pipeline_key =
-                        VulkanaliaSceneBoundDrawPipeline::SampledImage(sampled_draw.blend_mode);
+                    let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage(
+                        sampled_draw.material.blend_mode,
+                    );
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline(
                                 pipeline_resources,
-                                sampled_draw.blend_mode,
+                                sampled_draw.material.blend_mode,
                             ),
                         );
                         let vertex_buffers = [vertex_buffer];
@@ -1791,8 +1789,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                         descriptor_group_base_index,
-                        alpha_texture_slot,
-                        alpha_texture_mode,
                         ..
                     } = &sampled_draw.descriptor_binding;
                     if bound_descriptor_heap_group != Some(*descriptor_group_base_index) {
@@ -1811,8 +1807,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         command_buffer,
                         pipeline_resources.pipeline_layout,
                         extent,
-                        *alpha_texture_slot,
-                        *alpha_texture_mode,
+                        sampled_draw.material.alpha_texture_slot,
+                        sampled_draw.material.alpha_texture_mode,
                         0,
                     );
                     device.cmd_draw_indexed(
@@ -2063,8 +2059,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                 descriptor_group_base_index,
                 texture_slot_resource_indices,
-                alpha_texture_slot,
-                ..
             } => {
                 let Some(descriptor_heap_draw) = descriptor_heap_draw else {
                     return Err(
@@ -2092,8 +2086,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                     ));
                 }
-                if let Some(alpha_texture_slot) = alpha_texture_slot
-                    && *alpha_texture_slot as usize >= texture_slot_resource_indices.len()
+                if let Some(alpha_texture_slot) = draw.material.alpha_texture_slot
+                    && alpha_texture_slot as usize >= texture_slot_resource_indices.len()
                 {
                     return Err(format!(
                         "scene sampled-image alpha texture slot {alpha_texture_slot} has no resource binding"
@@ -2327,15 +2321,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 }
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
                     let sampled_draw = &draw_commands[draw.command_index];
-                    let pipeline_key =
-                        VulkanaliaSceneBoundDrawPipeline::SampledImage(sampled_draw.blend_mode);
+                    let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage(
+                        sampled_draw.material.blend_mode,
+                    );
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline(
                                 pipeline_resources,
-                                sampled_draw.blend_mode,
+                                sampled_draw.material.blend_mode,
                             ),
                         );
                         let vertex_buffers = [vertex_buffer];
@@ -2356,8 +2351,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     }
                     let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                         descriptor_group_base_index,
-                        alpha_texture_slot,
-                        alpha_texture_mode,
                         ..
                     } = &sampled_draw.descriptor_binding;
                     if bound_descriptor_heap_group != Some(*descriptor_group_base_index) {
@@ -2376,8 +2369,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         command_buffer,
                         pipeline_resources.pipeline_layout,
                         active_extent,
-                        *alpha_texture_slot,
-                        *alpha_texture_mode,
+                        sampled_draw.material.alpha_texture_slot,
+                        sampled_draw.material.alpha_texture_mode,
                         elapsed_ms,
                     );
                     device.cmd_draw_indexed(
@@ -3215,6 +3208,24 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
 mod tests {
     use super::*;
 
+    fn sampled_image_material(
+        blend_mode: SceneBlendMode,
+    ) -> super::super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial {
+        super::super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
+            blend_mode,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            1,
+            match blend_mode {
+                SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+                SceneBlendMode::Additive => "sampled-image-additive-blend",
+                SceneBlendMode::Multiply => "sampled-image-multiply-blend",
+                SceneBlendMode::Screen => "sampled-image-screen-blend",
+                SceneBlendMode::Max => "sampled-image-max-blend",
+            },
+        )
+    }
+
     fn input() -> NativeVulkanVulkanaliaSceneDrawPassInput {
         NativeVulkanVulkanaliaSceneDrawPassInput {
             plan_ready: true,
@@ -3621,12 +3632,10 @@ mod tests {
             VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 1,
                 last_layer_index: 1,
-                blend_mode: SceneBlendMode::Alpha,
+                material: sampled_image_material(SceneBlendMode::Alpha),
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: 0,
                     texture_slot_resource_indices: vec![0],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 0,
@@ -3635,13 +3644,11 @@ mod tests {
             VulkanaliaSceneSampledImageDrawCommand {
                 layer_index: 3,
                 last_layer_index: 3,
-                blend_mode: SceneBlendMode::Alpha,
+                material: sampled_image_material(SceneBlendMode::Alpha),
                 descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
                     descriptor_group_base_index: SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT
                         as u32,
                     texture_slot_resource_indices: vec![1],
-                    alpha_texture_slot: None,
-                    alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 first_index: 6,
