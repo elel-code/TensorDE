@@ -3936,6 +3936,12 @@ mod tests {
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    fn test_puppet_inverse_bind(tx: f64, ty: f64, tz: f64) -> [f64; 16] {
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, tx, ty, tz, 1.0,
+        ]
+    }
+
     fn playlist_test_clock(
         local_minute_of_day: u16,
         local_weekday: PlaylistWeekday,
@@ -6068,8 +6074,11 @@ exit 0
                             "indices": [0, 1, 2],
                             "skin": {
                                 "bones": [
-                                    {},
-                                    { "parent": 0 }
+                                    { "inverse_bind": test_puppet_inverse_bind(0.0, 0.0, 0.0) },
+                                    {
+                                        "parent": 0,
+                                        "inverse_bind": test_puppet_inverse_bind(0.0, 0.0, 0.0)
+                                    }
                                 ],
                                 "vertices": [
                                     { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },

@@ -1642,13 +1642,15 @@ impl ScenePuppetSkinAttachment {
 struct ScenePuppetSkinBone {
     parent: Option<usize>,
     bind: ScenePuppetTransform,
+    inverse_bind: [f64; 16],
 }
 
 impl ScenePuppetSkinBone {
     fn to_value(self) -> Value {
         json!({
             "parent": self.parent,
-            "bind": self.bind.to_value()
+            "bind": self.bind.to_value(),
+            "inverse_bind": self.inverse_bind
         })
     }
 }
@@ -1754,6 +1756,16 @@ impl ScenePuppetTransform {
         }
         value
     }
+
+    fn matrix(self) -> [f64; 16] {
+        let rx = scene_puppet_rotation_x_matrix(self.rotation[0]);
+        let ry = scene_puppet_rotation_y_matrix(self.rotation[1]);
+        let rz = scene_puppet_rotation_z_matrix(self.rotation[2]);
+        let rotation = scene_puppet_matrix_mul(scene_puppet_matrix_mul(rz, ry), rx);
+        let scale = scene_puppet_scale_matrix(self.scale);
+        let translation = scene_puppet_translation_matrix(self.translation);
+        scene_puppet_matrix_mul(translation, scene_puppet_matrix_mul(rotation, scale))
+    }
 }
 
 impl Default for ScenePuppetTransform {
@@ -1832,10 +1844,11 @@ struct ScenePuppetBone {
 }
 
 impl ScenePuppetBone {
-    fn skin_bone(self) -> ScenePuppetSkinBone {
+    fn skin_bone(&self, inverse_bind: [f64; 16]) -> ScenePuppetSkinBone {
         ScenePuppetSkinBone {
             parent: self.parent,
             bind: self.bind,
+            inverse_bind,
         }
     }
 }
@@ -4721,11 +4734,12 @@ fn scene_parse_puppet_attachment_map(
     if let Some(mesh) = mesh.as_mut()
         && scene_puppet_skin_vertices_valid(&mesh.skin_vertices, bone_count)
     {
+        let inverse_binds = scene_parse_puppet_inverse_bind_matrices(bytes, mdls_end, &bones)?;
         mesh.skin = Some(ScenePuppetSkin {
             bones: bones
                 .iter()
-                .copied()
-                .map(ScenePuppetBone::skin_bone)
+                .zip(inverse_binds)
+                .map(|(bone, inverse_bind)| bone.skin_bone(inverse_bind))
                 .collect(),
             vertices: mesh.skin_vertices.clone(),
             attachments: Vec::new(),
@@ -5032,6 +5046,184 @@ fn scene_puppet_skin_vertices_valid(vertices: &[ScenePuppetSkinVertex], bone_cou
                     .zip(vertex.weights.iter())
                     .all(|(bone_index, weight)| *weight <= f64::EPSILON || *bone_index < bone_count)
         })
+}
+
+fn scene_parse_puppet_inverse_bind_matrices(
+    bytes: &[u8],
+    after_offset: usize,
+    bones: &[ScenePuppetBone],
+) -> Result<Vec<[f64; 16]>, String> {
+    let bone_count = bones.len();
+    let Some(mdle_offset) = scene_find_mdl_section_after(bytes, b"MDLE", after_offset) else {
+        return scene_puppet_bind_inverse_matrices_from_mdls(bones);
+    };
+    let (mdle_end, matrix_count, mut position) =
+        scene_mdl_section_end_count_start(bytes, mdle_offset, "MDLE")?;
+    if matrix_count != bone_count {
+        return Err(format!(
+            "Wallpaper Engine puppet MDLE matrix count {matrix_count} does not match MDLS bone count {bone_count}."
+        ));
+    }
+    let mut matrices = Vec::with_capacity(matrix_count);
+    for bone_index in 0..matrix_count {
+        let matrix = scene_take_mdl_matrix(bytes, &mut position, mdle_end)?;
+        for (component, value) in matrix.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(format!(
+                    "Wallpaper Engine puppet MDLE bone {bone_index} matrix component {component} must be finite."
+                ));
+            }
+        }
+        matrices.push(matrix);
+    }
+    Ok(matrices)
+}
+
+fn scene_puppet_bind_inverse_matrices_from_mdls(
+    bones: &[ScenePuppetBone],
+) -> Result<Vec<[f64; 16]>, String> {
+    let bind_world = scene_puppet_world_matrices(
+        bones.iter().map(|bone| bone.parent),
+        bones.iter().map(|bone| bone.bind.matrix()),
+    )
+    .ok_or_else(|| "Wallpaper Engine puppet MDLS bind matrix hierarchy is invalid.".to_owned())?;
+    bind_world
+        .into_iter()
+        .enumerate()
+        .map(|(bone_index, matrix)| {
+            scene_puppet_inverse_affine_matrix(matrix).ok_or_else(|| {
+                format!(
+                    "Wallpaper Engine puppet MDLS bone {bone_index} bind matrix is not invertible."
+                )
+            })
+        })
+        .collect()
+}
+
+fn scene_puppet_world_matrices<P, M>(parents: P, local_matrices: M) -> Option<Vec<[f64; 16]>>
+where
+    P: IntoIterator<Item = Option<usize>>,
+    M: IntoIterator<Item = [f64; 16]>,
+{
+    let parents = parents.into_iter().collect::<Vec<_>>();
+    let locals = local_matrices.into_iter().collect::<Vec<_>>();
+    if parents.len() != locals.len() {
+        return None;
+    }
+    let mut worlds = vec![scene_puppet_identity_matrix(); locals.len()];
+    for index in 0..locals.len() {
+        worlds[index] = if let Some(parent) = parents[index] {
+            if parent >= index {
+                return None;
+            }
+            scene_puppet_matrix_mul(worlds[parent], locals[index])
+        } else {
+            locals[index]
+        };
+    }
+    Some(worlds)
+}
+
+fn scene_puppet_identity_matrix() -> [f64; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_translation_matrix(translation: [f64; 3]) -> [f64; 16] {
+    let mut matrix = scene_puppet_identity_matrix();
+    matrix[12] = translation[0];
+    matrix[13] = translation[1];
+    matrix[14] = translation[2];
+    matrix
+}
+
+fn scene_puppet_scale_matrix(scale: [f64; 3]) -> [f64; 16] {
+    [
+        scale[0], 0.0, 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 0.0, scale[2], 0.0, 0.0, 0.0, 0.0,
+        1.0,
+    ]
+}
+
+fn scene_puppet_rotation_x_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_rotation_y_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        cos, 0.0, -sin, 0.0, 0.0, 1.0, 0.0, 0.0, sin, 0.0, cos, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_rotation_z_matrix(angle: f64) -> [f64; 16] {
+    let (sin, cos) = angle.sin_cos();
+    [
+        cos, sin, 0.0, 0.0, -sin, cos, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn scene_puppet_matrix_mul(a: [f64; 16], b: [f64; 16]) -> [f64; 16] {
+    let mut output = [0.0; 16];
+    for column in 0..4 {
+        for row in 0..4 {
+            output[column * 4 + row] = (0..4)
+                .map(|index| a[index * 4 + row] * b[column * 4 + index])
+                .sum();
+        }
+    }
+    output
+}
+
+fn scene_puppet_inverse_affine_matrix(matrix: [f64; 16]) -> Option<[f64; 16]> {
+    let a00 = matrix[0];
+    let a01 = matrix[4];
+    let a02 = matrix[8];
+    let a10 = matrix[1];
+    let a11 = matrix[5];
+    let a12 = matrix[9];
+    let a20 = matrix[2];
+    let a21 = matrix[6];
+    let a22 = matrix[10];
+    let det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20)
+        + a02 * (a10 * a21 - a11 * a20);
+    if !det.is_finite() || det.abs() <= f64::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let b00 = (a11 * a22 - a12 * a21) * inv_det;
+    let b01 = (a02 * a21 - a01 * a22) * inv_det;
+    let b02 = (a01 * a12 - a02 * a11) * inv_det;
+    let b10 = (a12 * a20 - a10 * a22) * inv_det;
+    let b11 = (a00 * a22 - a02 * a20) * inv_det;
+    let b12 = (a02 * a10 - a00 * a12) * inv_det;
+    let b20 = (a10 * a21 - a11 * a20) * inv_det;
+    let b21 = (a01 * a20 - a00 * a21) * inv_det;
+    let b22 = (a00 * a11 - a01 * a10) * inv_det;
+    let tx = matrix[12];
+    let ty = matrix[13];
+    let tz = matrix[14];
+    Some([
+        b00,
+        b10,
+        b20,
+        0.0,
+        b01,
+        b11,
+        b21,
+        0.0,
+        b02,
+        b12,
+        b22,
+        0.0,
+        -(b00 * tx + b01 * ty + b02 * tz),
+        -(b10 * tx + b11 * ty + b12 * tz),
+        -(b20 * tx + b21 * ty + b22 * tz),
+        1.0,
+    ])
 }
 
 fn scene_parse_puppet_animation_clips(
