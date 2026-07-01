@@ -2741,14 +2741,11 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
     pub layer_id: String,
     pub source: PathBuf,
     pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
-    pub alpha_texture_slot: Option<u32>,
-    pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub image_effect_pass_count: usize,
     pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub fit: FitMode,
-    pub blend_mode: SceneBlendMode,
     pub texture_region: Option<SceneTextureRegion>,
     pub opacity: f64,
     pub width: f64,
@@ -3070,8 +3067,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                     .iter()
                     .map(native_vulkan_scene_texture_slot_snapshot)
                     .collect(),
-                alpha_texture_slot: quad.alpha_texture_slot,
-                alpha_texture_mode: quad.alpha_texture_mode,
                 image_effect_pass_count: quad.image_effect_pass_count,
                 material_pass: native_vulkan_scene_material_pass_snapshot(&quad.material_pass),
                 effect_passes: quad
@@ -3081,7 +3076,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                     .collect(),
                 composite_key: quad.composite_key,
                 fit: quad.fit,
-                blend_mode: quad.blend_mode,
                 texture_region: quad.texture_region,
                 opacity: quad.opacity,
                 width: quad.width,
@@ -5540,7 +5534,9 @@ mod tests {
         );
         assert_eq!(snapshot.scene_sampled_image_resource_count, 2);
         assert_eq!(
-            snapshot.draw_pass_sampled_image_quads[0].alpha_texture_slot,
+            snapshot.draw_pass_sampled_image_quads[0]
+                .material_pass
+                .alpha_texture_slot,
             Some(3)
         );
         assert_eq!(

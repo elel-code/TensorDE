@@ -277,8 +277,6 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_payload_from_render_lay
         layer_id: layer.id.clone(),
         source: PathBuf::new(),
         texture_slots,
-        alpha_texture_slot: layer.alpha_texture_slot,
-        alpha_texture_mode: layer.alpha_texture_mode,
         image_effect_pass_count: effect_passes.len(),
         effect_target_pass: native_vulkan_scene_render_first_class_effect_target_pass(
             &layer.image_effect_passes,
@@ -294,7 +292,6 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_payload_from_render_lay
         mesh,
         effect_uv_space: None,
         effect_motion: layer.effect_motion,
-        blend_mode: layer.blend_mode,
         texture_region: layer.texture_region,
         transform: layer.transform,
     };
@@ -562,8 +559,6 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         layer_id: String::new(),
         source: PathBuf::new(),
         texture_slots,
-        alpha_texture_slot: layer.alpha_texture_slot,
-        alpha_texture_mode,
         image_effect_pass_count: effect_passes.len(),
         effect_target_pass: native_vulkan_scene_snapshot_first_class_effect_target_pass(
             &layer.image_effect_passes,
@@ -579,7 +574,6 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         mesh: layer.mesh.clone(),
         effect_uv_space,
         effect_motion: layer.effect_motion,
-        blend_mode: layer.blend_mode,
         texture_region: layer.texture_region,
         transform: layer.transform,
     };
@@ -671,8 +665,6 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
         layer_id: String::new(),
         source: PathBuf::new(),
         texture_slots: Vec::new(),
-        alpha_texture_slot,
-        alpha_texture_mode,
         image_effect_pass_count: 0,
         effect_target_pass: None,
         material_pass,
@@ -686,7 +678,6 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
         mesh,
         effect_uv_space,
         effect_motion,
-        blend_mode,
         texture_region,
         transform,
     };
@@ -748,8 +739,6 @@ fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
         layer_id: String::new(),
         source: PathBuf::new(),
         texture_slots: Vec::new(),
-        alpha_texture_slot,
-        alpha_texture_mode,
         image_effect_pass_count: 0,
         effect_target_pass: None,
         material_pass,
@@ -763,7 +752,6 @@ fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
         mesh,
         effect_uv_space,
         effect_motion,
-        blend_mode,
         texture_region,
         transform,
     };
@@ -1033,8 +1021,8 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 } else {
                     (
                         vec![target_resource_index],
-                        quad.alpha_texture_slot,
-                        quad.alpha_texture_mode,
+                        quad.material_pass.alpha_texture_slot,
+                        quad.material_pass.alpha_texture_mode,
                     )
                 };
             if final_texture_slots.is_empty() {
@@ -1061,7 +1049,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 final_alpha_texture_mode,
                 NativeVulkanSceneSampledImageRenderTarget::Swapchain,
                 final_range,
-                quad.blend_mode,
+                quad.material_pass.blend_mode,
             );
             native_vulkan_scene_debug_sampled_image_recording_step(
                 quad,
@@ -1080,11 +1068,11 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 quad,
                 resource_index,
                 texture_slot_resource_indices,
-                quad.alpha_texture_slot,
-                quad.alpha_texture_mode,
+                quad.material_pass.alpha_texture_slot,
+                quad.material_pass.alpha_texture_mode,
                 NativeVulkanSceneSampledImageRenderTarget::Swapchain,
                 range,
-                quad.blend_mode,
+                quad.material_pass.blend_mode,
             );
             native_vulkan_scene_debug_sampled_image_recording_step(quad, &step, range, &vertices);
             steps.push(step);
@@ -1275,7 +1263,7 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
     vertices: &[NativeVulkanSceneSampledImageVertex],
 ) {
     if !native_vulkan_effect_debug_enabled()
-        || (quad.alpha_texture_slot.is_none()
+        || (step.material_pass.alpha_texture_slot.is_none()
             && quad.composite_key.is_none()
             && quad.effect_uv_space.is_none()
             && quad.effect_target_pass.is_none())
@@ -1316,7 +1304,7 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
             native_vulkan_scene_debug_effect_uv_space_label(quad.effect_uv_space)
         ),
     );
-    native_vulkan_scene_debug_sampled_alpha_mask(quad, range, vertices);
+    native_vulkan_scene_debug_sampled_alpha_mask(quad, &step.material_pass, range, vertices);
 }
 
 fn native_vulkan_scene_sampled_image_render_target_label(
@@ -1333,10 +1321,11 @@ fn native_vulkan_scene_sampled_image_render_target_label(
 
 fn native_vulkan_scene_debug_sampled_alpha_mask(
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
     range: NativeVulkanSceneSampledImageGeometryRange,
     vertices: &[NativeVulkanSceneSampledImageVertex],
 ) {
-    let Some(alpha_slot) = quad.alpha_texture_slot else {
+    let Some(alpha_slot) = material.alpha_texture_slot else {
         return;
     };
     let Some(mask_slot) = quad
@@ -1357,6 +1346,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::CurrentEffect,
         true,
     );
@@ -1364,6 +1354,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::CurrentEffect,
         false,
     );
@@ -1371,6 +1362,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::BaseUv,
         true,
     );
@@ -1378,6 +1370,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::BaseUv,
         false,
     );
@@ -1385,6 +1378,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::SceneBounds,
         true,
     );
@@ -1392,6 +1386,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::SceneBounds,
         false,
     );
@@ -1399,6 +1394,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::SceneBoundsAlphaOverBase,
         true,
     );
@@ -1406,6 +1402,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::SceneBoundsAlphaOverBase,
         false,
     );
@@ -1413,6 +1410,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::BaseUvBaseOverAlpha,
         true,
     );
@@ -1420,6 +1418,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
         range,
         vertices,
         quad,
+        material,
         NativeVulkanSceneDebugAlphaMaskUvProjection::BaseUvBaseOverAlpha,
         false,
     );
@@ -1462,7 +1461,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask(
                 alpha_slot,
                 mask_slot.source.display(),
                 native_vulkan_scene_debug_alpha_mask_base_slot_label(quad),
-                native_vulkan_scene_debug_alpha_mask_uv_projection_label(quad),
+                native_vulkan_scene_debug_alpha_mask_uv_projection_label(quad, material),
                 vertex_label,
                 report
             ),
@@ -1486,6 +1485,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask_probe_uvs(
     range: NativeVulkanSceneSampledImageGeometryRange,
     vertices: &[NativeVulkanSceneSampledImageVertex],
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
     projection: NativeVulkanSceneDebugAlphaMaskUvProjection,
     sparse: bool,
 ) -> Vec<[f32; 2]> {
@@ -1514,6 +1514,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask_probe_uvs(
             probes.push(native_vulkan_scene_debug_alpha_mask_project_uv(
                 &vertices[index],
                 quad,
+                material,
                 projection,
             ));
         }
@@ -1522,7 +1523,7 @@ fn native_vulkan_scene_debug_sampled_alpha_mask_probe_uvs(
         probes.reserve(end.saturating_sub(start));
         for vertex in &vertices[start..end] {
             probes.push(native_vulkan_scene_debug_alpha_mask_project_uv(
-                vertex, quad, projection,
+                vertex, quad, material, projection,
             ));
         }
     }
@@ -1541,6 +1542,7 @@ enum NativeVulkanSceneDebugAlphaMaskUvProjection {
 fn native_vulkan_scene_debug_alpha_mask_project_uv(
     vertex: &NativeVulkanSceneSampledImageVertex,
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
     projection: NativeVulkanSceneDebugAlphaMaskUvProjection,
 ) -> [f32; 2] {
     match projection {
@@ -1551,10 +1553,10 @@ fn native_vulkan_scene_debug_alpha_mask_project_uv(
         }
         NativeVulkanSceneDebugAlphaMaskUvProjection::SceneBoundsAlphaOverBase => {
             let uv = native_vulkan_scene_debug_alpha_mask_scene_bounds_uv(vertex, quad);
-            native_vulkan_scene_debug_alpha_mask_scale_uv(uv, quad, false)
+            native_vulkan_scene_debug_alpha_mask_scale_uv(uv, quad, material, false)
         }
         NativeVulkanSceneDebugAlphaMaskUvProjection::BaseUvBaseOverAlpha => {
-            native_vulkan_scene_debug_alpha_mask_scale_uv(vertex.uv, quad, true)
+            native_vulkan_scene_debug_alpha_mask_scale_uv(vertex.uv, quad, material, true)
         }
     }
 }
@@ -1578,9 +1580,11 @@ fn native_vulkan_scene_debug_alpha_mask_scene_bounds_uv(
 fn native_vulkan_scene_debug_alpha_mask_scale_uv(
     uv: [f32; 2],
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
     inverse: bool,
 ) -> [f32; 2] {
-    let Some((scale_u, scale_v)) = native_vulkan_scene_debug_alpha_mask_alpha_over_base_scale(quad)
+    let Some((scale_u, scale_v)) =
+        native_vulkan_scene_debug_alpha_mask_alpha_over_base_scale(quad, material)
     else {
         return uv;
     };
@@ -1603,8 +1607,9 @@ fn native_vulkan_scene_debug_alpha_mask_scale_uv(
 
 fn native_vulkan_scene_debug_alpha_mask_alpha_over_base_scale(
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
 ) -> Option<(f32, f32)> {
-    let alpha_slot = quad.alpha_texture_slot?;
+    let alpha_slot = material.alpha_texture_slot?;
     let base = quad.texture_slots.iter().find(|slot| slot.slot == 0)?;
     let alpha = quad
         .texture_slots
@@ -1655,8 +1660,9 @@ fn native_vulkan_scene_debug_alpha_mask_base_slot_label(
 
 fn native_vulkan_scene_debug_alpha_mask_uv_projection_label(
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
 ) -> String {
-    let scale = native_vulkan_scene_debug_alpha_mask_alpha_over_base_scale(quad)
+    let scale = native_vulkan_scene_debug_alpha_mask_alpha_over_base_scale(quad, material)
         .map(|(scale_u, scale_v)| format!(" we_texture_resolution_scale={scale_u:.6}/{scale_v:.6}"))
         .unwrap_or_default();
     format!(
@@ -1856,23 +1862,27 @@ fn native_vulkan_scene_sampled_image_recording_step_geometry_semantics_label(
             };
         }
     }
-    native_vulkan_scene_sampled_image_geometry_semantics_label(quad)
+    native_vulkan_scene_sampled_image_geometry_semantics_label(quad, &step.material_pass)
 }
 
 fn native_vulkan_scene_sampled_image_geometry_semantics_label(
     quad: &NativeVulkanSceneSampledImageQuad,
+    material: &NativeVulkanSceneMaterialPass,
 ) -> &'static str {
     if native_vulkan_scene_sampled_image_uses_we_effect_final_quad(quad) {
         "we-image-effect-chain-final-scene-quad"
-    } else if quad.alpha_texture_slot.is_some()
-        && quad.mesh.is_some()
-        && matches!(quad.alpha_texture_mode, SceneRenderAlphaTextureMode::Iris)
-    {
-        "we-iris-effect-direct-puppet-mesh-pass-space-raw-v"
-    } else if quad.alpha_texture_slot.is_some()
+    } else if material.alpha_texture_slot.is_some()
         && quad.mesh.is_some()
         && matches!(
-            quad.alpha_texture_mode,
+            material.alpha_texture_mode,
+            SceneRenderAlphaTextureMode::Iris
+        )
+    {
+        "we-iris-effect-direct-puppet-mesh-pass-space-raw-v"
+    } else if material.alpha_texture_slot.is_some()
+        && quad.mesh.is_some()
+        && matches!(
+            material.alpha_texture_mode,
             SceneRenderAlphaTextureMode::Multiply
         )
     {
@@ -4666,8 +4676,6 @@ fn native_vulkan_scene_sampled_image_quad(
         layer_id: op.layer_id.clone(),
         source: op.source.clone()?,
         texture_slots,
-        alpha_texture_slot: op.alpha_texture_slot,
-        alpha_texture_mode: op.alpha_texture_mode,
         image_effect_pass_count: effect_passes.len(),
         effect_target_pass: native_vulkan_scene_render_first_class_effect_target_pass(
             &op.image_effect_passes,
@@ -4683,7 +4691,6 @@ fn native_vulkan_scene_sampled_image_quad(
         mesh: op.mesh.clone(),
         effect_uv_space: op.effect_uv_space.clone(),
         effect_motion: op.effect_motion,
-        blend_mode: op.blend_mode,
         texture_region: op.texture_region,
         transform: op.transform,
     })

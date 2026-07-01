@@ -201,8 +201,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) source: PathBuf,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
-    pub(in crate::renderer::native_vulkan::scene) alpha_texture_slot: Option<u32>,
-    pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub(in crate::renderer::native_vulkan::scene) image_effect_pass_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_target_pass:
         Option<NativeVulkanSceneSampledImageEffectPass>,
@@ -218,7 +216,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) effect_uv_space:
         Option<super::NativeVulkanSceneEffectUvSpace>,
     pub(in crate::renderer::native_vulkan::scene) effect_motion: SceneNativeEffectMotion,
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: SceneBlendMode,
     pub(in crate::renderer::native_vulkan::scene) texture_region: Option<SceneTextureRegion>,
     pub(in crate::renderer::native_vulkan::scene) transform: SceneTransform,
 }
