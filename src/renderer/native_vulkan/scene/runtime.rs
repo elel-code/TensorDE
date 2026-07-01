@@ -29,9 +29,10 @@ use super::super::present::render_plan::{
     native_vulkan_scene_draw_plan, native_vulkan_scene_opacity_effect_material_uv_scale,
 };
 use super::super::vulkan::{
-    NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
-    NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneBlendState, NativeVulkanVulkanaliaSceneCullMode,
+    NativeVulkanVulkanaliaSceneDrawPassInput, NativeVulkanVulkanaliaSceneDrawPassSnapshot,
+    NativeVulkanVulkanaliaSceneEffectKind, NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImageMaterial,
@@ -49,10 +50,10 @@ use super::super::vulkan::{
     native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec,
 };
 use super::draw_pass::{
-    NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
-    NativeVulkanSceneSampledImageEffectTarget, NativeVulkanSceneSampledImageRenderTarget,
-    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneTextureSlot,
-    NativeVulkanSceneTextureSlotResourceBinding,
+    NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
+    NativeVulkanSceneRenderState, NativeVulkanSceneSampledImageEffectTarget,
+    NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
+    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain,
@@ -296,7 +297,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
-                blend_mode: step.blend_mode,
+                blend: native_vulkan_scene_vulkanalia_blend_state(step.blend),
             })
             .collect::<Vec<_>>();
 
@@ -337,27 +338,21 @@ impl NativeVulkanSceneRuntimeSnapshot {
         let source = sources.first().cloned()?;
         let draw_steps = std::mem::take(&mut self.draw_pass_sampled_image_recording_steps)
             .into_iter()
-            .map(|step| {
-                let pipeline_label = step.material_pass.pipeline;
-                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-                    layer_index: step.layer_index,
-                    texture_slot_bindings: step
-                        .texture_slot_bindings
-                        .into_iter()
-                        .map(native_vulkan_scene_vulkanalia_texture_slot_resource_binding)
-                        .collect(),
-                    material: native_vulkan_scene_vulkanalia_sampled_image_material(
-                        step.material_pass,
-                        pipeline_label,
-                    ),
-                    first_index: step.first_index,
-                    index_count: step.index_count,
-                    fit: Some(step.fit),
-                    texture_region: step.texture_region,
-                    render_target: native_vulkan_scene_vulkanalia_sampled_image_render_target(
-                        step.render_target,
-                    ),
-                }
+            .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                layer_index: step.layer_index,
+                texture_slot_bindings: step
+                    .texture_slot_bindings
+                    .into_iter()
+                    .map(native_vulkan_scene_vulkanalia_texture_slot_resource_binding)
+                    .collect(),
+                material: native_vulkan_scene_vulkanalia_sampled_image_material(step.material_pass),
+                first_index: step.first_index,
+                index_count: step.index_count,
+                fit: Some(step.fit),
+                texture_region: step.texture_region,
+                render_target: native_vulkan_scene_vulkanalia_sampled_image_render_target(
+                    step.render_target,
+                ),
             })
             .collect::<Vec<_>>();
         let effect_targets = std::mem::take(&mut self.draw_pass_sampled_image_effect_targets)
@@ -465,7 +460,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
-                blend_mode: step.blend_mode,
+                blend: native_vulkan_scene_vulkanalia_blend_state(step.blend),
             })
             .collect::<Vec<_>>();
 
@@ -519,7 +514,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometr
             layer_index,
             first_index,
             index_count,
-            blend_mode: layer.blend_mode,
+            blend: NativeVulkanVulkanaliaSceneBlendState {
+                mode: layer.blend_mode,
+            },
         });
         vertices.extend(solid_vertices.into_iter().map(|vertex| {
             NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -668,7 +665,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                     layer.alpha_texture_slot,
                     layer.alpha_texture_mode,
                     texture_slot_bindings.len(),
-                    native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
                 ),
                 texture_slot_bindings,
                 first_index: range.first_index,
@@ -695,7 +691,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
-                blend_mode: layer.blend_mode,
+                blend: NativeVulkanVulkanaliaSceneBlendState {
+                    mode: layer.blend_mode,
+                },
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -824,7 +822,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                     layer.alpha_texture_slot,
                     layer.alpha_texture_mode.into(),
                     texture_slot_bindings.len(),
-                    native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(layer.blend_mode),
                 ),
                 texture_slot_bindings,
                 first_index: range.first_index,
@@ -854,7 +851,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
-                blend_mode: layer.blend_mode,
+                blend: NativeVulkanVulkanaliaSceneBlendState {
+                    mode: layer.blend_mode,
+                },
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -955,7 +954,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
                 layer_index,
                 first_index,
                 index_count,
-                blend_mode: layer.blend_mode,
+                blend: NativeVulkanVulkanaliaSceneBlendState {
+                    mode: layer.blend_mode,
+                },
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -2589,6 +2590,19 @@ pub struct NativeVulkanSceneTextureSlotResourceBindingSnapshot {
     pub resource_index: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneBlendStateSnapshot {
+    pub mode: SceneBlendMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneRenderStateSnapshot {
+    pub blend: NativeVulkanSceneBlendStateSnapshot,
+    pub depth_test: &'static str,
+    pub depth_write: &'static str,
+    pub cull_mode: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub kind: &'static str,
@@ -2610,16 +2624,12 @@ pub struct NativeVulkanSceneMaterialPassSnapshot {
     pub kind: &'static str,
     pub shader: Option<String>,
     pub blending: Option<String>,
-    pub blend_mode: SceneBlendMode,
+    pub render_state: NativeVulkanSceneRenderStateSnapshot,
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
-    pub depth_test: &'static str,
-    pub depth_write: &'static str,
-    pub cull_mode: String,
     pub texture_slot_count: usize,
     pub effect_kinds: Vec<&'static str>,
     pub combo_keys: Vec<String>,
-    pub pipeline: &'static str,
 }
 
 fn native_vulkan_scene_texture_slot_snapshot(
@@ -2642,6 +2652,23 @@ fn native_vulkan_scene_texture_slot_resource_binding_snapshot(
     }
 }
 
+fn native_vulkan_scene_blend_state_snapshot(
+    blend: NativeVulkanSceneBlendState,
+) -> NativeVulkanSceneBlendStateSnapshot {
+    NativeVulkanSceneBlendStateSnapshot { mode: blend.mode }
+}
+
+fn native_vulkan_scene_render_state_snapshot(
+    render_state: &NativeVulkanSceneRenderState,
+) -> NativeVulkanSceneRenderStateSnapshot {
+    NativeVulkanSceneRenderStateSnapshot {
+        blend: native_vulkan_scene_blend_state_snapshot(render_state.blend),
+        depth_test: render_state.depth_test.as_str(),
+        depth_write: render_state.depth_write.as_str(),
+        cull_mode: render_state.cull_mode.label().to_owned(),
+    }
+}
+
 fn native_vulkan_scene_material_pass_snapshot(
     material: &NativeVulkanSceneMaterialPass,
 ) -> NativeVulkanSceneMaterialPassSnapshot {
@@ -2649,12 +2676,9 @@ fn native_vulkan_scene_material_pass_snapshot(
         kind: material.kind.as_str(),
         shader: material.shader.clone(),
         blending: material.blending.clone(),
-        blend_mode: material.blend_mode,
+        render_state: native_vulkan_scene_render_state_snapshot(&material.render_state),
         alpha_texture_slot: material.alpha_texture_slot,
         alpha_texture_mode: material.alpha_texture_mode,
-        depth_test: material.depth_test.as_str(),
-        depth_write: material.depth_write.as_str(),
-        cull_mode: material.cull_mode.label().to_owned(),
         texture_slot_count: material.texture_slot_count,
         effect_kinds: material
             .effect_kinds
@@ -2662,7 +2686,6 @@ fn native_vulkan_scene_material_pass_snapshot(
             .map(|kind| kind.as_str())
             .collect(),
         combo_keys: material.combo_keys.clone(),
-        pipeline: material.pipeline,
     }
 }
 
@@ -2727,7 +2750,7 @@ pub struct NativeVulkanSceneRecordableQuadSnapshot {
     pub kind: &'static str,
     pub color: String,
     pub rgba: [f32; 4],
-    pub blend_mode: SceneBlendMode,
+    pub blend: NativeVulkanSceneBlendStateSnapshot,
     pub fill_color: Option<String>,
     pub fill_rgba: Option<[f32; 4]>,
     pub stroke_color: Option<String>,
@@ -2752,8 +2775,7 @@ pub struct NativeVulkanSceneQuadRecordingStepSnapshot {
     pub layer_index: usize,
     pub layer_id: String,
     pub kind: &'static str,
-    pub blend_mode: SceneBlendMode,
-    pub pipeline: &'static str,
+    pub blend: NativeVulkanSceneBlendStateSnapshot,
     pub first_vertex: u32,
     pub vertex_count: u32,
     pub first_index: u32,
@@ -2885,20 +2907,33 @@ fn native_vulkan_scene_vulkanalia_texture_slot_resource_binding(
     }
 }
 
+fn native_vulkan_scene_vulkanalia_blend_state(
+    blend: NativeVulkanSceneBlendStateSnapshot,
+) -> NativeVulkanVulkanaliaSceneBlendState {
+    NativeVulkanVulkanaliaSceneBlendState { mode: blend.mode }
+}
+
+fn native_vulkan_scene_vulkanalia_render_state(
+    render_state: NativeVulkanSceneRenderStateSnapshot,
+) -> NativeVulkanVulkanaliaSceneRenderState {
+    NativeVulkanVulkanaliaSceneRenderState {
+        blend: native_vulkan_scene_vulkanalia_blend_state(render_state.blend),
+        depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(render_state.depth_test),
+        depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(render_state.depth_write),
+        cull_mode: NativeVulkanVulkanaliaSceneCullMode::from_label(&render_state.cull_mode),
+    }
+}
+
 fn native_vulkan_scene_vulkanalia_sampled_image_material(
     material: NativeVulkanSceneMaterialPassSnapshot,
-    pipeline_label: &'static str,
 ) -> NativeVulkanVulkanaliaSceneSampledImageMaterial {
     NativeVulkanVulkanaliaSceneSampledImageMaterial {
         kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind::from_label(material.kind),
         shader: material.shader,
         blending: material.blending,
-        blend_mode: material.blend_mode,
+        render_state: native_vulkan_scene_vulkanalia_render_state(material.render_state),
         alpha_texture_slot: material.alpha_texture_slot,
         alpha_texture_mode: material.alpha_texture_mode,
-        depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(material.depth_test),
-        depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::from_label(material.depth_write),
-        cull_mode: NativeVulkanVulkanaliaSceneCullMode::from_label(&material.cull_mode),
         texture_slot_count: material.texture_slot_count,
         effect_kinds: material
             .effect_kinds
@@ -2906,19 +2941,6 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
             .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
             .collect(),
         combo_keys: material.combo_keys,
-        pipeline_label,
-    }
-}
-
-fn native_vulkan_scene_vulkanalia_sampled_image_pipeline_label(
-    blend_mode: SceneBlendMode,
-) -> &'static str {
-    match blend_mode {
-        SceneBlendMode::Alpha => "sampled-image-alpha-blend",
-        SceneBlendMode::Additive => "sampled-image-additive-blend",
-        SceneBlendMode::Multiply => "sampled-image-multiply-blend",
-        SceneBlendMode::Screen => "sampled-image-screen-blend",
-        SceneBlendMode::Max => "sampled-image-max-blend",
     }
 }
 
@@ -3040,7 +3062,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 kind: quad.kind,
                 color: quad.color,
                 rgba: quad.rgba,
-                blend_mode: quad.blend_mode,
+                blend: native_vulkan_scene_blend_state_snapshot(quad.blend),
                 fill_color: quad.fill_color,
                 fill_rgba: quad.fill_rgba,
                 stroke_color: quad.stroke_color,
@@ -3069,8 +3091,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 layer_index: step.layer_index,
                 layer_id: step.layer_id,
                 kind: step.kind,
-                blend_mode: step.blend_mode,
-                pipeline: step.pipeline,
+                blend: native_vulkan_scene_blend_state_snapshot(step.blend),
                 first_vertex: step.first_vertex,
                 vertex_count: step.vertex_count,
                 first_index: step.first_index,
@@ -4923,8 +4944,8 @@ mod tests {
         assert_eq!(snapshot.draw_pass_quad_vertex_buffer_bytes, 96);
         assert_eq!(snapshot.draw_pass_quad_index_buffer_bytes, 24);
         assert_eq!(
-            snapshot.draw_pass_quad_recording_steps[0].pipeline,
-            "solid-quad-alpha-blend"
+            snapshot.draw_pass_quad_recording_steps[0].blend.mode,
+            SceneBlendMode::Alpha
         );
         assert_eq!(snapshot.draw_pass_quad_recording_steps[0].vertex_count, 4);
         assert_eq!(snapshot.draw_pass_quad_recording_steps[0].index_count, 6);
@@ -5059,8 +5080,10 @@ mod tests {
         assert_eq!(
             snapshot.draw_pass_sampled_image_recording_steps[0]
                 .material_pass
-                .pipeline,
-            "sampled-image-alpha-blend"
+                .render_state
+                .blend
+                .mode,
+            SceneBlendMode::Alpha
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_vertices[0].position,

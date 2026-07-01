@@ -382,6 +382,31 @@ impl NativeVulkanVulkanaliaSceneCullMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneBlendState {
+    pub mode: SceneBlendMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneRenderState {
+    pub blend: NativeVulkanVulkanaliaSceneBlendState,
+    pub depth_test: NativeVulkanVulkanaliaSceneMaterialFlag,
+    pub depth_write: NativeVulkanVulkanaliaSceneMaterialFlag,
+    pub cull_mode: NativeVulkanVulkanaliaSceneCullMode,
+}
+
+impl NativeVulkanVulkanaliaSceneRenderState {
+    pub fn sampled_image_pipeline_label(&self) -> &'static str {
+        match self.blend.mode {
+            SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+            SceneBlendMode::Additive => "sampled-image-additive-blend",
+            SceneBlendMode::Multiply => "sampled-image-multiply-blend",
+            SceneBlendMode::Screen => "sampled-image-screen-blend",
+            SceneBlendMode::Max => "sampled-image-max-blend",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeVulkanVulkanaliaSceneEffectKind {
     OpacityMask,
     Iris,
@@ -441,16 +466,12 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind,
     pub shader: Option<String>,
     pub blending: Option<String>,
-    pub blend_mode: SceneBlendMode,
+    pub render_state: NativeVulkanVulkanaliaSceneRenderState,
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
-    pub depth_test: NativeVulkanVulkanaliaSceneMaterialFlag,
-    pub depth_write: NativeVulkanVulkanaliaSceneMaterialFlag,
-    pub cull_mode: NativeVulkanVulkanaliaSceneCullMode,
     pub texture_slot_count: usize,
     pub effect_kinds: Vec<NativeVulkanVulkanaliaSceneEffectKind>,
     pub combo_keys: Vec<String>,
-    pub pipeline_label: &'static str,
 }
 
 impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
@@ -459,22 +480,22 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
         alpha_texture_slot: Option<u32>,
         alpha_texture_mode: SceneRenderAlphaTextureMode,
         texture_slot_count: usize,
-        pipeline_label: &'static str,
     ) -> Self {
         Self {
             kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind::SampledImage,
             shader: None,
             blending: None,
-            blend_mode,
+            render_state: NativeVulkanVulkanaliaSceneRenderState {
+                blend: NativeVulkanVulkanaliaSceneBlendState { mode: blend_mode },
+                depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
+                depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
+                cull_mode: NativeVulkanVulkanaliaSceneCullMode::Unspecified,
+            },
             alpha_texture_slot,
             alpha_texture_mode,
-            depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
-            depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
-            cull_mode: NativeVulkanVulkanaliaSceneCullMode::Unspecified,
             texture_slot_count,
             effect_kinds: Vec::new(),
             combo_keys: Vec::new(),
-            pipeline_label,
         }
     }
 
@@ -497,15 +518,15 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
-            self.blend_mode,
+            self.render_state.blend.mode,
             self.alpha_texture_slot,
             self.alpha_texture_mode.as_str(),
-            self.depth_test.as_str(),
-            self.depth_write.as_str(),
-            self.cull_mode.label(),
+            self.render_state.depth_test.as_str(),
+            self.render_state.depth_write.as_str(),
+            self.render_state.cull_mode.label(),
             self.texture_slot_count,
             effect_kinds,
-            self.pipeline_label,
+            self.render_state.sampled_image_pipeline_label(),
         )
     }
 }
@@ -557,7 +578,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
     pub layer_index: usize,
     pub first_index: u32,
     pub index_count: u32,
-    pub blend_mode: SceneBlendMode,
+    pub blend: NativeVulkanVulkanaliaSceneBlendState,
 }
 
 impl NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
@@ -598,7 +619,6 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
                     None,
                     SceneRenderAlphaTextureMode::Multiply,
                     1,
-                    "sampled-image-alpha-blend",
                 ),
                 first_index: 0,
                 index_count,
@@ -660,7 +680,9 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
                 layer_index: 0,
                 first_index: 0,
                 index_count,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: NativeVulkanVulkanaliaSceneBlendState {
+                    mode: SceneBlendMode::Alpha,
+                },
             }],
             source_label,
         )
@@ -5630,7 +5652,6 @@ fn scene_video_layer_geometry_payload(
                     None,
                     SceneRenderAlphaTextureMode::Multiply,
                     1,
-                    "sampled-image-alpha-blend",
                 ),
                 first_index: step.first_index,
                 index_count: step.index_count,
@@ -6257,7 +6278,7 @@ fn scene_solid_quad_draw_commands(
         let command = VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
-            blend_mode: step.blend_mode,
+            blend: step.blend,
             first_index: step.first_index,
             index_count: step.index_count,
         };
@@ -6278,7 +6299,7 @@ fn scene_solid_quad_draw_commands_can_merge(
     next: &VulkanaliaSceneSolidQuadDrawCommand,
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
-        && previous.blend_mode == next.blend_mode
+        && previous.blend == next.blend
         && previous
             .first_index
             .checked_add(previous.index_count)
@@ -6746,6 +6767,10 @@ fn memory_property_flag_labels(flags: u32) -> Vec<&'static str> {
 mod tests {
     use super::*;
 
+    fn blend_state(mode: SceneBlendMode) -> NativeVulkanVulkanaliaSceneBlendState {
+        NativeVulkanVulkanaliaSceneBlendState { mode }
+    }
+
     fn sampled_image_material(
         blend_mode: SceneBlendMode,
         alpha_texture_slot: Option<u32>,
@@ -6757,13 +6782,6 @@ mod tests {
             alpha_texture_slot,
             alpha_texture_mode,
             texture_slot_count,
-            match blend_mode {
-                SceneBlendMode::Alpha => "sampled-image-alpha-blend",
-                SceneBlendMode::Additive => "sampled-image-additive-blend",
-                SceneBlendMode::Multiply => "sampled-image-multiply-blend",
-                SceneBlendMode::Screen => "sampled-image-screen-blend",
-                SceneBlendMode::Max => "sampled-image-max-blend",
-            },
         )
     }
 
@@ -6845,19 +6863,19 @@ mod tests {
                 layer_index: 4,
                 first_index: 0,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 5,
                 first_index: 6,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 6,
                 first_index: 12,
                 index_count: 12,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
         ])
         .unwrap();
@@ -6867,7 +6885,7 @@ mod tests {
             vec![VulkanaliaSceneSolidQuadDrawCommand {
                 layer_index: 4,
                 last_layer_index: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
                 first_index: 0,
                 index_count: 24,
             }]
@@ -6881,19 +6899,19 @@ mod tests {
                 layer_index: 4,
                 first_index: 0,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 6,
                 first_index: 6,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 7,
                 first_index: 24,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
         ])
         .unwrap();
@@ -6904,21 +6922,21 @@ mod tests {
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 4,
                     last_layer_index: 4,
-                    blend_mode: SceneBlendMode::Alpha,
+                    blend: blend_state(SceneBlendMode::Alpha),
                     first_index: 0,
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 6,
                     last_layer_index: 6,
-                    blend_mode: SceneBlendMode::Alpha,
+                    blend: blend_state(SceneBlendMode::Alpha),
                     first_index: 6,
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
                     layer_index: 7,
                     last_layer_index: 7,
-                    blend_mode: SceneBlendMode::Alpha,
+                    blend: blend_state(SceneBlendMode::Alpha),
                     first_index: 24,
                     index_count: 6,
                 }
@@ -6933,20 +6951,20 @@ mod tests {
                 layer_index: 4,
                 first_index: 0,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Alpha,
+                blend: blend_state(SceneBlendMode::Alpha),
             },
             NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
                 layer_index: 5,
                 first_index: 6,
                 index_count: 6,
-                blend_mode: SceneBlendMode::Screen,
+                blend: blend_state(SceneBlendMode::Screen),
             },
         ])
         .unwrap();
 
         assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].blend_mode, SceneBlendMode::Alpha);
-        assert_eq!(commands[1].blend_mode, SceneBlendMode::Screen);
+        assert_eq!(commands[0].blend.mode, SceneBlendMode::Alpha);
+        assert_eq!(commands[1].blend.mode, SceneBlendMode::Screen);
     }
 
     #[test]
@@ -7201,8 +7219,14 @@ mod tests {
         .unwrap();
 
         assert_eq!(commands.len(), 2);
-        assert_eq!(commands[0].material.blend_mode, SceneBlendMode::Alpha);
-        assert_eq!(commands[1].material.blend_mode, SceneBlendMode::Max);
+        assert_eq!(
+            commands[0].material.render_state.blend.mode,
+            SceneBlendMode::Alpha
+        );
+        assert_eq!(
+            commands[1].material.render_state.blend.mode,
+            SceneBlendMode::Max
+        );
     }
 
     #[test]

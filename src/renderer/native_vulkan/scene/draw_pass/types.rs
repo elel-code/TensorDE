@@ -21,6 +21,19 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneTextureSlo
     pub(in crate::renderer::native_vulkan::scene) resource_index: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBlendState {
+    pub(in crate::renderer::native_vulkan::scene) mode: SceneBlendMode,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRenderState {
+    pub(in crate::renderer::native_vulkan::scene) blend: NativeVulkanSceneBlendState,
+    pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
+    pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
+    pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageEffectPass {
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
@@ -143,16 +156,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
     pub(in crate::renderer::native_vulkan::scene) kind: NativeVulkanSceneMaterialKind,
     pub(in crate::renderer::native_vulkan::scene) shader: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) blending: Option<String>,
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::scene) render_state: NativeVulkanSceneRenderState,
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_slot: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: SceneRenderAlphaTextureMode,
-    pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
-    pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
-    pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kinds: Vec<NativeVulkanSceneEffectKind>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
-    pub(in crate::renderer::native_vulkan::scene) pipeline: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -162,7 +171,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRecordable
     pub(in crate::renderer::native_vulkan::scene) kind: &'static str,
     pub(in crate::renderer::native_vulkan::scene) color: String,
     pub(in crate::renderer::native_vulkan::scene) rgba: [f32; 4],
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::scene) blend: NativeVulkanSceneBlendState,
     pub(in crate::renderer::native_vulkan::scene) fill_color: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) fill_rgba: Option<[f32; 4]>,
     pub(in crate::renderer::native_vulkan::scene) stroke_color: Option<String>,
@@ -187,8 +196,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneQuadRecord
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) kind: &'static str,
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: SceneBlendMode,
-    pub(in crate::renderer::native_vulkan::scene) pipeline: &'static str,
+    pub(in crate::renderer::native_vulkan::scene) blend: NativeVulkanSceneBlendState,
     pub(in crate::renderer::native_vulkan::scene) first_vertex: u32,
     pub(in crate::renderer::native_vulkan::scene) vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) first_index: u32,

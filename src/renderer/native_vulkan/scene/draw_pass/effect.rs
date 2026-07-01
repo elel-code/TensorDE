@@ -4,6 +4,9 @@ use crate::core::SceneBlendMode;
 use crate::core::scene::{SceneImageEffectPass, SceneTextureSlot};
 use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderImageEffectPass};
 
+use super::blend::{
+    native_vulkan_scene_render_state, native_vulkan_scene_sampled_image_pipeline_label,
+};
 use super::{
     NativeVulkanSceneCullMode, NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord,
     NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
@@ -74,29 +77,30 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass(
     alpha_texture_mode: SceneRenderAlphaTextureMode,
     texture_slot_count: usize,
     effect_passes: &[NativeVulkanSceneEffectRecord],
-    pipeline: &'static str,
 ) -> NativeVulkanSceneMaterialPass {
     let material_source = effect_passes.first();
+    let render_state = native_vulkan_scene_render_state(
+        blend_mode,
+        material_source
+            .map(|pass| pass.depth_test)
+            .unwrap_or(NativeVulkanSceneMaterialFlag::Unspecified),
+        material_source
+            .map(|pass| pass.depth_write)
+            .unwrap_or(NativeVulkanSceneMaterialFlag::Unspecified),
+        material_source
+            .map(|pass| pass.cull_mode.clone())
+            .unwrap_or(NativeVulkanSceneCullMode::Unspecified),
+    );
     NativeVulkanSceneMaterialPass {
         kind,
         shader: material_source.and_then(|pass| pass.shader.clone()),
         blending: material_source.and_then(|pass| pass.blending.clone()),
-        blend_mode,
+        render_state,
         alpha_texture_slot,
         alpha_texture_mode,
-        depth_test: material_source
-            .map(|pass| pass.depth_test)
-            .unwrap_or(NativeVulkanSceneMaterialFlag::Unspecified),
-        depth_write: material_source
-            .map(|pass| pass.depth_write)
-            .unwrap_or(NativeVulkanSceneMaterialFlag::Unspecified),
-        cull_mode: material_source
-            .map(|pass| pass.cull_mode.clone())
-            .unwrap_or(NativeVulkanSceneCullMode::Unspecified),
         texture_slot_count,
         effect_kinds: native_vulkan_scene_effect_kind_list(effect_passes),
         combo_keys: native_vulkan_scene_effect_combo_key_list(effect_passes),
-        pipeline,
     }
 }
 
@@ -147,18 +151,19 @@ pub(super) fn native_vulkan_scene_material_pass_label(
     material: &NativeVulkanSceneMaterialPass,
 ) -> String {
     format!(
-        "kind={} shader={} blending={} blend={:?} alpha_slot={:?} alpha_mode={} depth_test={} depth_write={} cull={} texture_slots={} effect_kinds={}",
+        "kind={} shader={} blending={} blend={:?} alpha_slot={:?} alpha_mode={} depth_test={} depth_write={} cull={} texture_slots={} effect_kinds={} pipeline={}",
         material.kind.as_str(),
         material.shader.as_deref().unwrap_or("<none>"),
         material.blending.as_deref().unwrap_or("<none>"),
-        material.blend_mode,
+        material.render_state.blend.mode,
         material.alpha_texture_slot,
         material.alpha_texture_mode.as_str(),
-        material.depth_test.as_str(),
-        material.depth_write.as_str(),
-        material.cull_mode.label(),
+        material.render_state.depth_test.as_str(),
+        material.render_state.depth_write.as_str(),
+        material.render_state.cull_mode.label(),
         material.texture_slot_count,
         native_vulkan_scene_effect_kind_label(&material.effect_kinds),
+        native_vulkan_scene_sampled_image_pipeline_label(&material.render_state),
     )
 }
 

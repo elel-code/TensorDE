@@ -255,7 +255,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDrawCommand {
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
-    pub(in crate::renderer::native_vulkan::vulkan) blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::vulkan) blend:
+        super::present::NativeVulkanVulkanaliaSceneBlendState,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
 }
@@ -291,8 +292,8 @@ struct VulkanaliaSceneOrderedDrawStep {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VulkanaliaSceneBoundDrawPipeline {
-    SolidQuad(SceneBlendMode),
-    SampledImage(SceneBlendMode),
+    SolidQuad(super::present::NativeVulkanVulkanaliaSceneBlendState),
+    SampledImage(super::present::NativeVulkanVulkanaliaSceneBlendState),
 }
 
 #[derive(Clone, Copy)]
@@ -348,13 +349,14 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
 ) -> VulkanaliaSceneBoundDrawPipeline {
     match draw.pipeline {
         VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
-            VulkanaliaSceneBoundDrawPipeline::SolidQuad(
-                solid_commands[draw.command_index].blend_mode,
-            )
+            VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_commands[draw.command_index].blend)
         }
         VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
             VulkanaliaSceneBoundDrawPipeline::SampledImage(
-                sampled_commands[draw.command_index].material.blend_mode,
+                sampled_commands[draw.command_index]
+                    .material
+                    .render_state
+                    .blend,
             )
         }
     }
@@ -1567,13 +1569,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         );
         let mut bound_pipeline = None;
         for solid_draw in solid_quad_draw.draw_commands {
-            if bound_pipeline != Some(solid_draw.blend_mode) {
+            if bound_pipeline != Some(solid_draw.blend) {
                 device.cmd_bind_pipeline(
                     command_buffer,
                     vk::PipelineBindPoint::GRAPHICS,
                     native_vulkan_vulkanalia_scene_solid_quad_pipeline(
                         solid_quad_draw.pipeline_resources,
-                        solid_draw.blend_mode,
+                        solid_draw.blend.mode,
                     ),
                 );
                 let vertex_buffers = [solid_quad_draw.vertex_buffer];
@@ -1592,7 +1594,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     0,
                     solid_push_constant_bytes,
                 );
-                bound_pipeline = Some(solid_draw.blend_mode);
+                bound_pipeline = Some(solid_draw.blend);
             }
             device.cmd_draw_indexed(
                 command_buffer,
@@ -1714,7 +1716,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     let solid_draw = &solid_draw_commands[draw.command_index];
                     let pipeline_key =
-                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend_mode);
+                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend);
                     if bound_pipeline != Some(pipeline_key) {
                         let solid_resources = solid_quad_draw
                             .as_ref()
@@ -1724,7 +1726,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_solid_quad_pipeline(
                                 solid_resources.pipeline_resources,
-                                solid_draw.blend_mode,
+                                solid_draw.blend.mode,
                             ),
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
@@ -1762,7 +1764,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
                     let sampled_draw = &draw_commands[draw.command_index];
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage(
-                        sampled_draw.material.blend_mode,
+                        sampled_draw.material.render_state.blend,
                     );
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
@@ -1770,7 +1772,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline(
                                 pipeline_resources,
-                                sampled_draw.material.blend_mode,
+                                sampled_draw.material.render_state.blend.mode,
                             ),
                         );
                         let vertex_buffers = [vertex_buffer];
@@ -2277,7 +2279,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     let solid_draw = &solid_draw_commands[draw.command_index];
                     let pipeline_key =
-                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend_mode);
+                        VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend);
                     if bound_pipeline != Some(pipeline_key) {
                         let solid_resources = solid_quad_draw
                             .as_ref()
@@ -2287,7 +2289,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_solid_quad_pipeline(
                                 solid_resources.pipeline_resources,
-                                solid_draw.blend_mode,
+                                solid_draw.blend.mode,
                             ),
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
@@ -2325,7 +2327,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
                     let sampled_draw = &draw_commands[draw.command_index];
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage(
-                        sampled_draw.material.blend_mode,
+                        sampled_draw.material.render_state.blend,
                     );
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
@@ -2333,7 +2335,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineBindPoint::GRAPHICS,
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline(
                                 pipeline_resources,
-                                sampled_draw.material.blend_mode,
+                                sampled_draw.material.render_state.blend.mode,
                             ),
                         );
                         let vertex_buffers = [vertex_buffer];
@@ -3211,6 +3213,12 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
 mod tests {
     use super::*;
 
+    fn blend_state(
+        mode: SceneBlendMode,
+    ) -> super::super::present::NativeVulkanVulkanaliaSceneBlendState {
+        super::super::present::NativeVulkanVulkanaliaSceneBlendState { mode }
+    }
+
     fn sampled_image_material(
         blend_mode: SceneBlendMode,
     ) -> super::super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial {
@@ -3219,13 +3227,6 @@ mod tests {
             None,
             SceneRenderAlphaTextureMode::Multiply,
             1,
-            match blend_mode {
-                SceneBlendMode::Alpha => "sampled-image-alpha-blend",
-                SceneBlendMode::Additive => "sampled-image-additive-blend",
-                SceneBlendMode::Multiply => "sampled-image-multiply-blend",
-                SceneBlendMode::Screen => "sampled-image-screen-blend",
-                SceneBlendMode::Max => "sampled-image-max-blend",
-            },
         )
     }
 
@@ -3643,7 +3644,7 @@ mod tests {
         let solid_commands = [VulkanaliaSceneSolidQuadDrawCommand {
             layer_index: 2,
             last_layer_index: 2,
-            blend_mode: SceneBlendMode::Alpha,
+            blend: blend_state(SceneBlendMode::Alpha),
             first_index: 0,
             index_count: 6,
         }];

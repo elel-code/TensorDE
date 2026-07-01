@@ -27,9 +27,7 @@ mod plan;
 mod texture_slots;
 mod types;
 
-use self::blend::{
-    native_vulkan_scene_sampled_image_pipeline_label, native_vulkan_scene_solid_quad_pipeline_label,
-};
+use self::blend::native_vulkan_scene_blend_state;
 pub(super) use self::classification::native_vulkan_scene_render_layer_is_clear;
 use self::classification::{
     native_vulkan_scene_background_clear_color, native_vulkan_scene_draw_pass_op_buckets,
@@ -62,15 +60,17 @@ use self::texture_slots::{
     native_vulkan_scene_texture_slots_from_scene_slots,
 };
 pub(super) use self::types::{
-    NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan, NativeVulkanSceneEffectKind,
-    NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind,
-    NativeVulkanSceneMaterialPass, NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
-    NativeVulkanSceneRecordableQuad, NativeVulkanSceneSampledImageEffectPass,
-    NativeVulkanSceneSampledImageEffectTarget, NativeVulkanSceneSampledImageGeometryRange,
-    NativeVulkanSceneSampledImageQuad, NativeVulkanSceneSampledImageRecordingStep,
-    NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
-    NativeVulkanSceneVideoQuad, NativeVulkanSceneVideoRecordingStep,
+    NativeVulkanSceneBlendState, NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan,
+    NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
+    NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
+    NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
+    NativeVulkanSceneRecordableQuad, NativeVulkanSceneRenderState,
+    NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
+    NativeVulkanSceneSampledImageGeometryRange, NativeVulkanSceneSampledImageQuad,
+    NativeVulkanSceneSampledImageRecordingStep, NativeVulkanSceneSampledImageRenderTarget,
+    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneVideoQuad,
+    NativeVulkanSceneVideoRecordingStep,
 };
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
@@ -271,7 +271,6 @@ pub(super) fn native_vulkan_scene_sampled_image_geometry_payload_from_render_lay
         layer.alpha_texture_mode,
         texture_slots.len(),
         &effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(layer.blend_mode),
     );
     let quad = NativeVulkanSceneSampledImageQuad {
         layer_index,
@@ -553,7 +552,6 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         alpha_texture_mode,
         texture_slots.len(),
         &effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(layer.blend_mode),
     );
     let quad = NativeVulkanSceneSampledImageQuad {
         layer_index,
@@ -659,7 +657,6 @@ fn native_vulkan_scene_append_sampled_image_geometry_from_layer_parts(
         alpha_texture_mode,
         0,
         &effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(blend_mode),
     );
     let quad = NativeVulkanSceneSampledImageQuad {
         layer_index,
@@ -733,7 +730,6 @@ fn native_vulkan_scene_append_sampled_image_vertices_from_layer_parts(
         alpha_texture_mode,
         0,
         &effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(blend_mode),
     );
     let quad = NativeVulkanSceneSampledImageQuad {
         layer_index,
@@ -817,7 +813,7 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
         kind,
         color,
         rgba,
-        blend_mode: layer.blend_mode,
+        blend: native_vulkan_scene_blend_state(layer.blend_mode),
         fill_color,
         fill_rgba,
         stroke_color,
@@ -882,8 +878,7 @@ fn native_vulkan_scene_quad_recording_payload(
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
                 kind: quad.kind,
-                blend_mode: quad.blend_mode,
-                pipeline: native_vulkan_scene_solid_quad_pipeline_label(quad.blend_mode),
+                blend: quad.blend,
                 first_vertex,
                 vertex_count,
                 first_index,
@@ -1067,7 +1062,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 final_alpha_texture_mode,
                 NativeVulkanSceneSampledImageRenderTarget::Swapchain,
                 final_range,
-                quad.material_pass.blend_mode,
+                quad.material_pass.render_state.blend.mode,
             );
             native_vulkan_scene_debug_sampled_image_recording_step(
                 quad,
@@ -1089,7 +1084,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 quad.material_pass.alpha_texture_mode,
                 NativeVulkanSceneSampledImageRenderTarget::Swapchain,
                 range,
-                quad.material_pass.blend_mode,
+                quad.material_pass.render_state.blend.mode,
             );
             native_vulkan_scene_debug_sampled_image_recording_step(quad, &step, range, &vertices);
             steps.push(step);
@@ -1243,7 +1238,6 @@ fn native_vulkan_scene_sampled_image_recording_step(
         alpha_texture_mode,
         texture_slot_bindings.len(),
         &quad.effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(blend_mode),
     );
     NativeVulkanSceneSampledImageRecordingStep {
         layer_index: quad.layer_index,
@@ -1306,7 +1300,7 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
             step.texture_slot_bindings,
             step.material_pass.alpha_texture_slot,
             step.material_pass.alpha_texture_mode.as_str(),
-            step.material_pass.blend_mode,
+            step.material_pass.render_state.blend.mode,
             native_vulkan_scene_material_pass_label(&step.material_pass),
             native_vulkan_scene_effect_records_label(&step.effect_passes),
             native_vulkan_scene_sampled_image_render_target_label(step.render_target),
@@ -4694,7 +4688,6 @@ fn native_vulkan_scene_sampled_image_quad(
         op.alpha_texture_mode,
         texture_slots.len(),
         &effect_passes,
-        native_vulkan_scene_sampled_image_pipeline_label(op.blend_mode),
     );
     Some(NativeVulkanSceneSampledImageQuad {
         layer_index: op.layer_index,
@@ -4770,7 +4763,7 @@ fn native_vulkan_scene_recordable_quad_from_op(
         kind,
         color,
         rgba,
-        blend_mode: op.blend_mode,
+        blend: native_vulkan_scene_blend_state(op.blend_mode),
         fill_color,
         fill_rgba,
         stroke_color,
@@ -5802,8 +5795,16 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_index_buffer_bytes, 24);
         assert_eq!(pass_plan.sampled_image_indices, vec![0, 1, 2, 2, 1, 3]);
         let step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(step.material_pass.pipeline, "sampled-image-alpha-blend");
-        assert_eq!(step.material_pass.blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(
+            super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                &step.material_pass.render_state
+            ),
+            "sampled-image-alpha-blend"
+        );
+        assert_eq!(
+            step.material_pass.render_state.blend.mode,
+            SceneBlendMode::Alpha
+        );
         assert_eq!(step.source, PathBuf::from("/tmp/hero.png"));
         assert_eq!(step.fit, FitMode::Contain);
         assert_eq!(step.texture_slot_bindings, texture_slot_bindings(&[0]));
@@ -5847,8 +5848,16 @@ mod tests {
 
         assert!(pass_plan.sampled_image_recording_ready);
         let step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(step.material_pass.blend_mode, SceneBlendMode::Max);
-        assert_eq!(step.material_pass.pipeline, "sampled-image-max-blend");
+        assert_eq!(
+            step.material_pass.render_state.blend.mode,
+            SceneBlendMode::Max
+        );
+        assert_eq!(
+            super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                &step.material_pass.render_state
+            ),
+            "sampled-image-max-blend"
+        );
     }
 
     #[test]
@@ -5880,7 +5889,14 @@ mod tests {
             pass_plan
                 .sampled_image_recording_steps
                 .iter()
-                .map(|step| (step.material_pass.blend_mode, step.material_pass.pipeline))
+                .map(|step| {
+                    (
+                        step.material_pass.render_state.blend.mode,
+                        super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                            &step.material_pass.render_state,
+                        ),
+                    )
+                })
                 .collect::<Vec<_>>(),
             vec![
                 (SceneBlendMode::Multiply, "sampled-image-multiply-blend"),
@@ -5910,15 +5926,17 @@ mod tests {
 
         assert!(pass_plan.quad_recording_ready);
         assert_eq!(
-            pass_plan.recordable_quads[0].blend_mode,
+            pass_plan.recordable_quads[0].blend.mode,
             SceneBlendMode::Screen
         );
         assert_eq!(
-            pass_plan.quad_recording_steps[0].blend_mode,
+            pass_plan.quad_recording_steps[0].blend.mode,
             SceneBlendMode::Screen
         );
         assert_eq!(
-            pass_plan.quad_recording_steps[0].pipeline,
+            super::blend::native_vulkan_scene_solid_quad_pipeline_label(
+                pass_plan.quad_recording_steps[0].blend
+            ),
             "solid-quad-screen-blend"
         );
     }
@@ -6958,7 +6976,9 @@ mod tests {
         assert_eq!(pass_plan.quad_vertex_buffer_bytes, 41 * 24);
         assert_eq!(pass_plan.quad_index_buffer_bytes, 114 * 4);
         assert_eq!(
-            pass_plan.quad_recording_steps[0].pipeline,
+            super::blend::native_vulkan_scene_solid_quad_pipeline_label(
+                pass_plan.quad_recording_steps[0].blend
+            ),
             "solid-quad-alpha-blend"
         );
         assert_eq!(pass_plan.quad_recording_steps[0].kind, "rectangle");
@@ -7461,7 +7481,10 @@ mod tests {
         let step = &pass_plan.quad_recording_steps[0];
         assert_eq!(step.layer_id, "layer-0");
         assert_eq!(step.kind, "rectangle");
-        assert_eq!(step.pipeline, "solid-quad-alpha-blend");
+        assert_eq!(
+            super::blend::native_vulkan_scene_solid_quad_pipeline_label(step.blend),
+            "solid-quad-alpha-blend"
+        );
         assert_eq!(step.first_vertex, 0);
         assert_eq!(step.vertex_count, 4);
         assert_eq!(step.first_index, 0);
