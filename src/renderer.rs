@@ -9,6 +9,8 @@ mod scene_binary;
 mod scene_display;
 mod scene_runtime;
 
+#[cfg(feature = "native-vulkan-renderer")]
+pub(crate) use self::scene_binary::SceneBinaryRuntimeSampler;
 use self::scene_display::{
     scene_background_color, scene_direct_display_color, scene_direct_display_image,
     scene_layer_is_snapshot_renderable,

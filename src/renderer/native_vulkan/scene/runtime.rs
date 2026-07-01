@@ -661,6 +661,63 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometr
     )
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers: &[SceneRenderLayer],
+) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>, String> {
+    let _ = (snapshot_time_ms, scene_size, scene_fit);
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    let mut draw_steps = Vec::new();
+
+    for (layer_index, layer) in layers.iter().enumerate() {
+        if native_vulkan_scene_render_layer_has_no_visual_geometry(layer)
+            || layer.kind == crate::core::SceneNodeKind::Video
+            || layer.kind == crate::core::SceneNodeKind::Image
+        {
+            continue;
+        }
+        let Some((solid_vertices, solid_indices)) =
+            native_vulkan_scene_solid_geometry_from_render_layer(layer_index, layer).map_err(
+                |reason| format!("dynamic mixed scene is not solid-quad recordable: {reason}"),
+            )?
+        else {
+            continue;
+        };
+        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+        let first_index = indices.len().min(u32::MAX as usize) as u32;
+        let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
+        draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+            layer_index,
+            first_index,
+            index_count,
+            blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
+        });
+        vertices.extend(solid_vertices.into_iter().map(|vertex| {
+            NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
+        }));
+        indices.extend(
+            solid_indices
+                .into_iter()
+                .map(|index| first_vertex.saturating_add(index)),
+        );
+    }
+
+    if draw_steps.is_empty() || vertices.is_empty() || indices.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
+            vertices,
+            indices,
+            draw_steps,
+            "scene-runtime-direct-mixed-solid-quad-vertex-update",
+        ),
+    ))
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometry_input_from_snapshot_layers(
     layers: &[SceneSnapshotLayer],
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, String> {

@@ -45,7 +45,7 @@ use crate::core::{
 };
 use crate::renderer::{
     RendererPlanError, SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderLayer,
-    SceneRenderTextureSlot, SceneWallpaperPlan,
+    SceneRenderTextureSlot, SceneWallpaperPlan, SceneWallpaperRuntimeFrame,
 };
 
 const BINARY_TRANSFORM_PROPERTY_DEFAULT: u16 = 0;
@@ -290,6 +290,76 @@ impl BinarySceneReader {
     }
 }
 
+pub(crate) struct SceneBinaryRuntimeSampler {
+    reader: BinarySceneReader,
+    names: BinarySceneNames,
+    resources: Vec<BinarySceneResource>,
+    package_root: PathBuf,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers_scratch: Vec<SceneRenderLayer>,
+}
+
+impl SceneBinaryRuntimeSampler {
+    pub(crate) fn from_plan(plan: &SceneWallpaperPlan) -> Result<Option<Self>, RendererPlanError> {
+        let Some(source_path) = plan.source.as_ref() else {
+            return Ok(None);
+        };
+        if !scene_binary_source_is_gscn(source_path) {
+            return Ok(None);
+        }
+        let mut reader = BinarySceneReader::open(source_path)?;
+        let names = binary_scene_names(&mut reader)?;
+        let package_root = binary_scene_package_root(source_path);
+        let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
+        let scene_size = binary_scene_size(&mut reader)?;
+        Ok(Some(Self {
+            reader,
+            names,
+            resources,
+            package_root,
+            scene_size,
+            scene_fit: plan.scene_fit,
+            layers_scratch: Vec::new(),
+        }))
+    }
+
+    pub(crate) fn sample_frame_reusing(
+        &mut self,
+        time_ms: u64,
+    ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
+        binary_scene_render_layers_into(
+            &mut self.reader,
+            &self.names,
+            &self.resources,
+            time_ms,
+            &mut self.layers_scratch,
+        )?;
+        Ok(SceneWallpaperRuntimeFrame {
+            snapshot_time_ms: time_ms,
+            scene_size: self.scene_size,
+            scene_fit: self.scene_fit,
+            layers: std::mem::take(&mut self.layers_scratch),
+        })
+    }
+
+    pub(crate) fn recycle_frame(&mut self, mut frame: SceneWallpaperRuntimeFrame) {
+        frame.layers.clear();
+        self.layers_scratch = frame.layers;
+    }
+
+    pub(crate) fn package_root(&self) -> &Path {
+        &self.package_root
+    }
+}
+
+fn scene_binary_source_is_gscn(source_path: &Path) -> bool {
+    source_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gscn"))
+}
+
 #[derive(Debug, Clone)]
 struct BinarySceneNames {
     names: Vec<Option<String>>,
@@ -322,6 +392,15 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path(
     let (timeline_animation_count, timeline_animated_layer_count) =
         binary_scene_timeline_counts(&mut reader)?;
     let puppet_animation_layer_count = binary_scene_puppet_animation_layer_count(&mut reader)?;
+    let particle_emitter_count = reader.chunk_count(SceneBinaryChunkKind::ParticleEmitter);
+    let scene_systems = SceneSystems {
+        particles: if particle_emitter_count > 0 {
+            crate::core::SceneSystemStatus::Ready
+        } else {
+            crate::core::SceneSystemStatus::Absent
+        },
+        ..Default::default()
+    };
 
     Ok(SceneWallpaperPlan {
         output_name,
@@ -331,7 +410,7 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path(
         snapshot_time_ms,
         scene_size,
         scene_fit: fit_override.unwrap_or(FitMode::Cover),
-        scene_systems: SceneSystems::default(),
+        scene_systems,
         audio_cue_count: 0,
         bound_properties: Vec::new(),
         timeline_animation_count,
@@ -522,6 +601,19 @@ fn binary_scene_render_layers(
     resources: &[BinarySceneResource],
     snapshot_time_ms: u64,
 ) -> Result<Vec<SceneRenderLayer>, RendererPlanError> {
+    let mut layers = Vec::new();
+    binary_scene_render_layers_into(reader, names, resources, snapshot_time_ms, &mut layers)?;
+    Ok(layers)
+}
+
+fn binary_scene_render_layers_into(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    resources: &[BinarySceneResource],
+    snapshot_time_ms: u64,
+    layers: &mut Vec<SceneRenderLayer>,
+) -> Result<(), RendererPlanError> {
+    layers.clear();
     let node_records = reader.records(
         SceneBinaryChunkKind::NodeTable,
         SCENE_BINARY_NODE_RECORD_SIZE,
@@ -549,7 +641,7 @@ fn binary_scene_render_layers(
         ));
         node_geometries.push(geometry);
     }
-    let mut layers = Vec::with_capacity(node_records.len());
+    layers.reserve(node_records.len());
     for (node, (geometry, node_state)) in node_records
         .into_iter()
         .zip(node_geometries.into_iter().zip(node_states.into_iter()))
@@ -592,7 +684,7 @@ fn binary_scene_render_layers(
                     material,
                     node_state.state,
                     snapshot_time_ms,
-                    &mut layers,
+                    layers,
                 )?;
             }
             continue;
@@ -610,7 +702,7 @@ fn binary_scene_render_layers(
         )?;
         layers.push(layer);
     }
-    Ok(layers)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1636,6 +1728,68 @@ mod tests {
             assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
             assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn gscn_binary_runtime_sampler_reads_timeline_frames_without_json() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "hero", "type": "image", "source": "assets/hero.gtex", "width": 16, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "hero-node",
+                    "type": "image",
+                    "resource": "hero",
+                    "width": 16.0,
+                    "height": 16.0,
+                    "transform": { "x": 0.0, "y": 5.0 }
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "move-x",
+                    "target_node": "hero-node",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 1000, "value": 100.0 }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-runtime-sampler");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path,
+            Some(60),
+            0,
+            None,
+        )
+        .expect("binary scene plan");
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .expect("binary sampler open")
+            .expect("binary sampler");
+        let frame = sampler.sample_frame_reusing(500).expect("sample frame");
+
+        assert_eq!(frame.snapshot_time_ms, 500);
+        assert_eq!(frame.layers.len(), 1);
+        assert!((frame.layers[0].transform.x - 50.0).abs() < 0.0001);
+        assert!((frame.layers[0].transform.y - 5.0).abs() < 0.0001);
+
+        sampler.recycle_frame(frame);
+        fs::remove_dir_all(root).expect("remove test dir");
     }
 
     fn unique_test_dir(prefix: &str) -> PathBuf {
