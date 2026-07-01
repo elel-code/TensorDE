@@ -3,6 +3,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_NONE_ID, SceneBinaryError, SceneBinaryLayoutPlan, decode_scene_binary_container,
 };
 
+mod flutter;
+
+pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
+use self::flutter::native_vulkan_scene_binary_flutter_records;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan {
     pub(in crate::renderer::native_vulkan::scene) feature_flags: u32,
@@ -25,6 +30,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
         Vec<NativeVulkanSceneBinaryDrawRecord>,
+    pub(in crate::renderer::native_vulkan::scene) flutter_records:
+        Vec<NativeVulkanSceneBinaryFlutterRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,22 +66,24 @@ fn native_vulkan_scene_binary_plan_from_layout(
     layout: &SceneBinaryLayoutPlan,
 ) -> Result<NativeVulkanSceneBinaryPlan, SceneBinaryError> {
     let resource_count = record_len(layout.resource_records(container)?);
-    let node_count = record_len(layout.node_records(container)?);
+    let node_records = layout.node_records(container)?;
+    let node_count = record_len_from_usize(node_records.len());
     let geometry_record_count = record_len(layout.geometry_records(container)?);
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
     let material_pass_count = record_len(layout.material_pass_records(container)?);
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
     let effect_parameter_count = record_len(layout.effect_parameter_records(container)?);
-    let flutter_state_count = record_len(layout.flutter_state_records(container)?);
     let puppet_count = record_len(layout.puppet_records(container)?);
     let retained_gpu_state_count = record_len(layout.retained_gpu_state_records(container)?);
+    let flutter_records = native_vulkan_scene_binary_flutter_records(container, layout)?;
+    let flutter_state_count = record_len_from_usize(flutter_records.len());
 
-    let mut draw_records = Vec::new();
+    let mut draw_records = Vec::with_capacity(node_records.len());
     let mut generated_vertex_count = 0u32;
     let mut generated_index_count = 0u32;
     let mut mesh_vertex_count = 0u32;
     let mut mesh_index_count = 0u32;
-    for node in layout.node_records(container)? {
+    for node in node_records {
         let node = node?;
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
@@ -142,11 +151,6 @@ fn native_vulkan_scene_binary_plan_from_layout(
         });
     }
 
-    for flutter in layout.flutter_state_records(container)? {
-        let flutter = flutter?;
-        let _ = layout.flutter_parameter_records(container, flutter)?;
-    }
-
     Ok(NativeVulkanSceneBinaryPlan {
         feature_flags: layout.feature_flags,
         resource_count,
@@ -169,6 +173,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         puppet_count,
         retained_gpu_state_count,
         draw_records,
+        flutter_records,
     })
 }
 
@@ -190,7 +195,7 @@ mod tests {
         SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH, SCENE_BINARY_GEOMETRY_PRIMITIVE_QUAD,
         SCENE_BINARY_GEOMETRY_QUAD_INDEX_COUNT, SCENE_BINARY_GEOMETRY_QUAD_VERTEX_COUNT,
         SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_GENERATED,
-        SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
+        SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY, SCENE_BINARY_MOTION_FAMILY_FLUTTER,
         scene_binary_payloads_from_document,
     };
 
@@ -249,6 +254,7 @@ mod tests {
         assert_eq!(plan.effect_pass_count, 1);
         assert_eq!(plan.effect_parameter_count, 2);
         assert_eq!(plan.texture_slot_count, 2);
+        assert!(plan.flutter_records.is_empty());
         assert_eq!(
             plan.retained_gpu_state_count,
             plan.resource_count
@@ -270,6 +276,63 @@ mod tests {
         assert_eq!(plan.draw_records[0].effect_pass_count, 1);
         assert_eq!(plan.draw_records[0].effect_texture_slot_count, 2);
         assert_eq!(plan.draw_records[0].effect_parameter_count, 2);
+    }
+
+    #[test]
+    fn binary_plan_reads_flutter_retained_state_without_json_payloads() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "hair", "type": "image", "source": "assets/hair.gtex", "width": 128, "height": 256 }
+            ],
+            "nodes": [
+                {
+                    "id": "hair",
+                    "type": "image",
+                    "resource": "hair",
+                    "width": 128,
+                    "height": 256,
+                    "effects": [
+                        {
+                            "file": "effects/flutter/effect.json",
+                            "properties": { "phase": 0.25 },
+                            "passes": [
+                                {
+                                    "shader": "effects/flutter",
+                                    "texture_resources": ["hair"],
+                                    "constant_shader_values": {
+                                        "speed": 1.5,
+                                        "wind": [1.0, 0.0]
+                                    },
+                                    "combos": { "WIND_MODE": 2 }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = scene_binary_payloads_from_document(&document)
+            .encode_container(0)
+            .expect("binary scene");
+
+        let plan = native_vulkan_scene_binary_plan_from_container(&bytes).expect("binary plan");
+
+        assert_eq!(plan.flutter_state_count, 1);
+        assert_eq!(plan.effect_parameter_count, 4);
+        assert_eq!(plan.flutter_records.len(), 1);
+        assert_eq!(
+            plan.flutter_records[0].owner_name,
+            plan.draw_records[0].node_name
+        );
+        assert_eq!(
+            plan.flutter_records[0].motion_family_flags,
+            SCENE_BINARY_MOTION_FAMILY_FLUTTER
+        );
+        assert_eq!(plan.flutter_records[0].first_parameter, 0);
+        assert_eq!(plan.flutter_records[0].parameter_count, 4);
+        assert_eq!(plan.flutter_records[0].pass_count, 1);
+        assert_eq!(plan.flutter_records[0].dirty_range_count, 3);
     }
 
     #[test]
