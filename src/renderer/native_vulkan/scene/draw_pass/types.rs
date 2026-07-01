@@ -23,6 +23,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneTextureSlo
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneBlendFactor {
+    Zero,
     One,
     SrcAlpha,
     OneMinusSrcAlpha,
@@ -33,6 +34,7 @@ pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneBlendFactor 
 impl NativeVulkanSceneBlendFactor {
     pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
         match self {
+            Self::Zero => "zero",
             Self::One => "one",
             Self::SrcAlpha => "src-alpha",
             Self::OneMinusSrcAlpha => "one-minus-src-alpha",

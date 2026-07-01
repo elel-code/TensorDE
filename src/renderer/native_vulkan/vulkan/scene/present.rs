@@ -418,6 +418,14 @@ fn native_vulkan_vulkanalia_scene_blend_equation(
             dst_alpha: "one-minus-src-alpha",
             alpha_op: "add",
         },
+        SceneBlendMode::Normal => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "one",
+            dst_color: "zero",
+            color_op: "add",
+            src_alpha: "one",
+            dst_alpha: "zero",
+            alpha_op: "add",
+        },
         SceneBlendMode::Additive => NativeVulkanVulkanaliaSceneBlendEquation {
             src_color: "src-alpha",
             dst_color: "one",
@@ -465,6 +473,7 @@ impl NativeVulkanVulkanaliaSceneRenderState {
     pub fn sampled_image_pipeline_label(&self) -> &'static str {
         match self.blend.mode {
             SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+            SceneBlendMode::Normal => "sampled-image-normal-blend",
             SceneBlendMode::Additive => "sampled-image-additive-blend",
             SceneBlendMode::Multiply => "sampled-image-multiply-blend",
             SceneBlendMode::Screen => "sampled-image-screen-blend",

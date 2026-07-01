@@ -26,6 +26,14 @@ pub(super) fn native_vulkan_vulkanalia_scene_color_attachment(
             .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
+        SceneBlendMode::Normal => builder
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ZERO)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
         SceneBlendMode::Additive => builder
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
             .dst_color_blend_factor(vk::BlendFactor::ONE)
@@ -67,7 +75,9 @@ pub(super) fn native_vulkan_vulkanalia_scene_fragment_module_for_blend(
     premultiplied_fragment_module: vk::ShaderModule,
 ) -> vk::ShaderModule {
     match blend_mode {
-        SceneBlendMode::Alpha | SceneBlendMode::Additive => straight_fragment_module,
+        SceneBlendMode::Alpha | SceneBlendMode::Normal | SceneBlendMode::Additive => {
+            straight_fragment_module
+        }
         SceneBlendMode::Multiply | SceneBlendMode::Screen | SceneBlendMode::Max => {
             premultiplied_fragment_module
         }
@@ -80,6 +90,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_solid_quad_pipeline(
 ) -> vk::Pipeline {
     match blend_mode {
         SceneBlendMode::Alpha => resources.alpha_pipeline,
+        SceneBlendMode::Normal => resources.normal_pipeline,
         SceneBlendMode::Additive => resources.additive_pipeline,
         SceneBlendMode::Multiply => resources.multiply_pipeline,
         SceneBlendMode::Screen => resources.screen_pipeline,
@@ -93,6 +104,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline(
 ) -> vk::Pipeline {
     match blend_mode {
         SceneBlendMode::Alpha => resources.alpha_pipeline,
+        SceneBlendMode::Normal => resources.normal_pipeline,
         SceneBlendMode::Additive => resources.additive_pipeline,
         SceneBlendMode::Multiply => resources.multiply_pipeline,
         SceneBlendMode::Screen => resources.screen_pipeline,
@@ -105,6 +117,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_blend_mode_label(
 ) -> &'static str {
     match blend_mode {
         SceneBlendMode::Alpha => "alpha",
+        SceneBlendMode::Normal => "normal",
         SceneBlendMode::Additive => "additive",
         SceneBlendMode::Multiply => "multiply",
         SceneBlendMode::Screen => "screen",

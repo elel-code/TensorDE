@@ -2301,7 +2301,7 @@ fn native_vulkan_scene_puppet_animation_frames_label(
             label.push_str(", ");
         }
         label.push_str(&format!(
-            "clip={} name={} layer={} frame={:.3} f0={} f1={} mix={:.3} fps={:.3} count={} loop={} rate={:.6} phase={:.3} blend={:.3} additive={}",
+            "clip={} name={} layer={} frame={:.3} f0={} f1={} mix={:.3} fps={:.3} count={} loop={} rate={:.6} phase={:.3} blend={:.3} additive={} lock_transforms={}",
             frame.clip_id,
             frame.clip_name.as_deref().unwrap_or("<none>"),
             frame.layer_name.as_deref().unwrap_or("<none>"),
@@ -2316,6 +2316,7 @@ fn native_vulkan_scene_puppet_animation_frames_label(
             frame.initial_phase,
             frame.blend,
             frame.additive,
+            frame.lock_transforms,
         ));
     }
     label.push(']');
@@ -5447,11 +5448,13 @@ mod tests {
             snapshot.vulkanalia_draw_pass.pipeline_labels,
             vec![
                 "scene-solid-quad-alpha-blend",
+                "scene-solid-quad-normal-blend",
                 "scene-solid-quad-additive-blend",
                 "scene-solid-quad-multiply-blend",
                 "scene-solid-quad-screen-blend",
                 "scene-solid-quad-max-blend",
                 "scene-sampled-image-alpha-blend",
+                "scene-sampled-image-normal-blend",
                 "scene-sampled-image-additive-blend",
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",

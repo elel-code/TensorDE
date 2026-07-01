@@ -3783,24 +3783,32 @@ fn scene_puppet_animation_layers_from_object(object: &Map<String, Value>) -> Vec
         return Vec::new();
     };
     let mut layers = Vec::new();
-    scene_collect_puppet_animation_layers(value, &mut layers);
+    let lock_transforms = object
+        .get("locktransforms")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    scene_collect_puppet_animation_layers(value, lock_transforms, &mut layers);
     layers
 }
 
-fn scene_collect_puppet_animation_layers(value: &Value, layers: &mut Vec<Value>) {
+fn scene_collect_puppet_animation_layers(
+    value: &Value,
+    lock_transforms: bool,
+    layers: &mut Vec<Value>,
+) {
     match value {
         Value::Array(values) => {
             for value in values {
-                scene_collect_puppet_animation_layers(value, layers);
+                scene_collect_puppet_animation_layers(value, lock_transforms, layers);
             }
         }
         Value::Object(object) => {
-            if let Some(layer) = scene_puppet_animation_layer_from_object(object) {
+            if let Some(layer) = scene_puppet_animation_layer_from_object(object, lock_transforms) {
                 layers.push(layer);
             }
             for key in ["layers", "children", "items"] {
                 if let Some(value) = object.get(key) {
-                    scene_collect_puppet_animation_layers(value, layers);
+                    scene_collect_puppet_animation_layers(value, lock_transforms, layers);
                 }
             }
         }
@@ -3808,7 +3816,10 @@ fn scene_collect_puppet_animation_layers(value: &Value, layers: &mut Vec<Value>)
     }
 }
 
-fn scene_puppet_animation_layer_from_object(object: &Map<String, Value>) -> Option<Value> {
+fn scene_puppet_animation_layer_from_object(
+    object: &Map<String, Value>,
+    lock_transforms: bool,
+) -> Option<Value> {
     let clip_id = object.get("animation").and_then(value_to_u32)?;
     let visible = object
         .get("visible")
@@ -3824,6 +3835,9 @@ fn scene_puppet_animation_layer_from_object(object: &Map<String, Value>) -> Opti
     }
     if let Some(additive) = object.get("additive").and_then(value_to_bool_unwrapped) {
         layer.insert("additive".to_owned(), json!(additive));
+    }
+    if lock_transforms {
+        layer.insert("lock_transforms".to_owned(), json!(true));
     }
     if let Some(blend) = number_value_field(object, &["blend", "weight", "strength"])
         && blend.is_finite()
@@ -5062,7 +5076,7 @@ fn scene_parse_puppet_animation_clips(
             &mut position,
             mdla_end,
             4,
-            "MDLA clip reserved frame field",
+            "MDLA clip frame metadata field",
         )?;
         let clip_bone_count = usize::try_from(scene_take_u32_le(
             bytes,
@@ -5662,9 +5676,6 @@ fn scene_node_provenance_from_object(
     }
     if let Some(attachment) = string_field(object, &["attachment"]) {
         provenance.insert("attachment".to_owned(), Value::String(attachment));
-    }
-    if let Some(lock_transforms) = object.get("locktransforms").and_then(Value::as_bool) {
-        provenance.insert("lock_transforms".to_owned(), Value::Bool(lock_transforms));
     }
     if let Some(dependencies) = scene_dependencies_from_object(object) {
         provenance.insert("dependencies".to_owned(), dependencies);

@@ -32,6 +32,7 @@ pub(super) fn native_vulkan_scene_solid_quad_pipeline_label(
 ) -> &'static str {
     match blend.mode {
         SceneBlendMode::Alpha => "solid-quad-alpha-blend",
+        SceneBlendMode::Normal => "solid-quad-normal-blend",
         SceneBlendMode::Additive => "solid-quad-additive-blend",
         SceneBlendMode::Multiply => "solid-quad-multiply-blend",
         SceneBlendMode::Screen => "solid-quad-screen-blend",
@@ -58,6 +59,7 @@ pub(super) fn native_vulkan_scene_sampled_image_pipeline_label(
 ) -> &'static str {
     match render_state.blend.mode {
         SceneBlendMode::Alpha => "sampled-image-alpha-blend",
+        SceneBlendMode::Normal => "sampled-image-normal-blend",
         SceneBlendMode::Additive => "sampled-image-additive-blend",
         SceneBlendMode::Multiply => "sampled-image-multiply-blend",
         SceneBlendMode::Screen => "sampled-image-screen-blend",
@@ -73,6 +75,14 @@ fn native_vulkan_scene_blend_equation(mode: SceneBlendMode) -> NativeVulkanScene
             color_op: NativeVulkanSceneBlendOp::Add,
             src_alpha: NativeVulkanSceneBlendFactor::SrcAlpha,
             dst_alpha: NativeVulkanSceneBlendFactor::OneMinusSrcAlpha,
+            alpha_op: NativeVulkanSceneBlendOp::Add,
+        },
+        SceneBlendMode::Normal => NativeVulkanSceneBlendEquation {
+            src_color: NativeVulkanSceneBlendFactor::One,
+            dst_color: NativeVulkanSceneBlendFactor::Zero,
+            color_op: NativeVulkanSceneBlendOp::Add,
+            src_alpha: NativeVulkanSceneBlendFactor::One,
+            dst_alpha: NativeVulkanSceneBlendFactor::Zero,
             alpha_op: NativeVulkanSceneBlendOp::Add,
         },
         SceneBlendMode::Additive => NativeVulkanSceneBlendEquation {
@@ -126,6 +136,22 @@ mod tests {
             NativeVulkanSceneBlendFactor::OneMinusSrcAlpha
         );
         assert_eq!(alpha.equation.color_op, NativeVulkanSceneBlendOp::Add);
+
+        let normal = native_vulkan_scene_blend_state(SceneBlendMode::Normal);
+        assert_eq!(normal.equation.src_color, NativeVulkanSceneBlendFactor::One);
+        assert_eq!(
+            normal.equation.dst_color,
+            NativeVulkanSceneBlendFactor::Zero
+        );
+        assert_eq!(normal.equation.src_alpha, NativeVulkanSceneBlendFactor::One);
+        assert_eq!(
+            normal.equation.dst_alpha,
+            NativeVulkanSceneBlendFactor::Zero
+        );
+        assert_eq!(
+            native_vulkan_scene_blend_equation_label(normal),
+            "color=one*src add zero*dst alpha=one*src add zero*dst"
+        );
 
         let multiply = native_vulkan_scene_blend_state(SceneBlendMode::Multiply);
         assert_eq!(

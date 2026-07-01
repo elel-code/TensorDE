@@ -2034,8 +2034,6 @@ pub struct SceneNodeProvenance {
     #[serde(default)]
     pub attachment: Option<String>,
     #[serde(default)]
-    pub lock_transforms: Option<bool>,
-    #[serde(default)]
     pub dependencies: Vec<String>,
     #[serde(default)]
     pub original_type: Option<String>,
@@ -2366,6 +2364,7 @@ pub enum SceneTextAlign {
 pub enum SceneBlendMode {
     #[default]
     Alpha,
+    Normal,
     Additive,
     Multiply,
     Screen,
@@ -3541,6 +3540,7 @@ impl SceneMesh {
                 initial_phase: layer.initial_phase,
                 blend: layer.blend,
                 additive: layer.additive,
+                lock_transforms: layer.lock_transforms,
                 frame: timing.frame,
                 frame0: timing.frame0,
                 frame1: timing.frame1,
@@ -3628,7 +3628,14 @@ impl SceneMesh {
             let blend = layer.blend.clamp(0.0, 1.0);
             for (bone_index, transform) in sampled.iter().enumerate() {
                 let bind = skin.bones.get(bone_index)?.bind;
-                if layer.additive {
+                if layer.lock_transforms {
+                    local_pose[bone_index] = local_pose[bone_index].blend_opacity_only(
+                        bind,
+                        *transform,
+                        blend,
+                        layer.additive,
+                    );
+                } else if layer.additive {
                     local_pose[bone_index] =
                         local_pose[bone_index].additive_blend(bind, *transform, blend);
                 } else {
@@ -3837,6 +3844,7 @@ pub struct ScenePuppetAnimationFrameDebug {
     pub initial_phase: f64,
     pub blend: f64,
     pub additive: bool,
+    pub lock_transforms: bool,
     pub frame: f64,
     pub frame0: usize,
     pub frame1: usize,
@@ -4041,6 +4049,19 @@ impl ScenePuppetTransform {
         }
     }
 
+    fn blend_opacity_only(self, bind: Self, target: Self, mix: f64, additive: bool) -> Self {
+        let mix = mix.clamp(0.0, 1.0);
+        let opacity = if additive {
+            self.opacity + (target.opacity - bind.opacity) * mix
+        } else {
+            scene_lerp(self.opacity, target.opacity, mix)
+        };
+        Self {
+            opacity: opacity.clamp(0.0, 1.0),
+            ..self
+        }
+    }
+
     fn matrix(self) -> [f64; 16] {
         let rx = scene_puppet_rotation_x_matrix(self.rotation[0]);
         let ry = scene_puppet_rotation_y_matrix(self.rotation[1]);
@@ -4063,6 +4084,8 @@ pub struct ScenePuppetAnimationLayer {
     pub name: Option<String>,
     #[serde(default)]
     pub additive: bool,
+    #[serde(default)]
+    pub lock_transforms: bool,
     #[serde(default = "default_opacity")]
     pub blend: f64,
     #[serde(default = "default_true")]
@@ -4426,12 +4449,17 @@ fn scene_blend_mode_from_material(
         .flatten()
         .filter_map(Value::as_object)
         .filter_map(|pass| pass.get("blending").and_then(Value::as_str))
-        .find_map(|blending| match blending.to_ascii_lowercase().as_str() {
-            "additive" | "add" => Some(SceneBlendMode::Additive),
-            "multiply" => Some(SceneBlendMode::Multiply),
-            "screen" => Some(SceneBlendMode::Screen),
-            _ => None,
-        })
+        .find_map(scene_blend_mode_from_material_blending)
+}
+
+pub(crate) fn scene_blend_mode_from_material_blending(blending: &str) -> Option<SceneBlendMode> {
+    match blending.to_ascii_lowercase().as_str() {
+        "normal" => Some(SceneBlendMode::Normal),
+        "additive" | "add" => Some(SceneBlendMode::Additive),
+        "multiply" => Some(SceneBlendMode::Multiply),
+        "screen" => Some(SceneBlendMode::Screen),
+        _ => None,
+    }
 }
 
 fn scene_text_from_properties(
@@ -4914,6 +4942,35 @@ mod tests {
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
         assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Screen);
         assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Screen);
+    }
+
+    #[test]
+    fn wallpaper_engine_material_normal_blend_reaches_snapshot_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-eye", "type": "image", "source": "assets/eye.gtex" }
+            ],
+            "nodes": [
+                {
+                    "id": "node-eye",
+                    "type": "image",
+                    "resource": "resource-eye",
+                    "properties": {
+                        "material": {
+                            "passes": [
+                                { "shader": "effects/iris", "blending": "normal" }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Normal);
     }
 
     #[test]
@@ -5414,6 +5471,96 @@ mod tests {
         assert!((later_mesh.vertices[0].y - 10.0).abs() < 0.000_001);
         assert_eq!(later_mesh.vertices[0].u, first_mesh.vertices[0].u);
         assert_eq!(later_mesh.vertices[0].v, first_mesh.vertices[0].v);
+    }
+
+    #[test]
+    fn puppet_animation_lock_transforms_samples_opacity_without_moving_bones() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-puppet", "type": "image", "source": "assets/puppet.gtex" }
+            ],
+            "nodes": [
+                {
+                    "id": "node-puppet",
+                    "type": "image",
+                    "resource": "resource-puppet",
+                    "width": 32,
+                    "height": 32,
+                    "mesh": {
+                        "vertices": [
+                            { "x": 20.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 20.0, "y": 1.0, "u": 0.0, "v": 1.0 },
+                            { "x": 21.0, "y": 0.0, "u": 1.0, "v": 0.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                {
+                                    "bind": {
+                                        "translation": [0.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                },
+                                {
+                                    "parent": 0,
+                                    "bind": {
+                                        "translation": [10.0, 0.0, 0.0],
+                                        "rotation": [0.0, 0.0, 0.0],
+                                        "scale": [1.0, 1.0, 1.0]
+                                    }
+                                }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 7,
+                                "fps": 1.0,
+                                "frame_count": 1,
+                                "looping": false,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0], "opacity": 1.0 },
+                                            { "translation": [0.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0], "opacity": 1.0 }
+                                        ]
+                                    },
+                                    {
+                                        "frames": [
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 0.0], "scale": [1.0, 1.0, 1.0], "opacity": 1.0 },
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 1.5707963267948966], "scale": [1.0, 1.0, 1.0], "opacity": 0.25 }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        { "clip_id": 7, "rate": 1.0, "blend": 1.0, "lock_transforms": true }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        document.validate().unwrap();
+        let mut later = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            1000,
+            |_| None,
+            |_| None,
+            &mut later,
+        );
+
+        let mesh = later[0].mesh.as_ref().expect("locked puppet mesh");
+        assert!((mesh.vertices[0].x - 20.0).abs() < 0.000_001);
+        assert!(mesh.vertices[0].y.abs() < 0.000_001);
+        assert!((mesh.vertices[0].opacity - 0.25).abs() < 0.000_001);
     }
 
     #[test]

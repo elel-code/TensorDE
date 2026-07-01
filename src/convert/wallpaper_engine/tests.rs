@@ -3052,9 +3052,10 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
         &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        scene["nodes"][1]["provenance"]["lock_transforms"],
-        Value::Bool(true)
+    assert!(
+        scene["nodes"][1]["provenance"]
+            .get("lock_transforms")
+            .is_none()
     );
     let mask_source = scene["nodes"][1]["effects"][0]["passes"][0]["texture_resources"][1]
         .as_str()
@@ -4576,6 +4577,75 @@ fn lowers_wallpaper_engine_puppet_animation_layers_to_sampled_skinning() {
             .unsupported_features
             .contains(&"we-animation-layer-blending".to_owned())
     );
+}
+
+#[test]
+fn lowers_wallpaper_engine_locktransforms_to_puppet_animation_layer_state() {
+    let source = TestDir::new("we-scene-puppet-locktransforms-source");
+    let output = TestDir::new("we-scene-puppet-locktransforms-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [{
+                "id": 10,
+                "name": "Locked Puppet",
+                "image": "models/body.json",
+                "origin": [0, 0, 0],
+                "size": [32, 32, 0],
+                "locktransforms": true,
+                "animationlayers": [
+                  {
+                    "id": 20,
+                    "name": "turn",
+                    "animation": 7,
+                    "additive": false,
+                    "blend": 1.0,
+                    "rate": 1.0,
+                    "visible": true
+                  }
+                ]
+              }]
+            }"#,
+    );
+    source.write_file(
+        "models/body.json",
+        r#"{
+              "width": 32,
+              "height": 32,
+              "puppet": "models/body_puppet.mdl"
+            }"#,
+    );
+    source.write_bytes(
+        "models/body_puppet.mdl",
+        &test_we_mdl_with_skinned_animation(),
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Locked Puppet Animation Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let node = &scene["nodes"][0];
+    assert!(node["provenance"].get("lock_transforms").is_none());
+    assert_eq!(node["puppet_animation_layers"][0]["lock_transforms"], true);
+
+    let document: crate::core::SceneDocument = serde_json::from_value(scene).unwrap();
+    document.validate().unwrap();
+    let mut later = Vec::new();
+    document.snapshot_sampled_image_layers_at_with_resolvers(1000, |_| None, |_| None, &mut later);
+    let later_mesh = later[0].mesh.as_ref().expect("locked puppet mesh");
+    assert!((later_mesh.vertices[0].x - 20.0).abs() < 0.000_001);
+    assert!(later_mesh.vertices[0].y.abs() < 0.000_001);
+    assert!((later_mesh.vertices[0].opacity - 0.25).abs() < 0.000_001);
 }
 
 #[test]

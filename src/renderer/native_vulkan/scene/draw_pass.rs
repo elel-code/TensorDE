@@ -979,9 +979,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                     clear: true,
                 },
                 base_range,
-                quad.mesh
-                    .as_ref()
-                    .map_or(SceneBlendMode::Alpha, |_| SceneBlendMode::Alpha),
+                quad.material_pass.render_state.blend.mode,
             );
             native_vulkan_scene_debug_sampled_image_recording_step(
                 quad, &base_step, base_range, &vertices,
@@ -5991,6 +5989,16 @@ mod tests {
         );
         assert_eq!(base_step.texture_slot_bindings, texture_slot_bindings(&[0]));
         assert_eq!(base_step.material_pass.alpha_texture_slot, None);
+        assert_eq!(
+            base_step.material_pass.render_state.blend.mode,
+            SceneBlendMode::Normal
+        );
+        assert_eq!(
+            super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                &base_step.material_pass.render_state
+            ),
+            "sampled-image-normal-blend"
+        );
         assert_eq!(base_step.vertex_count, 3);
         assert_eq!(base_step.index_count, 3);
         let final_step = &pass_plan.sampled_image_recording_steps[1];
@@ -6006,6 +6014,16 @@ mod tests {
         assert_eq!(
             final_step.material_pass.alpha_texture_mode,
             SceneRenderAlphaTextureMode::Iris
+        );
+        assert_eq!(
+            final_step.material_pass.render_state.blend.mode,
+            SceneBlendMode::Normal
+        );
+        assert_eq!(
+            super::blend::native_vulkan_scene_sampled_image_pipeline_label(
+                &final_step.material_pass.render_state
+            ),
+            "sampled-image-normal-blend"
         );
         assert_eq!(final_step.vertex_count, 4);
         assert_eq!(final_step.index_count, 6);

@@ -37,7 +37,7 @@ use self::geometry::{
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 5;
+pub const SCENE_BINARY_VERSION: u16 = 6;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -1625,10 +1625,18 @@ impl<'a> SceneBinaryMaterialState<'a> {
             alpha_texture_slot.is_some(),
             effect_pass_count,
         );
+        let property_blend_mode = super::scene_blend_mode_from_properties(&node.properties);
+        let blend_mode = match property_blend_mode {
+            SceneBlendMode::Alpha => first_pass
+                .and_then(|pass| pass.blending.as_deref())
+                .and_then(super::scene_blend_mode_from_material_blending)
+                .unwrap_or(property_blend_mode),
+            _ => property_blend_mode,
+        };
         Self {
             shader: first_pass.and_then(|pass| pass.shader.as_deref()),
             blending: first_pass.and_then(|pass| pass.blending.as_deref()),
-            blend_mode: super::scene_blend_mode_from_properties(&node.properties),
+            blend_mode,
             alpha_texture_slot,
             alpha_texture_mode,
             texture_slot_count,
@@ -2844,6 +2852,7 @@ fn blend_mode_code(mode: SceneBlendMode) -> u16 {
         SceneBlendMode::Multiply => 3,
         SceneBlendMode::Screen => 4,
         SceneBlendMode::Max => 5,
+        SceneBlendMode::Normal => 6,
     }
 }
 
@@ -4427,5 +4436,52 @@ mod tests {
         assert_eq!(effect_passes[0].first_texture_slot, 0);
         assert_eq!(effect_passes[0].texture_slot_count, 2);
         assert_eq!(effect_passes[0].evaluation_boundary, 1);
+    }
+
+    #[test]
+    fn binary_material_pass_maps_effect_normal_blend_to_overwrite_mode() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 100, "height": 50 },
+                { "id": "mask", "type": "image", "source": "assets/iris-mask.gtex", "width": 50, "height": 25 }
+            ],
+            "nodes": [
+                {
+                    "id": "eye-node",
+                    "type": "image",
+                    "resource": "eye",
+                    "effects": [
+                        {
+                            "file": "effects/iris/effect.json",
+                            "runtime": "wallpaper-engine-effect",
+                            "passes": [
+                                {
+                                    "shader": "effects/iris",
+                                    "blending": "normal",
+                                    "texture_resources": ["eye", "mask"]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let payloads = scene_binary_payloads_from_document(&document);
+        let bytes = payloads.encode_container(0).expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+
+        let materials = layout
+            .material_pass_records(&bytes)
+            .expect("material records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material records");
+
+        assert_eq!(materials.len(), 1);
+        assert_eq!(
+            materials[0].blend_mode,
+            blend_mode_code(SceneBlendMode::Normal)
+        );
     }
 }

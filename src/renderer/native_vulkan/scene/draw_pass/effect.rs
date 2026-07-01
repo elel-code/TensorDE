@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 use crate::core::SceneBlendMode;
-use crate::core::scene::{SceneImageEffectPass, SceneTextureSlot};
+use crate::core::scene::{
+    SceneImageEffectPass, SceneTextureSlot, scene_blend_mode_from_material_blending,
+};
 use crate::renderer::{
     SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderTextureSlot,
 };
@@ -111,8 +113,15 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass(
     effect_passes: &[NativeVulkanSceneEffectRecord],
 ) -> NativeVulkanSceneMaterialPass {
     let material_source = effect_passes.first();
+    let material_blend_mode = match blend_mode {
+        SceneBlendMode::Alpha => material_source
+            .and_then(|pass| pass.blending.as_deref())
+            .and_then(scene_blend_mode_from_material_blending)
+            .unwrap_or(blend_mode),
+        _ => blend_mode,
+    };
     let render_state = native_vulkan_scene_render_state(
-        blend_mode,
+        material_blend_mode,
         material_source
             .map(|pass| pass.depth_test)
             .unwrap_or(NativeVulkanSceneMaterialFlag::Unspecified),
@@ -489,6 +498,44 @@ mod tests {
         };
         assert!(
             native_vulkan_scene_render_first_class_effect_target_pass(&[opacity_pass]).is_none()
+        );
+    }
+
+    #[test]
+    fn material_pass_lowers_normal_blending_to_overwrite_render_state() {
+        let effect_pass = NativeVulkanSceneEffectRecord {
+            kind: NativeVulkanSceneEffectKind::Iris,
+            evaluation_boundary: NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget,
+            effect_file: "effects/iris/effect.json".to_owned(),
+            runtime: Some("native-iris-mask".to_owned()),
+            pass_index: 0,
+            shader: Some("effects/iris".to_owned()),
+            blending: Some("normal".to_owned()),
+            texture_slots: Vec::new(),
+            parameter_keys: Vec::new(),
+            combo_keys: Vec::new(),
+            depth_test: NativeVulkanSceneMaterialFlag::Unspecified,
+            depth_write: NativeVulkanSceneMaterialFlag::Unspecified,
+            cull_mode: NativeVulkanSceneCullMode::Unspecified,
+        };
+
+        let material = native_vulkan_scene_sampled_image_material_pass(
+            NativeVulkanSceneMaterialKind::SampledImage,
+            SceneBlendMode::Alpha,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            1,
+            &[effect_pass],
+        );
+
+        assert_eq!(material.render_state.blend.mode, SceneBlendMode::Normal);
+        assert_eq!(
+            native_vulkan_scene_sampled_image_pipeline_label(&material.render_state),
+            "sampled-image-normal-blend"
+        );
+        assert_eq!(
+            native_vulkan_scene_blend_equation_label(material.render_state.blend),
+            "color=one*src add zero*dst alpha=one*src add zero*dst"
         );
     }
 }
