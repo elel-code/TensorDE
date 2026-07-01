@@ -9,7 +9,7 @@ use super::{
 };
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 2;
+pub const SCENE_BINARY_VERSION: u16 = 3;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -17,7 +17,7 @@ pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 72;
-pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 32;
+pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 64;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 48;
@@ -756,6 +756,14 @@ pub struct SceneBinaryGeometryRecord {
     pub index_count: u32,
     pub material_uv_count: u32,
     pub topology_id: u32,
+    pub bounds_min_x: f32,
+    pub bounds_min_y: f32,
+    pub bounds_max_x: f32,
+    pub bounds_max_y: f32,
+    pub uv_min_u: f32,
+    pub uv_min_v: f32,
+    pub uv_max_u: f32,
+    pub uv_max_v: f32,
 }
 
 impl SceneBinaryGeometryRecord {
@@ -769,7 +777,15 @@ impl SceneBinaryGeometryRecord {
         write_u32(out, self.index_count);
         write_u32(out, self.material_uv_count);
         write_u32(out, self.topology_id);
-        debug_assert_eq!(SCENE_BINARY_GEOMETRY_RECORD_SIZE, 32);
+        write_f32(out, self.bounds_min_x);
+        write_f32(out, self.bounds_min_y);
+        write_f32(out, self.bounds_max_x);
+        write_f32(out, self.bounds_max_y);
+        write_f32(out, self.uv_min_u);
+        write_f32(out, self.uv_min_v);
+        write_f32(out, self.uv_max_u);
+        write_f32(out, self.uv_max_v);
+        debug_assert_eq!(SCENE_BINARY_GEOMETRY_RECORD_SIZE, 64);
     }
 }
 
@@ -2069,6 +2085,7 @@ impl SceneBinaryPayloadBuilder {
                     saturating_u32(mesh.indices.len()),
                 )
             });
+            let ranges = geometry_ranges(node);
             SceneBinaryGeometryRecord {
                 owner_name,
                 kind: node_kind_code(node.kind),
@@ -2077,8 +2094,16 @@ impl SceneBinaryPayloadBuilder {
                 height: node.height.unwrap_or(0.0) as f32,
                 vertex_count,
                 index_count,
-                material_uv_count: u32::from(node.mesh.is_some()),
+                material_uv_count: u32::from(geometry_has_uv(node)),
                 topology_id: vertex_count ^ index_count.rotate_left(16),
+                bounds_min_x: ranges.bounds_min_x,
+                bounds_min_y: ranges.bounds_min_y,
+                bounds_max_x: ranges.bounds_max_x,
+                bounds_max_y: ranges.bounds_max_y,
+                uv_min_u: ranges.uv_min_u,
+                uv_min_v: ranges.uv_min_v,
+                uv_max_u: ranges.uv_max_u,
+                uv_max_v: ranges.uv_max_v,
             }
             .encode(out)
         })
@@ -2675,6 +2700,87 @@ fn geometry_flags(node: &SceneNode) -> u16 {
         | (u16::from(node.mesh.is_some()) << 2)
         | (u16::from(node.path_data.is_some()) << 3)
         | (u16::from(node.text.is_some()) << 4)
+        | (u16::from(geometry_has_bounds(node)) << 5)
+        | (u16::from(geometry_has_uv(node)) << 6)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryGeometryRanges {
+    bounds_min_x: f32,
+    bounds_min_y: f32,
+    bounds_max_x: f32,
+    bounds_max_y: f32,
+    uv_min_u: f32,
+    uv_min_v: f32,
+    uv_max_u: f32,
+    uv_max_v: f32,
+}
+
+fn geometry_ranges(node: &SceneNode) -> SceneBinaryGeometryRanges {
+    if let Some(mesh) = node.mesh.as_ref() {
+        return mesh_geometry_ranges(mesh);
+    }
+    let width = node.width.unwrap_or(0.0) as f32;
+    let height = node.height.unwrap_or(0.0) as f32;
+    let uv_max = if geometry_has_uv(node) { 1.0 } else { 0.0 };
+    SceneBinaryGeometryRanges {
+        bounds_min_x: 0.0,
+        bounds_min_y: 0.0,
+        bounds_max_x: width,
+        bounds_max_y: height,
+        uv_min_u: 0.0,
+        uv_min_v: 0.0,
+        uv_max_u: uv_max,
+        uv_max_v: uv_max,
+    }
+}
+
+fn mesh_geometry_ranges(mesh: &super::SceneMesh) -> SceneBinaryGeometryRanges {
+    let Some(first) = mesh.vertices.first() else {
+        return SceneBinaryGeometryRanges {
+            bounds_min_x: 0.0,
+            bounds_min_y: 0.0,
+            bounds_max_x: 0.0,
+            bounds_max_y: 0.0,
+            uv_min_u: 0.0,
+            uv_min_v: 0.0,
+            uv_max_u: 0.0,
+            uv_max_v: 0.0,
+        };
+    };
+    let mut ranges = SceneBinaryGeometryRanges {
+        bounds_min_x: first.x as f32,
+        bounds_min_y: first.y as f32,
+        bounds_max_x: first.x as f32,
+        bounds_max_y: first.y as f32,
+        uv_min_u: first.u as f32,
+        uv_min_v: first.v as f32,
+        uv_max_u: first.u as f32,
+        uv_max_v: first.v as f32,
+    };
+    for vertex in &mesh.vertices[1..] {
+        let x = vertex.x as f32;
+        let y = vertex.y as f32;
+        let u = vertex.u as f32;
+        let v = vertex.v as f32;
+        ranges.bounds_min_x = ranges.bounds_min_x.min(x);
+        ranges.bounds_min_y = ranges.bounds_min_y.min(y);
+        ranges.bounds_max_x = ranges.bounds_max_x.max(x);
+        ranges.bounds_max_y = ranges.bounds_max_y.max(y);
+        ranges.uv_min_u = ranges.uv_min_u.min(u);
+        ranges.uv_min_v = ranges.uv_min_v.min(v);
+        ranges.uv_max_u = ranges.uv_max_u.max(u);
+        ranges.uv_max_v = ranges.uv_max_v.max(v);
+    }
+    ranges
+}
+
+fn geometry_has_bounds(node: &SceneNode) -> bool {
+    node.mesh.is_some() || node.width.is_some() || node.height.is_some()
+}
+
+fn geometry_has_uv(node: &SceneNode) -> bool {
+    node.mesh.is_some() || matches!(node.kind, SceneNodeKind::Image | SceneNodeKind::Video)
 }
 
 fn material_flags(
@@ -3151,6 +3257,14 @@ fn decode_geometry_record(bytes: &[u8]) -> Result<SceneBinaryGeometryRecord, Sce
         index_count: read_u32(bytes, 20)?,
         material_uv_count: read_u32(bytes, 24)?,
         topology_id: read_u32(bytes, 28)?,
+        bounds_min_x: read_f32(bytes, 32)?,
+        bounds_min_y: read_f32(bytes, 36)?,
+        bounds_max_x: read_f32(bytes, 40)?,
+        bounds_max_y: read_f32(bytes, 44)?,
+        uv_min_u: read_f32(bytes, 48)?,
+        uv_min_v: read_f32(bytes, 52)?,
+        uv_max_u: read_f32(bytes, 56)?,
+        uv_max_v: read_f32(bytes, 60)?,
     })
 }
 
@@ -3823,6 +3937,24 @@ mod tests {
         assert_eq!(nodes[0].effect_count, 1);
         assert_ne!(nodes[0].material_index, SCENE_BINARY_NONE_ID);
         assert_ne!(nodes[0].geometry_index, SCENE_BINARY_NONE_ID);
+
+        let geometry = layout
+            .geometry_records(&bytes)
+            .expect("geometry records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded geometry records");
+        assert_eq!(geometry.len(), 1);
+        assert_eq!(geometry[0].vertex_count, 0);
+        assert_eq!(geometry[0].index_count, 0);
+        assert_eq!(geometry[0].material_uv_count, 1);
+        assert_eq!(geometry[0].bounds_min_x, 0.0);
+        assert_eq!(geometry[0].bounds_min_y, 0.0);
+        assert_eq!(geometry[0].bounds_max_x, 64.0);
+        assert_eq!(geometry[0].bounds_max_y, 64.0);
+        assert_eq!(geometry[0].uv_min_u, 0.0);
+        assert_eq!(geometry[0].uv_min_v, 0.0);
+        assert_eq!(geometry[0].uv_max_u, 1.0);
+        assert_eq!(geometry[0].uv_max_v, 1.0);
 
         let materials = layout
             .material_pass_records(&bytes)
