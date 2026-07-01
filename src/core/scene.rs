@@ -25,6 +25,10 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     *value == T::default()
 }
 
+fn is_default_opacity(value: &f64) -> bool {
+    (*value - 1.0).abs() <= f64::EPSILON
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneDocument {
     #[serde(default = "default_scene_version")]
@@ -430,6 +434,8 @@ impl SceneDocument {
             source: None,
             texture_slots: Vec::new(),
             alpha_texture_slot: None,
+            alpha_texture_mode: SceneAlphaTextureMode::Multiply,
+            image_effect_passes: Vec::new(),
             composite_key: None,
             texture_region: None,
             effect_motion: SceneNativeEffectMotion::default(),
@@ -996,8 +1002,12 @@ impl SceneNode {
                 .as_deref()
                 .and_then(|resource| resources.get(resource))
                 .copied();
-            let (texture_slots, alpha_texture_slot) =
+            let (texture_slots, alpha_texture_slot, alpha_texture_mode) =
                 scene_texture_slots_for_node(source_resource, &self.effects, |resource_id| {
+                    resources.get(resource_id).copied()
+                });
+            let image_effect_passes =
+                scene_image_effect_passes_for_node(&self.effects, |resource_id| {
                     resources.get(resource_id).copied()
                 });
             let composite_key = self.scene_layer_composite_key(source_resource);
@@ -1007,6 +1017,8 @@ impl SceneNode {
                 source: source_resource.map(|resource| resource.source.clone()),
                 texture_slots,
                 alpha_texture_slot,
+                alpha_texture_mode,
+                image_effect_passes,
                 composite_key,
                 texture_region,
                 effect_motion: layer_effect.motion,
@@ -1192,8 +1204,12 @@ impl SceneNode {
                 .resource
                 .as_deref()
                 .and_then(|resource| build_index.resource(resources, resource));
-            let (texture_slots, alpha_texture_slot) =
+            let (texture_slots, alpha_texture_slot, alpha_texture_mode) =
                 scene_texture_slots_for_node(source_resource, &self.effects, |resource_id| {
+                    build_index.resource(resources, resource_id)
+                });
+            let image_effect_passes =
+                scene_image_effect_passes_for_node(&self.effects, |resource_id| {
                     build_index.resource(resources, resource_id)
                 });
             let composite_key = self.scene_layer_composite_key(source_resource);
@@ -1209,11 +1225,15 @@ impl SceneNode {
                 scene_native_effect_adjustment_at(&self.effects, width, height, time_ms);
             let layer_transform = layer_effect.apply_transform(transform);
             let layer_opacity = layer_effect.apply_opacity(opacity);
+            let puppet_animation_frames = self.snapshot_puppet_animation_frames_at(time_ms);
             let mesh = self.snapshot_mesh_at(time_ms);
             let layer = SceneSnapshotSampledImageLayer {
+                id: self.id.clone(),
                 has_source: source_resource.is_some(),
                 texture_slots,
                 alpha_texture_slot,
+                alpha_texture_mode,
+                image_effect_passes,
                 composite_key,
                 texture_region: scene_texture_region_from_properties(&self.properties, time_ms),
                 width,
@@ -1225,6 +1245,7 @@ impl SceneNode {
                 fit: self.fit,
                 opacity: layer_opacity,
                 transform: layer_transform,
+                puppet_animation_frames,
             };
             if scene_sampled_image_snapshot_layer_intersects_visibility(&layer, visibility) {
                 output.push(layer);
@@ -1376,6 +1397,8 @@ impl SceneNode {
                 source: None,
                 texture_slots: Vec::new(),
                 alpha_texture_slot: None,
+                alpha_texture_mode: SceneAlphaTextureMode::Multiply,
+                image_effect_passes: Vec::new(),
                 composite_key: None,
                 texture_region: None,
                 effect_motion: layer_effect.motion,
@@ -1515,6 +1538,8 @@ impl SceneNode {
                     })
                     .unwrap_or_default(),
                 alpha_texture_slot: None,
+                alpha_texture_mode: SceneAlphaTextureMode::Multiply,
+                image_effect_passes: Vec::new(),
                 composite_key: None,
                 texture_region,
                 effect_motion: SceneNativeEffectMotion::default(),
@@ -1611,9 +1636,12 @@ impl SceneNode {
                 continue;
             }
             output.push(SceneSnapshotSampledImageLayer {
+                id: format!("{}#particle-{index}", self.id),
                 has_source: true,
                 texture_slots: texture_slots.clone(),
                 alpha_texture_slot: None,
+                alpha_texture_mode: SceneAlphaTextureMode::Multiply,
+                image_effect_passes: Vec::new(),
                 composite_key: None,
                 texture_region,
                 width: Some(settings.particle_width),
@@ -1625,6 +1653,7 @@ impl SceneNode {
                 fit: self.fit,
                 opacity: layer_opacity.clamp(0.0, 1.0),
                 transform: particle_transform,
+                puppet_animation_frames: Vec::new(),
             });
         }
         true
@@ -1690,6 +1719,8 @@ impl SceneNode {
                 source: None,
                 texture_slots: Vec::new(),
                 alpha_texture_slot: None,
+                alpha_texture_mode: SceneAlphaTextureMode::Multiply,
+                image_effect_passes: Vec::new(),
                 composite_key: None,
                 texture_region: None,
                 effect_motion: SceneNativeEffectMotion::default(),
@@ -1752,6 +1783,19 @@ impl SceneNode {
         mesh.sample_puppet_animation(&self.puppet_animation_layers, time_ms)
             .map(Arc::new)
             .or_else(|| Some(mesh.clone()))
+    }
+
+    fn snapshot_puppet_animation_frames_at(
+        &self,
+        time_ms: u64,
+    ) -> Vec<ScenePuppetAnimationFrameDebug> {
+        let Some(mesh) = self.mesh.as_ref() else {
+            return Vec::new();
+        };
+        if self.puppet_animation_layers.is_empty() {
+            return Vec::new();
+        }
+        mesh.puppet_animation_frame_debug(&self.puppet_animation_layers, time_ms)
     }
 
     fn snapshot_puppet_attachment_deltas(
@@ -2177,6 +2221,16 @@ pub struct SceneEffectPass {
     #[serde(default)]
     pub id: Option<i64>,
     #[serde(default)]
+    pub shader: Option<String>,
+    #[serde(default)]
+    pub blending: Option<String>,
+    #[serde(default)]
+    pub depthtest: Option<String>,
+    #[serde(default)]
+    pub depthwrite: Option<String>,
+    #[serde(default)]
+    pub cullmode: Option<String>,
+    #[serde(default)]
     pub textures: Vec<Option<String>>,
     #[serde(default)]
     pub texture_resources: Vec<Option<String>>,
@@ -2190,6 +2244,21 @@ pub struct SceneEffectPass {
 
 impl SceneEffectPass {
     fn validate(&self, node_id: &str, effect_file: &str) -> Result<(), SceneError> {
+        for (field, value) in [
+            ("shader", self.shader.as_deref()),
+            ("blending", self.blending.as_deref()),
+            ("depthtest", self.depthtest.as_deref()),
+            ("depthwrite", self.depthwrite.as_deref()),
+            ("cullmode", self.cullmode.as_deref()),
+        ] {
+            if let Some(value) = value
+                && value.trim().is_empty()
+            {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} effect {effect_file:?} pass {field} must not be empty"
+                )));
+            }
+        }
         for texture in self.textures.iter().flatten() {
             if texture.trim().is_empty() {
                 return Err(SceneError::invalid(format!(
@@ -2300,6 +2369,16 @@ pub enum SceneBlendMode {
     Multiply,
     Screen,
     Max,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneAlphaTextureMode {
+    #[default]
+    Multiply,
+    Inverse,
+    Iris,
+    Coverage,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -2774,17 +2853,18 @@ fn scene_texture_slots_for_node<'a>(
     base_resource: Option<&'a SceneResource>,
     effects: &[SceneEffect],
     mut resolve_resource: impl FnMut(&str) -> Option<&'a SceneResource>,
-) -> (Vec<SceneTextureSlot>, Option<u32>) {
+) -> (Vec<SceneTextureSlot>, Option<u32>, SceneAlphaTextureMode) {
     let mut slots = Vec::new();
     if let Some(resource) = base_resource {
         scene_push_texture_slot(&mut slots, 0, resource);
     }
 
     let mut alpha_texture_slot = None;
-    for effect in effects
-        .iter()
-        .filter(|effect| scene_effect_uses_alpha_texture_slot(effect))
-    {
+    let mut alpha_texture_mode = SceneAlphaTextureMode::Multiply;
+    for effect in effects {
+        let Some(effect_mode) = scene_effect_alpha_texture_mode(effect) else {
+            continue;
+        };
         for pass in &effect.passes {
             for (slot, resource_id) in pass.texture_resources.iter().enumerate().skip(1) {
                 let Some(resource_id) = resource_id.as_deref() else {
@@ -2797,12 +2877,57 @@ fn scene_texture_slots_for_node<'a>(
                     continue;
                 };
                 scene_push_texture_slot(&mut slots, slot, resource);
-                alpha_texture_slot.get_or_insert(slot);
+                if alpha_texture_slot.is_none() {
+                    alpha_texture_slot = Some(slot);
+                    alpha_texture_mode = effect_mode;
+                }
             }
         }
     }
 
-    (slots, alpha_texture_slot)
+    (slots, alpha_texture_slot, alpha_texture_mode)
+}
+
+fn scene_image_effect_passes_for_node<'a>(
+    effects: &[SceneEffect],
+    mut resolve_resource: impl FnMut(&str) -> Option<&'a SceneResource>,
+) -> Vec<SceneImageEffectPass> {
+    let mut passes = Vec::new();
+    for effect in effects {
+        if effect
+            .visible
+            .as_ref()
+            .and_then(scene_runtime_visibility_value_bool)
+            .is_some_and(|visible| !visible)
+        {
+            continue;
+        }
+        for (pass_index, pass) in effect.passes.iter().enumerate() {
+            let mut texture_slots = Vec::new();
+            for (slot, resource_id) in pass.texture_resources.iter().enumerate() {
+                let Some(resource_id) = resource_id.as_deref() else {
+                    continue;
+                };
+                let Some(resource) = resolve_resource(resource_id) else {
+                    continue;
+                };
+                let Ok(slot) = u32::try_from(slot) else {
+                    continue;
+                };
+                scene_push_texture_slot(&mut texture_slots, slot, resource);
+            }
+            passes.push(SceneImageEffectPass {
+                effect_file: effect.file.clone(),
+                runtime: scene_image_effect_pass_runtime(effect),
+                pass_index,
+                shader: pass.shader.clone(),
+                blending: pass.blending.clone(),
+                texture_slots,
+                constant_shader_values: pass.constant_shader_values.clone(),
+            });
+        }
+    }
+    passes
 }
 
 fn scene_push_texture_slot(slots: &mut Vec<SceneTextureSlot>, slot: u32, resource: &SceneResource) {
@@ -2837,9 +2962,23 @@ fn scene_push_texture_slot_value(
     true
 }
 
-fn scene_effect_uses_alpha_texture_slot(effect: &SceneEffect) -> bool {
+fn scene_effect_alpha_texture_mode(effect: &SceneEffect) -> Option<SceneAlphaTextureMode> {
     let file = effect.file.replace('\\', "/").to_ascii_lowercase();
-    file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json")
+    if file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json") {
+        return Some(SceneAlphaTextureMode::Multiply);
+    }
+    None
+}
+
+fn scene_image_effect_pass_runtime(effect: &SceneEffect) -> Option<String> {
+    let file = effect.file.replace('\\', "/").to_ascii_lowercase();
+    if file == "effects/opacity/effect.json" || file.ends_with("/effects/opacity/effect.json") {
+        return Some("native-opacity-mask".to_owned());
+    }
+    if file == "effects/iris/effect.json" || file.ends_with("/effects/iris/effect.json") {
+        return Some("native-iris-mask".to_owned());
+    }
+    effect.runtime.clone()
 }
 
 impl SceneSnapshotVisibility {
@@ -2900,6 +3039,17 @@ pub struct SceneTextureSlot {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SceneImageEffectPass {
+    pub effect_file: String,
+    pub runtime: Option<String>,
+    pub pass_index: usize,
+    pub shader: Option<String>,
+    pub blending: Option<String>,
+    pub texture_slots: Vec<SceneTextureSlot>,
+    pub constant_shader_values: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneLayerCompositeKey {
     pub parent_source_id: Option<String>,
@@ -2915,6 +3065,8 @@ pub struct SceneSnapshotLayer {
     pub source: Option<PackagePath>,
     pub texture_slots: Vec<SceneTextureSlot>,
     pub alpha_texture_slot: Option<u32>,
+    pub alpha_texture_mode: SceneAlphaTextureMode,
+    pub image_effect_passes: Vec<SceneImageEffectPass>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     pub effect_motion: SceneNativeEffectMotion,
@@ -2943,9 +3095,12 @@ pub struct SceneSnapshotLayer {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SceneSnapshotSampledImageLayer {
+    pub id: String,
     pub has_source: bool,
     pub texture_slots: Vec<SceneTextureSlot>,
     pub alpha_texture_slot: Option<u32>,
+    pub alpha_texture_mode: SceneAlphaTextureMode,
+    pub image_effect_passes: Vec<SceneImageEffectPass>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     pub width: Option<f64>,
@@ -2957,6 +3112,7 @@ pub struct SceneSnapshotSampledImageLayer {
     pub fit: FitMode,
     pub opacity: f64,
     pub transform: SceneTransform,
+    pub puppet_animation_frames: Vec<ScenePuppetAnimationFrameDebug>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -3274,7 +3430,8 @@ impl SceneMesh {
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<SceneMesh> {
-        let (skin, bind_world, pose_world) = self.sample_puppet_pose_world(layers, time_ms)?;
+        let (skin, local_pose, bind_world, pose_world) =
+            self.sample_puppet_pose_world(layers, time_ms)?;
         let inverse_bind_world = bind_world
             .iter()
             .map(|matrix| scene_puppet_inverse_affine_matrix(*matrix))
@@ -3311,6 +3468,22 @@ impl SceneMesh {
                 y: sampled_y,
                 u: vertex.u,
                 v: vertex.v,
+                opacity: if total_weight > f64::EPSILON {
+                    (0..4)
+                        .filter_map(|slot| {
+                            let weight = skin_vertex.weights[slot];
+                            (weight.is_finite() && weight > f64::EPSILON).then(|| {
+                                let bone_index = skin_vertex.bone_indices[slot];
+                                local_pose
+                                    .get(bone_index)
+                                    .map(|pose| pose.opacity.clamp(0.0, 1.0) * weight)
+                            })?
+                        })
+                        .sum::<f64>()
+                        / total_weight
+                } else {
+                    vertex.opacity
+                },
             });
         }
 
@@ -3322,12 +3495,59 @@ impl SceneMesh {
         })
     }
 
+    fn puppet_animation_frame_debug(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Vec<ScenePuppetAnimationFrameDebug> {
+        let Some(skin) = self.skin.as_ref() else {
+            return Vec::new();
+        };
+        if skin.bones.is_empty() {
+            return Vec::new();
+        }
+        let mut frames = Vec::new();
+        for layer in layers {
+            if !layer.visible || layer.blend <= 0.0 {
+                continue;
+            }
+            let Some(clip) = self
+                .puppet_clips
+                .iter()
+                .find(|clip| clip.id == layer.clip_id)
+            else {
+                continue;
+            };
+            let Some(timing) = clip.sample_timing(layer, time_ms) else {
+                continue;
+            };
+            frames.push(ScenePuppetAnimationFrameDebug {
+                clip_id: clip.id,
+                clip_name: clip.name.clone(),
+                layer_name: layer.name.clone(),
+                fps: clip.fps,
+                frame_count: clip.frame_count,
+                looping: clip.looping,
+                rate: layer.rate,
+                initial_phase: layer.initial_phase,
+                blend: layer.blend,
+                additive: layer.additive,
+                frame: timing.frame,
+                frame0: timing.frame0,
+                frame1: timing.frame1,
+                mix: timing.mix,
+            });
+        }
+        frames
+    }
+
     fn sample_puppet_attachment_deltas(
         &self,
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
-        let (skin, bind_world, pose_world) = self.sample_puppet_pose_world(layers, time_ms)?;
+        let (skin, _local_pose, bind_world, pose_world) =
+            self.sample_puppet_pose_world(layers, time_ms)?;
         if skin.attachments.is_empty() {
             return None;
         }
@@ -3358,7 +3578,12 @@ impl SceneMesh {
         &self,
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
-    ) -> Option<(&SceneMeshSkin, Vec<[f64; 16]>, Vec<[f64; 16]>)> {
+    ) -> Option<(
+        &SceneMeshSkin,
+        Vec<ScenePuppetTransform>,
+        Vec<[f64; 16]>,
+        Vec<[f64; 16]>,
+    )> {
         let (skin, local_pose) = self.sample_puppet_local_pose(layers, time_ms)?;
         let bind_world = scene_puppet_world_matrices(
             skin.bones.iter().map(|bone| bone.parent),
@@ -3368,7 +3593,7 @@ impl SceneMesh {
             skin.bones.iter().map(|bone| bone.parent),
             local_pose.iter().map(|transform| transform.matrix()),
         )?;
-        Some((skin, bind_world, pose_world))
+        Some((skin, local_pose, bind_world, pose_world))
     }
 
     fn sample_puppet_local_pose(
@@ -3407,12 +3632,29 @@ impl SceneMesh {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneMeshVertex {
     pub x: f64,
     pub y: f64,
     pub u: f64,
     pub v: f64,
+    #[serde(
+        default = "default_opacity",
+        skip_serializing_if = "is_default_opacity"
+    )]
+    pub opacity: f64,
+}
+
+impl Default for SceneMeshVertex {
+    fn default() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            u: 0.0,
+            v: 0.0,
+            opacity: 1.0,
+        }
+    }
 }
 
 impl SceneMeshVertex {
@@ -3424,6 +3666,10 @@ impl SceneMeshVertex {
                 )));
             }
         }
+        validate_opacity(
+            self.opacity,
+            &format!("node {node_id:?} mesh vertex {index}"),
+        )?;
         Ok(())
     }
 }
@@ -3570,6 +3816,32 @@ pub struct ScenePuppetAnimationClip {
     pub bones: Vec<ScenePuppetAnimationBone>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScenePuppetAnimationFrameDebug {
+    pub clip_id: u32,
+    pub clip_name: Option<String>,
+    pub layer_name: Option<String>,
+    pub fps: f64,
+    pub frame_count: u32,
+    pub looping: bool,
+    pub rate: f64,
+    pub initial_phase: f64,
+    pub blend: f64,
+    pub additive: bool,
+    pub frame: f64,
+    pub frame0: usize,
+    pub frame1: usize,
+    pub mix: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ScenePuppetAnimationFrameTiming {
+    frame: f64,
+    frame0: usize,
+    frame1: usize,
+    mix: f64,
+}
+
 impl ScenePuppetAnimationClip {
     fn validate(&self, node_id: &str, bone_count: usize) -> Result<(), SceneError> {
         if self.fps <= 0.0 || !self.fps.is_finite() {
@@ -3603,7 +3875,25 @@ impl ScenePuppetAnimationClip {
         time_ms: u64,
         bone_count: usize,
     ) -> Option<Vec<ScenePuppetTransform>> {
-        if self.bones.len() != bone_count || self.frame_count == 0 || self.fps <= 0.0 {
+        if self.bones.len() != bone_count {
+            return None;
+        }
+        let timing = self.sample_timing(layer, time_ms)?;
+        let mut pose = Vec::with_capacity(bone_count);
+        for bone in &self.bones {
+            let first = *bone.frames.get(timing.frame0)?;
+            let second = *bone.frames.get(timing.frame1)?;
+            pose.push(first.lerp(second, timing.mix));
+        }
+        Some(pose)
+    }
+
+    fn sample_timing(
+        &self,
+        layer: &ScenePuppetAnimationLayer,
+        time_ms: u64,
+    ) -> Option<ScenePuppetAnimationFrameTiming> {
+        if self.frame_count == 0 || self.fps <= 0.0 {
             return None;
         }
         let duration_frames = f64::from(self.frame_count);
@@ -3617,13 +3907,12 @@ impl ScenePuppetAnimationClip {
         let frame0 = frame.floor().min(duration_frames) as usize;
         let frame1 = (frame0 + 1).min(self.frame_count as usize);
         let mix = (frame - frame0 as f64).clamp(0.0, 1.0);
-        let mut pose = Vec::with_capacity(bone_count);
-        for bone in &self.bones {
-            let first = *bone.frames.get(frame0)?;
-            let second = *bone.frames.get(frame1)?;
-            pose.push(first.lerp(second, mix));
-        }
-        Some(pose)
+        Some(ScenePuppetAnimationFrameTiming {
+            frame,
+            frame0,
+            frame1,
+            mix,
+        })
     }
 }
 
@@ -3658,6 +3947,11 @@ pub struct ScenePuppetTransform {
     pub rotation: [f64; 3],
     #[serde(default = "scene_puppet_default_scale")]
     pub scale: [f64; 3],
+    #[serde(
+        default = "default_opacity",
+        skip_serializing_if = "is_default_opacity"
+    )]
+    pub opacity: f64,
 }
 
 impl Default for ScenePuppetTransform {
@@ -3666,6 +3960,7 @@ impl Default for ScenePuppetTransform {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
+            opacity: 1.0,
         }
     }
 }
@@ -3685,6 +3980,7 @@ impl ScenePuppetTransform {
                 }
             }
         }
+        validate_opacity(self.opacity, label)?;
         Ok(())
     }
 
@@ -3707,6 +4003,7 @@ impl ScenePuppetTransform {
                 scene_lerp(self.scale[1], target.scale[1], mix),
                 scene_lerp(self.scale[2], target.scale[2], mix),
             ],
+            opacity: scene_lerp(self.opacity, target.opacity, mix).clamp(0.0, 1.0),
         }
     }
 
@@ -3731,6 +4028,7 @@ impl ScenePuppetTransform {
                 self.scale[1] + (target.scale[1] - bind.scale[1]) * mix,
                 self.scale[2] + (target.scale[2] - bind.scale[2]) * mix,
             ],
+            opacity: (self.opacity + (target.opacity - bind.opacity) * mix).clamp(0.0, 1.0),
         }
     }
 
@@ -4607,6 +4905,68 @@ mod tests {
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
         assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Screen);
         assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Screen);
+    }
+
+    #[test]
+    fn iris_effect_mask_stays_effect_metadata_not_alpha_texture_shortcut() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-eye", "type": "image", "source": "assets/eye.gtex", "width": 663, "height": 230 },
+                { "id": "resource-iris-mask", "type": "image", "source": "assets/iris-mask.gtex", "width": 331, "height": 115 }
+            ],
+            "nodes": [
+                {
+                    "id": "node-eye",
+                    "type": "image",
+                    "resource": "resource-eye",
+                    "width": 663,
+                    "height": 230,
+                    "effects": [
+                        {
+                            "file": "effects/iris/effect.json",
+                            "runtime": "wallpaper-engine-effect",
+                            "passes": [
+                                {
+                                    "shader": "effects/iris",
+                                    "blending": "normal",
+                                    "texture_resources": [null, "resource-iris-mask"]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+
+        let mut layers = Vec::new();
+        document.snapshot_sampled_image_layers_at_with_resolvers(
+            0,
+            |_| None,
+            |_| None,
+            &mut layers,
+        );
+
+        assert_eq!(layers.len(), 1);
+        assert_eq!(layers[0].alpha_texture_slot, None);
+        assert_eq!(
+            layers[0].alpha_texture_mode,
+            SceneAlphaTextureMode::Multiply
+        );
+        assert_eq!(layers[0].texture_slots.len(), 1);
+        assert_eq!(layers[0].image_effect_passes.len(), 1);
+        let pass = &layers[0].image_effect_passes[0];
+        assert_eq!(pass.effect_file, "effects/iris/effect.json");
+        assert_eq!(pass.runtime.as_deref(), Some("native-iris-mask"));
+        assert_eq!(pass.pass_index, 0);
+        assert_eq!(pass.shader.as_deref(), Some("effects/iris"));
+        assert_eq!(pass.blending.as_deref(), Some("normal"));
+        assert_eq!(pass.texture_slots.len(), 1);
+        assert_eq!(pass.texture_slots[0].slot, 1);
+        assert_eq!(
+            pass.texture_slots[0].source.as_str(),
+            "assets/iris-mask.gtex"
+        );
     }
 
     #[test]

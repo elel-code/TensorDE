@@ -1728,6 +1728,7 @@ struct ScenePuppetTransform {
     translation: [f64; 3],
     rotation: [f64; 3],
     scale: [f64; 3],
+    opacity: f64,
 }
 
 impl ScenePuppetTransform {
@@ -1736,15 +1737,22 @@ impl ScenePuppetTransform {
             translation: [0.0, 0.0, 0.0],
             rotation: [0.0, 0.0, 0.0],
             scale: [1.0, 1.0, 1.0],
+            opacity: 1.0,
         }
     }
 
     fn to_value(self) -> Value {
-        json!({
+        let mut value = json!({
             "translation": self.translation,
             "rotation": self.rotation,
             "scale": self.scale
-        })
+        });
+        if (self.opacity - 1.0).abs() > 0.000_01
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("opacity".to_owned(), json!(self.opacity));
+        }
+        value
     }
 }
 
@@ -1760,16 +1768,23 @@ struct ScenePuppetMeshVertex {
     y: f64,
     u: f64,
     v: f64,
+    opacity: f64,
 }
 
 impl ScenePuppetMeshVertex {
     fn to_value(&self) -> Value {
-        json!({
+        let mut value = json!({
             "x": self.x,
             "y": self.y,
             "u": self.u,
             "v": self.v
-        })
+        });
+        if (self.opacity - 1.0).abs() > 0.000_01
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("opacity".to_owned(), json!(self.opacity));
+        }
+        value
     }
 }
 
@@ -4874,7 +4889,13 @@ fn scene_puppet_mesh_from_block(
         min_y = min_y.min(y);
         max_x = max_x.max(x);
         max_y = max_y.max(y);
-        vertices.push(ScenePuppetMeshVertex { x, y, u, v });
+        vertices.push(ScenePuppetMeshVertex {
+            x,
+            y,
+            u,
+            v,
+            opacity: 1.0,
+        });
         skin_vertices.push(ScenePuppetSkinVertex {
             bone_indices: [
                 usize::try_from(scene_read_u32_le_at(bytes, bone_index_base)?).ok()?,
@@ -5117,9 +5138,26 @@ fn scene_parse_puppet_animation_clips(
                         scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame scale y")?,
                         scene_take_f32_le(bytes, &mut position, mdla_end, "MDLA frame scale z")?,
                     ],
+                    opacity: 1.0,
                 });
             }
             bones.push(ScenePuppetAnimationBone { frames });
+        }
+        let opacity_tracks = scene_parse_puppet_animation_opacity_tracks(
+            bytes,
+            &mut position,
+            mdla_end,
+            clip_bone_count,
+            expected_samples,
+        )
+        .unwrap_or_default();
+        for (bone_index, opacity_frames) in opacity_tracks.into_iter().enumerate() {
+            let Some(bone) = bones.get_mut(bone_index) else {
+                continue;
+            };
+            for (frame, opacity) in bone.frames.iter_mut().zip(opacity_frames) {
+                frame.opacity = opacity.clamp(0.0, 1.0);
+            }
         }
         clips.push(ScenePuppetAnimationClip {
             id: clip_id,
@@ -5131,6 +5169,57 @@ fn scene_parse_puppet_animation_clips(
         });
     }
     Ok(clips)
+}
+
+fn scene_parse_puppet_animation_opacity_tracks(
+    bytes: &[u8],
+    position: &mut usize,
+    mdla_end: usize,
+    bone_count: usize,
+    sample_count: usize,
+) -> Option<Vec<Vec<f64>>> {
+    let track_bytes = sample_count.checked_mul(4)?;
+    let block_bytes = track_bytes.checked_add(8)?;
+    let start = *position;
+    for preamble_bytes in 0..=16usize {
+        let base = start.checked_add(preamble_bytes)?;
+        let total_bytes = bone_count.checked_mul(block_bytes)?;
+        let end = base.checked_add(total_bytes)?;
+        if end > mdla_end || end > bytes.len() {
+            continue;
+        }
+        let mut tracks = Vec::with_capacity(bone_count);
+        let mut valid = true;
+        for bone_index in 0..bone_count {
+            let block = base + bone_index * block_bytes;
+            let byte_count = usize::try_from(scene_read_u32_le_at(bytes, block + 4)?).ok()?;
+            if byte_count != track_bytes {
+                valid = false;
+                break;
+            }
+            let data_start = block + 8;
+            let data_end = data_start + track_bytes;
+            let mut frames = Vec::with_capacity(sample_count);
+            for offset in (data_start..data_end).step_by(4) {
+                let value = f64::from(scene_read_f32_le_at(bytes, offset)?);
+                if !value.is_finite() {
+                    valid = false;
+                    break;
+                }
+                frames.push(value.clamp(0.0, 1.0));
+            }
+            if !valid || frames.len() != sample_count {
+                valid = false;
+                break;
+            }
+            tracks.push(frames);
+        }
+        if valid {
+            *position = end;
+            return Some(tracks);
+        }
+    }
+    None
 }
 
 fn scene_puppet_transform_from_mdl_matrix(matrix: [f64; 16]) -> ScenePuppetTransform {
@@ -5147,6 +5236,7 @@ fn scene_puppet_transform_from_mdl_matrix(matrix: [f64; 16]) -> ScenePuppetTrans
         translation: [matrix[12], matrix[13], matrix[14]],
         rotation: [0.0, 0.0, (matrix[1] / scale_x).atan2(matrix[0] / scale_x)],
         scale: [scale_x, scale_y, scale_z],
+        opacity: 1.0,
     }
 }
 

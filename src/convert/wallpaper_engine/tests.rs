@@ -3078,12 +3078,26 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
     assert_eq!(snapshot.layers[0].texture_slots.len(), 1);
     assert_eq!(snapshot.layers[1].id, "node-2-models-eye-json");
     assert_eq!(snapshot.layers[1].alpha_texture_slot, Some(1));
+    assert_eq!(
+        snapshot.layers[1].alpha_texture_mode,
+        crate::core::SceneAlphaTextureMode::Multiply
+    );
+    assert_eq!(snapshot.layers[1].opacity, 1.0);
     assert_eq!(snapshot.layers[1].texture_slots.len(), 2);
     assert_eq!(snapshot.layers[1].texture_slots[1].slot, 1);
     assert_eq!(
         snapshot.layers[1].texture_slots[1].source.as_str(),
         mask_source.as_str()
     );
+    assert!(snapshot.layers[0].image_effect_passes.is_empty());
+    assert_eq!(snapshot.layers[1].image_effect_passes.len(), 1);
+    let opacity_pass = &snapshot.layers[1].image_effect_passes[0];
+    assert_eq!(opacity_pass.effect_file, "effects/opacity/effect.json");
+    assert_eq!(opacity_pass.runtime.as_deref(), Some("native-opacity-mask"));
+    assert_eq!(opacity_pass.pass_index, 0);
+    assert_eq!(opacity_pass.texture_slots.len(), 1);
+    assert_eq!(opacity_pass.texture_slots[0].slot, 1);
+    assert_eq!(opacity_pass.texture_slots[0].source.as_str(), mask_source);
 
     let mut sampled = Vec::new();
     document.snapshot_sampled_image_layers_at_with_resolvers(0, |_| None, |_| None, &mut sampled);
@@ -3091,8 +3105,19 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
     assert_eq!(sampled[0].alpha_texture_slot, None);
     assert_eq!(sampled[0].texture_slots.len(), 1);
     assert_eq!(sampled[1].alpha_texture_slot, Some(1));
+    assert_eq!(
+        sampled[1].alpha_texture_mode,
+        crate::core::SceneAlphaTextureMode::Multiply
+    );
+    assert_eq!(sampled[1].opacity, 1.0);
     assert_eq!(sampled[1].texture_slots.len(), 2);
     assert_eq!(sampled[1].texture_slots[1].source.as_str(), mask_source);
+    assert!(sampled[0].image_effect_passes.is_empty());
+    assert_eq!(sampled[1].image_effect_passes.len(), 1);
+    assert_eq!(
+        sampled[1].image_effect_passes[0].effect_file,
+        "effects/opacity/effect.json"
+    );
 }
 
 #[test]
@@ -4523,6 +4548,8 @@ fn lowers_wallpaper_engine_puppet_animation_layers_to_sampled_skinning() {
     assert_eq!(later_mesh.indices, first_mesh.indices);
     assert!((later_mesh.vertices[0].x - 10.0).abs() < 0.000_001);
     assert!((later_mesh.vertices[0].y - 10.0).abs() < 0.000_001);
+    assert!((first_mesh.vertices[0].opacity - 1.0).abs() < 0.000_001);
+    assert!((later_mesh.vertices[0].opacity - 0.25).abs() < 0.000_001);
 
     let report: ConversionReport = serde_json::from_str(
         &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
@@ -6687,6 +6714,8 @@ fn test_we_mdl_with_skinned_animation() -> Vec<u8> {
             test_puppet_frame((10.0, 0.0, 0.0), std::f32::consts::FRAC_PI_2),
         ],
     );
+    test_push_mdl_animation_bone_opacity_frames(&mut bytes, [1.0, 1.0]);
+    test_push_mdl_animation_bone_opacity_frames(&mut bytes, [1.0, 0.25]);
     let mdla_end = u32::try_from(bytes.len()).unwrap();
     bytes[mdla_end_offset..mdla_end_offset + 4].copy_from_slice(&mdla_end.to_le_bytes());
     assert!(bytes[mdls_offset..].starts_with(b"MDLS"));
@@ -6764,6 +6793,14 @@ fn test_push_mdl_animation_bone_frames(bytes: &mut Vec<u8>, frames: [[f32; 9]; 2
         for value in frame {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
+    }
+}
+
+fn test_push_mdl_animation_bone_opacity_frames(bytes: &mut Vec<u8>, frames: [f32; 2]) {
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&8u32.to_le_bytes());
+    for value in frames {
+        bytes.extend_from_slice(&value.to_le_bytes());
     }
 }
 

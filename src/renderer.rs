@@ -24,14 +24,14 @@ use self::scene_runtime::{
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
-    SceneAudioCueCondition, SceneEffect, SceneLayerCompositeKey, SceneMesh,
+    SceneAudioCueCondition, SceneEffect, SceneImageEffectPass, SceneLayerCompositeKey, SceneMesh,
     SceneNativeEffectMotion, SceneSnapshotLayer,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
-    SceneAudioCue, SceneBlendMode, SceneDocument, SceneNodeKind, ScenePathFillRule, SceneResource,
-    SceneResourceKind, SceneSize, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTransform,
-    Transition, WallpaperEntry, WallpaperPackage,
+    SceneAlphaTextureMode, SceneAudioCue, SceneBlendMode, SceneDocument, SceneNodeKind,
+    ScenePathFillRule, SceneResource, SceneResourceKind, SceneSize, SceneSystems, SceneTextAlign,
+    SceneTextureRegion, SceneTransform, Transition, WallpaperEntry, WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
 use crate::policy::{PerformanceDecision, RenderMode};
@@ -153,12 +153,31 @@ pub struct SceneRenderTextureSlot {
     pub height: Option<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneRenderImageEffectPass {
+    pub effect_file: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
+    pub pass_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shader: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blending: Option<String>,
+    #[serde(default)]
+    pub texture_slots: Vec<SceneRenderTextureSlot>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub constant_shader_values: BTreeMap<String, Value>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SceneRenderAlphaTextureMode {
     #[default]
     Multiply,
     Inverse,
+    Iris,
+    Coverage,
+    IrisCoverage,
 }
 
 impl SceneRenderAlphaTextureMode {
@@ -166,6 +185,9 @@ impl SceneRenderAlphaTextureMode {
         match self {
             Self::Multiply => "multiply",
             Self::Inverse => "inverse",
+            Self::Iris => "iris",
+            Self::Coverage => "coverage",
+            Self::IrisCoverage => "iris-coverage",
         }
     }
 
@@ -173,6 +195,20 @@ impl SceneRenderAlphaTextureMode {
         match self {
             Self::Multiply => 0,
             Self::Inverse => 1,
+            Self::Iris => 2,
+            Self::Coverage => 3,
+            Self::IrisCoverage => 4,
+        }
+    }
+}
+
+impl From<SceneAlphaTextureMode> for SceneRenderAlphaTextureMode {
+    fn from(mode: SceneAlphaTextureMode) -> Self {
+        match mode {
+            SceneAlphaTextureMode::Multiply => Self::Multiply,
+            SceneAlphaTextureMode::Inverse => Self::Inverse,
+            SceneAlphaTextureMode::Iris => Self::Iris,
+            SceneAlphaTextureMode::Coverage => Self::Coverage,
         }
     }
 }
@@ -188,6 +224,8 @@ pub struct SceneRenderLayer {
     pub alpha_texture_slot: Option<u32>,
     #[serde(default)]
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
+    #[serde(default)]
+    pub image_effect_passes: Vec<SceneRenderImageEffectPass>,
     #[serde(default)]
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
@@ -1988,7 +2026,12 @@ fn scene_render_layers_from_snapshot_into(
                 })
                 .collect(),
             alpha_texture_slot: layer.alpha_texture_slot,
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            alpha_texture_mode: layer.alpha_texture_mode.into(),
+            image_effect_passes: layer
+                .image_effect_passes
+                .into_iter()
+                .map(|pass| scene_render_image_effect_pass(package_root, pass))
+                .collect(),
             composite_key: layer.composite_key,
             texture_region: layer.texture_region,
             effect_motion: layer.effect_motion,
@@ -2015,6 +2058,30 @@ fn scene_render_layers_from_snapshot_into(
         });
     }
     Ok(())
+}
+
+fn scene_render_image_effect_pass(
+    package_root: &Path,
+    pass: SceneImageEffectPass,
+) -> SceneRenderImageEffectPass {
+    SceneRenderImageEffectPass {
+        effect_file: pass.effect_file,
+        runtime: pass.runtime,
+        pass_index: pass.pass_index,
+        shader: pass.shader,
+        blending: pass.blending,
+        texture_slots: pass
+            .texture_slots
+            .into_iter()
+            .map(|slot| SceneRenderTextureSlot {
+                slot: slot.slot,
+                source: slot.source.join_to(package_root),
+                width: slot.width,
+                height: slot.height,
+            })
+            .collect(),
+        constant_shader_values: pass.constant_shader_values,
+    }
 }
 
 fn scene_render_audio_cues(

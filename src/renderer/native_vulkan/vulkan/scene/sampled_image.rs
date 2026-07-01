@@ -316,6 +316,168 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneTransferIma
         NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot,
 }
 
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_scene_effect_target_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    source_label: impl Into<String>,
+    extent: vk::Extent2D,
+    image_format: vk::Format,
+) -> Result<VulkanaliaSceneSampledImageResources, String> {
+    if extent.width == 0 || extent.height == 0 {
+        return Err("scene effect target requires non-zero extent".to_owned());
+    }
+    let source_label = source_label.into();
+    let image_usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+    let image_extent = vk::Extent3D {
+        width: extent.width,
+        height: extent.height,
+        depth: 1,
+    };
+    let image_create_info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .format(image_format)
+        .extent(image_extent)
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(image_usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_create_info, None) }
+        .map_err(|err| format!("vkCreateImage(vulkanalia scene effect target): {err:?}"))?;
+
+    let mut image_live = true;
+    let mut memory = vk::DeviceMemory::default();
+    let mut memory_live = false;
+    let mut image_view = vk::ImageView::default();
+    let mut image_view_live = false;
+    let mut sampler = vk::Sampler::default();
+    let mut sampler_live = false;
+
+    let result = (|| -> Result<VulkanaliaSceneSampledImageResources, String> {
+        let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let image_memory_type = sampled_image_memory_type_index_excluding(
+            &memory_type_candidates,
+            memory_requirements.memory_type_bits,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
+        )
+        .ok_or_else(|| {
+            format!(
+                "scene effect target requires device-local non-host-visible memory for bits 0x{:08x}",
+                memory_requirements.memory_type_bits
+            )
+        })?;
+        let allocation_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(image_memory_type.index);
+        memory = unsafe { device.allocate_memory(&allocation_info, None) }
+            .map_err(|err| format!("vkAllocateMemory(vulkanalia scene effect target): {err:?}"))?;
+        memory_live = true;
+
+        native_vulkan_vulkanalia_bind_image_memory2(
+            device,
+            image,
+            memory,
+            0,
+            "scene effect target",
+        )?;
+
+        let image_view_info = scene_sampled_image_view_create_info(image, image_format);
+        image_view = create_scene_sampled_image_view(device, &image_view_info)?;
+        image_view_live = true;
+        let sampler_info = scene_sampled_image_sampler_create_info(
+            NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge,
+        );
+        sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
+        sampler_live = true;
+
+        image_live = false;
+        memory_live = false;
+        image_view_live = false;
+        sampler_live = false;
+
+        Ok(VulkanaliaSceneSampledImageResources {
+            image,
+            memory,
+            image_view_create_info: image_view_info,
+            image_view,
+            sampler_create_info: sampler_info,
+            sampler,
+            snapshot: NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot {
+                binding: "vulkanalia",
+                route: "scene-we-image-effect-target-resource",
+                source_label,
+                extent: (extent.width, extent.height),
+                texture_payload_bytes: 0,
+                decoded_rgba_payload_retained_after_upload: false,
+                image_format: scene_vk_format_label(image_format),
+                image_usage: sampled_image_usage_labels(image_usage),
+                image_created: true,
+                image_memory_bound: true,
+                image_memory_size: memory_requirements.size,
+                image_memory_alignment: memory_requirements.alignment,
+                image_memory_type_bits: memory_requirements.memory_type_bits,
+                selected_image_memory_type_index: image_memory_type.index,
+                selected_image_memory_property_flags: memory_property_flag_labels(
+                    image_memory_type.property_flags_bits,
+                ),
+                staging_buffer_bytes: 0,
+                selected_staging_memory_type_index: 0,
+                selected_staging_memory_property_flags: Vec::new(),
+                image_view_created: true,
+                sampler_created: true,
+                sampler_address_mode: "clamp-to-edge",
+                descriptor_model: "VK_EXT_descriptor_heap",
+                descriptor_type: "combined-image-sampler",
+                descriptor_image_layout: "shader-read-only-optimal",
+                upload_command_recorded: false,
+                upload_submitted: false,
+                upload_wait_model: "local image/effect target is rendered by scene passes and sampled by later passes; no upload",
+                final_image_layout: "shader-read-only-optimal-after-each-effect-pass",
+                command_order: vec![
+                    "create_color_attachment_sampled_image",
+                    "render_base_pass_to_effect_target",
+                    "cmd_pipeline_barrier2_effect_target_shader_read",
+                    "sample_effect_target_in_later_pass",
+                ],
+                uses_synchronization2: true,
+                uses_copy2: false,
+                uses_host_image_copy: false,
+                retained_across_present_frames: true,
+            },
+        })
+    })();
+
+    if result.is_err() {
+        if sampler_live {
+            unsafe {
+                device.destroy_sampler(sampler, None);
+            }
+        }
+        if image_view_live {
+            unsafe {
+                device.destroy_image_view(image_view, None);
+            }
+        }
+        if memory_live {
+            unsafe {
+                device.free_memory(memory, None);
+            }
+        }
+        if image_live {
+            unsafe {
+                device.destroy_image(image, None);
+            }
+        }
+    }
+
+    result
+}
+
 pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
     input: NativeVulkanVulkanaliaSceneSampledImagePlanInput,
 ) -> NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot {
@@ -1655,6 +1817,9 @@ fn memory_property_flag_labels(bits: u32) -> Vec<&'static str> {
 
 fn sampled_image_usage_labels(flags: vk::ImageUsageFlags) -> Vec<&'static str> {
     let mut labels = Vec::new();
+    if flags.contains(vk::ImageUsageFlags::COLOR_ATTACHMENT) {
+        labels.push("color-attachment");
+    }
     if flags.contains(vk::ImageUsageFlags::TRANSFER_DST) {
         labels.push("transfer-dst");
     }
@@ -1665,6 +1830,17 @@ fn sampled_image_usage_labels(flags: vk::ImageUsageFlags) -> Vec<&'static str> {
         labels.push("sampled");
     }
     labels
+}
+
+fn scene_vk_format_label(format: vk::Format) -> &'static str {
+    match format {
+        vk::Format::B8G8R8A8_SRGB => "B8G8R8A8_SRGB",
+        vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
+        vk::Format::R8G8B8A8_SRGB => "R8G8B8A8_SRGB",
+        vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
+        vk::Format::A2B10G10R10_UNORM_PACK32 => "A2B10G10R10_UNORM_PACK32",
+        _ => "OTHER",
+    }
 }
 
 #[cfg(test)]

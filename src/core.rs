@@ -21,9 +21,10 @@ pub use package::{
 };
 pub use path::{PackagePath, PackagePathError};
 pub use scene::{
-    SceneAnimatedProperty, SceneAudioCue, SceneBlendMode, SceneCurve, SceneDocument, SceneError,
-    SceneKeyframe, SceneNativeLowering, SceneNode, SceneNodeKind, ScenePathFillRule, SceneProfile,
-    ScenePropertyBinding, SceneResource, SceneResourceKind, SceneSize, SceneSourceMetadata,
-    SceneSystemStatus, SceneSystems, SceneTextAlign, SceneTextureRegion, SceneTimeline,
-    SceneTimelineChannel, SceneTransform, SceneUnsupportedFeature,
+    SceneAlphaTextureMode, SceneAnimatedProperty, SceneAudioCue, SceneBlendMode, SceneCurve,
+    SceneDocument, SceneError, SceneKeyframe, SceneNativeLowering, SceneNode, SceneNodeKind,
+    ScenePathFillRule, SceneProfile, ScenePropertyBinding, SceneResource, SceneResourceKind,
+    SceneSize, SceneSourceMetadata, SceneSystemStatus, SceneSystems, SceneTextAlign,
+    SceneTextureRegion, SceneTimeline, SceneTimelineChannel, SceneTransform,
+    SceneUnsupportedFeature,
 };

@@ -39,7 +39,7 @@ pub(super) fn scene_effects_from_object(
                 output.insert("visible".to_owned(), visible.clone());
             }
             let passes = scene_effect_passes_from_object(
-                project, output_dir, effect, report, context, resources,
+                project, output_dir, &file, effect, report, context, resources,
             );
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
@@ -118,6 +118,12 @@ fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Optio
     if file.contains("watercaustics") {
         return Some("native-water-caustics");
     }
+    if file.ends_with("effects/opacity/effect.json") || file == "effects/opacity/effect.json" {
+        return Some("native-opacity-mask");
+    }
+    if file.ends_with("effects/iris/effect.json") || file == "effects/iris/effect.json" {
+        return Some("native-iris-mask");
+    }
     if file.contains("waterwaves")
         || file.contains("waterripple")
         || file.contains("waterflow")
@@ -135,6 +141,8 @@ fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Optio
 fn scene_native_effect_feature(runtime: &str) -> &'static str {
     match runtime {
         "native-water-caustics" => "native-water-caustics-effect-runtime",
+        "native-opacity-mask" => "native-opacity-mask-effect-runtime",
+        "native-iris-mask" => "native-iris-mask-effect-runtime",
         "native-effect-motion" => "native-effect-motion-runtime",
         _ => "native-effect-runtime",
     }
@@ -315,6 +323,7 @@ fn scene_effect_value_requires_runtime(value: &Value) -> bool {
 fn scene_effect_passes_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
+    effect_file: &str,
     effect: &Map<String, Value>,
     report: &mut ConversionReport,
     context: &mut SceneDocumentBuildContext,
@@ -323,13 +332,18 @@ fn scene_effect_passes_from_object(
     let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
         return Vec::new();
     };
+    let material_passes = scene_effect_material_passes(project, effect_file);
     passes
         .iter()
-        .filter_map(Value::as_object)
-        .map(|pass| {
+        .enumerate()
+        .filter_map(|(pass_index, pass)| pass.as_object().map(|pass| (pass_index, pass)))
+        .map(|(pass_index, pass)| {
             let mut output = Map::new();
             if let Some(id) = pass.get("id").and_then(value_to_i64) {
                 output.insert("id".to_owned(), json!(id));
+            }
+            if let Some(material_pass) = material_passes.get(pass_index) {
+                scene_copy_effect_material_pass_fields(material_pass, &mut output);
             }
             if let Some(textures) = scene_effect_pass_textures(pass) {
                 output.insert("textures".to_owned(), textures);
@@ -354,6 +368,52 @@ fn scene_effect_passes_from_object(
             Value::Object(output)
         })
         .collect()
+}
+
+fn scene_effect_material_passes(
+    project: &WallpaperEngineProject,
+    effect_file: &str,
+) -> Vec<Map<String, Value>> {
+    let Some(effect) = fs::read_to_string(project.root.join(effect_file))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+    else {
+        return Vec::new();
+    };
+    let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    passes
+        .iter()
+        .filter_map(Value::as_object)
+        .filter_map(|pass| string_field(pass, &["material"]))
+        .filter_map(|material| scene_effect_material_first_pass(project, &material))
+        .collect()
+}
+
+fn scene_effect_material_first_pass(
+    project: &WallpaperEngineProject,
+    material: &str,
+) -> Option<Map<String, Value>> {
+    let material = fs::read_to_string(project.root.join(material)).ok()?;
+    let material = serde_json::from_str::<Value>(&material).ok()?;
+    material
+        .get("passes")?
+        .as_array()?
+        .first()?
+        .as_object()
+        .cloned()
+}
+
+fn scene_copy_effect_material_pass_fields(
+    material_pass: &Map<String, Value>,
+    output: &mut Map<String, Value>,
+) {
+    for key in ["shader", "blending", "depthtest", "depthwrite", "cullmode"] {
+        if let Some(value) = material_pass.get(key) {
+            output.insert(key.to_owned(), value.clone());
+        }
+    }
 }
 
 fn scene_effect_pass_textures(pass: &Map<String, Value>) -> Option<Value> {

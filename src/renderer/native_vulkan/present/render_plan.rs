@@ -12,7 +12,8 @@ use crate::renderer::native_vulkan::effect_debug::{
     native_vulkan_effect_debug_enabled, native_vulkan_effect_debug_log,
 };
 use crate::renderer::{
-    SceneDisplayPlan, SceneRenderAlphaTextureMode, SceneRenderLayer, SceneRenderTextureSlot,
+    SceneDisplayPlan, SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderLayer,
+    SceneRenderTextureSlot,
 };
 
 use super::super::NativeVulkanClearColor;
@@ -92,6 +93,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawOp {
     pub(in crate::renderer::native_vulkan) texture_slots: Vec<SceneRenderTextureSlot>,
     pub(in crate::renderer::native_vulkan) alpha_texture_slot: Option<u32>,
     pub(in crate::renderer::native_vulkan) alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub(in crate::renderer::native_vulkan) image_effect_passes: Vec<SceneRenderImageEffectPass>,
     pub(in crate::renderer::native_vulkan) composite_key: Option<SceneLayerCompositeKey>,
     pub(in crate::renderer::native_vulkan) texture_region: Option<SceneTextureRegion>,
     pub(in crate::renderer::native_vulkan) effect_uv_space: Option<NativeVulkanSceneEffectUvSpace>,
@@ -210,6 +212,7 @@ fn native_vulkan_scene_draw_layers(
                     texture_slots: layer.texture_slots.clone(),
                     alpha_texture_slot: layer.alpha_texture_slot,
                     alpha_texture_mode: layer.alpha_texture_mode,
+                    image_effect_passes: layer.image_effect_passes.clone(),
                     composite_key: layer.composite_key.clone(),
                     texture_region: layer.texture_region,
                     effect_uv_space: None,
@@ -235,16 +238,19 @@ fn native_vulkan_scene_draw_layers(
                 };
                 op.effect_uv_space =
                     native_vulkan_scene_opacity_effect_uv_space_from_render_op(&op);
-                if native_vulkan_effect_debug_enabled() && op.alpha_texture_slot.is_some() {
+                if native_vulkan_effect_debug_enabled()
+                    && (op.alpha_texture_slot.is_some() || !op.image_effect_passes.is_empty())
+                {
                     native_vulkan_effect_debug_log(
-                        "render-plan.alpha-texture",
+                        "render-plan.we-image-effect",
                         format_args!(
-                            "layer_index={} id={} alpha_slot={:?} mode={} slots={} geometry={} effect_uv_space={}",
+                            "layer_index={} id={} alpha_slot={:?} mode={} slots={} we_passes={} geometry={} effect_uv_space={}",
                             op.layer_index,
                             op.layer_id,
                             op.alpha_texture_slot,
                             op.alpha_texture_mode.as_str(),
                             native_vulkan_scene_render_texture_slots_label(&op.texture_slots),
+                            native_vulkan_scene_image_effect_passes_label(&op.image_effect_passes),
                             native_vulkan_scene_draw_op_geometry_label(&op),
                             native_vulkan_scene_effect_uv_space_label(op.effect_uv_space)
                         ),
@@ -264,7 +270,7 @@ fn native_vulkan_scene_draw_layers(
 
 fn native_vulkan_scene_draw_op_geometry_label(op: &NativeVulkanSceneDrawOp) -> String {
     format!(
-        "size={}x{} opacity={:.3} transform=({:.3},{:.3}, scale={:.3}/{:.3}, rot={:.3}, anchor={:.3}/{:.3}) mesh={}",
+        "size={}x{} opacity={:.3} transform=({:.3},{:.3}, scale={:.3}/{:.3}, rot={:.3}, anchor={:.3}/{:.3}) effect_chain={} mesh={}",
         op.width
             .map(|width| format!("{width:.3}"))
             .unwrap_or_else(|| "<none>".to_owned()),
@@ -279,6 +285,7 @@ fn native_vulkan_scene_draw_op_geometry_label(op: &NativeVulkanSceneDrawOp) -> S
         op.transform.rotation_deg,
         op.transform.anchor_x,
         op.transform.anchor_y,
+        native_vulkan_scene_draw_op_effect_chain_label(op),
         op.mesh
             .as_ref()
             .map(|mesh| format!(
@@ -289,6 +296,59 @@ fn native_vulkan_scene_draw_op_geometry_label(op: &NativeVulkanSceneDrawOp) -> S
             ))
             .unwrap_or_else(|| "<none>".to_owned())
     )
+}
+
+fn native_vulkan_scene_draw_op_effect_chain_label(op: &NativeVulkanSceneDrawOp) -> &'static str {
+    if native_vulkan_scene_draw_op_has_effect_runtime(op, "native-iris-mask")
+        && op.alpha_texture_slot.is_some()
+        && matches!(op.alpha_texture_mode, SceneRenderAlphaTextureMode::Iris)
+    {
+        "we-known-iris-pass-inline-active"
+    } else if native_vulkan_scene_draw_op_has_effect_runtime(op, "native-opacity-mask")
+        && op.alpha_texture_slot.is_some()
+        && matches!(op.alpha_texture_mode, SceneRenderAlphaTextureMode::Multiply)
+    {
+        "we-known-opacity-pass-inline-active"
+    } else if !op.image_effect_passes.is_empty() {
+        "we-effect-pass-chain-present-not-executed"
+    } else if op.alpha_texture_slot.is_some() {
+        "alpha-texture-inline-mask"
+    } else {
+        "direct"
+    }
+}
+
+fn native_vulkan_scene_draw_op_has_effect_runtime(
+    op: &NativeVulkanSceneDrawOp,
+    runtime: &str,
+) -> bool {
+    op.image_effect_passes
+        .iter()
+        .any(|pass| pass.runtime.as_deref() == Some(runtime))
+}
+
+fn native_vulkan_scene_image_effect_passes_label(passes: &[SceneRenderImageEffectPass]) -> String {
+    if passes.is_empty() {
+        return "[]".to_owned();
+    }
+    let mut label = String::new();
+    label.push('[');
+    for (index, pass) in passes.iter().enumerate() {
+        if index > 0 {
+            label.push_str(", ");
+        }
+        label.push_str(&format!(
+            "{}#{} runtime={} shader={} blend={} slots={}",
+            pass.effect_file,
+            pass.pass_index,
+            pass.runtime.as_deref().unwrap_or("<none>"),
+            pass.shader.as_deref().unwrap_or("<none>"),
+            pass.blending.as_deref().unwrap_or("<none>"),
+            native_vulkan_scene_render_texture_slots_label(&pass.texture_slots)
+        ));
+    }
+    label.push(']');
+    label
 }
 
 fn native_vulkan_scene_mesh_bounds_label(mesh: &SceneMesh) -> String {
@@ -412,31 +472,66 @@ fn native_vulkan_scene_opacity_effect_uv_space_from_render_ops(
     _target: &NativeVulkanSceneDrawOp,
     carrier: &NativeVulkanSceneDrawOp,
 ) -> NativeVulkanSceneEffectUvSpace {
+    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
+        &carrier.texture_slots,
+        carrier.alpha_texture_slot,
+    );
     NativeVulkanSceneEffectUvSpace {
-        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled {
-            scale_u: 1.0,
-            scale_v: 1.0,
-        },
+        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
         width: carrier.width.unwrap_or(0.0),
         height: carrier.height.unwrap_or(0.0),
         texture_region: carrier.texture_region,
         transform: carrier.transform,
-        bounds: native_vulkan_scene_effect_uv_bounds(
-            carrier.width,
-            carrier.height,
-            carrier.mesh.as_deref(),
-            carrier.transform,
-        ),
+        bounds: None,
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_opacity_effect_material_uv_scale(
+    _base_width: Option<u32>,
+    _base_height: Option<u32>,
+    _alpha_width: Option<u32>,
+    _alpha_height: Option<u32>,
+) -> (f64, f64) {
+    // These dimensions are Gilder's decoded logical extents, not Wallpaper
+    // Engine backing texture extents. Scaling by them re-samples the eye masks
+    // into the wrong half-sized area. Keep pass material UV identity until the
+    // converter preserves separate backing extents.
+    (1.0, 1.0)
+}
+
+fn native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
+    slots: &[SceneRenderTextureSlot],
+    alpha_texture_slot: Option<u32>,
+) -> (f64, f64) {
+    let Some(alpha_slot) = alpha_texture_slot else {
+        return (1.0, 1.0);
+    };
+    let base = slots.iter().find(|slot| slot.slot == 0);
+    let alpha = slots.iter().find(|slot| slot.slot == alpha_slot);
+    native_vulkan_scene_opacity_effect_material_uv_scale(
+        base.and_then(|slot| slot.width),
+        base.and_then(|slot| slot.height),
+        alpha.and_then(|slot| slot.width),
+        alpha.and_then(|slot| slot.height),
+    )
 }
 
 fn native_vulkan_scene_opacity_effect_uv_space_from_render_op(
     op: &NativeVulkanSceneDrawOp,
 ) -> Option<NativeVulkanSceneEffectUvSpace> {
     op.alpha_texture_slot?;
-    Some(native_vulkan_scene_opacity_effect_uv_space_from_render_ops(
-        op, op,
-    ))
+    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
+        &op.texture_slots,
+        op.alpha_texture_slot,
+    );
+    Some(NativeVulkanSceneEffectUvSpace {
+        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
+        width: op.width.unwrap_or(0.0),
+        height: op.height.unwrap_or(0.0),
+        texture_region: op.texture_region,
+        transform: op.transform,
+        bounds: None,
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_uv_bounds(
@@ -621,7 +716,9 @@ mod tests {
     use crate::core::scene::SceneMeshVertex;
     use crate::core::{FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSystems};
     use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanRenderItem};
-    use crate::renderer::{SceneDisplayPlan, SceneRenderLayer, SceneRenderTextureSlot};
+    use crate::renderer::{
+        SceneDisplayPlan, SceneRenderImageEffectPass, SceneRenderLayer, SceneRenderTextureSlot,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -674,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_draw_plan_keeps_opacity_mask_layer_independent() {
+    fn scene_draw_plan_keeps_opacity_mask_duplicate_as_independent_draw() {
         let composite_key = Some(SceneLayerCompositeKey {
             parent_source_id: Some("937".to_owned()),
             puppet_attachment: "eye".to_owned(),
@@ -697,18 +794,21 @@ mod tests {
                     y: -20.0,
                     u: 0.0,
                     v: 0.0,
+                    opacity: 1.0,
                 },
                 SceneMeshVertex {
                     x: 10.0,
                     y: -20.0,
                     u: 1.0,
                     v: 0.0,
+                    opacity: 1.0,
                 },
                 SceneMeshVertex {
                     x: -10.0,
                     y: 20.0,
                     u: 0.0,
                     v: 1.0,
+                    opacity: 1.0,
                 },
             ],
             indices: vec![0, 1, 2],
@@ -719,6 +819,7 @@ mod tests {
         carrier.source = Some(PathBuf::from("/tmp/eye.gtex"));
         carrier.composite_key = composite_key.clone();
         carrier.alpha_texture_slot = Some(1);
+        carrier.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
         carrier.texture_slots = vec![
             SceneRenderTextureSlot {
                 slot: 0,
@@ -733,6 +834,20 @@ mod tests {
                 height: Some(115),
             },
         ];
+        carrier.image_effect_passes = vec![SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("native-opacity-mask".to_owned()),
+            pass_index: 0,
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            texture_slots: vec![SceneRenderTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/eye-mask.gtex"),
+                width: Some(331),
+                height: Some(115),
+            }],
+            constant_shader_values: Default::default(),
+        }];
         carrier.mesh = base.mesh.clone();
 
         let plan = native_vulkan_scene_draw_plan_from_layers(
@@ -747,38 +862,36 @@ mod tests {
         assert_eq!(plan.draw_ops.len(), 2);
         assert_eq!(plan.draw_ops[0].layer_id, "eye-base");
         assert_eq!(plan.draw_ops[0].alpha_texture_slot, None);
+        assert_eq!(
+            plan.draw_ops[0].alpha_texture_mode,
+            SceneRenderAlphaTextureMode::Multiply
+        );
         assert!(plan.draw_ops[0].effect_uv_space.is_none());
+        assert_eq!(plan.draw_ops[0].composite_key, composite_key);
+        assert_eq!(plan.draw_ops[0].texture_slots.len(), 1);
         assert_eq!(plan.draw_ops[1].layer_id, "eye-opacity");
         assert_eq!(plan.draw_ops[1].alpha_texture_slot, Some(1));
         assert_eq!(
             plan.draw_ops[1].alpha_texture_mode,
             SceneRenderAlphaTextureMode::Multiply
         );
-        let effect_uv_space = plan.draw_ops[1].effect_uv_space.expect("effect uv space");
         assert_eq!(
-            effect_uv_space.mapping,
-            NativeVulkanSceneEffectUvMapping::MaterialUvScaled {
+            plan.draw_ops[1].effect_uv_space.map(|space| space.mapping),
+            Some(NativeVulkanSceneEffectUvMapping::MaterialUvScaled {
                 scale_u: 1.0,
                 scale_v: 1.0
-            }
+            })
         );
         assert_eq!(plan.draw_ops[1].composite_key, composite_key);
+        assert_eq!(plan.draw_ops[1].texture_slots.len(), 2);
+        assert_eq!(plan.draw_ops[1].image_effect_passes.len(), 1);
         assert_eq!(
-            plan.draw_ops[1].texture_slots,
-            vec![
-                SceneRenderTextureSlot {
-                    slot: 0,
-                    source: PathBuf::from("/tmp/eye.gtex"),
-                    width: Some(663),
-                    height: Some(230),
-                },
-                SceneRenderTextureSlot {
-                    slot: 1,
-                    source: PathBuf::from("/tmp/eye-mask.gtex"),
-                    width: Some(331),
-                    height: Some(115),
-                },
-            ]
+            plan.draw_ops[1].image_effect_passes[0].effect_file,
+            "effects/opacity/effect.json"
+        );
+        assert_eq!(
+            plan.draw_ops[1].texture_slots[1].source,
+            PathBuf::from("/tmp/eye-mask.gtex")
         );
     }
 
@@ -790,6 +903,7 @@ mod tests {
             texture_slots: Vec::new(),
             alpha_texture_slot: None,
             alpha_texture_mode: Default::default(),
+            image_effect_passes: Vec::new(),
             composite_key: None,
             texture_region: None,
             effect_motion: Default::default(),

@@ -123,6 +123,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
             texture_slots: Vec::new(),
             alpha_texture_slot: None,
             alpha_texture_mode: Default::default(),
+            image_effect_passes: Vec::new(),
             composite_key: None,
             texture_region: None,
             effect_motion: Default::default(),

@@ -48,7 +48,7 @@ use super::super::{
 };
 use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot, native_vulkan_scene_runtime_snapshot,
-    native_vulkan_scene_sampled_vertex_input_from_sampled_layers,
+    native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
     native_vulkan_scene_solid_quad_geometry_input_from_snapshot_layers,
 };
@@ -207,6 +207,7 @@ impl NativeVulkanSceneDynamicGeometryCache {
         let sampled_geometry =
             native_vulkan_scene_sampled_geometry_input_from_runtime_sampled_image_frame(
                 &sampled_frame,
+                self.sampler.package_root(),
             );
         self.sampler.recycle_sampled_image_frame(sampled_frame);
         let sampled_geometry = sampled_geometry?;
@@ -257,8 +258,13 @@ impl NativeVulkanSceneDynamicGeometryCache {
 
 fn native_vulkan_scene_sampled_geometry_input_from_runtime_sampled_image_frame(
     frame: &SceneWallpaperRuntimeSampledImageFrame,
+    package_root: &std::path::Path,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    native_vulkan_scene_sampled_vertex_input_from_sampled_layers(&frame.layers)
+    native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root(
+        Some(frame.snapshot_time_ms),
+        &frame.layers,
+        Some(package_root),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -929,6 +935,7 @@ mod tests {
             texture_slots: Vec::new(),
             alpha_texture_slot: None,
             alpha_texture_mode: Default::default(),
+            image_effect_passes: Vec::new(),
             composite_key: None,
             texture_region: None,
             effect_motion: Default::default(),
