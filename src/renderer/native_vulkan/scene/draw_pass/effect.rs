@@ -2,7 +2,9 @@ use std::path::PathBuf;
 
 use crate::core::SceneBlendMode;
 use crate::core::scene::{SceneImageEffectPass, SceneTextureSlot};
-use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderImageEffectPass};
+use crate::renderer::{
+    SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderTextureSlot,
+};
 
 use super::blend::{
     native_vulkan_scene_render_state, native_vulkan_scene_sampled_image_pipeline_label,
@@ -10,7 +12,7 @@ use super::blend::{
 use super::{
     NativeVulkanSceneCullMode, NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord,
     NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
-    NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneTextureSlot,
 };
 
 mod iris;
@@ -110,19 +112,34 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass(
     }
 }
 
-pub(super) fn native_vulkan_scene_effect_pass_uses_first_class_target(
-    runtime: Option<&str>,
-    effect_file: &str,
-) -> bool {
-    iris::uses_first_class_target(runtime, effect_file)
+pub(super) fn native_vulkan_scene_render_first_class_effect_target_pass(
+    passes: &[SceneRenderImageEffectPass],
+) -> Option<NativeVulkanSceneSampledImageEffectPass> {
+    passes
+        .iter()
+        .find(|pass| iris::uses_first_class_target(pass.runtime.as_deref(), &pass.effect_file))
+        .and_then(|pass| {
+            native_vulkan_scene_first_class_effect_target_pass_from_slots(
+                native_vulkan_scene_texture_slots_from_render_slots(&pass.texture_slots),
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
 }
 
-pub(super) fn native_vulkan_scene_effect_pass_is_iris(
-    runtime: Option<&str>,
-    effect_file: &str,
-) -> bool {
-    let normalized = native_vulkan_scene_normalized_effect_file(effect_file);
-    iris::matches(runtime, &normalized)
+pub(super) fn native_vulkan_scene_snapshot_first_class_effect_target_pass(
+    passes: &[SceneImageEffectPass],
+) -> Option<NativeVulkanSceneSampledImageEffectPass> {
+    passes
+        .iter()
+        .find(|pass| iris::uses_first_class_target(pass.runtime.as_deref(), &pass.effect_file))
+        .and_then(|pass| {
+            native_vulkan_scene_first_class_effect_target_pass_from_slots(
+                native_vulkan_scene_texture_slots_from_scene_slots(&pass.texture_slots),
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
 }
 
 pub(super) fn native_vulkan_scene_effect_records_label(
@@ -190,6 +207,23 @@ fn native_vulkan_scene_effect_kind(
 
 fn native_vulkan_scene_normalized_effect_file(effect_file: &str) -> String {
     effect_file.replace('\\', "/").to_ascii_lowercase()
+}
+
+fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
+    texture_slots: Vec<NativeVulkanSceneTextureSlot>,
+    runtime: Option<&str>,
+    effect_file: &str,
+) -> Option<NativeVulkanSceneSampledImageEffectPass> {
+    let normalized = native_vulkan_scene_normalized_effect_file(effect_file);
+    if !iris::matches(runtime, &normalized) {
+        return None;
+    }
+    let alpha_texture_slot = iris::alpha_texture_slot(&texture_slots)?;
+    Some(NativeVulkanSceneSampledImageEffectPass {
+        texture_slots,
+        alpha_texture_slot: Some(alpha_texture_slot),
+        alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
+    })
 }
 
 fn native_vulkan_scene_effect_kind_list(
@@ -307,18 +341,66 @@ mod tests {
 
     #[test]
     fn iris_family_owns_first_class_target_policy() {
-        assert!(native_vulkan_scene_effect_pass_uses_first_class_target(
-            Some("native-iris-mask"),
-            "effects/other/effect.json"
-        ));
-        assert!(native_vulkan_scene_effect_pass_uses_first_class_target(
-            None,
-            "materials/effects/iris/effect.json"
-        ));
-        assert!(!native_vulkan_scene_effect_pass_uses_first_class_target(
-            Some("native-opacity-mask"),
-            "effects/opacity/effect.json"
-        ));
+        let mut iris_pass = SceneRenderImageEffectPass {
+            effect_file: "materials/effects/iris/effect.json".to_owned(),
+            runtime: None,
+            pass_index: 0,
+            shader: Some("effects/iris".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: vec![
+                SceneRenderTextureSlot {
+                    slot: 2,
+                    source: std::path::PathBuf::from("textures/iris-mask-b.gtex"),
+                    width: Some(16),
+                    height: Some(16),
+                },
+                SceneRenderTextureSlot {
+                    slot: 1,
+                    source: std::path::PathBuf::from("textures/iris-mask-a.gtex"),
+                    width: Some(16),
+                    height: Some(16),
+                },
+            ],
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        };
+
+        let target =
+            native_vulkan_scene_render_first_class_effect_target_pass(&[iris_pass.clone()])
+                .expect("iris effect should own a first-class target pass");
+        assert_eq!(target.alpha_texture_slot, Some(1));
+        assert_eq!(target.alpha_texture_mode, SceneRenderAlphaTextureMode::Iris);
+        assert_eq!(target.texture_slots[0].slot, 1);
+        assert_eq!(target.texture_slots[1].slot, 2);
+
+        iris_pass.runtime = Some("native-iris-mask".to_owned());
+        iris_pass.effect_file = "effects/other/effect.json".to_owned();
+        assert!(native_vulkan_scene_render_first_class_effect_target_pass(&[iris_pass]).is_some());
+
+        let opacity_pass = SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("native-opacity-mask".to_owned()),
+            pass_index: 0,
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: vec![SceneRenderTextureSlot {
+                slot: 1,
+                source: std::path::PathBuf::from("textures/opacity-mask.gtex"),
+                width: Some(16),
+                height: Some(16),
+            }],
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        };
+        assert!(
+            native_vulkan_scene_render_first_class_effect_target_pass(&[opacity_pass]).is_none()
+        );
     }
 }
 
@@ -366,6 +448,23 @@ fn native_vulkan_scene_texture_slots_from_scene_slots(
         .map(|slot| NativeVulkanSceneTextureSlot {
             slot: slot.slot,
             source: PathBuf::from(slot.source.as_str()),
+            width: slot.width,
+            height: slot.height,
+        })
+        .collect::<Vec<_>>();
+    output.sort_by_key(|slot| slot.slot);
+    output.dedup_by(|left, right| left.slot == right.slot && left.source == right.source);
+    output
+}
+
+fn native_vulkan_scene_texture_slots_from_render_slots(
+    slots: &[SceneRenderTextureSlot],
+) -> Vec<NativeVulkanSceneTextureSlot> {
+    let mut output = slots
+        .iter()
+        .map(|slot| NativeVulkanSceneTextureSlot {
+            slot: slot.slot,
+            source: slot.source.clone(),
             width: slot.width,
             height: slot.height,
         })

@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::core::scene::{
-    SceneImageEffectPass, SceneMesh, SceneMeshVertex, SceneNativeEffectMotion, SceneSnapshotLayer,
+    SceneMesh, SceneMeshVertex, SceneNativeEffectMotion, SceneSnapshotLayer,
     SceneSnapshotSampledImageLayer, SceneTextureSlot,
 };
 use crate::core::{
@@ -13,10 +13,7 @@ use crate::renderer::native_vulkan::effect_debug::{
     NativeVulkanEffectDebugR8UvGroup, native_vulkan_effect_debug_enabled,
     native_vulkan_effect_debug_log, native_vulkan_effect_debug_r8_gtex_group_report,
 };
-use crate::renderer::{
-    SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderLayer,
-    SceneRenderTextureSlot,
-};
+use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderLayer, SceneRenderTextureSlot};
 
 mod blend;
 mod classification;
@@ -40,11 +37,12 @@ use self::color::{
 };
 use self::effect::motion as sampled_image_motion;
 use self::effect::{
-    native_vulkan_scene_effect_pass_is_iris,
-    native_vulkan_scene_effect_pass_uses_first_class_target,
     native_vulkan_scene_effect_passes_from_render_passes,
     native_vulkan_scene_effect_passes_from_scene_passes, native_vulkan_scene_effect_records_label,
-    native_vulkan_scene_material_pass_label, native_vulkan_scene_sampled_image_material_pass,
+    native_vulkan_scene_material_pass_label,
+    native_vulkan_scene_render_first_class_effect_target_pass,
+    native_vulkan_scene_sampled_image_material_pass,
+    native_vulkan_scene_snapshot_first_class_effect_target_pass,
 };
 use self::geometry_common::{
     native_vulkan_scene_quad_positions, native_vulkan_scene_sampled_image_index_buffer_bytes,
@@ -1134,68 +1132,6 @@ fn native_vulkan_scene_sampled_image_quad_has_visible_recording_geometry(
         )
         .is_some()
     }
-}
-
-fn native_vulkan_scene_render_first_class_effect_target_pass(
-    passes: &[SceneRenderImageEffectPass],
-) -> Option<NativeVulkanSceneSampledImageEffectPass> {
-    passes
-        .iter()
-        .find(|pass| {
-            native_vulkan_scene_effect_pass_uses_first_class_target(
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-        .and_then(|pass| {
-            native_vulkan_scene_first_class_effect_target_pass_from_slots(
-                native_vulkan_scene_texture_slots_from_render_slots(&pass.texture_slots),
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-}
-
-fn native_vulkan_scene_snapshot_first_class_effect_target_pass(
-    passes: &[SceneImageEffectPass],
-) -> Option<NativeVulkanSceneSampledImageEffectPass> {
-    passes
-        .iter()
-        .find(|pass| {
-            native_vulkan_scene_effect_pass_uses_first_class_target(
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-        .and_then(|pass| {
-            native_vulkan_scene_first_class_effect_target_pass_from_slots(
-                native_vulkan_scene_texture_slots_from_scene_slots(&pass.texture_slots),
-                pass.runtime.as_deref(),
-                &pass.effect_file,
-            )
-        })
-}
-
-fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
-    texture_slots: Vec<NativeVulkanSceneTextureSlot>,
-    runtime: Option<&str>,
-    effect_file: &str,
-) -> Option<NativeVulkanSceneSampledImageEffectPass> {
-    if !native_vulkan_scene_effect_pass_is_iris(runtime, effect_file) {
-        return None;
-    }
-    let alpha_texture_slot = texture_slots
-        .iter()
-        .filter(|slot| slot.slot > 0)
-        .map(|slot| slot.slot)
-        .min();
-    alpha_texture_slot.map(
-        |alpha_texture_slot| NativeVulkanSceneSampledImageEffectPass {
-            texture_slots,
-            alpha_texture_slot: Some(alpha_texture_slot),
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
-        },
-    )
 }
 
 fn native_vulkan_scene_effect_target_extent(value: f64) -> u32 {
