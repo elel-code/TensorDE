@@ -978,7 +978,6 @@ fn native_vulkan_scene_sampled_image_recording_payload(
             });
             let base_step = native_vulkan_scene_sampled_image_recording_step(
                 quad,
-                resource_index,
                 vec![NativeVulkanSceneTextureSlotResourceBinding {
                     slot: 0,
                     resource_index,
@@ -1063,7 +1062,6 @@ fn native_vulkan_scene_sampled_image_recording_payload(
             }
             let final_step = native_vulkan_scene_sampled_image_recording_step(
                 quad,
-                target_resource_index,
                 final_texture_slots,
                 final_alpha_texture_slot,
                 final_alpha_texture_mode,
@@ -1086,7 +1084,6 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         ) {
             let step = native_vulkan_scene_sampled_image_recording_step(
                 quad,
-                resource_index,
                 texture_slot_bindings,
                 quad.material_pass.alpha_texture_slot,
                 quad.material_pass.alpha_texture_mode,
@@ -1219,7 +1216,6 @@ fn native_vulkan_scene_effect_target_extent(value: f64) -> u32 {
 
 fn native_vulkan_scene_sampled_image_recording_step(
     quad: &NativeVulkanSceneSampledImageQuad,
-    resource_index: u32,
     texture_slot_bindings: Vec<NativeVulkanSceneTextureSlotResourceBinding>,
     alpha_texture_slot: Option<u32>,
     alpha_texture_mode: SceneRenderAlphaTextureMode,
@@ -1255,7 +1251,6 @@ fn native_vulkan_scene_sampled_image_recording_step(
         source: quad.source.clone(),
         fit: quad.fit,
         texture_region: quad.texture_region,
-        resource_index,
         texture_slot_bindings,
         material_pass,
         effect_passes: quad.effect_passes.clone(),
@@ -1297,7 +1292,8 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
             step.layer_index,
             step.layer_id,
             step.source.display(),
-            step.resource_index,
+            native_vulkan_scene_sampled_image_primary_resource_index(step)
+                .map_or_else(|| "<missing>".to_owned(), |resource| resource.to_string()),
             native_vulkan_scene_debug_sampled_texture_slots_label(&quad.texture_slots),
             quad.effect_target_pass
                 .as_ref()
@@ -1325,6 +1321,15 @@ fn native_vulkan_scene_debug_sampled_image_recording_step(
         ),
     );
     native_vulkan_scene_debug_sampled_alpha_mask(quad, &step.material_pass, range, vertices);
+}
+
+fn native_vulkan_scene_sampled_image_primary_resource_index(
+    step: &NativeVulkanSceneSampledImageRecordingStep,
+) -> Option<u32> {
+    step.texture_slot_bindings
+        .iter()
+        .find(|binding| binding.slot == 0)
+        .map(|binding| binding.resource_index)
 }
 
 fn native_vulkan_scene_sampled_image_render_target_label(
@@ -5801,7 +5806,7 @@ mod tests {
         assert_eq!(step.material_pass.blend_mode, SceneBlendMode::Alpha);
         assert_eq!(step.source, PathBuf::from("/tmp/hero.png"));
         assert_eq!(step.fit, FitMode::Contain);
-        assert_eq!(step.resource_index, 0);
+        assert_eq!(step.texture_slot_bindings, texture_slot_bindings(&[0]));
         assert_eq!(step.vertex_count, 4);
         assert_eq!(step.index_count, 6);
         assert_eq!(pass_plan.sampled_image_vertices.len(), 4);
@@ -6250,7 +6255,6 @@ mod tests {
             final_step.render_target,
             NativeVulkanSceneSampledImageRenderTarget::Swapchain
         );
-        assert_eq!(final_step.resource_index, 0);
         assert_eq!(
             final_step.texture_slot_bindings,
             texture_slot_bindings(&[0, 1])
@@ -6356,7 +6360,6 @@ mod tests {
                 clear: true
             }
         );
-        assert_eq!(base_step.resource_index, 0);
         assert_eq!(base_step.texture_slot_bindings, texture_slot_bindings(&[0]));
         assert_eq!(base_step.material_pass.alpha_texture_slot, None);
         assert_eq!(base_step.vertex_count, 3);
@@ -6366,7 +6369,6 @@ mod tests {
             final_step.render_target,
             NativeVulkanSceneSampledImageRenderTarget::Swapchain
         );
-        assert_eq!(final_step.resource_index, 2);
         assert_eq!(
             final_step.texture_slot_bindings,
             texture_slot_bindings(&[2, 1])

@@ -233,7 +233,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) source: PathBuf,
     pub(in crate::renderer::native_vulkan::scene) fit: FitMode,
     pub(in crate::renderer::native_vulkan::scene) texture_region: Option<SceneTextureRegion>,
-    pub(in crate::renderer::native_vulkan::scene) resource_index: u32,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_bindings:
         Vec<NativeVulkanSceneTextureSlotResourceBinding>,
     pub(in crate::renderer::native_vulkan::scene) material_pass: NativeVulkanSceneMaterialPass,

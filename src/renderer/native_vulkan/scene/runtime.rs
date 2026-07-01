@@ -341,7 +341,6 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 let pipeline_label = step.material_pass.pipeline;
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                     layer_index: step.layer_index,
-                    resource_index: step.resource_index,
                     texture_slot_bindings: step
                         .texture_slot_bindings
                         .into_iter()
@@ -664,7 +663,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
-                resource_index,
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     layer.blend_mode,
                     layer.alpha_texture_slot,
@@ -821,7 +819,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
-                resource_index,
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     layer.blend_mode,
                     layer.alpha_texture_slot,
@@ -2794,7 +2791,6 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub source: PathBuf,
     pub fit: FitMode,
     pub texture_region: Option<SceneTextureRegion>,
-    pub resource_index: u32,
     pub texture_slot_bindings: Vec<NativeVulkanSceneTextureSlotResourceBindingSnapshot>,
     pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
@@ -3145,7 +3141,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 source: step.source,
                 fit: step.fit,
                 texture_region: step.texture_region,
-                resource_index: step.resource_index,
                 texture_slot_bindings: step
                     .texture_slot_bindings
                     .into_iter()
@@ -5203,7 +5198,10 @@ mod tests {
             vec![PathBuf::from("/tmp/scene-hero.png")]
         );
         assert_eq!(sampled_geometry.draw_steps.len(), 1);
-        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(
+            sampled_geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0])
+        );
         assert!(
             snapshot
                 .vulkanalia_draw_pass
@@ -5525,11 +5523,17 @@ mod tests {
             ]
         );
         assert_eq!(sampled_geometry.draw_steps.len(), 2);
-        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(
+            sampled_geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0])
+        );
         assert_eq!(sampled_geometry.draw_steps[0].first_index, 0);
         assert_eq!(sampled_geometry.draw_steps[0].index_count, 6);
         assert_eq!(sampled_geometry.draw_steps[0].fit, Some(FitMode::Cover));
-        assert_eq!(sampled_geometry.draw_steps[1].resource_index, 1);
+        assert_eq!(
+            sampled_geometry.draw_steps[1].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[1])
+        );
         assert_eq!(sampled_geometry.draw_steps[1].first_index, 6);
         assert_eq!(sampled_geometry.draw_steps[1].index_count, 6);
         assert_eq!(sampled_geometry.draw_steps[1].fit, Some(FitMode::Tile));
@@ -5574,8 +5578,14 @@ mod tests {
             vec![PathBuf::from("/tmp/particle-spark.gtex")]
         );
         assert_eq!(sampled_geometry.draw_steps.len(), 2);
-        assert_eq!(sampled_geometry.draw_steps[0].resource_index, 0);
-        assert_eq!(sampled_geometry.draw_steps[1].resource_index, 0);
+        assert_eq!(
+            sampled_geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0])
+        );
+        assert_eq!(
+            sampled_geometry.draw_steps[1].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0])
+        );
         assert_eq!(snapshot.scene_sampled_image_resource_count, 1);
         assert_eq!(snapshot.vulkanalia_sampled_image.sampled_image_count, 1);
     }
@@ -6127,7 +6137,10 @@ mod tests {
         );
         assert_eq!(geometry.sampled_geometry.draw_steps.len(), 1);
         assert_eq!(geometry.sampled_geometry.draw_steps[0].layer_index, 1);
-        assert_eq!(geometry.sampled_geometry.draw_steps[0].resource_index, 0);
+        assert_eq!(
+            geometry.sampled_geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[0])
+        );
         assert_eq!(
             geometry.sampled_geometry.draw_steps[0].fit,
             Some(FitMode::Tile)
@@ -6166,7 +6179,10 @@ mod tests {
         );
         assert!(geometry.sources.is_empty());
         assert_eq!(geometry.draw_steps.len(), 1);
-        assert_eq!(geometry.draw_steps[0].resource_index, 7);
+        assert_eq!(
+            geometry.draw_steps[0].texture_slot_bindings,
+            vulkanalia_texture_slot_bindings(&[7])
+        );
         assert_eq!(geometry.draw_steps[0].first_index, 0);
         assert_eq!(geometry.draw_steps[0].index_count, 6);
         assert_eq!(geometry.vertices.len(), 4);
