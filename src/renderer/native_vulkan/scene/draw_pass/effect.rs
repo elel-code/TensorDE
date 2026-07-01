@@ -14,7 +14,7 @@ use super::{
 };
 
 mod iris;
-mod motion;
+pub(super) mod motion;
 mod opacity_mask;
 mod utility;
 mod water;
