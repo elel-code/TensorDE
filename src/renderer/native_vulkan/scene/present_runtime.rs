@@ -296,6 +296,9 @@ fn native_vulkan_scene_dynamic_sampler(
 }
 
 fn native_vulkan_scene_plan_needs_dynamic_sampler(plan: &SceneWallpaperPlan) -> bool {
+    if native_vulkan_scene_plan_uses_binary_scene(plan) {
+        return false;
+    }
     let particle_runtime_active = matches!(
         plan.scene_systems.particles,
         SceneSystemStatus::Detected | SceneSystemStatus::Ready
@@ -314,6 +317,14 @@ fn native_vulkan_scene_plan_needs_dynamic_sampler(plan: &SceneWallpaperPlan) -> 
                 .texture_region
                 .is_some_and(native_vulkan_scene_texture_region_is_animated)
         })
+}
+
+fn native_vulkan_scene_plan_uses_binary_scene(plan: &SceneWallpaperPlan) -> bool {
+    plan.source
+        .as_deref()
+        .and_then(std::path::Path::extension)
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gscn"))
 }
 
 fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) -> bool {
@@ -1078,6 +1089,26 @@ mod tests {
         assert_eq!(
             route_for_layers(vec![background, overlay]).unwrap(),
             NativeVulkanScenePresentRouteKind::SampledImage
+        );
+    }
+
+    #[test]
+    fn binary_scene_plan_does_not_try_json_dynamic_sampler() {
+        let mut image = layer("hero", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/hero.gtex"));
+        image.width = Some(640.0);
+        image.height = Some(360.0);
+        let mut plan = plan(vec![image]);
+        plan.source = Some(PathBuf::from("/tmp/scene.gscn"));
+        plan.timeline_animation_count = 1;
+        plan.timeline_animated_layer_count = 1;
+        plan.puppet_animation_layer_count = 1;
+
+        assert!(!native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
+        assert!(
+            native_vulkan_scene_dynamic_sampler(&plan)
+                .unwrap()
+                .is_none()
         );
     }
 

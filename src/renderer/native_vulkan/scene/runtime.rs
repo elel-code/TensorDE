@@ -5078,15 +5078,9 @@ mod tests {
         assert!(!snapshot.native_draw_ready);
         assert!(snapshot.runtime_display_available);
         assert!(!snapshot.draw_pass_plan_ready);
-        assert!(!snapshot.draw_pass_backend_ready);
-        assert_eq!(
-            snapshot.draw_pass_backend_status,
-            "blocked-by-unsupported-scene-layers"
-        );
-        assert_eq!(
-            snapshot.draw_pass_blocking_reason,
-            Some("unsupported-scene-layers")
-        );
+        assert!(snapshot.draw_pass_backend_ready);
+        assert_eq!(snapshot.draw_pass_backend_status, "fast-clear-color-ready");
+        assert_eq!(snapshot.draw_pass_blocking_reason, None);
         assert_eq!(snapshot.draw_pass_color_op_count, 1);
         assert_eq!(snapshot.draw_op_count, 1);
         assert_eq!(snapshot.draw_ops[0].kind, "color-quad");

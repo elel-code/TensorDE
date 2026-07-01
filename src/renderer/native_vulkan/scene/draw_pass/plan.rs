@@ -234,9 +234,6 @@ impl NativeVulkanSceneDrawPassBuild {
     }
 
     fn backend_route(&self) -> NativeVulkanSceneDrawPassBackendRoute {
-        if !self.plan_ready {
-            return NativeVulkanSceneDrawPassBackendRoute::BlockedUnsupportedSceneLayers;
-        }
         if self.draw_op_count == 0 {
             return NativeVulkanSceneDrawPassBackendRoute::BlockedEmptyDrawPlan;
         }
@@ -290,6 +287,9 @@ impl NativeVulkanSceneDrawPassBuild {
         }
         if self.video_op_count > 0 {
             return NativeVulkanSceneDrawPassBackendRoute::PendingVideoLayerBridge;
+        }
+        if !self.plan_ready {
+            return NativeVulkanSceneDrawPassBackendRoute::BlockedUnsupportedSceneLayers;
         }
         if !self.quad_recording_payload.steps.is_empty() {
             return NativeVulkanSceneDrawPassBackendRoute::PartialSolidQuadRecording;

@@ -53,7 +53,6 @@ use self::geometry_common::{
 pub(super) use self::plan::native_vulkan_scene_draw_pass_plan;
 use self::texture_slots::{
     native_vulkan_scene_sampled_image_source_index,
-    native_vulkan_scene_sampled_image_texture_slot_bindings,
     native_vulkan_scene_sampled_image_texture_slot_bindings_for_slots,
     native_vulkan_scene_texture_slots_from_render_slots,
     native_vulkan_scene_texture_slots_from_scene_slots,
@@ -887,7 +886,7 @@ fn native_vulkan_scene_sampled_image_recording_payload(
     for quad in &visible_quads {
         let resource_index =
             native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
-        let _ = native_vulkan_scene_sampled_image_texture_slot_bindings(
+        let _ = native_vulkan_scene_sampled_image_material_texture_slot_bindings(
             &mut sources,
             quad,
             resource_index,
@@ -911,11 +910,12 @@ fn native_vulkan_scene_sampled_image_recording_payload(
     for quad in visible_quads {
         let resource_index =
             native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
-        let texture_slot_bindings = native_vulkan_scene_sampled_image_texture_slot_bindings(
-            &mut sources,
-            quad,
-            resource_index,
-        );
+        let texture_slot_bindings =
+            native_vulkan_scene_sampled_image_material_texture_slot_bindings(
+                &mut sources,
+                quad,
+                resource_index,
+            );
         if native_vulkan_scene_sampled_image_needs_we_effect_chain(quad) {
             let Some(base_range) = native_vulkan_scene_append_sampled_image_effect_base_geometry(
                 quad,
@@ -1061,6 +1061,39 @@ fn native_vulkan_scene_sampled_image_needs_we_effect_chain(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> bool {
     quad.effect_target_pass.is_some()
+}
+
+fn native_vulkan_scene_sampled_image_material_texture_slot_bindings(
+    sources: &mut Vec<PathBuf>,
+    quad: &NativeVulkanSceneSampledImageQuad,
+    base_resource_index: u32,
+) -> Vec<NativeVulkanSceneTextureSlotResourceBinding> {
+    let texture_slots = native_vulkan_scene_sampled_image_material_texture_slots(quad);
+    native_vulkan_scene_sampled_image_texture_slot_bindings_for_slots(
+        sources,
+        &texture_slots,
+        base_resource_index,
+    )
+}
+
+fn native_vulkan_scene_sampled_image_material_texture_slots(
+    quad: &NativeVulkanSceneSampledImageQuad,
+) -> Vec<NativeVulkanSceneTextureSlot> {
+    let mut texture_slots = quad.texture_slots.clone();
+    for effect in &quad.effect_passes {
+        for slot in &effect.texture_slots {
+            if slot.slot == 0
+                || texture_slots
+                    .iter()
+                    .any(|existing| existing.slot == slot.slot)
+            {
+                continue;
+            }
+            texture_slots.push(slot.clone());
+        }
+    }
+    texture_slots.sort_by_key(|slot| slot.slot);
+    texture_slots
 }
 
 fn native_vulkan_scene_sampled_image_quad_has_visible_recording_geometry(
@@ -5049,6 +5082,7 @@ mod tests {
     use crate::core::scene::{SceneMesh, SceneMeshVertex};
     use crate::core::{FitMode, SceneBlendMode, ScenePathFillRule, SceneSize, SceneTextureRegion};
     use crate::renderer::SceneRenderTextureSlot;
+    use crate::renderer::native_vulkan::present::render_plan::NativeVulkanSceneUnsupportedLayer;
     use crate::renderer::native_vulkan::present::render_plan::native_vulkan_scene_effect_uv_space_from_parts;
 
     fn texture_slot_bindings(
@@ -5326,6 +5360,43 @@ mod tests {
             vec![PathBuf::from("/tmp/scene-video.mp4")]
         );
         assert!(pass_plan.requires_video_decode);
+    }
+
+    #[test]
+    fn draw_pass_plan_keeps_recordable_scene_subset_presentable_with_pending_layers() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        image.width = Some(663.0);
+        image.height = Some(230.0);
+        let mut panel = draw_op(1, NativeVulkanSceneDrawOpKind::Rectangle);
+        panel.color = Some("#102030".to_owned());
+        panel.width = Some(64.0);
+        panel.height = Some(64.0);
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image, panel],
+            unsupported_layers: vec![NativeVulkanSceneUnsupportedLayer {
+                layer_index: 2,
+                layer_id: "particle-layer".to_owned(),
+                reason: "particle-layer-needs-scene-particle-runtime",
+            }],
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(!pass_plan.plan_ready);
+        assert!(pass_plan.backend_ready);
+        assert_eq!(
+            pass_plan.backend_status,
+            "mixed-quad-sampled-image-recording-ready"
+        );
+        assert_eq!(pass_plan.blocking_reason, None);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert_eq!(pass_plan.quad_recording_steps.len(), 1);
     }
 
     #[test]
@@ -5867,6 +5938,63 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[0].effect_uv, [0.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[1].effect_uv, [1.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[2].effect_uv, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn draw_pass_plan_binds_direct_effect_pass_texture_slots() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        image.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/eye.gtex"),
+            width: Some(663),
+            height: Some(230),
+        }];
+        image.alpha_texture_slot = Some(1);
+        image.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
+        image.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("native-opacity-mask".to_owned()),
+            pass_index: 0,
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: None,
+            texture_slots: vec![SceneRenderTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/opacity-mask.gtex"),
+                width: Some(331),
+                height: Some(115),
+            }],
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+        image.width = Some(663.0);
+        image.height = Some(230.0);
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert_eq!(
+            pass_plan.sampled_image_sources,
+            vec![
+                PathBuf::from("/tmp/eye.gtex"),
+                PathBuf::from("/tmp/opacity-mask.gtex")
+            ]
+        );
+        let step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(step.texture_slot_bindings, texture_slot_bindings(&[0, 1]));
+        assert_eq!(step.material_pass.alpha_texture_slot, Some(1));
     }
 
     #[test]

@@ -374,52 +374,122 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
     }
 }
 
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_recordable(status: &str) -> bool {
+    native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_solid_quad(status)
+        || native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_recording(
+            status,
+        )
+        || native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_full_extent(
+            status,
+        )
+        || native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_recording(status)
+        || native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_full_extent(status)
+}
+
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_solid_quad(status: &str) -> bool {
+    matches!(
+        status,
+        "solid-quad-recording-ready" | "clear-background-solid-quad-recording-ready"
+    )
+}
+
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_recording(
+    status: &str,
+) -> bool {
+    matches!(
+        status,
+        "sampled-image-recording-ready" | "clear-background-sampled-image-recording-ready"
+    )
+}
+
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_full_extent(
+    status: &str,
+) -> bool {
+    matches!(
+        status,
+        "sampled-image-implicit-full-extent-ready"
+            | "clear-background-sampled-image-implicit-full-extent-ready"
+    )
+}
+
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_recording(
+    status: &str,
+) -> bool {
+    matches!(
+        status,
+        "mixed-quad-sampled-image-recording-ready"
+            | "clear-background-mixed-quad-sampled-image-recording-ready"
+    )
+}
+
+fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_full_extent(
+    status: &str,
+) -> bool {
+    matches!(
+        status,
+        "mixed-quad-sampled-image-implicit-full-extent-ready"
+            | "clear-background-mixed-quad-sampled-image-implicit-full-extent-ready"
+    )
+}
+
 pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
     input: NativeVulkanVulkanaliaSceneDrawPassInput,
 ) -> NativeVulkanVulkanaliaSceneDrawPassSnapshot {
-    let solid_quad_ready = input.plan_ready
-        && input.native_draw_ready
-        && input.quad_recording_ready
-        && input
-            .quad_recording_step_count
-            .saturating_add(input.clear_background_op_count)
-            == input.draw_op_count
-        && input.sampled_image_op_count == 0;
-    let sampled_image_pending = input.plan_ready
-        && input.native_draw_ready
-        && input.sampled_image_recording_ready
-        && input.sampled_image_recording_step_count <= input.sampled_image_op_count
-        && input
-            .sampled_image_op_count
-            .saturating_add(input.clear_background_op_count)
-            == input.draw_op_count;
-    let sampled_image_implicit_full_extent_ready = input.plan_ready
-        && input.native_draw_ready
-        && input.sampled_image_implicit_full_extent_ready
-        && input
-            .sampled_image_op_count
-            .saturating_add(input.clear_background_op_count)
-            == input.draw_op_count;
-    let mixed_quad_sampled_image_implicit_full_extent_ready = input.plan_ready
-        && input.native_draw_ready
-        && input.sampled_image_implicit_full_extent_ready
-        && input.quad_recording_step_count > 0
-        && input.sampled_image_op_count == 1
-        && input
-            .quad_recording_step_count
-            .saturating_add(input.sampled_image_op_count)
-            .saturating_add(input.clear_background_op_count)
-            == input.draw_op_count;
-    let mixed_quad_sampled_image_ready = input.plan_ready
-        && input.native_draw_ready
-        && input.quad_recording_step_count > 0
-        && input.sampled_image_recording_ready
-        && input.sampled_image_recording_step_count <= input.sampled_image_op_count
-        && input
-            .quad_recording_step_count
-            .saturating_add(input.sampled_image_op_count)
-            .saturating_add(input.clear_background_op_count)
-            == input.draw_op_count;
+    let status_driven_ready =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_recordable(input.backend_status);
+    let graph_ready = (input.plan_ready && input.native_draw_ready) || status_driven_ready;
+    let solid_quad_ready =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_solid_quad(input.backend_status)
+            || (graph_ready
+                && input.quad_recording_ready
+                && input
+                    .quad_recording_step_count
+                    .saturating_add(input.clear_background_op_count)
+                    == input.draw_op_count
+                && input.sampled_image_op_count == 0);
+    let sampled_image_pending =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_recording(
+            input.backend_status,
+        ) || (graph_ready
+            && input.sampled_image_recording_ready
+            && input.sampled_image_recording_step_count <= input.sampled_image_op_count
+            && input
+                .sampled_image_op_count
+                .saturating_add(input.clear_background_op_count)
+                == input.draw_op_count);
+    let sampled_image_implicit_full_extent_ready =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_sampled_image_full_extent(
+            input.backend_status,
+        ) || (graph_ready
+            && input.sampled_image_implicit_full_extent_ready
+            && input
+                .sampled_image_op_count
+                .saturating_add(input.clear_background_op_count)
+                == input.draw_op_count);
+    let mixed_quad_sampled_image_implicit_full_extent_ready =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_full_extent(
+            input.backend_status,
+        ) || (graph_ready
+            && input.sampled_image_implicit_full_extent_ready
+            && input.quad_recording_step_count > 0
+            && input.sampled_image_op_count == 1
+            && input
+                .quad_recording_step_count
+                .saturating_add(input.sampled_image_op_count)
+                .saturating_add(input.clear_background_op_count)
+                == input.draw_op_count);
+    let mixed_quad_sampled_image_ready =
+        native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_mixed_recording(
+            input.backend_status,
+        ) || (graph_ready
+            && input.quad_recording_step_count > 0
+            && input.sampled_image_recording_ready
+            && input.sampled_image_recording_step_count <= input.sampled_image_op_count
+            && input
+                .quad_recording_step_count
+                .saturating_add(input.sampled_image_op_count)
+                .saturating_add(input.clear_background_op_count)
+                == input.draw_op_count);
 
     let (backend_ready, backend_status, blocking_reason) = if solid_quad_ready {
         if input.clear_background_op_count > 0 {
@@ -487,7 +557,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
                 None,
             )
         }
-    } else if !input.plan_ready || !input.native_draw_ready {
+    } else if !graph_ready {
         (
             false,
             "blocked-by-scene-draw-plan",
@@ -3382,6 +3452,42 @@ mod tests {
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
         assert!(snapshot.uses_submit2);
+        assert!(
+            snapshot
+                .command_order
+                .contains(&"cmd_draw_indexed_in_scene_layer_order")
+        );
+    }
+
+    #[test]
+    fn draw_pass_snapshot_uses_recordable_backend_status_for_effect_chain_steps() {
+        let mut input = input();
+        input.plan_ready = false;
+        input.native_draw_ready = false;
+        input.draw_op_count = 76;
+        input.backend_status = "mixed-quad-sampled-image-recording-ready";
+        input.quad_recording_ready = false;
+        input.quad_recording_step_count = 10;
+        input.quad_vertex_buffer_bytes = 960;
+        input.quad_index_buffer_bytes = 240;
+        input.sampled_image_recording_ready = true;
+        input.sampled_image_op_count = 66;
+        input.sampled_image_recording_step_count = 67;
+        input.sampled_image_vertex_buffer_bytes = 1_234_024;
+        input.sampled_image_index_buffer_bytes = 746_328;
+        input.vector_shape_op_count = 10;
+
+        let snapshot = native_vulkan_vulkanalia_scene_draw_pass_snapshot(input);
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(
+            snapshot.backend_status,
+            "mixed-quad-sampled-image-dynamic-rendering-recording-ready"
+        );
+        assert_eq!(snapshot.blocking_reason, None);
+        assert_eq!(snapshot.solid_quad_count, 10);
+        assert_eq!(snapshot.sampled_image_quad_count, 67);
+        assert_eq!(snapshot.draw_indexed_count, 77);
         assert!(
             snapshot
                 .command_order
