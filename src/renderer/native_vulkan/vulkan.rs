@@ -98,8 +98,9 @@ pub use scene_draw_pass::{
 pub(in crate::renderer::native_vulkan) use scene_present::NativeVulkanVulkanaliaSceneVideoOverlayInput;
 pub(in crate::renderer::native_vulkan) use scene_present::native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec;
 pub use scene_present::{
-    NativeVulkanVulkanaliaSceneBlendState, NativeVulkanVulkanaliaSceneCullMode,
-    NativeVulkanVulkanaliaSceneEffectKind, NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
+    NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneEffectKind,
+    NativeVulkanVulkanaliaSceneMaterialFlag,
     NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,

@@ -382,8 +382,75 @@ impl NativeVulkanVulkanaliaSceneCullMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneBlendEquation {
+    pub src_color: &'static str,
+    pub dst_color: &'static str,
+    pub color_op: &'static str,
+    pub src_alpha: &'static str,
+    pub dst_alpha: &'static str,
+    pub alpha_op: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneBlendState {
     pub mode: SceneBlendMode,
+    pub equation: NativeVulkanVulkanaliaSceneBlendEquation,
+}
+
+impl NativeVulkanVulkanaliaSceneBlendState {
+    pub fn from_mode(mode: SceneBlendMode) -> Self {
+        Self {
+            mode,
+            equation: native_vulkan_vulkanalia_scene_blend_equation(mode),
+        }
+    }
+}
+
+fn native_vulkan_vulkanalia_scene_blend_equation(
+    mode: SceneBlendMode,
+) -> NativeVulkanVulkanaliaSceneBlendEquation {
+    match mode {
+        SceneBlendMode::Alpha => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "src-alpha",
+            dst_color: "one-minus-src-alpha",
+            color_op: "add",
+            src_alpha: "src-alpha",
+            dst_alpha: "one-minus-src-alpha",
+            alpha_op: "add",
+        },
+        SceneBlendMode::Additive => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "src-alpha",
+            dst_color: "one",
+            color_op: "add",
+            src_alpha: "one",
+            dst_alpha: "one",
+            alpha_op: "add",
+        },
+        SceneBlendMode::Multiply => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "dst-color",
+            dst_color: "one-minus-src-alpha",
+            color_op: "add",
+            src_alpha: "one",
+            dst_alpha: "one-minus-src-alpha",
+            alpha_op: "add",
+        },
+        SceneBlendMode::Screen => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "one-minus-dst-color",
+            dst_color: "one",
+            color_op: "add",
+            src_alpha: "one",
+            dst_alpha: "one-minus-src-alpha",
+            alpha_op: "add",
+        },
+        SceneBlendMode::Max => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "one",
+            dst_color: "one",
+            color_op: "max",
+            src_alpha: "one",
+            dst_alpha: "one-minus-src-alpha",
+            alpha_op: "add",
+        },
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -486,7 +553,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             shader: None,
             blending: None,
             render_state: NativeVulkanVulkanaliaSceneRenderState {
-                blend: NativeVulkanVulkanaliaSceneBlendState { mode: blend_mode },
+                blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(blend_mode),
                 depth_test: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
                 depth_write: NativeVulkanVulkanaliaSceneMaterialFlag::Unspecified,
                 cull_mode: NativeVulkanVulkanaliaSceneCullMode::Unspecified,
@@ -514,11 +581,17 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             label
         };
         format!(
-            "kind={} shader={} blending={} blend={:?} alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} effects={} pipeline={}",
+            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} effects={} pipeline={}",
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
             self.render_state.blend.mode,
+            self.render_state.blend.equation.src_color,
+            self.render_state.blend.equation.color_op,
+            self.render_state.blend.equation.dst_color,
+            self.render_state.blend.equation.src_alpha,
+            self.render_state.blend.equation.alpha_op,
+            self.render_state.blend.equation.dst_alpha,
             self.alpha_texture_slot,
             self.alpha_texture_mode.as_str(),
             self.render_state.depth_test.as_str(),
@@ -680,9 +753,7 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
                 layer_index: 0,
                 first_index: 0,
                 index_count,
-                blend: NativeVulkanVulkanaliaSceneBlendState {
-                    mode: SceneBlendMode::Alpha,
-                },
+                blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(SceneBlendMode::Alpha),
             }],
             source_label,
         )
@@ -6768,7 +6839,7 @@ mod tests {
     use super::*;
 
     fn blend_state(mode: SceneBlendMode) -> NativeVulkanVulkanaliaSceneBlendState {
-        NativeVulkanVulkanaliaSceneBlendState { mode }
+        NativeVulkanVulkanaliaSceneBlendState::from_mode(mode)
     }
 
     fn sampled_image_material(

@@ -3216,7 +3216,7 @@ mod tests {
     fn blend_state(
         mode: SceneBlendMode,
     ) -> super::super::present::NativeVulkanVulkanaliaSceneBlendState {
-        super::super::present::NativeVulkanVulkanaliaSceneBlendState { mode }
+        super::super::present::NativeVulkanVulkanaliaSceneBlendState::from_mode(mode)
     }
 
     fn sampled_image_material(

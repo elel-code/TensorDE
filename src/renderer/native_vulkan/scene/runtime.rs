@@ -29,10 +29,11 @@ use super::super::present::render_plan::{
     native_vulkan_scene_draw_plan, native_vulkan_scene_opacity_effect_material_uv_scale,
 };
 use super::super::vulkan::{
-    NativeVulkanVulkanaliaSceneBlendState, NativeVulkanVulkanaliaSceneCullMode,
-    NativeVulkanVulkanaliaSceneDrawPassInput, NativeVulkanVulkanaliaSceneDrawPassSnapshot,
-    NativeVulkanVulkanaliaSceneEffectKind, NativeVulkanVulkanaliaSceneMaterialFlag,
-    NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
+    NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
+    NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
+    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneRenderState,
+    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImageMaterial,
@@ -514,9 +515,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometr
             layer_index,
             first_index,
             index_count,
-            blend: NativeVulkanVulkanaliaSceneBlendState {
-                mode: layer.blend_mode,
-            },
+            blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
         });
         vertices.extend(solid_vertices.into_iter().map(|vertex| {
             NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -691,9 +690,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
-                blend: NativeVulkanVulkanaliaSceneBlendState {
-                    mode: layer.blend_mode,
-                },
+                blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -851,9 +848,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 layer_index,
                 first_index,
                 index_count,
-                blend: NativeVulkanVulkanaliaSceneBlendState {
-                    mode: layer.blend_mode,
-                },
+                blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -954,9 +949,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
                 layer_index,
                 first_index,
                 index_count,
-                blend: NativeVulkanVulkanaliaSceneBlendState {
-                    mode: layer.blend_mode,
-                },
+                blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
             });
             solid_vertices.extend(vertices.into_iter().map(|vertex| {
                 NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
@@ -2591,8 +2584,19 @@ pub struct NativeVulkanSceneTextureSlotResourceBindingSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneBlendEquationSnapshot {
+    pub src_color: &'static str,
+    pub dst_color: &'static str,
+    pub color_op: &'static str,
+    pub src_alpha: &'static str,
+    pub dst_alpha: &'static str,
+    pub alpha_op: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneBlendStateSnapshot {
     pub mode: SceneBlendMode,
+    pub equation: NativeVulkanSceneBlendEquationSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2655,7 +2659,17 @@ fn native_vulkan_scene_texture_slot_resource_binding_snapshot(
 fn native_vulkan_scene_blend_state_snapshot(
     blend: NativeVulkanSceneBlendState,
 ) -> NativeVulkanSceneBlendStateSnapshot {
-    NativeVulkanSceneBlendStateSnapshot { mode: blend.mode }
+    NativeVulkanSceneBlendStateSnapshot {
+        mode: blend.mode,
+        equation: NativeVulkanSceneBlendEquationSnapshot {
+            src_color: blend.equation.src_color.as_str(),
+            dst_color: blend.equation.dst_color.as_str(),
+            color_op: blend.equation.color_op.as_str(),
+            src_alpha: blend.equation.src_alpha.as_str(),
+            dst_alpha: blend.equation.dst_alpha.as_str(),
+            alpha_op: blend.equation.alpha_op.as_str(),
+        },
+    }
 }
 
 fn native_vulkan_scene_render_state_snapshot(
@@ -2910,7 +2924,17 @@ fn native_vulkan_scene_vulkanalia_texture_slot_resource_binding(
 fn native_vulkan_scene_vulkanalia_blend_state(
     blend: NativeVulkanSceneBlendStateSnapshot,
 ) -> NativeVulkanVulkanaliaSceneBlendState {
-    NativeVulkanVulkanaliaSceneBlendState { mode: blend.mode }
+    NativeVulkanVulkanaliaSceneBlendState {
+        mode: blend.mode,
+        equation: NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: blend.equation.src_color,
+            dst_color: blend.equation.dst_color,
+            color_op: blend.equation.color_op,
+            src_alpha: blend.equation.src_alpha,
+            dst_alpha: blend.equation.dst_alpha,
+            alpha_op: blend.equation.alpha_op,
+        },
+    }
 }
 
 fn native_vulkan_scene_vulkanalia_render_state(

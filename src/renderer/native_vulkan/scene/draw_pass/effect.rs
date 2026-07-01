@@ -7,7 +7,8 @@ use crate::renderer::{
 };
 
 use super::blend::{
-    native_vulkan_scene_render_state, native_vulkan_scene_sampled_image_pipeline_label,
+    native_vulkan_scene_blend_equation_label, native_vulkan_scene_render_state,
+    native_vulkan_scene_sampled_image_pipeline_label,
 };
 use super::{
     NativeVulkanSceneCullMode, NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord,
@@ -169,11 +170,12 @@ pub(super) fn native_vulkan_scene_material_pass_label(
     material: &NativeVulkanSceneMaterialPass,
 ) -> String {
     format!(
-        "kind={} shader={} blending={} blend={:?} alpha_slot={:?} alpha_mode={} depth_test={} depth_write={} cull={} texture_slots={} effect_kinds={} pipeline={}",
+        "kind={} shader={} blending={} blend={:?} equation={} alpha_slot={:?} alpha_mode={} depth_test={} depth_write={} cull={} texture_slots={} effect_kinds={} pipeline={}",
         material.kind.as_str(),
         material.shader.as_deref().unwrap_or("<none>"),
         material.blending.as_deref().unwrap_or("<none>"),
         material.render_state.blend.mode,
+        native_vulkan_scene_blend_equation_label(material.render_state.blend),
         material.alpha_texture_slot,
         material.alpha_texture_mode.as_str(),
         material.render_state.depth_test.as_str(),

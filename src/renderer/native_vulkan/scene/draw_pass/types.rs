@@ -22,8 +22,55 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneTextureSlo
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneBlendFactor {
+    One,
+    SrcAlpha,
+    OneMinusSrcAlpha,
+    DstColor,
+    OneMinusDstColor,
+}
+
+impl NativeVulkanSceneBlendFactor {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::One => "one",
+            Self::SrcAlpha => "src-alpha",
+            Self::OneMinusSrcAlpha => "one-minus-src-alpha",
+            Self::DstColor => "dst-color",
+            Self::OneMinusDstColor => "one-minus-dst-color",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneBlendOp {
+    Add,
+    Max,
+}
+
+impl NativeVulkanSceneBlendOp {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::Add => "add",
+            Self::Max => "max",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBlendEquation {
+    pub(in crate::renderer::native_vulkan::scene) src_color: NativeVulkanSceneBlendFactor,
+    pub(in crate::renderer::native_vulkan::scene) dst_color: NativeVulkanSceneBlendFactor,
+    pub(in crate::renderer::native_vulkan::scene) color_op: NativeVulkanSceneBlendOp,
+    pub(in crate::renderer::native_vulkan::scene) src_alpha: NativeVulkanSceneBlendFactor,
+    pub(in crate::renderer::native_vulkan::scene) dst_alpha: NativeVulkanSceneBlendFactor,
+    pub(in crate::renderer::native_vulkan::scene) alpha_op: NativeVulkanSceneBlendOp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBlendState {
     pub(in crate::renderer::native_vulkan::scene) mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::scene) equation: NativeVulkanSceneBlendEquation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

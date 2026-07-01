@@ -59,6 +59,7 @@ use self::texture_slots::{
     native_vulkan_scene_texture_slots_from_scene_slots,
 };
 pub(super) use self::types::{
+    NativeVulkanSceneBlendEquation, NativeVulkanSceneBlendFactor, NativeVulkanSceneBlendOp,
     NativeVulkanSceneBlendState, NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan,
     NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
     NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
@@ -5453,6 +5454,14 @@ mod tests {
         assert_eq!(
             step.material_pass.render_state.blend.mode,
             SceneBlendMode::Max
+        );
+        assert_eq!(
+            step.material_pass.render_state.blend.equation.color_op,
+            NativeVulkanSceneBlendOp::Max
+        );
+        assert_eq!(
+            step.material_pass.render_state.blend.equation.dst_alpha,
+            NativeVulkanSceneBlendFactor::OneMinusSrcAlpha
         );
         assert_eq!(
             super::blend::native_vulkan_scene_sampled_image_pipeline_label(
