@@ -54,7 +54,7 @@ pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
 pub const SCENE_BINARY_DEBUG_NAME_RECORD_SIZE: usize = 16;
 
-const SCENE_BINARY_NONE_ID: u32 = u32::MAX;
+pub const SCENE_BINARY_NONE_ID: u32 = u32::MAX;
 const SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY: u16 = 0;
 const SCENE_BINARY_RETAINED_RESOURCE: u16 = 1;
 const SCENE_BINARY_RETAINED_TEXTURE_SLOT: u16 = 2;
@@ -283,6 +283,20 @@ impl SceneBinaryLayoutPlan {
         )
     }
 
+    pub fn node_record_at(
+        &self,
+        container: &[u8],
+        record_index: u32,
+    ) -> Result<SceneBinaryNodeRecord, SceneBinaryError> {
+        self.record_at(
+            container,
+            SceneBinaryChunkKind::NodeTable,
+            SCENE_BINARY_NODE_RECORD_SIZE,
+            record_index,
+            decode_node_record,
+        )
+    }
+
     pub fn transform_timeline_records<'a>(
         &self,
         container: &'a [u8],
@@ -303,6 +317,20 @@ impl SceneBinaryLayoutPlan {
             container,
             SceneBinaryChunkKind::Geometry,
             SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            decode_geometry_record,
+        )
+    }
+
+    pub fn geometry_record_at(
+        &self,
+        container: &[u8],
+        record_index: u32,
+    ) -> Result<SceneBinaryGeometryRecord, SceneBinaryError> {
+        self.record_at(
+            container,
+            SceneBinaryChunkKind::Geometry,
+            SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            record_index,
             decode_geometry_record,
         )
     }
@@ -421,6 +449,20 @@ impl SceneBinaryLayoutPlan {
             container,
             SceneBinaryChunkKind::MaterialPass,
             SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            decode_material_pass_record,
+        )
+    }
+
+    pub fn material_pass_record_at(
+        &self,
+        container: &[u8],
+        record_index: u32,
+    ) -> Result<SceneBinaryMaterialPassRecord, SceneBinaryError> {
+        self.record_at(
+            container,
+            SceneBinaryChunkKind::MaterialPass,
+            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            record_index,
             decode_material_pass_record,
         )
     }
@@ -590,6 +632,64 @@ impl SceneBinaryLayoutPlan {
             record_count: descriptor.record_count as usize,
             decode,
         })
+    }
+
+    fn record_at<T>(
+        &self,
+        container: &[u8],
+        kind: SceneBinaryChunkKind,
+        record_size: usize,
+        record_index: u32,
+        decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
+    ) -> Result<T, SceneBinaryError> {
+        let descriptor = self
+            .chunk(kind)
+            .ok_or(SceneBinaryError::MissingChunk { kind })?;
+        let payload = descriptor.payload(container)?;
+        let expected = usize::try_from(descriptor.record_count)
+            .ok()
+            .and_then(|count| count.checked_mul(record_size))
+            .ok_or(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            })?;
+        if payload.len() != expected {
+            return Err(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            });
+        }
+        if record_index >= descriptor.record_count {
+            return Err(SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record: record_index,
+                record_count: 1,
+                chunk_record_count: descriptor.record_count,
+            });
+        }
+        let start = usize::try_from(record_index)
+            .ok()
+            .and_then(|index| index.checked_mul(record_size))
+            .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record: record_index,
+                record_count: 1,
+                chunk_record_count: descriptor.record_count,
+            })?;
+        let end =
+            start
+                .checked_add(record_size)
+                .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                    kind,
+                    first_record: record_index,
+                    record_count: 1,
+                    chunk_record_count: descriptor.record_count,
+                })?;
+        decode(&payload[start..end])
     }
 
     fn records_range<'a, T>(
