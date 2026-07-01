@@ -5,16 +5,6 @@ use crate::core::scene::binary::{
     SceneBinaryLayoutPlan,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryRetainedGpuRecord {
-    pub(in crate::renderer::native_vulkan::scene) owner_kind: u16,
-    pub(in crate::renderer::native_vulkan::scene) flags: u16,
-    pub(in crate::renderer::native_vulkan::scene) owner_name: u32,
-    pub(in crate::renderer::native_vulkan::scene) stable_id: u64,
-    pub(in crate::renderer::native_vulkan::scene) record_index: u32,
-    pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryRetainedUpdatePlan {
     pub(in crate::renderer::native_vulkan::scene) resource_count: u32,
@@ -26,58 +16,49 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryReta
     pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
 }
 
-pub(super) fn native_vulkan_scene_binary_retained_gpu_records(
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryRetainedIngestPlan {
+    pub(in crate::renderer::native_vulkan::scene) record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) stable_id_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) dirty_record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) update_plan:
+        NativeVulkanSceneBinaryRetainedUpdatePlan,
+}
+
+pub(super) fn native_vulkan_scene_binary_retained_ingest_plan(
     container: &[u8],
     layout: &SceneBinaryLayoutPlan,
-) -> Result<Vec<NativeVulkanSceneBinaryRetainedGpuRecord>, SceneBinaryError> {
+) -> Result<NativeVulkanSceneBinaryRetainedIngestPlan, SceneBinaryError> {
     let retained_records = layout.retained_gpu_state_records(container)?;
-    let mut records = Vec::with_capacity(retained_records.len());
+    let mut plan = NativeVulkanSceneBinaryRetainedIngestPlan {
+        record_count: retained_records.len().min(u32::MAX as usize) as u32,
+        ..Default::default()
+    };
     for retained in retained_records {
         let retained = retained?;
-        records.push(NativeVulkanSceneBinaryRetainedGpuRecord {
-            owner_kind: retained.owner_kind,
-            flags: retained.flags,
-            owner_name: retained.owner_name,
-            stable_id: retained.stable_id,
-            record_index: retained.record_index,
-            dirty_range_count: retained.dirty_range_count,
-        });
-    }
-    Ok(records)
-}
-
-pub(super) fn native_vulkan_scene_binary_retained_dirty_range_count(
-    records: &[NativeVulkanSceneBinaryRetainedGpuRecord],
-) -> u32 {
-    records
-        .iter()
-        .map(|record| record.dirty_range_count)
-        .fold(0u32, u32::saturating_add)
-}
-
-pub(super) fn native_vulkan_scene_binary_retained_update_plan(
-    records: &[NativeVulkanSceneBinaryRetainedGpuRecord],
-) -> Result<NativeVulkanSceneBinaryRetainedUpdatePlan, SceneBinaryError> {
-    let mut plan = NativeVulkanSceneBinaryRetainedUpdatePlan::default();
-    for record in records {
-        match record.owner_kind {
+        match retained.owner_kind {
             SCENE_BINARY_RETAINED_RESOURCE => {
-                plan.resource_count = plan.resource_count.saturating_add(1);
+                plan.update_plan.resource_count = plan.update_plan.resource_count.saturating_add(1);
             }
             SCENE_BINARY_RETAINED_TEXTURE_SLOT => {
-                plan.texture_slot_count = plan.texture_slot_count.saturating_add(1);
+                plan.update_plan.texture_slot_count =
+                    plan.update_plan.texture_slot_count.saturating_add(1);
             }
             SCENE_BINARY_RETAINED_MATERIAL_PASS => {
-                plan.material_pass_count = plan.material_pass_count.saturating_add(1);
+                plan.update_plan.material_pass_count =
+                    plan.update_plan.material_pass_count.saturating_add(1);
             }
             SCENE_BINARY_RETAINED_EFFECT_PASS => {
-                plan.effect_pass_count = plan.effect_pass_count.saturating_add(1);
+                plan.update_plan.effect_pass_count =
+                    plan.update_plan.effect_pass_count.saturating_add(1);
             }
             SCENE_BINARY_RETAINED_EFFECT_PARAMETER => {
-                plan.effect_parameter_count = plan.effect_parameter_count.saturating_add(1);
+                plan.update_plan.effect_parameter_count =
+                    plan.update_plan.effect_parameter_count.saturating_add(1);
             }
             SCENE_BINARY_RETAINED_GEOMETRY => {
-                plan.geometry_count = plan.geometry_count.saturating_add(1);
+                plan.update_plan.geometry_count = plan.update_plan.geometry_count.saturating_add(1);
             }
             owner_kind => {
                 return Err(SceneBinaryError::UnknownRetainedOwnerKind { owner_kind });
@@ -85,7 +66,17 @@ pub(super) fn native_vulkan_scene_binary_retained_update_plan(
         }
         plan.dirty_range_count = plan
             .dirty_range_count
-            .saturating_add(record.dirty_range_count);
+            .saturating_add(retained.dirty_range_count);
+        plan.update_plan.dirty_range_count = plan
+            .update_plan
+            .dirty_range_count
+            .saturating_add(retained.dirty_range_count);
+        if retained.stable_id != 0 {
+            plan.stable_id_count = plan.stable_id_count.saturating_add(1);
+        }
+        if retained.dirty_range_count > 0 {
+            plan.dirty_record_count = plan.dirty_record_count.saturating_add(1);
+        }
     }
     Ok(plan)
 }

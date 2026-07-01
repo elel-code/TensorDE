@@ -4,6 +4,8 @@ use crate::core::scene::binary::{
 };
 
 mod blend;
+mod debug_name;
+mod effect_parameter;
 mod flutter;
 mod geometry;
 mod material;
@@ -14,6 +16,10 @@ mod resource;
 mod retained;
 mod transform;
 
+pub(in crate::renderer::native_vulkan::scene) use self::debug_name::NativeVulkanSceneBinaryDebugNameSummary;
+use self::debug_name::native_vulkan_scene_binary_debug_names;
+pub(in crate::renderer::native_vulkan::scene) use self::effect_parameter::NativeVulkanSceneBinaryEffectParameterIngestPlan;
+use self::effect_parameter::native_vulkan_scene_binary_effect_parameter_ingest_plan;
 pub(in crate::renderer::native_vulkan::scene) use self::flutter::NativeVulkanSceneBinaryFlutterRecord;
 use self::flutter::native_vulkan_scene_binary_flutter_records;
 pub(in crate::renderer::native_vulkan::scene) use self::geometry::NativeVulkanSceneBinaryGeometryRecord;
@@ -31,12 +37,9 @@ pub(in crate::renderer::native_vulkan::scene) use self::render_state::NativeVulk
 use self::render_state::native_vulkan_scene_binary_render_state_records;
 pub(in crate::renderer::native_vulkan::scene) use self::resource::NativeVulkanSceneBinaryResourceRecord;
 use self::resource::native_vulkan_scene_binary_resource_records;
-pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
-pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedUpdatePlan;
-use self::retained::{
-    native_vulkan_scene_binary_retained_dirty_range_count,
-    native_vulkan_scene_binary_retained_gpu_records,
-    native_vulkan_scene_binary_retained_update_plan,
+use self::retained::native_vulkan_scene_binary_retained_ingest_plan;
+pub(in crate::renderer::native_vulkan::scene) use self::retained::{
+    NativeVulkanSceneBinaryRetainedIngestPlan, NativeVulkanSceneBinaryRetainedUpdatePlan,
 };
 pub(in crate::renderer::native_vulkan::scene) use self::transform::NativeVulkanSceneBinaryTransformRecord;
 use self::transform::native_vulkan_scene_binary_transform_records;
@@ -64,8 +67,15 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) debug_name_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_update_plan:
         NativeVulkanSceneBinaryRetainedUpdatePlan,
+    pub(in crate::renderer::native_vulkan::scene) retained_ingest_plan:
+        NativeVulkanSceneBinaryRetainedIngestPlan,
+    pub(in crate::renderer::native_vulkan::scene) effect_parameter_ingest_plan:
+        NativeVulkanSceneBinaryEffectParameterIngestPlan,
+    pub(in crate::renderer::native_vulkan::scene) debug_names:
+        NativeVulkanSceneBinaryDebugNameSummary,
     pub(in crate::renderer::native_vulkan::scene) resource_records:
         Vec<NativeVulkanSceneBinaryResourceRecord>,
     pub(in crate::renderer::native_vulkan::scene) node_records:
@@ -82,8 +92,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryMaterialRecord>,
     pub(in crate::renderer::native_vulkan::scene) effect_records:
         Vec<NativeVulkanSceneBinaryEffectRecord>,
-    pub(in crate::renderer::native_vulkan::scene) retained_records:
-        Vec<NativeVulkanSceneBinaryRetainedGpuRecord>,
     pub(in crate::renderer::native_vulkan::scene) flutter_records:
         Vec<NativeVulkanSceneBinaryFlutterRecord>,
     pub(in crate::renderer::native_vulkan::scene) puppet_records:
@@ -119,17 +127,20 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
     let material_pass_count = record_len(layout.material_pass_records(container)?);
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
-    let effect_parameter_count = record_len(layout.effect_parameter_records(container)?);
+    let effect_parameter_ingest_plan =
+        native_vulkan_scene_binary_effect_parameter_ingest_plan(container, layout)?;
+    let effect_parameter_count = effect_parameter_ingest_plan.record_count;
     let puppet_records = native_vulkan_scene_binary_puppet_records(container, layout)?;
     let puppet_count = record_len_from_usize(puppet_records.len());
     let render_state_records = native_vulkan_scene_binary_render_state_records(container, layout)?;
     let render_state_count = record_len_from_usize(render_state_records.len());
     let material_records = native_vulkan_scene_binary_material_records(container, layout)?;
-    let retained_records = native_vulkan_scene_binary_retained_gpu_records(container, layout)?;
-    let retained_gpu_state_count = record_len_from_usize(retained_records.len());
-    let retained_dirty_range_count =
-        native_vulkan_scene_binary_retained_dirty_range_count(&retained_records);
-    let retained_update_plan = native_vulkan_scene_binary_retained_update_plan(&retained_records)?;
+    let retained_ingest_plan = native_vulkan_scene_binary_retained_ingest_plan(container, layout)?;
+    let retained_gpu_state_count = retained_ingest_plan.record_count;
+    let retained_dirty_range_count = retained_ingest_plan.dirty_range_count;
+    let retained_update_plan = retained_ingest_plan.update_plan;
+    let debug_names = native_vulkan_scene_binary_debug_names(container, layout)?;
+    let debug_name_count = debug_names.record_count;
     let flutter_records = native_vulkan_scene_binary_flutter_records(container, layout)?;
     let flutter_state_count = record_len_from_usize(flutter_records.len());
 
@@ -172,7 +183,11 @@ fn native_vulkan_scene_binary_plan_from_layout(
         render_state_count,
         retained_gpu_state_count,
         retained_dirty_range_count,
+        debug_name_count,
         retained_update_plan,
+        retained_ingest_plan,
+        effect_parameter_ingest_plan,
+        debug_names,
         resource_records,
         node_records,
         transform_records,
@@ -181,7 +196,6 @@ fn native_vulkan_scene_binary_plan_from_layout(
         texture_slots: material_records.texture_slots,
         material_records: material_records.materials,
         effect_records: material_records.effects,
-        retained_records,
         flutter_records,
         puppet_records,
         render_state_records,
@@ -250,6 +264,9 @@ mod tests {
         assert_eq!(plan.feature_flags, 0x40);
         assert_eq!(plan.resource_count, 2);
         assert_eq!(plan.resource_records.len(), 2);
+        assert!(plan.debug_name_count >= 2);
+        assert_eq!(plan.debug_name_count, plan.debug_names.record_count);
+        assert!(plan.debug_names.string_bytes > 0);
         assert_eq!(plan.resource_records[0].width, 128);
         assert_eq!(plan.resource_records[0].height, 64);
         assert_eq!(plan.resource_records[1].width, 128);
@@ -301,6 +318,9 @@ mod tests {
         assert_eq!(plan.material_pass_count, 1);
         assert_eq!(plan.effect_pass_count, 1);
         assert_eq!(plan.effect_parameter_count, 2);
+        assert_eq!(plan.effect_parameter_ingest_plan.record_count, 2);
+        assert_eq!(plan.effect_parameter_ingest_plan.pass_constant_count, 1);
+        assert_eq!(plan.effect_parameter_ingest_plan.pass_switch_count, 1);
         assert_eq!(plan.texture_slot_count, 2);
         assert_eq!(plan.render_state_count, 1);
         assert_eq!(plan.render_state_records.len(), 1);
@@ -360,7 +380,7 @@ mod tests {
                 + plan.effect_parameter_count
         );
         assert_eq!(
-            plan.retained_records.len() as u32,
+            plan.retained_ingest_plan.record_count,
             plan.retained_gpu_state_count
         );
         assert_eq!(
@@ -377,10 +397,13 @@ mod tests {
             plan.retained_update_plan.dirty_range_count,
             plan.retained_dirty_range_count
         );
-        assert!(
-            plan.retained_records
-                .iter()
-                .all(|record| record.stable_id != 0 && record.dirty_range_count > 0)
+        assert_eq!(
+            plan.retained_ingest_plan.stable_id_count,
+            plan.retained_gpu_state_count
+        );
+        assert_eq!(
+            plan.retained_ingest_plan.dirty_record_count,
+            plan.retained_gpu_state_count
         );
         assert_ne!(plan.material_records[0].descriptor_layout, 0);
     }
@@ -430,6 +453,10 @@ mod tests {
         assert_eq!(plan.resource_records[0].height, 256);
         assert_eq!(plan.transform_timeline_count, 1);
         assert_eq!(plan.effect_parameter_count, 4);
+        assert_eq!(plan.effect_parameter_ingest_plan.record_count, 4);
+        assert_eq!(plan.effect_parameter_ingest_plan.effect_property_count, 1);
+        assert_eq!(plan.effect_parameter_ingest_plan.pass_constant_count, 2);
+        assert_eq!(plan.effect_parameter_ingest_plan.pass_switch_count, 1);
         assert_eq!(plan.flutter_records.len(), 1);
         assert_eq!(
             plan.flutter_records[0].owner_name,
@@ -447,7 +474,7 @@ mod tests {
         assert_eq!(plan.effect_records.len(), 1);
         assert_eq!(plan.effect_records[0].parameters.record_count, 3);
         assert_eq!(
-            plan.retained_records.len() as u32,
+            plan.retained_ingest_plan.record_count,
             plan.retained_gpu_state_count
         );
     }
