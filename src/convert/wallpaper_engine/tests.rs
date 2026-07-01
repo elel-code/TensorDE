@@ -3099,6 +3099,15 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
     assert_eq!(opacity_pass.texture_slots.len(), 1);
     assert_eq!(opacity_pass.texture_slots[0].slot, 1);
     assert_eq!(opacity_pass.texture_slots[0].source.as_str(), mask_source);
+    let effect_uv = opacity_pass
+        .effect_uv_transform
+        .expect("opacity pass effect UV transform");
+    assert_eq!(effect_uv.source_slot, 0);
+    assert_eq!(effect_uv.mask_slot, 1);
+    assert_eq!(effect_uv.scale, [1.0, 1.0]);
+    assert_eq!(effect_uv.offset, [0.0, 0.0]);
+    assert_eq!(effect_uv.mask_extent.unwrap().width, 2);
+    assert_eq!(effect_uv.mask_backing_extent.unwrap().height, 2);
 
     let mut sampled = Vec::new();
     document.snapshot_sampled_image_layers_at_with_resolvers(0, |_| None, |_| None, &mut sampled);

@@ -14,7 +14,7 @@ pub struct SceneBinaryFlutterStateRecord {
     pub first_parameter: u32,
     pub parameter_count: u32,
     pub pass_count: u32,
-    pub motion_family_flags: u32,
+    pub motion_family_mask: u32,
     pub anchor_name: u32,
     pub dirty_range_count: u32,
 }
@@ -26,7 +26,7 @@ impl SceneBinaryFlutterStateRecord {
         write_u32(out, self.first_parameter);
         write_u32(out, self.parameter_count);
         write_u32(out, self.pass_count);
-        write_u32(out, self.motion_family_flags);
+        write_u32(out, self.motion_family_mask);
         write_u32(out, self.anchor_name);
         write_u32(out, self.dirty_range_count);
         debug_assert_eq!(SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, 32);
@@ -34,10 +34,10 @@ impl SceneBinaryFlutterStateRecord {
 }
 
 pub(super) fn effect_is_motion_family(effect: &SceneEffect) -> bool {
-    motion_family_flags(effect) != 0
+    motion_family_mask(effect) != 0
 }
 
-pub(super) fn motion_family_flags(effect: &SceneEffect) -> u32 {
+pub(super) fn motion_family_mask(effect: &SceneEffect) -> u32 {
     let file = effect.file.to_ascii_lowercase();
     let runtime = effect.runtime.as_deref().unwrap_or_default();
     u32::from(file.contains("flutter") || runtime.contains("flutter"))
@@ -47,8 +47,8 @@ pub(super) fn motion_family_flags(effect: &SceneEffect) -> u32 {
 }
 
 pub(super) fn motion_dirty_range_count(effect: &SceneEffect, parameter_count: u32) -> u32 {
-    let flags = motion_family_flags(effect);
-    let final_vertex_dirty = u32::from(flags != 0);
+    let mask = motion_family_mask(effect);
+    let final_vertex_dirty = u32::from(mask != 0);
     let material_parameter_dirty = u32::from(parameter_count > 0);
     let pass_binding_dirty = u32::from(!effect.passes.is_empty());
     final_vertex_dirty
@@ -66,7 +66,7 @@ pub(crate) fn decode_flutter_state_record(
         first_parameter: read_u32(bytes, 8)?,
         parameter_count: read_u32(bytes, 12)?,
         pass_count: read_u32(bytes, 16)?,
-        motion_family_flags: read_u32(bytes, 20)?,
+        motion_family_mask: read_u32(bytes, 20)?,
         anchor_name: read_u32(bytes, 24)?,
         dirty_range_count: read_u32(bytes, 28)?,
     })

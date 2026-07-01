@@ -26,8 +26,8 @@ pub(in crate::renderer::native_vulkan::scene) use self::geometry::NativeVulkanSc
 use self::geometry::native_vulkan_scene_binary_geometry_records;
 use self::material::native_vulkan_scene_binary_material_records;
 pub(in crate::renderer::native_vulkan::scene) use self::material::{
-    NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryMaterialRecord,
-    NativeVulkanSceneBinaryTextureSlotRecord,
+    NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryEffectUvTransformRecord,
+    NativeVulkanSceneBinaryMaterialRecord, NativeVulkanSceneBinaryTextureSlotRecord,
 };
 pub(in crate::renderer::native_vulkan::scene) use self::node::NativeVulkanSceneBinaryNodeRecord;
 use self::node::native_vulkan_scene_binary_node_records;
@@ -61,6 +61,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: u32,
     pub(in crate::renderer::native_vulkan::scene) material_pass_count: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_pass_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform_count: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) flutter_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
@@ -92,6 +93,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
         Vec<NativeVulkanSceneBinaryMaterialRecord>,
     pub(in crate::renderer::native_vulkan::scene) effect_records:
         Vec<NativeVulkanSceneBinaryEffectRecord>,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform_records:
+        Vec<NativeVulkanSceneBinaryEffectUvTransformRecord>,
     pub(in crate::renderer::native_vulkan::scene) flutter_records:
         Vec<NativeVulkanSceneBinaryFlutterRecord>,
     pub(in crate::renderer::native_vulkan::scene) puppet_records:
@@ -127,6 +130,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let texture_slot_count = record_len(layout.texture_slot_records(container)?);
     let material_pass_count = record_len(layout.material_pass_records(container)?);
     let effect_pass_count = record_len(layout.effect_pass_records(container)?);
+    let effect_uv_transform_count = record_len(layout.effect_uv_transform_records(container)?);
     let effect_parameter_ingest_plan =
         native_vulkan_scene_binary_effect_parameter_ingest_plan(container, layout)?;
     let effect_parameter_count = effect_parameter_ingest_plan.record_count;
@@ -177,6 +181,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         texture_slot_count,
         material_pass_count,
         effect_pass_count,
+        effect_uv_transform_count,
         effect_parameter_count,
         flutter_state_count,
         puppet_count,
@@ -196,6 +201,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         texture_slots: material_records.texture_slots,
         material_records: material_records.materials,
         effect_records: material_records.effects,
+        effect_uv_transform_records: material_records.effect_uv_transforms,
         flutter_records,
         puppet_records,
         render_state_records,
@@ -245,6 +251,16 @@ mod tests {
                                 {
                                     "shader": "effects/opacity",
                                     "texture_resources": ["base", "mask"],
+                                    "effect_uv_transform": {
+                                        "mapping": "texture-resolution",
+                                        "source_slot": 0,
+                                        "mask_slot": 1,
+                                        "scale": [1.0, 1.0],
+                                        "offset": [0.1, 0.0],
+                                        "input_extent": { "width": 128, "height": 64 },
+                                        "mask_extent": { "width": 128, "height": 64 },
+                                        "mask_backing_extent": { "width": 128, "height": 64 }
+                                    },
                                     "constant_shader_values": { "speed": 2.0 },
                                     "combos": { "MASK": 1 }
                                 }
@@ -317,6 +333,7 @@ mod tests {
         );
         assert_eq!(plan.material_pass_count, 1);
         assert_eq!(plan.effect_pass_count, 1);
+        assert_eq!(plan.effect_uv_transform_count, 1);
         assert_eq!(plan.effect_parameter_count, 2);
         assert_eq!(plan.effect_parameter_ingest_plan.record_count, 2);
         assert_eq!(plan.effect_parameter_ingest_plan.pass_constant_count, 1);
@@ -364,8 +381,13 @@ mod tests {
         assert_eq!(plan.effect_records.len(), 1);
         assert_eq!(plan.effect_records[0].texture_slots.first_record, 0);
         assert_eq!(plan.effect_records[0].texture_slots.record_count, 2);
+        assert_eq!(plan.effect_records[0].effect_uv_transforms.first_record, 0);
+        assert_eq!(plan.effect_records[0].effect_uv_transforms.record_count, 1);
         assert_eq!(plan.effect_records[0].parameters.first_record, 0);
         assert_eq!(plan.effect_records[0].parameters.record_count, 2);
+        assert_eq!(plan.effect_uv_transform_records.len(), 1);
+        assert_eq!(plan.effect_uv_transform_records[0].mask_slot, 1);
+        assert_eq!(plan.effect_uv_transform_records[0].offset_u, 0.1);
         assert_eq!(
             plan.effect_records[0].pass_state.blending_name,
             SCENE_BINARY_NONE_ID
@@ -377,6 +399,7 @@ mod tests {
                 + plan.texture_slot_count
                 + plan.material_pass_count
                 + plan.effect_pass_count
+                + plan.effect_uv_transform_count
                 + plan.effect_parameter_count
         );
         assert_eq!(
@@ -392,6 +415,7 @@ mod tests {
         assert_eq!(plan.retained_update_plan.texture_slot_count, 2);
         assert_eq!(plan.retained_update_plan.material_pass_count, 1);
         assert_eq!(plan.retained_update_plan.effect_pass_count, 1);
+        assert_eq!(plan.retained_update_plan.effect_uv_transform_count, 1);
         assert_eq!(plan.retained_update_plan.effect_parameter_count, 2);
         assert_eq!(
             plan.retained_update_plan.dirty_range_count,
@@ -463,7 +487,7 @@ mod tests {
             plan.node_records[plan.draw_records[0].node_index as usize].id_name
         );
         assert_eq!(
-            plan.flutter_records[0].motion_family_flags,
+            plan.flutter_records[0].motion_family_mask,
             SCENE_BINARY_MOTION_FAMILY_FLUTTER
         );
         assert_eq!(plan.flutter_records[0].first_parameter, 0);

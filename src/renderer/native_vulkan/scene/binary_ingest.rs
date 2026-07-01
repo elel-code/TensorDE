@@ -3,12 +3,12 @@ use crate::core::scene::binary::{
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_NONE_ID,
     SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY, SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO,
     SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT, SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
-    SCENE_BINARY_RETAINED_EFFECT_PASS, SCENE_BINARY_RETAINED_GEOMETRY,
-    SCENE_BINARY_RETAINED_MATERIAL_PASS, SCENE_BINARY_RETAINED_RESOURCE,
-    SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor, SceneBinaryChunkKind,
-    SceneBinaryEffectParameterRecord, SceneBinaryError, SceneBinaryGeometryRecord,
-    SceneBinaryLayoutPlan, SceneBinaryNodeRecord, SceneBinaryPuppetRecord,
-    SceneBinaryRetainedGpuStateRecord, decode_scene_binary_container,
+    SCENE_BINARY_RETAINED_EFFECT_PASS, SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM,
+    SCENE_BINARY_RETAINED_GEOMETRY, SCENE_BINARY_RETAINED_MATERIAL_PASS,
+    SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor,
+    SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryError,
+    SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryNodeRecord,
+    SceneBinaryPuppetRecord, SceneBinaryRetainedGpuStateRecord, decode_scene_binary_container,
 };
 
 mod stream;
@@ -83,6 +83,11 @@ fn native_vulkan_scene_binary_ingest_from_layout(
     for effect in layout.effect_pass_records(container)? {
         let _ = effect?;
         summary.effect_pass_count = summary.effect_pass_count.saturating_add(1);
+    }
+
+    for transform in layout.effect_uv_transform_records(container)? {
+        let _ = transform?;
+        summary.effect_uv_transform_count = summary.effect_uv_transform_count.saturating_add(1);
     }
 
     for parameter in layout.effect_parameter_records(container)? {
@@ -231,6 +236,10 @@ pub(super) fn native_vulkan_scene_binary_ingest_retained_record(
         SCENE_BINARY_RETAINED_EFFECT_PASS => {
             summary.retained.effect_pass_count =
                 summary.retained.effect_pass_count.saturating_add(1);
+        }
+        SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM => {
+            summary.retained.effect_uv_transform_count =
+                summary.retained.effect_uv_transform_count.saturating_add(1);
         }
         SCENE_BINARY_RETAINED_EFFECT_PARAMETER => {
             summary.retained.effect_parameter_count =
@@ -388,6 +397,16 @@ mod tests {
                                 {
                                     "shader": "effects/opacity",
                                     "texture_resources": ["base", "mask"],
+                                    "effect_uv_transform": {
+                                        "mapping": "texture-resolution",
+                                        "source_slot": 0,
+                                        "mask_slot": 1,
+                                        "scale": [1.0, 1.0],
+                                        "offset": [0.0, 0.0],
+                                        "input_extent": { "width": 64, "height": 64 },
+                                        "mask_extent": { "width": 64, "height": 64 },
+                                        "mask_backing_extent": { "width": 64, "height": 64 }
+                                    },
                                     "constant_shader_values": { "speed": 2.0 },
                                     "combos": { "MASK": 1 }
                                 }
@@ -442,6 +461,7 @@ mod tests {
         assert_eq!(ingest.texture_slot_count, 2);
         assert_eq!(ingest.material_pass_count, 1);
         assert_eq!(ingest.effect_pass_count, 1);
+        assert_eq!(ingest.effect_uv_transform_count, 1);
         assert_eq!(ingest.effect_parameter_count, 3);
         assert_eq!(ingest.effect_property_count, 1);
         assert_eq!(ingest.effect_pass_constant_count, 1);
@@ -454,6 +474,7 @@ mod tests {
             ingest.retained.record_count,
             ingest.retained.stable_id_count
         );
+        assert_eq!(ingest.retained.effect_uv_transform_count, 1);
         assert_eq!(
             ingest.retained.record_count,
             ingest.retained.dirty_record_count

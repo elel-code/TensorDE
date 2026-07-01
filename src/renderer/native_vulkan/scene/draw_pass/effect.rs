@@ -156,6 +156,7 @@ pub(super) fn native_vulkan_scene_render_first_class_effect_target_pass(
                 native_vulkan_scene_texture_slots_from_render_slots(&pass.texture_slots),
                 pass.runtime.as_deref(),
                 &pass.effect_file,
+                pass.effect_uv_transform,
             )
         })
 }
@@ -171,6 +172,7 @@ pub(super) fn native_vulkan_scene_snapshot_first_class_effect_target_pass(
                 native_vulkan_scene_texture_slots_from_scene_slots(&pass.texture_slots),
                 pass.runtime.as_deref(),
                 &pass.effect_file,
+                pass.effect_uv_transform,
             )
         })
 }
@@ -299,6 +301,7 @@ fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
     texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     runtime: Option<&str>,
     effect_file: &str,
+    effect_uv_transform: Option<crate::core::scene::SceneEffectUvTransform>,
 ) -> Option<NativeVulkanSceneSampledImageEffectPass> {
     let normalized = native_vulkan_scene_normalized_effect_file(effect_file);
     if !iris::matches(runtime, &normalized) {
@@ -309,6 +312,7 @@ fn native_vulkan_scene_first_class_effect_target_pass_from_slots(
         texture_slots,
         alpha_texture_slot: Some(alpha_texture_slot),
         alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
+        effect_uv_transform,
     })
 }
 
@@ -462,6 +466,7 @@ mod tests {
                     height: Some(16),
                 },
             ],
+            effect_uv_transform: None,
             combos: Default::default(),
             constant_shader_values: Default::default(),
         };
@@ -493,6 +498,7 @@ mod tests {
                 width: Some(16),
                 height: Some(16),
             }],
+            effect_uv_transform: None,
             combos: Default::default(),
             constant_shader_values: Default::default(),
         };

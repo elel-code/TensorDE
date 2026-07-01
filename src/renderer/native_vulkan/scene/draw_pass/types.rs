@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::core::scene::{SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion};
+use crate::core::scene::{
+    SceneEffectUvTransform, SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion,
+};
 use crate::core::{
     FitMode, SceneBlendMode, ScenePathFillRule, SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
@@ -83,11 +85,13 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRenderStat
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageEffectPass {
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_slot: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: SceneRenderAlphaTextureMode,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform:
+        Option<SceneEffectUvTransform>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

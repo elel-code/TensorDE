@@ -4,16 +4,17 @@ use std::io::{Read, Seek, SeekFrom};
 use crate::core::scene::binary::{
     SCENE_BINARY_ALIGNMENT, SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE,
     SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE, SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
-    SCENE_BINARY_ENDIAN_LITTLE, SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE,
-    SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE, SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-    SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MAGIC,
-    SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
-    SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE,
-    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-    SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor, SceneBinaryChunkKind, SceneBinaryError,
-    SceneBinaryLayoutPlan, decode_effect_parameter_record, decode_geometry_record,
-    decode_node_record, decode_puppet_record, decode_retained_gpu_state_record,
+    SCENE_BINARY_EFFECT_UV_TRANSFORM_RECORD_SIZE, SCENE_BINARY_ENDIAN_LITTLE,
+    SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
+    SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
+    SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MAGIC, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
+    SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SCENE_BINARY_VERSION, SceneBinaryChunkDescriptor,
+    SceneBinaryChunkKind, SceneBinaryError, SceneBinaryLayoutPlan, decode_effect_parameter_record,
+    decode_geometry_record, decode_node_record, decode_puppet_record,
+    decode_retained_gpu_state_record,
 };
 
 use super::{
@@ -119,6 +120,13 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
                     SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
                 )?;
                 summary.effect_pass_count = descriptor.record_count;
+            }
+            SceneBinaryChunkKind::EffectUvTransform => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_EFFECT_UV_TRANSFORM_RECORD_SIZE,
+                )?;
+                summary.effect_uv_transform_count = descriptor.record_count;
             }
             SceneBinaryChunkKind::EffectParameter => {
                 native_vulkan_scene_binary_stream_records(

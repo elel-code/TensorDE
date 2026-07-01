@@ -4,10 +4,10 @@ use std::path::Path;
 
 use super::{
     ConversionReport, SceneDocumentBuildContext, WallpaperEngineProject, ir::SceneOpacityEffectIr,
-    push_unique, scene_copy_resource_as, scene_effect_texture_resource_from_reference,
-    scene_i64_map_from_value, scene_next_timeline_id, scene_push_unsupported,
-    scene_record_native_script_lowering, string_field, value_to_bool_unwrapped, value_to_i64,
-    value_to_string,
+    number_value_field, push_unique, scene_copy_resource_as,
+    scene_effect_texture_resource_from_reference, scene_i64_map_from_value, scene_next_timeline_id,
+    scene_push_unsupported, scene_record_native_script_lowering, string_field,
+    value_to_bool_unwrapped, value_to_i64, value_to_string, value_to_u32,
 };
 
 pub(super) fn scene_effects_from_object(
@@ -39,7 +39,7 @@ pub(super) fn scene_effects_from_object(
                 output.insert("visible".to_owned(), visible.clone());
             }
             let passes = scene_effect_passes_from_object(
-                project, output_dir, &file, effect, report, context, resources,
+                project, output_dir, object, &file, effect, report, context, resources,
             );
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
@@ -323,6 +323,7 @@ fn scene_effect_value_requires_runtime(value: &Value) -> bool {
 fn scene_effect_passes_from_object(
     project: &WallpaperEngineProject,
     output_dir: &Path,
+    node: &Map<String, Value>,
     effect_file: &str,
     effect: &Map<String, Value>,
     report: &mut ConversionReport,
@@ -348,10 +349,28 @@ fn scene_effect_passes_from_object(
             if let Some(textures) = scene_effect_pass_textures(pass) {
                 output.insert("textures".to_owned(), textures);
             }
-            if let Some(texture_resources) = scene_effect_pass_texture_resources(
+            let texture_resources = scene_effect_pass_texture_resources(
                 project, output_dir, pass, report, context, resources,
+            );
+            if let Some(texture_resources) = texture_resources.as_ref() {
+                output.insert("texture_resources".to_owned(), texture_resources.clone());
+            }
+            if let Some(effect_uv_transform) = scene_effect_pass_uv_transform(
+                node,
+                effect_file,
+                pass,
+                texture_resources.as_ref(),
+                resources,
             ) {
-                output.insert("texture_resources".to_owned(), texture_resources);
+                output.insert("effect_uv_transform".to_owned(), effect_uv_transform);
+                push_unique(
+                    &mut context.converted_features,
+                    "scene-we-effect-uv-transform",
+                );
+                push_unique(
+                    &mut report.converted_features,
+                    "scene-we-effect-uv-transform",
+                );
             }
             if let Some(combos) = pass.get("combos").and_then(scene_i64_map_from_value) {
                 output.insert("combos".to_owned(), combos);
@@ -456,4 +475,158 @@ fn scene_effect_pass_texture_resources(
         })
         .collect::<Vec<_>>();
     has_resource.then(|| Value::Array(texture_resources))
+}
+
+fn scene_effect_pass_uv_transform(
+    node: &Map<String, Value>,
+    effect_file: &str,
+    pass: &Map<String, Value>,
+    texture_resources: Option<&Value>,
+    resources: &[Value],
+) -> Option<Value> {
+    if !scene_effect_file_uses_mask_uv(effect_file) {
+        return None;
+    }
+    let texture_resources = texture_resources?.as_array()?;
+    let (mask_slot, mask_resource) = texture_resources
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find_map(|(slot, resource)| value_to_string(resource).map(|resource| (slot, resource)))?;
+    let (scale, offset) = scene_effect_pass_uv_transform_values(pass);
+    let mut transform = Map::new();
+    transform.insert(
+        "mapping".to_owned(),
+        Value::String("texture-resolution".to_owned()),
+    );
+    transform.insert("source_slot".to_owned(), json!(0));
+    transform.insert(
+        "mask_slot".to_owned(),
+        json!(mask_slot.min(u32::MAX as usize) as u32),
+    );
+    transform.insert("scale".to_owned(), json!([scale[0], scale[1]]));
+    transform.insert("offset".to_owned(), json!([offset[0], offset[1]]));
+    if let Some(extent) = scene_effect_node_extent(node) {
+        transform.insert("input_extent".to_owned(), extent);
+    }
+    if let Some(extent) = scene_effect_resource_extent(resources, &mask_resource) {
+        transform.insert("mask_extent".to_owned(), extent.clone());
+        transform.insert("mask_backing_extent".to_owned(), extent);
+    }
+    Some(Value::Object(transform))
+}
+
+fn scene_effect_file_uses_mask_uv(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/opacity/effect.json"
+        || file.ends_with("/effects/opacity/effect.json")
+        || file == "effects/iris/effect.json"
+        || file.ends_with("/effects/iris/effect.json")
+}
+
+fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2], [f64; 2]) {
+    let mut scale = [1.0, 1.0];
+    let mut offset = [0.0, 0.0];
+    if let Some(values) = pass
+        .get("constantshadervalues")
+        .or_else(|| pass.get("constant_shader_values"))
+        .and_then(Value::as_object)
+    {
+        if let Some(resolution) = values
+            .get("g_Texture1Resolution")
+            .or_else(|| values.get("Texture1Resolution"))
+            .and_then(scene_effect_vec4)
+            && resolution[0].abs() > f64::EPSILON
+            && resolution[1].abs() > f64::EPSILON
+        {
+            scale = [resolution[2] / resolution[0], resolution[3] / resolution[1]];
+        }
+    }
+    if let Some(value) = pass
+        .get("effect_uv_scale")
+        .or_else(|| pass.get("effectuvscale"))
+        .and_then(scene_effect_vec2)
+    {
+        scale = value;
+    }
+    if let Some(value) = pass
+        .get("effect_uv_offset")
+        .or_else(|| pass.get("effectuvoffset"))
+        .and_then(scene_effect_vec2)
+    {
+        offset = value;
+    }
+    (scale, offset)
+}
+
+fn scene_effect_vec2(value: &Value) -> Option<[f64; 2]> {
+    let values = scene_effect_number_values(value)?;
+    if values.len() < 2 {
+        return None;
+    }
+    Some([values[0], values[1]])
+}
+
+fn scene_effect_vec4(value: &Value) -> Option<[f64; 4]> {
+    let values = scene_effect_number_values(value)?;
+    if values.len() < 4 {
+        return None;
+    }
+    Some([values[0], values[1], values[2], values[3]])
+}
+
+fn scene_effect_number_values(value: &Value) -> Option<Vec<f64>> {
+    match value {
+        Value::Array(values) => {
+            let values = values
+                .iter()
+                .filter_map(Value::as_f64)
+                .filter(|value| value.is_finite())
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then_some(values)
+        }
+        Value::String(value) => {
+            let values = value
+                .split_whitespace()
+                .filter_map(|part| part.parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+                .collect::<Vec<_>>();
+            (!values.is_empty()).then_some(values)
+        }
+        Value::Number(value) => value
+            .as_f64()
+            .filter(|value| value.is_finite())
+            .map(|value| vec![value]),
+        Value::Null | Value::Bool(_) | Value::Object(_) => None,
+    }
+}
+
+fn scene_effect_node_extent(node: &Map<String, Value>) -> Option<Value> {
+    let width = number_value_field(node, &["width", "w"])?;
+    let height = number_value_field(node, &["height", "h"])?;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    Some(json!({
+        "width": width.round().clamp(1.0, f64::from(u32::MAX)) as u32,
+        "height": height.round().clamp(1.0, f64::from(u32::MAX)) as u32
+    }))
+}
+
+fn scene_effect_resource_extent(resources: &[Value], resource_id: &str) -> Option<Value> {
+    resources
+        .iter()
+        .rev()
+        .filter_map(Value::as_object)
+        .find_map(|resource| {
+            if resource.get("id").and_then(Value::as_str) != Some(resource_id) {
+                return None;
+            }
+            let width = resource.get("width").and_then(value_to_u32)?;
+            let height = resource.get("height").and_then(value_to_u32)?;
+            if width == 0 || height == 0 {
+                return None;
+            }
+            Some(json!({ "width": width, "height": height }))
+        })
 }

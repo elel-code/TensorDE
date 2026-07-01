@@ -2233,6 +2233,8 @@ pub struct SceneEffectPass {
     pub textures: Vec<Option<String>>,
     #[serde(default)]
     pub texture_resources: Vec<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_uv_transform: Option<SceneEffectUvTransform>,
     #[serde(default)]
     pub combos: BTreeMap<String, i64>,
     #[serde(default)]
@@ -2270,6 +2272,77 @@ impl SceneEffectPass {
                 &format!("scene node {node_id:?} effect {effect_file:?} texture resource"),
                 texture_resource,
             )?;
+        }
+        if let Some(transform) = self.effect_uv_transform {
+            transform.validate(node_id, effect_file)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneEffectUvMapping {
+    #[default]
+    TextureResolution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneEffectUvExtent {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl SceneEffectUvExtent {
+    fn validate(&self, node_id: &str, effect_file: &str, label: &str) -> Result<(), SceneError> {
+        if self.width == 0 || self.height == 0 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} effect {effect_file:?} {label} extent must be non-zero"
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneEffectUvTransform {
+    #[serde(default)]
+    pub mapping: SceneEffectUvMapping,
+    #[serde(default)]
+    pub source_slot: u32,
+    #[serde(default)]
+    pub mask_slot: u32,
+    #[serde(default = "default_effect_uv_scale")]
+    pub scale: [f64; 2],
+    #[serde(default)]
+    pub offset: [f64; 2],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_extent: Option<SceneEffectUvExtent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_extent: Option<SceneEffectUvExtent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_backing_extent: Option<SceneEffectUvExtent>,
+}
+
+impl SceneEffectUvTransform {
+    fn validate(&self, node_id: &str, effect_file: &str) -> Result<(), SceneError> {
+        for (field, values) in [("scale", self.scale), ("offset", self.offset)] {
+            for (index, value) in values.iter().enumerate() {
+                if !value.is_finite() {
+                    return Err(SceneError::invalid(format!(
+                        "scene node {node_id:?} effect {effect_file:?} effect UV {field}[{index}] must be finite"
+                    )));
+                }
+            }
+        }
+        if let Some(extent) = self.input_extent {
+            extent.validate(node_id, effect_file, "input")?;
+        }
+        if let Some(extent) = self.mask_extent {
+            extent.validate(node_id, effect_file, "mask")?;
+        }
+        if let Some(extent) = self.mask_backing_extent {
+            extent.validate(node_id, effect_file, "mask backing")?;
         }
         Ok(())
     }
@@ -2926,6 +2999,7 @@ fn scene_image_effect_passes_for_node<'a>(
                 depthwrite: pass.depthwrite.clone(),
                 cullmode: pass.cullmode.clone(),
                 texture_slots,
+                effect_uv_transform: pass.effect_uv_transform,
                 combos: pass.combos.clone(),
                 constant_shader_values: pass.constant_shader_values.clone(),
             });
@@ -3054,6 +3128,7 @@ pub struct SceneImageEffectPass {
     pub depthwrite: Option<String>,
     pub cullmode: Option<String>,
     pub texture_slots: Vec<SceneTextureSlot>,
+    pub effect_uv_transform: Option<SceneEffectUvTransform>,
     pub combos: BTreeMap<String, i64>,
     pub constant_shader_values: BTreeMap<String, Value>,
 }
@@ -4757,6 +4832,10 @@ const fn default_true() -> bool {
 
 const fn default_opacity() -> f64 {
     1.0
+}
+
+const fn default_effect_uv_scale() -> [f64; 2] {
+    [1.0, 1.0]
 }
 
 const fn default_scale() -> f64 {

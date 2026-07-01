@@ -24,8 +24,9 @@ use self::scene_runtime::{
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
-    SceneAudioCueCondition, SceneEffect, SceneImageEffectPass, SceneLayerCompositeKey, SceneMesh,
-    SceneNativeEffectMotion, ScenePuppetAnimationClip, SceneSnapshotLayer,
+    SceneAudioCueCondition, SceneEffect, SceneEffectUvTransform, SceneImageEffectPass,
+    SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion, ScenePuppetAnimationClip,
+    SceneSnapshotLayer,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
@@ -171,6 +172,8 @@ pub struct SceneRenderImageEffectPass {
     pub cullmode: Option<String>,
     #[serde(default)]
     pub texture_slots: Vec<SceneRenderTextureSlot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effect_uv_transform: Option<SceneEffectUvTransform>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub combos: BTreeMap<String, i64>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -2091,6 +2094,7 @@ fn scene_render_image_effect_pass(
                 height: slot.height,
             })
             .collect(),
+        effect_uv_transform: pass.effect_uv_transform,
         combos: pass.combos,
         constant_shader_values: pass.constant_shader_values,
     }

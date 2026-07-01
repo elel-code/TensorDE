@@ -7,7 +7,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryFlut
     pub(in crate::renderer::native_vulkan::scene) first_parameter: u32,
     pub(in crate::renderer::native_vulkan::scene) parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) pass_count: u32,
-    pub(in crate::renderer::native_vulkan::scene) motion_family_flags: u32,
+    pub(in crate::renderer::native_vulkan::scene) motion_family_mask: u32,
     pub(in crate::renderer::native_vulkan::scene) anchor_name: u32,
     pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
 }
@@ -30,7 +30,7 @@ pub(super) fn native_vulkan_scene_binary_flutter_records(
             first_parameter: flutter.first_parameter,
             parameter_count,
             pass_count: flutter.pass_count,
-            motion_family_flags: flutter.motion_family_flags,
+            motion_family_mask: flutter.motion_family_mask,
             anchor_name: flutter.anchor_name,
             dirty_range_count: flutter.dirty_range_count,
         });

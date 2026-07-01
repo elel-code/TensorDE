@@ -27,7 +27,8 @@ use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderLayer};
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawPlan, NativeVulkanSceneEffectUvMapping, NativeVulkanSceneEffectUvSpace,
-    native_vulkan_scene_draw_plan, native_vulkan_scene_opacity_effect_material_uv_scale,
+    native_vulkan_scene_draw_plan, native_vulkan_scene_effect_uv_space_from_transform,
+    native_vulkan_scene_effect_uv_transform_for_scene_passes,
 };
 use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
@@ -1315,34 +1316,15 @@ fn native_vulkan_scene_opacity_effect_uv_space_from_sampled_layers(
     _target: &SceneSnapshotSampledImageLayer,
     carrier: &SceneSnapshotSampledImageLayer,
 ) -> NativeVulkanSceneEffectUvSpace {
-    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_scene_slots(
-        &carrier.texture_slots,
-        carrier.alpha_texture_slot,
-    );
-    NativeVulkanSceneEffectUvSpace {
-        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
-        width: carrier.width.unwrap_or(0.0),
-        height: carrier.height.unwrap_or(0.0),
-        texture_region: carrier.texture_region,
-        transform: carrier.transform,
-        bounds: None,
-    }
-}
-
-fn native_vulkan_scene_opacity_effect_material_uv_scale_for_scene_slots(
-    slots: &[SceneTextureSlot],
-    alpha_texture_slot: Option<u32>,
-) -> (f64, f64) {
-    let Some(alpha_slot) = alpha_texture_slot else {
-        return (1.0, 1.0);
-    };
-    let base = slots.iter().find(|slot| slot.slot == 0);
-    let alpha = slots.iter().find(|slot| slot.slot == alpha_slot);
-    native_vulkan_scene_opacity_effect_material_uv_scale(
-        base.and_then(|slot| slot.width),
-        base.and_then(|slot| slot.height),
-        alpha.and_then(|slot| slot.width),
-        alpha.and_then(|slot| slot.height),
+    native_vulkan_scene_effect_uv_space_from_transform(
+        native_vulkan_scene_effect_uv_transform_for_scene_passes(
+            &carrier.image_effect_passes,
+            carrier.alpha_texture_slot,
+        ),
+        carrier.width.unwrap_or(0.0),
+        carrier.height.unwrap_or(0.0),
+        carrier.texture_region,
+        carrier.transform,
     )
 }
 
@@ -1350,18 +1332,16 @@ fn native_vulkan_scene_opacity_effect_uv_space_from_sampled_layer(
     layer: &SceneSnapshotSampledImageLayer,
 ) -> Option<NativeVulkanSceneEffectUvSpace> {
     layer.alpha_texture_slot?;
-    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_scene_slots(
-        &layer.texture_slots,
-        layer.alpha_texture_slot,
-    );
-    Some(NativeVulkanSceneEffectUvSpace {
-        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
-        width: layer.width.unwrap_or(0.0),
-        height: layer.height.unwrap_or(0.0),
-        texture_region: layer.texture_region,
-        transform: layer.transform,
-        bounds: None,
-    })
+    Some(native_vulkan_scene_effect_uv_space_from_transform(
+        native_vulkan_scene_effect_uv_transform_for_scene_passes(
+            &layer.image_effect_passes,
+            layer.alpha_texture_slot,
+        ),
+        layer.width.unwrap_or(0.0),
+        layer.height.unwrap_or(0.0),
+        layer.texture_region,
+        layer.transform,
+    ))
 }
 
 fn native_vulkan_scene_runtime_effect_debug_log(args: std::fmt::Arguments<'_>) {
@@ -1418,9 +1398,8 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
         vertices.len()
     };
     let (base_vertices, final_vertices) = vertices.split_at(split);
-    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_scene_slots(
-        &layer.texture_slots,
-        layer.alpha_texture_slot,
+    let effect_uv_space = native_vulkan_scene_runtime_effect_uv_space_label(
+        native_vulkan_scene_opacity_effect_uv_space_from_sampled_layer(layer),
     );
     let mask_report = mask_slot
         .map(|mask_slot| {
@@ -1437,7 +1416,7 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
     native_vulkan_effect_debug_log(
         "runtime.eye-contribution",
         format_args!(
-            "time_ms={} layer_index={} layer_id={} effect={} mode={} opacity={:.3} alpha_slot={:?} base_slot={} mask_source={} mask_extent={} we_mask_uv_scale={:.6}/{:.6} puppet_frame={} passes={} vertices={} geometry_semantics={} base_pos_range={} base_uv_range={} base_effect_uv_range={} base_opacity_range={} final_pos_range={} final_uv_range={} final_effect_uv_range={} final_opacity_range={} alpha_zero_reason={} alpha_semantics={} base_texture_report={} mask_report={}",
+            "time_ms={} layer_index={} layer_id={} effect={} mode={} opacity={:.3} alpha_slot={:?} base_slot={} mask_source={} mask_extent={} effect_uv_space={} puppet_frame={} passes={} vertices={} geometry_semantics={} base_pos_range={} base_uv_range={} base_effect_uv_range={} base_opacity_range={} final_pos_range={} final_uv_range={} final_effect_uv_range={} final_opacity_range={} alpha_zero_reason={} alpha_semantics={} base_texture_report={} mask_report={}",
             snapshot_time_ms
                 .map(|time| time.to_string())
                 .unwrap_or_else(|| "<unknown>".to_owned()),
@@ -1454,8 +1433,7 @@ fn native_vulkan_scene_runtime_eye_contribution_debug(
             mask_slot
                 .map(|slot| native_vulkan_scene_texture_slot_extent_label(slot.width, slot.height))
                 .unwrap_or_else(|| "<none>".to_owned()),
-            scale_u,
-            scale_v,
+            effect_uv_space,
             native_vulkan_scene_puppet_animation_frames_label(&layer.puppet_animation_frames),
             native_vulkan_scene_sampled_image_effect_passes_label(&layer.image_effect_passes),
             vertices.len(),
@@ -2433,8 +2411,15 @@ fn native_vulkan_scene_runtime_effect_uv_mapping_label(
         NativeVulkanSceneEffectUvMapping::ScenePositionBounds => {
             "mapping=scene-position-bounds".to_owned()
         }
-        NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v } => {
-            format!("mapping=material-uv-scaled(scale={scale_u:.6}/{scale_v:.6})")
+        NativeVulkanSceneEffectUvMapping::MaterialUvTransformed {
+            scale_u,
+            scale_v,
+            offset_u,
+            offset_v,
+        } => {
+            format!(
+                "mapping=material-uv-transform(scale={scale_u:.6}/{scale_v:.6}, offset={offset_u:.6}/{offset_v:.6})"
+            )
         }
     }
 }
@@ -6238,6 +6223,7 @@ mod tests {
                     width: Some(50),
                     height: Some(50),
                 }],
+                effect_uv_transform: None,
                 combos: Default::default(),
                 constant_shader_values: Default::default(),
             }],
@@ -6330,6 +6316,7 @@ mod tests {
                     width: Some(50),
                     height: Some(50),
                 }],
+                effect_uv_transform: None,
                 combos: Default::default(),
                 constant_shader_values: Default::default(),
             }],

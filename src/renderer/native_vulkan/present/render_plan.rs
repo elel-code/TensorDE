@@ -3,7 +3,9 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use crate::core::scene::{SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion};
+use crate::core::scene::{
+    SceneEffectUvTransform, SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion,
+};
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneTextAlign,
     SceneTextureRegion, SceneTransform,
@@ -70,7 +72,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectUvBounds {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectUvMapping {
     ScenePositionBounds,
-    MaterialUvScaled { scale_u: f64, scale_v: f64 },
+    MaterialUvTransformed {
+        scale_u: f64,
+        scale_v: f64,
+        offset_u: f64,
+        offset_v: f64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -445,8 +452,15 @@ fn native_vulkan_scene_effect_uv_mapping_label(
         NativeVulkanSceneEffectUvMapping::ScenePositionBounds => {
             "mapping=scene-position-bounds".to_owned()
         }
-        NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v } => {
-            format!("mapping=material-uv-scaled(scale={scale_u:.6}/{scale_v:.6})")
+        NativeVulkanSceneEffectUvMapping::MaterialUvTransformed {
+            scale_u,
+            scale_v,
+            offset_u,
+            offset_v,
+        } => {
+            format!(
+                "mapping=material-uv-transform(scale={scale_u:.6}/{scale_v:.6}, offset={offset_u:.6}/{offset_v:.6})"
+            )
         }
     }
 }
@@ -472,66 +486,90 @@ fn native_vulkan_scene_opacity_effect_uv_space_from_render_ops(
     _target: &NativeVulkanSceneDrawOp,
     carrier: &NativeVulkanSceneDrawOp,
 ) -> NativeVulkanSceneEffectUvSpace {
-    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
-        &carrier.texture_slots,
-        carrier.alpha_texture_slot,
-    );
+    native_vulkan_scene_effect_uv_space_from_transform(
+        native_vulkan_scene_effect_uv_transform_for_render_passes(
+            &carrier.image_effect_passes,
+            carrier.alpha_texture_slot,
+        ),
+        carrier.width.unwrap_or(0.0),
+        carrier.height.unwrap_or(0.0),
+        carrier.texture_region,
+        carrier.transform,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_uv_space_from_transform(
+    transform: Option<SceneEffectUvTransform>,
+    width: f64,
+    height: f64,
+    texture_region: Option<SceneTextureRegion>,
+    scene_transform: SceneTransform,
+) -> NativeVulkanSceneEffectUvSpace {
+    let transform = transform.unwrap_or(SceneEffectUvTransform {
+        mapping: Default::default(),
+        source_slot: 0,
+        mask_slot: 0,
+        scale: [1.0, 1.0],
+        offset: [0.0, 0.0],
+        input_extent: None,
+        mask_extent: None,
+        mask_backing_extent: None,
+    });
     NativeVulkanSceneEffectUvSpace {
-        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
-        width: carrier.width.unwrap_or(0.0),
-        height: carrier.height.unwrap_or(0.0),
-        texture_region: carrier.texture_region,
-        transform: carrier.transform,
+        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvTransformed {
+            scale_u: transform.scale[0],
+            scale_v: transform.scale[1],
+            offset_u: transform.offset[0],
+            offset_v: transform.offset[1],
+        },
+        width,
+        height,
+        texture_region,
+        transform: scene_transform,
         bounds: None,
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_opacity_effect_material_uv_scale(
-    _base_width: Option<u32>,
-    _base_height: Option<u32>,
-    _alpha_width: Option<u32>,
-    _alpha_height: Option<u32>,
-) -> (f64, f64) {
-    // These dimensions are Gilder's decoded logical extents, not Wallpaper
-    // Engine backing texture extents. Scaling by them re-samples the eye masks
-    // into the wrong half-sized area. Keep pass material UV identity until the
-    // converter preserves separate backing extents.
-    (1.0, 1.0)
-}
-
-fn native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
-    slots: &[SceneRenderTextureSlot],
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_uv_transform_for_render_passes(
+    passes: &[SceneRenderImageEffectPass],
     alpha_texture_slot: Option<u32>,
-) -> (f64, f64) {
-    let Some(alpha_slot) = alpha_texture_slot else {
-        return (1.0, 1.0);
-    };
-    let base = slots.iter().find(|slot| slot.slot == 0);
-    let alpha = slots.iter().find(|slot| slot.slot == alpha_slot);
-    native_vulkan_scene_opacity_effect_material_uv_scale(
-        base.and_then(|slot| slot.width),
-        base.and_then(|slot| slot.height),
-        alpha.and_then(|slot| slot.width),
-        alpha.and_then(|slot| slot.height),
-    )
+) -> Option<SceneEffectUvTransform> {
+    passes
+        .iter()
+        .filter_map(|pass| pass.effect_uv_transform)
+        .find(|transform| match alpha_texture_slot {
+            Some(slot) => transform.mask_slot == slot,
+            None => transform.mask_slot > 0,
+        })
 }
 
 fn native_vulkan_scene_opacity_effect_uv_space_from_render_op(
     op: &NativeVulkanSceneDrawOp,
 ) -> Option<NativeVulkanSceneEffectUvSpace> {
     op.alpha_texture_slot?;
-    let (scale_u, scale_v) = native_vulkan_scene_opacity_effect_material_uv_scale_for_render_slots(
-        &op.texture_slots,
-        op.alpha_texture_slot,
-    );
-    Some(NativeVulkanSceneEffectUvSpace {
-        mapping: NativeVulkanSceneEffectUvMapping::MaterialUvScaled { scale_u, scale_v },
-        width: op.width.unwrap_or(0.0),
-        height: op.height.unwrap_or(0.0),
-        texture_region: op.texture_region,
-        transform: op.transform,
-        bounds: None,
-    })
+    Some(native_vulkan_scene_effect_uv_space_from_transform(
+        native_vulkan_scene_effect_uv_transform_for_render_passes(
+            &op.image_effect_passes,
+            op.alpha_texture_slot,
+        ),
+        op.width.unwrap_or(0.0),
+        op.height.unwrap_or(0.0),
+        op.texture_region,
+        op.transform,
+    ))
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_uv_transform_for_scene_passes(
+    passes: &[crate::core::scene::SceneImageEffectPass],
+    alpha_texture_slot: Option<u32>,
+) -> Option<SceneEffectUvTransform> {
+    passes
+        .iter()
+        .filter_map(|pass| pass.effect_uv_transform)
+        .find(|transform| match alpha_texture_slot {
+            Some(slot) => transform.mask_slot == slot,
+            None => transform.mask_slot > 0,
+        })
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_uv_bounds(
@@ -713,7 +751,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_clear_color_from_hex(
 mod tests {
     use super::*;
     use crate::core::path::PackagePath;
-    use crate::core::scene::SceneMeshVertex;
+    use crate::core::scene::{SceneEffectUvTransform, SceneMeshVertex};
     use crate::core::{FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSystems};
     use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanRenderItem};
     use crate::renderer::{
@@ -768,6 +806,23 @@ mod tests {
         assert!((color.g - 32.0 / 255.0).abs() < f32::EPSILON);
         assert!((color.b - 48.0 / 255.0).abs() < f32::EPSILON);
         assert_eq!(color.a, 1.0);
+    }
+
+    #[test]
+    fn effect_uv_transform_selection_matches_mask_slot_before_fallback() {
+        let passes = vec![
+            image_effect_pass_with_transform(2, [0.5, 0.5], [0.5, 0.0]),
+            image_effect_pass_with_transform(1, [1.0, 1.0], [0.25, 0.0]),
+        ];
+
+        let selected = native_vulkan_scene_effect_uv_transform_for_render_passes(&passes, Some(1))
+            .expect("mask slot transform");
+        assert_eq!(selected.mask_slot, 1);
+        assert_eq!(selected.offset, [0.25, 0.0]);
+
+        let fallback = native_vulkan_scene_effect_uv_transform_for_render_passes(&passes, None)
+            .expect("fallback transform");
+        assert_eq!(fallback.mask_slot, 2);
     }
 
     #[test]
@@ -849,6 +904,7 @@ mod tests {
                 width: Some(331),
                 height: Some(115),
             }],
+            effect_uv_transform: None,
             combos: Default::default(),
             constant_shader_values: Default::default(),
         }];
@@ -881,9 +937,11 @@ mod tests {
         );
         assert_eq!(
             plan.draw_ops[1].effect_uv_space.map(|space| space.mapping),
-            Some(NativeVulkanSceneEffectUvMapping::MaterialUvScaled {
+            Some(NativeVulkanSceneEffectUvMapping::MaterialUvTransformed {
                 scale_u: 1.0,
-                scale_v: 1.0
+                scale_v: 1.0,
+                offset_u: 0.0,
+                offset_v: 0.0
             })
         );
         assert_eq!(plan.draw_ops[1].composite_key, composite_key);
@@ -931,6 +989,36 @@ mod tests {
             fit: FitMode::Cover,
             opacity: 1.0,
             transform: SceneTransform::default(),
+        }
+    }
+
+    fn image_effect_pass_with_transform(
+        mask_slot: u32,
+        scale: [f64; 2],
+        offset: [f64; 2],
+    ) -> SceneRenderImageEffectPass {
+        SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("native-opacity-mask".to_owned()),
+            pass_index: 0,
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: Vec::new(),
+            effect_uv_transform: Some(SceneEffectUvTransform {
+                mapping: Default::default(),
+                source_slot: 0,
+                mask_slot,
+                scale,
+                offset,
+                input_extent: None,
+                mask_extent: None,
+                mask_backing_extent: None,
+            }),
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
         }
     }
 }
