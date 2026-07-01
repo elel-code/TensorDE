@@ -3151,7 +3151,7 @@ fn preserves_locked_opacity_mask_duplicate_as_independent_attachment_layer() {
 }
 
 #[test]
-fn binary_opacity_mask_uv_transform_uses_mask_over_base_extent_without_resolution_constant() {
+fn binary_opacity_mask_uv_transform_uses_base_over_mask_extent_without_resolution_constant() {
     let source = TestDir::new("we-scene-opacity-mask-binary-uv-source");
     let output = TestDir::new("we-scene-opacity-mask-binary-uv-output");
     output.remove();
@@ -3220,10 +3220,10 @@ fn binary_opacity_mask_uv_transform_uses_mask_over_base_extent_without_resolutio
     assert_eq!(transform.input_height, 230);
     assert_eq!(transform.mask_width, 331);
     assert_eq!(transform.mask_height, 115);
-    assert!((transform.scale_u - (331.0 / 663.0) as f32).abs() < f32::EPSILON);
-    assert_eq!(transform.scale_v, 0.5);
-    assert_ne!(transform.scale_u, 2.0);
-    assert_ne!(transform.scale_v, 2.0);
+    assert!((transform.scale_u - (663.0 / 331.0) as f32).abs() < f32::EPSILON);
+    assert_eq!(transform.scale_v, 2.0);
+    assert_ne!(transform.scale_u, (331.0 / 663.0) as f32);
+    assert_ne!(transform.scale_v, 0.5);
 }
 
 #[test]

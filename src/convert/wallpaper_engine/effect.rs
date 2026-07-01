@@ -551,8 +551,8 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
             && resolution[2].abs() > f64::EPSILON
             && resolution[3].abs() > f64::EPSILON
         {
-            // Wallpaper Engine stores the mask extent in xy and the pass/base extent in zw.
-            scale = [resolution[0] / resolution[2], resolution[1] / resolution[3]];
+            // WE's opacity vertex shader computes mask UV as base_uv * base_extent / mask_extent.
+            scale = [resolution[2] / resolution[0], resolution[3] / resolution[1]];
             has_explicit_scale = true;
         }
     }
@@ -659,7 +659,7 @@ fn scene_effect_uv_transform_scale_from_extents(
     if input_width <= f64::EPSILON || input_height <= f64::EPSILON {
         return None;
     }
-    Some([mask_width / input_width, mask_height / input_height])
+    Some([input_width / mask_width, input_height / mask_height])
 }
 
 #[cfg(test)]
@@ -667,7 +667,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uv_transform_resolution_scale_uses_mask_over_pass_extent() {
+    fn uv_transform_resolution_scale_uses_base_over_mask_extent() {
         let pass = json!({
             "constantshadervalues": {
                 "g_Texture1Resolution": [331.0, 115.0, 663.0, 230.0]
@@ -677,8 +677,8 @@ mod tests {
 
         let (scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
 
-        assert!((scale[0] - (331.0 / 663.0)).abs() < f64::EPSILON);
-        assert_eq!(scale[1], 0.5);
+        assert!((scale[0] - (663.0 / 331.0)).abs() < f64::EPSILON);
+        assert_eq!(scale[1], 2.0);
         assert_eq!(offset, [0.0, 0.0]);
         assert!(has_explicit_scale);
     }
@@ -711,7 +711,7 @@ mod tests {
         )
         .expect("effect uv transform");
 
-        assert_eq!(transform["scale"][0].as_f64(), Some(331.0 / 663.0));
-        assert_eq!(transform["scale"][1].as_f64(), Some(0.5));
+        assert_eq!(transform["scale"][0].as_f64(), Some(663.0 / 331.0));
+        assert_eq!(transform["scale"][1].as_f64(), Some(2.0));
     }
 }
