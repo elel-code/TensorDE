@@ -1,0 +1,47 @@
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryRetainedIngestSummary {
+    pub(in crate::renderer::native_vulkan::scene) record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) resource_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) texture_slot_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) material_pass_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) geometry_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) stable_id_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) dirty_record_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryIngestSummary {
+    pub(in crate::renderer::native_vulkan::scene) feature_flags: u32,
+    pub(in crate::renderer::native_vulkan::scene) chunk_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) resource_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) node_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) draw_record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) transform_timeline_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) geometry_record_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) generated_vertex_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) generated_index_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) mesh_vertex_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) mesh_index_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) mesh_vertex_stream_bytes: u64,
+    pub(in crate::renderer::native_vulkan::scene) mesh_index_stream_bytes: u64,
+    pub(in crate::renderer::native_vulkan::scene) texture_slot_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) material_pass_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_property_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_constant_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_switch_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) flutter_state_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_vertex_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_index_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_animation_layer_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) retained:
+        NativeVulkanSceneBinaryRetainedIngestSummary,
+    pub(in crate::renderer::native_vulkan::scene) debug_name_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) debug_name_string_bytes: u32,
+}
