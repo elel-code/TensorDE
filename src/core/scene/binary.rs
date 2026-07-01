@@ -5,13 +5,15 @@ use std::fmt;
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
     SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
-    SceneNode, SceneNodeKind, SceneResource, SceneResourceKind, SceneTimelineChannel,
+    SceneNode, SceneNodeKind, ScenePuppetTransform, SceneResource, SceneResourceKind,
+    SceneTimelineChannel,
 };
 use crate::core::FitMode;
 
 mod effect_uv;
 mod flutter;
 mod geometry;
+mod puppet;
 
 pub(crate) use self::effect_uv::decode_effect_uv_transform_record;
 pub use self::effect_uv::{
@@ -43,9 +45,28 @@ pub(crate) use self::geometry::{
 use self::geometry::{
     geometry_flags, geometry_has_uv, geometry_ranges, geometry_stream_shape, node_has_geometry,
 };
+pub use self::puppet::{
+    SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS,
+    SCENE_BINARY_PUPPET_FLAG_ATTACHMENTS, SCENE_BINARY_PUPPET_FLAG_CLIPS,
+    SCENE_BINARY_PUPPET_FLAG_MESH, SCENE_BINARY_PUPPET_FLAG_SKIN,
+    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
+    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+    SceneBinaryPuppetAttachmentRecord, SceneBinaryPuppetClipRecord, SceneBinaryPuppetFrameRecord,
+    SceneBinaryPuppetLayerRecord, SceneBinaryPuppetRecord, SceneBinaryPuppetSkinBoneRecord,
+    SceneBinaryPuppetSkinVertexRecord,
+};
+pub(crate) use self::puppet::{
+    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_frame_record,
+    decode_puppet_layer_record, decode_puppet_record, decode_puppet_skin_bone_record,
+    decode_puppet_skin_vertex_record,
+};
+use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 9;
+pub const SCENE_BINARY_VERSION: u16 = 10;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -58,7 +79,6 @@ pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
-pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 24;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
 pub const SCENE_BINARY_DEBUG_NAME_RECORD_SIZE: usize = 16;
@@ -72,6 +92,7 @@ pub const SCENE_BINARY_RETAINED_EFFECT_PASS: u16 = 4;
 pub const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
 pub const SCENE_BINARY_RETAINED_GEOMETRY: u16 = 6;
 pub const SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM: u16 = 7;
+pub const SCENE_BINARY_RETAINED_PUPPET: u16 = 8;
 
 const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
 const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
@@ -106,13 +127,19 @@ pub enum SceneBinaryChunkKind {
     EffectParameter,
     FlutterState,
     Puppet,
+    PuppetSkinBones,
+    PuppetSkinVertices,
+    PuppetAttachments,
+    PuppetClips,
+    PuppetFrames,
+    PuppetLayers,
     RenderState,
     RetainedGpuState,
     DebugNames,
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 17] = [
+    pub const REQUIRED_ORDER: [Self; 23] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
@@ -127,6 +154,12 @@ impl SceneBinaryChunkKind {
         Self::EffectParameter,
         Self::FlutterState,
         Self::Puppet,
+        Self::PuppetSkinBones,
+        Self::PuppetSkinVertices,
+        Self::PuppetAttachments,
+        Self::PuppetClips,
+        Self::PuppetFrames,
+        Self::PuppetLayers,
         Self::RenderState,
         Self::RetainedGpuState,
         Self::DebugNames,
@@ -148,6 +181,12 @@ impl SceneBinaryChunkKind {
             Self::EffectParameter => u32::from_le_bytes(*b"EPRM"),
             Self::FlutterState => u32::from_le_bytes(*b"FLUT"),
             Self::Puppet => u32::from_le_bytes(*b"PUPT"),
+            Self::PuppetSkinBones => u32::from_le_bytes(*b"PSKB"),
+            Self::PuppetSkinVertices => u32::from_le_bytes(*b"PSKV"),
+            Self::PuppetAttachments => u32::from_le_bytes(*b"PATT"),
+            Self::PuppetClips => u32::from_le_bytes(*b"PCLP"),
+            Self::PuppetFrames => u32::from_le_bytes(*b"PFRM"),
+            Self::PuppetLayers => u32::from_le_bytes(*b"PLYR"),
             Self::RenderState => u32::from_le_bytes(*b"RNDS"),
             Self::RetainedGpuState => u32::from_le_bytes(*b"RGPU"),
             Self::DebugNames => u32::from_le_bytes(*b"NAME"),
@@ -177,6 +216,12 @@ impl SceneBinaryChunkKind {
             Self::EffectParameter => "effect_parameter",
             Self::FlutterState => "flutter_state",
             Self::Puppet => "puppet",
+            Self::PuppetSkinBones => "puppet_skin_bones",
+            Self::PuppetSkinVertices => "puppet_skin_vertices",
+            Self::PuppetAttachments => "puppet_attachments",
+            Self::PuppetClips => "puppet_clips",
+            Self::PuppetFrames => "puppet_frames",
+            Self::PuppetLayers => "puppet_layers",
             Self::RenderState => "render_state",
             Self::RetainedGpuState => "retained_gpu_state",
             Self::DebugNames => "debug_names",
@@ -664,6 +709,120 @@ impl SceneBinaryLayoutPlan {
             SCENE_BINARY_PUPPET_RECORD_SIZE,
             record_index,
             decode_puppet_record,
+        )
+    }
+
+    pub fn puppet_skin_bone_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetSkinBoneRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::PuppetSkinBones,
+            SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+            decode_puppet_skin_bone_record,
+        )
+    }
+
+    pub fn puppet_skin_bone_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetSkinBoneRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_bone, puppet.bone_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetSkinBones,
+            SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_skin_bone_record,
+        )
+    }
+
+    pub fn puppet_skin_vertex_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetSkinVertexRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_skin_vertex, puppet.skin_vertex_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetSkinVertices,
+            SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_skin_vertex_record,
+        )
+    }
+
+    pub fn puppet_attachment_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetAttachmentRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_attachment, puppet.attachment_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetAttachments,
+            SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_attachment_record,
+        )
+    }
+
+    pub fn puppet_clip_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetClipRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_clip, puppet.clip_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetClips,
+            SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_clip_record,
+        )
+    }
+
+    pub fn puppet_frame_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        clip: SceneBinaryPuppetClipRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetFrameRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(clip.first_frame, clip.frame_record_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetFrames,
+            SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_frame_record,
+        )
+    }
+
+    pub fn puppet_layer_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetLayerRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_layer, puppet.animation_layer_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetLayers,
+            SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_layer_record,
         )
     }
 
@@ -1249,28 +1408,6 @@ impl SceneBinaryEffectParameterRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SceneBinaryPuppetRecord {
-    pub owner_name: u32,
-    pub vertex_count: u32,
-    pub index_count: u32,
-    pub animation_layer_count: u32,
-    pub flags: u32,
-    pub dirty_range_count: u32,
-}
-
-impl SceneBinaryPuppetRecord {
-    fn encode(self, out: &mut Vec<u8>) {
-        write_u32(out, self.owner_name);
-        write_u32(out, self.vertex_count);
-        write_u32(out, self.index_count);
-        write_u32(out, self.animation_layer_count);
-        write_u32(out, self.flags);
-        write_u32(out, self.dirty_range_count);
-        debug_assert_eq!(SCENE_BINARY_PUPPET_RECORD_SIZE, 24);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneBinaryRenderStateRecord {
     pub width: u32,
     pub height: u32,
@@ -1440,6 +1577,12 @@ pub struct SceneBinaryDocumentShape {
     pub effect_parameter_records: u32,
     pub flutter_state_records: u32,
     pub puppet_records: u32,
+    pub puppet_skin_bone_records: u32,
+    pub puppet_skin_vertex_records: u32,
+    pub puppet_attachment_records: u32,
+    pub puppet_clip_records: u32,
+    pub puppet_frame_records: u32,
+    pub puppet_layer_records: u32,
     pub render_state_records: u32,
     pub retained_gpu_state_records: u32,
     pub debug_name_records: u32,
@@ -1478,7 +1621,8 @@ impl SceneBinaryDocumentShape {
             .saturating_add(shape.material_pass_records)
             .saturating_add(shape.effect_pass_records)
             .saturating_add(shape.effect_uv_transform_records)
-            .saturating_add(shape.effect_parameter_records);
+            .saturating_add(shape.effect_parameter_records)
+            .saturating_add(shape.puppet_records);
         shape
     }
 
@@ -1498,6 +1642,12 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::EffectParameter => self.effect_parameter_records,
             SceneBinaryChunkKind::FlutterState => self.flutter_state_records,
             SceneBinaryChunkKind::Puppet => self.puppet_records,
+            SceneBinaryChunkKind::PuppetSkinBones => self.puppet_skin_bone_records,
+            SceneBinaryChunkKind::PuppetSkinVertices => self.puppet_skin_vertex_records,
+            SceneBinaryChunkKind::PuppetAttachments => self.puppet_attachment_records,
+            SceneBinaryChunkKind::PuppetClips => self.puppet_clip_records,
+            SceneBinaryChunkKind::PuppetFrames => self.puppet_frame_records,
+            SceneBinaryChunkKind::PuppetLayers => self.puppet_layer_records,
             SceneBinaryChunkKind::RenderState => self.render_state_records,
             SceneBinaryChunkKind::RetainedGpuState => self.retained_gpu_state_records,
             SceneBinaryChunkKind::DebugNames => self.debug_name_records,
@@ -1529,6 +1679,7 @@ impl SceneBinaryDocumentShape {
         }
         if node.mesh.is_some() || !node.puppet_animation_layers.is_empty() {
             self.puppet_records = self.puppet_records.saturating_add(1);
+            self.include_puppet_payload(node);
         }
         for effect in &node.effects {
             self.include_effect(effect);
@@ -1562,6 +1713,57 @@ impl SceneBinaryDocumentShape {
                 .texture_slot_records
                 .saturating_add(effect_pass_texture_slot_count(pass));
         }
+    }
+
+    fn include_puppet_payload(&mut self, node: &SceneNode) {
+        self.puppet_layer_records = self
+            .puppet_layer_records
+            .saturating_add(saturating_u32(node.puppet_animation_layers.len()));
+        self.debug_name_records = self.debug_name_records.saturating_add(
+            node.puppet_animation_layers
+                .iter()
+                .filter(|layer| layer.name.is_some())
+                .count()
+                .min(u32::MAX as usize) as u32,
+        );
+        let Some(mesh) = node.mesh.as_ref() else {
+            return;
+        };
+        if let Some(skin) = mesh.skin.as_ref() {
+            self.puppet_skin_bone_records = self
+                .puppet_skin_bone_records
+                .saturating_add(saturating_u32(skin.bones.len()));
+            self.puppet_skin_vertex_records = self
+                .puppet_skin_vertex_records
+                .saturating_add(saturating_u32(skin.vertices.len()));
+            self.puppet_attachment_records = self
+                .puppet_attachment_records
+                .saturating_add(saturating_u32(skin.attachments.len()));
+            self.debug_name_records = self.debug_name_records.saturating_add(
+                skin.attachments
+                    .iter()
+                    .filter(|attachment| !attachment.name.is_empty())
+                    .count()
+                    .min(u32::MAX as usize) as u32,
+            );
+        }
+        self.puppet_clip_records = self
+            .puppet_clip_records
+            .saturating_add(saturating_u32(mesh.puppet_clips.len()));
+        self.debug_name_records = self.debug_name_records.saturating_add(
+            mesh.puppet_clips
+                .iter()
+                .filter(|clip| clip.name.is_some())
+                .count()
+                .min(u32::MAX as usize) as u32,
+        );
+        self.puppet_frame_records = self.puppet_frame_records.saturating_add(
+            mesh.puppet_clips
+                .iter()
+                .flat_map(|clip| clip.bones.iter())
+                .map(|bone| saturating_u32(bone.frames.len()))
+                .fold(0u32, u32::saturating_add),
+        );
     }
 }
 
@@ -1619,6 +1821,9 @@ enum SceneBinaryNameKind {
     Property,
     EffectParameter,
     ParameterValue,
+    PuppetClip,
+    PuppetLayer,
+    PuppetAttachment,
 }
 
 impl SceneBinaryNameKind {
@@ -1635,6 +1840,9 @@ impl SceneBinaryNameKind {
             Self::Property => 9,
             Self::EffectParameter => 10,
             Self::ParameterValue => 11,
+            Self::PuppetClip => 12,
+            Self::PuppetLayer => 13,
+            Self::PuppetAttachment => 14,
         }
     }
 }
@@ -1704,6 +1912,12 @@ struct SceneBinaryPayloadBuilder {
     effect_parameter: SceneBinaryChunkWriter,
     flutter_state: SceneBinaryChunkWriter,
     puppet: SceneBinaryChunkWriter,
+    puppet_skin_bones: SceneBinaryChunkWriter,
+    puppet_skin_vertices: SceneBinaryChunkWriter,
+    puppet_attachments: SceneBinaryChunkWriter,
+    puppet_clips: SceneBinaryChunkWriter,
+    puppet_frames: SceneBinaryChunkWriter,
+    puppet_layers: SceneBinaryChunkWriter,
     render_state: SceneBinaryChunkWriter,
     retained_gpu_state: SceneBinaryChunkWriter,
 }
@@ -2668,25 +2882,193 @@ impl SceneBinaryPayloadBuilder {
     }
 
     fn push_puppet(&mut self, owner_name: u32, node: &SceneNode) -> u32 {
-        self.puppet.push_record(|out| {
-            let (vertex_count, index_count) = node.mesh.as_ref().map_or((0, 0), |mesh| {
-                (
-                    saturating_u32(mesh.vertices.len()),
-                    saturating_u32(mesh.indices.len()),
-                )
+        let record_index = self.puppet.record_count;
+        let mesh = node.mesh.as_deref();
+        let (vertex_count, index_count) = mesh.map_or((0, 0), |mesh| {
+            (
+                saturating_u32(mesh.vertices.len()),
+                saturating_u32(mesh.indices.len()),
+            )
+        });
+
+        let first_bone = self.puppet_skin_bones.record_count;
+        let first_skin_vertex = self.puppet_skin_vertices.record_count;
+        let first_attachment = self.puppet_attachments.record_count;
+        let mut bone_count = 0;
+        let mut skin_vertex_count = 0;
+        let mut attachment_count = 0;
+        if let Some(skin) = mesh.and_then(|mesh| mesh.skin.as_ref()) {
+            bone_count = saturating_u32(skin.bones.len());
+            for bone in &skin.bones {
+                self.puppet_skin_bones.push_record(|out| {
+                    SceneBinaryPuppetSkinBoneRecord {
+                        owner_name,
+                        parent_index: bone.parent.map_or(SCENE_BINARY_NONE_ID, saturating_u32),
+                        transform: bone.bind,
+                    }
+                    .encode(out)
+                });
+            }
+            skin_vertex_count = saturating_u32(skin.vertices.len());
+            for vertex in &skin.vertices {
+                let mut bone_indices = [0; 4];
+                for (slot, index) in vertex.bone_indices.iter().enumerate() {
+                    bone_indices[slot] = saturating_u32(*index);
+                }
+                self.puppet_skin_vertices.push_record(|out| {
+                    SceneBinaryPuppetSkinVertexRecord {
+                        owner_name,
+                        bone_indices,
+                        weights: [
+                            vertex.weights[0] as f32,
+                            vertex.weights[1] as f32,
+                            vertex.weights[2] as f32,
+                            vertex.weights[3] as f32,
+                        ],
+                        weight_count: saturating_u32(
+                            vertex
+                                .weights
+                                .iter()
+                                .filter(|weight| weight.is_finite() && **weight > f64::EPSILON)
+                                .count(),
+                        ),
+                    }
+                    .encode(out)
+                });
+            }
+            attachment_count = saturating_u32(skin.attachments.len());
+            for attachment in &skin.attachments {
+                let name = self
+                    .names
+                    .intern(SceneBinaryNameKind::PuppetAttachment, &attachment.name);
+                self.puppet_attachments.push_record(|out| {
+                    SceneBinaryPuppetAttachmentRecord {
+                        owner_name,
+                        name,
+                        bone_index: saturating_u32(attachment.bone_index),
+                        local_position: [
+                            attachment.local_position[0] as f32,
+                            attachment.local_position[1] as f32,
+                            attachment.local_position[2] as f32,
+                        ],
+                        bind_position: [
+                            attachment.bind_position[0] as f32,
+                            attachment.bind_position[1] as f32,
+                            attachment.bind_position[2] as f32,
+                        ],
+                        flags: 0,
+                    }
+                    .encode(out)
+                });
+            }
+        }
+
+        let first_clip = self.puppet_clips.record_count;
+        let first_clip_frame = self.puppet_frames.record_count;
+        if let Some(mesh) = mesh {
+            for clip in &mesh.puppet_clips {
+                let clip_name = self
+                    .names
+                    .intern_optional(SceneBinaryNameKind::PuppetClip, clip.name.as_deref());
+                let first_frame = self.puppet_frames.record_count;
+                let mut frame_record_count = 0u32;
+                for (bone_index, bone) in clip.bones.iter().enumerate() {
+                    for (frame_index, transform) in bone.frames.iter().enumerate() {
+                        self.puppet_frames.push_record(|out| {
+                            SceneBinaryPuppetFrameRecord {
+                                owner_name,
+                                clip_id: clip.id,
+                                bone_index: saturating_u32(bone_index),
+                                frame_index: saturating_u32(frame_index),
+                                transform: *transform,
+                            }
+                            .encode(out)
+                        });
+                        frame_record_count = frame_record_count.saturating_add(1);
+                    }
+                }
+                self.puppet_clips.push_record(|out| {
+                    SceneBinaryPuppetClipRecord {
+                        owner_name,
+                        clip_name,
+                        clip_id: clip.id,
+                        first_frame: puppet_first_record(first_frame, frame_record_count),
+                        bone_count: saturating_u32(clip.bones.len()),
+                        frame_count: clip.frame_count,
+                        frame_record_count,
+                        fps: clip.fps as f32,
+                        flags: puppet_clip_flags(clip.looping),
+                        dirty_range_count: u32::from(frame_record_count > 0),
+                    }
+                    .encode(out)
+                });
+            }
+        }
+        let clip_count = self.puppet_clips.record_count.saturating_sub(first_clip);
+        let clip_frame_count = self
+            .puppet_frames
+            .record_count
+            .saturating_sub(first_clip_frame);
+
+        let first_layer = self.puppet_layers.record_count;
+        for (layer_index, layer) in node.puppet_animation_layers.iter().enumerate() {
+            let layer_name = self
+                .names
+                .intern_optional(SceneBinaryNameKind::PuppetLayer, layer.name.as_deref());
+            self.puppet_layers.push_record(|out| {
+                SceneBinaryPuppetLayerRecord {
+                    owner_name,
+                    layer_name,
+                    clip_id: layer.clip_id,
+                    layer_index: saturating_u32(layer_index),
+                    flags: puppet_layer_flags(layer.additive, layer.lock_transforms, layer.visible),
+                    blend: layer.blend as f32,
+                    rate: layer.rate as f32,
+                    initial_phase: layer.initial_phase as f32,
+                }
+                .encode(out)
             });
+        }
+        let animation_layer_count = self.puppet_layers.record_count.saturating_sub(first_layer);
+
+        let flags = puppet_flags(
+            mesh.is_some(),
+            animation_layer_count > 0,
+            bone_count > 0 && skin_vertex_count > 0,
+            clip_count > 0,
+            attachment_count > 0,
+        );
+        let dirty_range_count = 1
+            + u32::from(bone_count > 0)
+            + u32::from(skin_vertex_count > 0)
+            + u32::from(attachment_count > 0)
+            + u32::from(clip_count > 0)
+            + u32::from(clip_frame_count > 0)
+            + u32::from(animation_layer_count > 0);
+        self.puppet.push_record(|out| {
             SceneBinaryPuppetRecord {
                 owner_name,
                 vertex_count,
                 index_count,
-                animation_layer_count: saturating_u32(node.puppet_animation_layers.len()),
-                flags: u32::from(node.mesh.is_some())
-                    | (u32::from(!node.puppet_animation_layers.is_empty()) << 1),
-                dirty_range_count: u32::from(node.mesh.is_some())
-                    + saturating_u32(node.puppet_animation_layers.len()),
+                first_bone: puppet_first_record(first_bone, bone_count),
+                bone_count,
+                first_skin_vertex: puppet_first_record(first_skin_vertex, skin_vertex_count),
+                skin_vertex_count,
+                first_attachment: puppet_first_record(first_attachment, attachment_count),
+                attachment_count,
+                first_clip: puppet_first_record(first_clip, clip_count),
+                clip_count,
+                first_clip_frame: puppet_first_record(first_clip_frame, clip_frame_count),
+                clip_frame_count,
+                first_layer: puppet_first_record(first_layer, animation_layer_count),
+                animation_layer_count,
+                flags,
+                dirty_range_count,
             }
             .encode(out)
-        })
+        });
+        self.push_retained(SCENE_BINARY_RETAINED_PUPPET, owner_name, record_index);
+        record_index
     }
 
     fn push_retained(&mut self, owner_kind: u16, owner_name: u32, record_index: u32) {
@@ -2725,6 +3107,12 @@ impl SceneBinaryPayloadBuilder {
             effect_parameter_records: self.effect_parameter.record_count,
             flutter_state_records: self.flutter_state.record_count,
             puppet_records: self.puppet.record_count,
+            puppet_skin_bone_records: self.puppet_skin_bones.record_count,
+            puppet_skin_vertex_records: self.puppet_skin_vertices.record_count,
+            puppet_attachment_records: self.puppet_attachments.record_count,
+            puppet_clip_records: self.puppet_clips.record_count,
+            puppet_frame_records: self.puppet_frames.record_count,
+            puppet_layer_records: self.puppet_layers.record_count,
             render_state_records: self.render_state.record_count,
             retained_gpu_state_records: self.retained_gpu_state.record_count,
             debug_name_records,
@@ -2758,6 +3146,18 @@ impl SceneBinaryPayloadBuilder {
                 self.flutter_state
                     .into_payload(SceneBinaryChunkKind::FlutterState),
                 self.puppet.into_payload(SceneBinaryChunkKind::Puppet),
+                self.puppet_skin_bones
+                    .into_payload(SceneBinaryChunkKind::PuppetSkinBones),
+                self.puppet_skin_vertices
+                    .into_payload(SceneBinaryChunkKind::PuppetSkinVertices),
+                self.puppet_attachments
+                    .into_payload(SceneBinaryChunkKind::PuppetAttachments),
+                self.puppet_clips
+                    .into_payload(SceneBinaryChunkKind::PuppetClips),
+                self.puppet_frames
+                    .into_payload(SceneBinaryChunkKind::PuppetFrames),
+                self.puppet_layers
+                    .into_payload(SceneBinaryChunkKind::PuppetLayers),
                 self.render_state
                     .into_payload(SceneBinaryChunkKind::RenderState),
                 self.retained_gpu_state
@@ -3883,19 +4283,6 @@ pub(crate) fn decode_effect_parameter_record(
     })
 }
 
-pub(crate) fn decode_puppet_record(
-    bytes: &[u8],
-) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
-    Ok(SceneBinaryPuppetRecord {
-        owner_name: read_u32(bytes, 0)?,
-        vertex_count: read_u32(bytes, 4)?,
-        index_count: read_u32(bytes, 8)?,
-        animation_layer_count: read_u32(bytes, 12)?,
-        flags: read_u32(bytes, 16)?,
-        dirty_range_count: read_u32(bytes, 20)?,
-    })
-}
-
 pub(crate) fn decode_render_state_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryRenderStateRecord, SceneBinaryError> {
@@ -4163,6 +4550,14 @@ fn node_first_effect_pass_reuses_base_resource(node: &SceneNode) -> bool {
 
 fn saturating_u32(value: usize) -> u32 {
     value.min(u32::MAX as usize) as u32
+}
+
+fn binary_range_start_count(first_record: u32, record_count: u32) -> (u32, u32) {
+    if first_record == SCENE_BINARY_NONE_ID && record_count == 0 {
+        (0, 0)
+    } else {
+        (first_record, record_count)
+    }
 }
 
 #[cfg(test)]
@@ -4914,6 +5309,200 @@ mod tests {
                 .map(|record| record.index)
                 .collect::<Vec<_>>(),
             vec![2, 1, 0]
+        );
+    }
+
+    #[test]
+    fn binary_puppet_payload_carries_skin_clips_and_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "nodes": [
+                {
+                    "id": "eye",
+                    "type": "image",
+                    "mesh": {
+                        "vertices": [
+                            { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 2.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 2.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } },
+                                { "parent": 0, "bind": { "translation": [1.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [0, 1, 0, 0], "weights": [0.25, 0.75, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ],
+                            "attachments": [
+                                {
+                                    "name": "socket",
+                                    "bone_index": 1,
+                                    "local_position": [1.0, 2.0, 0.0],
+                                    "bind_position": [2.0, 2.0, 0.0]
+                                }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 7,
+                                "name": "blink",
+                                "fps": 30.0,
+                                "frame_count": 2,
+                                "looping": true,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0] },
+                                            { "translation": [0.0, 1.0, 0.0] }
+                                        ]
+                                    },
+                                    {
+                                        "frames": [
+                                            { "translation": [1.0, 0.0, 0.0], "opacity": 1.0 },
+                                            { "translation": [1.0, 1.0, 0.0], "opacity": 0.25 }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        {
+                            "clip_id": 7,
+                            "name": "blink-layer",
+                            "blend": 0.75,
+                            "rate": 1.25,
+                            "initial_phase": 0.5,
+                            "additive": true,
+                            "lock_transforms": true
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+
+        let payloads = scene_binary_payloads_from_document(&document);
+        assert_eq!(payloads.shape.puppet_records, 1);
+        assert_eq!(payloads.shape.puppet_skin_bone_records, 2);
+        assert_eq!(payloads.shape.puppet_skin_vertex_records, 3);
+        assert_eq!(payloads.shape.puppet_attachment_records, 1);
+        assert_eq!(payloads.shape.puppet_clip_records, 1);
+        assert_eq!(payloads.shape.puppet_frame_records, 4);
+        assert_eq!(payloads.shape.puppet_layer_records, 1);
+        assert_eq!(
+            payloads
+                .chunk(SceneBinaryChunkKind::Puppet)
+                .expect("puppet payload")
+                .bytes
+                .len(),
+            SCENE_BINARY_PUPPET_RECORD_SIZE
+        );
+        assert_eq!(
+            payloads
+                .chunk(SceneBinaryChunkKind::PuppetFrames)
+                .expect("puppet frames")
+                .bytes
+                .len(),
+            4 * SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE
+        );
+
+        let bytes = payloads.encode_container(0).expect("encode");
+        assert!(
+            !bytes
+                .windows("lock_transforms".len())
+                .any(|window| window == b"lock_transforms")
+        );
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("nodes")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded nodes");
+        let puppet = layout
+            .puppet_record_at(&bytes, nodes[0].puppet_index)
+            .expect("puppet record");
+        assert_eq!(puppet.vertex_count, 3);
+        assert_eq!(puppet.index_count, 3);
+        assert_eq!(puppet.bone_count, 2);
+        assert_eq!(puppet.skin_vertex_count, 3);
+        assert_eq!(puppet.attachment_count, 1);
+        assert_eq!(puppet.clip_count, 1);
+        assert_eq!(puppet.clip_frame_count, 4);
+        assert_eq!(puppet.animation_layer_count, 1);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_MESH != 0);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_SKIN != 0);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_CLIPS != 0);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_ATTACHMENTS != 0);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS != 0);
+
+        let bones = layout
+            .puppet_skin_bone_record_range(&bytes, puppet)
+            .expect("bones")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded bones");
+        assert_eq!(bones[0].parent_index, SCENE_BINARY_NONE_ID);
+        assert_eq!(bones[1].parent_index, 0);
+        assert_eq!(bones[1].transform.translation[0], 1.0);
+        let skin_vertices = layout
+            .puppet_skin_vertex_record_range(&bytes, puppet)
+            .expect("skin vertices")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded skin vertices");
+        assert_eq!(skin_vertices[0].bone_indices, [0, 1, 0, 0]);
+        assert_eq!(skin_vertices[0].weight_count, 2);
+        assert!((skin_vertices[0].weights[1] - 0.75).abs() < f32::EPSILON);
+
+        let attachments = layout
+            .puppet_attachment_record_range(&bytes, puppet)
+            .expect("attachments")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded attachments");
+        assert_eq!(attachments[0].bone_index, 1);
+        assert_eq!(attachments[0].local_position, [1.0, 2.0, 0.0]);
+
+        let clips = layout
+            .puppet_clip_record_range(&bytes, puppet)
+            .expect("clips")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded clips");
+        assert_eq!(clips[0].clip_id, 7);
+        assert_eq!(clips[0].bone_count, 2);
+        assert_eq!(clips[0].frame_count, 2);
+        assert_eq!(clips[0].frame_record_count, 4);
+        assert!(clips[0].flags & SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING != 0);
+        let frames = layout
+            .puppet_frame_record_range(&bytes, clips[0])
+            .expect("frames")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded frames");
+        assert_eq!(frames[3].bone_index, 1);
+        assert_eq!(frames[3].frame_index, 1);
+        assert_eq!(frames[3].transform.opacity, 0.25);
+
+        let layers = layout
+            .puppet_layer_record_range(&bytes, puppet)
+            .expect("layers")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded layers");
+        assert_eq!(layers[0].clip_id, 7);
+        assert!(layers[0].flags & SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE != 0);
+        assert!(layers[0].flags & SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS != 0);
+        assert!(layers[0].flags & SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE != 0);
+        assert!((layers[0].blend - 0.75).abs() < f32::EPSILON);
+
+        let retained = layout
+            .retained_gpu_state_records(&bytes)
+            .expect("retained")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded retained");
+        assert!(
+            retained
+                .iter()
+                .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_PUPPET)
         );
     }
 

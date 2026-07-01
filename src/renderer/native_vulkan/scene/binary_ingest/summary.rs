@@ -8,6 +8,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryReta
     pub(in crate::renderer::native_vulkan::scene) effect_uv_transform_count: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
     pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
     pub(in crate::renderer::native_vulkan::scene) stable_id_count: u32,
     pub(in crate::renderer::native_vulkan::scene) dirty_record_count: u32,

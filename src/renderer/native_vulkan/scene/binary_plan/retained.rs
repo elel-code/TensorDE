@@ -1,8 +1,9 @@
 use crate::core::scene::binary::{
     SCENE_BINARY_RETAINED_EFFECT_PARAMETER, SCENE_BINARY_RETAINED_EFFECT_PASS,
     SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM, SCENE_BINARY_RETAINED_GEOMETRY,
-    SCENE_BINARY_RETAINED_MATERIAL_PASS, SCENE_BINARY_RETAINED_RESOURCE,
-    SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryError, SceneBinaryLayoutPlan,
+    SCENE_BINARY_RETAINED_MATERIAL_PASS, SCENE_BINARY_RETAINED_PUPPET,
+    SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryError,
+    SceneBinaryLayoutPlan,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -14,6 +15,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryReta
     pub(in crate::renderer::native_vulkan::scene) effect_uv_transform_count: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_parameter_count: u32,
     pub(in crate::renderer::native_vulkan::scene) geometry_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_count: u32,
     pub(in crate::renderer::native_vulkan::scene) dirty_range_count: u32,
 }
 
@@ -64,6 +66,9 @@ pub(super) fn native_vulkan_scene_binary_retained_ingest_plan(
             }
             SCENE_BINARY_RETAINED_GEOMETRY => {
                 plan.update_plan.geometry_count = plan.update_plan.geometry_count.saturating_add(1);
+            }
+            SCENE_BINARY_RETAINED_PUPPET => {
+                plan.update_plan.puppet_count = plan.update_plan.puppet_count.saturating_add(1);
             }
             owner_kind => {
                 return Err(SceneBinaryError::UnknownRetainedOwnerKind { owner_kind });

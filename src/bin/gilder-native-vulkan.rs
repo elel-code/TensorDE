@@ -1748,6 +1748,99 @@ mod tests {
     }
 
     #[test]
+    fn scene_cli_gscn_binary_source_samples_puppet_mesh() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-vulkan-cli-gscn-puppet-{}-{nonce}",
+            std::process::id()
+        ));
+        let assets = root.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let document: gilder::core::SceneDocument = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {
+                    "id": "puppet",
+                    "type": "image",
+                    "mesh": {
+                        "vertices": [
+                            { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 2.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 2.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 4,
+                                "fps": 1.0,
+                                "frame_count": 2,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0] },
+                                            { "translation": [2.0, 0.0, 0.0] }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        { "clip_id": 4, "blend": 1.0, "rate": 1.0 }
+                    ]
+                }
+            ]
+        }))
+        .unwrap();
+        let bytes = gilder::core::scene::binary::encode_scene_binary_document(0, &document)
+            .expect("binary scene");
+        let source = assets.join("scene.gscn");
+        std::fs::write(&source, bytes).unwrap();
+
+        let plan = scene_cli_plan(
+            "HDMI-A-1".to_owned(),
+            Some(source),
+            false,
+            None,
+            FitMode::Contain,
+            None,
+            None,
+            None,
+            ScenePathFillRule::default(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            500,
+            Some(30),
+            &std::collections::BTreeMap::new(),
+        )
+        .expect("gscn scene plan");
+
+        assert_eq!(plan.puppet_animation_layer_count, 1);
+        assert_eq!(plan.layers.len(), 1);
+        let mesh = plan.layers[0].mesh.as_ref().expect("sampled mesh");
+        assert_eq!(mesh.skin, None);
+        assert!(mesh.puppet_clips.is_empty());
+        assert!((mesh.vertices[0].x - 1.0).abs() < 0.001);
+        assert!((mesh.vertices[1].x - 3.0).abs() < 0.001);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
+    }
+
+    #[test]
     fn scene_cli_plan_builds_color_layer() {
         let plan = scene_cli_plan(
             "HDMI-A-1".to_owned(),

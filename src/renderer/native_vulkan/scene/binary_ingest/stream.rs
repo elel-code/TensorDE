@@ -8,7 +8,10 @@ use crate::core::scene::binary::{
     SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
     SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
     SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MAGIC, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
     SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
     SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
     SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
@@ -57,6 +60,24 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
             .record_count;
     let puppet_record_count =
         native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::Puppet)?
+            .record_count;
+    let puppet_skin_bone_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetSkinBones)?
+            .record_count;
+    let puppet_skin_vertex_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetSkinVertices)?
+            .record_count;
+    let puppet_attachment_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetAttachments)?
+            .record_count;
+    let puppet_clip_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetClips)?
+            .record_count;
+    let puppet_frame_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetFrames)?
+            .record_count;
+    let puppet_layer_record_count =
+        native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::PuppetLayers)?
             .record_count;
     let material_pass_record_count =
         native_vulkan_scene_binary_stream_chunk(&layout, SceneBinaryChunkKind::MaterialPass)?
@@ -210,9 +231,53 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_inge
                     SCENE_BINARY_PUPPET_RECORD_SIZE,
                     |bytes| {
                         let puppet = decode_puppet_record(bytes)?;
-                        native_vulkan_scene_binary_ingest_puppet_record(&mut summary, puppet);
-                        Ok(())
+                        native_vulkan_scene_binary_ingest_puppet_record(
+                            &mut summary,
+                            puppet,
+                            puppet_skin_bone_record_count,
+                            puppet_skin_vertex_record_count,
+                            puppet_attachment_record_count,
+                            puppet_clip_record_count,
+                            puppet_frame_record_count,
+                            puppet_layer_record_count,
+                        )
                     },
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetSkinBones => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetSkinVertices => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetAttachments => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetClips => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetFrames => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+                )?;
+            }
+            SceneBinaryChunkKind::PuppetLayers => {
+                native_vulkan_scene_binary_ingest_validate_record_payload(
+                    descriptor,
+                    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
                 )?;
             }
             SceneBinaryChunkKind::RenderState => {

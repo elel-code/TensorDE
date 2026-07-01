@@ -5,10 +5,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT, SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
     SCENE_BINARY_RETAINED_EFFECT_PASS, SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM,
     SCENE_BINARY_RETAINED_GEOMETRY, SCENE_BINARY_RETAINED_MATERIAL_PASS,
-    SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor,
-    SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryError,
-    SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryNodeRecord,
-    SceneBinaryPuppetRecord, SceneBinaryRetainedGpuStateRecord, SceneBinaryTransformTimelineRecord,
+    SCENE_BINARY_RETAINED_PUPPET, SCENE_BINARY_RETAINED_RESOURCE,
+    SCENE_BINARY_RETAINED_TEXTURE_SLOT, SceneBinaryChunkDescriptor, SceneBinaryChunkKind,
+    SceneBinaryEffectParameterRecord, SceneBinaryError, SceneBinaryGeometryRecord,
+    SceneBinaryLayoutPlan, SceneBinaryNodeRecord, SceneBinaryPuppetRecord,
+    SceneBinaryRetainedGpuStateRecord, SceneBinaryTransformTimelineRecord,
     decode_scene_binary_container,
 };
 
@@ -54,6 +55,30 @@ fn native_vulkan_scene_binary_ingest_from_layout(
     )?;
     let puppet_record_count =
         native_vulkan_scene_binary_ingest_chunk_record_count(layout, SceneBinaryChunkKind::Puppet)?;
+    let puppet_skin_bone_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetSkinBones,
+    )?;
+    let puppet_skin_vertex_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetSkinVertices,
+    )?;
+    let puppet_attachment_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetAttachments,
+    )?;
+    let puppet_clip_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetClips,
+    )?;
+    let puppet_frame_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetFrames,
+    )?;
+    let puppet_layer_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetLayers,
+    )?;
     let material_pass_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
         layout,
         SceneBinaryChunkKind::MaterialPass,
@@ -141,7 +166,16 @@ fn native_vulkan_scene_binary_ingest_from_layout(
     }
 
     for puppet in layout.puppet_records(container)? {
-        native_vulkan_scene_binary_ingest_puppet_record(&mut summary, puppet?);
+        native_vulkan_scene_binary_ingest_puppet_record(
+            &mut summary,
+            puppet?,
+            puppet_skin_bone_record_count,
+            puppet_skin_vertex_record_count,
+            puppet_attachment_record_count,
+            puppet_clip_record_count,
+            puppet_frame_record_count,
+            puppet_layer_record_count,
+        )?;
     }
 
     for render_state in layout.render_state_records(container)? {
@@ -318,7 +352,13 @@ pub(super) fn native_vulkan_scene_binary_ingest_effect_parameter_record(
 pub(super) fn native_vulkan_scene_binary_ingest_puppet_record(
     summary: &mut NativeVulkanSceneBinaryIngestSummary,
     puppet: SceneBinaryPuppetRecord,
-) {
+    puppet_skin_bone_record_count: u32,
+    puppet_skin_vertex_record_count: u32,
+    puppet_attachment_record_count: u32,
+    puppet_clip_record_count: u32,
+    puppet_frame_record_count: u32,
+    puppet_layer_record_count: u32,
+) -> Result<(), SceneBinaryError> {
     summary.puppet_count = summary.puppet_count.saturating_add(1);
     summary.puppet_vertex_count = summary
         .puppet_vertex_count
@@ -329,6 +369,43 @@ pub(super) fn native_vulkan_scene_binary_ingest_puppet_record(
     summary.puppet_animation_layer_count = summary
         .puppet_animation_layer_count
         .saturating_add(puppet.animation_layer_count);
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetSkinBones,
+        puppet.first_bone,
+        puppet.bone_count,
+        puppet_skin_bone_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetSkinVertices,
+        puppet.first_skin_vertex,
+        puppet.skin_vertex_count,
+        puppet_skin_vertex_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetAttachments,
+        puppet.first_attachment,
+        puppet.attachment_count,
+        puppet_attachment_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetClips,
+        puppet.first_clip,
+        puppet.clip_count,
+        puppet_clip_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetFrames,
+        puppet.first_clip_frame,
+        puppet.clip_frame_count,
+        puppet_frame_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetLayers,
+        puppet.first_layer,
+        puppet.animation_layer_count,
+        puppet_layer_record_count,
+    )?;
+    Ok(())
 }
 
 pub(super) fn native_vulkan_scene_binary_ingest_retained_record(
@@ -372,6 +449,9 @@ pub(super) fn native_vulkan_scene_binary_ingest_retained_record(
         }
         SCENE_BINARY_RETAINED_GEOMETRY => {
             summary.retained.geometry_count = summary.retained.geometry_count.saturating_add(1);
+        }
+        SCENE_BINARY_RETAINED_PUPPET => {
+            summary.retained.puppet_count = summary.retained.puppet_count.saturating_add(1);
         }
         owner_kind => {
             return Err(SceneBinaryError::UnknownRetainedOwnerKind { owner_kind });
@@ -618,6 +698,7 @@ mod tests {
             ingest.retained.stable_id_count
         );
         assert_eq!(ingest.retained.effect_uv_transform_count, 1);
+        assert_eq!(ingest.retained.puppet_count, 1);
         assert_eq!(
             ingest.retained.record_count,
             ingest.retained.dirty_record_count

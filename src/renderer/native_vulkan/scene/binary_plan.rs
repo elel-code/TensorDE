@@ -164,7 +164,14 @@ fn native_vulkan_scene_binary_plan_from_layout(
         let source_node = layout.node_record_at(container, record_len_from_usize(node_index))?;
         let _ = layout.node_transform_records(container, source_node)?;
         if node.puppet_index != SCENE_BINARY_NONE_ID {
-            let _ = layout.puppet_record_at(container, node.puppet_index)?;
+            let puppet = layout.puppet_record_at(container, node.puppet_index)?;
+            let _ = layout.puppet_skin_bone_record_range(container, puppet)?;
+            let _ = layout.puppet_skin_vertex_record_range(container, puppet)?;
+            let _ = layout.puppet_attachment_record_range(container, puppet)?;
+            let _ = layout.puppet_layer_record_range(container, puppet)?;
+            for clip in layout.puppet_clip_record_range(container, puppet)? {
+                let _ = layout.puppet_frame_record_range(container, clip?)?;
+            }
         }
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
@@ -245,7 +252,7 @@ mod tests {
         SCENE_BINARY_GEOMETRY_QUAD_INDEX_COUNT, SCENE_BINARY_GEOMETRY_QUAD_VERTEX_COUNT,
         SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_GENERATED,
         SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY, SCENE_BINARY_MOTION_FAMILY_FLUTTER,
-        scene_binary_payloads_from_document,
+        SCENE_BINARY_PUPPET_FLAG_MESH, scene_binary_payloads_from_document,
     };
 
     #[test]
@@ -599,8 +606,13 @@ mod tests {
         );
         assert_eq!(plan.puppet_records[0].vertex_count, 3);
         assert_eq!(plan.puppet_records[0].index_count, 3);
+        assert_eq!(plan.puppet_records[0].first_bone, SCENE_BINARY_NONE_ID);
+        assert_eq!(plan.puppet_records[0].bone_count, 0);
+        assert_eq!(plan.puppet_records[0].first_layer, SCENE_BINARY_NONE_ID);
         assert_eq!(plan.puppet_records[0].animation_layer_count, 0);
+        assert!(plan.puppet_records[0].flags & SCENE_BINARY_PUPPET_FLAG_MESH != 0);
         assert_eq!(plan.puppet_records[0].dirty_range_count, 1);
+        assert_eq!(plan.retained_update_plan.puppet_count, 1);
         assert_eq!(plan.geometry_records.len(), 1);
         let node = plan.node_records[plan.draw_records[0].node_index as usize];
         let geometry = plan.geometry_records[node.geometry_index as usize];

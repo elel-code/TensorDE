@@ -14,7 +14,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_HEADER_SIZE,
     SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE, SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
     SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
     SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
     SceneBinaryChunkKind, SceneBinaryEffectPassRecord, SceneBinaryEffectUvTransformRecord,
@@ -22,12 +26,16 @@ use crate::core::scene::binary::{
     SceneBinaryMaterialPassRecord, SceneBinaryResourceRecord, SceneBinaryTextureSlotRecord,
     decode_debug_name_record, decode_effect_pass_record, decode_effect_uv_transform_record,
     decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
-    decode_material_pass_record, decode_node_record, decode_puppet_record,
-    decode_render_state_record, decode_resource_record, decode_scene_binary_header_table,
-    decode_texture_slot_record, decode_transform_keyframe_record, decode_transform_timeline_record,
+    decode_material_pass_record, decode_node_record, decode_puppet_clip_record,
+    decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_record,
+    decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record, decode_render_state_record,
+    decode_resource_record, decode_scene_binary_header_table, decode_texture_slot_record,
+    decode_transform_keyframe_record, decode_transform_timeline_record,
 };
 use crate::core::scene::{
-    SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh, SceneMeshVertex,
+    SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh, SceneMeshSkin,
+    SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetAnimationBone,
+    ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
@@ -621,7 +629,7 @@ fn binary_scene_render_layer(
         corner_radius: node_state.corner_radius,
         width: node_state.width,
         height: node_state.height,
-        mesh: binary_scene_mesh(reader, geometry)?,
+        mesh: binary_scene_mesh(reader, geometry, node.puppet_index, snapshot_time_ms)?,
         text: None,
         font_size: None,
         font_family: None,
@@ -748,6 +756,8 @@ fn binary_scene_texture_slots(
 fn binary_scene_mesh(
     reader: &mut BinarySceneReader,
     geometry: SceneBinaryGeometryRecord,
+    puppet_index: u32,
+    snapshot_time_ms: u64,
 ) -> Result<Option<Arc<SceneMesh>>, RendererPlanError> {
     if geometry.primitive_kind != SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH
         || geometry.vertex_layout != SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY
@@ -782,12 +792,157 @@ fn binary_scene_mesh(
     for index in index_records {
         indices.push(index.index);
     }
-    Ok(Some(Arc::new(SceneMesh {
+    let mut mesh = SceneMesh {
         vertices,
         indices,
         skin: None,
         puppet_clips: Vec::new(),
-    })))
+    };
+    if puppet_index != SCENE_BINARY_NONE_ID {
+        mesh = binary_scene_sampled_puppet_mesh(reader, mesh, puppet_index, snapshot_time_ms)?;
+    }
+    Ok(Some(Arc::new(mesh)))
+}
+
+fn binary_scene_sampled_puppet_mesh(
+    reader: &mut BinarySceneReader,
+    mut mesh: SceneMesh,
+    puppet_index: u32,
+    snapshot_time_ms: u64,
+) -> Result<SceneMesh, RendererPlanError> {
+    let puppet = reader.record_at(
+        SceneBinaryChunkKind::Puppet,
+        SCENE_BINARY_PUPPET_RECORD_SIZE,
+        puppet_index,
+        decode_puppet_record,
+    )?;
+    if puppet.animation_layer_count == 0 || puppet.bone_count == 0 || puppet.clip_count == 0 {
+        return Ok(mesh);
+    }
+    mesh.skin = Some(binary_scene_puppet_skin(reader, puppet)?);
+    mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
+    let layers = binary_scene_puppet_layers(reader, puppet)?;
+    Ok(mesh
+        .sample_puppet_animation(&layers, snapshot_time_ms)
+        .unwrap_or(mesh))
+}
+
+fn binary_scene_puppet_skin(
+    reader: &mut BinarySceneReader,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<SceneMeshSkin, RendererPlanError> {
+    let bone_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetSkinBones,
+        SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+        puppet.first_bone,
+        puppet.bone_count,
+        decode_puppet_skin_bone_record,
+    )?;
+    let vertex_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetSkinVertices,
+        SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+        puppet.first_skin_vertex,
+        puppet.skin_vertex_count,
+        decode_puppet_skin_vertex_record,
+    )?;
+    let mut bones = Vec::with_capacity(bone_records.len());
+    for bone in bone_records {
+        bones.push(SceneMeshSkinBone {
+            parent: (bone.parent_index != SCENE_BINARY_NONE_ID)
+                .then_some(bone.parent_index as usize),
+            bind: bone.transform,
+        });
+    }
+    let mut vertices = Vec::with_capacity(vertex_records.len());
+    for vertex in vertex_records {
+        vertices.push(SceneMeshSkinVertex {
+            bone_indices: [
+                vertex.bone_indices[0] as usize,
+                vertex.bone_indices[1] as usize,
+                vertex.bone_indices[2] as usize,
+                vertex.bone_indices[3] as usize,
+            ],
+            weights: [
+                f64::from(vertex.weights[0]),
+                f64::from(vertex.weights[1]),
+                f64::from(vertex.weights[2]),
+                f64::from(vertex.weights[3]),
+            ],
+        });
+    }
+    Ok(SceneMeshSkin {
+        bones,
+        vertices,
+        attachments: Vec::new(),
+    })
+}
+
+fn binary_scene_puppet_clips(
+    reader: &mut BinarySceneReader,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Vec<ScenePuppetAnimationClip>, RendererPlanError> {
+    let clip_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetClips,
+        SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+        puppet.first_clip,
+        puppet.clip_count,
+        decode_puppet_clip_record,
+    )?;
+    let mut clips = Vec::with_capacity(clip_records.len());
+    for clip in clip_records {
+        let frame_records = reader.record_range(
+            SceneBinaryChunkKind::PuppetFrames,
+            SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+            clip.first_frame,
+            clip.frame_record_count,
+            decode_puppet_frame_record,
+        )?;
+        let mut bones = (0..clip.bone_count)
+            .map(|_| ScenePuppetAnimationBone { frames: Vec::new() })
+            .collect::<Vec<_>>();
+        for frame in frame_records {
+            if let Some(bone) = bones.get_mut(frame.bone_index as usize) {
+                bone.frames.push(frame.transform);
+            }
+        }
+        clips.push(ScenePuppetAnimationClip {
+            id: clip.clip_id,
+            name: None,
+            fps: f64::from(clip.fps),
+            frame_count: clip.frame_count,
+            looping: clip.flags & crate::core::scene::binary::SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING
+                != 0,
+            bones,
+        });
+    }
+    Ok(clips)
+}
+
+fn binary_scene_puppet_layers(
+    reader: &mut BinarySceneReader,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Vec<ScenePuppetAnimationLayer>, RendererPlanError> {
+    let layer_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetLayers,
+        SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+        puppet.first_layer,
+        puppet.animation_layer_count,
+        decode_puppet_layer_record,
+    )?;
+    let mut layers = Vec::with_capacity(layer_records.len());
+    for layer in layer_records {
+        layers.push(ScenePuppetAnimationLayer {
+            clip_id: layer.clip_id,
+            name: None,
+            additive: layer.flags & SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE != 0,
+            lock_transforms: layer.flags & SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS != 0,
+            blend: f64::from(layer.blend),
+            visible: layer.flags & SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE != 0,
+            rate: f64::from(layer.rate),
+            initial_phase: f64::from(layer.initial_phase),
+        });
+    }
+    Ok(layers)
 }
 
 #[derive(Debug, Clone, Copy)]

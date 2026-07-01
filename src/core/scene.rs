@@ -3508,7 +3508,7 @@ impl SceneMesh {
         Ok(())
     }
 
-    fn sample_puppet_animation(
+    pub(crate) fn sample_puppet_animation(
         &self,
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
