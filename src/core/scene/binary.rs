@@ -8,8 +8,18 @@ use super::{
     SceneTimelineChannel,
 };
 
+mod flutter;
 mod geometry;
 
+pub use self::flutter::{
+    SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, SCENE_BINARY_MOTION_FAMILY_DRIFT,
+    SCENE_BINARY_MOTION_FAMILY_FLUTTER, SCENE_BINARY_MOTION_FAMILY_SHAKE,
+    SCENE_BINARY_MOTION_FAMILY_SWAY, SceneBinaryFlutterStateRecord,
+};
+use self::flutter::{
+    decode_flutter_state_record, effect_is_motion_family, motion_dirty_range_count,
+    motion_family_flags,
+};
 pub use self::geometry::{
     SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE, SCENE_BINARY_GEOMETRY_PRIMITIVE_AUDIO_RESPONSE,
     SCENE_BINARY_GEOMETRY_PRIMITIVE_ELLIPSE, SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH,
@@ -39,7 +49,6 @@ pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
-pub const SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 24;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
@@ -984,32 +993,6 @@ impl SceneBinaryEffectParameterRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SceneBinaryFlutterStateRecord {
-    pub owner_name: u32,
-    pub effect_name: u32,
-    pub first_parameter: u32,
-    pub parameter_count: u32,
-    pub pass_count: u32,
-    pub family_flags: u32,
-    pub anchor_name: u32,
-    pub dirty_range_count: u32,
-}
-
-impl SceneBinaryFlutterStateRecord {
-    fn encode(self, out: &mut Vec<u8>) {
-        write_u32(out, self.owner_name);
-        write_u32(out, self.effect_name);
-        write_u32(out, self.first_parameter);
-        write_u32(out, self.parameter_count);
-        write_u32(out, self.pass_count);
-        write_u32(out, self.family_flags);
-        write_u32(out, self.anchor_name);
-        write_u32(out, self.dirty_range_count);
-        debug_assert_eq!(SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, 32);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneBinaryPuppetRecord {
     pub owner_name: u32,
     pub vertex_count: u32,
@@ -1880,9 +1863,9 @@ impl SceneBinaryPayloadBuilder {
                     first_parameter: effect_parameter_start,
                     parameter_count,
                     pass_count: saturating_u32(effect.passes.len().max(1)),
-                    family_flags: effect_motion_family_flags(effect),
+                    motion_family_flags: motion_family_flags(effect),
                     anchor_name: owner_name,
-                    dirty_range_count: flutter_dirty_range_count(effect, parameter_count),
+                    dirty_range_count: motion_dirty_range_count(effect, parameter_count),
                 }
                 .encode(out)
             });
@@ -2959,15 +2942,6 @@ fn effect_is_first_class_target(effect: &SceneEffect) -> bool {
         || file.ends_with("/effects/iris/effect.json")
 }
 
-fn effect_motion_family_flags(effect: &SceneEffect) -> u32 {
-    let file = effect.file.to_ascii_lowercase();
-    let runtime = effect.runtime.as_deref().unwrap_or_default();
-    u32::from(file.contains("flutter") || runtime.contains("flutter"))
-        | (u32::from(file.contains("sway") || runtime.contains("sway")) << 1)
-        | (u32::from(file.contains("shake") || runtime.contains("shake")) << 2)
-        | (u32::from(file.contains("drift") || runtime.contains("drift")) << 3)
-}
-
 #[derive(Debug, Clone, Copy)]
 struct SceneBinaryParameterValue {
     kind: u16,
@@ -3064,12 +3038,6 @@ fn scene_binary_parameter_value_supported(value: &serde_json::Value) -> bool {
         }
         serde_json::Value::Null | serde_json::Value::Object(_) => false,
     }
-}
-
-fn flutter_dirty_range_count(effect: &SceneEffect, parameter_count: u32) -> u32 {
-    u32::from(parameter_count > 0)
-        .saturating_add(u32::from(!effect.passes.is_empty()))
-        .max(1)
 }
 
 fn node_effect_pass_count(effects: &[SceneEffect]) -> u32 {
@@ -3345,21 +3313,6 @@ fn decode_effect_parameter_record(
     })
 }
 
-fn decode_flutter_state_record(
-    bytes: &[u8],
-) -> Result<SceneBinaryFlutterStateRecord, SceneBinaryError> {
-    Ok(SceneBinaryFlutterStateRecord {
-        owner_name: read_u32(bytes, 0)?,
-        effect_name: read_u32(bytes, 4)?,
-        first_parameter: read_u32(bytes, 8)?,
-        parameter_count: read_u32(bytes, 12)?,
-        pass_count: read_u32(bytes, 16)?,
-        family_flags: read_u32(bytes, 20)?,
-        anchor_name: read_u32(bytes, 24)?,
-        dirty_range_count: read_u32(bytes, 28)?,
-    })
-}
-
 fn decode_puppet_record(bytes: &[u8]) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
     Ok(SceneBinaryPuppetRecord {
         owner_name: read_u32(bytes, 0)?,
@@ -3632,19 +3585,6 @@ fn node_first_effect_pass_reuses_base_resource(node: &SceneNode) -> bool {
         .and_then(|pass| pass.texture_resources.first())
         .and_then(|value| value.as_deref())
         == Some(base_resource)
-}
-
-fn effect_is_motion_family(effect: &SceneEffect) -> bool {
-    let file = effect.file.to_ascii_lowercase();
-    let runtime = effect.runtime.as_deref().unwrap_or_default();
-    file.contains("flutter")
-        || file.contains("sway")
-        || file.contains("shake")
-        || file.contains("drift")
-        || runtime.contains("flutter")
-        || runtime.contains("sway")
-        || runtime.contains("shake")
-        || runtime.contains("drift")
 }
 
 fn saturating_u32(value: usize) -> u32 {
@@ -4143,8 +4083,12 @@ mod tests {
         assert_eq!(flutter[0].pass_count, 1);
         assert_eq!(flutter[0].first_parameter, 0);
         assert_eq!(flutter[0].parameter_count, 4);
+        assert_eq!(
+            flutter[0].motion_family_flags,
+            SCENE_BINARY_MOTION_FAMILY_FLUTTER
+        );
         assert_eq!(flutter[0].anchor_name, nodes[0].id_name);
-        assert_eq!(flutter[0].dirty_range_count, 2);
+        assert_eq!(flutter[0].dirty_range_count, 3);
         let flutter_parameters = layout
             .flutter_parameter_records(&bytes, flutter[0])
             .expect("flutter parameter range")
