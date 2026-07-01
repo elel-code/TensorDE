@@ -6,6 +6,7 @@ use crate::core::scene::binary::{
 mod flutter;
 mod geometry;
 mod material;
+mod node;
 mod resource;
 mod retained;
 
@@ -18,6 +19,8 @@ pub(in crate::renderer::native_vulkan::scene) use self::material::{
     NativeVulkanSceneBinaryEffectRecord, NativeVulkanSceneBinaryMaterialRecord,
     NativeVulkanSceneBinaryTextureSlotRecord,
 };
+pub(in crate::renderer::native_vulkan::scene) use self::node::NativeVulkanSceneBinaryNodeRecord;
+use self::node::native_vulkan_scene_binary_node_records;
 pub(in crate::renderer::native_vulkan::scene) use self::resource::NativeVulkanSceneBinaryResourceRecord;
 use self::resource::native_vulkan_scene_binary_resource_records;
 pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
@@ -49,6 +52,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
     pub(in crate::renderer::native_vulkan::scene) resource_records:
         Vec<NativeVulkanSceneBinaryResourceRecord>,
+    pub(in crate::renderer::native_vulkan::scene) node_records:
+        Vec<NativeVulkanSceneBinaryNodeRecord>,
     pub(in crate::renderer::native_vulkan::scene) geometry_records:
         Vec<NativeVulkanSceneBinaryGeometryRecord>,
     pub(in crate::renderer::native_vulkan::scene) draw_records:
@@ -67,9 +72,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryDrawRecord {
-    pub(in crate::renderer::native_vulkan::scene) node_name: u32,
-    pub(in crate::renderer::native_vulkan::scene) geometry_index: u32,
-    pub(in crate::renderer::native_vulkan::scene) material_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) node_index: u32,
 }
 
 pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_binary_plan_from_container(
@@ -85,7 +88,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
 ) -> Result<NativeVulkanSceneBinaryPlan, SceneBinaryError> {
     let resource_records = native_vulkan_scene_binary_resource_records(container, layout)?;
     let resource_count = record_len_from_usize(resource_records.len());
-    let node_records = layout.node_records(container)?;
+    let node_records = native_vulkan_scene_binary_node_records(container, layout)?;
     let node_count = record_len_from_usize(node_records.len());
     let geometry_records = native_vulkan_scene_binary_geometry_records(container, layout)?;
     let geometry_record_count = record_len_from_usize(geometry_records.records.len());
@@ -103,8 +106,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let flutter_state_count = record_len_from_usize(flutter_records.len());
 
     let mut draw_records = Vec::with_capacity(node_records.len());
-    for node in node_records {
-        let node = node?;
+    for (node_index, node) in node_records.iter().enumerate() {
         if node.geometry_index == SCENE_BINARY_NONE_ID {
             continue;
         }
@@ -114,9 +116,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         }
 
         draw_records.push(NativeVulkanSceneBinaryDrawRecord {
-            node_name: node.id_name,
-            geometry_index: node.geometry_index,
-            material_index: node.material_index,
+            node_index: record_len_from_usize(node_index),
         });
     }
 
@@ -143,6 +143,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         retained_gpu_state_count,
         retained_dirty_range_count,
         resource_records,
+        node_records,
         geometry_records: geometry_records.records,
         draw_records,
         texture_slots: material_records.texture_slots,
@@ -231,10 +232,14 @@ mod tests {
         );
         assert_eq!(plan.mesh_vertex_count, 0);
         assert_eq!(plan.mesh_index_count, 0);
+        assert_eq!(plan.node_records.len(), 1);
         assert_eq!(plan.geometry_records.len(), 1);
-        assert_eq!(plan.draw_records[0].geometry_index, 0);
-        assert_eq!(plan.draw_records[0].material_index, 0);
-        let geometry = plan.geometry_records[plan.draw_records[0].geometry_index as usize];
+        assert_eq!(plan.draw_records[0].node_index, 0);
+        let node = plan.node_records[plan.draw_records[0].node_index as usize];
+        assert_eq!(node.geometry_index, 0);
+        assert_eq!(node.material_index, 0);
+        assert_eq!(node.draw_order, 0);
+        let geometry = plan.geometry_records[node.geometry_index as usize];
         assert_eq!(
             geometry.primitive_kind,
             SCENE_BINARY_GEOMETRY_PRIMITIVE_QUAD
@@ -347,7 +352,7 @@ mod tests {
         assert_eq!(plan.flutter_records.len(), 1);
         assert_eq!(
             plan.flutter_records[0].owner_name,
-            plan.draw_records[0].node_name
+            plan.node_records[plan.draw_records[0].node_index as usize].id_name
         );
         assert_eq!(
             plan.flutter_records[0].motion_family_flags,
@@ -397,7 +402,8 @@ mod tests {
         assert_eq!(plan.mesh_vertex_count, 3);
         assert_eq!(plan.mesh_index_count, 3);
         assert_eq!(plan.geometry_records.len(), 1);
-        let geometry = plan.geometry_records[plan.draw_records[0].geometry_index as usize];
+        let node = plan.node_records[plan.draw_records[0].node_index as usize];
+        let geometry = plan.geometry_records[node.geometry_index as usize];
         assert_eq!(
             geometry.primitive_kind,
             SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH
