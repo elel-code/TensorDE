@@ -278,6 +278,21 @@ impl SceneBinaryLayoutPlan {
         )
     }
 
+    pub fn material_texture_slot_records<'a>(
+        &self,
+        container: &'a [u8],
+        material: SceneBinaryMaterialPassRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTextureSlotRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::TextureSlots,
+            SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+            material.first_texture_slot,
+            material.texture_slot_count,
+            decode_texture_slot_record,
+        )
+    }
+
     pub fn material_pass_records<'a>(
         &self,
         container: &'a [u8],
@@ -310,6 +325,51 @@ impl SceneBinaryLayoutPlan {
             container,
             SceneBinaryChunkKind::EffectParameter,
             SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+            decode_effect_parameter_record,
+        )
+    }
+
+    pub fn effect_texture_slot_records<'a>(
+        &self,
+        container: &'a [u8],
+        effect_pass: SceneBinaryEffectPassRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryTextureSlotRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::TextureSlots,
+            SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+            effect_pass.first_texture_slot,
+            effect_pass.texture_slot_count,
+            decode_texture_slot_record,
+        )
+    }
+
+    pub fn effect_parameter_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        effect_pass: SceneBinaryEffectPassRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryEffectParameterRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::EffectParameter,
+            SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+            effect_pass.first_parameter,
+            effect_pass.parameter_count,
+            decode_effect_parameter_record,
+        )
+    }
+
+    pub fn flutter_parameter_records<'a>(
+        &self,
+        container: &'a [u8],
+        flutter: SceneBinaryFlutterStateRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryEffectParameterRecord>, SceneBinaryError> {
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::EffectParameter,
+            SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+            flutter.first_parameter,
+            flutter.parameter_count,
             decode_effect_parameter_record,
         )
     }
@@ -408,6 +468,113 @@ impl SceneBinaryLayoutPlan {
             record_size,
             index: 0,
             record_count: descriptor.record_count as usize,
+            decode,
+        })
+    }
+
+    fn records_range<'a, T>(
+        &self,
+        container: &'a [u8],
+        kind: SceneBinaryChunkKind,
+        record_size: usize,
+        first_record: u32,
+        record_count: u32,
+        decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
+    ) -> Result<SceneBinaryRecords<'a, T>, SceneBinaryError> {
+        let descriptor = self
+            .chunk(kind)
+            .ok_or(SceneBinaryError::MissingChunk { kind })?;
+        let payload = descriptor.payload(container)?;
+        let expected = usize::try_from(descriptor.record_count)
+            .ok()
+            .and_then(|count| count.checked_mul(record_size))
+            .ok_or(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            })?;
+        if payload.len() != expected {
+            return Err(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count: descriptor.record_count,
+                length: payload.len(),
+            });
+        }
+        if record_count == 0 {
+            return Ok(SceneBinaryRecords {
+                bytes: &payload[0..0],
+                record_size,
+                index: 0,
+                record_count: 0,
+                decode,
+            });
+        }
+        let first = usize::try_from(first_record).map_err(|_| {
+            SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record,
+                record_count,
+                chunk_record_count: descriptor.record_count,
+            }
+        })?;
+        let count = usize::try_from(record_count).map_err(|_| {
+            SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record,
+                record_count,
+                chunk_record_count: descriptor.record_count,
+            }
+        })?;
+        let end_record =
+            first
+                .checked_add(count)
+                .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                    kind,
+                    first_record,
+                    record_count,
+                    chunk_record_count: descriptor.record_count,
+                })?;
+        if end_record > descriptor.record_count as usize {
+            return Err(SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record,
+                record_count,
+                chunk_record_count: descriptor.record_count,
+            });
+        }
+        let start =
+            first
+                .checked_mul(record_size)
+                .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                    kind,
+                    first_record,
+                    record_count,
+                    chunk_record_count: descriptor.record_count,
+                })?;
+        let byte_len =
+            count
+                .checked_mul(record_size)
+                .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                    kind,
+                    first_record,
+                    record_count,
+                    chunk_record_count: descriptor.record_count,
+                })?;
+        let end = start
+            .checked_add(byte_len)
+            .ok_or(SceneBinaryError::RecordRangeOutOfBounds {
+                kind,
+                first_record,
+                record_count,
+                chunk_record_count: descriptor.record_count,
+            })?;
+        Ok(SceneBinaryRecords {
+            bytes: &payload[start..end],
+            record_size,
+            index: 0,
+            record_count: count,
             decode,
         })
     }
@@ -1815,6 +1982,12 @@ pub enum SceneBinaryError {
         record_count: u32,
         length: usize,
     },
+    RecordRangeOutOfBounds {
+        kind: SceneBinaryChunkKind,
+        first_record: u32,
+        record_count: u32,
+        chunk_record_count: u32,
+    },
     NameOutOfBounds {
         id: u32,
         offset: u32,
@@ -1893,6 +2066,19 @@ impl fmt::Display for SceneBinaryError {
                 "scene binary chunk {} has {length} payload bytes; expected {} records of {record_size} bytes",
                 kind.label(),
                 record_count
+            ),
+            Self::RecordRangeOutOfBounds {
+                kind,
+                first_record,
+                record_count,
+                chunk_record_count,
+            } => write!(
+                f,
+                "scene binary chunk {} record range {}..{} exceeds {} records",
+                kind.label(),
+                first_record,
+                first_record.saturating_add(*record_count),
+                chunk_record_count
             ),
             Self::NameOutOfBounds {
                 id,
@@ -3120,6 +3306,25 @@ mod tests {
         assert_ne!(nodes[0].material_index, SCENE_BINARY_NONE_ID);
         assert_ne!(nodes[0].geometry_index, SCENE_BINARY_NONE_ID);
 
+        let materials = layout
+            .material_pass_records(&bytes)
+            .expect("material records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material records");
+        assert_eq!(materials.len(), 1);
+        let material_texture_slots = layout
+            .material_texture_slot_records(&bytes, materials[0])
+            .expect("material texture slot range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material texture slot range");
+        assert_eq!(material_texture_slots.len(), 1);
+        assert_eq!(
+            debug_names
+                .name(material_texture_slots[0].resource_name)
+                .expect("material texture resource"),
+            Some("image")
+        );
+
         let transforms = layout
             .transform_timeline_records(&bytes)
             .expect("transform records")
@@ -3171,6 +3376,18 @@ mod tests {
             effect_passes[0].kind,
             effect_kind_code(&document.nodes[0].effects[0])
         );
+        let effect_texture_slots = layout
+            .effect_texture_slot_records(&bytes, effect_passes[0])
+            .expect("effect texture slot range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded effect texture slot range");
+        assert_eq!(effect_texture_slots.len(), 1);
+        assert_eq!(
+            debug_names
+                .name(effect_texture_slots[0].pass_name)
+                .expect("effect texture pass name"),
+            Some("effects/flutter/effect.json")
+        );
 
         let parameters = layout
             .effect_parameter_records(&bytes)
@@ -3209,6 +3426,25 @@ mod tests {
             SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO
         );
         assert_eq!(parameters[3].integer_value, 2);
+        let pass_parameters = layout
+            .effect_parameter_record_range(&bytes, effect_passes[0])
+            .expect("effect pass parameter range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded effect pass parameter range");
+        assert_eq!(pass_parameters.len(), 3);
+        assert_eq!(
+            debug_names
+                .name(pass_parameters[0].parameter_name)
+                .expect("first pass parameter"),
+            Some("speed")
+        );
+        let mut bad_effect_pass = effect_passes[0];
+        bad_effect_pass.first_parameter = shape.effect_parameter_records;
+        bad_effect_pass.parameter_count = 1;
+        assert!(matches!(
+            layout.effect_parameter_record_range(&bytes, bad_effect_pass),
+            Err(SceneBinaryError::RecordRangeOutOfBounds { .. })
+        ));
 
         let flutter = layout
             .flutter_state_records(&bytes)
@@ -3221,6 +3457,13 @@ mod tests {
         assert_eq!(flutter[0].parameter_count, 4);
         assert_eq!(flutter[0].anchor_name, nodes[0].id_name);
         assert_eq!(flutter[0].dirty_range_count, 2);
+        let flutter_parameters = layout
+            .flutter_parameter_records(&bytes, flutter[0])
+            .expect("flutter parameter range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded flutter parameter range");
+        assert_eq!(flutter_parameters.len(), 4);
+        assert_eq!(flutter_parameters[0].role_flags, parameters[0].role_flags);
 
         let render_state = layout
             .render_state_records(&bytes)
