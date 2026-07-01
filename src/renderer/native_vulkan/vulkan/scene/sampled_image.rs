@@ -352,8 +352,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     let mut memory_live = false;
     let mut image_view = vk::ImageView::default();
     let mut image_view_live = false;
-    let mut sampler = vk::Sampler::default();
-    let mut sampler_live = false;
 
     let result = (|| -> Result<VulkanaliaSceneSampledImageResources, String> {
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
@@ -392,13 +390,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         let sampler_info = scene_sampled_image_sampler_create_info(
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge,
         );
-        sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
-        sampler_live = true;
+        let sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
 
         image_live = false;
         memory_live = false;
         image_view_live = false;
-        sampler_live = false;
 
         Ok(VulkanaliaSceneSampledImageResources {
             image,
@@ -453,11 +449,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     })();
 
     if result.is_err() {
-        if sampler_live {
-            unsafe {
-                device.destroy_sampler(sampler, None);
-            }
-        }
         if image_view_live {
             unsafe {
                 device.destroy_image_view(image_view, None);
