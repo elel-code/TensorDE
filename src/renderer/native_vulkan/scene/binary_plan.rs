@@ -3,6 +3,7 @@ use crate::core::scene::binary::{
     SCENE_BINARY_NONE_ID, SceneBinaryError, SceneBinaryLayoutPlan, decode_scene_binary_container,
 };
 
+mod blend;
 mod flutter;
 mod geometry;
 mod material;
@@ -328,11 +329,21 @@ mod tests {
         assert_eq!(plan.material_records[0].texture_slots.record_count, 2);
         assert_eq!(plan.material_records[0].effect_passes.first_record, 0);
         assert_eq!(plan.material_records[0].effect_passes.record_count, 1);
+        assert_ne!(plan.material_records[0].pass_state.blend.mode, 0);
+        assert_eq!(plan.material_records[0].pass_state.alpha_texture_slot, 1);
+        assert_eq!(
+            plan.material_records[0].pass_state.blend.blending_name,
+            SCENE_BINARY_NONE_ID
+        );
         assert_eq!(plan.effect_records.len(), 1);
         assert_eq!(plan.effect_records[0].texture_slots.first_record, 0);
         assert_eq!(plan.effect_records[0].texture_slots.record_count, 2);
         assert_eq!(plan.effect_records[0].parameters.first_record, 0);
         assert_eq!(plan.effect_records[0].parameters.record_count, 2);
+        assert_eq!(
+            plan.effect_records[0].pass_state.blending_name,
+            SCENE_BINARY_NONE_ID
+        );
         assert_eq!(
             plan.retained_gpu_state_count,
             plan.resource_count

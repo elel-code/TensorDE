@@ -3,6 +3,11 @@ use crate::core::scene::binary::{
     SceneBinaryMaterialPassRecord,
 };
 
+use super::blend::{
+    NativeVulkanSceneBinaryEffectPassState, NativeVulkanSceneBinaryMaterialPassState,
+    native_vulkan_scene_binary_effect_pass_state, native_vulkan_scene_binary_material_pass_state,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryRecordRange {
     pub(in crate::renderer::native_vulkan::scene) first_record: u32,
@@ -26,18 +31,13 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryText
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryMaterialRecord {
     pub(in crate::renderer::native_vulkan::scene) owner_name: u32,
     pub(in crate::renderer::native_vulkan::scene) shader_name: u32,
-    pub(in crate::renderer::native_vulkan::scene) blending_name: u32,
     pub(in crate::renderer::native_vulkan::scene) pipeline_key: u32,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: NativeVulkanSceneBinaryRecordRange,
     pub(in crate::renderer::native_vulkan::scene) effect_passes: NativeVulkanSceneBinaryRecordRange,
+    pub(in crate::renderer::native_vulkan::scene) pass_state:
+        NativeVulkanSceneBinaryMaterialPassState,
     pub(in crate::renderer::native_vulkan::scene) material_kind: u16,
     pub(in crate::renderer::native_vulkan::scene) descriptor_layout: u16,
-    pub(in crate::renderer::native_vulkan::scene) blend_mode: u16,
-    pub(in crate::renderer::native_vulkan::scene) alpha_texture_slot: u32,
-    pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: u16,
-    pub(in crate::renderer::native_vulkan::scene) depth_test: u16,
-    pub(in crate::renderer::native_vulkan::scene) depth_write: u16,
-    pub(in crate::renderer::native_vulkan::scene) cull_mode: u16,
     pub(in crate::renderer::native_vulkan::scene) effect_kind_flags: u32,
     pub(in crate::renderer::native_vulkan::scene) flags: u16,
 }
@@ -47,15 +47,13 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryEffe
     pub(in crate::renderer::native_vulkan::scene) owner_name: u32,
     pub(in crate::renderer::native_vulkan::scene) effect_name: u32,
     pub(in crate::renderer::native_vulkan::scene) shader_name: u32,
-    pub(in crate::renderer::native_vulkan::scene) blending_name: u32,
     pub(in crate::renderer::native_vulkan::scene) pass_index: u32,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: NativeVulkanSceneBinaryRecordRange,
     pub(in crate::renderer::native_vulkan::scene) parameters: NativeVulkanSceneBinaryRecordRange,
+    pub(in crate::renderer::native_vulkan::scene) pass_state:
+        NativeVulkanSceneBinaryEffectPassState,
     pub(in crate::renderer::native_vulkan::scene) kind: u16,
     pub(in crate::renderer::native_vulkan::scene) evaluation_boundary: u16,
-    pub(in crate::renderer::native_vulkan::scene) depth_test: u16,
-    pub(in crate::renderer::native_vulkan::scene) depth_write: u16,
-    pub(in crate::renderer::native_vulkan::scene) cull_mode: u16,
     pub(in crate::renderer::native_vulkan::scene) flags: u16,
 }
 
@@ -127,18 +125,12 @@ fn native_vulkan_scene_binary_material_record(
     Ok(NativeVulkanSceneBinaryMaterialRecord {
         owner_name: material.owner_name,
         shader_name: material.shader_name,
-        blending_name: material.blending_name,
         pipeline_key: material.pipeline_key,
         texture_slots,
         effect_passes,
+        pass_state: native_vulkan_scene_binary_material_pass_state(material),
         material_kind: material.material_kind,
         descriptor_layout: material.descriptor_layout,
-        blend_mode: material.blend_mode,
-        alpha_texture_slot: material.alpha_texture_slot,
-        alpha_texture_mode: material.alpha_texture_mode,
-        depth_test: material.depth_test,
-        depth_write: material.depth_write,
-        cull_mode: material.cull_mode,
         effect_kind_flags: material.effect_kind_flags,
         flags: material.flags,
     })
@@ -179,15 +171,12 @@ fn native_vulkan_scene_binary_effect_record(
         owner_name: effect_pass.owner_name,
         effect_name: effect_pass.effect_name,
         shader_name: effect_pass.shader_name,
-        blending_name: effect_pass.blending_name,
         pass_index: effect_pass.pass_index,
         texture_slots,
         parameters,
+        pass_state: native_vulkan_scene_binary_effect_pass_state(effect_pass),
         kind: effect_pass.kind,
         evaluation_boundary: effect_pass.evaluation_boundary,
-        depth_test: effect_pass.depth_test,
-        depth_write: effect_pass.depth_write,
-        cull_mode: effect_pass.cull_mode,
         flags: effect_pass.flags,
     })
 }
