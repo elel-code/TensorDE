@@ -202,7 +202,7 @@ pub(super) fn node_has_geometry(node: &SceneNode) -> bool {
     )
 }
 
-pub(super) fn decode_geometry_record(
+pub(crate) fn decode_geometry_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryGeometryRecord, SceneBinaryError> {
     Ok(SceneBinaryGeometryRecord {
@@ -229,7 +229,7 @@ pub(super) fn decode_geometry_record(
     })
 }
 
-pub(super) fn decode_geometry_vertex_record(
+pub(crate) fn decode_geometry_vertex_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryGeometryVertexRecord, SceneBinaryError> {
     Ok(SceneBinaryGeometryVertexRecord {
@@ -241,7 +241,7 @@ pub(super) fn decode_geometry_vertex_record(
     })
 }
 
-pub(super) fn decode_geometry_index_record(
+pub(crate) fn decode_geometry_index_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryGeometryIndexRecord, SceneBinaryError> {
     Ok(SceneBinaryGeometryIndexRecord {

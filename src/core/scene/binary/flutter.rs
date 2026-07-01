@@ -57,7 +57,7 @@ pub(super) fn motion_dirty_range_count(effect: &SceneEffect, parameter_count: u3
         .max(1)
 }
 
-pub(super) fn decode_flutter_state_record(
+pub(crate) fn decode_flutter_state_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryFlutterStateRecord, SceneBinaryError> {
     Ok(SceneBinaryFlutterStateRecord {

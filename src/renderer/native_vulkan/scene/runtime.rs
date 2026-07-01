@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
@@ -49,6 +50,9 @@ use super::super::vulkan::{
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
     native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec,
+};
+use super::binary_ingest::{
+    NativeVulkanSceneBinaryIngestSummary, native_vulkan_scene_binary_ingest_from_reader,
 };
 use super::draw_pass::{
     NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
@@ -114,6 +118,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub full_scene: NativeVulkanFullSceneRuntimeSnapshot,
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
+    pub scene_binary_ingest: Option<NativeVulkanSceneBinaryIngestRuntimeSnapshot>,
     pub native_draw_ready: bool,
     pub runtime_display_available: bool,
     pub draw_pass_plan_ready: bool,
@@ -178,6 +183,106 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub unsupported_layers: Vec<NativeVulkanSceneUnsupportedLayerSnapshot>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneBinaryRetainedIngestRuntimeSnapshot {
+    pub record_count: u32,
+    pub resource_count: u32,
+    pub texture_slot_count: u32,
+    pub material_pass_count: u32,
+    pub effect_pass_count: u32,
+    pub effect_parameter_count: u32,
+    pub geometry_count: u32,
+    pub dirty_range_count: u32,
+    pub stable_id_count: u32,
+    pub dirty_record_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneBinaryIngestRuntimeSnapshot {
+    pub boundary: &'static str,
+    pub input_model: &'static str,
+    pub payload_retention_model: &'static str,
+    pub feature_flags: u32,
+    pub chunk_count: u32,
+    pub resource_count: u32,
+    pub node_count: u32,
+    pub draw_record_count: u32,
+    pub transform_timeline_count: u32,
+    pub geometry_record_count: u32,
+    pub generated_vertex_count: u32,
+    pub generated_index_count: u32,
+    pub mesh_vertex_count: u32,
+    pub mesh_index_count: u32,
+    pub mesh_vertex_stream_bytes: u64,
+    pub mesh_index_stream_bytes: u64,
+    pub texture_slot_count: u32,
+    pub material_pass_count: u32,
+    pub effect_pass_count: u32,
+    pub effect_parameter_count: u32,
+    pub effect_property_count: u32,
+    pub effect_pass_constant_count: u32,
+    pub effect_pass_switch_count: u32,
+    pub flutter_state_count: u32,
+    pub puppet_count: u32,
+    pub puppet_vertex_count: u32,
+    pub puppet_index_count: u32,
+    pub puppet_animation_layer_count: u32,
+    pub render_state_count: u32,
+    pub retained: NativeVulkanSceneBinaryRetainedIngestRuntimeSnapshot,
+    pub debug_name_count: u32,
+    pub debug_name_string_bytes: u32,
+}
+
+impl NativeVulkanSceneBinaryIngestRuntimeSnapshot {
+    fn from_summary(summary: NativeVulkanSceneBinaryIngestSummary) -> Self {
+        Self {
+            boundary: "native-vulkan-scene-binary-read-upload-drop",
+            input_model: "gscn-versioned-binary-chunks",
+            payload_retention_model: "read-header-table-stream-records-drop-source-bytes",
+            feature_flags: summary.feature_flags,
+            chunk_count: summary.chunk_count,
+            resource_count: summary.resource_count,
+            node_count: summary.node_count,
+            draw_record_count: summary.draw_record_count,
+            transform_timeline_count: summary.transform_timeline_count,
+            geometry_record_count: summary.geometry_record_count,
+            generated_vertex_count: summary.generated_vertex_count,
+            generated_index_count: summary.generated_index_count,
+            mesh_vertex_count: summary.mesh_vertex_count,
+            mesh_index_count: summary.mesh_index_count,
+            mesh_vertex_stream_bytes: summary.mesh_vertex_stream_bytes,
+            mesh_index_stream_bytes: summary.mesh_index_stream_bytes,
+            texture_slot_count: summary.texture_slot_count,
+            material_pass_count: summary.material_pass_count,
+            effect_pass_count: summary.effect_pass_count,
+            effect_parameter_count: summary.effect_parameter_count,
+            effect_property_count: summary.effect_property_count,
+            effect_pass_constant_count: summary.effect_pass_constant_count,
+            effect_pass_switch_count: summary.effect_pass_switch_count,
+            flutter_state_count: summary.flutter_state_count,
+            puppet_count: summary.puppet_count,
+            puppet_vertex_count: summary.puppet_vertex_count,
+            puppet_index_count: summary.puppet_index_count,
+            puppet_animation_layer_count: summary.puppet_animation_layer_count,
+            render_state_count: summary.render_state_count,
+            retained: NativeVulkanSceneBinaryRetainedIngestRuntimeSnapshot {
+                record_count: summary.retained.record_count,
+                resource_count: summary.retained.resource_count,
+                texture_slot_count: summary.retained.texture_slot_count,
+                material_pass_count: summary.retained.material_pass_count,
+                effect_pass_count: summary.retained.effect_pass_count,
+                effect_parameter_count: summary.retained.effect_parameter_count,
+                geometry_count: summary.retained.geometry_count,
+                dirty_range_count: summary.retained.dirty_range_count,
+                stable_id_count: summary.retained.stable_id_count,
+                dirty_record_count: summary.retained.dirty_record_count,
+            },
+            debug_name_count: summary.debug_name_count,
+            debug_name_string_bytes: summary.debug_name_string_bytes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub target_runtime: &'static str,
@@ -188,6 +293,7 @@ pub struct NativeVulkanFullSceneRuntimeSnapshot {
     pub native_scene_graph_lowering_ready: bool,
     pub native_present_route_ready: bool,
     pub retained_resource_model_ready: bool,
+    pub scene_binary_ingest_ready: bool,
     pub timeline_snapshot_runtime_ready: bool,
     pub timeline_snapshot_time_ms: u64,
     pub timeline_animation_runtime_ready: bool,
@@ -3057,12 +3163,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let scene_sampled_image_resource_count = vulkanalia_sampled_image.resource_count;
     let scene_sampled_image_descriptor_heap_required = scene_sampled_image_resource_count > 0;
     let scene_video_layer_resource_count = pass_plan.required_video_resources.len();
+    let scene_binary_ingest = native_vulkan_scene_binary_ingest_runtime_snapshot(render_item);
     let full_scene = native_vulkan_full_scene_runtime_snapshot(
         render_item,
         &plan,
         &pass_plan,
         scene_resource_model,
         scene_sampled_image_descriptor_heap_required,
+        scene_binary_ingest.is_some(),
     );
     let scene_video_native_layer_count = full_scene.video_native_layer_count;
     Some(NativeVulkanSceneRuntimeSnapshot {
@@ -3072,6 +3180,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         full_scene,
         scene_input_model: "core scene snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
+        scene_binary_ingest,
         native_draw_ready: plan.native_draw_ready(),
         runtime_display_available: plan.runtime_display_available,
         draw_pass_plan_ready: pass_plan.plan_ready,
@@ -3361,6 +3470,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
     pass_plan: &super::draw_pass::NativeVulkanSceneDrawPassPlan,
     scene_resource_model: &'static str,
     scene_sampled_image_descriptor_heap_required: bool,
+    scene_binary_ingest_ready: bool,
 ) -> NativeVulkanFullSceneRuntimeSnapshot {
     let (
         source_layer_count,
@@ -3658,6 +3768,9 @@ fn native_vulkan_full_scene_runtime_snapshot(
     if retained_resource_model_ready {
         completed_boundaries.push("retained-scene-resource-model");
     }
+    if scene_binary_ingest_ready {
+        completed_boundaries.push("streaming-binary-scene-ingest");
+    }
     if scene_sampled_image_descriptor_heap_required {
         completed_boundaries.push("descriptor-heap-sampled-image-scene-resources");
     }
@@ -3768,6 +3881,7 @@ fn native_vulkan_full_scene_runtime_snapshot(
         native_scene_graph_lowering_ready: plan.native_draw_ready(),
         native_present_route_ready: pass_plan.backend_ready,
         retained_resource_model_ready,
+        scene_binary_ingest_ready,
         timeline_snapshot_runtime_ready,
         timeline_snapshot_time_ms: plan.snapshot_time_ms,
         timeline_animation_runtime_ready,
@@ -3863,6 +3977,31 @@ fn native_vulkan_scene_path_uses_compound_subpaths(path: &str) -> bool {
         > 1
 }
 
+fn native_vulkan_scene_binary_ingest_runtime_snapshot(
+    render_item: &NativeVulkanRenderItem,
+) -> Option<NativeVulkanSceneBinaryIngestRuntimeSnapshot> {
+    let source = native_vulkan_scene_binary_source_path(render_item)?;
+    let mut file = File::open(source).ok()?;
+    native_vulkan_scene_binary_ingest_from_reader(&mut file)
+        .ok()
+        .map(NativeVulkanSceneBinaryIngestRuntimeSnapshot::from_summary)
+}
+
+fn native_vulkan_scene_binary_source_path(render_item: &NativeVulkanRenderItem) -> Option<&Path> {
+    let NativeVulkanRenderItem::Scene {
+        scene_source: Some(source),
+        ..
+    } = render_item
+    else {
+        return None;
+    };
+    if source.extension().and_then(|extension| extension.to_str()) == Some("gscn") {
+        Some(source.as_path())
+    } else {
+        None
+    }
+}
+
 fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usize) -> &'static str {
     match backend_status {
         "fast-clear-color-ready" => "fast-clear-only-no-scene-resources",
@@ -3899,6 +4038,8 @@ fn native_vulkan_scene_resource_model(backend_status: &str, video_op_count: usiz
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::SceneDocument;
+    use crate::core::scene::binary::scene_binary_payloads_from_document;
     use crate::core::scene::{SceneMesh, SceneMeshVertex, SceneSnapshotLayer, SceneTextureSlot};
     use crate::core::{
         FitMode, PackagePath, SceneNodeKind, ScenePathFillRule, SceneSystemStatus, SceneSystems,
@@ -3908,6 +4049,8 @@ mod tests {
     use crate::renderer::{
         SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer, SceneRenderTextureSlot,
     };
+    use serde_json::json;
+    use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::Arc;
 
@@ -4200,6 +4343,87 @@ mod tests {
         assert_eq!(snapshot.full_scene.native_runtime_coverage_percent, 100);
         assert_eq!(snapshot.full_scene.progress_estimate_percent, 100);
         assert!(snapshot.full_scene.full_scene_complete);
+    }
+
+    #[test]
+    fn scene_runtime_snapshot_reports_streaming_binary_scene_ingest_source() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "base", "type": "image", "source": "assets/base.gtex", "width": 64, "height": 64 },
+                { "id": "mask", "type": "image", "source": "assets/mask.gtex", "width": 64, "height": 64 }
+            ],
+            "nodes": [
+                {
+                    "id": "mesh-node",
+                    "type": "image",
+                    "resource": "base",
+                    "mesh": {
+                        "vertices": [
+                            { "x": -1.0, "y": -1.0, "u": 0.0, "v": 0.0 },
+                            { "x": 1.0, "y": -1.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 1.0, "u": 0.5, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2]
+                    },
+                    "effects": [
+                        {
+                            "file": "effects/opacity/effect.json",
+                            "properties": { "phase": 0.5 },
+                            "passes": [
+                                {
+                                    "shader": "effects/opacity",
+                                    "texture_resources": ["base", "mask"],
+                                    "constant_shader_values": { "speed": 2.0 },
+                                    "combos": { "MASK": 1 }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = scene_binary_payloads_from_document(&document)
+            .encode_container(0x80)
+            .expect("binary scene");
+        let path = std::env::temp_dir().join(format!(
+            "gilder-scene-runtime-binary-ingest-{}.gscn",
+            std::process::id()
+        ));
+        fs::write(&path, bytes).expect("write binary scene");
+        let mut image = scene_test_layer("hero", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/scene-hero.png"));
+        let mut item = scene_test_item(vec![image], None);
+        let NativeVulkanRenderItem::Scene { scene_source, .. } = &mut item else {
+            unreachable!("scene_test_item always returns a scene item");
+        };
+        *scene_source = Some(path.clone());
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+        let _ = fs::remove_file(path);
+        let ingest = snapshot
+            .scene_binary_ingest
+            .expect("binary ingest runtime summary");
+
+        assert_eq!(ingest.input_model, "gscn-versioned-binary-chunks");
+        assert_eq!(
+            ingest.payload_retention_model,
+            "read-header-table-stream-records-drop-source-bytes"
+        );
+        assert_eq!(ingest.feature_flags, 0x80);
+        assert_eq!(ingest.mesh_vertex_stream_bytes, 60);
+        assert_eq!(ingest.mesh_index_stream_bytes, 12);
+        assert_eq!(
+            ingest.retained.record_count,
+            ingest.retained.stable_id_count
+        );
+        assert!(snapshot.full_scene.scene_binary_ingest_ready);
+        assert!(
+            snapshot
+                .full_scene
+                .completed_boundaries
+                .contains(&"streaming-binary-scene-ingest")
+        );
     }
 
     #[test]

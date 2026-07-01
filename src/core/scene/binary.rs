@@ -11,15 +11,13 @@ use super::{
 mod flutter;
 mod geometry;
 
+pub(crate) use self::flutter::decode_flutter_state_record;
 pub use self::flutter::{
     SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, SCENE_BINARY_MOTION_FAMILY_DRIFT,
     SCENE_BINARY_MOTION_FAMILY_FLUTTER, SCENE_BINARY_MOTION_FAMILY_SHAKE,
     SCENE_BINARY_MOTION_FAMILY_SWAY, SceneBinaryFlutterStateRecord,
 };
-use self::flutter::{
-    decode_flutter_state_record, effect_is_motion_family, motion_dirty_range_count,
-    motion_family_flags,
-};
+use self::flutter::{effect_is_motion_family, motion_dirty_range_count, motion_family_flags};
 pub use self::geometry::{
     SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE, SCENE_BINARY_GEOMETRY_PRIMITIVE_AUDIO_RESPONSE,
     SCENE_BINARY_GEOMETRY_PRIMITIVE_ELLIPSE, SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH,
@@ -31,8 +29,10 @@ pub use self::geometry::{
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SceneBinaryGeometryIndexRecord,
     SceneBinaryGeometryRecord, SceneBinaryGeometryVertexRecord,
 };
-use self::geometry::{
+pub(crate) use self::geometry::{
     decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
+};
+use self::geometry::{
     geometry_flags, geometry_has_uv, geometry_ranges, geometry_stream_shape, node_has_geometry,
 };
 
@@ -2513,6 +2513,10 @@ pub enum SceneBinaryError {
         previous: SceneBinaryChunkKind,
         current: SceneBinaryChunkKind,
     },
+    StreamIo {
+        operation: &'static str,
+        message: String,
+    },
 }
 
 impl fmt::Display for SceneBinaryError {
@@ -2624,6 +2628,9 @@ impl fmt::Display for SceneBinaryError {
                 current.label(),
                 previous.label()
             ),
+            Self::StreamIo { operation, message } => {
+                write!(f, "scene binary {operation} failed: {message}")
+            }
         }
     }
 }
@@ -3283,7 +3290,9 @@ fn retained_stable_id(owner_kind: u16, owner_name: u32, record_index: u32) -> u6
     (u64::from(owner_kind) << 48) | (u64::from(owner_name) << 16) | u64::from(record_index)
 }
 
-fn decode_resource_record(bytes: &[u8]) -> Result<SceneBinaryResourceRecord, SceneBinaryError> {
+pub(crate) fn decode_resource_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryResourceRecord, SceneBinaryError> {
     Ok(SceneBinaryResourceRecord {
         id_name: read_u32(bytes, 0)?,
         source_name: read_u32(bytes, 4)?,
@@ -3297,7 +3306,7 @@ fn decode_resource_record(bytes: &[u8]) -> Result<SceneBinaryResourceRecord, Sce
     })
 }
 
-fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, SceneBinaryError> {
+pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, SceneBinaryError> {
     Ok(SceneBinaryNodeRecord {
         id_name: read_u32(bytes, 0)?,
         display_name: read_u32(bytes, 4)?,
@@ -3315,7 +3324,7 @@ fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, SceneBinary
     })
 }
 
-fn decode_transform_timeline_record(
+pub(crate) fn decode_transform_timeline_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryTransformTimelineRecord, SceneBinaryError> {
     Ok(SceneBinaryTransformTimelineRecord {
@@ -3337,7 +3346,7 @@ fn decode_transform_timeline_record(
     })
 }
 
-fn decode_texture_slot_record(
+pub(crate) fn decode_texture_slot_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryTextureSlotRecord, SceneBinaryError> {
     Ok(SceneBinaryTextureSlotRecord {
@@ -3353,7 +3362,7 @@ fn decode_texture_slot_record(
     })
 }
 
-fn decode_material_pass_record(
+pub(crate) fn decode_material_pass_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryMaterialPassRecord, SceneBinaryError> {
     Ok(SceneBinaryMaterialPassRecord {
@@ -3378,7 +3387,7 @@ fn decode_material_pass_record(
     })
 }
 
-fn decode_effect_pass_record(
+pub(crate) fn decode_effect_pass_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryEffectPassRecord, SceneBinaryError> {
     Ok(SceneBinaryEffectPassRecord {
@@ -3400,7 +3409,7 @@ fn decode_effect_pass_record(
     })
 }
 
-fn decode_effect_parameter_record(
+pub(crate) fn decode_effect_parameter_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryEffectParameterRecord, SceneBinaryError> {
     Ok(SceneBinaryEffectParameterRecord {
@@ -3419,7 +3428,9 @@ fn decode_effect_parameter_record(
     })
 }
 
-fn decode_puppet_record(bytes: &[u8]) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
+pub(crate) fn decode_puppet_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
     Ok(SceneBinaryPuppetRecord {
         owner_name: read_u32(bytes, 0)?,
         vertex_count: read_u32(bytes, 4)?,
@@ -3430,7 +3441,7 @@ fn decode_puppet_record(bytes: &[u8]) -> Result<SceneBinaryPuppetRecord, SceneBi
     })
 }
 
-fn decode_render_state_record(
+pub(crate) fn decode_render_state_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryRenderStateRecord, SceneBinaryError> {
     Ok(SceneBinaryRenderStateRecord {
@@ -3445,7 +3456,7 @@ fn decode_render_state_record(
     })
 }
 
-fn decode_retained_gpu_state_record(
+pub(crate) fn decode_retained_gpu_state_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryRetainedGpuStateRecord, SceneBinaryError> {
     Ok(SceneBinaryRetainedGpuStateRecord {
@@ -3458,7 +3469,9 @@ fn decode_retained_gpu_state_record(
     })
 }
 
-fn decode_debug_name_record(bytes: &[u8]) -> Result<SceneBinaryDebugNameRecord, SceneBinaryError> {
+pub(crate) fn decode_debug_name_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryDebugNameRecord, SceneBinaryError> {
     Ok(SceneBinaryDebugNameRecord {
         id: read_u32(bytes, 0)?,
         kind: read_u32(bytes, 4)?,
