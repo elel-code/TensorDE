@@ -22,6 +22,7 @@ use super::{
 mod drift;
 mod flutter;
 mod iris;
+mod material_graph;
 pub(super) mod motion;
 mod opacity_mask;
 mod sway_shake;
@@ -31,7 +32,7 @@ mod water_flow;
 mod water_ripple;
 mod water_waves;
 
-pub(super) fn native_vulkan_scene_effect_passes_from_render_passes(
+pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_effect_passes_from_render_passes(
     passes: &[SceneRenderImageEffectPass],
 ) -> Vec<NativeVulkanSceneEffectRecord> {
     passes
@@ -45,6 +46,11 @@ pub(super) fn native_vulkan_scene_effect_passes_from_render_passes(
                 effect_file: pass.effect_file.clone(),
                 runtime: pass.runtime.clone(),
                 pass_index: pass.pass_index,
+                command: pass.command.clone(),
+                source: pass.source.clone(),
+                target: pass.target.clone(),
+                binds: pass.binds.clone(),
+                fbos: pass.fbos.clone(),
                 shader: pass.shader.clone(),
                 blending: pass.blending.clone(),
                 texture_slots: pass
@@ -85,6 +91,11 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
                 effect_file: pass.effect_file.clone(),
                 runtime: pass.runtime.clone(),
                 pass_index: pass.pass_index,
+                command: pass.command.clone(),
+                source: pass.source.clone(),
+                target: pass.target.clone(),
+                binds: pass.binds.clone(),
+                fbos: pass.fbos.clone(),
                 shader: pass.shader.clone(),
                 blending: pass.blending.clone(),
                 texture_slots: native_vulkan_scene_texture_slots_from_scene_slots(
@@ -286,6 +297,8 @@ fn native_vulkan_scene_effect_semantics(
         NativeVulkanSceneEffectKind::WaterFlow
     } else if let Some(kind) = motion::classify(&file) {
         kind
+    } else if let Some(kind) = material_graph::classify(&file) {
+        kind
     } else if let Some(kind) = utility::classify(&file) {
         kind
     } else {
@@ -304,7 +317,9 @@ fn native_vulkan_scene_effect_evaluation_boundary(
         NativeVulkanSceneEffectKind::OpacityMask | NativeVulkanSceneEffectKind::Iris => {
             NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget
         }
-        NativeVulkanSceneEffectKind::SwayShake => {
+        NativeVulkanSceneEffectKind::SwayShake
+        | NativeVulkanSceneEffectKind::FoliageSway
+        | NativeVulkanSceneEffectKind::AutoSway => {
             NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform
         }
         NativeVulkanSceneEffectKind::Flutter => flutter::evaluation_boundary(),
@@ -316,6 +331,15 @@ fn native_vulkan_scene_effect_evaluation_boundary(
         | NativeVulkanSceneEffectKind::WaterWaves
         | NativeVulkanSceneEffectKind::WaterFlow
         | NativeVulkanSceneEffectKind::WaterCaustics
+        | NativeVulkanSceneEffectKind::Scroll
+        | NativeVulkanSceneEffectKind::Skew
+        | NativeVulkanSceneEffectKind::CloudMotion
+        | NativeVulkanSceneEffectKind::LightShafts
+        | NativeVulkanSceneEffectKind::ColorKey
+        | NativeVulkanSceneEffectKind::ClippingMask
+        | NativeVulkanSceneEffectKind::RoundedMask
+        | NativeVulkanSceneEffectKind::TechCircle
+        | NativeVulkanSceneEffectKind::AudioBars
         | NativeVulkanSceneEffectKind::UserBindings
         | NativeVulkanSceneEffectKind::ShaderMaterial => {
             NativeVulkanSceneEffectEvaluationBoundary::MaterialPass
@@ -467,6 +491,72 @@ mod tests {
             ),
             (
                 None,
+                "effects/workshop/2790231929/foliagesway/effect.json",
+                NativeVulkanSceneEffectKind::FoliageSway,
+                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform,
+            ),
+            (
+                None,
+                "effects/workshop/3392386920/auto_sway/effect.json",
+                NativeVulkanSceneEffectKind::AutoSway,
+                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform,
+            ),
+            (
+                None,
+                "effects/cloudmotion/effect.json",
+                NativeVulkanSceneEffectKind::CloudMotion,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/colorkey/effect.json",
+                NativeVulkanSceneEffectKind::ColorKey,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/lightshafts/effect.json",
+                NativeVulkanSceneEffectKind::LightShafts,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/scroll/effect.json",
+                NativeVulkanSceneEffectKind::Scroll,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/skew/effect.json",
+                NativeVulkanSceneEffectKind::Skew,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/workshop/2123274886/tech_circle/effect.json",
+                NativeVulkanSceneEffectKind::TechCircle,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/workshop/2800594362/clipping_mask/effect.json",
+                NativeVulkanSceneEffectKind::ClippingMask,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/workshop/3083593512/rounded_mask/effect.json",
+                NativeVulkanSceneEffectKind::RoundedMask,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
+                "effects/workshop/3082978660/enhanced_simple_audio_bars/effect.json",
+                NativeVulkanSceneEffectKind::AudioBars,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
+            ),
+            (
+                None,
                 "effects/fullscreenlayer/effect.json",
                 NativeVulkanSceneEffectKind::CompositeLayer,
                 NativeVulkanSceneEffectEvaluationBoundary::UtilityPass,
@@ -494,6 +584,11 @@ mod tests {
             effect_file: "materials/effects/iris/effect.json".to_owned(),
             runtime: None,
             pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
             shader: Some("effects/iris".to_owned()),
             blending: Some("normal".to_owned()),
             depthtest: None,
@@ -534,6 +629,11 @@ mod tests {
             effect_file: "effects/opacity/effect.json".to_owned(),
             runtime: Some("native-opacity-mask".to_owned()),
             pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
             shader: Some("effects/opacity".to_owned()),
             blending: Some("normal".to_owned()),
             depthtest: None,
@@ -566,6 +666,11 @@ mod tests {
             effect_file: "effects/iris/effect.json".to_owned(),
             runtime: Some("native-iris-mask".to_owned()),
             pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
             shader: Some("effects/iris".to_owned()),
             blending: Some("normal".to_owned()),
             texture_slots: Vec::new(),

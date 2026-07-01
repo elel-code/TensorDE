@@ -4,9 +4,9 @@ use std::fmt;
 
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
-    SceneEffect, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform, SceneKeyframe,
-    SceneNode, SceneNodeKind, SceneParticleEmitterSettings, ScenePuppetTransform, SceneResource,
-    SceneResourceKind, SceneTextAlign, SceneTimelineChannel,
+    SceneEffect, SceneEffectFbo, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform,
+    SceneKeyframe, SceneNode, SceneNodeKind, SceneParticleEmitterSettings, ScenePuppetTransform,
+    SceneResource, SceneResourceKind, SceneTextAlign, SceneTimelineChannel,
 };
 use crate::core::FitMode;
 
@@ -75,7 +75,7 @@ pub(crate) use self::puppet::{
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 12;
+pub const SCENE_BINARY_VERSION: u16 = 14;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -86,7 +86,7 @@ pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
-pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 56;
+pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 68;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
@@ -104,17 +104,19 @@ pub const SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM: u16 = 7;
 pub const SCENE_BINARY_RETAINED_PUPPET: u16 = 8;
 pub const SCENE_BINARY_RETAINED_PARTICLE_EMITTER: u16 = 9;
 
-const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
-const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
-const SCENE_BINARY_PARAMETER_VALUE_INTEGER: u16 = 3;
-const SCENE_BINARY_PARAMETER_VALUE_STRING: u16 = 4;
-const SCENE_BINARY_PARAMETER_VALUE_VEC2: u16 = 5;
-const SCENE_BINARY_PARAMETER_VALUE_VEC3: u16 = 6;
-const SCENE_BINARY_PARAMETER_VALUE_VEC4: u16 = 7;
+pub const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
+pub const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
+pub const SCENE_BINARY_PARAMETER_VALUE_INTEGER: u16 = 3;
+pub const SCENE_BINARY_PARAMETER_VALUE_STRING: u16 = 4;
+pub const SCENE_BINARY_PARAMETER_VALUE_VEC2: u16 = 5;
+pub const SCENE_BINARY_PARAMETER_VALUE_VEC3: u16 = 6;
+pub const SCENE_BINARY_PARAMETER_VALUE_VEC4: u16 = 7;
 
 pub const SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY: u16 = 1;
 pub const SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT: u16 = 2;
 pub const SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO: u16 = 4;
+pub const SCENE_BINARY_PARAMETER_ROLE_PASS_BIND: u16 = 8;
+pub const SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO: u16 = 16;
 
 const SCENE_BINARY_TEXTURE_ROLE_BASE_COLOR: u16 = 1;
 const SCENE_BINARY_TEXTURE_ROLE_EFFECT_INPUT: u16 = 2;
@@ -1387,6 +1389,9 @@ pub struct SceneBinaryEffectPassRecord {
     pub effect_name: u32,
     pub shader_name: u32,
     pub blending_name: u32,
+    pub command_name: u32,
+    pub source_name: u32,
+    pub target_name: u32,
     pub pass_index: u32,
     pub first_texture_slot: u32,
     pub texture_slot_count: u32,
@@ -1408,6 +1413,9 @@ impl SceneBinaryEffectPassRecord {
         write_u32(out, self.effect_name);
         write_u32(out, self.shader_name);
         write_u32(out, self.blending_name);
+        write_u32(out, self.command_name);
+        write_u32(out, self.source_name);
+        write_u32(out, self.target_name);
         write_u32(out, self.pass_index);
         write_u32(out, self.first_texture_slot);
         write_u32(out, self.texture_slot_count);
@@ -1421,7 +1429,7 @@ impl SceneBinaryEffectPassRecord {
         write_u16(out, self.depth_write);
         write_u16(out, self.cull_mode);
         write_u16(out, self.flags);
-        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 56);
+        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 68);
     }
 }
 
@@ -1890,6 +1898,10 @@ enum SceneBinaryNameKind {
     PuppetAttachment,
     Text,
     Font,
+    EffectCommand,
+    EffectSource,
+    EffectTarget,
+    EffectBind,
 }
 
 impl SceneBinaryNameKind {
@@ -1911,6 +1923,10 @@ impl SceneBinaryNameKind {
             Self::PuppetAttachment => 14,
             Self::Text => 15,
             Self::Font => 16,
+            Self::EffectCommand => 17,
+            Self::EffectSource => 18,
+            Self::EffectTarget => 19,
+            Self::EffectBind => 20,
         }
     }
 }
@@ -2501,8 +2517,13 @@ impl SceneBinaryPayloadBuilder {
                 let effect_uv_transform_count =
                     self.push_effect_uv_transform(owner_name, effect_name, pass_index, pass);
                 let first_parameter = self.effect_parameter.record_count;
-                let parameter_count =
-                    self.push_effect_pass_parameters(owner_name, effect_name, pass_index, pass);
+                let parameter_count = self.push_effect_pass_parameters(
+                    owner_name,
+                    effect_name,
+                    pass_index,
+                    pass,
+                    &effect.fbos,
+                );
                 self.push_effect_record(
                     owner_name,
                     effect_name,
@@ -2567,6 +2588,22 @@ impl SceneBinaryPayloadBuilder {
             .map_or(SCENE_BINARY_NONE_ID, |blending| {
                 self.names.intern(SceneBinaryNameKind::Material, blending)
             });
+        let command_name =
+            pass.and_then(|pass| pass.command.as_deref())
+                .map_or(SCENE_BINARY_NONE_ID, |command| {
+                    self.names
+                        .intern(SceneBinaryNameKind::EffectCommand, command)
+                });
+        let source_name = pass
+            .and_then(|pass| pass.source.as_deref())
+            .map_or(SCENE_BINARY_NONE_ID, |source| {
+                self.names.intern(SceneBinaryNameKind::EffectSource, source)
+            });
+        let target_name = pass
+            .and_then(|pass| pass.target.as_deref())
+            .map_or(SCENE_BINARY_NONE_ID, |target| {
+                self.names.intern(SceneBinaryNameKind::EffectTarget, target)
+            });
         let record_index = self.effect_pass.record_count;
         self.effect_pass.push_record(|out| {
             SceneBinaryEffectPassRecord {
@@ -2574,6 +2611,9 @@ impl SceneBinaryPayloadBuilder {
                 effect_name,
                 shader_name,
                 blending_name,
+                command_name,
+                source_name,
+                target_name,
                 pass_index: pass_index.min(u32::MAX as usize) as u32,
                 first_texture_slot,
                 texture_slot_count,
@@ -2665,6 +2705,7 @@ impl SceneBinaryPayloadBuilder {
         effect_name: u32,
         pass_index: usize,
         pass: &SceneEffectPass,
+        fbos: &[SceneEffectFbo],
     ) -> u32 {
         let before = self.effect_parameter.record_count;
         let pass_index = pass_index.min(u32::MAX as usize) as u32;
@@ -2680,6 +2721,12 @@ impl SceneBinaryPayloadBuilder {
         }
         for (name, value) in &pass.combos {
             self.push_effect_combo(owner_name, effect_name, pass_index, name, *value);
+        }
+        for (slot, name) in &pass.binds {
+            self.push_effect_bind(owner_name, effect_name, pass_index, *slot, name);
+        }
+        for fbo in fbos {
+            self.push_effect_fbo(owner_name, effect_name, pass_index, fbo);
         }
         self.effect_parameter.record_count.saturating_sub(before)
     }
@@ -2747,6 +2794,85 @@ impl SceneBinaryPayloadBuilder {
                 role_flags: SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO,
                 integer_value: value,
                 value0: value as f32,
+                value1: 0.0,
+                value2: 0.0,
+                value3: 0.0,
+            }
+            .encode(out)
+        });
+        self.push_retained(
+            SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
+            parameter_name,
+            record_index,
+        );
+    }
+
+    fn push_effect_bind(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        pass_index: u32,
+        slot: u32,
+        name: &str,
+    ) {
+        let slot_name = slot.to_string();
+        let parameter_name = self
+            .names
+            .intern(SceneBinaryNameKind::EffectBind, &slot_name);
+        let value_name = self.names.intern(SceneBinaryNameKind::EffectBind, name);
+        let record_index = self.effect_parameter.record_count;
+        self.effect_parameter.push_record(|out| {
+            SceneBinaryEffectParameterRecord {
+                owner_name,
+                effect_name,
+                parameter_name,
+                value_name,
+                pass_index,
+                value_kind: SCENE_BINARY_PARAMETER_VALUE_STRING,
+                role_flags: SCENE_BINARY_PARAMETER_ROLE_PASS_BIND,
+                integer_value: i64::from(slot),
+                value0: slot as f32,
+                value1: 0.0,
+                value2: 0.0,
+                value3: 0.0,
+            }
+            .encode(out)
+        });
+        self.push_retained(
+            SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
+            parameter_name,
+            record_index,
+        );
+    }
+
+    fn push_effect_fbo(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        pass_index: u32,
+        fbo: &SceneEffectFbo,
+    ) {
+        let parameter_name = self
+            .names
+            .intern(SceneBinaryNameKind::EffectBind, &fbo.name);
+        let value_name = fbo
+            .format
+            .as_deref()
+            .map_or(SCENE_BINARY_NONE_ID, |format| {
+                self.names.intern(SceneBinaryNameKind::EffectBind, format)
+            });
+        let record_index = self.effect_parameter.record_count;
+        self.effect_parameter.push_record(|out| {
+            SceneBinaryEffectParameterRecord {
+                owner_name,
+                effect_name,
+                parameter_name,
+                value_name,
+                pass_index,
+                value_kind: SCENE_BINARY_PARAMETER_VALUE_STRING,
+                role_flags: SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO,
+                integer_value: i64::from(fbo.unique),
+                value0: fbo.scale as f32,
                 value1: 0.0,
                 value2: 0.0,
                 value3: 0.0,
@@ -3727,6 +3853,7 @@ fn blend_mode_code(mode: SceneBlendMode) -> u16 {
         SceneBlendMode::Screen => 4,
         SceneBlendMode::Max => 5,
         SceneBlendMode::Normal => 6,
+        SceneBlendMode::Modulate => 7,
     }
 }
 
@@ -4132,6 +4259,8 @@ fn effect_parameter_record_count(effect: &SceneEffect) -> u32 {
                 .filter(|value| scene_binary_parameter_value_supported(value))
                 .count()
                 .saturating_add(pass.combos.len())
+                .saturating_add(pass.binds.len())
+                .saturating_add(effect.fbos.len())
         })
         .sum::<usize>();
     saturating_u32(property_count.saturating_add(pass_parameter_count))
@@ -4437,19 +4566,22 @@ pub(crate) fn decode_effect_pass_record(
         effect_name: read_u32(bytes, 4)?,
         shader_name: read_u32(bytes, 8)?,
         blending_name: read_u32(bytes, 12)?,
-        pass_index: read_u32(bytes, 16)?,
-        first_texture_slot: read_u32(bytes, 20)?,
-        texture_slot_count: read_u32(bytes, 24)?,
-        first_effect_uv_transform: read_u32(bytes, 28)?,
-        effect_uv_transform_count: read_u32(bytes, 32)?,
-        first_parameter: read_u32(bytes, 36)?,
-        parameter_count: read_u32(bytes, 40)?,
-        kind: read_u16(bytes, 44)?,
-        evaluation_boundary: read_u16(bytes, 46)?,
-        depth_test: read_u16(bytes, 48)?,
-        depth_write: read_u16(bytes, 50)?,
-        cull_mode: read_u16(bytes, 52)?,
-        flags: read_u16(bytes, 54)?,
+        command_name: read_u32(bytes, 16)?,
+        source_name: read_u32(bytes, 20)?,
+        target_name: read_u32(bytes, 24)?,
+        pass_index: read_u32(bytes, 28)?,
+        first_texture_slot: read_u32(bytes, 32)?,
+        texture_slot_count: read_u32(bytes, 36)?,
+        first_effect_uv_transform: read_u32(bytes, 40)?,
+        effect_uv_transform_count: read_u32(bytes, 44)?,
+        first_parameter: read_u32(bytes, 48)?,
+        parameter_count: read_u32(bytes, 52)?,
+        kind: read_u16(bytes, 56)?,
+        evaluation_boundary: read_u16(bytes, 58)?,
+        depth_test: read_u16(bytes, 60)?,
+        depth_write: read_u16(bytes, 62)?,
+        cull_mode: read_u16(bytes, 64)?,
+        flags: read_u16(bytes, 66)?,
     })
 }
 
@@ -4866,6 +4998,10 @@ mod tests {
                     resource: Some("effect".to_owned()),
                     properties: BTreeMap::from([("phase".to_owned(), json!(0.25))]),
                     passes: vec![SceneEffectPass {
+                        command: Some("draw".to_owned()),
+                        source: Some("previous".to_owned()),
+                        target: Some("_rt_Flutter".to_owned()),
+                        binds: BTreeMap::from([(0, "previous".to_owned())]),
                         shader: Some("effects/flutter".to_owned()),
                         blending: Some("additive".to_owned()),
                         depthtest: Some("false".to_owned()),
@@ -4940,7 +5076,7 @@ mod tests {
         assert_eq!(shape.texture_slot_records, 1);
         assert_eq!(shape.material_pass_records, 1);
         assert_eq!(shape.effect_pass_records, 1);
-        assert_eq!(shape.effect_parameter_records, 4);
+        assert_eq!(shape.effect_parameter_records, 5);
         assert_eq!(shape.flutter_state_records, 1);
         assert_eq!(shape.render_state_records, 1);
         assert_eq!(
@@ -5136,7 +5272,7 @@ mod tests {
         assert_eq!(materials[0].first_effect_pass, 0);
         assert_eq!(
             materials[0].blend_mode,
-            blend_mode_code(SceneBlendMode::Max)
+            blend_mode_code(SceneBlendMode::Screen)
         );
         assert_eq!(materials[0].depth_test, material_flag_code(Some("false")));
         assert_eq!(materials[0].depth_write, material_flag_code(Some("false")));
@@ -5186,7 +5322,25 @@ mod tests {
         assert_eq!(effect_passes[0].texture_slot_count, 1);
         assert_eq!(effect_passes[0].first_texture_slot, 0);
         assert_eq!(effect_passes[0].first_parameter, 1);
-        assert_eq!(effect_passes[0].parameter_count, 3);
+        assert_eq!(effect_passes[0].parameter_count, 4);
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].command_name)
+                .expect("effect command"),
+            Some("draw")
+        );
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].source_name)
+                .expect("effect source"),
+            Some("previous")
+        );
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].target_name)
+                .expect("effect target"),
+            Some("_rt_Flutter")
+        );
         assert_eq!(
             effect_passes[0].kind,
             effect_kind_code(&document.nodes[0].effects[0])
@@ -5214,7 +5368,7 @@ mod tests {
             .expect("effect parameter records")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded effect parameter records");
-        assert_eq!(parameters.len(), 4);
+        assert_eq!(parameters.len(), 5);
         assert_eq!(
             debug_names
                 .name(parameters[0].parameter_name)
@@ -5246,12 +5400,29 @@ mod tests {
             SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO
         );
         assert_eq!(parameters[3].integer_value, 2);
+        assert_eq!(
+            debug_names
+                .name(parameters[4].parameter_name)
+                .expect("bind parameter name"),
+            Some("0")
+        );
+        assert_eq!(
+            debug_names
+                .name(parameters[4].value_name)
+                .expect("bind parameter value"),
+            Some("previous")
+        );
+        assert_eq!(
+            parameters[4].role_flags,
+            SCENE_BINARY_PARAMETER_ROLE_PASS_BIND
+        );
+        assert_eq!(parameters[4].integer_value, 0);
         let pass_parameters = layout
             .effect_parameter_record_range(&bytes, effect_passes[0])
             .expect("effect pass parameter range")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded effect pass parameter range");
-        assert_eq!(pass_parameters.len(), 3);
+        assert_eq!(pass_parameters.len(), 4);
         assert_eq!(
             debug_names
                 .name(pass_parameters[0].parameter_name)
@@ -5274,7 +5445,7 @@ mod tests {
         assert_eq!(flutter.len(), 1);
         assert_eq!(flutter[0].pass_count, 1);
         assert_eq!(flutter[0].first_parameter, 0);
-        assert_eq!(flutter[0].parameter_count, 4);
+        assert_eq!(flutter[0].parameter_count, 5);
         assert_eq!(
             flutter[0].motion_family_mask,
             SCENE_BINARY_MOTION_FAMILY_FLUTTER
@@ -5286,7 +5457,7 @@ mod tests {
             .expect("flutter parameter range")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded flutter parameter range");
-        assert_eq!(flutter_parameters.len(), 4);
+        assert_eq!(flutter_parameters.len(), 5);
         assert_eq!(flutter_parameters[0].role_flags, parameters[0].role_flags);
 
         let render_state = layout

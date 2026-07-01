@@ -2196,6 +2196,8 @@ pub struct SceneEffect {
     #[serde(default)]
     pub visible: Option<Value>,
     #[serde(default)]
+    pub fbos: Vec<SceneEffectFbo>,
+    #[serde(default)]
     pub passes: Vec<SceneEffectPass>,
 }
 
@@ -2211,6 +2213,46 @@ impl SceneEffect {
         for pass in &self.passes {
             pass.validate(node_id, &self.file)?;
         }
+        for fbo in &self.fbos {
+            fbo.validate(node_id, &self.file)?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneEffectFbo {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<String>,
+    #[serde(default = "scene_effect_fbo_default_scale")]
+    pub scale: f64,
+    #[serde(default)]
+    pub unique: bool,
+}
+
+fn scene_effect_fbo_default_scale() -> f64 {
+    1.0
+}
+
+impl SceneEffectFbo {
+    fn validate(&self, node_id: &str, effect_file: &str) -> Result<(), SceneError> {
+        validate_required_text(
+            &format!("scene node {node_id:?} effect {effect_file:?} fbo name"),
+            &self.name,
+        )?;
+        if let Some(format) = &self.format {
+            validate_required_text(
+                &format!("scene node {node_id:?} effect {effect_file:?} fbo format"),
+                format,
+            )?;
+        }
+        if !self.scale.is_finite() || self.scale <= 0.0 {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} effect {effect_file:?} fbo {:?} scale must be positive",
+                self.name
+            )));
+        }
         Ok(())
     }
 }
@@ -2219,6 +2261,14 @@ impl SceneEffect {
 pub struct SceneEffectPass {
     #[serde(default)]
     pub id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub binds: BTreeMap<u32, String>,
     #[serde(default)]
     pub shader: Option<String>,
     #[serde(default)]
@@ -2246,6 +2296,9 @@ pub struct SceneEffectPass {
 impl SceneEffectPass {
     fn validate(&self, node_id: &str, effect_file: &str) -> Result<(), SceneError> {
         for (field, value) in [
+            ("command", self.command.as_deref()),
+            ("source", self.source.as_deref()),
+            ("target", self.target.as_deref()),
             ("shader", self.shader.as_deref()),
             ("blending", self.blending.as_deref()),
             ("depthtest", self.depthtest.as_deref()),
@@ -2259,6 +2312,12 @@ impl SceneEffectPass {
                     "scene node {node_id:?} effect {effect_file:?} pass {field} must not be empty"
                 )));
             }
+        }
+        for bind in self.binds.values() {
+            validate_required_text(
+                &format!("scene node {node_id:?} effect {effect_file:?} pass bind"),
+                bind,
+            )?;
         }
         for texture in self.textures.iter().flatten() {
             if texture.trim().is_empty() {
@@ -2442,6 +2501,10 @@ pub enum SceneBlendMode {
     Multiply,
     Screen,
     Max,
+    /// Wallpaper Engine colorBlendMode 32: `A * (1 + B*a)` - a background-modulated
+    /// brighten that vanishes on dark backgrounds. With a premultiplied source (B*a) this
+    /// is the fixed-function equation `src*DST_COLOR + dst*ONE`.
+    Modulate,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -2993,6 +3056,11 @@ fn scene_image_effect_passes_for_node<'a>(
                 effect_file: effect.file.clone(),
                 runtime: scene_image_effect_pass_runtime(effect),
                 pass_index,
+                command: pass.command.clone(),
+                source: pass.source.clone(),
+                target: pass.target.clone(),
+                binds: pass.binds.clone(),
+                fbos: effect.fbos.clone(),
                 shader: pass.shader.clone(),
                 blending: pass.blending.clone(),
                 depthtest: pass.depthtest.clone(),
@@ -3122,6 +3190,11 @@ pub struct SceneImageEffectPass {
     pub effect_file: String,
     pub runtime: Option<String>,
     pub pass_index: usize,
+    pub command: Option<String>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub binds: BTreeMap<u32, String>,
+    pub fbos: Vec<SceneEffectFbo>,
     pub shader: Option<String>,
     pub blending: Option<String>,
     pub depthtest: Option<String>,
@@ -4506,10 +4579,12 @@ fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
         .or_else(|| value.as_str()?.parse::<i64>().ok())?;
     match mode {
         2 => Some(SceneBlendMode::Multiply),
-        3 => Some(SceneBlendMode::Additive),
-        7 => Some(SceneBlendMode::Max),
-        8 | 28 | 32 => Some(SceneBlendMode::Screen),
+        3 => Some(SceneBlendMode::Multiply),
+        7 => Some(SceneBlendMode::Screen),
+        8 => Some(SceneBlendMode::Screen),
+        28 => Some(SceneBlendMode::Screen),
         31 => Some(SceneBlendMode::Additive),
+        32 => Some(SceneBlendMode::Modulate),
         _ => None,
     }
 }
@@ -4952,7 +5027,7 @@ mod tests {
     }
 
     #[test]
-    fn wallpaper_engine_color_blend_mode_max_reaches_snapshot_layer() {
+    fn wallpaper_engine_color_blend_mode_screen_reaches_snapshot_layer() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -4980,7 +5055,9 @@ mod tests {
 
         assert_eq!(snapshot.layers.len(), 1);
         assert_eq!(snapshot.layers[0].id, "node-caustic");
-        assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Max);
+        // WE colorBlendMode 7 is genuine Screen (1-(1-A)(1-B)) per decompiled
+        // common_blending.h; previously mis-mapped to Max.
+        assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Screen);
     }
 
     #[test]
@@ -5020,7 +5097,9 @@ mod tests {
 
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
         assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Screen);
-        assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Screen);
+        // WE colorBlendMode 32 = A*(1+B*a) (multiplicative brighten), now mapped to
+        // Modulate; previously mis-mapped to Screen which caused the visible rectangle.
+        assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Modulate);
     }
 
     #[test]

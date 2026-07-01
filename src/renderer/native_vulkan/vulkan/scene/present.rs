@@ -267,6 +267,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
     pub indices: Vec<u32>,
     pub sources: Vec<PathBuf>,
     pub effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
+    pub we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
     pub draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     pub source_label: String,
 }
@@ -282,9 +283,31 @@ pub struct NativeVulkanVulkanaliaSceneVideoLayerGeometryInput {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageEffectTarget {
+    pub effect_target_index: u32,
     pub layer_index: usize,
     pub width: u32,
     pub height: u32,
+    pub we_graph_chain_index: Option<usize>,
+    pub we_graph_target_index: Option<u32>,
+    pub we_graph_endpoint: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneWeImageGraphResource {
+    pub resource_index: u32,
+    pub resource_kind: &'static str,
+    pub layer_index: Option<usize>,
+    pub layer_id: Option<String>,
+    pub chain_index: Option<usize>,
+    pub execution: Option<&'static str>,
+    pub source_path: Option<PathBuf>,
+    pub target_index: Option<u32>,
+    pub endpoint: Option<&'static str>,
+    pub name: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub allocation: &'static str,
+    pub vulkan_effect_target_index: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -458,6 +481,16 @@ fn native_vulkan_vulkanalia_scene_blend_equation(
             dst_alpha: "one-minus-src-alpha",
             alpha_op: "add",
         },
+        // WE colorBlendMode 32: A*(1 + B*a) via premultiplied source (src=B*a):
+        // color = dst-color*src + one*dst = A*B*a + A; preserve background alpha.
+        SceneBlendMode::Modulate => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "dst-color",
+            dst_color: "one",
+            color_op: "add",
+            src_alpha: "zero",
+            dst_alpha: "one",
+            alpha_op: "add",
+        },
     }
 }
 
@@ -478,6 +511,7 @@ impl NativeVulkanVulkanaliaSceneRenderState {
             SceneBlendMode::Multiply => "sampled-image-multiply-blend",
             SceneBlendMode::Screen => "sampled-image-screen-blend",
             SceneBlendMode::Max => "sampled-image-max-blend",
+            SceneBlendMode::Modulate => "sampled-image-modulate-blend",
         }
     }
 }
@@ -693,6 +727,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             indices,
             sources: Vec::new(),
             effect_targets: Vec::new(),
+            we_graph_resources: Vec::new(),
             draw_steps: vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 0,
                 texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
@@ -724,6 +759,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             indices,
             sources,
             effect_targets: Vec::new(),
+            we_graph_resources: Vec::new(),
             draw_steps,
             source_label: source_label.into(),
         }
@@ -742,6 +778,27 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             indices,
             sources,
             effect_targets,
+            we_graph_resources: Vec::new(),
+            draw_steps,
+            source_label: source_label.into(),
+        }
+    }
+
+    pub fn new_batched_with_effect_targets_and_we_graph_resources(
+        vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+        indices: Vec<u32>,
+        sources: Vec<PathBuf>,
+        effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
+        we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
+        draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
+        source_label: impl Into<String>,
+    ) -> Self {
+        Self {
+            vertices,
+            indices,
+            sources,
+            effect_targets,
+            we_graph_resources,
             draw_steps,
             source_label: source_label.into(),
         }
@@ -892,6 +949,12 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
     pub quad_count: u32,
     pub source_count: u32,
     pub effect_target_count: u32,
+    pub we_graph_resource_count: u32,
+    pub we_graph_texture_resource_count: u32,
+    pub we_graph_target_resource_count: u32,
+    pub we_graph_allocated_target_resource_count: u32,
+    pub we_graph_planned_target_resource_count: u32,
+    pub we_graph_resource_model: &'static str,
     pub draw_step_count: u32,
     pub vertex_stride_bytes: u32,
     pub selected_vertex_memory_type_index: u32,
@@ -920,6 +983,7 @@ struct VulkanaliaSceneSampledImageGeometryResources {
     indices: Vec<u32>,
     sources: Vec<PathBuf>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
+    we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
     snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
 }
 
@@ -1141,6 +1205,12 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     quad_count: u32,
     source_count: u32,
     effect_target_count: u32,
+    we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
+    we_graph_resource_count: u32,
+    we_graph_texture_resource_count: u32,
+    we_graph_target_resource_count: u32,
+    we_graph_allocated_target_resource_count: u32,
+    we_graph_planned_target_resource_count: u32,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     source_label: String,
 }
@@ -1743,10 +1813,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         let resource = match native_vulkan_vulkanalia_create_scene_effect_target_resources(
             device,
             &memory_properties,
-            format!(
-                "we-image-effect-target-layer-{}-{}",
-                target.layer_index, target_index
-            ),
+            native_vulkan_vulkanalia_scene_effect_target_source_label(target, target_index),
             extent,
             swapchain_plan.format.format,
         ) {
@@ -3091,6 +3158,30 @@ fn run_scene_sampled_image_present_loop(
     })
 }
 
+fn native_vulkan_vulkanalia_scene_effect_target_source_label(
+    target: &NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
+    fallback_target_index: usize,
+) -> String {
+    match (
+        target.we_graph_chain_index,
+        target.we_graph_target_index,
+        target.we_graph_endpoint,
+    ) {
+        (Some(chain_index), Some(graph_target_index), Some(endpoint)) => format!(
+            "we-image-effect-target-layer-{}-effect-{}-graph-chain-{}-target-{}-{}",
+            target.layer_index,
+            target.effect_target_index,
+            chain_index,
+            graph_target_index,
+            endpoint
+        ),
+        _ => format!(
+            "we-image-effect-target-layer-{}-{}",
+            target.layer_index, fallback_target_index
+        ),
+    }
+}
+
 fn scene_sampled_image_can_release_sources_after_first_present(
     options: &NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     geometry: &VulkanaliaSceneSampledImageGeometryResources,
@@ -3768,6 +3859,12 @@ fn scene_static_transfer_geometry_snapshot()
         quad_count: 0,
         source_count: 1,
         effect_target_count: 0,
+        we_graph_resource_count: 0,
+        we_graph_texture_resource_count: 0,
+        we_graph_target_resource_count: 0,
+        we_graph_allocated_target_resource_count: 0,
+        we_graph_planned_target_resource_count: 0,
+        we_graph_resource_model: "none",
         draw_step_count: 0,
         vertex_stride_bytes: 0,
         selected_vertex_memory_type_index: 0,
@@ -4776,6 +4873,7 @@ fn create_scene_sampled_image_geometry_resources(
     };
     let effect_target_count = payload.effect_target_count;
     let effect_targets = payload.effect_targets;
+    let we_graph_resources = payload.we_graph_resources;
     Ok(VulkanaliaSceneSampledImageGeometryResources {
         vertex_buffers,
         index_buffer: index.buffer,
@@ -4785,6 +4883,7 @@ fn create_scene_sampled_image_geometry_resources(
         indices,
         sources,
         effect_targets,
+        we_graph_resources,
         snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
@@ -4795,6 +4894,13 @@ fn create_scene_sampled_image_geometry_resources(
             quad_count: payload.quad_count,
             source_count: payload.source_count,
             effect_target_count,
+            we_graph_resource_count: payload.we_graph_resource_count,
+            we_graph_texture_resource_count: payload.we_graph_texture_resource_count,
+            we_graph_target_resource_count: payload.we_graph_target_resource_count,
+            we_graph_allocated_target_resource_count: payload
+                .we_graph_allocated_target_resource_count,
+            we_graph_planned_target_resource_count: payload.we_graph_planned_target_resource_count,
+            we_graph_resource_model: "planned-we-image-graph-resources-for-descriptor-and-target-executor",
             draw_step_count,
             vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index,
@@ -5160,6 +5266,13 @@ fn update_scene_sampled_image_geometry_input_for_time(
     if !input.effect_targets.is_empty() && input.effect_targets != geometry.effect_targets {
         return Err(
             "scene dynamic sampled-image geometry changed effect target topology".to_owned(),
+        );
+    }
+    if !input.we_graph_resources.is_empty()
+        && input.we_graph_resources != geometry.we_graph_resources
+    {
+        return Err(
+            "scene dynamic sampled-image geometry changed WE graph resource topology".to_owned(),
         );
     }
     if !input.draw_steps.is_empty()
@@ -6498,8 +6611,37 @@ fn scene_sampled_image_geometry_payload_from_input(
     if input.draw_steps.is_empty() {
         return Err("scene sampled-image geometry requires at least one draw step".to_owned());
     }
+    scene_sampled_image_validate_we_graph_resources(
+        &input.we_graph_resources,
+        input.effect_targets.len(),
+    )?;
     let source_count = input.sources.len().max(1);
     let resource_count = source_count.saturating_add(input.effect_targets.len());
+    let we_graph_resource_count = input.we_graph_resources.len().min(u32::MAX as usize) as u32;
+    let we_graph_texture_resource_count = input
+        .we_graph_resources
+        .iter()
+        .filter(|resource| resource.resource_kind == "texture-source")
+        .count()
+        .min(u32::MAX as usize) as u32;
+    let we_graph_target_resource_count = input
+        .we_graph_resources
+        .iter()
+        .filter(|resource| resource.resource_kind == "graph-target")
+        .count()
+        .min(u32::MAX as usize) as u32;
+    let we_graph_allocated_target_resource_count = input
+        .we_graph_resources
+        .iter()
+        .filter(|resource| resource.allocation == "allocated-vulkan-effect-target")
+        .count()
+        .min(u32::MAX as usize) as u32;
+    let we_graph_planned_target_resource_count = input
+        .we_graph_resources
+        .iter()
+        .filter(|resource| resource.allocation == "planned-until-graph-executor")
+        .count()
+        .min(u32::MAX as usize) as u32;
     for (step_index, step) in input.draw_steps.iter().enumerate() {
         let _ = scene_sampled_image_draw_step_primary_resource_index(step, step_index)?;
         if step.index_count == 0 {
@@ -6567,9 +6709,95 @@ fn scene_sampled_image_geometry_payload_from_input(
         effect_target_count: resource_count
             .saturating_sub(source_count)
             .min(u32::MAX as usize) as u32,
+        we_graph_resources: input.we_graph_resources,
+        we_graph_resource_count,
+        we_graph_texture_resource_count,
+        we_graph_target_resource_count,
+        we_graph_allocated_target_resource_count,
+        we_graph_planned_target_resource_count,
         draw_steps: input.draw_steps,
         source_label: input.source_label,
     })
+}
+
+fn scene_sampled_image_validate_we_graph_resources(
+    resources: &[NativeVulkanVulkanaliaSceneWeImageGraphResource],
+    effect_target_count: usize,
+) -> Result<(), String> {
+    for (index, resource) in resources.iter().enumerate() {
+        let expected_index = index.min(u32::MAX as usize) as u32;
+        if resource.resource_index != expected_index {
+            return Err(format!(
+                "scene sampled-image WE graph resource index {} is not dense at {expected_index}",
+                resource.resource_index
+            ));
+        }
+        match resource.resource_kind {
+            "texture-source" => {
+                if resource.source_path.is_none() {
+                    return Err(format!(
+                        "scene sampled-image WE graph texture resource {index} missing source path"
+                    ));
+                }
+                if resource.target_index.is_some() || resource.endpoint.is_some() {
+                    return Err(format!(
+                        "scene sampled-image WE graph texture resource {index} cannot also be a graph target"
+                    ));
+                }
+            }
+            "graph-target" => {
+                if resource.target_index.is_none() || resource.endpoint.is_none() {
+                    return Err(format!(
+                        "scene sampled-image WE graph target resource {index} missing target index or endpoint"
+                    ));
+                }
+            }
+            kind => {
+                return Err(format!(
+                    "scene sampled-image WE graph resource {index} has unknown kind {kind}"
+                ));
+            }
+        }
+        match resource.allocation {
+            "file-texture-source" => {
+                if resource.resource_kind != "texture-source" {
+                    return Err(format!(
+                        "scene sampled-image WE graph resource {index} has file allocation but is not a texture source"
+                    ));
+                }
+            }
+            "allocated-vulkan-effect-target" => {
+                let Some(target_index) = resource.vulkan_effect_target_index else {
+                    return Err(format!(
+                        "scene sampled-image WE graph allocated target resource {index} missing Vulkan target index"
+                    ));
+                };
+                if target_index as usize >= effect_target_count {
+                    return Err(format!(
+                        "scene sampled-image WE graph resource {index} Vulkan target index {target_index} exceeds effect target count {effect_target_count}"
+                    ));
+                }
+            }
+            "planned-until-graph-executor" => {
+                if resource.resource_kind != "graph-target" {
+                    return Err(format!(
+                        "scene sampled-image WE graph planned resource {index} is not a graph target"
+                    ));
+                }
+                if resource.vulkan_effect_target_index.is_some() {
+                    return Err(format!(
+                        "scene sampled-image WE graph planned target resource {index} cannot already have a Vulkan target index"
+                    ));
+                }
+            }
+            allocation => {
+                return Err(format!(
+                    "scene sampled-image WE graph resource {index} has unknown allocation {allocation}"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn scene_solid_quad_vertex_bytes(
@@ -7647,9 +7875,13 @@ mod tests {
                 vec![0, 1, 2, 3, 4, 5],
                 vec![PathBuf::from("/tmp/eye.gtex")],
                 vec![NativeVulkanVulkanaliaSceneSampledImageEffectTarget {
+                    effect_target_index: 0,
                     layer_index: 7,
                     width: 100,
                     height: 100,
+                    we_graph_chain_index: None,
+                    we_graph_target_index: None,
+                    we_graph_endpoint: None,
                 }],
                 vec![
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
@@ -7734,6 +7966,176 @@ mod tests {
         assert_close(floats[final_first + stride + 1], -50.0);
         assert_close(floats[final_first + stride * 2], 0.0);
         assert_close(floats[final_first + stride * 2 + 1], 150.0);
+    }
+
+    #[test]
+    fn sampled_image_geometry_preserves_we_graph_resources_for_executor() {
+        let input =
+            NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched_with_effect_targets_and_we_graph_resources(
+                vec![
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                        1.0,
+                    ),
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [10.0, 0.0],
+                        [1.0, 0.0],
+                        1.0,
+                    ),
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [0.0, 10.0],
+                        [0.0, 1.0],
+                        1.0,
+                    ),
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [0.0, 0.0],
+                        [0.0, 0.0],
+                        1.0,
+                    ),
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [10.0, 0.0],
+                        [1.0, 0.0],
+                        1.0,
+                    ),
+                    NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+                        [0.0, 10.0],
+                        [0.0, 1.0],
+                        1.0,
+                    ),
+                ],
+                vec![0, 1, 2, 3, 4, 5],
+                vec![PathBuf::from("/tmp/eye.gtex")],
+                vec![NativeVulkanVulkanaliaSceneSampledImageEffectTarget {
+                    effect_target_index: 0,
+                    layer_index: 7,
+                    width: 100,
+                    height: 100,
+                    we_graph_chain_index: Some(0),
+                    we_graph_target_index: Some(0),
+                    we_graph_endpoint: Some("first-class-effect-target"),
+                }],
+                vec![
+                    NativeVulkanVulkanaliaSceneWeImageGraphResource {
+                        resource_index: 0,
+                        resource_kind: "texture-source",
+                        layer_index: None,
+                        layer_id: None,
+                        chain_index: None,
+                        execution: None,
+                        source_path: Some(PathBuf::from("/tmp/eye.gtex")),
+                        target_index: None,
+                        endpoint: None,
+                        name: None,
+                        width: Some(100),
+                        height: Some(100),
+                        allocation: "file-texture-source",
+                        vulkan_effect_target_index: None,
+                    },
+                    NativeVulkanVulkanaliaSceneWeImageGraphResource {
+                        resource_index: 1,
+                        resource_kind: "texture-source",
+                        layer_index: None,
+                        layer_id: None,
+                        chain_index: None,
+                        execution: None,
+                        source_path: Some(PathBuf::from("/tmp/mask.gtex")),
+                        target_index: None,
+                        endpoint: None,
+                        name: None,
+                        width: Some(64),
+                        height: Some(64),
+                        allocation: "file-texture-source",
+                        vulkan_effect_target_index: None,
+                    },
+                    NativeVulkanVulkanaliaSceneWeImageGraphResource {
+                        resource_index: 2,
+                        resource_kind: "graph-target",
+                        layer_index: Some(7),
+                        layer_id: Some("eye".to_owned()),
+                        chain_index: Some(0),
+                        execution: Some("first-class-target"),
+                        source_path: None,
+                        target_index: Some(0),
+                        endpoint: Some("first-class-effect-target"),
+                        name: None,
+                        width: Some(100),
+                        height: Some(100),
+                        allocation: "allocated-vulkan-effect-target",
+                        vulkan_effect_target_index: Some(0),
+                    },
+                    NativeVulkanVulkanaliaSceneWeImageGraphResource {
+                        resource_index: 3,
+                        resource_kind: "graph-target",
+                        layer_index: Some(8),
+                        layer_id: Some("water-carrier".to_owned()),
+                        chain_index: Some(1),
+                        execution: Some("suppressed-until-graph-executor"),
+                        source_path: None,
+                        target_index: Some(1),
+                        endpoint: Some("image-local-main"),
+                        name: None,
+                        width: Some(3450),
+                        height: Some(3000),
+                        allocation: "planned-until-graph-executor",
+                        vulkan_effect_target_index: None,
+                    },
+                ],
+                vec![
+                    NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                        layer_index: 7,
+                        texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+                        material: sampled_image_material(
+                            SceneBlendMode::Normal,
+                            None,
+                            SceneRenderAlphaTextureMode::Multiply,
+                            1,
+                        ),
+                        first_index: 0,
+                        index_count: 3,
+                        fit: None,
+                        texture_region: None,
+                        render_target:
+                            NativeVulkanVulkanaliaSceneSampledImageRenderTarget::EffectTarget {
+                                target_index: 0,
+                                clear: true,
+                            },
+                    },
+                    NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                        layer_index: 7,
+                        texture_slot_bindings: scene_texture_slot_resource_bindings([1]),
+                        material: sampled_image_material(
+                            SceneBlendMode::Alpha,
+                            None,
+                            SceneRenderAlphaTextureMode::Multiply,
+                            1,
+                        ),
+                        first_index: 3,
+                        index_count: 3,
+                        fit: None,
+                        texture_region: None,
+                        render_target:
+                            NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+                    },
+                ],
+                "we-graph-resource-executor-input",
+            );
+
+        let payload = scene_sampled_image_geometry_payload_from_input(input).unwrap();
+
+        assert_eq!(payload.we_graph_resource_count, 4);
+        assert_eq!(payload.we_graph_texture_resource_count, 2);
+        assert_eq!(payload.we_graph_target_resource_count, 2);
+        assert_eq!(payload.we_graph_allocated_target_resource_count, 1);
+        assert_eq!(payload.we_graph_planned_target_resource_count, 1);
+        assert_eq!(
+            payload.we_graph_resources[2].vulkan_effect_target_index,
+            Some(0)
+        );
+        assert_eq!(
+            payload.we_graph_resources[3].allocation,
+            "planned-until-graph-executor"
+        );
     }
 
     #[test]

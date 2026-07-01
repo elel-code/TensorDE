@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -104,8 +105,19 @@ pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneEffectKind {
     WaterCaustics,
     Blur,
     SwayShake,
+    FoliageSway,
+    AutoSway,
     Flutter,
     Drift,
+    Scroll,
+    Skew,
+    CloudMotion,
+    LightShafts,
+    ColorKey,
+    ClippingMask,
+    RoundedMask,
+    TechCircle,
+    AudioBars,
     CompositeLayer,
     UserBindings,
     ShaderMaterial,
@@ -122,8 +134,19 @@ impl NativeVulkanSceneEffectKind {
             Self::WaterCaustics => "water-caustics",
             Self::Blur => "blur",
             Self::SwayShake => "sway-shake",
+            Self::FoliageSway => "foliage-sway",
+            Self::AutoSway => "auto-sway",
             Self::Flutter => "flutter",
             Self::Drift => "drift",
+            Self::Scroll => "scroll",
+            Self::Skew => "skew",
+            Self::CloudMotion => "cloud-motion",
+            Self::LightShafts => "light-shafts",
+            Self::ColorKey => "color-key",
+            Self::ClippingMask => "clipping-mask",
+            Self::RoundedMask => "rounded-mask",
+            Self::TechCircle => "tech-circle",
+            Self::AudioBars => "audio-bars",
             Self::CompositeLayer => "composite-layer",
             Self::UserBindings => "user-bindings",
             Self::ShaderMaterial => "shader-material",
@@ -170,6 +193,203 @@ impl NativeVulkanSceneMaterialKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImagePassRole {
+    BaseMaterial,
+    EffectMaterial,
+    ColorBlendPassthrough,
+}
+
+impl NativeVulkanSceneWeImagePassRole {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::BaseMaterial => "base-material",
+            Self::EffectMaterial => "effect-material",
+            Self::ColorBlendPassthrough => "color-blend-passthrough",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImagePassEndpoint {
+    SourceTexture,
+    ImageLocalMain,
+    ImageLocalSub,
+    NamedFbo,
+    FirstClassEffectTarget,
+    Scene,
+}
+
+impl NativeVulkanSceneWeImagePassEndpoint {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceTexture => "source-texture",
+            Self::ImageLocalMain => "image-local-main",
+            Self::ImageLocalSub => "image-local-sub",
+            Self::NamedFbo => "named-fbo",
+            Self::FirstClassEffectTarget => "first-class-effect-target",
+            Self::Scene => "scene",
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan::scene) fn is_graph_target(self) -> bool {
+        matches!(
+            self,
+            Self::ImageLocalMain
+                | Self::ImageLocalSub
+                | Self::NamedFbo
+                | Self::FirstClassEffectTarget
+        )
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImagePassExecution {
+    Direct,
+    FirstClassTarget,
+    TemporaryRawFallback,
+    SuppressedUntilGraphExecutor,
+}
+
+impl NativeVulkanSceneWeImagePassExecution {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::FirstClassTarget => "first-class-target",
+            Self::TemporaryRawFallback => "temporary-raw-fallback",
+            Self::SuppressedUntilGraphExecutor => "suppressed-until-graph-executor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImageGraphTextureBindingSource
+{
+    SourceTexture,
+    PreviousGraphTarget,
+    PassTextureSlot,
+    NamedFboBind,
+}
+
+impl NativeVulkanSceneWeImageGraphTextureBindingSource {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::SourceTexture => "source-texture",
+            Self::PreviousGraphTarget => "previous-graph-target",
+            Self::PassTextureSlot => "pass-texture-slot",
+            Self::NamedFboBind => "named-fbo-bind",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphTextureBinding {
+    pub(in crate::renderer::native_vulkan::scene) slot: u32,
+    pub(in crate::renderer::native_vulkan::scene) uniform: String,
+    pub(in crate::renderer::native_vulkan::scene) source:
+        NativeVulkanSceneWeImageGraphTextureBindingSource,
+    pub(in crate::renderer::native_vulkan::scene) target_index: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) endpoint:
+        Option<NativeVulkanSceneWeImagePassEndpoint>,
+    pub(in crate::renderer::native_vulkan::scene) bind_name: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) source_path: Option<PathBuf>,
+    pub(in crate::renderer::native_vulkan::scene) width: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) height: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) resolution: Option<[u32; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePass {
+    pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) role: NativeVulkanSceneWeImagePassRole,
+    pub(in crate::renderer::native_vulkan::scene) effect_kind: Option<NativeVulkanSceneEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) effect_file: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) command: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) source: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) target_name: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) binds: BTreeMap<u32, String>,
+    pub(in crate::renderer::native_vulkan::scene) fbos: Vec<crate::core::scene::SceneEffectFbo>,
+    pub(in crate::renderer::native_vulkan::scene) shader: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) blending: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) scene_blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::scene) render_state: NativeVulkanSceneRenderState,
+    pub(in crate::renderer::native_vulkan::scene) input: NativeVulkanSceneWeImagePassEndpoint,
+    pub(in crate::renderer::native_vulkan::scene) input_name: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) target: NativeVulkanSceneWeImagePassEndpoint,
+    pub(in crate::renderer::native_vulkan::scene) final_scene_pass: bool,
+    pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
+    pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
+    pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
+    pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePassChain {
+    pub(in crate::renderer::native_vulkan::scene) execution: NativeVulkanSceneWeImagePassExecution,
+    pub(in crate::renderer::native_vulkan::scene) local_target_required: bool,
+    pub(in crate::renderer::native_vulkan::scene) ping_pong_required: bool,
+    pub(in crate::renderer::native_vulkan::scene) first_pass_blend_moved_to_final: bool,
+    pub(in crate::renderer::native_vulkan::scene) color_blend_passthrough: bool,
+    pub(in crate::renderer::native_vulkan::scene) final_scene_blend_mode: SceneBlendMode,
+    pub(in crate::renderer::native_vulkan::scene) raw_direct_composite_allowed: bool,
+    pub(in crate::renderer::native_vulkan::scene) unsupported_reason: Option<&'static str>,
+    pub(in crate::renderer::native_vulkan::scene) passes: Vec<NativeVulkanSceneWeImagePass>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphStep {
+    pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) layer_id: String,
+    pub(in crate::renderer::native_vulkan::scene) chain_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) step_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) execution: NativeVulkanSceneWeImagePassExecution,
+    pub(in crate::renderer::native_vulkan::scene) raw_direct_composite_allowed: bool,
+    pub(in crate::renderer::native_vulkan::scene) unsupported_reason: Option<&'static str>,
+    pub(in crate::renderer::native_vulkan::scene) input_target_index: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) output_target_index: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) texture_bindings:
+        Vec<NativeVulkanSceneWeImageGraphTextureBinding>,
+    pub(in crate::renderer::native_vulkan::scene) pass: NativeVulkanSceneWeImagePass,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphTarget {
+    pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) layer_id: String,
+    pub(in crate::renderer::native_vulkan::scene) chain_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) target_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    pub(in crate::renderer::native_vulkan::scene) name: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) format: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) scale: Option<f64>,
+    pub(in crate::renderer::native_vulkan::scene) unique: bool,
+    pub(in crate::renderer::native_vulkan::scene) execution: NativeVulkanSceneWeImagePassExecution,
+    pub(in crate::renderer::native_vulkan::scene) width: u32,
+    pub(in crate::renderer::native_vulkan::scene) height: u32,
+    pub(in crate::renderer::native_vulkan::scene) first_write_step_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) write_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) sampled_by_following_pass: bool,
+    pub(in crate::renderer::native_vulkan::scene) scene_composite_source: bool,
+    pub(in crate::renderer::native_vulkan::scene) clear_before_first_write: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphPlan {
+    pub(in crate::renderer::native_vulkan::scene) chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) first_class_target_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) temporary_raw_fallback_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) suppressed_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) target_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) final_scene_step_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) step_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_kind_counts: BTreeMap<&'static str, usize>,
+    pub(in crate::renderer::native_vulkan::scene) targets: Vec<NativeVulkanSceneWeImageGraphTarget>,
+    pub(in crate::renderer::native_vulkan::scene) steps: Vec<NativeVulkanSceneWeImageGraphStep>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneMaterialFlag {
     Unspecified,
     Enabled,
@@ -209,7 +429,7 @@ impl NativeVulkanSceneCullMode {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectRecord {
     pub(in crate::renderer::native_vulkan::scene) kind: NativeVulkanSceneEffectKind,
     pub(in crate::renderer::native_vulkan::scene) evaluation_boundary:
@@ -217,6 +437,11 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) effect_file: String,
     pub(in crate::renderer::native_vulkan::scene) runtime: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) command: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) source: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) target: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) binds: BTreeMap<u32, String>,
+    pub(in crate::renderer::native_vulkan::scene) fbos: Vec<crate::core::scene::SceneEffectFbo>,
     pub(in crate::renderer::native_vulkan::scene) shader: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) blending: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
@@ -325,6 +550,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
     pub(in crate::renderer::native_vulkan::scene) composite_key: Option<SceneLayerCompositeKey>,
     pub(in crate::renderer::native_vulkan::scene) render_target:
         NativeVulkanSceneSampledImageRenderTarget,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_chain_index: Option<usize>,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_step_index: Option<usize>,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_input_target_index: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_output_target_index: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) first_vertex: u32,
     pub(in crate::renderer::native_vulkan::scene) vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) first_index: u32,
@@ -337,9 +566,14 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageEffectTarget {
+    pub(in crate::renderer::native_vulkan::scene) effect_target_index: u32,
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) width: u32,
     pub(in crate::renderer::native_vulkan::scene) height: u32,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_chain_index: Option<usize>,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_target_index: Option<u32>,
+    pub(in crate::renderer::native_vulkan::scene) we_graph_endpoint:
+        Option<NativeVulkanSceneWeImagePassEndpoint>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -419,6 +653,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneDrawPassPl
     pub(in crate::renderer::native_vulkan::scene) quad_index_buffer_bytes: u64,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_quads:
         Vec<NativeVulkanSceneSampledImageQuad>,
+    pub(in crate::renderer::native_vulkan::scene) sampled_image_we_graph_plan:
+        NativeVulkanSceneWeImageGraphPlan,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_effect_targets:
         Vec<NativeVulkanSceneSampledImageEffectTarget>,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_sources: Vec<PathBuf>,
@@ -449,6 +685,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneDrawPassPl
     pub(in crate::renderer::native_vulkan::scene) vector_shape_op_count: usize,
     pub(in crate::renderer::native_vulkan::scene) text_op_count: usize,
     pub(in crate::renderer::native_vulkan::scene) path_op_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_non_image_layer_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_pass_kind_counts:
+        BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) required_image_resources: Vec<PathBuf>,
     pub(in crate::renderer::native_vulkan::scene) required_video_resources: Vec<PathBuf>,
     pub(in crate::renderer::native_vulkan::scene) requires_text_geometry: bool,

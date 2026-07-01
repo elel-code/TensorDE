@@ -37,6 +37,7 @@ pub(super) fn native_vulkan_scene_solid_quad_pipeline_label(
         SceneBlendMode::Multiply => "solid-quad-multiply-blend",
         SceneBlendMode::Screen => "solid-quad-screen-blend",
         SceneBlendMode::Max => "solid-quad-max-blend",
+        SceneBlendMode::Modulate => "solid-quad-modulate-blend",
     }
 }
 
@@ -64,6 +65,7 @@ pub(super) fn native_vulkan_scene_sampled_image_pipeline_label(
         SceneBlendMode::Multiply => "sampled-image-multiply-blend",
         SceneBlendMode::Screen => "sampled-image-screen-blend",
         SceneBlendMode::Max => "sampled-image-max-blend",
+        SceneBlendMode::Modulate => "sampled-image-modulate-blend",
     }
 }
 
@@ -115,6 +117,17 @@ fn native_vulkan_scene_blend_equation(mode: SceneBlendMode) -> NativeVulkanScene
             color_op: NativeVulkanSceneBlendOp::Max,
             src_alpha: NativeVulkanSceneBlendFactor::One,
             dst_alpha: NativeVulkanSceneBlendFactor::OneMinusSrcAlpha,
+            alpha_op: NativeVulkanSceneBlendOp::Add,
+        },
+        // WE colorBlendMode 32: mix(A, A + A*B, opacity) = A*(1 + B*a).
+        // With a premultiplied source (src_rgb = B*a) this is A + A*(B*a) =
+        // dst*ONE + src*DST_COLOR. Background alpha is preserved (WE keeps screen.a).
+        SceneBlendMode::Modulate => NativeVulkanSceneBlendEquation {
+            src_color: NativeVulkanSceneBlendFactor::DstColor,
+            dst_color: NativeVulkanSceneBlendFactor::One,
+            color_op: NativeVulkanSceneBlendOp::Add,
+            src_alpha: NativeVulkanSceneBlendFactor::Zero,
+            dst_alpha: NativeVulkanSceneBlendFactor::One,
             alpha_op: NativeVulkanSceneBlendOp::Add,
         },
     }

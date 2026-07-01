@@ -66,6 +66,17 @@ pub(super) fn native_vulkan_vulkanalia_scene_color_attachment(
             .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
             .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
+        // WE colorBlendMode 32: mix(A, A + A*B, opacity) = A*(1 + B*opacity).
+        // With a premultiplied source (src_rgb = B*a) this is A + A*(B*a) =
+        // dst*ONE + src*DST_COLOR. Background alpha is preserved (WE keeps screen.a).
+        SceneBlendMode::Modulate => builder
+            .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
     }
 }
 
@@ -78,9 +89,10 @@ pub(super) fn native_vulkan_vulkanalia_scene_fragment_module_for_blend(
         SceneBlendMode::Alpha | SceneBlendMode::Normal | SceneBlendMode::Additive => {
             straight_fragment_module
         }
-        SceneBlendMode::Multiply | SceneBlendMode::Screen | SceneBlendMode::Max => {
-            premultiplied_fragment_module
-        }
+        SceneBlendMode::Multiply
+        | SceneBlendMode::Screen
+        | SceneBlendMode::Max
+        | SceneBlendMode::Modulate => premultiplied_fragment_module,
     }
 }
 
@@ -95,6 +107,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_solid_quad_pipeline(
         SceneBlendMode::Multiply => resources.multiply_pipeline,
         SceneBlendMode::Screen => resources.screen_pipeline,
         SceneBlendMode::Max => resources.max_pipeline,
+        SceneBlendMode::Modulate => resources.modulate_pipeline,
     }
 }
 
@@ -109,6 +122,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline(
         SceneBlendMode::Multiply => resources.multiply_pipeline,
         SceneBlendMode::Screen => resources.screen_pipeline,
         SceneBlendMode::Max => resources.max_pipeline,
+        SceneBlendMode::Modulate => resources.modulate_pipeline,
     }
 }
 
@@ -122,5 +136,6 @@ pub(super) fn native_vulkan_vulkanalia_scene_blend_mode_label(
         SceneBlendMode::Multiply => "multiply",
         SceneBlendMode::Screen => "screen",
         SceneBlendMode::Max => "max",
+        SceneBlendMode::Modulate => "modulate",
     }
 }

@@ -28,9 +28,9 @@ use self::scene_runtime::{
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
-    SceneAudioCueCondition, SceneEffect, SceneEffectUvTransform, SceneImageEffectPass,
-    SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion, ScenePuppetAnimationClip,
-    SceneSnapshotLayer,
+    SceneAudioCueCondition, SceneEffect, SceneEffectFbo, SceneEffectUvTransform,
+    SceneImageEffectPass, SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion,
+    ScenePuppetAnimationClip, SceneSnapshotLayer,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
@@ -164,6 +164,16 @@ pub struct SceneRenderImageEffectPass {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime: Option<String>,
     pub pass_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub binds: BTreeMap<u32, String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fbos: Vec<SceneEffectFbo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shader: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2100,6 +2110,11 @@ fn scene_render_image_effect_pass(
         effect_file: pass.effect_file,
         runtime: pass.runtime,
         pass_index: pass.pass_index,
+        command: pass.command,
+        source: pass.source,
+        target: pass.target,
+        binds: pass.binds,
+        fbos: pass.fbos,
         shader: pass.shader,
         blending: pass.blending,
         depthtest: pass.depthtest,

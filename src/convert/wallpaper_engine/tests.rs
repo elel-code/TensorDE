@@ -2627,6 +2627,14 @@ fn keeps_runtime_scene_effect_as_material_graph_boundary() {
         scene["nodes"][0]["effects"][0]["runtime"],
         "wallpaper-engine-effect"
     );
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["passes"][0]["textures"][0],
+        "_rt_FullFrameBuffer"
+    );
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["passes"][0]["combos"]["MODE"],
+        1
+    );
     assert!(
         scene["native_lowering"]["pending_boundaries"]
             .as_array()
@@ -2640,6 +2648,111 @@ fn keeps_runtime_scene_effect_as_material_graph_boundary() {
             .unwrap()
             .iter()
             .any(|boundary| boundary == "shader-material-graph")
+    );
+}
+
+#[test]
+fn preserves_wallpaper_engine_effect_pass_graph_fields_from_effect_file() {
+    let source = TestDir::new("we-scene-effect-pass-graph-source");
+    let output = TestDir::new("we-scene-effect-pass-graph-output");
+    output.remove();
+    source.write_file(
+        "scene.json",
+        r#"{
+              "objects": [
+                {
+                  "id": 1,
+                  "name": "Renderable With Effect Graph",
+                  "image": "models/renderable.json",
+                  "effects": [
+                    {
+                      "file": "effects/waterripple/effect.json",
+                      "visible": true,
+                      "passes": [
+                        {
+                          "textures": [null, null, "textures/waterripplenormal.png"],
+                          "constantshadervalues": { "strength": 0.1 },
+                          "combos": { "MASK": 0 }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ]
+            }"#,
+    );
+    source.write_file(
+        "models/renderable.json",
+        r#"{ "material": "materials/renderable.json" }"#,
+    );
+    source.write_file(
+        "materials/renderable.json",
+        r#"{ "passes": [{ "textures": ["textures/albedo.png"] }] }"#,
+    );
+    source.write_file(
+        "materials/waterripple.json",
+        r#"{ "passes": [{ "shader": "effects/waterripple", "blending": "normal", "depthtest": "false", "depthwrite": "false", "cullmode": "nocull" }] }"#,
+    );
+    source.write_file(
+        "effects/waterripple/effect.json",
+        r#"{
+              "fbos": [
+                { "name": "_rt_WaterRipple", "format": "rgba8888", "scale": 0.5, "unique": true },
+                { "name": "_rt_WaterRippleNormal" }
+              ],
+              "passes": [
+                {
+                  "command": "draw",
+                  "source": "previous",
+                  "target": "_rt_WaterRipple",
+                  "bind": [
+                    { "index": 0, "name": "previous" },
+                    { "index": 2, "name": "_rt_WaterRippleNormal" }
+                  ],
+                  "material": "materials/waterripple.json"
+                }
+              ]
+            }"#,
+    );
+    source.write_file("textures/albedo.png", "not real png");
+    source.write_file("textures/waterripplenormal.png", "not real png");
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Effect Pass Graph Scene",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let scene: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("assets/scene.gscene.json")).unwrap(),
+    )
+    .unwrap();
+    let pass = &scene["nodes"][0]["effects"][0]["passes"][0];
+    assert_eq!(pass["command"], "draw");
+    assert_eq!(pass["source"], "previous");
+    assert_eq!(pass["target"], "_rt_WaterRipple");
+    assert_eq!(pass["binds"]["0"], "previous");
+    assert_eq!(pass["binds"]["2"], "_rt_WaterRippleNormal");
+    assert_eq!(pass["shader"], "effects/waterripple");
+    assert_eq!(pass["blending"], "normal");
+    assert_eq!(pass["constant_shader_values"]["strength"], 0.1);
+    assert_eq!(pass["combos"]["MASK"], 0);
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["fbos"][0]["name"],
+        "_rt_WaterRipple"
+    );
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["fbos"][0]["format"],
+        "rgba8888"
+    );
+    assert_eq!(scene["nodes"][0]["effects"][0]["fbos"][0]["scale"], 0.5);
+    assert_eq!(scene["nodes"][0]["effects"][0]["fbos"][0]["unique"], true);
+    assert_eq!(
+        scene["nodes"][0]["effects"][0]["fbos"][1]["name"],
+        "_rt_WaterRippleNormal"
     );
 }
 

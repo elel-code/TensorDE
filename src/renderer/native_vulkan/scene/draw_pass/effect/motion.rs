@@ -10,7 +10,11 @@ const MESH_MAX_VERTICES: usize = 4096;
 const MESH_SAMPLES_PER_PERIOD: f64 = 4.0;
 
 pub(super) fn classify(normalized_effect_file: &str) -> Option<NativeVulkanSceneEffectKind> {
-    if sway_shake::matches(normalized_effect_file) {
+    if sway_shake::matches_foliage(normalized_effect_file) {
+        Some(NativeVulkanSceneEffectKind::FoliageSway)
+    } else if sway_shake::matches_auto(normalized_effect_file) {
+        Some(NativeVulkanSceneEffectKind::AutoSway)
+    } else if sway_shake::matches(normalized_effect_file) {
         Some(NativeVulkanSceneEffectKind::SwayShake)
     } else if flutter::matches(normalized_effect_file) {
         Some(NativeVulkanSceneEffectKind::Flutter)

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use super::*;
@@ -15,6 +16,9 @@ struct NativeVulkanSceneDrawPassBuild {
     vector_shape_op_count: usize,
     text_op_count: usize,
     path_op_count: usize,
+    effect_pass_count: usize,
+    effect_pass_non_image_layer_count: usize,
+    effect_pass_kind_counts: BTreeMap<&'static str, usize>,
     required_image_resources: Vec<PathBuf>,
     required_video_resources: Vec<PathBuf>,
     recordable_op_count: usize,
@@ -24,6 +28,7 @@ struct NativeVulkanSceneDrawPassBuild {
     recorded_path_geometry_count: usize,
     recorded_text_geometry_count: usize,
     sampled_image_quads: Vec<NativeVulkanSceneSampledImageQuad>,
+    sampled_image_we_graph_plan: NativeVulkanSceneWeImageGraphPlan,
     sampled_image_recording_payload: NativeVulkanSceneSampledImageRecordingPayload,
     sampled_image_recording_ready: bool,
     sampled_image_visible_recording_ready: bool,
@@ -58,10 +63,42 @@ enum NativeVulkanSceneDrawPassBackendRoute {
     DrawRecordingPending,
 }
 
+#[derive(Debug, Default)]
+struct NativeVulkanSceneDrawPassEffectInventory {
+    pass_count: usize,
+    non_image_layer_count: usize,
+    kind_counts: BTreeMap<&'static str, usize>,
+}
+
 pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_draw_pass_plan(
     draw_plan: &NativeVulkanSceneDrawPlan,
 ) -> NativeVulkanSceneDrawPassPlan {
     NativeVulkanSceneDrawPassBuild::new(draw_plan).into_plan()
+}
+
+fn native_vulkan_scene_draw_pass_effect_inventory(
+    draw_ops: &[NativeVulkanSceneDrawOp],
+) -> NativeVulkanSceneDrawPassEffectInventory {
+    let mut inventory = NativeVulkanSceneDrawPassEffectInventory::default();
+    for op in draw_ops {
+        if op.image_effect_passes.is_empty() {
+            continue;
+        }
+        inventory.pass_count = inventory
+            .pass_count
+            .saturating_add(op.image_effect_passes.len());
+        if op.kind != NativeVulkanSceneDrawOpKind::Image {
+            inventory.non_image_layer_count = inventory.non_image_layer_count.saturating_add(1);
+        }
+        for effect in native_vulkan_scene_effect_passes_from_render_passes(&op.image_effect_passes)
+        {
+            *inventory
+                .kind_counts
+                .entry(effect.kind.as_str())
+                .or_default() += 1;
+        }
+    }
+    inventory
 }
 
 impl NativeVulkanSceneDrawPassBuild {
@@ -73,6 +110,7 @@ impl NativeVulkanSceneDrawPassBuild {
         let vector_shape_op_count = op_buckets.vector_shape_op_count;
         let text_op_count = op_buckets.text_op_count;
         let path_op_count = op_buckets.path_op_count;
+        let effect_inventory = native_vulkan_scene_draw_pass_effect_inventory(&draw_plan.draw_ops);
         let required_image_resources = op_buckets.required_image_resources;
         let required_video_resources = op_buckets.required_video_resources;
 
@@ -108,11 +146,14 @@ impl NativeVulkanSceneDrawPassBuild {
             .iter()
             .filter_map(native_vulkan_scene_sampled_image_quad)
             .collect::<Vec<_>>();
+        let sampled_image_we_graph_plan =
+            native_vulkan_scene_we_image_graph_plan(&sampled_image_quads);
         let sampled_image_recording_payload = native_vulkan_scene_sampled_image_recording_payload(
             &sampled_image_quads,
             (!draw_plan.dynamic_topology_required)
                 .then_some(draw_plan.scene_size)
                 .flatten(),
+            &sampled_image_we_graph_plan,
         );
         let sampled_image_recording_ready = sampled_image_op_count > 0
             && sampled_image_recording_payload.recordable_quad_count == sampled_image_op_count;
@@ -143,6 +184,9 @@ impl NativeVulkanSceneDrawPassBuild {
             vector_shape_op_count,
             text_op_count,
             path_op_count,
+            effect_pass_count: effect_inventory.pass_count,
+            effect_pass_non_image_layer_count: effect_inventory.non_image_layer_count,
+            effect_pass_kind_counts: effect_inventory.kind_counts,
             required_image_resources,
             required_video_resources,
             recordable_op_count,
@@ -152,6 +196,7 @@ impl NativeVulkanSceneDrawPassBuild {
             recorded_path_geometry_count,
             recorded_text_geometry_count,
             sampled_image_quads,
+            sampled_image_we_graph_plan,
             sampled_image_recording_payload,
             sampled_image_recording_ready,
             sampled_image_visible_recording_ready,
@@ -199,6 +244,7 @@ impl NativeVulkanSceneDrawPassBuild {
             quad_vertex_buffer_bytes,
             quad_index_buffer_bytes,
             sampled_image_quads: self.sampled_image_quads,
+            sampled_image_we_graph_plan: self.sampled_image_we_graph_plan,
             sampled_image_effect_targets: self.sampled_image_recording_payload.effect_targets,
             sampled_image_sources: self.sampled_image_recording_payload.sources,
             sampled_image_recording_ready: self.sampled_image_recording_ready,
@@ -224,6 +270,9 @@ impl NativeVulkanSceneDrawPassBuild {
             vector_shape_op_count: self.vector_shape_op_count,
             text_op_count: self.text_op_count,
             path_op_count: self.path_op_count,
+            effect_pass_count: self.effect_pass_count,
+            effect_pass_non_image_layer_count: self.effect_pass_non_image_layer_count,
+            effect_pass_kind_counts: self.effect_pass_kind_counts,
             required_image_resources: self.required_image_resources,
             required_video_resources: self.required_video_resources,
             requires_text_geometry,

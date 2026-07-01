@@ -9,3 +9,4 @@
 *.gwp.tmp
 .DS_Store
 /references/*
+artifacts/

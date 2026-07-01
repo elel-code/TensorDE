@@ -7,7 +7,7 @@ use super::{
     number_value_field, push_unique, scene_copy_resource_as,
     scene_effect_texture_resource_from_reference, scene_i64_map_from_value, scene_next_timeline_id,
     scene_push_unsupported, scene_record_native_script_lowering, string_field,
-    value_to_bool_unwrapped, value_to_i64, value_to_string, value_to_u32,
+    value_to_bool_unwrapped, value_to_f64_unwrapped, value_to_i64, value_to_string, value_to_u32,
 };
 
 pub(super) fn scene_effects_from_object(
@@ -44,6 +44,9 @@ pub(super) fn scene_effects_from_object(
             );
             if !passes.is_empty() {
                 output.insert("passes".to_owned(), Value::Array(passes));
+            }
+            if let Some(fbos) = scene_effect_fbos_from_file(project, &file) {
+                output.insert("fbos".to_owned(), fbos);
             }
             let opacity_timeline_lowered =
                 scene_lower_opacity_effect_timeline(effect, &file, node_id, report, context);
@@ -331,27 +334,35 @@ fn scene_effect_passes_from_object(
     context: &mut SceneDocumentBuildContext,
     resources: &mut Vec<Value>,
 ) -> Vec<Value> {
-    let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
+    let file_pass_objects = scene_effect_file_pass_objects(project, effect_file);
+    let file_passes = scene_effect_file_passes(project, &file_pass_objects);
+    let object_passes = effect.get("passes").and_then(Value::as_array);
+    let pass_count = object_passes.map_or(file_pass_objects.len(), |passes| {
+        passes.len().max(file_pass_objects.len())
+    });
+    if pass_count == 0 {
         return Vec::new();
-    };
-    let material_passes = scene_effect_material_passes(project, effect_file);
-    passes
-        .iter()
-        .enumerate()
-        .filter_map(|(pass_index, pass)| pass.as_object().map(|pass| (pass_index, pass)))
-        .map(|(pass_index, pass)| {
-            let mut output = Map::new();
+    }
+    (0..pass_count)
+        .filter_map(|pass_index| {
+            let object_pass = object_passes.and_then(|passes| passes.get(pass_index)?.as_object());
+            let file_pass = file_pass_objects.get(pass_index);
+            let pass = scene_effect_merged_pass(file_pass, object_pass);
+            if pass.is_empty() {
+                return None;
+            }
+            let mut output = file_passes.get(pass_index).cloned().unwrap_or_default();
             if let Some(id) = pass.get("id").and_then(value_to_i64) {
                 output.insert("id".to_owned(), json!(id));
             }
-            if let Some(material_pass) = material_passes.get(pass_index) {
-                scene_copy_effect_material_pass_fields(material_pass, &mut output);
+            if let Some(object_pass) = object_pass {
+                scene_copy_effect_pass_fields(object_pass, &mut output);
             }
-            if let Some(textures) = scene_effect_pass_textures(pass) {
+            if let Some(textures) = scene_effect_pass_textures(&pass) {
                 output.insert("textures".to_owned(), textures);
             }
             let texture_resources = scene_effect_pass_texture_resources(
-                project, output_dir, pass, report, context, resources,
+                project, output_dir, &pass, report, context, resources,
             );
             if let Some(texture_resources) = texture_resources.as_ref() {
                 output.insert("texture_resources".to_owned(), texture_resources.clone());
@@ -359,7 +370,7 @@ fn scene_effect_passes_from_object(
             if let Some(effect_uv_transform) = scene_effect_pass_uv_transform(
                 node,
                 effect_file,
-                pass,
+                &pass,
                 texture_resources.as_ref(),
                 resources,
             ) {
@@ -385,19 +396,35 @@ fn scene_effect_passes_from_object(
             if let Some(user_textures) = pass.get("usertextures") {
                 output.insert("user_textures".to_owned(), user_textures.clone());
             }
-            Value::Object(output)
+            Some(Value::Object(output))
         })
         .collect()
 }
 
-fn scene_effect_material_passes(
+fn scene_effect_file_passes(
+    project: &WallpaperEngineProject,
+    passes: &[Map<String, Value>],
+) -> Vec<Map<String, Value>> {
+    passes
+        .iter()
+        .map(|pass| {
+            let mut output = Map::new();
+            if let Some(material) = string_field(pass, &["material"])
+                && let Some(material_pass) = scene_effect_material_first_pass(project, &material)
+            {
+                scene_copy_effect_material_pass_fields(&material_pass, &mut output);
+            }
+            scene_copy_effect_pass_fields(pass, &mut output);
+            output
+        })
+        .collect()
+}
+
+fn scene_effect_file_pass_objects(
     project: &WallpaperEngineProject,
     effect_file: &str,
 ) -> Vec<Map<String, Value>> {
-    let Some(effect) = fs::read_to_string(project.root.join(effect_file))
-        .ok()
-        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
-    else {
+    let Some(effect) = scene_effect_file_value(project, effect_file) else {
         return Vec::new();
     };
     let Some(passes) = effect.get("passes").and_then(Value::as_array) else {
@@ -406,9 +433,57 @@ fn scene_effect_material_passes(
     passes
         .iter()
         .filter_map(Value::as_object)
-        .filter_map(|pass| string_field(pass, &["material"]))
-        .filter_map(|material| scene_effect_material_first_pass(project, &material))
+        .cloned()
         .collect()
+}
+
+fn scene_effect_fbos_from_file(
+    project: &WallpaperEngineProject,
+    effect_file: &str,
+) -> Option<Value> {
+    let effect = scene_effect_file_value(project, effect_file)?;
+    let fbos = effect.get("fbos").and_then(Value::as_array)?;
+    let mut output = Vec::new();
+    for fbo in fbos.iter().filter_map(Value::as_object) {
+        let Some(name) = string_field(fbo, &["name"]) else {
+            continue;
+        };
+        let mut item = Map::new();
+        item.insert("name".to_owned(), Value::String(name));
+        if let Some(format) = string_field(fbo, &["format"]) {
+            item.insert("format".to_owned(), Value::String(format));
+        }
+        if let Some(scale) = fbo.get("scale").and_then(value_to_f64_unwrapped)
+            && scale.is_finite()
+            && scale > 0.0
+        {
+            item.insert("scale".to_owned(), json!(scale));
+        }
+        if let Some(unique) = fbo.get("unique").and_then(value_to_bool_unwrapped) {
+            item.insert("unique".to_owned(), json!(unique));
+        }
+        output.push(Value::Object(item));
+    }
+    (!output.is_empty()).then_some(Value::Array(output))
+}
+
+fn scene_effect_file_value(project: &WallpaperEngineProject, effect_file: &str) -> Option<Value> {
+    fs::read_to_string(project.root.join(effect_file))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+}
+
+fn scene_effect_merged_pass(
+    file_pass: Option<&Map<String, Value>>,
+    object_pass: Option<&Map<String, Value>>,
+) -> Map<String, Value> {
+    let mut output = file_pass.cloned().unwrap_or_default();
+    if let Some(object_pass) = object_pass {
+        for (key, value) in object_pass {
+            output.insert(key.clone(), value.clone());
+        }
+    }
+    output
 }
 
 fn scene_effect_material_first_pass(
@@ -434,6 +509,55 @@ fn scene_copy_effect_material_pass_fields(
             output.insert(key.to_owned(), value.clone());
         }
     }
+}
+
+fn scene_copy_effect_pass_fields(pass: &Map<String, Value>, output: &mut Map<String, Value>) {
+    for key in [
+        "command",
+        "source",
+        "target",
+        "shader",
+        "blending",
+        "depthtest",
+        "depthwrite",
+        "cullmode",
+    ] {
+        if let Some(value) = pass.get(key) {
+            output.insert(key.to_owned(), value.clone());
+        }
+    }
+    if let Some(binds) = scene_effect_pass_binds(pass) {
+        output.insert("binds".to_owned(), binds);
+    }
+}
+
+fn scene_effect_pass_binds(pass: &Map<String, Value>) -> Option<Value> {
+    if let Some(binds) = pass.get("binds").and_then(Value::as_object) {
+        let mut output = Map::new();
+        for (index, name) in binds {
+            let Ok(index) = index.parse::<u32>() else {
+                continue;
+            };
+            let Some(name) = value_to_string(name) else {
+                continue;
+            };
+            output.insert(index.to_string(), Value::String(name));
+        }
+        return (!output.is_empty()).then_some(Value::Object(output));
+    }
+
+    let binds = pass.get("bind").and_then(Value::as_array)?;
+    let mut output = Map::new();
+    for bind in binds.iter().filter_map(Value::as_object) {
+        let Some(index) = bind.get("index").and_then(value_to_u32) else {
+            continue;
+        };
+        let Some(name) = string_field(bind, &["name"]) else {
+            continue;
+        };
+        output.insert(index.to_string(), Value::String(name));
+    }
+    (!output.is_empty()).then_some(Value::Object(output))
 }
 
 fn scene_effect_pass_textures(pass: &Map<String, Value>) -> Option<Value> {

@@ -4,6 +4,15 @@ pub(super) fn matches(normalized_effect_file: &str) -> bool {
     normalized_effect_file.contains("sway") || normalized_effect_file.contains("shake")
 }
 
+pub(super) fn matches_foliage(normalized_effect_file: &str) -> bool {
+    normalized_effect_file.contains("foliagesway")
+        || normalized_effect_file.contains("foliage_sway")
+}
+
+pub(super) fn matches_auto(normalized_effect_file: &str) -> bool {
+    normalized_effect_file.contains("auto_sway") || normalized_effect_file.contains("autosway")
+}
+
 pub(super) fn max_frequency(motion: SceneNativeEffectMotion) -> f64 {
     if motion.sway_count > 0 {
         motion.sway_spatial_frequency.abs()

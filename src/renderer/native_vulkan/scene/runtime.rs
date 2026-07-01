@@ -7,8 +7,8 @@ use std::sync::OnceLock;
 use std::sync::atomic::AtomicUsize;
 
 use crate::core::scene::{
-    SceneLayerCompositeKey, SceneMesh, ScenePuppetAnimationFrameDebug, SceneSnapshotLayer,
-    SceneSnapshotSampledImageLayer, SceneTextureSlot,
+    SceneEffectFbo, SceneLayerCompositeKey, SceneMesh, ScenePuppetAnimationFrameDebug,
+    SceneSnapshotLayer, SceneSnapshotSampledImageLayer, SceneTextureSlot,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystemStatus,
@@ -48,6 +48,7 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneTextureSlotResourceBinding,
     NativeVulkanVulkanaliaSceneVideoLayerDrawStep,
     NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
+    NativeVulkanVulkanaliaSceneWeImageGraphResource,
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
     native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec,
@@ -60,13 +61,16 @@ use super::draw_pass::{
     NativeVulkanSceneRenderState, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
     NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
+    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphTarget,
+    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImagePassChain,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_uv_space,
     native_vulkan_scene_append_sampled_image_vertices_from_snapshot_layer,
-    native_vulkan_scene_draw_pass_plan, native_vulkan_scene_render_layer_is_clear,
-    native_vulkan_scene_solid_geometry_from_render_layer,
+    native_vulkan_scene_draw_pass_plan, native_vulkan_scene_effect_passes_from_render_passes,
+    native_vulkan_scene_render_layer_is_clear,
+    native_vulkan_scene_solid_geometry_from_render_layer, native_vulkan_scene_we_image_pass_chain,
 };
 
 const SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_RETAINED: usize = 3;
@@ -136,6 +140,21 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_quad_vertex_buffer_bytes: u64,
     pub draw_pass_quad_index_buffer_bytes: u64,
     pub draw_pass_sampled_image_quads: Vec<NativeVulkanSceneSampledImageQuadSnapshot>,
+    pub draw_pass_sampled_image_we_graph_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_first_class_target_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_temporary_raw_fallback_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_suppressed_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_target_count: usize,
+    pub draw_pass_sampled_image_we_graph_final_scene_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_resource_count: usize,
+    pub draw_pass_sampled_image_we_graph_texture_resource_count: usize,
+    pub draw_pass_sampled_image_we_graph_target_resource_count: usize,
+    pub draw_pass_sampled_image_we_graph_resources:
+        Vec<NativeVulkanSceneWeImageGraphResourceSnapshot>,
+    pub draw_pass_sampled_image_we_graph_targets: Vec<NativeVulkanSceneWeImageGraphTargetSnapshot>,
+    pub draw_pass_sampled_image_we_graph_steps: Vec<NativeVulkanSceneWeImageGraphStepSnapshot>,
     pub draw_pass_sampled_image_effect_targets:
         Vec<NativeVulkanSceneSampledImageEffectTargetSnapshot>,
     pub draw_pass_sampled_image_sources: Vec<PathBuf>,
@@ -170,6 +189,9 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_vector_shape_op_count: usize,
     pub draw_pass_text_op_count: usize,
     pub draw_pass_path_op_count: usize,
+    pub draw_pass_effect_pass_count: usize,
+    pub draw_pass_effect_pass_non_image_layer_count: usize,
+    pub draw_pass_effect_pass_kind_counts: BTreeMap<String, usize>,
     pub draw_pass_required_image_resources: Vec<PathBuf>,
     pub draw_pass_required_video_resources: Vec<PathBuf>,
     pub draw_pass_requires_text_geometry: bool,
@@ -475,16 +497,25 @@ impl NativeVulkanSceneRuntimeSnapshot {
             .into_iter()
             .map(
                 |target| NativeVulkanVulkanaliaSceneSampledImageEffectTarget {
+                    effect_target_index: target.effect_target_index,
                     layer_index: target.layer_index,
                     width: target.width,
                     height: target.height,
+                    we_graph_chain_index: target.we_graph_chain_index,
+                    we_graph_target_index: target.we_graph_target_index,
+                    we_graph_endpoint: target.we_graph_endpoint,
                 },
             )
             .collect::<Vec<_>>();
+        let we_graph_resources =
+            std::mem::take(&mut self.draw_pass_sampled_image_we_graph_resources)
+                .into_iter()
+                .map(native_vulkan_scene_vulkanalia_we_image_graph_resource)
+                .collect::<Vec<_>>();
 
         Some((
             source,
-            NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched_with_effect_targets(
+            NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched_with_effect_targets_and_we_graph_resources(
                 std::mem::take(&mut self.draw_pass_sampled_image_vertices)
                     .into_iter()
                     .map(|vertex| {
@@ -500,6 +531,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 std::mem::take(&mut self.draw_pass_sampled_image_indices),
                 sources,
                 effect_targets,
+                we_graph_resources,
                 draw_steps,
                 "scene-runtime-sampled-image-draw-plan",
             ),
@@ -794,6 +826,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             continue;
         }
         if layer.kind == crate::core::SceneNodeKind::Image {
+            if native_vulkan_scene_render_layer_suppresses_unimplemented_we_effect_chain(layer) {
+                continue;
+            }
             let Some((fit, texture_region, range)) =
                 native_vulkan_scene_append_sampled_image_geometry_from_render_layer(
                     layer_index,
@@ -954,6 +989,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             continue;
         }
         if layer.kind == crate::core::SceneNodeKind::Image {
+            if native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(layer) {
+                continue;
+            }
             let Some((fit, texture_region, range)) =
                 native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer(
                     layer_index,
@@ -1094,6 +1132,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             continue;
         }
         if layer.kind == crate::core::SceneNodeKind::Image {
+            if native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(layer) {
+                continue;
+            }
             native_vulkan_scene_append_sampled_image_vertices_from_snapshot_layer(
                 layer_index,
                 layer,
@@ -1225,6 +1266,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         } else {
             folded.layer
         };
+        if native_vulkan_scene_sampled_layer_suppresses_unimplemented_we_effect_chain(layer) {
+            continue;
+        }
         if native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer) {
             native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain(
                 folded.layer_index,
@@ -1429,6 +1473,52 @@ fn native_vulkan_scene_sampled_layer_uses_first_class_effect_target(
     })
 }
 
+fn native_vulkan_scene_render_layer_suppresses_unimplemented_we_effect_chain(
+    layer: &SceneRenderLayer,
+) -> bool {
+    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
+        && !layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
+        && layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+        })
+}
+
+fn native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(
+    layer: &SceneSnapshotLayer,
+) -> bool {
+    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
+        && !layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
+        })
+        && layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+        })
+}
+
+fn native_vulkan_scene_sampled_layer_suppresses_unimplemented_we_effect_chain(
+    layer: &SceneSnapshotSampledImageLayer,
+) -> bool {
+    native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(layer.blend_mode)
+        && !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
+        && layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+        })
+}
+
+fn native_vulkan_scene_unimplemented_effect_chain_blend_is_passthrough(
+    blend_mode: SceneBlendMode,
+) -> bool {
+    !matches!(blend_mode, SceneBlendMode::Alpha | SceneBlendMode::Normal)
+}
+
 fn native_vulkan_scene_effect_pass_uses_first_class_target(
     runtime: Option<&str>,
     effect_file: &str,
@@ -1441,6 +1531,16 @@ fn native_vulkan_scene_effect_pass_uses_first_class_target(
         || file.ends_with("/effects/iris/effect.json")
         || file == "effects/opacity/effect.json"
         || file.ends_with("/effects/opacity/effect.json")
+}
+
+fn native_vulkan_scene_effect_pass_is_unimplemented_water_chain(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file.contains("waterripple")
+        || file.contains("water_ripple")
+        || file.contains("waterflow")
+        || file.contains("water_flow")
+        || file.contains("watercaustics")
+        || file.contains("water_caustics")
 }
 
 fn native_vulkan_scene_runtime_eye_contribution_debug(
@@ -2796,6 +2896,11 @@ pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub effect_file: String,
     pub runtime: Option<String>,
     pub pass_index: usize,
+    pub command: Option<String>,
+    pub source: Option<String>,
+    pub target: Option<String>,
+    pub binds: BTreeMap<u32, String>,
+    pub fbos: Vec<SceneEffectFbo>,
     pub shader: Option<String>,
     pub blending: Option<String>,
     pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
@@ -2817,6 +2922,121 @@ pub struct NativeVulkanSceneMaterialPassSnapshot {
     pub texture_slot_count: usize,
     pub effect_kinds: Vec<&'static str>,
     pub combo_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImagePassSnapshot {
+    pub pass_index: usize,
+    pub role: &'static str,
+    pub effect_kind: Option<&'static str>,
+    pub effect_file: Option<String>,
+    pub command: Option<String>,
+    pub source: Option<String>,
+    pub target_name: Option<String>,
+    pub binds: BTreeMap<u32, String>,
+    pub fbos: Vec<SceneEffectFbo>,
+    pub shader: Option<String>,
+    pub blending: Option<String>,
+    pub scene_blend_mode: SceneBlendMode,
+    pub render_state: NativeVulkanSceneRenderStateSnapshot,
+    pub input: &'static str,
+    pub input_name: Option<String>,
+    pub target: &'static str,
+    pub final_scene_pass: bool,
+    pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
+    pub texture_slot_count: usize,
+    pub parameter_keys: Vec<String>,
+    pub combo_keys: Vec<String>,
+    pub depth_test: &'static str,
+    pub depth_write: &'static str,
+    pub cull_mode: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImagePassChainSnapshot {
+    pub execution: &'static str,
+    pub local_target_required: bool,
+    pub ping_pong_required: bool,
+    pub first_pass_blend_moved_to_final: bool,
+    pub color_blend_passthrough: bool,
+    pub final_scene_blend_mode: SceneBlendMode,
+    pub raw_direct_composite_allowed: bool,
+    pub unsupported_reason: Option<&'static str>,
+    pub passes: Vec<NativeVulkanSceneWeImagePassSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImageGraphStepSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub chain_index: usize,
+    pub step_index: usize,
+    pub execution: &'static str,
+    pub raw_direct_composite_allowed: bool,
+    pub unsupported_reason: Option<&'static str>,
+    pub input_target_index: Option<u32>,
+    pub output_target_index: Option<u32>,
+    pub texture_bindings: Vec<NativeVulkanSceneWeImageGraphTextureBindingSnapshot>,
+    pub pass: NativeVulkanSceneWeImagePassSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImageGraphTextureBindingSnapshot {
+    pub slot: u32,
+    pub uniform: String,
+    pub source: &'static str,
+    pub resource_index: Option<u32>,
+    pub planned_graph_resource_index: Option<u32>,
+    pub target_index: Option<u32>,
+    pub endpoint: Option<&'static str>,
+    pub vulkan_effect_target_index: Option<u32>,
+    pub bind_name: Option<String>,
+    pub source_path: Option<PathBuf>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub resolution: Option<[u32; 2]>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImageGraphResourceSnapshot {
+    pub resource_index: u32,
+    pub resource_kind: &'static str,
+    pub layer_index: Option<usize>,
+    pub layer_id: Option<String>,
+    pub chain_index: Option<usize>,
+    pub execution: Option<&'static str>,
+    pub source_path: Option<PathBuf>,
+    pub target_index: Option<u32>,
+    pub endpoint: Option<&'static str>,
+    pub name: Option<String>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub allocation: &'static str,
+    pub vulkan_effect_target_index: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneWeImageGraphTargetSnapshot {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub chain_index: usize,
+    pub target_index: u32,
+    pub endpoint: &'static str,
+    pub name: Option<String>,
+    pub format: Option<String>,
+    pub scale: Option<f64>,
+    pub unique: bool,
+    pub execution: &'static str,
+    pub planned_graph_resource_index: u32,
+    pub vulkan_effect_target_index: Option<u32>,
+    pub allocation: &'static str,
+    pub width: u32,
+    pub height: u32,
+    pub first_write_step_index: usize,
+    pub write_count: usize,
+    pub sampled_by_following_pass: bool,
+    pub scene_composite_source: bool,
+    pub clear_before_first_write: bool,
 }
 
 fn native_vulkan_scene_texture_slot_snapshot(
@@ -2895,6 +3115,11 @@ fn native_vulkan_scene_effect_record_snapshot(
         effect_file: effect.effect_file.clone(),
         runtime: effect.runtime.clone(),
         pass_index: effect.pass_index,
+        command: effect.command.clone(),
+        source: effect.source.clone(),
+        target: effect.target.clone(),
+        binds: effect.binds.clone(),
+        fbos: effect.fbos.clone(),
         shader: effect.shader.clone(),
         blending: effect.blending.clone(),
         texture_slots: effect
@@ -2910,6 +3135,318 @@ fn native_vulkan_scene_effect_record_snapshot(
     }
 }
 
+fn native_vulkan_scene_we_image_pass_chain_snapshot(
+    chain: NativeVulkanSceneWeImagePassChain,
+) -> NativeVulkanSceneWeImagePassChainSnapshot {
+    NativeVulkanSceneWeImagePassChainSnapshot {
+        execution: chain.execution.as_str(),
+        local_target_required: chain.local_target_required,
+        ping_pong_required: chain.ping_pong_required,
+        first_pass_blend_moved_to_final: chain.first_pass_blend_moved_to_final,
+        color_blend_passthrough: chain.color_blend_passthrough,
+        final_scene_blend_mode: chain.final_scene_blend_mode,
+        raw_direct_composite_allowed: chain.raw_direct_composite_allowed,
+        unsupported_reason: chain.unsupported_reason,
+        passes: chain
+            .passes
+            .into_iter()
+            .map(native_vulkan_scene_we_image_pass_snapshot)
+            .collect(),
+    }
+}
+
+fn native_vulkan_scene_we_image_pass_snapshot(
+    pass: super::draw_pass::NativeVulkanSceneWeImagePass,
+) -> NativeVulkanSceneWeImagePassSnapshot {
+    let texture_slots = pass
+        .texture_slots
+        .iter()
+        .map(native_vulkan_scene_texture_slot_snapshot)
+        .collect();
+    NativeVulkanSceneWeImagePassSnapshot {
+        pass_index: pass.pass_index,
+        role: pass.role.as_str(),
+        effect_kind: pass.effect_kind.map(|kind| kind.as_str()),
+        effect_file: pass.effect_file,
+        command: pass.command,
+        source: pass.source,
+        target_name: pass.target_name,
+        binds: pass.binds,
+        fbos: pass.fbos,
+        shader: pass.shader,
+        blending: pass.blending,
+        scene_blend_mode: pass.scene_blend_mode,
+        render_state: native_vulkan_scene_render_state_snapshot(&pass.render_state),
+        input: pass.input.as_str(),
+        input_name: pass.input_name,
+        target: pass.target.as_str(),
+        final_scene_pass: pass.final_scene_pass,
+        texture_slots,
+        texture_slot_count: pass.texture_slot_count,
+        parameter_keys: pass.parameter_keys,
+        combo_keys: pass.combo_keys,
+        depth_test: pass.depth_test.as_str(),
+        depth_write: pass.depth_write.as_str(),
+        cull_mode: pass.cull_mode.label().to_owned(),
+    }
+}
+
+fn native_vulkan_scene_we_image_graph_texture_resource_paths(
+    graph_plan: &NativeVulkanSceneWeImageGraphPlan,
+) -> Vec<PathBuf> {
+    let mut resources = Vec::new();
+    for step in &graph_plan.steps {
+        for binding in &step.texture_bindings {
+            let Some(source_path) = binding.source_path.as_ref() else {
+                continue;
+            };
+            if !resources.iter().any(|resource| resource == source_path) {
+                resources.push(source_path.clone());
+            }
+        }
+    }
+    resources
+}
+
+fn native_vulkan_scene_we_image_graph_resources_snapshot(
+    graph_plan: &NativeVulkanSceneWeImageGraphPlan,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    texture_resources: &[PathBuf],
+) -> Vec<NativeVulkanSceneWeImageGraphResourceSnapshot> {
+    let mut resources = texture_resources
+        .iter()
+        .enumerate()
+        .map(|(resource_index, source_path)| {
+            let (width, height) = native_vulkan_scene_we_image_graph_texture_resource_dimensions(
+                graph_plan,
+                source_path,
+            );
+            NativeVulkanSceneWeImageGraphResourceSnapshot {
+                resource_index: resource_index.min(u32::MAX as usize) as u32,
+                resource_kind: "texture-source",
+                layer_index: None,
+                layer_id: None,
+                chain_index: None,
+                execution: None,
+                source_path: Some(source_path.clone()),
+                target_index: None,
+                endpoint: None,
+                name: None,
+                width,
+                height,
+                allocation: "file-texture-source",
+                vulkan_effect_target_index: None,
+            }
+        })
+        .collect::<Vec<_>>();
+    let target_resource_base = texture_resources.len().min(u32::MAX as usize) as u32;
+    resources.extend(graph_plan.targets.iter().map(|target| {
+        let vulkan_effect_target_index = effect_targets
+            .iter()
+            .find(|effect_target| {
+                effect_target.we_graph_chain_index == Some(target.chain_index)
+                    && effect_target.we_graph_target_index == Some(target.target_index)
+                    && effect_target.we_graph_endpoint == Some(target.endpoint)
+            })
+            .map(|effect_target| effect_target.effect_target_index);
+        NativeVulkanSceneWeImageGraphResourceSnapshot {
+            resource_index: target_resource_base.saturating_add(target.target_index),
+            resource_kind: "graph-target",
+            layer_index: Some(target.layer_index),
+            layer_id: Some(target.layer_id.clone()),
+            chain_index: Some(target.chain_index),
+            execution: Some(target.execution.as_str()),
+            source_path: None,
+            target_index: Some(target.target_index),
+            endpoint: Some(target.endpoint.as_str()),
+            name: target.name.clone(),
+            width: Some(target.width),
+            height: Some(target.height),
+            allocation: if vulkan_effect_target_index.is_some() {
+                "allocated-vulkan-effect-target"
+            } else {
+                "planned-until-graph-executor"
+            },
+            vulkan_effect_target_index,
+        }
+    }));
+    resources
+}
+
+fn native_vulkan_scene_we_image_graph_texture_resource_dimensions(
+    graph_plan: &NativeVulkanSceneWeImageGraphPlan,
+    source_path: &Path,
+) -> (Option<u32>, Option<u32>) {
+    graph_plan
+        .steps
+        .iter()
+        .flat_map(|step| &step.texture_bindings)
+        .find(|binding| binding.source_path.as_deref() == Some(source_path))
+        .map(|binding| (binding.width, binding.height))
+        .unwrap_or((None, None))
+}
+
+fn native_vulkan_scene_we_image_graph_targets_snapshot(
+    graph_plan: &NativeVulkanSceneWeImageGraphPlan,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    graph_resource_target_base: u32,
+) -> Vec<NativeVulkanSceneWeImageGraphTargetSnapshot> {
+    graph_plan
+        .targets
+        .iter()
+        .map(|target| {
+            native_vulkan_scene_we_image_graph_target_snapshot(
+                target,
+                effect_targets,
+                graph_resource_target_base,
+            )
+        })
+        .collect()
+}
+
+fn native_vulkan_scene_we_image_graph_target_snapshot(
+    target: &NativeVulkanSceneWeImageGraphTarget,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    graph_resource_target_base: u32,
+) -> NativeVulkanSceneWeImageGraphTargetSnapshot {
+    let vulkan_effect_target_index = effect_targets
+        .iter()
+        .find(|effect_target| {
+            effect_target.we_graph_chain_index == Some(target.chain_index)
+                && effect_target.we_graph_target_index == Some(target.target_index)
+                && effect_target.we_graph_endpoint == Some(target.endpoint)
+        })
+        .map(|effect_target| effect_target.effect_target_index);
+    NativeVulkanSceneWeImageGraphTargetSnapshot {
+        layer_index: target.layer_index,
+        layer_id: target.layer_id.clone(),
+        chain_index: target.chain_index,
+        target_index: target.target_index,
+        endpoint: target.endpoint.as_str(),
+        name: target.name.clone(),
+        format: target.format.clone(),
+        scale: target.scale,
+        unique: target.unique,
+        execution: target.execution.as_str(),
+        planned_graph_resource_index: graph_resource_target_base
+            .saturating_add(target.target_index),
+        vulkan_effect_target_index,
+        allocation: if vulkan_effect_target_index.is_some() {
+            "allocated-vulkan-effect-target"
+        } else {
+            "planned-until-graph-executor"
+        },
+        width: target.width,
+        height: target.height,
+        first_write_step_index: target.first_write_step_index,
+        write_count: target.write_count,
+        sampled_by_following_pass: target.sampled_by_following_pass,
+        scene_composite_source: target.scene_composite_source,
+        clear_before_first_write: target.clear_before_first_write,
+    }
+}
+
+fn native_vulkan_scene_we_image_graph_steps_snapshot(
+    graph_plan: NativeVulkanSceneWeImageGraphPlan,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    sampled_image_sources: &[PathBuf],
+    graph_texture_resources: &[PathBuf],
+    graph_resource_target_base: u32,
+) -> Vec<NativeVulkanSceneWeImageGraphStepSnapshot> {
+    graph_plan
+        .steps
+        .into_iter()
+        .map(|step| NativeVulkanSceneWeImageGraphStepSnapshot {
+            layer_index: step.layer_index,
+            layer_id: step.layer_id,
+            chain_index: step.chain_index,
+            step_index: step.step_index,
+            execution: step.execution.as_str(),
+            raw_direct_composite_allowed: step.raw_direct_composite_allowed,
+            unsupported_reason: step.unsupported_reason,
+            input_target_index: step.input_target_index,
+            output_target_index: step.output_target_index,
+            texture_bindings: step
+                .texture_bindings
+                .into_iter()
+                .map(|binding| {
+                    native_vulkan_scene_we_image_graph_texture_binding_snapshot(
+                        binding,
+                        step.chain_index,
+                        effect_targets,
+                        sampled_image_sources,
+                        graph_texture_resources,
+                        graph_resource_target_base,
+                    )
+                })
+                .collect(),
+            pass: native_vulkan_scene_we_image_pass_snapshot(step.pass),
+        })
+        .collect()
+}
+
+fn native_vulkan_scene_we_image_graph_texture_binding_snapshot(
+    binding: NativeVulkanSceneWeImageGraphTextureBinding,
+    chain_index: usize,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    sampled_image_sources: &[PathBuf],
+    graph_texture_resources: &[PathBuf],
+    graph_resource_target_base: u32,
+) -> NativeVulkanSceneWeImageGraphTextureBindingSnapshot {
+    let vulkan_effect_target_index = binding.target_index.and_then(|target_index| {
+        effect_targets
+            .iter()
+            .find(|effect_target| {
+                effect_target.we_graph_chain_index == Some(chain_index)
+                    && effect_target.we_graph_target_index == Some(target_index)
+                    && effect_target.we_graph_endpoint == binding.endpoint
+            })
+            .map(|effect_target| effect_target.effect_target_index)
+    });
+    let planned_graph_resource_index = binding
+        .target_index
+        .map(|target_index| graph_resource_target_base.saturating_add(target_index))
+        .or_else(|| {
+            binding.source_path.as_ref().and_then(|source| {
+                graph_texture_resources
+                    .iter()
+                    .position(|candidate| candidate == source)
+                    .map(|index| index.min(u32::MAX as usize) as u32)
+            })
+        });
+    let resource_index = vulkan_effect_target_index
+        .map(|target_index| {
+            sampled_image_sources
+                .len()
+                .max(1)
+                .saturating_add(target_index as usize)
+                .min(u32::MAX as usize) as u32
+        })
+        .or_else(|| {
+            binding.source_path.as_ref().and_then(|source| {
+                sampled_image_sources
+                    .iter()
+                    .position(|candidate| candidate == source)
+                    .map(|index| index.min(u32::MAX as usize) as u32)
+            })
+        });
+    NativeVulkanSceneWeImageGraphTextureBindingSnapshot {
+        slot: binding.slot,
+        uniform: binding.uniform,
+        source: binding.source.as_str(),
+        resource_index,
+        planned_graph_resource_index,
+        target_index: binding.target_index,
+        endpoint: binding.endpoint.map(|endpoint| endpoint.as_str()),
+        vulkan_effect_target_index,
+        bind_name: binding.bind_name,
+        source_path: binding.source_path,
+        width: binding.width,
+        height: binding.height,
+        resolution: binding.resolution,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneDrawOpSnapshot {
     pub layer_index: usize,
@@ -2918,9 +3455,11 @@ pub struct NativeVulkanSceneDrawOpSnapshot {
     pub opacity: f64,
     pub source: Option<PathBuf>,
     pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
+    pub blend_mode: SceneBlendMode,
     pub alpha_texture_slot: Option<u32>,
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub image_effect_pass_count: usize,
+    pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub texture_region: Option<SceneTextureRegion>,
     pub color: Option<String>,
@@ -2995,6 +3534,8 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
     pub image_effect_pass_count: usize,
     pub material_pass: NativeVulkanSceneMaterialPassSnapshot,
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub we_image_pass_chain: Option<NativeVulkanSceneWeImagePassChainSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub fit: FitMode,
     pub texture_region: Option<SceneTextureRegion>,
@@ -3016,6 +3557,10 @@ pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
     pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub composite_key: Option<SceneLayerCompositeKey>,
     pub render_target: NativeVulkanSceneSampledImageRenderTargetSnapshot,
+    pub we_graph_chain_index: Option<usize>,
+    pub we_graph_step_index: Option<usize>,
+    pub we_graph_input_target_index: Option<u32>,
+    pub we_graph_output_target_index: Option<u32>,
     pub first_vertex: u32,
     pub vertex_count: u32,
     pub first_index: u32,
@@ -3035,9 +3580,13 @@ pub enum NativeVulkanSceneSampledImageRenderTargetSnapshot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneSampledImageEffectTargetSnapshot {
+    pub effect_target_index: u32,
     pub layer_index: usize,
     pub width: u32,
     pub height: u32,
+    pub we_graph_chain_index: Option<usize>,
+    pub we_graph_target_index: Option<u32>,
+    pub we_graph_endpoint: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -3073,9 +3622,13 @@ fn native_vulkan_scene_sampled_image_effect_target_snapshot(
     target: NativeVulkanSceneSampledImageEffectTarget,
 ) -> NativeVulkanSceneSampledImageEffectTargetSnapshot {
     NativeVulkanSceneSampledImageEffectTargetSnapshot {
+        effect_target_index: target.effect_target_index,
         layer_index: target.layer_index,
         width: target.width,
         height: target.height,
+        we_graph_chain_index: target.we_graph_chain_index,
+        we_graph_target_index: target.we_graph_target_index,
+        we_graph_endpoint: target.we_graph_endpoint.map(|endpoint| endpoint.as_str()),
     }
 }
 
@@ -3093,6 +3646,27 @@ fn native_vulkan_scene_vulkanalia_sampled_image_render_target(
             target_index,
             clear,
         },
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_we_image_graph_resource(
+    resource: NativeVulkanSceneWeImageGraphResourceSnapshot,
+) -> NativeVulkanVulkanaliaSceneWeImageGraphResource {
+    NativeVulkanVulkanaliaSceneWeImageGraphResource {
+        resource_index: resource.resource_index,
+        resource_kind: resource.resource_kind,
+        layer_index: resource.layer_index,
+        layer_id: resource.layer_id,
+        chain_index: resource.chain_index,
+        execution: resource.execution,
+        source_path: resource.source_path,
+        target_index: resource.target_index,
+        endpoint: resource.endpoint,
+        name: resource.name,
+        width: resource.width,
+        height: resource.height,
+        allocation: resource.allocation,
+        vulkan_effect_target_index: resource.vulkan_effect_target_index,
     }
 }
 
@@ -3249,6 +3823,49 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         scene_binary_ingest.is_some(),
     );
     let scene_video_native_layer_count = full_scene.video_native_layer_count;
+    let sampled_image_we_graph_chain_count = pass_plan.sampled_image_we_graph_plan.chain_count;
+    let sampled_image_we_graph_step_count = pass_plan.sampled_image_we_graph_plan.step_count;
+    let sampled_image_we_graph_first_class_target_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .first_class_target_chain_count;
+    let sampled_image_we_graph_temporary_raw_fallback_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .temporary_raw_fallback_chain_count;
+    let sampled_image_we_graph_suppressed_chain_count =
+        pass_plan.sampled_image_we_graph_plan.suppressed_chain_count;
+    let sampled_image_we_graph_target_count = pass_plan.sampled_image_we_graph_plan.target_count;
+    let sampled_image_we_graph_final_scene_step_count =
+        pass_plan.sampled_image_we_graph_plan.final_scene_step_count;
+    let sampled_image_we_graph_effect_kind_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .effect_kind_counts
+        .iter()
+        .map(|(kind, count)| ((*kind).to_owned(), *count))
+        .collect::<BTreeMap<_, _>>();
+    let sampled_image_we_graph_texture_resources =
+        native_vulkan_scene_we_image_graph_texture_resource_paths(
+            &pass_plan.sampled_image_we_graph_plan,
+        );
+    let sampled_image_we_graph_target_resource_base = sampled_image_we_graph_texture_resources
+        .len()
+        .min(u32::MAX as usize) as u32;
+    let sampled_image_we_graph_resources = native_vulkan_scene_we_image_graph_resources_snapshot(
+        &pass_plan.sampled_image_we_graph_plan,
+        &pass_plan.sampled_image_effect_targets,
+        &sampled_image_we_graph_texture_resources,
+    );
+    let sampled_image_we_graph_targets = native_vulkan_scene_we_image_graph_targets_snapshot(
+        &pass_plan.sampled_image_we_graph_plan,
+        &pass_plan.sampled_image_effect_targets,
+        sampled_image_we_graph_target_resource_base,
+    );
+    let sampled_image_we_graph_steps = native_vulkan_scene_we_image_graph_steps_snapshot(
+        pass_plan.sampled_image_we_graph_plan.clone(),
+        &pass_plan.sampled_image_effect_targets,
+        &pass_plan.sampled_image_sources,
+        &sampled_image_we_graph_texture_resources,
+        sampled_image_we_graph_target_resource_base,
+    );
     Some(NativeVulkanSceneRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
         scene_size: plan.scene_size,
@@ -3329,31 +3946,56 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_pass_sampled_image_quads: pass_plan
             .sampled_image_quads
             .into_iter()
-            .map(|quad| NativeVulkanSceneSampledImageQuadSnapshot {
-                layer_index: quad.layer_index,
-                layer_id: quad.layer_id,
-                source: quad.source,
-                texture_slots: quad
-                    .texture_slots
-                    .iter()
-                    .map(native_vulkan_scene_texture_slot_snapshot)
-                    .collect(),
-                image_effect_pass_count: quad.image_effect_pass_count,
-                material_pass: native_vulkan_scene_material_pass_snapshot(&quad.material_pass),
-                effect_passes: quad
-                    .effect_passes
-                    .iter()
-                    .map(native_vulkan_scene_effect_record_snapshot)
-                    .collect(),
-                composite_key: quad.composite_key,
-                fit: quad.fit,
-                texture_region: quad.texture_region,
-                opacity: quad.opacity,
-                width: quad.width,
-                height: quad.height,
-                transform: quad.transform,
+            .map(|quad| {
+                let we_image_pass_chain = native_vulkan_scene_we_image_pass_chain(&quad)
+                    .map(native_vulkan_scene_we_image_pass_chain_snapshot);
+                NativeVulkanSceneSampledImageQuadSnapshot {
+                    layer_index: quad.layer_index,
+                    layer_id: quad.layer_id,
+                    source: quad.source,
+                    texture_slots: quad
+                        .texture_slots
+                        .iter()
+                        .map(native_vulkan_scene_texture_slot_snapshot)
+                        .collect(),
+                    image_effect_pass_count: quad.image_effect_pass_count,
+                    material_pass: native_vulkan_scene_material_pass_snapshot(&quad.material_pass),
+                    effect_passes: quad
+                        .effect_passes
+                        .iter()
+                        .map(native_vulkan_scene_effect_record_snapshot)
+                        .collect(),
+                    we_image_pass_chain,
+                    composite_key: quad.composite_key,
+                    fit: quad.fit,
+                    texture_region: quad.texture_region,
+                    opacity: quad.opacity,
+                    width: quad.width,
+                    height: quad.height,
+                    transform: quad.transform,
+                }
             })
             .collect(),
+        draw_pass_sampled_image_we_graph_chain_count: sampled_image_we_graph_chain_count,
+        draw_pass_sampled_image_we_graph_step_count: sampled_image_we_graph_step_count,
+        draw_pass_sampled_image_we_graph_first_class_target_chain_count:
+            sampled_image_we_graph_first_class_target_chain_count,
+        draw_pass_sampled_image_we_graph_temporary_raw_fallback_chain_count:
+            sampled_image_we_graph_temporary_raw_fallback_chain_count,
+        draw_pass_sampled_image_we_graph_suppressed_chain_count:
+            sampled_image_we_graph_suppressed_chain_count,
+        draw_pass_sampled_image_we_graph_target_count: sampled_image_we_graph_target_count,
+        draw_pass_sampled_image_we_graph_final_scene_step_count:
+            sampled_image_we_graph_final_scene_step_count,
+        draw_pass_sampled_image_we_graph_effect_kind_counts:
+            sampled_image_we_graph_effect_kind_counts,
+        draw_pass_sampled_image_we_graph_resource_count: sampled_image_we_graph_resources.len(),
+        draw_pass_sampled_image_we_graph_texture_resource_count:
+            sampled_image_we_graph_texture_resources.len(),
+        draw_pass_sampled_image_we_graph_target_resource_count: sampled_image_we_graph_target_count,
+        draw_pass_sampled_image_we_graph_resources: sampled_image_we_graph_resources,
+        draw_pass_sampled_image_we_graph_targets: sampled_image_we_graph_targets,
+        draw_pass_sampled_image_we_graph_steps: sampled_image_we_graph_steps,
         draw_pass_sampled_image_effect_targets: pass_plan
             .sampled_image_effect_targets
             .into_iter()
@@ -3388,6 +4030,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 render_target: native_vulkan_scene_sampled_image_render_target_snapshot(
                     step.render_target,
                 ),
+                we_graph_chain_index: step.we_graph_chain_index,
+                we_graph_step_index: step.we_graph_step_index,
+                we_graph_input_target_index: step.we_graph_input_target_index,
+                we_graph_output_target_index: step.we_graph_output_target_index,
                 first_vertex: step.first_vertex,
                 vertex_count: step.vertex_count,
                 first_index: step.first_index,
@@ -3476,6 +4122,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_pass_vector_shape_op_count: pass_plan.vector_shape_op_count,
         draw_pass_text_op_count: pass_plan.text_op_count,
         draw_pass_path_op_count: pass_plan.path_op_count,
+        draw_pass_effect_pass_count: pass_plan.effect_pass_count,
+        draw_pass_effect_pass_non_image_layer_count: pass_plan.effect_pass_non_image_layer_count,
+        draw_pass_effect_pass_kind_counts: pass_plan
+            .effect_pass_kind_counts
+            .iter()
+            .map(|(kind, count)| ((*kind).to_owned(), *count))
+            .collect(),
         draw_pass_required_image_resources: pass_plan.required_image_resources,
         draw_pass_required_video_resources: pass_plan.required_video_resources,
         draw_pass_requires_text_geometry: pass_plan.requires_text_geometry,
@@ -3489,43 +4142,52 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_ops: plan
             .draw_ops
             .into_iter()
-            .map(|op| NativeVulkanSceneDrawOpSnapshot {
-                layer_index: op.layer_index,
-                layer_id: op.layer_id,
-                kind: op.kind.as_str(),
-                opacity: op.opacity,
-                source: op.source,
-                texture_slots: op
-                    .texture_slots
-                    .into_iter()
-                    .map(|slot| NativeVulkanSceneTextureSlotSnapshot {
-                        slot: slot.slot,
-                        source: slot.source,
-                        width: slot.width,
-                        height: slot.height,
-                    })
-                    .collect(),
-                alpha_texture_slot: op.alpha_texture_slot,
-                alpha_texture_mode: op.alpha_texture_mode,
-                image_effect_pass_count: op.image_effect_passes.len(),
-                composite_key: op.composite_key,
-                texture_region: op.texture_region,
-                color: op.color,
-                stroke_color: op.stroke_color,
-                stroke_width: op.stroke_width,
-                corner_radius: op.corner_radius,
-                width: op.width,
-                height: op.height,
-                text: op.text,
-                font_size: op.font_size,
-                font_family: op.font_family,
-                font_source: op.font_source,
-                font_weight: op.font_weight,
-                text_align: op.text_align,
-                path_data: op.path_data,
-                path_fill_rule: op.path_fill_rule,
-                fit: op.fit,
-                transform: op.transform,
+            .map(|op| {
+                let effect_passes =
+                    native_vulkan_scene_effect_passes_from_render_passes(&op.image_effect_passes)
+                        .iter()
+                        .map(native_vulkan_scene_effect_record_snapshot)
+                        .collect::<Vec<_>>();
+                NativeVulkanSceneDrawOpSnapshot {
+                    layer_index: op.layer_index,
+                    layer_id: op.layer_id,
+                    kind: op.kind.as_str(),
+                    opacity: op.opacity,
+                    source: op.source,
+                    texture_slots: op
+                        .texture_slots
+                        .into_iter()
+                        .map(|slot| NativeVulkanSceneTextureSlotSnapshot {
+                            slot: slot.slot,
+                            source: slot.source,
+                            width: slot.width,
+                            height: slot.height,
+                        })
+                        .collect(),
+                    blend_mode: op.blend_mode,
+                    alpha_texture_slot: op.alpha_texture_slot,
+                    alpha_texture_mode: op.alpha_texture_mode,
+                    image_effect_pass_count: op.image_effect_passes.len(),
+                    effect_passes,
+                    composite_key: op.composite_key,
+                    texture_region: op.texture_region,
+                    color: op.color,
+                    stroke_color: op.stroke_color,
+                    stroke_width: op.stroke_width,
+                    corner_radius: op.corner_radius,
+                    width: op.width,
+                    height: op.height,
+                    text: op.text,
+                    font_size: op.font_size,
+                    font_family: op.font_family,
+                    font_source: op.font_source,
+                    font_weight: op.font_weight,
+                    text_align: op.text_align,
+                    path_data: op.path_data,
+                    path_fill_rule: op.path_fill_rule,
+                    fit: op.fit,
+                    transform: op.transform,
+                }
             })
             .collect(),
         unsupported_layers: plan
@@ -4123,7 +4785,8 @@ mod tests {
     };
     use crate::renderer::native_vulkan::NativeVulkanRenderItem;
     use crate::renderer::{
-        SceneDisplayPlan, SceneRenderAudioCue, SceneRenderLayer, SceneRenderTextureSlot,
+        SceneDisplayPlan, SceneRenderAlphaTextureMode, SceneRenderAudioCue,
+        SceneRenderImageEffectPass, SceneRenderLayer, SceneRenderTextureSlot,
     };
     use serde_json::json;
     use std::fs;
@@ -4316,6 +4979,25 @@ mod tests {
         text.font_family = Some("Inter".to_owned());
         text.font_weight = Some("600".to_owned());
         text.text_align = Some(SceneTextAlign::Middle);
+        text.image_effect_passes = vec![SceneRenderImageEffectPass {
+            effect_file: "effects/scroll/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/scroll".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
         let mut hidden_group = scene_test_layer("hidden-group", SceneNodeKind::Group);
         hidden_group.opacity = 0.0;
         let item = scene_test_item(
@@ -4352,6 +5034,15 @@ mod tests {
         assert_eq!(snapshot.draw_pass_vector_shape_op_count, 1);
         assert_eq!(snapshot.draw_pass_text_op_count, 1);
         assert_eq!(snapshot.draw_pass_path_op_count, 0);
+        assert_eq!(snapshot.draw_pass_effect_pass_count, 1);
+        assert_eq!(snapshot.draw_pass_effect_pass_non_image_layer_count, 1);
+        assert_eq!(
+            snapshot
+                .draw_pass_effect_pass_kind_counts
+                .get("scroll")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(
             snapshot.draw_pass_required_image_resources,
             vec![PathBuf::from("/tmp/scene-hero.png")]
@@ -4393,6 +5084,16 @@ mod tests {
         assert_eq!(
             snapshot.draw_ops[2].text_align,
             Some(SceneTextAlign::Middle)
+        );
+        assert_eq!(snapshot.draw_ops[2].image_effect_pass_count, 1);
+        assert_eq!(snapshot.draw_ops[2].effect_passes[0].kind, "scroll");
+        assert_eq!(
+            snapshot.draw_ops[2].effect_passes[0].effect_file,
+            "effects/scroll/effect.json"
+        );
+        assert_eq!(
+            snapshot.draw_ops[2].effect_passes[0].shader.as_deref(),
+            Some("effects/scroll")
         );
         assert_eq!(
             snapshot.draw_pass_recordable_quads[0].kind,
@@ -5474,6 +6175,267 @@ mod tests {
     }
 
     #[test]
+    fn scene_runtime_snapshot_reports_we_graph_resources_as_first_class() {
+        let mut opacity = scene_test_layer("eye", SceneNodeKind::Image);
+        opacity.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        opacity.blend_mode = SceneBlendMode::Normal;
+        opacity.width = Some(663.0);
+        opacity.height = Some(230.0);
+        opacity.texture_slots = vec![
+            SceneRenderTextureSlot {
+                slot: 0,
+                source: PathBuf::from("/tmp/eye.gtex"),
+                width: Some(663),
+                height: Some(230),
+            },
+            SceneRenderTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/opacity-mask.gtex"),
+                width: Some(331),
+                height: Some(115),
+            },
+        ];
+        opacity.alpha_texture_slot = Some(1);
+        opacity.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
+        opacity.image_effect_passes = vec![SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: opacity.texture_slots.clone(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+
+        let mut water = scene_test_layer("water-carrier", SceneNodeKind::Image);
+        water.source = Some(PathBuf::from("/tmp/water-source.gtex"));
+        water.blend_mode = SceneBlendMode::Modulate;
+        water.width = Some(3450.0);
+        water.height = Some(3000.0);
+        water.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/water-source.gtex"),
+            width: Some(3450),
+            height: Some(3000),
+        }];
+        water.image_effect_passes = vec![SceneRenderImageEffectPass {
+            effect_file: "effects/waterripple/effect.json".to_owned(),
+            runtime: Some("native-effect-motion".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/waterripple".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: vec![SceneRenderTextureSlot {
+                slot: 2,
+                source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                width: Some(512),
+                height: Some(512),
+            }],
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+
+        let item = scene_test_item(vec![opacity, water], None);
+
+        let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
+
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_chain_count, 2);
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_step_count, 5);
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 3);
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_texture_resource_count,
+            4
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_target_resource_count,
+            3
+        );
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_resource_count, 7);
+        assert_eq!(
+            snapshot
+                .draw_pass_sampled_image_we_graph_resources
+                .iter()
+                .map(|resource| resource.resource_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3, 4, 5, 6]
+        );
+
+        let opacity_target = snapshot
+            .draw_pass_sampled_image_we_graph_targets
+            .iter()
+            .find(|target| target.layer_id == "eye")
+            .expect("opacity graph target");
+        assert_eq!(opacity_target.endpoint, "first-class-effect-target");
+        assert_eq!(opacity_target.planned_graph_resource_index, 4);
+        assert_eq!(opacity_target.vulkan_effect_target_index, Some(0));
+        assert_eq!(opacity_target.allocation, "allocated-vulkan-effect-target");
+
+        let opacity_target_resource = snapshot
+            .draw_pass_sampled_image_we_graph_resources
+            .iter()
+            .find(|resource| resource.resource_index == opacity_target.planned_graph_resource_index)
+            .expect("opacity target resource");
+        assert_eq!(opacity_target_resource.resource_kind, "graph-target");
+        assert_eq!(opacity_target_resource.layer_id.as_deref(), Some("eye"));
+        assert_eq!(opacity_target_resource.chain_index, Some(0));
+        assert_eq!(opacity_target_resource.target_index, Some(0));
+        assert_eq!(
+            opacity_target_resource.endpoint,
+            Some("first-class-effect-target")
+        );
+        assert_eq!(
+            opacity_target_resource.allocation,
+            "allocated-vulkan-effect-target"
+        );
+        assert_eq!(opacity_target_resource.vulkan_effect_target_index, Some(0));
+
+        let opacity_final_input = snapshot
+            .draw_pass_sampled_image_we_graph_steps
+            .iter()
+            .find(|step| step.layer_id == "eye" && step.step_index == 1)
+            .and_then(|step| {
+                step.texture_bindings
+                    .iter()
+                    .find(|binding| binding.slot == 0)
+            })
+            .expect("opacity final input binding");
+        assert_eq!(opacity_final_input.source, "previous-graph-target");
+        assert_eq!(opacity_final_input.planned_graph_resource_index, Some(4));
+        assert_eq!(opacity_final_input.vulkan_effect_target_index, Some(0));
+
+        let water_targets = snapshot
+            .draw_pass_sampled_image_we_graph_targets
+            .iter()
+            .filter(|target| target.layer_id == "water-carrier")
+            .collect::<Vec<_>>();
+        assert_eq!(water_targets.len(), 2);
+        assert_eq!(water_targets[0].endpoint, "image-local-main");
+        assert_eq!(water_targets[0].planned_graph_resource_index, 5);
+        assert_eq!(water_targets[0].vulkan_effect_target_index, None);
+        assert_eq!(water_targets[0].allocation, "planned-until-graph-executor");
+        assert_eq!(water_targets[1].endpoint, "image-local-sub");
+        assert_eq!(water_targets[1].planned_graph_resource_index, 6);
+        assert_eq!(water_targets[1].vulkan_effect_target_index, None);
+        assert_eq!(water_targets[1].allocation, "planned-until-graph-executor");
+
+        let water_target_resources = snapshot
+            .draw_pass_sampled_image_we_graph_resources
+            .iter()
+            .filter(|resource| resource.layer_id.as_deref() == Some("water-carrier"))
+            .collect::<Vec<_>>();
+        assert_eq!(water_target_resources.len(), 2);
+        assert_eq!(water_target_resources[0].resource_index, 5);
+        assert_eq!(
+            water_target_resources[0].execution,
+            Some("suppressed-until-graph-executor")
+        );
+        assert_eq!(
+            water_target_resources[0].allocation,
+            "planned-until-graph-executor"
+        );
+        assert_eq!(water_target_resources[1].resource_index, 6);
+        assert_eq!(
+            water_target_resources[1].execution,
+            Some("suppressed-until-graph-executor")
+        );
+        assert_eq!(
+            water_target_resources[1].allocation,
+            "planned-until-graph-executor"
+        );
+
+        let water_ripple_input = snapshot
+            .draw_pass_sampled_image_we_graph_steps
+            .iter()
+            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
+            .and_then(|step| {
+                step.texture_bindings
+                    .iter()
+                    .find(|binding| binding.slot == 0)
+            })
+            .expect("water ripple input binding");
+        assert_eq!(water_ripple_input.source, "previous-graph-target");
+        assert_eq!(water_ripple_input.planned_graph_resource_index, Some(5));
+        assert_eq!(water_ripple_input.vulkan_effect_target_index, None);
+
+        let water_normal = snapshot
+            .draw_pass_sampled_image_we_graph_steps
+            .iter()
+            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
+            .and_then(|step| {
+                step.texture_bindings
+                    .iter()
+                    .find(|binding| binding.slot == 2)
+            })
+            .expect("water normal-map binding");
+        assert_eq!(water_normal.source, "pass-texture-slot");
+        assert_eq!(
+            water_normal.source_path.as_deref(),
+            Some(Path::new("/tmp/waterripplenormal.gtex"))
+        );
+        assert_eq!(water_normal.planned_graph_resource_index, Some(3));
+        let water_normal_resource = snapshot
+            .draw_pass_sampled_image_we_graph_resources
+            .iter()
+            .find(|resource| resource.resource_index == 3)
+            .expect("water normal-map texture resource");
+        assert_eq!(water_normal_resource.resource_kind, "texture-source");
+        assert_eq!(
+            water_normal_resource.source_path.as_deref(),
+            Some(Path::new("/tmp/waterripplenormal.gtex"))
+        );
+        assert_eq!(water_normal_resource.width, Some(512));
+        assert_eq!(water_normal_resource.height, Some(512));
+
+        let mut vulkan_snapshot = snapshot.clone();
+        let (_source, vulkan_geometry) = vulkan_snapshot
+            .take_vulkanalia_sampled_image_geometry_input()
+            .expect("vulkanalia sampled image geometry");
+        assert_eq!(vulkan_geometry.we_graph_resources.len(), 7);
+        assert_eq!(
+            vulkan_geometry
+                .we_graph_resources
+                .iter()
+                .filter(|resource| resource.resource_kind == "texture-source")
+                .count(),
+            4
+        );
+        assert_eq!(
+            vulkan_geometry
+                .we_graph_resources
+                .iter()
+                .filter(|resource| resource.resource_kind == "graph-target")
+                .count(),
+            3
+        );
+        assert_eq!(
+            vulkan_geometry.we_graph_resources[4].allocation,
+            "allocated-vulkan-effect-target"
+        );
+        assert_eq!(
+            vulkan_geometry.we_graph_resources[5].allocation,
+            "planned-until-graph-executor"
+        );
+    }
+
+    #[test]
     fn scene_runtime_snapshot_exports_mixed_quad_and_sampled_image_geometry() {
         let mut background = scene_test_layer("background", SceneNodeKind::Rectangle);
         background.color = Some("#102030".to_owned());
@@ -5522,12 +6484,14 @@ mod tests {
                 "scene-solid-quad-multiply-blend",
                 "scene-solid-quad-screen-blend",
                 "scene-solid-quad-max-blend",
+                "scene-solid-quad-modulate-blend",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-normal-blend",
                 "scene-sampled-image-additive-blend",
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",
-                "scene-sampled-image-max-blend"
+                "scene-sampled-image-max-blend",
+                "scene-sampled-image-modulate-blend"
             ]
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);
@@ -6296,6 +7260,11 @@ mod tests {
                 effect_file: "effects/opacity/effect.json".to_owned(),
                 runtime: Some("native-opacity-mask".to_owned()),
                 pass_index: 0,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
                 shader: Some("effects/opacity".to_owned()),
                 blending: Some("normal".to_owned()),
                 depthtest: None,
@@ -6387,6 +7356,11 @@ mod tests {
                 effect_file: "effects/iris/effect.json".to_owned(),
                 runtime: Some("native-iris-mask".to_owned()),
                 pass_index: 0,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
                 shader: Some("effects/iris".to_owned()),
                 blending: Some("normal".to_owned()),
                 depthtest: None,

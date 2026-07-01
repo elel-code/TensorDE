@@ -122,6 +122,7 @@ pub use scene_present::{
     NativeVulkanVulkanaliaSceneTextureSlotResourceBinding,
     NativeVulkanVulkanaliaSceneVideoLayerDrawStep,
     NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
+    NativeVulkanVulkanaliaSceneWeImageGraphResource,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_solid_quad_present,
 };

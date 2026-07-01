@@ -14,30 +14,36 @@ use crate::core::scene::binary::{
     SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_HEADER_SIZE,
     SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
-    SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
-    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
-    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
-    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryEffectPassRecord,
+    SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO, SCENE_BINARY_PARAMETER_ROLE_PASS_BIND,
+    SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO, SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT,
+    SCENE_BINARY_PARAMETER_VALUE_BOOL, SCENE_BINARY_PARAMETER_VALUE_FLOAT,
+    SCENE_BINARY_PARAMETER_VALUE_INTEGER, SCENE_BINARY_PARAMETER_VALUE_STRING,
+    SCENE_BINARY_PARAMETER_VALUE_VEC2, SCENE_BINARY_PARAMETER_VALUE_VEC3,
+    SCENE_BINARY_PARAMETER_VALUE_VEC4, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE, SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+    SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+    SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryEffectPassRecord,
     SceneBinaryEffectUvTransformRecord, SceneBinaryError, SceneBinaryGeometryRecord,
     SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord, SceneBinaryParticleEmitterRecord,
     SceneBinaryResourceRecord, SceneBinaryTextureSlotRecord, decode_debug_name_record,
-    decode_effect_pass_record, decode_effect_uv_transform_record, decode_geometry_index_record,
-    decode_geometry_record, decode_geometry_vertex_record, decode_material_pass_record,
-    decode_node_record, decode_particle_emitter_record, decode_puppet_clip_record,
-    decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_record,
-    decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record, decode_render_state_record,
-    decode_resource_record, decode_scene_binary_header_table, decode_texture_slot_record,
-    decode_transform_keyframe_record, decode_transform_timeline_record,
+    decode_effect_parameter_record, decode_effect_pass_record, decode_effect_uv_transform_record,
+    decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
+    decode_material_pass_record, decode_node_record, decode_particle_emitter_record,
+    decode_puppet_clip_record, decode_puppet_frame_record, decode_puppet_layer_record,
+    decode_puppet_record, decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
+    decode_render_state_record, decode_resource_record, decode_scene_binary_header_table,
+    decode_texture_slot_record, decode_transform_keyframe_record, decode_transform_timeline_record,
     scene_binary_particle_shape_kind, scene_binary_particle_transform,
 };
 use crate::core::scene::{
-    SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh, SceneMeshSkin,
-    SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetAnimationBone,
-    ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
+    SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
+    SceneMeshSkin, SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex,
+    ScenePuppetAnimationBone, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
@@ -949,15 +955,32 @@ fn binary_scene_image_effect_pass(
         pass.effect_uv_transform_count,
         decode_effect_uv_transform_record,
     )?;
+    let parameters = reader.record_range(
+        SceneBinaryChunkKind::EffectParameter,
+        crate::core::scene::binary::SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+        pass.first_parameter,
+        pass.parameter_count,
+        decode_effect_parameter_record,
+    )?;
     let effect_file = binary_name(names, pass.effect_name)
         .unwrap_or("")
         .to_owned();
     let shader = binary_name(names, pass.shader_name).map(str::to_owned);
     let blending = binary_name(names, pass.blending_name).map(str::to_owned);
+    let command = binary_name(names, pass.command_name).map(str::to_owned);
+    let source = binary_name(names, pass.source_name).map(str::to_owned);
+    let target = binary_name(names, pass.target_name).map(str::to_owned);
+    let (binds, fbos, combos, constant_shader_values) =
+        binary_scene_image_effect_parameters(names, parameters);
     Ok(SceneRenderImageEffectPass {
         effect_file: effect_file.clone(),
         runtime: binary_scene_effect_runtime(pass.kind, &effect_file),
         pass_index: pass.pass_index as usize,
+        command,
+        source,
+        target,
+        binds,
+        fbos,
         shader,
         blending,
         depthtest: binary_scene_material_flag(pass.depth_test),
@@ -968,9 +991,100 @@ fn binary_scene_image_effect_pass(
             .into_iter()
             .next()
             .map(binary_scene_effect_uv_transform),
-        combos: BTreeMap::new(),
-        constant_shader_values: BTreeMap::<String, Value>::new(),
+        combos,
+        constant_shader_values,
     })
+}
+
+fn binary_scene_image_effect_parameters(
+    names: &BinarySceneNames,
+    parameters: Vec<SceneBinaryEffectParameterRecord>,
+) -> (
+    BTreeMap<u32, String>,
+    Vec<SceneEffectFbo>,
+    BTreeMap<String, i64>,
+    BTreeMap<String, Value>,
+) {
+    let mut binds = BTreeMap::new();
+    let mut fbos = Vec::new();
+    let mut combos = BTreeMap::new();
+    let mut constants = BTreeMap::new();
+    for parameter in parameters {
+        if parameter.role_flags & SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO != 0 {
+            if let Some(name) = binary_name(names, parameter.parameter_name) {
+                fbos.push(SceneEffectFbo {
+                    name: name.to_owned(),
+                    format: binary_name(names, parameter.value_name).map(str::to_owned),
+                    scale: if parameter.value0.is_finite() && parameter.value0 > 0.0 {
+                        parameter.value0 as f64
+                    } else {
+                        1.0
+                    },
+                    unique: parameter.integer_value != 0,
+                });
+            }
+            continue;
+        }
+        if parameter.role_flags & SCENE_BINARY_PARAMETER_ROLE_PASS_BIND != 0 {
+            let slot = u32::try_from(parameter.integer_value)
+                .ok()
+                .or_else(|| {
+                    binary_name(names, parameter.parameter_name).and_then(|name| name.parse().ok())
+                })
+                .unwrap_or(0);
+            if let Some(name) = binary_name(names, parameter.value_name) {
+                binds.insert(slot, name.to_owned());
+            }
+            continue;
+        }
+        let Some(name) = binary_name(names, parameter.parameter_name) else {
+            continue;
+        };
+        if parameter.role_flags & SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO != 0 {
+            combos.insert(name.to_owned(), parameter.integer_value);
+            continue;
+        }
+        if parameter.role_flags & SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT != 0
+            && let Some(value) = binary_scene_effect_parameter_value(names, parameter)
+        {
+            constants.insert(name.to_owned(), value);
+        }
+    }
+    (binds, fbos, combos, constants)
+}
+
+fn binary_scene_effect_parameter_value(
+    names: &BinarySceneNames,
+    parameter: SceneBinaryEffectParameterRecord,
+) -> Option<Value> {
+    match parameter.value_kind {
+        SCENE_BINARY_PARAMETER_VALUE_BOOL => Some(Value::Bool(parameter.integer_value != 0)),
+        SCENE_BINARY_PARAMETER_VALUE_FLOAT => {
+            serde_json::Number::from_f64(parameter.value0 as f64).map(Value::Number)
+        }
+        SCENE_BINARY_PARAMETER_VALUE_INTEGER => Some(Value::Number(serde_json::Number::from(
+            parameter.integer_value,
+        ))),
+        SCENE_BINARY_PARAMETER_VALUE_STRING => binary_name(names, parameter.value_name)
+            .map(str::to_owned)
+            .map(Value::String),
+        SCENE_BINARY_PARAMETER_VALUE_VEC2 => Some(Value::Array(vec![
+            Value::from(parameter.value0 as f64),
+            Value::from(parameter.value1 as f64),
+        ])),
+        SCENE_BINARY_PARAMETER_VALUE_VEC3 => Some(Value::Array(vec![
+            Value::from(parameter.value0 as f64),
+            Value::from(parameter.value1 as f64),
+            Value::from(parameter.value2 as f64),
+        ])),
+        SCENE_BINARY_PARAMETER_VALUE_VEC4 => Some(Value::Array(vec![
+            Value::from(parameter.value0 as f64),
+            Value::from(parameter.value1 as f64),
+            Value::from(parameter.value2 as f64),
+            Value::from(parameter.value3 as f64),
+        ])),
+        _ => None,
+    }
 }
 
 fn binary_scene_texture_slots(
@@ -1465,6 +1579,7 @@ fn binary_scene_blend_mode(code: u16) -> SceneBlendMode {
         4 => SceneBlendMode::Screen,
         5 => SceneBlendMode::Max,
         6 => SceneBlendMode::Normal,
+        7 => SceneBlendMode::Modulate,
         _ => SceneBlendMode::Alpha,
     }
 }
@@ -1728,6 +1843,81 @@ mod tests {
             assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
             assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
         }
+    }
+
+    #[test]
+    fn gscn_direct_ingest_preserves_effect_graph_pass_fields_from_binary_payload() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "base", "type": "image", "source": "assets/base.gtex", "width": 320, "height": 180 },
+                { "id": "normal", "type": "image", "source": "assets/normal.gtex", "width": 64, "height": 64 }
+            ],
+            "nodes": [
+                {
+                    "id": "water-carrier",
+                    "type": "image",
+                    "resource": "base",
+                    "width": 320.0,
+                    "height": 180.0,
+                    "effects": [
+                        {
+                            "file": "effects/custom/effect.json",
+                            "fbos": [
+                                { "name": "_rt_Custom", "format": "rgba8888", "scale": 0.5, "unique": true }
+                            ],
+                            "passes": [
+                                {
+                                    "command": "draw",
+                                    "source": "previous",
+                                    "target": "_rt_Custom",
+                                    "binds": { "0": "previous", "2": "_rt_CustomNormal" },
+                                    "shader": "effects/custom",
+                                    "blending": "normal",
+                                    "texture_resources": ["base", null, "normal"],
+                                    "combos": { "MASK": 0 },
+                                    "constant_shader_values": { "strength": 0.5 }
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-effect-graph-plan");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        assert_eq!(plan.layers.len(), 1);
+        let pass = &plan.layers[0].image_effect_passes[0];
+        assert_eq!(pass.command.as_deref(), Some("draw"));
+        assert_eq!(pass.source.as_deref(), Some("previous"));
+        assert_eq!(pass.target.as_deref(), Some("_rt_Custom"));
+        assert_eq!(pass.binds.get(&0).map(String::as_str), Some("previous"));
+        assert_eq!(
+            pass.binds.get(&2).map(String::as_str),
+            Some("_rt_CustomNormal")
+        );
+        assert_eq!(pass.fbos.len(), 1);
+        assert_eq!(pass.fbos[0].name, "_rt_Custom");
+        assert_eq!(pass.fbos[0].format.as_deref(), Some("rgba8888"));
+        assert!((pass.fbos[0].scale - 0.5).abs() < f64::EPSILON);
+        assert!(pass.fbos[0].unique);
+        assert_eq!(pass.combos.get("MASK"), Some(&0));
+        assert_eq!(
+            pass.constant_shader_values
+                .get("strength")
+                .and_then(|value| value.as_f64()),
+            Some(0.5)
+        );
     }
 
     #[test]
