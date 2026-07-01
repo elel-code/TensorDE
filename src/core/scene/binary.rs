@@ -20,7 +20,8 @@ pub const SCENE_BINARY_GEOMETRY_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 40;
-pub const SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE: usize = 24;
+pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
+pub const SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 24;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
@@ -32,6 +33,19 @@ const SCENE_BINARY_RETAINED_RESOURCE: u16 = 1;
 const SCENE_BINARY_RETAINED_TEXTURE_SLOT: u16 = 2;
 const SCENE_BINARY_RETAINED_MATERIAL_PASS: u16 = 3;
 const SCENE_BINARY_RETAINED_EFFECT_PASS: u16 = 4;
+const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
+
+const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
+const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
+const SCENE_BINARY_PARAMETER_VALUE_INTEGER: u16 = 3;
+const SCENE_BINARY_PARAMETER_VALUE_STRING: u16 = 4;
+const SCENE_BINARY_PARAMETER_VALUE_VEC2: u16 = 5;
+const SCENE_BINARY_PARAMETER_VALUE_VEC3: u16 = 6;
+const SCENE_BINARY_PARAMETER_VALUE_VEC4: u16 = 7;
+
+const SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY: u16 = 1;
+const SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT: u16 = 2;
+const SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO: u16 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SceneBinaryChunkKind {
@@ -42,6 +56,7 @@ pub enum SceneBinaryChunkKind {
     TextureSlots,
     MaterialPass,
     EffectPass,
+    EffectParameter,
     FlutterState,
     Puppet,
     RenderState,
@@ -50,7 +65,7 @@ pub enum SceneBinaryChunkKind {
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 12] = [
+    pub const REQUIRED_ORDER: [Self; 13] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
@@ -58,6 +73,7 @@ impl SceneBinaryChunkKind {
         Self::TextureSlots,
         Self::MaterialPass,
         Self::EffectPass,
+        Self::EffectParameter,
         Self::FlutterState,
         Self::Puppet,
         Self::RenderState,
@@ -74,6 +90,7 @@ impl SceneBinaryChunkKind {
             Self::TextureSlots => u32::from_le_bytes(*b"TEXS"),
             Self::MaterialPass => u32::from_le_bytes(*b"MATP"),
             Self::EffectPass => u32::from_le_bytes(*b"EFTP"),
+            Self::EffectParameter => u32::from_le_bytes(*b"EPRM"),
             Self::FlutterState => u32::from_le_bytes(*b"FLUT"),
             Self::Puppet => u32::from_le_bytes(*b"PUPT"),
             Self::RenderState => u32::from_le_bytes(*b"RNDS"),
@@ -98,6 +115,7 @@ impl SceneBinaryChunkKind {
             Self::TextureSlots => "texture_slots",
             Self::MaterialPass => "material_pass",
             Self::EffectPass => "effect_pass",
+            Self::EffectParameter => "effect_parameter",
             Self::FlutterState => "flutter_state",
             Self::Puppet => "puppet",
             Self::RenderState => "render_state",
@@ -281,6 +299,18 @@ impl SceneBinaryLayoutPlan {
             SceneBinaryChunkKind::EffectPass,
             SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
             decode_effect_pass_record,
+        )
+    }
+
+    pub fn effect_parameter_records<'a>(
+        &self,
+        container: &'a [u8],
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryEffectParameterRecord>, SceneBinaryError> {
+        self.records(
+            container,
+            SceneBinaryChunkKind::EffectParameter,
+            SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+            decode_effect_parameter_record,
         )
     }
 
@@ -620,7 +650,7 @@ pub struct SceneBinaryEffectPassRecord {
     pub pass_index: u32,
     pub first_texture_slot: u32,
     pub texture_slot_count: u32,
-    pub combo_count: u32,
+    pub first_parameter: u32,
     pub parameter_count: u32,
     pub kind: u16,
     pub flags: u16,
@@ -635,7 +665,7 @@ impl SceneBinaryEffectPassRecord {
         write_u32(out, self.pass_index);
         write_u32(out, self.first_texture_slot);
         write_u32(out, self.texture_slot_count);
-        write_u32(out, self.combo_count);
+        write_u32(out, self.first_parameter);
         write_u32(out, self.parameter_count);
         write_u16(out, self.kind);
         write_u16(out, self.flags);
@@ -643,25 +673,63 @@ impl SceneBinaryEffectPassRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBinaryEffectParameterRecord {
+    pub owner_name: u32,
+    pub effect_name: u32,
+    pub parameter_name: u32,
+    pub value_name: u32,
+    pub pass_index: u32,
+    pub value_kind: u16,
+    pub role_flags: u16,
+    pub integer_value: i64,
+    pub value0: f32,
+    pub value1: f32,
+    pub value2: f32,
+    pub value3: f32,
+}
+
+impl SceneBinaryEffectParameterRecord {
+    fn encode(self, out: &mut Vec<u8>) {
+        write_u32(out, self.owner_name);
+        write_u32(out, self.effect_name);
+        write_u32(out, self.parameter_name);
+        write_u32(out, self.value_name);
+        write_u32(out, self.pass_index);
+        write_u16(out, self.value_kind);
+        write_u16(out, self.role_flags);
+        write_i64(out, self.integer_value);
+        write_f32(out, self.value0);
+        write_f32(out, self.value1);
+        write_f32(out, self.value2);
+        write_f32(out, self.value3);
+        debug_assert_eq!(SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE, 48);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SceneBinaryFlutterStateRecord {
     pub owner_name: u32,
     pub effect_name: u32,
-    pub pass_count: u32,
+    pub first_parameter: u32,
     pub parameter_count: u32,
+    pub pass_count: u32,
     pub family_flags: u32,
-    pub reserved: u32,
+    pub anchor_name: u32,
+    pub dirty_range_count: u32,
 }
 
 impl SceneBinaryFlutterStateRecord {
     fn encode(self, out: &mut Vec<u8>) {
         write_u32(out, self.owner_name);
         write_u32(out, self.effect_name);
-        write_u32(out, self.pass_count);
+        write_u32(out, self.first_parameter);
         write_u32(out, self.parameter_count);
+        write_u32(out, self.pass_count);
         write_u32(out, self.family_flags);
-        write_u32(out, self.reserved);
-        debug_assert_eq!(SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, 24);
+        write_u32(out, self.anchor_name);
+        write_u32(out, self.dirty_range_count);
+        debug_assert_eq!(SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE, 32);
     }
 }
 
@@ -672,7 +740,7 @@ pub struct SceneBinaryPuppetRecord {
     pub index_count: u32,
     pub animation_layer_count: u32,
     pub flags: u32,
-    pub reserved: u32,
+    pub dirty_range_count: u32,
 }
 
 impl SceneBinaryPuppetRecord {
@@ -682,7 +750,7 @@ impl SceneBinaryPuppetRecord {
         write_u32(out, self.index_count);
         write_u32(out, self.animation_layer_count);
         write_u32(out, self.flags);
-        write_u32(out, self.reserved);
+        write_u32(out, self.dirty_range_count);
         debug_assert_eq!(SCENE_BINARY_PUPPET_RECORD_SIZE, 24);
     }
 }
@@ -696,7 +764,7 @@ pub struct SceneBinaryRenderStateRecord {
     pub material_count: u32,
     pub effect_count: u32,
     pub flags: u32,
-    pub reserved: u32,
+    pub texture_slot_count: u32,
 }
 
 impl SceneBinaryRenderStateRecord {
@@ -708,7 +776,7 @@ impl SceneBinaryRenderStateRecord {
         write_u32(out, self.material_count);
         write_u32(out, self.effect_count);
         write_u32(out, self.flags);
-        write_u32(out, self.reserved);
+        write_u32(out, self.texture_slot_count);
         debug_assert_eq!(SCENE_BINARY_RENDER_STATE_RECORD_SIZE, 32);
     }
 }
@@ -720,7 +788,7 @@ pub struct SceneBinaryRetainedGpuStateRecord {
     pub owner_name: u32,
     pub stable_id: u64,
     pub record_index: u32,
-    pub reserved: u32,
+    pub dirty_range_count: u32,
 }
 
 impl SceneBinaryRetainedGpuStateRecord {
@@ -730,7 +798,7 @@ impl SceneBinaryRetainedGpuStateRecord {
         write_u32(out, self.owner_name);
         write_u64(out, self.stable_id);
         write_u32(out, self.record_index);
-        write_u32(out, self.reserved);
+        write_u32(out, self.dirty_range_count);
         debug_assert_eq!(SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, 24);
     }
 }
@@ -850,6 +918,7 @@ pub struct SceneBinaryDocumentShape {
     pub texture_slot_records: u32,
     pub material_pass_records: u32,
     pub effect_pass_records: u32,
+    pub effect_parameter_records: u32,
     pub flutter_state_records: u32,
     pub puppet_records: u32,
     pub render_state_records: u32,
@@ -879,7 +948,8 @@ impl SceneBinaryDocumentShape {
             .resource_table_records
             .saturating_add(shape.texture_slot_records)
             .saturating_add(shape.material_pass_records)
-            .saturating_add(shape.effect_pass_records);
+            .saturating_add(shape.effect_pass_records)
+            .saturating_add(shape.effect_parameter_records);
         shape
     }
 
@@ -892,6 +962,7 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::TextureSlots => self.texture_slot_records,
             SceneBinaryChunkKind::MaterialPass => self.material_pass_records,
             SceneBinaryChunkKind::EffectPass => self.effect_pass_records,
+            SceneBinaryChunkKind::EffectParameter => self.effect_parameter_records,
             SceneBinaryChunkKind::FlutterState => self.flutter_state_records,
             SceneBinaryChunkKind::Puppet => self.puppet_records,
             SceneBinaryChunkKind::RenderState => self.render_state_records,
@@ -933,6 +1004,9 @@ impl SceneBinaryDocumentShape {
         self.effect_pass_records = self
             .effect_pass_records
             .saturating_add(saturating_u32(effect.passes.len().max(1)));
+        self.effect_parameter_records = self
+            .effect_parameter_records
+            .saturating_add(effect_parameter_record_count(effect));
         if effect_is_motion_family(effect) {
             self.flutter_state_records = self.flutter_state_records.saturating_add(1);
         }
@@ -996,6 +1070,8 @@ enum SceneBinaryNameKind {
     Material,
     Timeline,
     Property,
+    EffectParameter,
+    ParameterValue,
 }
 
 impl SceneBinaryNameKind {
@@ -1010,6 +1086,8 @@ impl SceneBinaryNameKind {
             Self::Material => 7,
             Self::Timeline => 8,
             Self::Property => 9,
+            Self::EffectParameter => 10,
+            Self::ParameterValue => 11,
         }
     }
 }
@@ -1072,6 +1150,7 @@ struct SceneBinaryPayloadBuilder {
     texture_slots: SceneBinaryChunkWriter,
     material_pass: SceneBinaryChunkWriter,
     effect_pass: SceneBinaryChunkWriter,
+    effect_parameter: SceneBinaryChunkWriter,
     flutter_state: SceneBinaryChunkWriter,
     puppet: SceneBinaryChunkWriter,
     render_state: SceneBinaryChunkWriter,
@@ -1139,7 +1218,7 @@ impl SceneBinaryPayloadBuilder {
                 material_count: self.material_pass.record_count,
                 effect_count: self.effect_pass.record_count,
                 flags: render_state_flags(document),
-                reserved: 0,
+                texture_slot_count: self.texture_slots.record_count,
             }
             .encode(out)
         });
@@ -1269,6 +1348,8 @@ impl SceneBinaryPayloadBuilder {
         let effect_name = self
             .names
             .intern(SceneBinaryNameKind::EffectFile, &effect.file);
+        let effect_parameter_start = self.effect_parameter.record_count;
+        let effect_property_count = self.push_effect_parameters(owner_name, effect_name, effect);
         if effect.passes.is_empty() {
             self.push_effect_record(
                 owner_name,
@@ -1278,12 +1359,17 @@ impl SceneBinaryPayloadBuilder {
                 0,
                 SCENE_BINARY_NONE_ID,
                 0,
+                effect_parameter_start,
+                effect_property_count,
             );
         } else {
             for (pass_index, pass) in effect.passes.iter().enumerate() {
                 let first_texture_slot = self.texture_slots.record_count;
                 let texture_slot_count =
                     self.push_effect_texture_slots(owner_name, effect_name, pass);
+                let first_parameter = self.effect_parameter.record_count;
+                let parameter_count =
+                    self.push_effect_pass_parameters(owner_name, effect_name, pass_index, pass);
                 self.push_effect_record(
                     owner_name,
                     effect_name,
@@ -1292,18 +1378,26 @@ impl SceneBinaryPayloadBuilder {
                     pass_index,
                     first_texture_slot,
                     texture_slot_count,
+                    first_parameter,
+                    parameter_count,
                 );
             }
         }
         if effect_is_motion_family(effect) {
+            let parameter_count = self
+                .effect_parameter
+                .record_count
+                .saturating_sub(effect_parameter_start);
             self.flutter_state.push_record(|out| {
                 SceneBinaryFlutterStateRecord {
                     owner_name,
                     effect_name,
+                    first_parameter: effect_parameter_start,
+                    parameter_count,
                     pass_count: saturating_u32(effect.passes.len().max(1)),
-                    parameter_count: effect_parameter_count(effect),
                     family_flags: effect_motion_family_flags(effect),
-                    reserved: 0,
+                    anchor_name: owner_name,
+                    dirty_range_count: flutter_dirty_range_count(effect, parameter_count),
                 }
                 .encode(out)
             });
@@ -1319,6 +1413,8 @@ impl SceneBinaryPayloadBuilder {
         pass_index: usize,
         first_texture_slot: u32,
         texture_slot_count: u32,
+        first_parameter: u32,
+        parameter_count: u32,
     ) {
         let shader_name = pass
             .and_then(|pass| pass.shader.as_deref())
@@ -1330,9 +1426,6 @@ impl SceneBinaryPayloadBuilder {
             .map_or(SCENE_BINARY_NONE_ID, |blending| {
                 self.names.intern(SceneBinaryNameKind::Material, blending)
             });
-        let combo_count = pass.map_or(0, |pass| saturating_u32(pass.combos.len()));
-        let parameter_count =
-            pass.map_or(0, |pass| saturating_u32(pass.constant_shader_values.len()));
         let record_index = self.effect_pass.record_count;
         self.effect_pass.push_record(|out| {
             SceneBinaryEffectPassRecord {
@@ -1343,7 +1436,7 @@ impl SceneBinaryPayloadBuilder {
                 pass_index: pass_index.min(u32::MAX as usize) as u32,
                 first_texture_slot,
                 texture_slot_count,
-                combo_count,
+                first_parameter,
                 parameter_count,
                 kind: effect_kind_code(effect),
                 flags: effect_flags(effect, pass),
@@ -1351,6 +1444,127 @@ impl SceneBinaryPayloadBuilder {
             .encode(out)
         });
         self.push_retained(SCENE_BINARY_RETAINED_EFFECT_PASS, effect_name, record_index);
+    }
+
+    fn push_effect_parameters(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        effect: &SceneEffect,
+    ) -> u32 {
+        let before = self.effect_parameter.record_count;
+        for (name, value) in &effect.properties {
+            self.push_effect_parameter(
+                owner_name,
+                effect_name,
+                SCENE_BINARY_NONE_ID,
+                SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY,
+                name,
+                value,
+            );
+        }
+        self.effect_parameter.record_count.saturating_sub(before)
+    }
+
+    fn push_effect_pass_parameters(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        pass_index: usize,
+        pass: &SceneEffectPass,
+    ) -> u32 {
+        let before = self.effect_parameter.record_count;
+        let pass_index = pass_index.min(u32::MAX as usize) as u32;
+        for (name, value) in &pass.constant_shader_values {
+            self.push_effect_parameter(
+                owner_name,
+                effect_name,
+                pass_index,
+                SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT,
+                name,
+                value,
+            );
+        }
+        for (name, value) in &pass.combos {
+            self.push_effect_combo(owner_name, effect_name, pass_index, name, *value);
+        }
+        self.effect_parameter.record_count.saturating_sub(before)
+    }
+
+    fn push_effect_parameter(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        pass_index: u32,
+        role_flags: u16,
+        name: &str,
+        value: &serde_json::Value,
+    ) {
+        let Some(value) = scene_binary_parameter_value(value, &mut self.names) else {
+            return;
+        };
+        let parameter_name = self
+            .names
+            .intern(SceneBinaryNameKind::EffectParameter, name);
+        let record_index = self.effect_parameter.record_count;
+        self.effect_parameter.push_record(|out| {
+            SceneBinaryEffectParameterRecord {
+                owner_name,
+                effect_name,
+                parameter_name,
+                value_name: value.value_name,
+                pass_index,
+                value_kind: value.kind,
+                role_flags,
+                integer_value: value.integer,
+                value0: value.values[0],
+                value1: value.values[1],
+                value2: value.values[2],
+                value3: value.values[3],
+            }
+            .encode(out)
+        });
+        self.push_retained(
+            SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
+            parameter_name,
+            record_index,
+        );
+    }
+
+    fn push_effect_combo(
+        &mut self,
+        owner_name: u32,
+        effect_name: u32,
+        pass_index: u32,
+        name: &str,
+        value: i64,
+    ) {
+        let parameter_name = self
+            .names
+            .intern(SceneBinaryNameKind::EffectParameter, name);
+        let record_index = self.effect_parameter.record_count;
+        self.effect_parameter.push_record(|out| {
+            SceneBinaryEffectParameterRecord {
+                owner_name,
+                effect_name,
+                parameter_name,
+                value_name: SCENE_BINARY_NONE_ID,
+                pass_index,
+                value_kind: SCENE_BINARY_PARAMETER_VALUE_INTEGER,
+                role_flags: SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO,
+                integer_value: value,
+                value0: value as f32,
+                value1: 0.0,
+                value2: 0.0,
+                value3: 0.0,
+            }
+            .encode(out)
+        });
+        self.push_retained(
+            SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
+            parameter_name,
+            record_index,
+        );
     }
 
     fn push_effect_texture_slots(
@@ -1462,7 +1676,8 @@ impl SceneBinaryPayloadBuilder {
                 animation_layer_count: saturating_u32(node.puppet_animation_layers.len()),
                 flags: u32::from(node.mesh.is_some())
                     | (u32::from(!node.puppet_animation_layers.is_empty()) << 1),
-                reserved: 0,
+                dirty_range_count: u32::from(node.mesh.is_some())
+                    + saturating_u32(node.puppet_animation_layers.len()),
             }
             .encode(out)
         });
@@ -1476,7 +1691,7 @@ impl SceneBinaryPayloadBuilder {
                 owner_name,
                 stable_id: retained_stable_id(owner_kind, owner_name, record_index),
                 record_index,
-                reserved: 0,
+                dirty_range_count: 1,
             }
             .encode(out)
         });
@@ -1497,6 +1712,7 @@ impl SceneBinaryPayloadBuilder {
             texture_slot_records: self.texture_slots.record_count,
             material_pass_records: self.material_pass.record_count,
             effect_pass_records: self.effect_pass.record_count,
+            effect_parameter_records: self.effect_parameter.record_count,
             flutter_state_records: self.flutter_state.record_count,
             puppet_records: self.puppet.record_count,
             render_state_records: self.render_state.record_count,
@@ -1519,6 +1735,8 @@ impl SceneBinaryPayloadBuilder {
                     .into_payload(SceneBinaryChunkKind::MaterialPass),
                 self.effect_pass
                     .into_payload(SceneBinaryChunkKind::EffectPass),
+                self.effect_parameter
+                    .into_payload(SceneBinaryChunkKind::EffectParameter),
                 self.flutter_state
                     .into_payload(SceneBinaryChunkKind::FlutterState),
                 self.puppet.into_payload(SceneBinaryChunkKind::Puppet),
@@ -2049,13 +2267,108 @@ fn effect_motion_family_flags(effect: &SceneEffect) -> u32 {
         | (u32::from(file.contains("drift") || runtime.contains("drift")) << 3)
 }
 
-fn effect_parameter_count(effect: &SceneEffect) -> u32 {
+#[derive(Debug, Clone, Copy)]
+struct SceneBinaryParameterValue {
+    kind: u16,
+    value_name: u32,
+    integer: i64,
+    values: [f32; 4],
+}
+
+fn scene_binary_parameter_value(
+    value: &serde_json::Value,
+    names: &mut SceneBinaryNameTable,
+) -> Option<SceneBinaryParameterValue> {
+    match value {
+        serde_json::Value::Bool(value) => Some(SceneBinaryParameterValue {
+            kind: SCENE_BINARY_PARAMETER_VALUE_BOOL,
+            value_name: SCENE_BINARY_NONE_ID,
+            integer: i64::from(*value),
+            values: [if *value { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+        }),
+        serde_json::Value::Number(value) => value.as_f64().map(|value| {
+            let integer = value as i64;
+            SceneBinaryParameterValue {
+                kind: SCENE_BINARY_PARAMETER_VALUE_FLOAT,
+                value_name: SCENE_BINARY_NONE_ID,
+                integer,
+                values: [value as f32, 0.0, 0.0, 0.0],
+            }
+        }),
+        serde_json::Value::String(value) => Some(SceneBinaryParameterValue {
+            kind: SCENE_BINARY_PARAMETER_VALUE_STRING,
+            value_name: names.intern(SceneBinaryNameKind::ParameterValue, value),
+            integer: 0,
+            values: [0.0, 0.0, 0.0, 0.0],
+        }),
+        serde_json::Value::Array(values) => scene_binary_vector_parameter_value(values),
+        serde_json::Value::Null | serde_json::Value::Object(_) => None,
+    }
+}
+
+fn scene_binary_vector_parameter_value(
+    values: &[serde_json::Value],
+) -> Option<SceneBinaryParameterValue> {
+    if values.is_empty() || values.len() > 4 {
+        return None;
+    }
+    let mut out = [0.0; 4];
+    for (index, value) in values.iter().enumerate() {
+        out[index] = value.as_f64()? as f32;
+    }
+    let kind = match values.len() {
+        1 => SCENE_BINARY_PARAMETER_VALUE_FLOAT,
+        2 => SCENE_BINARY_PARAMETER_VALUE_VEC2,
+        3 => SCENE_BINARY_PARAMETER_VALUE_VEC3,
+        4 => SCENE_BINARY_PARAMETER_VALUE_VEC4,
+        _ => return None,
+    };
+    Some(SceneBinaryParameterValue {
+        kind,
+        value_name: SCENE_BINARY_NONE_ID,
+        integer: out[0] as i64,
+        values: out,
+    })
+}
+
+fn effect_parameter_record_count(effect: &SceneEffect) -> u32 {
+    let property_count = effect
+        .properties
+        .values()
+        .filter(|value| scene_binary_parameter_value_supported(value))
+        .count();
     let pass_parameter_count = effect
         .passes
         .iter()
-        .map(|pass| pass.constant_shader_values.len())
+        .map(|pass| {
+            pass.constant_shader_values
+                .values()
+                .filter(|value| scene_binary_parameter_value_supported(value))
+                .count()
+                .saturating_add(pass.combos.len())
+        })
         .sum::<usize>();
-    saturating_u32(effect.properties.len().saturating_add(pass_parameter_count))
+    saturating_u32(property_count.saturating_add(pass_parameter_count))
+}
+
+fn scene_binary_parameter_value_supported(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => true,
+        serde_json::Value::Array(values) => {
+            !values.is_empty()
+                && values.len() <= 4
+                && values.iter().all(|value| value.as_f64().is_some())
+        }
+        serde_json::Value::Null | serde_json::Value::Object(_) => false,
+    }
+}
+
+fn flutter_dirty_range_count(effect: &SceneEffect, parameter_count: u32) -> u32 {
+    u32::from(parameter_count > 0)
+        .saturating_add(u32::from(!effect.passes.is_empty()))
+        .max(1)
 }
 
 fn node_effect_pass_count(effects: &[SceneEffect]) -> u32 {
@@ -2214,10 +2527,29 @@ fn decode_effect_pass_record(
         pass_index: read_u32(bytes, 16)?,
         first_texture_slot: read_u32(bytes, 20)?,
         texture_slot_count: read_u32(bytes, 24)?,
-        combo_count: read_u32(bytes, 28)?,
+        first_parameter: read_u32(bytes, 28)?,
         parameter_count: read_u32(bytes, 32)?,
         kind: read_u16(bytes, 36)?,
         flags: read_u16(bytes, 38)?,
+    })
+}
+
+fn decode_effect_parameter_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryEffectParameterRecord, SceneBinaryError> {
+    Ok(SceneBinaryEffectParameterRecord {
+        owner_name: read_u32(bytes, 0)?,
+        effect_name: read_u32(bytes, 4)?,
+        parameter_name: read_u32(bytes, 8)?,
+        value_name: read_u32(bytes, 12)?,
+        pass_index: read_u32(bytes, 16)?,
+        value_kind: read_u16(bytes, 20)?,
+        role_flags: read_u16(bytes, 22)?,
+        integer_value: read_i64(bytes, 24)?,
+        value0: read_f32(bytes, 32)?,
+        value1: read_f32(bytes, 36)?,
+        value2: read_f32(bytes, 40)?,
+        value3: read_f32(bytes, 44)?,
     })
 }
 
@@ -2227,10 +2559,12 @@ fn decode_flutter_state_record(
     Ok(SceneBinaryFlutterStateRecord {
         owner_name: read_u32(bytes, 0)?,
         effect_name: read_u32(bytes, 4)?,
-        pass_count: read_u32(bytes, 8)?,
+        first_parameter: read_u32(bytes, 8)?,
         parameter_count: read_u32(bytes, 12)?,
-        family_flags: read_u32(bytes, 16)?,
-        reserved: read_u32(bytes, 20)?,
+        pass_count: read_u32(bytes, 16)?,
+        family_flags: read_u32(bytes, 20)?,
+        anchor_name: read_u32(bytes, 24)?,
+        dirty_range_count: read_u32(bytes, 28)?,
     })
 }
 
@@ -2241,7 +2575,7 @@ fn decode_puppet_record(bytes: &[u8]) -> Result<SceneBinaryPuppetRecord, SceneBi
         index_count: read_u32(bytes, 8)?,
         animation_layer_count: read_u32(bytes, 12)?,
         flags: read_u32(bytes, 16)?,
-        reserved: read_u32(bytes, 20)?,
+        dirty_range_count: read_u32(bytes, 20)?,
     })
 }
 
@@ -2256,7 +2590,7 @@ fn decode_render_state_record(
         material_count: read_u32(bytes, 16)?,
         effect_count: read_u32(bytes, 20)?,
         flags: read_u32(bytes, 24)?,
-        reserved: read_u32(bytes, 28)?,
+        texture_slot_count: read_u32(bytes, 28)?,
     })
 }
 
@@ -2269,7 +2603,7 @@ fn decode_retained_gpu_state_record(
         owner_name: read_u32(bytes, 4)?,
         stable_id: read_u64(bytes, 8)?,
         record_index: read_u32(bytes, 16)?,
-        reserved: read_u32(bytes, 20)?,
+        dirty_range_count: read_u32(bytes, 20)?,
     })
 }
 
@@ -2317,6 +2651,10 @@ fn write_u32(bytes: &mut Vec<u8>, value: u32) {
 }
 
 fn write_u64(bytes: &mut Vec<u8>, value: u64) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn write_i64(bytes: &mut Vec<u8>, value: i64) {
     bytes.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -2456,6 +2794,18 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, SceneBinaryError> {
             actual: bytes.len(),
         })?;
     Ok(u64::from_le_bytes([
+        slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
+    ]))
+}
+
+fn read_i64(bytes: &[u8], offset: usize) -> Result<i64, SceneBinaryError> {
+    let slice = bytes
+        .get(offset..offset + 8)
+        .ok_or(SceneBinaryError::BufferTooSmall {
+            needed: offset + 8,
+            actual: bytes.len(),
+        })?;
+    Ok(i64::from_le_bytes([
         slice[0], slice[1], slice[2], slice[3], slice[4], slice[5], slice[6], slice[7],
     ]))
 }
@@ -2626,10 +2976,15 @@ mod tests {
                 effects: vec![SceneEffect {
                     file: "effects/flutter/effect.json".to_owned(),
                     resource: Some("effect".to_owned()),
+                    properties: BTreeMap::from([("phase".to_owned(), json!(0.25))]),
                     passes: vec![SceneEffectPass {
                         textures: vec![Some("g_Texture0".to_owned())],
                         texture_resources: vec![Some("image".to_owned())],
-                        constant_shader_values: BTreeMap::from([("speed".to_owned(), json!(1.0))]),
+                        combos: BTreeMap::from([("WIND_MODE".to_owned(), 2)]),
+                        constant_shader_values: BTreeMap::from([
+                            ("speed".to_owned(), json!(1.0)),
+                            ("wind".to_owned(), json!([1.0, 0.0])),
+                        ]),
                         ..Default::default()
                     }],
                     ..Default::default()
@@ -2686,6 +3041,7 @@ mod tests {
         assert_eq!(shape.texture_slot_records, 2);
         assert_eq!(shape.material_pass_records, 1);
         assert_eq!(shape.effect_pass_records, 1);
+        assert_eq!(shape.effect_parameter_records, 4);
         assert_eq!(shape.flutter_state_records, 1);
         assert_eq!(shape.render_state_records, 1);
         assert_eq!(
@@ -2809,11 +3165,50 @@ mod tests {
             .expect("decoded effect pass records");
         assert_eq!(effect_passes.len(), 1);
         assert_eq!(effect_passes[0].texture_slot_count, 1);
-        assert_eq!(effect_passes[0].parameter_count, 1);
+        assert_eq!(effect_passes[0].first_parameter, 1);
+        assert_eq!(effect_passes[0].parameter_count, 3);
         assert_eq!(
             effect_passes[0].kind,
             effect_kind_code(&document.nodes[0].effects[0])
         );
+
+        let parameters = layout
+            .effect_parameter_records(&bytes)
+            .expect("effect parameter records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded effect parameter records");
+        assert_eq!(parameters.len(), 4);
+        assert_eq!(
+            debug_names
+                .name(parameters[0].parameter_name)
+                .expect("effect property name"),
+            Some("phase")
+        );
+        assert_eq!(
+            parameters[0].role_flags,
+            SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY
+        );
+        assert!((parameters[0].value0 - 0.25).abs() < f32::EPSILON);
+        assert_eq!(
+            debug_names
+                .name(parameters[2].parameter_name)
+                .expect("wind parameter name"),
+            Some("wind")
+        );
+        assert_eq!(parameters[2].value_kind, SCENE_BINARY_PARAMETER_VALUE_VEC2);
+        assert_eq!(parameters[2].value0, 1.0);
+        assert_eq!(parameters[2].value1, 0.0);
+        assert_eq!(
+            debug_names
+                .name(parameters[3].parameter_name)
+                .expect("combo parameter name"),
+            Some("WIND_MODE")
+        );
+        assert_eq!(
+            parameters[3].role_flags,
+            SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO
+        );
+        assert_eq!(parameters[3].integer_value, 2);
 
         let flutter = layout
             .flutter_state_records(&bytes)
@@ -2822,7 +3217,10 @@ mod tests {
             .expect("decoded flutter records");
         assert_eq!(flutter.len(), 1);
         assert_eq!(flutter[0].pass_count, 1);
-        assert_eq!(flutter[0].parameter_count, 1);
+        assert_eq!(flutter[0].first_parameter, 0);
+        assert_eq!(flutter[0].parameter_count, 4);
+        assert_eq!(flutter[0].anchor_name, nodes[0].id_name);
+        assert_eq!(flutter[0].dirty_range_count, 2);
 
         let render_state = layout
             .render_state_records(&bytes)
@@ -2833,6 +3231,7 @@ mod tests {
         assert_eq!(render_state[0].resource_count, 2);
         assert_eq!(render_state[0].node_count, 1);
         assert_eq!(render_state[0].effect_count, 1);
+        assert_eq!(render_state[0].texture_slot_count, 2);
 
         let retained = layout
             .retained_gpu_state_records(&bytes)
