@@ -32,9 +32,11 @@ use self::render_state::native_vulkan_scene_binary_render_state_records;
 pub(in crate::renderer::native_vulkan::scene) use self::resource::NativeVulkanSceneBinaryResourceRecord;
 use self::resource::native_vulkan_scene_binary_resource_records;
 pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedGpuRecord;
+pub(in crate::renderer::native_vulkan::scene) use self::retained::NativeVulkanSceneBinaryRetainedUpdatePlan;
 use self::retained::{
     native_vulkan_scene_binary_retained_dirty_range_count,
     native_vulkan_scene_binary_retained_gpu_records,
+    native_vulkan_scene_binary_retained_update_plan,
 };
 pub(in crate::renderer::native_vulkan::scene) use self::transform::NativeVulkanSceneBinaryTransformRecord;
 use self::transform::native_vulkan_scene_binary_transform_records;
@@ -62,6 +64,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryPlan
     pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_gpu_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained_dirty_range_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) retained_update_plan:
+        NativeVulkanSceneBinaryRetainedUpdatePlan,
     pub(in crate::renderer::native_vulkan::scene) resource_records:
         Vec<NativeVulkanSceneBinaryResourceRecord>,
     pub(in crate::renderer::native_vulkan::scene) node_records:
@@ -125,6 +129,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
     let retained_gpu_state_count = record_len_from_usize(retained_records.len());
     let retained_dirty_range_count =
         native_vulkan_scene_binary_retained_dirty_range_count(&retained_records);
+    let retained_update_plan = native_vulkan_scene_binary_retained_update_plan(&retained_records)?;
     let flutter_records = native_vulkan_scene_binary_flutter_records(container, layout)?;
     let flutter_state_count = record_len_from_usize(flutter_records.len());
 
@@ -167,6 +172,7 @@ fn native_vulkan_scene_binary_plan_from_layout(
         render_state_count,
         retained_gpu_state_count,
         retained_dirty_range_count,
+        retained_update_plan,
         resource_records,
         node_records,
         transform_records,
@@ -360,6 +366,16 @@ mod tests {
         assert_eq!(
             plan.retained_dirty_range_count,
             plan.retained_gpu_state_count
+        );
+        assert_eq!(plan.retained_update_plan.resource_count, 2);
+        assert_eq!(plan.retained_update_plan.geometry_count, 1);
+        assert_eq!(plan.retained_update_plan.texture_slot_count, 2);
+        assert_eq!(plan.retained_update_plan.material_pass_count, 1);
+        assert_eq!(plan.retained_update_plan.effect_pass_count, 1);
+        assert_eq!(plan.retained_update_plan.effect_parameter_count, 2);
+        assert_eq!(
+            plan.retained_update_plan.dirty_range_count,
+            plan.retained_dirty_range_count
         );
         assert!(
             plan.retained_records

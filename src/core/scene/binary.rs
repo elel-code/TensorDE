@@ -56,12 +56,12 @@ pub const SCENE_BINARY_DEBUG_NAME_RECORD_SIZE: usize = 16;
 
 pub const SCENE_BINARY_NONE_ID: u32 = u32::MAX;
 const SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY: u16 = 0;
-const SCENE_BINARY_RETAINED_RESOURCE: u16 = 1;
-const SCENE_BINARY_RETAINED_TEXTURE_SLOT: u16 = 2;
-const SCENE_BINARY_RETAINED_MATERIAL_PASS: u16 = 3;
-const SCENE_BINARY_RETAINED_EFFECT_PASS: u16 = 4;
-const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
-const SCENE_BINARY_RETAINED_GEOMETRY: u16 = 6;
+pub const SCENE_BINARY_RETAINED_RESOURCE: u16 = 1;
+pub const SCENE_BINARY_RETAINED_TEXTURE_SLOT: u16 = 2;
+pub const SCENE_BINARY_RETAINED_MATERIAL_PASS: u16 = 3;
+pub const SCENE_BINARY_RETAINED_EFFECT_PASS: u16 = 4;
+pub const SCENE_BINARY_RETAINED_EFFECT_PARAMETER: u16 = 5;
+pub const SCENE_BINARY_RETAINED_GEOMETRY: u16 = 6;
 
 const SCENE_BINARY_PARAMETER_VALUE_BOOL: u16 = 1;
 const SCENE_BINARY_PARAMETER_VALUE_FLOAT: u16 = 2;
@@ -2469,6 +2469,9 @@ pub enum SceneBinaryError {
     UnknownChunk {
         code: u32,
     },
+    UnknownRetainedOwnerKind {
+        owner_kind: u16,
+    },
     InvalidRecordPayload {
         kind: SceneBinaryChunkKind,
         record_size: usize,
@@ -2549,6 +2552,9 @@ impl fmt::Display for SceneBinaryError {
                 write!(f, "missing scene binary chunk {}", kind.label())
             }
             Self::UnknownChunk { code } => write!(f, "unknown scene binary chunk code {code:#x}"),
+            Self::UnknownRetainedOwnerKind { owner_kind } => {
+                write!(f, "unknown scene binary retained owner kind {owner_kind}")
+            }
             Self::InvalidRecordPayload {
                 kind,
                 record_size,
