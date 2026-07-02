@@ -75,13 +75,13 @@ pub(crate) use self::puppet::{
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 14;
+pub const SCENE_BINARY_VERSION: u16 = 15;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 116;
+pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 120;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
@@ -1196,6 +1196,7 @@ pub struct SceneBinaryNodeRecord {
     pub transform_count: u32,
     pub puppet_index: u32,
     pub particle_index: u32,
+    pub puppet_attachment_name: u32,
     pub opacity: f32,
     pub color_rgba: u32,
     pub stroke_color_rgba: u32,
@@ -1231,6 +1232,7 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.transform_count);
         write_u32(out, self.puppet_index);
         write_u32(out, self.particle_index);
+        write_u32(out, self.puppet_attachment_name);
         write_f32(out, self.opacity);
         write_u32(out, self.color_rgba);
         write_u32(out, self.stroke_color_rgba);
@@ -1243,7 +1245,7 @@ impl SceneBinaryNodeRecord {
         write_u32(out, self.font_weight_name);
         write_u16(out, self.fit);
         write_u16(out, self.text_align);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 116);
+        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 120);
     }
 }
 
@@ -2323,6 +2325,10 @@ impl SceneBinaryPayloadBuilder {
         let font_weight_name = self
             .names
             .intern_optional(SceneBinaryNameKind::Font, node.font_weight.as_deref());
+        let puppet_attachment_name = self.names.intern_optional(
+            SceneBinaryNameKind::PuppetAttachment,
+            node.puppet_attachment.as_deref(),
+        );
         let base_resource = node
             .resource
             .as_deref()
@@ -2454,6 +2460,7 @@ impl SceneBinaryPayloadBuilder {
                 transform_count,
                 puppet_index,
                 particle_index,
+                puppet_attachment_name,
                 opacity: node.opacity as f32,
                 color_rgba: scene_binary_color_rgba(node.color.as_deref()),
                 stroke_color_rgba: scene_binary_color_rgba(node.stroke_color.as_deref()),
@@ -4504,18 +4511,19 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         transform_count: read_u32(bytes, 60)?,
         puppet_index: read_u32(bytes, 64)?,
         particle_index: read_u32(bytes, 68)?,
-        opacity: read_f32(bytes, 72)?,
-        color_rgba: read_u32(bytes, 76)?,
-        stroke_color_rgba: read_u32(bytes, 80)?,
-        stroke_width: read_f32(bytes, 84)?,
-        corner_radius: read_f32(bytes, 88)?,
-        font_size: read_f32(bytes, 92)?,
-        text_name: read_u32(bytes, 96)?,
-        font_family_name: read_u32(bytes, 100)?,
-        font_resource_name: read_u32(bytes, 104)?,
-        font_weight_name: read_u32(bytes, 108)?,
-        fit: read_u16(bytes, 112)?,
-        text_align: read_u16(bytes, 114)?,
+        puppet_attachment_name: read_u32(bytes, 72)?,
+        opacity: read_f32(bytes, 76)?,
+        color_rgba: read_u32(bytes, 80)?,
+        stroke_color_rgba: read_u32(bytes, 84)?,
+        stroke_width: read_f32(bytes, 88)?,
+        corner_radius: read_f32(bytes, 92)?,
+        font_size: read_f32(bytes, 96)?,
+        text_name: read_u32(bytes, 100)?,
+        font_family_name: read_u32(bytes, 104)?,
+        font_resource_name: read_u32(bytes, 108)?,
+        font_weight_name: read_u32(bytes, 112)?,
+        fit: read_u16(bytes, 116)?,
+        text_align: read_u16(bytes, 118)?,
     })
 }
 
@@ -5959,6 +5967,13 @@ mod tests {
                             "additive": true,
                             "lock_transforms": true
                         }
+                    ],
+                    "children": [
+                        {
+                            "id": "socket-child",
+                            "type": "group",
+                            "puppet_attachment": "socket"
+                        }
                     ]
                 }
             ]
@@ -6002,6 +6017,14 @@ mod tests {
             .expect("nodes")
             .collect::<Result<Vec<_>, _>>()
             .expect("decoded nodes");
+        assert_ne!(nodes[1].puppet_attachment_name, SCENE_BINARY_NONE_ID);
+        let names = layout.debug_names(&bytes).expect("debug names");
+        assert_eq!(
+            names
+                .name(nodes[1].puppet_attachment_name)
+                .expect("attachment name"),
+            Some("socket")
+        );
         let puppet = layout
             .puppet_record_at(&bytes, nodes[0].puppet_index)
             .expect("puppet record");

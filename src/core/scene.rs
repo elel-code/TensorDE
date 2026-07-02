@@ -3586,6 +3586,10 @@ impl SceneMesh {
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<SceneMesh> {
+        let skin = self.skin.as_ref()?;
+        if skin.vertices.len() != self.vertices.len() {
+            return None;
+        }
         let (skin, local_pose, bind_world, pose_world) =
             self.sample_puppet_pose_world(layers, time_ms)?;
         let inverse_bind_world = bind_world
@@ -3698,7 +3702,7 @@ impl SceneMesh {
         frames
     }
 
-    fn sample_puppet_attachment_deltas(
+    pub(crate) fn sample_puppet_attachment_deltas(
         &self,
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
@@ -3759,7 +3763,7 @@ impl SceneMesh {
         time_ms: u64,
     ) -> Option<(&SceneMeshSkin, Vec<ScenePuppetTransform>)> {
         let skin = self.skin.as_ref()?;
-        if skin.bones.is_empty() || skin.vertices.len() != self.vertices.len() {
+        if skin.bones.is_empty() {
             return None;
         }
         let mut local_pose = skin.bones.iter().map(|bone| bone.bind).collect::<Vec<_>>();
@@ -3910,10 +3914,10 @@ impl SceneMeshSkinAttachment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct ScenePuppetAttachmentDelta {
-    x: f64,
-    y: f64,
-    rotation_deg: f64,
+pub(crate) struct ScenePuppetAttachmentDelta {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+    pub(crate) rotation_deg: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

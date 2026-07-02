@@ -34,16 +34,18 @@ use crate::core::scene::binary::{
     decode_effect_parameter_record, decode_effect_pass_record, decode_effect_uv_transform_record,
     decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
     decode_material_pass_record, decode_node_record, decode_particle_emitter_record,
-    decode_puppet_clip_record, decode_puppet_frame_record, decode_puppet_layer_record,
-    decode_puppet_record, decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
-    decode_render_state_record, decode_resource_record, decode_scene_binary_header_table,
-    decode_texture_slot_record, decode_transform_keyframe_record, decode_transform_timeline_record,
-    scene_binary_particle_shape_kind, scene_binary_particle_transform,
+    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_frame_record,
+    decode_puppet_layer_record, decode_puppet_record, decode_puppet_skin_bone_record,
+    decode_puppet_skin_vertex_record, decode_render_state_record, decode_resource_record,
+    decode_scene_binary_header_table, decode_texture_slot_record, decode_transform_keyframe_record,
+    decode_transform_timeline_record, scene_binary_particle_shape_kind,
+    scene_binary_particle_transform,
 };
 use crate::core::scene::{
     SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
-    SceneMeshSkin, SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex,
-    ScenePuppetAnimationBone, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
+    SceneMeshSkin, SceneMeshSkinAttachment, SceneMeshSkinBone, SceneMeshSkinVertex,
+    SceneMeshVertex, ScenePuppetAnimationBone, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
+    ScenePuppetAttachmentDelta,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
@@ -638,13 +640,23 @@ fn binary_scene_render_layers_into(
                 decode_geometry_record,
             )?)
         };
-        let local_state = binary_scene_node_state(reader, *node, geometry, snapshot_time_ms)?;
+        let mut local_state = binary_scene_node_state(reader, *node, geometry, snapshot_time_ms)?;
         let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
-        node_states.push(binary_scene_effective_node_state(
-            *node,
-            local_state,
-            parent_state,
-        ));
+        binary_scene_apply_puppet_attachment_delta(
+            names,
+            &mut local_state.transform,
+            node.puppet_attachment_name,
+            parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
+        );
+        let mut effective_state =
+            binary_scene_effective_node_state(*node, local_state, parent_state);
+        effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
+            reader,
+            names,
+            node.puppet_index,
+            snapshot_time_ms,
+        )?;
+        node_states.push(effective_state);
         node_geometries.push(geometry);
     }
     layers.reserve(node_records.len());
@@ -880,7 +892,7 @@ fn binary_scene_render_layer(
         corner_radius: node_state.corner_radius,
         width: node_state.width,
         height: node_state.height,
-        mesh: binary_scene_mesh(reader, geometry, node.puppet_index, snapshot_time_ms)?,
+        mesh: binary_scene_mesh(reader, names, geometry, node.puppet_index, snapshot_time_ms)?,
         text: binary_name(names, node.text_name).map(str::to_owned),
         font_size: (node.font_size > 0.0).then_some(f64::from(node.font_size)),
         font_family: binary_name(names, node.font_family_name).map(str::to_owned),
@@ -1115,6 +1127,7 @@ fn binary_scene_texture_slots(
 
 fn binary_scene_mesh(
     reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
     geometry: SceneBinaryGeometryRecord,
     puppet_index: u32,
     snapshot_time_ms: u64,
@@ -1159,13 +1172,15 @@ fn binary_scene_mesh(
         puppet_clips: Vec::new(),
     };
     if puppet_index != SCENE_BINARY_NONE_ID {
-        mesh = binary_scene_sampled_puppet_mesh(reader, mesh, puppet_index, snapshot_time_ms)?;
+        mesh =
+            binary_scene_sampled_puppet_mesh(reader, names, mesh, puppet_index, snapshot_time_ms)?;
     }
     Ok(Some(Arc::new(mesh)))
 }
 
 fn binary_scene_sampled_puppet_mesh(
     reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
     mut mesh: SceneMesh,
     puppet_index: u32,
     snapshot_time_ms: u64,
@@ -1179,7 +1194,7 @@ fn binary_scene_sampled_puppet_mesh(
     if puppet.animation_layer_count == 0 || puppet.bone_count == 0 || puppet.clip_count == 0 {
         return Ok(mesh);
     }
-    mesh.skin = Some(binary_scene_puppet_skin(reader, puppet)?);
+    mesh.skin = Some(binary_scene_puppet_skin(reader, names, puppet, true)?);
     mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
     let layers = binary_scene_puppet_layers(reader, puppet)?;
     Ok(mesh
@@ -1187,9 +1202,47 @@ fn binary_scene_sampled_puppet_mesh(
         .unwrap_or(mesh))
 }
 
+fn binary_scene_puppet_attachment_deltas(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    puppet_index: u32,
+    snapshot_time_ms: u64,
+) -> Result<Option<BTreeMap<String, ScenePuppetAttachmentDelta>>, RendererPlanError> {
+    if puppet_index == SCENE_BINARY_NONE_ID {
+        return Ok(None);
+    }
+    let puppet = reader.record_at(
+        SceneBinaryChunkKind::Puppet,
+        SCENE_BINARY_PUPPET_RECORD_SIZE,
+        puppet_index,
+        decode_puppet_record,
+    )?;
+    if puppet.attachment_count == 0
+        || puppet.animation_layer_count == 0
+        || puppet.bone_count == 0
+        || puppet.clip_count == 0
+    {
+        return Ok(None);
+    }
+    let skin = binary_scene_puppet_skin(reader, names, puppet, false)?;
+    if skin.attachments.is_empty() {
+        return Ok(None);
+    }
+    let mesh = SceneMesh {
+        vertices: Vec::new(),
+        indices: Vec::new(),
+        skin: Some(skin),
+        puppet_clips: binary_scene_puppet_clips(reader, puppet)?,
+    };
+    let layers = binary_scene_puppet_layers(reader, puppet)?;
+    Ok(mesh.sample_puppet_attachment_deltas(&layers, snapshot_time_ms))
+}
+
 fn binary_scene_puppet_skin(
     reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
     puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+    include_vertices: bool,
 ) -> Result<SceneMeshSkin, RendererPlanError> {
     let bone_records = reader.record_range(
         SceneBinaryChunkKind::PuppetSkinBones,
@@ -1197,13 +1250,6 @@ fn binary_scene_puppet_skin(
         puppet.first_bone,
         puppet.bone_count,
         decode_puppet_skin_bone_record,
-    )?;
-    let vertex_records = reader.record_range(
-        SceneBinaryChunkKind::PuppetSkinVertices,
-        SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
-        puppet.first_skin_vertex,
-        puppet.skin_vertex_count,
-        decode_puppet_skin_vertex_record,
     )?;
     let mut bones = Vec::with_capacity(bone_records.len());
     for bone in bone_records {
@@ -1213,27 +1259,66 @@ fn binary_scene_puppet_skin(
             bind: bone.transform,
         });
     }
-    let mut vertices = Vec::with_capacity(vertex_records.len());
-    for vertex in vertex_records {
-        vertices.push(SceneMeshSkinVertex {
-            bone_indices: [
-                vertex.bone_indices[0] as usize,
-                vertex.bone_indices[1] as usize,
-                vertex.bone_indices[2] as usize,
-                vertex.bone_indices[3] as usize,
+    let vertices = if include_vertices {
+        let vertex_records = reader.record_range(
+            SceneBinaryChunkKind::PuppetSkinVertices,
+            SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+            puppet.first_skin_vertex,
+            puppet.skin_vertex_count,
+            decode_puppet_skin_vertex_record,
+        )?;
+        let mut vertices = Vec::with_capacity(vertex_records.len());
+        for vertex in vertex_records {
+            vertices.push(SceneMeshSkinVertex {
+                bone_indices: [
+                    vertex.bone_indices[0] as usize,
+                    vertex.bone_indices[1] as usize,
+                    vertex.bone_indices[2] as usize,
+                    vertex.bone_indices[3] as usize,
+                ],
+                weights: [
+                    f64::from(vertex.weights[0]),
+                    f64::from(vertex.weights[1]),
+                    f64::from(vertex.weights[2]),
+                    f64::from(vertex.weights[3]),
+                ],
+            });
+        }
+        vertices
+    } else {
+        Vec::new()
+    };
+    let attachment_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetAttachments,
+        crate::core::scene::binary::SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+        puppet.first_attachment,
+        puppet.attachment_count,
+        decode_puppet_attachment_record,
+    )?;
+    let mut attachments = Vec::with_capacity(attachment_records.len());
+    for attachment in attachment_records {
+        let Some(name) = binary_name(names, attachment.name) else {
+            continue;
+        };
+        attachments.push(SceneMeshSkinAttachment {
+            name: name.to_owned(),
+            bone_index: attachment.bone_index as usize,
+            local_position: [
+                f64::from(attachment.local_position[0]),
+                f64::from(attachment.local_position[1]),
+                f64::from(attachment.local_position[2]),
             ],
-            weights: [
-                f64::from(vertex.weights[0]),
-                f64::from(vertex.weights[1]),
-                f64::from(vertex.weights[2]),
-                f64::from(vertex.weights[3]),
+            bind_position: [
+                f64::from(attachment.bind_position[0]),
+                f64::from(attachment.bind_position[1]),
+                f64::from(attachment.bind_position[2]),
             ],
         });
     }
     Ok(SceneMeshSkin {
         bones,
         vertices,
-        attachments: Vec::new(),
+        attachments,
     })
 }
 
@@ -1314,10 +1399,11 @@ struct BinarySceneNodeState {
     corner_radius: Option<f64>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct BinarySceneEffectiveNodeState {
     visible: bool,
     state: BinarySceneNodeState,
+    puppet_attachment_deltas: Option<BTreeMap<String, ScenePuppetAttachmentDelta>>,
 }
 
 fn binary_scene_node_state(
@@ -1363,11 +1449,11 @@ fn binary_scene_node_state(
 fn binary_scene_parent_node_state(
     states: &[BinarySceneEffectiveNodeState],
     parent_index: u32,
-) -> Result<Option<BinarySceneEffectiveNodeState>, RendererPlanError> {
+) -> Result<Option<&BinarySceneEffectiveNodeState>, RendererPlanError> {
     if parent_index == SCENE_BINARY_NONE_ID {
         return Ok(None);
     }
-    let Some(state) = states.get(parent_index as usize).copied() else {
+    let Some(state) = states.get(parent_index as usize) else {
         return Err(RendererPlanError::PackageLoad(format!(
             "binary scene node parent index {parent_index} is not before its child"
         )));
@@ -1378,7 +1464,7 @@ fn binary_scene_parent_node_state(
 fn binary_scene_effective_node_state(
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
     local: BinarySceneNodeState,
-    parent: Option<BinarySceneEffectiveNodeState>,
+    parent: Option<&BinarySceneEffectiveNodeState>,
 ) -> BinarySceneEffectiveNodeState {
     let visible =
         node.flags & BINARY_NODE_FLAG_VISIBLE != 0 && parent.is_none_or(|parent| parent.visible);
@@ -1386,6 +1472,7 @@ fn binary_scene_effective_node_state(
         return BinarySceneEffectiveNodeState {
             visible,
             state: local,
+            puppet_attachment_deltas: None,
         };
     };
     BinarySceneEffectiveNodeState {
@@ -1397,7 +1484,26 @@ fn binary_scene_effective_node_state(
             height: local.height,
             corner_radius: local.corner_radius,
         },
+        puppet_attachment_deltas: None,
     }
+}
+
+fn binary_scene_apply_puppet_attachment_delta(
+    names: &BinarySceneNames,
+    transform: &mut SceneTransform,
+    puppet_attachment_name: u32,
+    parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
+) {
+    let Some(attachment) = binary_name(names, puppet_attachment_name) else {
+        return;
+    };
+    let Some(delta) = parent_puppet_attachment_deltas.and_then(|deltas| deltas.get(attachment))
+    else {
+        return;
+    };
+    transform.x += delta.x;
+    transform.y += delta.y;
+    transform.rotation_deg += delta.rotation_deg;
 }
 
 fn binary_scene_compose_transform(parent: SceneTransform, child: SceneTransform) -> SceneTransform {
@@ -1979,6 +2085,149 @@ mod tests {
         assert!((frame.layers[0].transform.y - 5.0).abs() < 0.0001);
 
         sampler.recycle_frame(frame);
+        fs::remove_dir_all(root).expect("remove test dir");
+    }
+
+    #[test]
+    fn gscn_binary_runtime_sampler_moves_attachment_children_with_parent_puppet() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "puppet", "type": "image", "source": "assets/puppet.gtex", "width": 32, "height": 32 },
+                { "id": "hair", "type": "image", "source": "assets/hair.gtex", "width": 8, "height": 4 }
+            ],
+            "nodes": [
+                {
+                    "id": "body",
+                    "type": "image",
+                    "resource": "puppet",
+                    "width": 32,
+                    "height": 32,
+                    "transform": { "x": 100.0, "y": 200.0 },
+                    "mesh": {
+                        "vertices": [
+                            { "x": 20.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 20.0, "y": 1.0, "u": 0.0, "v": 1.0 },
+                            { "x": 21.0, "y": 0.0, "u": 1.0, "v": 0.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } },
+                                { "parent": 0, "bind": { "translation": [10.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ],
+                            "attachments": [
+                                {
+                                    "name": "hair",
+                                    "bone_index": 1,
+                                    "local_position": [10.0, 0.0, 0.0],
+                                    "bind_position": [20.0, 0.0, 0.0]
+                                }
+                            ]
+                        },
+                        "puppet_clips": [
+                            {
+                                "id": 7,
+                                "fps": 1.0,
+                                "frame_count": 1,
+                                "looping": false,
+                                "bones": [
+                                    {
+                                        "frames": [
+                                            { "translation": [0.0, 0.0, 0.0] },
+                                            { "translation": [0.0, 0.0, 0.0] }
+                                        ]
+                                    },
+                                    {
+                                        "frames": [
+                                            { "translation": [10.0, 0.0, 0.0] },
+                                            { "translation": [10.0, 0.0, 0.0], "rotation": [0.0, 0.0, 1.5707963267948966] }
+                                        ]
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    "puppet_animation_layers": [
+                        { "clip_id": 7, "rate": 1.0, "blend": 1.0 }
+                    ],
+                    "children": [
+                        {
+                            "id": "hair-group",
+                            "type": "group",
+                            "transform": { "x": 20.0, "y": 0.0 },
+                            "puppet_attachment": "hair",
+                            "children": [
+                                {
+                                    "id": "hair-image",
+                                    "type": "image",
+                                    "resource": "hair",
+                                    "width": 8,
+                                    "height": 4
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-runtime-attachment");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path,
+            Some(60),
+            0,
+            None,
+        )
+        .expect("binary scene plan");
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .expect("binary sampler open")
+            .expect("binary sampler");
+
+        let first = sampler.sample_frame_reusing(0).expect("first frame");
+        let first_hair = first
+            .layers
+            .iter()
+            .find(|layer| layer.id == "hair-image")
+            .expect("first hair layer");
+        assert!((first_hair.transform.x - 120.0).abs() < 0.0001);
+        assert!((first_hair.transform.y - 200.0).abs() < 0.0001);
+        sampler.recycle_frame(first);
+
+        let later = sampler.sample_frame_reusing(1000).expect("later frame");
+        let later_hair = later
+            .layers
+            .iter()
+            .find(|layer| layer.id == "hair-image")
+            .expect("later hair layer");
+        assert!(
+            (later_hair.transform.x - 110.0).abs() < 0.0001,
+            "later hair x was {}",
+            later_hair.transform.x
+        );
+        assert!(
+            (later_hair.transform.y - 210.0).abs() < 0.0001,
+            "later hair y was {}",
+            later_hair.transform.y
+        );
+        assert!(
+            (later_hair.transform.rotation_deg - 90.0).abs() < 0.0001,
+            "later hair rotation was {}",
+            later_hair.transform.rotation_deg
+        );
+
+        sampler.recycle_frame(later);
         fs::remove_dir_all(root).expect("remove test dir");
     }
 
