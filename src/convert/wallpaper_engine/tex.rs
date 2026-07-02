@@ -124,20 +124,6 @@ impl SceneWeTextureFormat {
     }
 }
 
-#[cfg(test)]
-pub(super) fn decode_we_tex_image(bytes: &[u8]) -> Result<SceneWeTexImage, String> {
-    match decode_we_tex_payload(bytes)? {
-        SceneWeTexPayload::Image(image) => Ok(image),
-        SceneWeTexPayload::BlockCompressedImage(image) => Err(format!(
-            "TEXB0004 payload is a {} GPU texture, not an RGBA image",
-            image.format.label()
-        )),
-        SceneWeTexPayload::Video(_) => {
-            Err("TEXB0004 payload is a video stream, not an RGBA image".to_owned())
-        }
-    }
-}
-
 pub(super) fn decode_we_tex_payload(bytes: &[u8]) -> Result<SceneWeTexPayload<'_>, String> {
     let block = we_tex_block(bytes)?;
     let payload = we_tex_block_payload(bytes, block)?;

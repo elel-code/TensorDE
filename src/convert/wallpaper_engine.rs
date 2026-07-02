@@ -29,8 +29,6 @@ use self::media::{
     generate_static_image_variants, generate_static_image_variants_with_tools,
     probe_static_image_dimensions_for_manifest,
 };
-#[cfg(test)]
-use self::media::{find_executable_in_path_list, generate_video_first_frame_preview_with_ffmpeg};
 use self::source::{
     SourceType, collect_feature_hints_from_entry, collect_feature_hints_from_value,
     detect_source_type, explicit_audio_request, has_shader_extension, is_audio_extension,
@@ -373,11 +371,7 @@ fn write_static_image_audio_scene_document(
     audio_sources: &[String],
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
-    let package_path = "assets/scene.gscene.json";
-    let scene_path = output_dir.join(package_path);
-    if let Some(parent) = scene_path.parent() {
-        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
-    }
+    let package_path = "assets/scene.gscn";
 
     let mut static_image_resource = json!({
         "id": "static-image",
@@ -441,10 +435,8 @@ fn write_static_image_audio_scene_document(
             json!({ "width": dimensions.width, "height": dimensions.height }),
         );
     }
-    write_json_pretty(&scene_path, &document)?;
     write_scene_binary_document(output_dir, package_path, &document, report)?;
     let package_path = path_to_package_string(Path::new(package_path));
-    report.generated_assets.push(package_path.clone());
     Ok(package_path)
 }
 
@@ -915,7 +907,7 @@ fn convert_playlist_scene_item(
         source,
         &original_scene.package_path,
         source_scene.as_ref(),
-        &format!("assets/playlist-{index}-scene.gscene.json"),
+        &format!("assets/playlist-{index}-scene.gscn"),
         report,
     )?;
     report.warnings.push(format!(
@@ -1094,7 +1086,7 @@ fn write_scene_document(
         source_entry,
         source_metadata,
         source_scene,
-        "assets/scene.gscene.json",
+        "assets/scene.gscn",
         report,
     )
 }
@@ -1108,11 +1100,6 @@ fn write_scene_document_to(
     package_path: &str,
     report: &mut ConversionReport,
 ) -> Result<String, ConversionError> {
-    let scene_path = output_dir.join(package_path);
-    if let Some(parent) = scene_path.parent() {
-        fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
-    }
-
     let viewport_extent = scene_document_extent(source_scene);
     let mut context = SceneDocumentBuildContext {
         resource_scope: scene_resource_scope(package_path),
@@ -1214,25 +1201,18 @@ fn write_scene_document_to(
         "native_lowering": native_lowering,
         "unsupported_features": scene_unsupported_features(report, context.unsupported_features)
     });
-    fs::write(
-        &scene_path,
-        serde_json::to_vec_pretty(&document).map_err(ConversionError::Serialize)?,
-    )
-    .map_err(ConversionError::WriteFile)?;
     write_scene_binary_document(output_dir, package_path, &document, report)?;
     let package_path = path_to_package_string(Path::new(package_path));
-    report.generated_assets.push(package_path.clone());
     Ok(package_path)
 }
 
 fn write_scene_binary_document(
     output_dir: &Path,
-    json_package_path: &str,
+    binary_package_path: &str,
     document: &Value,
     report: &mut ConversionReport,
 ) -> Result<(), ConversionError> {
-    let binary_package_path = scene_binary_package_path(json_package_path);
-    let binary_path = output_dir.join(&binary_package_path);
+    let binary_path = output_dir.join(binary_package_path);
     if let Some(parent) = binary_path.parent() {
         fs::create_dir_all(parent).map_err(ConversionError::CreateDir)?;
     }
@@ -1253,15 +1233,8 @@ fn write_scene_binary_document(
     push_unique(&mut report.converted_features, "binary-scene-format");
     report
         .generated_assets
-        .push(path_to_package_string(Path::new(&binary_package_path)));
+        .push(path_to_package_string(Path::new(binary_package_path)));
     Ok(())
-}
-
-fn scene_binary_package_path(json_package_path: &str) -> String {
-    json_package_path
-        .strip_suffix(".gscene.json")
-        .map(|prefix| format!("{prefix}.gscn"))
-        .unwrap_or_else(|| format!("{json_package_path}.gscn"))
 }
 
 fn scene_document_size(source_scene: Option<&Value>) -> Value {
@@ -7044,16 +7017,6 @@ fn scene_we_tex_crop_first_frame_bytes(
     Ok(frame)
 }
 
-#[cfg(test)]
-fn scene_we_tex_first_frame(
-    image: SceneWeTexImage,
-    frame_size: Option<SceneWeModelFrameSize>,
-) -> Result<(SceneWeTexImage, u32), String> {
-    let layout = scene_we_tex_frame_layout(&image, frame_size);
-    let frame_count = layout.frame_count;
-    scene_we_tex_crop_first_frame(image, layout).map(|image| (image, frame_count))
-}
-
 fn scene_material_spritesheet_enabled(material_json: &Value) -> bool {
     material_json
         .get("passes")
@@ -7079,7 +7042,7 @@ fn scene_resource_scope(package_path: &str) -> String {
         .and_then(|stem| stem.to_str())
         .unwrap_or(package_path);
     let stem = file_name
-        .strip_suffix(".gscene.json")
+        .strip_suffix(".gscn")
         .or_else(|| file_name.strip_suffix(".json"))
         .unwrap_or(file_name);
     let stem = Some(slug_id(stem)).filter(|stem| !stem.is_empty());

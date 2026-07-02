@@ -1212,42 +1212,6 @@ fn render_sync_telemetry_report(
         render_sync_cache.static_image_cache_eviction_errors
     );
     insert!(
-        "scene_snapshot_cache_entries",
-        render_sync_cache.scene_snapshot_cache_entries
-    );
-    insert!(
-        "scene_snapshot_cache_max_entries",
-        render_sync_cache.scene_snapshot_cache_max_entries
-    );
-    insert!(
-        "scene_snapshot_cache_bytes",
-        render_sync_cache.scene_snapshot_cache_bytes
-    );
-    insert!(
-        "scene_snapshot_cache_max_bytes",
-        render_sync_cache.scene_snapshot_cache_max_bytes
-    );
-    insert!(
-        "scene_snapshot_cache_generations",
-        render_sync_cache.scene_snapshot_cache_generations
-    );
-    insert!(
-        "scene_snapshot_cache_reuses",
-        render_sync_cache.scene_snapshot_cache_reuses
-    );
-    insert!(
-        "scene_snapshot_cache_generation_errors",
-        render_sync_cache.scene_snapshot_cache_generation_errors
-    );
-    insert!(
-        "scene_snapshot_cache_evictions",
-        render_sync_cache.scene_snapshot_cache_evictions
-    );
-    insert!(
-        "scene_snapshot_cache_eviction_errors",
-        render_sync_cache.scene_snapshot_cache_eviction_errors
-    );
-    insert!(
         "planned_video_source_references",
         render_sync_cache.planned_video_source_references
     );
@@ -1943,42 +1907,6 @@ mod tests {
             json!(536_870_912)
         );
         assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_entries"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_max_entries"],
-            json!(32)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_bytes"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_max_bytes"],
-            json!(536_870_912)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_generations"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_reuses"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_generation_errors"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_evictions"],
-            json!(0)
-        );
-        assert_eq!(
-            response["result"]["telemetry"]["render_sync"]["scene_snapshot_cache_eviction_errors"],
-            json!(0)
-        );
-        assert_eq!(
             response["result"]["telemetry"]["render_sync"]["planned_static_image_resources"],
             json!(0)
         );
@@ -2466,41 +2394,6 @@ mod tests {
     }
 
     #[test]
-    fn current_render_sync_cache_invalidates_scene_bound_properties() {
-        let package_dir = TestDir::new("gilder-render-sync-scene-property-cache");
-        write_scene_property_package(package_dir.path());
-
-        let mut context = test_context();
-        context.paths.cache_dir = package_dir.path().join("cache");
-        context.desktop.outputs = vec![gilder::desktop::DesktopOutput::virtual_output("eDP-1")];
-        context
-            .state
-            .set_wallpaper(Some("eDP-1"), package_dir.path().to_string_lossy());
-
-        let first = current_render_sync(&mut context);
-        assert_eq!(first.scene_plans.len(), 1);
-        assert_eq!(first.scene_plans[0].bound_properties, vec!["scene_opacity"]);
-        assert!((first.scene_plans[0].layers[0].opacity - 1.0).abs() < f64::EPSILON);
-
-        context
-            .state
-            .set_property(Some("eDP-1"), "scene_opacity", json!(0.25));
-        let second = current_render_sync(&mut context);
-        assert_eq!(second.scene_plans.len(), 1);
-        assert!((second.scene_plans[0].layers[0].opacity - 0.25).abs() < f64::EPSILON);
-        assert_ne!(second, first);
-
-        let third = current_render_sync(&mut context);
-        assert_eq!(third, second);
-
-        context
-            .state
-            .set_property(Some("eDP-1"), "unused", json!(123));
-        let fourth = current_render_sync(&mut context);
-        assert_eq!(fourth, second);
-    }
-
-    #[test]
     fn current_render_sync_cache_ignores_non_render_config() {
         let package_dir = TestDir::new("gilder-render-sync-config-cache-package");
         write_static_package_manifest(package_dir.path(), "#101418");
@@ -2648,50 +2541,6 @@ mod tests {
             ),
         )
         .expect("failed to write package manifest");
-    }
-
-    fn write_scene_property_package(root: &Path) {
-        let assets = root.join("assets");
-        std::fs::create_dir_all(&assets).expect("failed to create scene package assets");
-        std::fs::write(
-            assets.join("scene.gscene.json"),
-            r##"{
-  "nodes": [
-    {
-      "id": "background",
-      "type": "color",
-      "color": "#101418"
-    }
-  ],
-  "property_bindings": [
-    {
-      "property": "scene_opacity",
-      "target": "opacity",
-      "target_node": "background"
-    }
-  ]
-}
-"##,
-        )
-        .expect("failed to write scene document");
-        std::fs::write(
-            root.join(gilder::core::MANIFEST_FILE),
-            r#"{
-  "format": "gilder.wallpaper",
-  "format_version": 1,
-  "id": "io.github.elelcode.gilder.scene-property-cache-test",
-  "version": "0.1.0",
-  "title": "Scene Property Cache Test",
-  "kind": "scene",
-  "entry": {
-    "type": "scene",
-    "source": "assets/scene.gscene.json",
-    "max_fps": 60
-  }
-}
-"#,
-        )
-        .expect("failed to write scene package manifest");
     }
 
     fn empty_render_sync() -> StaticRenderSyncPlan {

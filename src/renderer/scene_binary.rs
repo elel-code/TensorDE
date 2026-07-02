@@ -53,7 +53,7 @@ use crate::core::{
 };
 use crate::renderer::{
     RendererPlanError, SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, SceneRenderLayer,
-    SceneRenderTextureSlot, SceneWallpaperPlan, SceneWallpaperRuntimeFrame,
+    SceneRenderTextureSlot, SceneWallpaperPlan,
 };
 
 const BINARY_TRANSFORM_PROPERTY_DEFAULT: u16 = 0;
@@ -308,6 +308,13 @@ pub(crate) struct SceneBinaryRuntimeSampler {
     layers_scratch: Vec<SceneRenderLayer>,
 }
 
+pub(crate) struct SceneBinaryRuntimeFrame {
+    pub(crate) snapshot_time_ms: u64,
+    pub(crate) scene_size: Option<SceneSize>,
+    pub(crate) scene_fit: FitMode,
+    pub(crate) layers: Vec<SceneRenderLayer>,
+}
+
 impl SceneBinaryRuntimeSampler {
     pub(crate) fn from_plan(plan: &SceneWallpaperPlan) -> Result<Option<Self>, RendererPlanError> {
         let Some(source_path) = plan.source.as_ref() else {
@@ -335,7 +342,7 @@ impl SceneBinaryRuntimeSampler {
     pub(crate) fn sample_frame_reusing(
         &mut self,
         time_ms: u64,
-    ) -> Result<SceneWallpaperRuntimeFrame, RendererPlanError> {
+    ) -> Result<SceneBinaryRuntimeFrame, RendererPlanError> {
         binary_scene_render_layers_into(
             &mut self.reader,
             &self.names,
@@ -343,7 +350,7 @@ impl SceneBinaryRuntimeSampler {
             time_ms,
             &mut self.layers_scratch,
         )?;
-        Ok(SceneWallpaperRuntimeFrame {
+        Ok(SceneBinaryRuntimeFrame {
             snapshot_time_ms: time_ms,
             scene_size: self.scene_size,
             scene_fit: self.scene_fit,
@@ -351,7 +358,7 @@ impl SceneBinaryRuntimeSampler {
         })
     }
 
-    pub(crate) fn recycle_frame(&mut self, mut frame: SceneWallpaperRuntimeFrame) {
+    pub(crate) fn recycle_frame(&mut self, mut frame: SceneBinaryRuntimeFrame) {
         frame.layers.clear();
         self.layers_scratch = frame.layers;
     }

@@ -13,7 +13,6 @@ use crate::core::{
 use crate::renderer::{
     SceneBinaryRuntimeSampler, SceneRenderAlphaTextureMode, SceneRenderAudioCue,
     SceneRenderImageEffectPass, SceneRenderLayer, SceneRenderTextureSlot, SceneWallpaperPlan,
-    SceneWallpaperRuntimeSampledImageFrame, SceneWallpaperRuntimeSampler,
 };
 
 #[cfg(feature = "native-vulkan-video")]
@@ -57,7 +56,6 @@ use super::runtime::{
     native_vulkan_scene_runtime_snapshot,
     native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
-    native_vulkan_scene_solid_quad_geometry_input_from_snapshot_layers,
 };
 
 const SCENE_DYNAMIC_GEOMETRY_HEAP_TRIM_INTERVAL_MS: u64 = 1_000;
@@ -135,13 +133,8 @@ struct NativeVulkanSceneDynamicGeometryFrame {
     sampled_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
 }
 
-enum NativeVulkanSceneDynamicGeometrySampler {
-    Document(SceneWallpaperRuntimeSampler),
-    Binary(SceneBinaryRuntimeSampler),
-}
-
 struct NativeVulkanSceneDynamicGeometryCache {
-    sampler: NativeVulkanSceneDynamicGeometrySampler,
+    sampler: SceneBinaryRuntimeSampler,
     base_time_ms: u64,
     include_solid_geometry: bool,
     cached: Option<NativeVulkanSceneDynamicGeometryFrame>,
@@ -149,32 +142,8 @@ struct NativeVulkanSceneDynamicGeometryCache {
 }
 
 impl NativeVulkanSceneDynamicGeometryCache {
-    fn new_document(
-        sampler: SceneWallpaperRuntimeSampler,
-        base_time_ms: u64,
-        include_solid_geometry: bool,
-    ) -> Self {
-        Self::new(
-            NativeVulkanSceneDynamicGeometrySampler::Document(sampler),
-            base_time_ms,
-            include_solid_geometry,
-        )
-    }
-
     fn new_binary(
         sampler: SceneBinaryRuntimeSampler,
-        base_time_ms: u64,
-        include_solid_geometry: bool,
-    ) -> Self {
-        Self::new(
-            NativeVulkanSceneDynamicGeometrySampler::Binary(sampler),
-            base_time_ms,
-            include_solid_geometry,
-        )
-    }
-
-    fn new(
-        sampler: NativeVulkanSceneDynamicGeometrySampler,
         base_time_ms: u64,
         include_solid_geometry: bool,
     ) -> Self {
@@ -236,63 +205,31 @@ impl NativeVulkanSceneDynamicGeometryCache {
 
     fn refresh_frame(&mut self, elapsed_ms: u64) -> Result<(), String> {
         let sample_time_ms = self.base_time_ms.saturating_add(elapsed_ms);
-        let (sampled_geometry, solid_geometry) = match &mut self.sampler {
-            NativeVulkanSceneDynamicGeometrySampler::Document(sampler) => {
-                let sampled_frame = sampler
-                    .sample_sampled_image_frame_reusing(sample_time_ms)
-                    .map_err(|err| format!("sample dynamic sampled image frame: {err}"))?;
-                let sampled_geometry =
-                    native_vulkan_scene_sampled_geometry_input_from_runtime_sampled_image_frame(
-                        &sampled_frame,
-                        sampler.package_root(),
-                    );
-                sampler.recycle_sampled_image_frame(sampled_frame);
-                let sampled_geometry = sampled_geometry?;
-                let solid_geometry = if self.include_solid_geometry {
-                    let frame = sampler
-                        .sample_solid_snapshot_frame_reusing(sample_time_ms)
-                        .map_err(|err| {
-                            format!("sample dynamic solid scene snapshot frame: {err}")
-                        })?;
-                    let geometry =
-                        native_vulkan_scene_solid_quad_geometry_input_from_snapshot_layers(
-                            &frame.layers,
-                        );
-                    sampler.recycle_snapshot_frame(frame);
-                    Some(geometry?)
-                } else {
-                    None
-                };
-                (sampled_geometry, solid_geometry)
-            }
-            NativeVulkanSceneDynamicGeometrySampler::Binary(sampler) => {
-                let frame = sampler
-                    .sample_frame_reusing(sample_time_ms)
-                    .map_err(|err| format!("sample dynamic binary scene frame: {err}"))?;
-                let sampled_geometry = native_vulkan_scene_binary_sampled_geometry_from_layers(
-                    frame.snapshot_time_ms,
-                    sampler.package_root(),
-                    &frame.layers,
-                );
-                let solid_geometry = if self.include_solid_geometry {
-                    native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers(
-                        frame.snapshot_time_ms,
-                        frame.scene_size,
-                        frame.scene_fit,
-                        &frame.layers,
-                    )
-                } else {
-                    Ok(None)
-                };
-                sampler.recycle_frame(frame);
-                let sampled_geometry = sampled_geometry?;
-                let mut solid_geometry = solid_geometry?;
-                if let Some(solid_geometry) = solid_geometry.as_mut() {
-                    native_vulkan_scene_keep_binary_dynamic_solid_vertices_only(solid_geometry);
-                }
-                (sampled_geometry, solid_geometry)
-            }
+        let frame = self
+            .sampler
+            .sample_frame_reusing(sample_time_ms)
+            .map_err(|err| format!("sample dynamic binary scene frame: {err}"))?;
+        let sampled_geometry = native_vulkan_scene_binary_sampled_geometry_from_layers(
+            frame.snapshot_time_ms,
+            self.sampler.package_root(),
+            &frame.layers,
+        );
+        let solid_geometry = if self.include_solid_geometry {
+            native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers(
+                frame.snapshot_time_ms,
+                frame.scene_size,
+                frame.scene_fit,
+                &frame.layers,
+            )
+        } else {
+            Ok(None)
         };
+        self.sampler.recycle_frame(frame);
+        let sampled_geometry = sampled_geometry?;
+        let mut solid_geometry = solid_geometry?;
+        if let Some(solid_geometry) = solid_geometry.as_mut() {
+            native_vulkan_scene_keep_binary_dynamic_solid_vertices_only(solid_geometry);
+        }
         self.cached = Some(NativeVulkanSceneDynamicGeometryFrame {
             elapsed_ms,
             solid_geometry,
@@ -394,9 +331,7 @@ fn native_vulkan_scene_binary_alpha_texture_mode(
     match mode {
         SceneRenderAlphaTextureMode::Multiply => SceneAlphaTextureMode::Multiply,
         SceneRenderAlphaTextureMode::Inverse => SceneAlphaTextureMode::Inverse,
-        SceneRenderAlphaTextureMode::Iris | SceneRenderAlphaTextureMode::IrisCoverage => {
-            SceneAlphaTextureMode::Iris
-        }
+        SceneRenderAlphaTextureMode::Iris => SceneAlphaTextureMode::Iris,
         SceneRenderAlphaTextureMode::Coverage => SceneAlphaTextureMode::Coverage,
     }
 }
@@ -483,17 +418,6 @@ fn native_vulkan_scene_binary_tint_from_color(color: Option<&str>) -> [f32; 4] {
         .unwrap_or([1.0, 1.0, 1.0, 1.0])
 }
 
-fn native_vulkan_scene_sampled_geometry_input_from_runtime_sampled_image_frame(
-    frame: &SceneWallpaperRuntimeSampledImageFrame,
-    package_root: &std::path::Path,
-) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root(
-        Some(frame.snapshot_time_ms),
-        &frame.layers,
-        Some(package_root),
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanSceneVideoBridgeSourceOptions {
     pub source: std::path::PathBuf,
@@ -512,16 +436,6 @@ pub struct NativeVulkanSceneVideoBridgeOptions {
     pub audio_output_mode: NativeVulkanAudioOutputMode,
 }
 
-fn native_vulkan_scene_dynamic_sampler(
-    plan: &SceneWallpaperPlan,
-) -> Result<Option<SceneWallpaperRuntimeSampler>, NativeVulkanError> {
-    if !native_vulkan_scene_plan_needs_dynamic_sampler(plan) {
-        return Ok(None);
-    }
-    SceneWallpaperRuntimeSampler::from_plan(plan)
-        .map_err(|err| NativeVulkanError::Scene(format!("prepare dynamic scene sampler: {err}")))
-}
-
 fn native_vulkan_scene_binary_dynamic_sampler(
     plan: &SceneWallpaperPlan,
 ) -> Result<Option<SceneBinaryRuntimeSampler>, NativeVulkanError> {
@@ -533,30 +447,6 @@ fn native_vulkan_scene_binary_dynamic_sampler(
     SceneBinaryRuntimeSampler::from_plan(plan).map_err(|err| {
         NativeVulkanError::Scene(format!("prepare dynamic binary scene sampler: {err}"))
     })
-}
-
-fn native_vulkan_scene_plan_needs_dynamic_sampler(plan: &SceneWallpaperPlan) -> bool {
-    if native_vulkan_scene_plan_uses_binary_scene(plan) {
-        return false;
-    }
-    let particle_runtime_active = matches!(
-        plan.scene_systems.particles,
-        SceneSystemStatus::Detected | SceneSystemStatus::Ready
-    );
-    let native_effect_runtime_active = matches!(
-        plan.scene_systems.shader_material_graph,
-        SceneSystemStatus::Detected | SceneSystemStatus::Ready
-    );
-    plan.timeline_animation_count > 0
-        || plan.timeline_animated_layer_count > 0
-        || plan.puppet_animation_layer_count > 0
-        || particle_runtime_active
-        || native_effect_runtime_active
-        || plan.layers.iter().any(|layer| {
-            layer
-                .texture_region
-                .is_some_and(native_vulkan_scene_texture_region_is_animated)
-        })
 }
 
 fn native_vulkan_scene_plan_needs_binary_dynamic_sampler(plan: &SceneWallpaperPlan) -> bool {
@@ -589,20 +479,14 @@ fn native_vulkan_scene_texture_region_is_animated(region: SceneTextureRegion) ->
 fn native_vulkan_scene_dynamic_solid_geometry(
     plan: &SceneWallpaperPlan,
 ) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry>, NativeVulkanError> {
-    if let Some(sampler) = native_vulkan_scene_binary_dynamic_sampler(plan)? {
-        return Ok(Some(
+    Ok(
+        native_vulkan_scene_binary_dynamic_sampler(plan)?.map(|sampler| {
             native_vulkan_scene_binary_dynamic_solid_geometry_from_sampler(
                 sampler,
                 plan.snapshot_time_ms,
-            ),
-        ));
-    }
-    let Some(sampler) = native_vulkan_scene_dynamic_sampler(plan)? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        native_vulkan_scene_dynamic_solid_geometry_from_sampler(sampler, plan.snapshot_time_ms),
-    ))
+            )
+        }),
+    )
 }
 
 fn native_vulkan_scene_binary_dynamic_solid_geometry_from_sampler(
@@ -619,33 +503,6 @@ fn native_vulkan_scene_binary_dynamic_solid_geometry_from_sampler(
             let frame = sampler
                 .sample_frame_reusing(sample_time_ms)
                 .map_err(|err| format!("sample dynamic binary solid scene frame: {err}"))?;
-            let geometry = native_vulkan_scene_solid_quad_geometry_input_from_layers(
-                frame.snapshot_time_ms,
-                frame.scene_size,
-                frame.scene_fit,
-                &frame.layers,
-            );
-            sampler.recycle_frame(frame);
-            geometry
-        })();
-        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
-        result
-    })
-}
-
-fn native_vulkan_scene_dynamic_solid_geometry_from_sampler(
-    sampler: SceneWallpaperRuntimeSampler,
-    base_time_ms: u64,
-) -> NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry {
-    let sampler = Arc::new(Mutex::new(sampler));
-    Box::new(move |elapsed_ms| {
-        let result = (|| {
-            let mut sampler = sampler
-                .lock()
-                .map_err(|_| "dynamic solid scene sampler is poisoned".to_owned())?;
-            let frame = sampler
-                .sample_frame_reusing(base_time_ms.saturating_add(elapsed_ms))
-                .map_err(|err| format!("sample dynamic solid scene: {err}"))?;
             let geometry = native_vulkan_scene_solid_quad_geometry_input_from_layers(
                 frame.snapshot_time_ms,
                 frame.scene_size,
@@ -692,33 +549,12 @@ fn native_vulkan_scene_dynamic_sampled_geometry_pair(
     ),
     NativeVulkanError,
 > {
-    if let Some(sampler) = native_vulkan_scene_binary_dynamic_sampler(plan)? {
-        let base_time_ms = plan.snapshot_time_ms;
-        let include_solid_geometry = include_solid_geometry;
-        let cache = Arc::new(Mutex::new(
-            NativeVulkanSceneDynamicGeometryCache::new_binary(
-                sampler,
-                base_time_ms,
-                include_solid_geometry,
-            ),
-        ));
-        return Ok((
-            include_solid_geometry.then(|| {
-                native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(Arc::clone(&cache))
-            }),
-            Some(native_vulkan_scene_dynamic_sampled_geometry_from_cache(
-                cache,
-            )),
-        ));
-    }
-    let Some(sampler) = native_vulkan_scene_dynamic_sampler(plan)? else {
+    let Some(sampler) = native_vulkan_scene_binary_dynamic_sampler(plan)? else {
         return Ok((None, None));
     };
     let base_time_ms = plan.snapshot_time_ms;
-    let include_solid_geometry =
-        include_solid_geometry && sampler.dynamic_solid_geometry_required();
     let cache = Arc::new(Mutex::new(
-        NativeVulkanSceneDynamicGeometryCache::new_document(
+        NativeVulkanSceneDynamicGeometryCache::new_binary(
             sampler,
             base_time_ms,
             include_solid_geometry,
@@ -1416,7 +1252,6 @@ mod tests {
         plan.timeline_animated_layer_count = 1;
         plan.puppet_animation_layer_count = 1;
 
-        assert!(!native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
         assert!(native_vulkan_scene_plan_needs_binary_dynamic_sampler(&plan));
     }
 
@@ -1481,9 +1316,10 @@ mod tests {
             loop_playback: true,
         });
 
-        let plan = plan(vec![image]);
+        let mut plan = plan(vec![image]);
+        plan.source = Some(PathBuf::from("/tmp/scene.gscn"));
 
-        assert!(native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
+        assert!(native_vulkan_scene_plan_needs_binary_dynamic_sampler(&plan));
     }
 
     #[test]
@@ -1492,9 +1328,10 @@ mod tests {
         image.source = Some(PathBuf::from("/tmp/puppet.gtex"));
 
         let mut plan = plan(vec![image]);
+        plan.source = Some(PathBuf::from("/tmp/scene.gscn"));
         plan.puppet_animation_layer_count = 1;
 
-        assert!(native_vulkan_scene_plan_needs_dynamic_sampler(&plan));
+        assert!(native_vulkan_scene_plan_needs_binary_dynamic_sampler(&plan));
     }
 
     #[test]

@@ -2361,9 +2361,6 @@ fn native_vulkan_scene_eye_alpha_zero_reason_label(
         SceneRenderAlphaTextureMode::Coverage => {
             "coverage-mask-can-zero-this-layer-only; previous layers remain untouched"
         }
-        SceneRenderAlphaTextureMode::IrisCoverage => {
-            "iris first samples g_Texture0, then coverage texture can zero this layer"
-        }
     }
 }
 
@@ -2382,9 +2379,6 @@ fn native_vulkan_scene_eye_alpha_semantics_label(
         }
         SceneRenderAlphaTextureMode::Coverage => {
             "straight_alpha_out = effect_target_alpha * coverage_mask * layer_opacity"
-        }
-        SceneRenderAlphaTextureMode::IrisCoverage => {
-            "iris pass perturbs g_Texture0 sampling and then gates alpha with coverage texture"
         }
     }
 }
