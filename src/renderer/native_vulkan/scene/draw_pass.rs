@@ -25,7 +25,7 @@ mod plan;
 mod texture_slots;
 mod types;
 
-use self::blend::native_vulkan_scene_blend_state;
+use self::blend::{native_vulkan_scene_blend_state, native_vulkan_scene_render_state};
 pub(super) use self::classification::native_vulkan_scene_render_layer_is_clear;
 use self::classification::{
     native_vulkan_scene_background_clear_color, native_vulkan_scene_draw_pass_op_buckets,
@@ -557,6 +557,32 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
         &mut discarded_indices,
     )
     .ok_or("image-layer-missing-recordable-geometry")?;
+    if let Some(chain) = native_vulkan_scene_we_image_pass_chain(&quad) {
+        let mut local_quad = quad.clone();
+        local_quad.mesh = None;
+        local_quad.effect_motion = SceneNativeEffectMotion::default();
+        for pass in chain
+            .passes
+            .iter()
+            .skip(1)
+            .filter(|pass| !pass.final_scene_pass)
+        {
+            match pass.role {
+                NativeVulkanSceneWeImagePassRole::EffectMaterial
+                | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+                    local_quad.effect_uv_space =
+                        native_vulkan_scene_we_image_pass_effect_uv_space(&quad, pass);
+                    native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                        &local_quad,
+                        vertices,
+                        &mut discarded_indices,
+                    )
+                    .ok_or("image-layer-missing-recordable-geometry")?;
+                }
+                NativeVulkanSceneWeImagePassRole::BaseMaterial => {}
+            }
+        }
+    }
     native_vulkan_scene_append_sampled_image_effect_final_geometry(
         &quad,
         None,
@@ -570,6 +596,18 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
             .saturating_sub(first_vertex)
             .min(u32::MAX as usize) as u32,
     ))
+}
+
+fn native_vulkan_scene_we_image_pass_effect_uv_space(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    pass: &NativeVulkanSceneWeImagePass,
+) -> Option<NativeVulkanSceneEffectUvSpace> {
+    match pass.effect_kind {
+        Some(NativeVulkanSceneEffectKind::Iris | NativeVulkanSceneEffectKind::OpacityMask) => {
+            native_vulkan_scene_sampled_image_effect_final_uv_space(quad)
+        }
+        _ => None,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -906,14 +944,8 @@ fn native_vulkan_scene_sampled_image_recording_payload(
             quad,
             resource_index,
         );
-        if native_vulkan_scene_sampled_image_needs_we_effect_chain(quad)
-            && let Some(effect_pass) = quad.effect_target_pass.as_ref()
-        {
-            let _ = native_vulkan_scene_sampled_image_texture_slot_bindings_for_slots(
-                &mut sources,
-                &effect_pass.texture_slots,
-                resource_index,
-            );
+        if native_vulkan_scene_sampled_image_needs_we_effect_chain(quad) {
+            native_vulkan_scene_collect_we_graph_step_sources(&mut sources, we_graph_plan, quad);
         }
     }
     let file_source_count = sources.len().max(1);
@@ -932,141 +964,22 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 resource_index,
             );
         if native_vulkan_scene_sampled_image_needs_we_effect_chain(quad) {
-            let scene_blend_mode = native_vulkan_scene_first_class_effect_scene_blend_mode(quad);
-            let we_graph_target = native_vulkan_scene_we_image_graph_target_for_layer(
+            native_vulkan_scene_allocate_we_graph_effect_targets(
+                &mut effect_targets,
                 we_graph_plan,
-                quad.layer_index,
-                NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget,
-            );
-            let we_graph_base_step = native_vulkan_scene_we_image_graph_step_for_layer_role(
-                we_graph_plan,
-                quad.layer_index,
-                NativeVulkanSceneWeImagePassRole::BaseMaterial,
-            );
-            let we_graph_final_step = we_graph_target.and_then(|target| {
-                native_vulkan_scene_we_image_graph_final_scene_step_for_layer(
-                    we_graph_plan,
-                    quad.layer_index,
-                )
-                .filter(|step| step.input_target_index == Some(target.target_index))
-            });
-            let Some(base_range) = native_vulkan_scene_append_sampled_image_effect_base_geometry(
                 quad,
-                &mut vertices,
-                &mut indices,
-            ) else {
-                continue;
-            };
-            let target_index = effect_targets.len().min(u32::MAX as usize) as u32;
-            effect_targets.push(NativeVulkanSceneSampledImageEffectTarget {
-                effect_target_index: target_index,
-                layer_index: quad.layer_index,
-                width: native_vulkan_scene_effect_target_extent(quad.width),
-                height: native_vulkan_scene_effect_target_extent(quad.height),
-                we_graph_chain_index: we_graph_target.map(|target| target.chain_index),
-                we_graph_target_index: we_graph_target.map(|target| target.target_index),
-                we_graph_endpoint: we_graph_target.map(|target| target.endpoint),
-            });
-            let base_step = native_vulkan_scene_sampled_image_recording_step(
-                quad,
-                vec![NativeVulkanSceneTextureSlotResourceBinding {
-                    slot: 0,
-                    resource_index,
-                }],
-                None,
-                SceneRenderAlphaTextureMode::Multiply,
-                NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
-                    target_index,
-                    clear: true,
-                },
-                we_graph_base_step,
-                base_range,
-                scene_blend_mode,
             );
-            native_vulkan_scene_debug_sampled_image_recording_step(
-                quad, &base_step, base_range, &vertices,
-            );
-            steps.push(base_step);
-
-            let Some(final_range) = native_vulkan_scene_append_sampled_image_effect_final_geometry(
+            native_vulkan_scene_record_we_graph_sampled_image_steps(
                 quad,
                 scene_size,
+                we_graph_plan,
+                file_source_count,
+                &effect_targets,
+                &mut sources,
+                &mut steps,
                 &mut vertices,
                 &mut indices,
-            ) else {
-                continue;
-            };
-            let target_resource_index = file_source_count
-                .saturating_add(target_index as usize)
-                .min(u32::MAX as usize) as u32;
-            let (mut final_texture_slots, final_alpha_texture_slot, final_alpha_texture_mode) =
-                if let Some(effect_pass) = quad.effect_target_pass.as_ref() {
-                    (
-                        native_vulkan_scene_sampled_image_texture_slot_bindings_for_slots(
-                            &mut sources,
-                            &effect_pass.texture_slots,
-                            target_resource_index,
-                        ),
-                        effect_pass.alpha_texture_slot,
-                        effect_pass.alpha_texture_mode,
-                    )
-                } else {
-                    (
-                        vec![NativeVulkanSceneTextureSlotResourceBinding {
-                            slot: 0,
-                            resource_index: target_resource_index,
-                        }],
-                        quad.material_pass.alpha_texture_slot,
-                        quad.material_pass.alpha_texture_mode,
-                    )
-                };
-            if final_texture_slots.is_empty() {
-                final_texture_slots.push(NativeVulkanSceneTextureSlotResourceBinding {
-                    slot: 0,
-                    resource_index: target_resource_index,
-                });
-            } else {
-                final_texture_slots[0] = NativeVulkanSceneTextureSlotResourceBinding {
-                    slot: 0,
-                    resource_index: target_resource_index,
-                };
-            }
-            if let Some(alpha_slot) = final_alpha_texture_slot {
-                while final_texture_slots.len() <= alpha_slot as usize {
-                    final_texture_slots.push(NativeVulkanSceneTextureSlotResourceBinding {
-                        slot: final_texture_slots.len().min(u32::MAX as usize) as u32,
-                        resource_index: target_resource_index,
-                    });
-                }
-                if let Some(alpha_resource_index) = texture_slot_bindings
-                    .iter()
-                    .find(|binding| binding.slot == alpha_slot)
-                    .map(|binding| binding.resource_index)
-                {
-                    final_texture_slots[alpha_slot as usize] =
-                        NativeVulkanSceneTextureSlotResourceBinding {
-                            slot: alpha_slot,
-                            resource_index: alpha_resource_index,
-                        };
-                }
-            }
-            let final_step = native_vulkan_scene_sampled_image_recording_step(
-                quad,
-                final_texture_slots,
-                final_alpha_texture_slot,
-                final_alpha_texture_mode,
-                NativeVulkanSceneSampledImageRenderTarget::Swapchain,
-                we_graph_final_step,
-                final_range,
-                scene_blend_mode,
             );
-            native_vulkan_scene_debug_sampled_image_recording_step(
-                quad,
-                &final_step,
-                final_range,
-                &vertices,
-            );
-            steps.push(final_step);
         } else if let Some(range) = native_vulkan_scene_append_sampled_image_geometry(
             quad,
             scene_size,
@@ -1101,6 +1014,283 @@ fn native_vulkan_scene_sampled_image_needs_we_effect_chain(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> bool {
     quad.effect_target_pass.is_some()
+}
+
+fn native_vulkan_scene_collect_we_graph_step_sources(
+    sources: &mut Vec<PathBuf>,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    quad: &NativeVulkanSceneSampledImageQuad,
+) {
+    for step in native_vulkan_scene_we_image_graph_steps_for_layer(plan, quad.layer_index) {
+        for binding in &step.texture_bindings {
+            if let Some(source_path) = binding.source_path.as_ref() {
+                let _ =
+                    native_vulkan_scene_sampled_image_source_index(sources, source_path.clone());
+            }
+        }
+    }
+}
+
+fn native_vulkan_scene_allocate_we_graph_effect_targets(
+    effect_targets: &mut Vec<NativeVulkanSceneSampledImageEffectTarget>,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    quad: &NativeVulkanSceneSampledImageQuad,
+) {
+    for target in plan.targets.iter().filter(|target| {
+        target.layer_index == quad.layer_index
+            && matches!(
+                target.execution,
+                NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+            )
+    }) {
+        if effect_targets.iter().any(|effect_target| {
+            effect_target.we_graph_chain_index == Some(target.chain_index)
+                && effect_target.we_graph_target_index == Some(target.target_index)
+                && effect_target.we_graph_endpoint == Some(target.endpoint)
+        }) {
+            continue;
+        }
+        let effect_target_index = effect_targets.len().min(u32::MAX as usize) as u32;
+        effect_targets.push(NativeVulkanSceneSampledImageEffectTarget {
+            effect_target_index,
+            layer_index: quad.layer_index,
+            width: target.width,
+            height: target.height,
+            we_graph_chain_index: Some(target.chain_index),
+            we_graph_target_index: Some(target.target_index),
+            we_graph_endpoint: Some(target.endpoint),
+        });
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_scene_record_we_graph_sampled_image_steps(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    scene_size: Option<SceneSize>,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    file_source_count: usize,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    sources: &mut Vec<PathBuf>,
+    steps: &mut Vec<NativeVulkanSceneSampledImageRecordingStep>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) {
+    for we_graph_step in native_vulkan_scene_we_image_graph_steps_for_layer(plan, quad.layer_index)
+    {
+        let Some(range) = native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
+            quad,
+            we_graph_step,
+            scene_size,
+            vertices,
+            indices,
+        ) else {
+            continue;
+        };
+        let Some(render_target) = native_vulkan_scene_we_graph_step_render_target(
+            plan,
+            we_graph_step,
+            effect_targets,
+        ) else {
+            continue;
+        };
+        let Some(texture_slot_bindings) =
+            native_vulkan_scene_we_graph_step_texture_slot_bindings(
+                sources,
+                we_graph_step,
+                file_source_count,
+                effect_targets,
+            )
+        else {
+            continue;
+        };
+        let (alpha_texture_slot, alpha_texture_mode) =
+            native_vulkan_scene_we_graph_step_alpha_texture(we_graph_step);
+        let blend_mode = if we_graph_step.pass.final_scene_pass {
+            native_vulkan_scene_first_class_effect_scene_blend_mode(quad)
+        } else {
+            we_graph_step.pass.render_state.blend.mode
+        };
+        let step = native_vulkan_scene_sampled_image_recording_step(
+            quad,
+            texture_slot_bindings,
+            alpha_texture_slot,
+            alpha_texture_mode,
+            render_target,
+            Some(we_graph_step),
+            range,
+            blend_mode,
+        );
+        native_vulkan_scene_debug_sampled_image_recording_step(quad, &step, range, vertices);
+        steps.push(step);
+    }
+}
+
+fn native_vulkan_scene_we_image_graph_steps_for_layer(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    layer_index: usize,
+) -> Vec<&NativeVulkanSceneWeImageGraphStep> {
+    plan.steps
+        .iter()
+        .filter(|step| {
+            step.layer_index == layer_index
+                && matches!(
+                    step.execution,
+                    NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+                )
+        })
+        .collect()
+}
+
+fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    if step.pass.final_scene_pass {
+        return native_vulkan_scene_append_sampled_image_effect_final_geometry(
+            quad, scene_size, vertices, indices,
+        );
+    }
+    match step.pass.role {
+        NativeVulkanSceneWeImagePassRole::BaseMaterial => {
+            native_vulkan_scene_append_sampled_image_effect_base_geometry(quad, vertices, indices)
+        }
+        NativeVulkanSceneWeImagePassRole::EffectMaterial
+        | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+            let mut local_quad = quad.clone();
+            local_quad.mesh = None;
+            local_quad.effect_motion = SceneNativeEffectMotion::default();
+            local_quad.effect_uv_space =
+                native_vulkan_scene_we_graph_step_effect_uv_space(quad, step);
+            native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                &local_quad,
+                vertices,
+                indices,
+            )
+        }
+    }
+}
+
+fn native_vulkan_scene_we_graph_step_effect_uv_space(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> Option<NativeVulkanSceneEffectUvSpace> {
+    match step.pass.effect_kind {
+        Some(NativeVulkanSceneEffectKind::Iris | NativeVulkanSceneEffectKind::OpacityMask) => {
+            native_vulkan_scene_sampled_image_effect_final_uv_space(quad)
+        }
+        _ => None,
+    }
+}
+
+fn native_vulkan_scene_we_graph_step_render_target(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+) -> Option<NativeVulkanSceneSampledImageRenderTarget> {
+    let Some(output_target_index) = step.output_target_index else {
+        return Some(NativeVulkanSceneSampledImageRenderTarget::Swapchain);
+    };
+    let target = native_vulkan_scene_we_image_graph_target_for_step_output(
+        plan,
+        step.chain_index,
+        output_target_index,
+    )?;
+    let effect_target = native_vulkan_scene_effect_target_for_graph_target(
+        effect_targets,
+        step.chain_index,
+        output_target_index,
+        target.endpoint,
+    )?;
+    Some(NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
+        target_index: effect_target.effect_target_index,
+        clear: target.clear_before_first_write && target.first_write_step_index == step.step_index,
+    })
+}
+
+fn native_vulkan_scene_we_image_graph_target_for_step_output(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    chain_index: usize,
+    target_index: u32,
+) -> Option<&NativeVulkanSceneWeImageGraphTarget> {
+    plan.targets
+        .iter()
+        .find(|target| target.chain_index == chain_index && target.target_index == target_index)
+}
+
+fn native_vulkan_scene_effect_target_for_graph_target(
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    chain_index: usize,
+    graph_target_index: u32,
+    endpoint: NativeVulkanSceneWeImagePassEndpoint,
+) -> Option<&NativeVulkanSceneSampledImageEffectTarget> {
+    effect_targets.iter().find(|target| {
+        target.we_graph_chain_index == Some(chain_index)
+            && target.we_graph_target_index == Some(graph_target_index)
+            && target.we_graph_endpoint == Some(endpoint)
+    })
+}
+
+fn native_vulkan_scene_we_graph_step_texture_slot_bindings(
+    sources: &mut Vec<PathBuf>,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    file_source_count: usize,
+    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+) -> Option<Vec<NativeVulkanSceneTextureSlotResourceBinding>> {
+    let mut bindings = Vec::new();
+    for binding in &step.texture_bindings {
+        let resource_index = if let Some(source_path) = binding.source_path.as_ref() {
+            native_vulkan_scene_sampled_image_source_index(sources, source_path.clone())
+        } else if let (Some(target_index), Some(endpoint)) =
+            (binding.target_index, binding.endpoint)
+        {
+            let effect_target = native_vulkan_scene_effect_target_for_graph_target(
+                effect_targets,
+                step.chain_index,
+                target_index,
+                endpoint,
+            )?;
+            file_source_count
+                .saturating_add(effect_target.effect_target_index as usize)
+                .min(u32::MAX as usize) as u32
+        } else {
+            return None;
+        };
+        bindings.push(NativeVulkanSceneTextureSlotResourceBinding {
+            slot: binding.slot,
+            resource_index,
+        });
+    }
+    bindings.sort_by_key(|binding| binding.slot);
+    (!bindings.is_empty()).then_some(bindings)
+}
+
+fn native_vulkan_scene_we_graph_step_alpha_texture(
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> (Option<u32>, SceneRenderAlphaTextureMode) {
+    match step.pass.effect_kind {
+        Some(NativeVulkanSceneEffectKind::Iris) => (
+            native_vulkan_scene_we_graph_step_first_nonzero_texture_slot(step),
+            SceneRenderAlphaTextureMode::Iris,
+        ),
+        Some(NativeVulkanSceneEffectKind::OpacityMask) => (
+            native_vulkan_scene_we_graph_step_first_nonzero_texture_slot(step),
+            SceneRenderAlphaTextureMode::Coverage,
+        ),
+        _ => (None, SceneRenderAlphaTextureMode::Multiply),
+    }
+}
+
+fn native_vulkan_scene_we_graph_step_first_nonzero_texture_slot(
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> Option<u32> {
+    step.texture_bindings
+        .iter()
+        .filter(|binding| binding.slot != 0)
+        .map(|binding| binding.slot)
+        .min()
 }
 
 fn native_vulkan_scene_we_image_graph_target_for_layer(
@@ -1249,14 +1439,29 @@ fn native_vulkan_scene_sampled_image_recording_step(
             NativeVulkanSceneMaterialKind::SampledImage
         }
     };
-    let material_pass = native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
-        material_kind,
-        blend_mode,
-        alpha_texture_slot,
-        alpha_texture_mode,
-        texture_slot_bindings.len(),
-        &quad.effect_passes,
-        false,
+    let material_pass = we_graph_step.map_or_else(
+        || {
+            native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
+                material_kind,
+                blend_mode,
+                alpha_texture_slot,
+                alpha_texture_mode,
+                texture_slot_bindings.len(),
+                &quad.effect_passes,
+                false,
+            )
+        },
+        |step| {
+            native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
+                material_kind,
+                step,
+                blend_mode,
+                alpha_texture_slot,
+                alpha_texture_mode,
+                texture_slot_bindings.len(),
+                &quad.effect_passes,
+            )
+        },
     );
     NativeVulkanSceneSampledImageRecordingStep {
         layer_index: quad.layer_index,
@@ -1286,6 +1491,49 @@ fn native_vulkan_scene_sampled_image_recording_step(
         index_buffer_size_bytes: u64::from(range.index_count)
             .saturating_mul(SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES),
     }
+}
+
+fn native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
+    kind: NativeVulkanSceneMaterialKind,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    blend_mode: SceneBlendMode,
+    alpha_texture_slot: Option<u32>,
+    alpha_texture_mode: SceneRenderAlphaTextureMode,
+    texture_slot_count: usize,
+    quad_effect_passes: &[NativeVulkanSceneEffectRecord],
+) -> NativeVulkanSceneMaterialPass {
+    NativeVulkanSceneMaterialPass {
+        kind,
+        shader: step.pass.shader.clone(),
+        blending: step.pass.blending.clone(),
+        render_state: native_vulkan_scene_render_state(
+            blend_mode,
+            step.pass.depth_test,
+            step.pass.depth_write,
+            step.pass.cull_mode.clone(),
+        ),
+        alpha_texture_slot,
+        alpha_texture_mode,
+        texture_slot_count,
+        effect_kinds: native_vulkan_scene_we_graph_step_effect_kinds(step, quad_effect_passes),
+        combo_keys: step.pass.combo_keys.clone(),
+    }
+}
+
+fn native_vulkan_scene_we_graph_step_effect_kinds(
+    step: &NativeVulkanSceneWeImageGraphStep,
+    quad_effect_passes: &[NativeVulkanSceneEffectRecord],
+) -> Vec<NativeVulkanSceneEffectKind> {
+    if let Some(effect_kind) = step.pass.effect_kind {
+        return vec![effect_kind];
+    }
+    let mut kinds = Vec::new();
+    for pass in quad_effect_passes {
+        if !kinds.contains(&pass.kind) {
+            kinds.push(pass.kind);
+        }
+    }
+    kinds
 }
 
 fn native_vulkan_scene_debug_sampled_image_recording_step(
@@ -3782,7 +4030,18 @@ fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry(
             [1.0, 0.0],
         ),
     ];
-    for (position, uv, effect_uv) in target_vertices {
+    for (position, uv, default_effect_uv) in target_vertices {
+        let effect_uv = if quad.effect_uv_space.is_some() {
+            native_vulkan_scene_sampled_image_vertex_effect_uv(
+                position,
+                f64::from(position[0]),
+                f64::from(position[1]),
+                uv,
+                quad,
+            )
+        } else {
+            default_effect_uv
+        };
         vertices.push(NativeVulkanSceneSampledImageVertex {
             position,
             uv,
@@ -5175,7 +5434,7 @@ fn native_vulkan_scene_point_in_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::scene::{SceneEffectFbo, SceneMesh, SceneMeshVertex};
+    use crate::core::scene::{SceneEffectFbo, SceneEffectUvTransform, SceneMesh, SceneMeshVertex};
     use crate::core::{FitMode, SceneBlendMode, ScenePathFillRule, SceneSize, SceneTextureRegion};
     use crate::renderer::SceneRenderTextureSlot;
     use crate::renderer::native_vulkan::present::render_plan::NativeVulkanSceneUnsupportedLayer;
@@ -6167,7 +6426,7 @@ mod tests {
         assert_eq!(base_step.material_pass.alpha_texture_slot, None);
         assert_eq!(
             base_step.material_pass.render_state.blend.mode,
-            SceneBlendMode::Alpha
+            SceneBlendMode::Normal
         );
         assert_eq!(base_step.vertex_count, 3);
         assert_eq!(base_step.index_count, 3);
@@ -7044,13 +7303,13 @@ mod tests {
         assert_eq!(base_step.material_pass.alpha_texture_slot, None);
         assert_eq!(
             base_step.material_pass.render_state.blend.mode,
-            SceneBlendMode::Alpha
+            SceneBlendMode::Normal
         );
         assert_eq!(
             super::blend::native_vulkan_scene_sampled_image_pipeline_label(
                 &base_step.material_pass.render_state
             ),
-            "sampled-image-alpha-blend"
+            "sampled-image-normal-blend"
         );
         assert_eq!(base_step.vertex_count, 3);
         assert_eq!(base_step.index_count, 3);
@@ -7092,7 +7351,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_does_not_fake_graph_link_for_collapsed_first_class_chain() {
+    fn draw_pass_plan_executes_iris_then_water_ripple_first_class_chain() {
         let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/eye.gtex"));
         image.texture_slots = vec![SceneRenderTextureSlot {
@@ -7122,7 +7381,16 @@ mod tests {
                     width: Some(331),
                     height: Some(115),
                 }],
-                effect_uv_transform: None,
+                effect_uv_transform: Some(SceneEffectUvTransform {
+                    mapping: Default::default(),
+                    source_slot: 0,
+                    mask_slot: 1,
+                    scale: [2.0, 2.0],
+                    offset: [0.0, 0.0],
+                    input_extent: None,
+                    mask_extent: None,
+                    mask_backing_extent: None,
+                }),
                 combos: Default::default(),
                 constant_shader_values: Default::default(),
             },
@@ -7140,12 +7408,20 @@ mod tests {
                 depthtest: Some("disabled".to_owned()),
                 depthwrite: Some("disabled".to_owned()),
                 cullmode: Some("nocull".to_owned()),
-                texture_slots: vec![SceneRenderTextureSlot {
-                    slot: 2,
-                    source: PathBuf::from("/tmp/waterripplenormal.gtex"),
-                    width: Some(512),
-                    height: Some(512),
-                }],
+                texture_slots: vec![
+                    SceneRenderTextureSlot {
+                        slot: 1,
+                        source: PathBuf::from("/tmp/waterripple-mask.gtex"),
+                        width: Some(331),
+                        height: Some(115),
+                    },
+                    SceneRenderTextureSlot {
+                        slot: 2,
+                        source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                        width: Some(512),
+                        height: Some(512),
+                    },
+                ],
                 effect_uv_transform: None,
                 combos: Default::default(),
                 constant_shader_values: Default::default(),
@@ -7166,7 +7442,7 @@ mod tests {
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
-        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 1);
+        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 2);
         assert_eq!(
             pass_plan.sampled_image_effect_targets[0].effect_target_index,
             0
@@ -7175,9 +7451,18 @@ mod tests {
             pass_plan.sampled_image_effect_targets[0].we_graph_endpoint,
             Some(NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget)
         );
+        assert_eq!(
+            pass_plan.sampled_image_effect_targets[1].effect_target_index,
+            1
+        );
+        assert_eq!(
+            pass_plan.sampled_image_effect_targets[1].we_graph_endpoint,
+            Some(NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub)
+        );
         assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 2);
         assert_eq!(pass_plan.sampled_image_we_graph_plan.step_count, 3);
-        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        assert_eq!(pass_plan.sampled_image_sources.len(), 4);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 3);
         assert_eq!(
             pass_plan.sampled_image_recording_steps[0].we_graph_step_index,
             Some(0)
@@ -7187,11 +7472,82 @@ mod tests {
             Some(0)
         );
         assert_eq!(
-            pass_plan.sampled_image_recording_steps[1].render_target,
-            NativeVulkanSceneSampledImageRenderTarget::Swapchain
+            pass_plan.sampled_image_recording_steps[0]
+                .material_pass
+                .render_state
+                .blend
+                .mode,
+            SceneBlendMode::Normal
         );
         assert_eq!(
             pass_plan.sampled_image_recording_steps[1].we_graph_step_index,
+            Some(1)
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1].render_target,
+            NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
+                target_index: 1,
+                clear: true
+            }
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1].we_graph_input_target_index,
+            Some(0)
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1].we_graph_output_target_index,
+            Some(1)
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1].texture_slot_bindings,
+            texture_slot_bindings(&[4, 1])
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1]
+                .material_pass
+                .alpha_texture_mode,
+            SceneRenderAlphaTextureMode::Iris
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[1]
+                .material_pass
+                .render_state
+                .blend
+                .mode,
+            SceneBlendMode::Normal
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[4].effect_uv,
+            [0.0, 2.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[7].effect_uv,
+            [2.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2].render_target,
+            NativeVulkanSceneSampledImageRenderTarget::Swapchain
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2].we_graph_step_index,
+            Some(2)
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2].we_graph_input_target_index,
+            Some(1)
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2].we_graph_output_target_index,
+            None
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2].texture_slot_bindings,
+            texture_slot_bindings(&[5, 3, 2])
+        );
+        assert_eq!(
+            pass_plan.sampled_image_recording_steps[2]
+                .material_pass
+                .alpha_texture_slot,
             None
         );
         assert_eq!(
