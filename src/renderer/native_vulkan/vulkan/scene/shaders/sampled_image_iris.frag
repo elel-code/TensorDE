@@ -6,6 +6,8 @@
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
+layout(location = 2) in float v_opacity;
+layout(location = 3) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -46,10 +48,16 @@ vec2 iris_motion() {
     return da * pc.iris_scale * 0.001;
 }
 
+vec4 apply_vertex_color(vec4 color) {
+    color *= v_tint;
+    color.a *= v_opacity;
+    return color;
+}
+
 void main() {
     float mask = 1.0;
     if ((pc.texture_resolution_mask & (1u << 1)) != 0u) {
         mask = texture(g_Texture1, v_effect_uv).r;
     }
-    out_color = texture(g_Texture0, v_uv + iris_motion() * mask);
+    out_color = apply_vertex_color(texture(g_Texture0, v_uv + iris_motion() * mask));
 }

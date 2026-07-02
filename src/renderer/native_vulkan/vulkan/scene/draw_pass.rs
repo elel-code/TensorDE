@@ -4073,15 +4073,15 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
     0x00010038,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1390] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1516] =
     include!("shaders/sampled_image_waterripple.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 1542] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 1658] =
     include!("shaders/sampled_image_waterwaves.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV: [u32; 630] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV: [u32; 746] =
     include!("shaders/sampled_image_scroll.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV: [u32; 1063] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV: [u32; 1193] =
     include!("shaders/sampled_image_iris.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV: [u32; 510] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV: [u32; 636] =
     include!("shaders/sampled_image_opacity.frag.spv.rs");
 
 #[cfg(test)]
@@ -5254,6 +5254,10 @@ mod tests {
             0x0723_0203
         );
         assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV[0],
+            0x0723_0203
+        );
+        assert_eq!(
             NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV[0],
             0x0723_0203
         );
@@ -5305,25 +5309,31 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV
             ),
-            5560
+            6064
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
+            ),
+            6632
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV
             ),
-            2520
+            2984
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV
             ),
-            4252
+            4772
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV
             ),
-            2040
+            2544
         );
     }
 
@@ -5339,6 +5349,45 @@ mod tests {
             "alpha_mask",
             "v_effect_uv"
         ));
+    }
+
+    #[test]
+    fn sampled_image_pass_specific_fragments_apply_vertex_tint_and_opacity() {
+        for (label, words) in [
+            (
+                "waterripple",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV
+                    as &[u32],
+            ),
+            (
+                "waterwaves",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
+                    as &[u32],
+            ),
+            (
+                "scroll",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV
+                    as &[u32],
+            ),
+            (
+                "iris",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV as &[u32],
+            ),
+            (
+                "opacity",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV
+                    as &[u32],
+            ),
+        ] {
+            assert!(
+                spirv_function_loads_named_input(words, "apply_vertex_color", "v_tint"),
+                "{label} fragment must keep WE solid/shadow tint"
+            );
+            assert!(
+                spirv_function_loads_named_input(words, "apply_vertex_color", "v_opacity"),
+                "{label} fragment must keep layer opacity"
+            );
+        }
     }
 
     fn spirv_function_argument_loads_named_input(
@@ -5369,6 +5418,36 @@ mod tests {
             };
             if spirv_loads_input_before(words, &offsets[..call_position], loaded_id, input_id) {
                 return true;
+            }
+        }
+        false
+    }
+
+    fn spirv_function_loads_named_input(
+        words: &[u32],
+        function_name_prefix: &str,
+        input_name: &str,
+    ) -> bool {
+        let Some(function_id) = spirv_named_id(words, function_name_prefix, true) else {
+            return false;
+        };
+        let Some(input_id) = spirv_named_id(words, input_name, false) else {
+            return false;
+        };
+        let mut in_function = false;
+        for offset in spirv_instruction_offsets(words) {
+            match spirv_opcode(words[offset]) {
+                54 if spirv_word_count(words[offset]) >= 5 && words[offset + 2] == function_id => {
+                    in_function = true;
+                }
+                56 if in_function => break,
+                61 if in_function
+                    && spirv_word_count(words[offset]) >= 4
+                    && words[offset + 3] == input_id =>
+                {
+                    return true;
+                }
+                _ => {}
             }
         }
         false

@@ -5,6 +5,8 @@
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
+layout(location = 2) in float v_opacity;
+layout(location = 3) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -24,6 +26,12 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 120) uint effect_shader_code;
 } pc;
 
+vec4 apply_vertex_color(vec4 color) {
+    color *= v_tint;
+    color.a *= v_opacity;
+    return color;
+}
+
 void main() {
     vec4 albedo = texture(g_Texture0, v_uv);
     float mask = 1.0;
@@ -31,5 +39,5 @@ void main() {
         mask = texture(g_Texture1, v_effect_uv).r;
     }
     albedo.a *= mask * pc.user_alpha;
-    out_color = albedo;
+    out_color = apply_vertex_color(albedo);
 }

@@ -6,6 +6,8 @@
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
+layout(location = 2) in float v_opacity;
+layout(location = 3) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -31,10 +33,16 @@ float signed_square(float value) {
     return sign(value) * value * value;
 }
 
+vec4 apply_vertex_color(vec4 color) {
+    color *= v_tint;
+    color.a *= v_opacity;
+    return color;
+}
+
 void main() {
     vec2 scroll = vec2(signed_square(pc.scroll_speed_x), signed_square(pc.scroll_speed_y))
         * pc.time_seconds;
     vec2 repeat = vec2(pc.scroll_repeat_x, pc.scroll_repeat_y);
     vec2 uv = fract((v_uv + scroll) * repeat);
-    out_color = texture(g_Texture0, uv);
+    out_color = apply_vertex_color(texture(g_Texture0, uv));
 }

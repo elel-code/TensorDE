@@ -6,6 +6,8 @@
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
+layout(location = 2) in float v_opacity;
+layout(location = 3) in vec4 v_tint;
 
 layout(location = 0) out vec4 out_color;
 
@@ -50,6 +52,12 @@ float signed_pow_sin(float value, float exponent) {
     return sign(wave) * pow(abs(wave), max(exponent, 0.001));
 }
 
+vec4 apply_vertex_color(vec4 color) {
+    color *= v_tint;
+    color.a *= v_opacity;
+    return color;
+}
+
 void main() {
     vec2 tex_coord = v_uv;
     vec2 tex_coord_motion = tex_coord;
@@ -85,5 +93,5 @@ void main() {
     }
 
     tex_coord += val * offset * strength * mask;
-    out_color = texture(g_Texture0, tex_coord);
+    out_color = apply_vertex_color(texture(g_Texture0, tex_coord));
 }
