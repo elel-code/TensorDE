@@ -100,7 +100,7 @@ pub(in crate::renderer::native_vulkan) use scene_present::native_vulkan_vulkanal
 pub use scene_present::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneMaterialFlag,
     NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,

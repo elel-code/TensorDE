@@ -47,6 +47,8 @@ fn read_png_decoder_as_rgba<R: std::io::BufRead + std::io::Seek>(
     Ok(SceneWeTexImage {
         width: info.width,
         height: info.height,
+        backing_width: info.width,
+        backing_height: info.height,
         rgba,
         r8: None,
     })

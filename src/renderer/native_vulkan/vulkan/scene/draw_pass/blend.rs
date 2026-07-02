@@ -3,7 +3,8 @@ use vulkanalia::vk::{self, HasBuilder};
 use crate::core::SceneBlendMode;
 
 use super::{
-    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImagePipelineSet,
+    VulkanaliaSceneSolidQuadPipelineResources,
 };
 
 pub(super) fn native_vulkan_vulkanalia_scene_color_attachment(
@@ -113,6 +114,16 @@ pub(super) fn native_vulkan_vulkanalia_scene_solid_quad_pipeline(
 
 pub(super) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline(
     resources: &VulkanaliaSceneSampledImagePipelineResources,
+    blend_mode: SceneBlendMode,
+) -> vk::Pipeline {
+    native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
+        &resources.generic_pipelines,
+        blend_mode,
+    )
+}
+
+pub(super) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
+    resources: &VulkanaliaSceneSampledImagePipelineSet,
     blend_mode: SceneBlendMode,
 ) -> vk::Pipeline {
     match blend_mode {

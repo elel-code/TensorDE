@@ -8,6 +8,8 @@ pub(super) struct SceneWeModelFrameSize {
 pub(super) struct SceneWeTexImage {
     pub(super) width: u32,
     pub(super) height: u32,
+    pub(super) backing_width: u32,
+    pub(super) backing_height: u32,
     pub(super) rgba: Vec<u8>,
     pub(super) r8: Option<Vec<u8>>,
 }
@@ -389,6 +391,8 @@ fn decode_we_tex_image_payload(
     Ok(SceneWeTexImage {
         width: block.width,
         height: block.height,
+        backing_width: block.width,
+        backing_height: block.height,
         rgba,
         r8,
     })

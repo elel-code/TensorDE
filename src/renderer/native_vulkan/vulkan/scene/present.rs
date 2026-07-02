@@ -9,6 +9,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
+use serde_json::Value;
 use vulkanalia::Version;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{
@@ -526,8 +527,19 @@ pub enum NativeVulkanVulkanaliaSceneEffectKind {
     WaterCaustics,
     Blur,
     SwayShake,
+    FoliageSway,
+    AutoSway,
     Flutter,
     Drift,
+    Scroll,
+    Skew,
+    CloudMotion,
+    LightShafts,
+    ColorKey,
+    ClippingMask,
+    RoundedMask,
+    TechCircle,
+    AudioBars,
     CompositeLayer,
     UserBindings,
     ShaderMaterial,
@@ -544,8 +556,19 @@ impl NativeVulkanVulkanaliaSceneEffectKind {
             "water-caustics" => Self::WaterCaustics,
             "blur" => Self::Blur,
             "sway-shake" => Self::SwayShake,
+            "foliage-sway" => Self::FoliageSway,
+            "auto-sway" => Self::AutoSway,
             "flutter" => Self::Flutter,
             "drift" => Self::Drift,
+            "scroll" => Self::Scroll,
+            "skew" => Self::Skew,
+            "cloud-motion" => Self::CloudMotion,
+            "light-shafts" => Self::LightShafts,
+            "color-key" => Self::ColorKey,
+            "clipping-mask" => Self::ClippingMask,
+            "rounded-mask" => Self::RoundedMask,
+            "tech-circle" => Self::TechCircle,
+            "audio-bars" => Self::AudioBars,
             "composite-layer" => Self::CompositeLayer,
             "user-bindings" => Self::UserBindings,
             _ => Self::ShaderMaterial,
@@ -562,12 +585,132 @@ impl NativeVulkanVulkanaliaSceneEffectKind {
             Self::WaterCaustics => "water-caustics",
             Self::Blur => "blur",
             Self::SwayShake => "sway-shake",
+            Self::FoliageSway => "foliage-sway",
+            Self::AutoSway => "auto-sway",
             Self::Flutter => "flutter",
             Self::Drift => "drift",
+            Self::Scroll => "scroll",
+            Self::Skew => "skew",
+            Self::CloudMotion => "cloud-motion",
+            Self::LightShafts => "light-shafts",
+            Self::ColorKey => "color-key",
+            Self::ClippingMask => "clipping-mask",
+            Self::RoundedMask => "rounded-mask",
+            Self::TechCircle => "tech-circle",
+            Self::AudioBars => "audio-bars",
             Self::CompositeLayer => "composite-layer",
             Self::UserBindings => "user-bindings",
             Self::ShaderMaterial => "shader-material",
         }
+    }
+
+    pub fn uses_elapsed_push_constants(self) -> bool {
+        matches!(
+            self,
+            Self::Iris
+                | Self::WaterRipple
+                | Self::WaterWaves
+                | Self::WaterFlow
+                | Self::WaterCaustics
+                | Self::SwayShake
+                | Self::FoliageSway
+                | Self::AutoSway
+                | Self::Flutter
+                | Self::Drift
+                | Self::Scroll
+                | Self::Skew
+                | Self::CloudMotion
+                | Self::LightShafts
+                | Self::TechCircle
+                | Self::AudioBars
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneEffectUniform {
+    pub name: String,
+    pub value_kind: &'static str,
+    pub component_count: u32,
+    pub float_bits: [u32; 4],
+    pub int_values: [i32; 4],
+}
+
+impl NativeVulkanVulkanaliaSceneEffectUniform {
+    pub fn from_constant_shader_value(name: &str, value: &Value) -> Option<Self> {
+        match value {
+            Value::Bool(value) => Some(Self {
+                name: name.to_owned(),
+                value_kind: "bool",
+                component_count: 1,
+                float_bits: [0; 4],
+                int_values: [i32::from(*value), 0, 0, 0],
+            }),
+            Value::Number(value) => {
+                if let Some(value) = value.as_i64().and_then(|value| i32::try_from(value).ok()) {
+                    return Some(Self {
+                        name: name.to_owned(),
+                        value_kind: "int",
+                        component_count: 1,
+                        float_bits: [0; 4],
+                        int_values: [value, 0, 0, 0],
+                    });
+                }
+                let value = value.as_f64()?;
+                value.is_finite().then(|| Self {
+                    name: name.to_owned(),
+                    value_kind: "float",
+                    component_count: 1,
+                    float_bits: [(value as f32).to_bits(), 0, 0, 0],
+                    int_values: [0; 4],
+                })
+            }
+            Value::Array(values) => {
+                let component_count = values.len();
+                if !(1..=4).contains(&component_count) {
+                    return None;
+                }
+                let mut float_bits = [0; 4];
+                for (index, value) in values.iter().enumerate() {
+                    let value = value.as_f64()?;
+                    if !value.is_finite() {
+                        return None;
+                    }
+                    float_bits[index] = (value as f32).to_bits();
+                }
+                let value_kind = match component_count {
+                    1 => "float",
+                    2 => "vec2",
+                    3 => "vec3",
+                    4 => "vec4",
+                    _ => unreachable!(),
+                };
+                Some(Self {
+                    name: name.to_owned(),
+                    value_kind,
+                    component_count: component_count as u32,
+                    float_bits,
+                    int_values: [0; 4],
+                })
+            }
+            _ => None,
+        }
+    }
+
+    pub fn float_values(&self) -> Vec<f32> {
+        self.float_bits
+            .iter()
+            .take(self.component_count as usize)
+            .map(|value| f32::from_bits(*value))
+            .collect()
+    }
+
+    pub fn int_values(&self) -> Vec<i32> {
+        self.int_values
+            .iter()
+            .take(self.component_count as usize)
+            .copied()
+            .collect()
     }
 }
 
@@ -582,6 +725,9 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub texture_slot_count: usize,
     pub uses_elapsed_push_constants: bool,
     pub effect_kinds: Vec<NativeVulkanVulkanaliaSceneEffectKind>,
+    pub constant_shader_values: BTreeMap<String, Value>,
+    pub constant_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
+    pub system_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
     pub combo_keys: Vec<String>,
 }
 
@@ -607,6 +753,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             texture_slot_count,
             uses_elapsed_push_constants: false,
             effect_kinds: Vec::new(),
+            constant_shader_values: Default::default(),
+            constant_shader_uniforms: Vec::new(),
+            system_shader_uniforms: Vec::new(),
             combo_keys: Vec::new(),
         }
     }
@@ -626,7 +775,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             label
         };
         format!(
-            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} elapsed_push_constants={} effects={} pipeline={}",
+            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} constants={} uniforms={} system_uniforms={} elapsed_push_constants={} effects={} pipeline={}",
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
@@ -643,6 +792,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             self.render_state.depth_write.as_str(),
             self.render_state.cull_mode.label(),
             self.texture_slot_count,
+            self.constant_shader_values.len(),
+            self.constant_shader_uniforms.len(),
+            self.system_shader_uniforms.len(),
             self.uses_elapsed_push_constants,
             effect_kinds,
             self.render_state.sampled_image_pipeline_label(),
@@ -3982,6 +4134,7 @@ fn scene_static_transfer_pipeline_snapshot(
         descriptor_set_layout_created: false,
         pipeline_layout_created: false,
         pipeline_created: false,
+        pass_specific_fragment_pipeline_count: 0,
         render_pass_compatibility: "not-used-transfer-only",
         primitive_topology: "none-transfer-only",
         vertex_input_binding_count: 0,
@@ -7463,6 +7616,85 @@ mod tests {
         }];
 
         assert!(!scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(&commands));
+    }
+
+    #[test]
+    fn effect_kind_labels_preserve_material_graph_families() {
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneEffectKind::from_label("foliage-sway").as_str(),
+            "foliage-sway"
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneEffectKind::from_label("auto-sway").as_str(),
+            "auto-sway"
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneEffectKind::from_label("scroll").as_str(),
+            "scroll"
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneEffectKind::from_label("clipping-mask").as_str(),
+            "clipping-mask"
+        );
+        assert_eq!(
+            NativeVulkanVulkanaliaSceneEffectKind::from_label("audio-bars").as_str(),
+            "audio-bars"
+        );
+    }
+
+    #[test]
+    fn effect_kind_elapsed_push_constant_requirement_is_family_specific() {
+        assert!(NativeVulkanVulkanaliaSceneEffectKind::WaterRipple.uses_elapsed_push_constants());
+        assert!(NativeVulkanVulkanaliaSceneEffectKind::Scroll.uses_elapsed_push_constants());
+        assert!(NativeVulkanVulkanaliaSceneEffectKind::AudioBars.uses_elapsed_push_constants());
+        assert!(NativeVulkanVulkanaliaSceneEffectKind::Iris.uses_elapsed_push_constants());
+        assert!(!NativeVulkanVulkanaliaSceneEffectKind::OpacityMask.uses_elapsed_push_constants());
+        assert!(!NativeVulkanVulkanaliaSceneEffectKind::ClippingMask.uses_elapsed_push_constants());
+    }
+
+    #[test]
+    fn effect_uniform_plan_converts_cwe_constant_shapes() {
+        let float_uniform = NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+            "strength",
+            &serde_json::json!(0.25),
+        )
+        .expect("float uniform");
+        assert_eq!(float_uniform.value_kind, "float");
+        assert_eq!(float_uniform.component_count, 1);
+        assert_eq!(float_uniform.float_values(), vec![0.25_f32]);
+
+        let int_uniform = NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+            "mode",
+            &serde_json::json!(2),
+        )
+        .expect("int uniform");
+        assert_eq!(int_uniform.value_kind, "int");
+        assert_eq!(int_uniform.int_values(), vec![2]);
+
+        let bool_uniform = NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+            "enabled",
+            &serde_json::json!(true),
+        )
+        .expect("bool uniform");
+        assert_eq!(bool_uniform.value_kind, "bool");
+        assert_eq!(bool_uniform.int_values(), vec![1]);
+
+        let vec2_uniform = NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+            "direction",
+            &serde_json::json!([1.0, -0.5]),
+        )
+        .expect("vec2 uniform");
+        assert_eq!(vec2_uniform.value_kind, "vec2");
+        assert_eq!(vec2_uniform.component_count, 2);
+        assert_eq!(vec2_uniform.float_values(), vec![1.0_f32, -0.5_f32]);
+
+        assert!(
+            NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+                "unsupported",
+                &serde_json::json!("not-a-uniform"),
+            )
+            .is_none()
+        );
     }
 
     #[test]

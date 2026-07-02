@@ -72,14 +72,14 @@ pub(super) use self::types::{
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageGeometryRange, NativeVulkanSceneSampledImageQuad,
     NativeVulkanSceneSampledImageRecordingStep, NativeVulkanSceneSampledImageRenderTarget,
-    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneTextureSlot,
-    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneVideoQuad,
-    NativeVulkanSceneVideoRecordingStep, NativeVulkanSceneWeImageGraphPlan,
-    NativeVulkanSceneWeImageGraphStep, NativeVulkanSceneWeImageGraphTarget,
-    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImageGraphTextureBindingSource,
-    NativeVulkanSceneWeImagePass, NativeVulkanSceneWeImagePassChain,
-    NativeVulkanSceneWeImagePassEndpoint, NativeVulkanSceneWeImagePassExecution,
-    NativeVulkanSceneWeImagePassRole,
+    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneShaderUniform,
+    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
+    NativeVulkanSceneVideoQuad, NativeVulkanSceneVideoRecordingStep,
+    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphStep,
+    NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
+    NativeVulkanSceneWeImageGraphTextureBindingSource, NativeVulkanSceneWeImagePass,
+    NativeVulkanSceneWeImagePassChain, NativeVulkanSceneWeImagePassEndpoint,
+    NativeVulkanSceneWeImagePassExecution, NativeVulkanSceneWeImagePassRole,
 };
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
@@ -570,6 +570,12 @@ pub(super) fn native_vulkan_scene_append_sampled_image_vertices_from_sampled_lay
             match pass.role {
                 NativeVulkanSceneWeImagePassRole::EffectMaterial
                 | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+                    // CWE reference: CImage::setupPasses uses puppet/copy geometry only for
+                    // the first pass. Later effect passes use passSpacePosition +
+                    // texcoordPass, so their input FBO is sampled in local pass space.
+                    local_quad.mesh = None;
+                    local_quad.effect_motion = SceneNativeEffectMotion::default();
+                    local_quad.texture_region = None;
                     local_quad.effect_uv_space =
                         native_vulkan_scene_we_image_pass_effect_uv_space(&quad, pass);
                     native_vulkan_scene_append_sampled_image_effect_base_geometry(
@@ -1086,21 +1092,17 @@ fn native_vulkan_scene_record_we_graph_sampled_image_steps(
         ) else {
             continue;
         };
-        let Some(render_target) = native_vulkan_scene_we_graph_step_render_target(
-            plan,
-            we_graph_step,
-            effect_targets,
-        ) else {
+        let Some(render_target) =
+            native_vulkan_scene_we_graph_step_render_target(plan, we_graph_step, effect_targets)
+        else {
             continue;
         };
-        let Some(texture_slot_bindings) =
-            native_vulkan_scene_we_graph_step_texture_slot_bindings(
-                sources,
-                we_graph_step,
-                file_source_count,
-                effect_targets,
-            )
-        else {
+        let Some(texture_slot_bindings) = native_vulkan_scene_we_graph_step_texture_slot_bindings(
+            sources,
+            we_graph_step,
+            file_source_count,
+            effect_targets,
+        ) else {
             continue;
         };
         let (alpha_texture_slot, alpha_texture_mode) =
@@ -1160,8 +1162,11 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
         NativeVulkanSceneWeImagePassRole::EffectMaterial
         | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
             let mut local_quad = quad.clone();
+            // CWE reference: graph-local effect passes after the base material draw
+            // use pass-space quad geometry and texcoordPass, not the puppet mesh UVs.
             local_quad.mesh = None;
             local_quad.effect_motion = SceneNativeEffectMotion::default();
+            local_quad.texture_region = None;
             local_quad.effect_uv_space =
                 native_vulkan_scene_we_graph_step_effect_uv_space(quad, step);
             native_vulkan_scene_append_sampled_image_effect_base_geometry(
@@ -1468,7 +1473,13 @@ fn native_vulkan_scene_sampled_image_recording_step(
         layer_id: quad.layer_id.clone(),
         source: quad.source.clone(),
         fit: quad.fit,
-        texture_region: quad.texture_region,
+        texture_region: match we_graph_step.map(|step| step.pass.role) {
+            Some(
+                NativeVulkanSceneWeImagePassRole::EffectMaterial
+                | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough,
+            ) => None,
+            _ => quad.texture_region,
+        },
         texture_slot_bindings,
         material_pass,
         effect_passes: quad.effect_passes.clone(),
@@ -1500,7 +1511,7 @@ fn native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
     alpha_texture_slot: Option<u32>,
     alpha_texture_mode: SceneRenderAlphaTextureMode,
     texture_slot_count: usize,
-    quad_effect_passes: &[NativeVulkanSceneEffectRecord],
+    _quad_effect_passes: &[NativeVulkanSceneEffectRecord],
 ) -> NativeVulkanSceneMaterialPass {
     NativeVulkanSceneMaterialPass {
         kind,
@@ -1515,25 +1526,35 @@ fn native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
         alpha_texture_slot,
         alpha_texture_mode,
         texture_slot_count,
-        effect_kinds: native_vulkan_scene_we_graph_step_effect_kinds(step, quad_effect_passes),
+        effect_kinds: native_vulkan_scene_we_graph_step_effect_kinds(step),
+        constant_shader_values: step.pass.constant_shader_values.clone(),
+        system_shader_uniforms: native_vulkan_scene_we_graph_step_system_shader_uniforms(step),
         combo_keys: step.pass.combo_keys.clone(),
     }
 }
 
+fn native_vulkan_scene_we_graph_step_system_shader_uniforms(
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> Vec<NativeVulkanSceneShaderUniform> {
+    // CWE reference: CPass::setupTextureUniforms registers
+    // g_TextureNResolution after resolving pass textures and bind overrides.
+    step.texture_bindings
+        .iter()
+        .filter_map(|binding| {
+            binding.resolution.map(|resolution| {
+                NativeVulkanSceneShaderUniform::texture_resolution(&binding.uniform, resolution)
+            })
+        })
+        .collect()
+}
+
 fn native_vulkan_scene_we_graph_step_effect_kinds(
     step: &NativeVulkanSceneWeImageGraphStep,
-    quad_effect_passes: &[NativeVulkanSceneEffectRecord],
 ) -> Vec<NativeVulkanSceneEffectKind> {
     if let Some(effect_kind) = step.pass.effect_kind {
         return vec![effect_kind];
     }
-    let mut kinds = Vec::new();
-    for pass in quad_effect_passes {
-        if !kinds.contains(&pass.kind) {
-            kinds.push(pass.kind);
-        }
-    }
-    kinds
+    Vec::new()
 }
 
 fn native_vulkan_scene_debug_sampled_image_recording_step(
@@ -2131,7 +2152,9 @@ fn native_vulkan_scene_sampled_image_recording_step_geometry_semantics_label(
         ) {
             return match step.render_target {
                 NativeVulkanSceneSampledImageRenderTarget::EffectTarget { .. } => {
-                    if quad.mesh.is_some() {
+                    if step.we_graph_step_index.is_some_and(|index| index > 0) {
+                        "we-opacity-effect-pass-space-target-quad"
+                    } else if quad.mesh.is_some() {
                         "we-opacity-effect-local-target-base-mesh"
                     } else {
                         "we-opacity-effect-local-target-base-quad"
@@ -2148,7 +2171,9 @@ fn native_vulkan_scene_sampled_image_recording_step_geometry_semantics_label(
         ) {
             return match step.render_target {
                 NativeVulkanSceneSampledImageRenderTarget::EffectTarget { .. } => {
-                    if quad.mesh.is_some() {
+                    if step.we_graph_step_index.is_some_and(|index| index > 0) {
+                        "we-iris-effect-pass-space-target-quad"
+                    } else if quad.mesh.is_some() {
                         "we-iris-effect-local-target-base-mesh"
                     } else {
                         "we-iris-effect-local-target-base-quad"
@@ -3964,6 +3989,7 @@ fn native_vulkan_scene_append_sampled_image_effect_final_geometry(
     let mut final_quad = quad.clone();
     final_quad.mesh = None;
     final_quad.effect_motion = SceneNativeEffectMotion::default();
+    final_quad.texture_region = None;
     final_quad.effect_uv_space = native_vulkan_scene_sampled_image_effect_final_uv_space(quad);
     native_vulkan_scene_append_sampled_image_geometry(&final_quad, scene_size, vertices, indices)
 }
@@ -3972,7 +3998,10 @@ fn native_vulkan_scene_sampled_image_effect_final_uv_space(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<NativeVulkanSceneEffectUvSpace> {
     let effect_pass = quad.effect_target_pass.as_ref()?;
-    effect_pass.alpha_texture_slot?;
+    // CWE reference: WE/CWE derives mask UV from the pass texture-resolution
+    // transform. In a WE graph step the current texture binding already proves
+    // which mask slot is active; requiring the folded alpha slot here drops the
+    // iris effect UV space for graph-local passes.
     Some(native_vulkan_scene_effect_uv_space_from_transform(
         effect_pass.effect_uv_transform,
         quad.width,
@@ -4104,10 +4133,13 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry(
         let x = vertex.x + quad.width * 0.5;
         let y = quad.height * 0.5 - vertex.y;
         let uv = native_vulkan_scene_sampled_image_effect_base_mesh_uv(vertex, region);
-        vertices.push(NativeVulkanSceneSampledImageVertex {
-            position: [x as f32, y as f32],
-            uv,
-            effect_uv: native_vulkan_scene_sampled_image_effect_uv(
+        let position = [x as f32, y as f32];
+        let effect_uv = if quad.effect_uv_space.is_some() {
+            native_vulkan_scene_sampled_image_vertex_effect_uv(
+                position, vertex.x, vertex.y, uv, quad,
+            )
+        } else {
+            native_vulkan_scene_sampled_image_effect_uv(
                 vertex.x,
                 vertex.y,
                 quad.width,
@@ -4117,7 +4149,12 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry(
                     anchor_y: 0.5,
                     ..SceneTransform::default()
                 },
-            ),
+            )
+        };
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv,
+            effect_uv,
             opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
             tint: quad.tint,
         });
@@ -4137,9 +4174,12 @@ fn native_vulkan_scene_sampled_image_effect_base_mesh_uv(
 ) -> [f32; 2] {
     let u_scale = region.u_max - region.u_min;
     let v_scale = region.v_max - region.v_min;
+    // CWE reference: the first/base pass uses the same puppet material UVs as
+    // direct mesh drawing. The converter has already normalized WE MDL UVs into
+    // Gilder texture space, so the effect-target path must not flip V again.
     [
         (region.u_min + vertex.u * u_scale) as f32,
-        (region.v_min + (1.0 - vertex.v) * v_scale) as f32,
+        (region.v_min + vertex.v * v_scale) as f32,
     ]
 }
 
@@ -5494,6 +5534,77 @@ mod tests {
     }
 
     #[test]
+    fn iris_graph_effect_uv_space_does_not_require_folded_alpha_slot() {
+        let quad = NativeVulkanSceneSampledImageQuad {
+            layer_index: 0,
+            layer_id: "eye-iris".to_owned(),
+            source: PathBuf::from("/tmp/eye.gtex"),
+            texture_slots: vec![NativeVulkanSceneTextureSlot {
+                slot: 0,
+                source: PathBuf::from("/tmp/eye.gtex"),
+                width: Some(663),
+                height: Some(230),
+            }],
+            image_effect_pass_count: 1,
+            effect_target_pass: Some(NativeVulkanSceneSampledImageEffectPass {
+                texture_slots: vec![NativeVulkanSceneTextureSlot {
+                    slot: 1,
+                    source: PathBuf::from("/tmp/iris-mask.gtex"),
+                    width: Some(331),
+                    height: Some(115),
+                }],
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
+                effect_uv_transform: Some(SceneEffectUvTransform {
+                    mapping: Default::default(),
+                    source_slot: 0,
+                    mask_slot: 1,
+                    scale: [1.0, 1.0],
+                    offset: [0.0, 0.0],
+                    input_extent: None,
+                    mask_extent: None,
+                    mask_backing_extent: None,
+                }),
+            }),
+            material_pass: native_vulkan_scene_sampled_image_material_pass(
+                NativeVulkanSceneMaterialKind::SampledImage,
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Iris,
+                1,
+                &[],
+            ),
+            base_blend_mode: SceneBlendMode::Alpha,
+            effect_passes: Vec::new(),
+            composite_key: None,
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            width: 663.0,
+            height: 230.0,
+            mesh: None,
+            effect_uv_space: None,
+            effect_motion: SceneNativeEffectMotion::default(),
+            texture_region: None,
+            transform: SceneTransform::default(),
+        };
+
+        let space = native_vulkan_scene_sampled_image_effect_final_uv_space(&quad).expect(
+            "iris graph effect UV should come from transform even without folded alpha slot",
+        );
+
+        assert_eq!(
+            space.mapping,
+            NativeVulkanSceneEffectUvMapping::MaterialUvTransformed {
+                scale_u: 1.0,
+                scale_v: 1.0,
+                offset_u: 0.0,
+                offset_v: 0.0
+            }
+        );
+    }
+
+    #[test]
     fn draw_pass_plan_reports_fast_clear_color_ready() {
         let mut color = draw_op(0, NativeVulkanSceneDrawOpKind::ColorQuad);
         color.color = Some("#102030".to_owned());
@@ -6424,6 +6535,15 @@ mod tests {
         assert_eq!(base_step.we_graph_input_target_index, None);
         assert_eq!(base_step.we_graph_output_target_index, Some(0));
         assert_eq!(base_step.material_pass.alpha_texture_slot, None);
+        assert_eq!(base_step.material_pass.system_shader_uniforms.len(), 1);
+        assert_eq!(
+            base_step.material_pass.system_shader_uniforms[0].name,
+            "g_Texture0Resolution"
+        );
+        assert_eq!(
+            base_step.material_pass.system_shader_uniforms[0].float_values(),
+            vec![663.0_f32, 230.0_f32]
+        );
         assert_eq!(
             base_step.material_pass.render_state.blend.mode,
             SceneBlendMode::Normal
@@ -6444,6 +6564,19 @@ mod tests {
         assert_eq!(final_step.we_graph_input_target_index, Some(0));
         assert_eq!(final_step.we_graph_output_target_index, None);
         assert_eq!(final_step.material_pass.alpha_texture_slot, Some(1));
+        assert_eq!(final_step.material_pass.system_shader_uniforms.len(), 2);
+        assert_eq!(
+            final_step
+                .material_pass
+                .system_shader_uniforms
+                .iter()
+                .map(|uniform| (uniform.name.as_str(), uniform.float_values()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("g_Texture0Resolution", vec![663.0_f32, 230.0_f32]),
+                ("g_Texture1Resolution", vec![331.0_f32, 115.0_f32])
+            ]
+        );
         assert_eq!(
             final_step.material_pass.alpha_texture_mode,
             SceneRenderAlphaTextureMode::Coverage
@@ -6595,7 +6728,10 @@ mod tests {
             }],
             effect_uv_transform: None,
             combos: Default::default(),
-            constant_shader_values: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                ("strength".to_owned(), serde_json::json!(0.25)),
+                ("direction".to_owned(), serde_json::json!([1.0, 0.0])),
+            ]),
         }];
         image.blend_mode = SceneBlendMode::Alpha;
         image.width = Some(320.0);
@@ -6618,6 +6754,18 @@ mod tests {
         assert_eq!(effect_step.pass.command.as_deref(), Some("draw"));
         assert_eq!(effect_step.pass.source.as_deref(), Some("previous"));
         assert_eq!(effect_step.pass.target_name.as_deref(), Some("_rt_Custom"));
+        assert_eq!(
+            effect_step.pass.parameter_keys,
+            vec!["direction".to_owned(), "strength".to_owned()]
+        );
+        assert_eq!(
+            effect_step.pass.constant_shader_values.get("strength"),
+            Some(&serde_json::json!(0.25))
+        );
+        assert_eq!(
+            effect_step.pass.constant_shader_values.get("direction"),
+            Some(&serde_json::json!([1.0, 0.0]))
+        );
         assert_eq!(effect_step.texture_bindings.len(), 2);
         assert_eq!(effect_step.texture_bindings[0].slot, 0);
         assert_eq!(
@@ -7516,14 +7664,8 @@ mod tests {
                 .mode,
             SceneBlendMode::Normal
         );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[4].effect_uv,
-            [0.0, 2.0]
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[7].effect_uv,
-            [2.0, 0.0]
-        );
+        assert_eq!(pass_plan.sampled_image_vertices[4].effect_uv, [0.0, 2.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[7].effect_uv, [2.0, 0.0]);
         assert_eq!(
             pass_plan.sampled_image_recording_steps[2].render_target,
             NativeVulkanSceneSampledImageRenderTarget::Swapchain
@@ -7559,6 +7701,158 @@ mod tests {
         assert_eq!(
             pass_plan.sampled_image_we_graph_plan.steps[2].input_target_index,
             Some(1)
+        );
+    }
+
+    #[test]
+    fn draw_pass_plan_uses_pass_space_quad_for_iris_graph_effect_after_puppet_base() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        image.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/eye.gtex"),
+            width: Some(663),
+            height: Some(230),
+        }];
+        image.image_effect_passes = vec![
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/iris/effect.json".to_owned(),
+                runtime: Some("native-iris-mask".to_owned()),
+                pass_index: 0,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("effects/iris".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 1,
+                    source: PathBuf::from("/tmp/iris-mask.gtex"),
+                    width: Some(331),
+                    height: Some(115),
+                }],
+                effect_uv_transform: Some(SceneEffectUvTransform {
+                    mapping: Default::default(),
+                    source_slot: 0,
+                    mask_slot: 1,
+                    scale: [1.0, 1.0],
+                    offset: [0.0, 0.0],
+                    input_extent: None,
+                    mask_extent: None,
+                    mask_backing_extent: None,
+                }),
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            },
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/waterripple/effect.json".to_owned(),
+                runtime: Some("native-effect-motion".to_owned()),
+                pass_index: 1,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("effects/waterripple".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: Some("disabled".to_owned()),
+                depthwrite: Some("disabled".to_owned()),
+                cullmode: Some("nocull".to_owned()),
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 2,
+                    source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                    width: Some(512),
+                    height: Some(512),
+                }],
+                effect_uv_transform: None,
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            },
+        ];
+        image.width = Some(663.0);
+        image.height = Some(230.0);
+        image.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: -20.0,
+                    u: 0.25,
+                    v: 0.75,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 10.0,
+                    y: -20.0,
+                    u: 0.5,
+                    v: 0.25,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: 20.0,
+                    u: 0.75,
+                    v: 0.5,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+        }));
+
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+        let base_step = &pass_plan.sampled_image_recording_steps[0];
+        let base_first = base_step.first_vertex as usize;
+        let iris_step = &pass_plan.sampled_image_recording_steps[1];
+        let first = iris_step.first_vertex as usize;
+
+        assert_eq!(base_step.vertex_count, 3);
+        assert_eq!(
+            pass_plan.sampled_image_vertices[base_first].uv,
+            [0.25, 0.75]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[base_first + 1].uv,
+            [0.5, 0.25]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[base_first + 2].uv,
+            [0.75, 0.5]
+        );
+        assert_eq!(
+            iris_step.material_pass.effect_kinds,
+            vec![NativeVulkanSceneEffectKind::Iris]
+        );
+        assert_eq!(iris_step.vertex_count, 4);
+        assert_eq!(iris_step.index_count, 6);
+        assert_eq!(pass_plan.sampled_image_vertices[first].position, [0.0, 0.0]);
+        assert_eq!(pass_plan.sampled_image_vertices[first].uv, [0.0, 1.0]);
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first].effect_uv,
+            [0.0, 1.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first + 3].position,
+            [663.0, 230.0]
+        );
+        assert_eq!(pass_plan.sampled_image_vertices[first + 3].uv, [1.0, 0.0]);
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first + 3].effect_uv,
+            [1.0, 0.0]
         );
     }
 

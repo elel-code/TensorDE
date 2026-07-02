@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde_json::Value;
+
 use crate::core::scene::{
     SceneEffectUvTransform, SceneLayerCompositeKey, SceneMesh, SceneNativeEffectMotion,
 };
@@ -297,6 +299,53 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) resolution: Option<[u32; 2]>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneShaderUniform {
+    pub(in crate::renderer::native_vulkan::scene) name: String,
+    pub(in crate::renderer::native_vulkan::scene) value_kind: &'static str,
+    pub(in crate::renderer::native_vulkan::scene) component_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) float_bits: [u32; 4],
+    pub(in crate::renderer::native_vulkan::scene) int_values: [i32; 4],
+}
+
+impl NativeVulkanSceneShaderUniform {
+    pub(in crate::renderer::native_vulkan::scene) fn texture_resolution(
+        texture_uniform: &str,
+        resolution: [u32; 2],
+    ) -> Self {
+        let mut name = String::with_capacity(texture_uniform.len() + "Resolution".len());
+        name.push_str(texture_uniform);
+        name.push_str("Resolution");
+        Self::vec2(name, [resolution[0] as f32, resolution[1] as f32])
+    }
+
+    fn vec2(name: String, values: [f32; 2]) -> Self {
+        Self {
+            name,
+            value_kind: "vec2",
+            component_count: 2,
+            float_bits: [values[0].to_bits(), values[1].to_bits(), 0, 0],
+            int_values: [0; 4],
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan::scene) fn float_values(&self) -> Vec<f32> {
+        self.float_bits
+            .iter()
+            .take(self.component_count as usize)
+            .map(|value| f32::from_bits(*value))
+            .collect()
+    }
+
+    pub(in crate::renderer::native_vulkan::scene) fn int_values(&self) -> Vec<i32> {
+        self.int_values
+            .iter()
+            .take(self.component_count as usize)
+            .copied()
+            .collect()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePass {
     pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
@@ -319,6 +368,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
     pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
@@ -446,6 +496,9 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) blending: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
+    // CWE reference: ObjectParser parses constantshadervalues and CPass applies
+    // them as shader uniforms before per-pass override constants.
+    pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
@@ -462,6 +515,9 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kinds: Vec<NativeVulkanSceneEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
+    pub(in crate::renderer::native_vulkan::scene) system_shader_uniforms:
+        Vec<NativeVulkanSceneShaderUniform>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
 }
 

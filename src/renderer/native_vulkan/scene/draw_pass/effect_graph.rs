@@ -124,7 +124,12 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
     } else {
         NativeVulkanSceneWeImagePassEndpoint::Scene
     };
-    let base_blend_mode = if first_pass_blend_moved_to_final {
+    let base_blend_mode = if first_pass_blend_moved_to_final && quad.mesh.is_some() {
+        // CWE reference: CImage::setupPasses() forces the first pass that
+        // draws puppet geometry to BlendingMode_Translucent even after
+        // CImage::setup() moves the image blend mode to the final pass.
+        SceneBlendMode::Alpha
+    } else if first_pass_blend_moved_to_final {
         SceneBlendMode::Normal
     } else {
         quad.base_blend_mode
@@ -158,6 +163,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         texture_slots: quad.texture_slots.clone(),
         texture_slot_count: quad.texture_slots.len(),
         parameter_keys: Vec::new(),
+        constant_shader_values: Default::default(),
         combo_keys: quad.material_pass.combo_keys.clone(),
         depth_test: base_depth_test,
         depth_write: base_depth_write,
@@ -218,6 +224,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             texture_slots: effect.texture_slots.clone(),
             texture_slot_count: effect.texture_slots.len(),
             parameter_keys: effect.parameter_keys.clone(),
+            constant_shader_values: effect.constant_shader_values.clone(),
             combo_keys: effect.combo_keys.clone(),
             depth_test,
             depth_write,
@@ -259,6 +266,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             texture_slots: Vec::new(),
             texture_slot_count: 1,
             parameter_keys: Vec::new(),
+            constant_shader_values: Default::default(),
             combo_keys: Vec::new(),
             depth_test: passthrough_depth_test,
             depth_write: passthrough_depth_write,
@@ -687,4 +695,177 @@ fn native_vulkan_scene_we_image_graph_scaled_target_extent(value: f64, scale: Op
         .filter(|scale| scale.is_finite() && *scale > 0.0)
         .unwrap_or(1.0);
     native_vulkan_scene_we_image_graph_target_extent(value * scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use crate::core::scene::{SceneMesh, SceneMeshVertex, SceneNativeEffectMotion};
+    use crate::core::{FitMode, SceneBlendMode, SceneTransform};
+    use crate::renderer::SceneRenderAlphaTextureMode;
+
+    use super::*;
+    use crate::renderer::native_vulkan::scene::draw_pass::{
+        NativeVulkanSceneEffectEvaluationBoundary, NativeVulkanSceneEffectKind,
+        NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
+        NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
+        NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneTextureSlot,
+    };
+
+    fn iris_effect_record() -> NativeVulkanSceneEffectRecord {
+        NativeVulkanSceneEffectRecord {
+            kind: NativeVulkanSceneEffectKind::Iris,
+            evaluation_boundary: NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget,
+            effect_file: "effects/iris/effect.json".to_owned(),
+            runtime: Some("native-iris-mask".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: BTreeMap::new(),
+            fbos: Vec::new(),
+            shader: Some("effects/iris".to_owned()),
+            blending: Some("normal".to_owned()),
+            texture_slots: vec![NativeVulkanSceneTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/iris-mask.gtex"),
+                width: Some(331),
+                height: Some(115),
+            }],
+            parameter_keys: Vec::new(),
+            constant_shader_values: BTreeMap::new(),
+            combo_keys: Vec::new(),
+            depth_test: NativeVulkanSceneMaterialFlag::Disabled,
+            depth_write: NativeVulkanSceneMaterialFlag::Disabled,
+            cull_mode: NativeVulkanSceneCullMode::None,
+        }
+    }
+
+    fn mesh() -> Arc<SceneMesh> {
+        Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: 0.0,
+                    y: 0.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 1.0,
+                    y: 0.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 0.0,
+                    y: 1.0,
+                    u: 0.0,
+                    v: 1.0,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+        })
+    }
+
+    fn sampled_image_quad(mesh: Option<Arc<SceneMesh>>) -> NativeVulkanSceneSampledImageQuad {
+        let effect_passes = vec![iris_effect_record()];
+        NativeVulkanSceneSampledImageQuad {
+            layer_index: 7,
+            layer_id: "eye".to_owned(),
+            source: PathBuf::from("/tmp/eye.gtex"),
+            texture_slots: vec![NativeVulkanSceneTextureSlot {
+                slot: 0,
+                source: PathBuf::from("/tmp/eye.gtex"),
+                width: Some(663),
+                height: Some(230),
+            }],
+            image_effect_pass_count: effect_passes.len(),
+            effect_target_pass: Some(NativeVulkanSceneSampledImageEffectPass {
+                texture_slots: vec![NativeVulkanSceneTextureSlot {
+                    slot: 1,
+                    source: PathBuf::from("/tmp/iris-mask.gtex"),
+                    width: Some(331),
+                    height: Some(115),
+                }],
+                alpha_texture_slot: Some(1),
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Iris,
+                effect_uv_transform: None,
+            }),
+            material_pass: NativeVulkanSceneMaterialPass {
+                kind: NativeVulkanSceneMaterialKind::SampledImage,
+                shader: Some("genericimage4".to_owned()),
+                blending: Some("translucent".to_owned()),
+                render_state: native_vulkan_scene_render_state(
+                    SceneBlendMode::Alpha,
+                    NativeVulkanSceneMaterialFlag::Disabled,
+                    NativeVulkanSceneMaterialFlag::Disabled,
+                    NativeVulkanSceneCullMode::Back,
+                ),
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                texture_slot_count: 1,
+                effect_kinds: Vec::new(),
+                constant_shader_values: BTreeMap::new(),
+                system_shader_uniforms: Vec::new(),
+                combo_keys: Vec::new(),
+            },
+            base_blend_mode: SceneBlendMode::Alpha,
+            effect_passes,
+            composite_key: None,
+            fit: FitMode::Cover,
+            opacity: 1.0,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            width: 663.0,
+            height: 230.0,
+            mesh,
+            effect_uv_space: None,
+            effect_motion: SceneNativeEffectMotion::default(),
+            texture_region: None,
+            transform: SceneTransform::default(),
+        }
+    }
+
+    #[test]
+    fn puppet_base_pass_keeps_cwe_translucent_blend_after_final_blend_move() {
+        let chain = native_vulkan_scene_we_image_pass_chain(&sampled_image_quad(Some(mesh())))
+            .expect("WE graph chain");
+
+        assert!(chain.first_pass_blend_moved_to_final);
+        assert_eq!(
+            chain.passes[0].role,
+            NativeVulkanSceneWeImagePassRole::BaseMaterial
+        );
+        assert_eq!(chain.passes[0].scene_blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(
+            chain.passes[0].render_state.blend.mode,
+            SceneBlendMode::Alpha
+        );
+        assert_eq!(chain.passes[1].scene_blend_mode, SceneBlendMode::Alpha);
+    }
+
+    #[test]
+    fn non_puppet_base_pass_stays_normal_after_final_blend_move() {
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&sampled_image_quad(None)).expect("WE graph");
+
+        assert!(chain.first_pass_blend_moved_to_final);
+        assert_eq!(
+            chain.passes[0].role,
+            NativeVulkanSceneWeImagePassRole::BaseMaterial
+        );
+        assert_eq!(chain.passes[0].scene_blend_mode, SceneBlendMode::Normal);
+        assert_eq!(
+            chain.passes[0].render_state.blend.mode,
+            SceneBlendMode::Normal
+        );
+        assert_eq!(chain.passes[1].scene_blend_mode, SceneBlendMode::Alpha);
+    }
 }

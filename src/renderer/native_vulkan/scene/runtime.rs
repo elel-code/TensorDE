@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -34,8 +35,8 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
     NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneRenderState,
-    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImageMaterial,
@@ -60,9 +61,10 @@ use super::draw_pass::{
     NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneRenderState, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
-    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphTarget,
-    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImagePassChain,
+    NativeVulkanSceneShaderUniform, NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneWeImageGraphPlan,
+    NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
+    NativeVulkanSceneWeImagePassChain,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_sampled_layer_with_effect_chain,
@@ -2881,6 +2883,15 @@ pub struct NativeVulkanSceneRenderStateSnapshot {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneEffectUniformSnapshot {
+    pub name: String,
+    pub value_kind: &'static str,
+    pub component_count: u32,
+    pub float_values: Vec<f32>,
+    pub int_values: Vec<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub kind: &'static str,
     pub evaluation_boundary: &'static str,
@@ -2896,6 +2907,7 @@ pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub blending: Option<String>,
     pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
     pub parameter_keys: Vec<String>,
+    pub constant_shader_values: BTreeMap<String, Value>,
     pub combo_keys: Vec<String>,
     pub depth_test: &'static str,
     pub depth_write: &'static str,
@@ -2912,6 +2924,9 @@ pub struct NativeVulkanSceneMaterialPassSnapshot {
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub texture_slot_count: usize,
     pub effect_kinds: Vec<&'static str>,
+    pub constant_shader_values: BTreeMap<String, Value>,
+    pub constant_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
+    pub system_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
     pub combo_keys: Vec<String>,
 }
 
@@ -2937,6 +2952,7 @@ pub struct NativeVulkanSceneWeImagePassSnapshot {
     pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
     pub texture_slot_count: usize,
     pub parameter_keys: Vec<String>,
+    pub constant_shader_values: BTreeMap<String, Value>,
     pub combo_keys: Vec<String>,
     pub depth_test: &'static str,
     pub depth_write: &'static str,
@@ -3093,8 +3109,52 @@ fn native_vulkan_scene_material_pass_snapshot(
             .iter()
             .map(|kind| kind.as_str())
             .collect(),
+        constant_shader_values: material.constant_shader_values.clone(),
+        constant_shader_uniforms: native_vulkan_scene_effect_uniform_snapshots(
+            &material.constant_shader_values,
+        ),
+        system_shader_uniforms: native_vulkan_scene_shader_uniform_snapshots(
+            &material.system_shader_uniforms,
+        ),
         combo_keys: material.combo_keys.clone(),
     }
+}
+
+fn native_vulkan_scene_effect_uniform_snapshots(
+    values: &BTreeMap<String, Value>,
+) -> Vec<NativeVulkanSceneEffectUniformSnapshot> {
+    values
+        .iter()
+        .filter_map(|(name, value)| {
+            NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(name, value)
+        })
+        .map(|uniform| {
+            let float_values = uniform.float_values();
+            let int_values = uniform.int_values();
+            NativeVulkanSceneEffectUniformSnapshot {
+                name: uniform.name,
+                value_kind: uniform.value_kind,
+                component_count: uniform.component_count,
+                float_values,
+                int_values,
+            }
+        })
+        .collect()
+}
+
+fn native_vulkan_scene_shader_uniform_snapshots(
+    uniforms: &[NativeVulkanSceneShaderUniform],
+) -> Vec<NativeVulkanSceneEffectUniformSnapshot> {
+    uniforms
+        .iter()
+        .map(|uniform| NativeVulkanSceneEffectUniformSnapshot {
+            name: uniform.name.clone(),
+            value_kind: uniform.value_kind,
+            component_count: uniform.component_count,
+            float_values: uniform.float_values(),
+            int_values: uniform.int_values(),
+        })
+        .collect()
 }
 
 fn native_vulkan_scene_effect_record_snapshot(
@@ -3119,6 +3179,7 @@ fn native_vulkan_scene_effect_record_snapshot(
             .map(native_vulkan_scene_texture_slot_snapshot)
             .collect(),
         parameter_keys: effect.parameter_keys.clone(),
+        constant_shader_values: effect.constant_shader_values.clone(),
         combo_keys: effect.combo_keys.clone(),
         depth_test: effect.depth_test.as_str(),
         depth_write: effect.depth_write.as_str(),
@@ -3175,6 +3236,7 @@ fn native_vulkan_scene_we_image_pass_snapshot(
         texture_slots,
         texture_slot_count: pass.texture_slot_count,
         parameter_keys: pass.parameter_keys,
+        constant_shader_values: pass.constant_shader_values,
         combo_keys: pass.combo_keys,
         depth_test: pass.depth_test.as_str(),
         depth_write: pass.depth_write.as_str(),
@@ -3700,6 +3762,36 @@ fn native_vulkan_scene_vulkanalia_render_state(
 fn native_vulkan_scene_vulkanalia_sampled_image_material(
     material: NativeVulkanSceneMaterialPassSnapshot,
 ) -> NativeVulkanVulkanaliaSceneSampledImageMaterial {
+    let effect_kinds: Vec<_> = material
+        .effect_kinds
+        .into_iter()
+        .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
+        .collect();
+    let uses_elapsed_push_constants = effect_kinds
+        .iter()
+        .any(|kind| kind.uses_elapsed_push_constants());
+    let constant_shader_uniforms = material
+        .constant_shader_values
+        .iter()
+        .filter_map(|(name, value)| {
+            NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(name, value)
+        })
+        .collect();
+    let system_shader_uniforms = material
+        .system_shader_uniforms
+        .into_iter()
+        .map(|uniform| {
+            let float_bits = native_vulkan_scene_effect_uniform_snapshot_float_bits(&uniform);
+            let int_values = native_vulkan_scene_effect_uniform_snapshot_int_values(&uniform);
+            NativeVulkanVulkanaliaSceneEffectUniform {
+                name: uniform.name,
+                value_kind: uniform.value_kind,
+                component_count: uniform.component_count,
+                float_bits,
+                int_values,
+            }
+        })
+        .collect();
     NativeVulkanVulkanaliaSceneSampledImageMaterial {
         kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind::from_label(material.kind),
         shader: material.shader,
@@ -3708,14 +3800,33 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         alpha_texture_slot: material.alpha_texture_slot,
         alpha_texture_mode: material.alpha_texture_mode,
         texture_slot_count: material.texture_slot_count,
-        uses_elapsed_push_constants: false,
-        effect_kinds: material
-            .effect_kinds
-            .into_iter()
-            .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
-            .collect(),
+        uses_elapsed_push_constants,
+        effect_kinds,
+        constant_shader_values: material.constant_shader_values,
+        constant_shader_uniforms,
+        system_shader_uniforms,
         combo_keys: material.combo_keys,
     }
+}
+
+fn native_vulkan_scene_effect_uniform_snapshot_float_bits(
+    uniform: &NativeVulkanSceneEffectUniformSnapshot,
+) -> [u32; 4] {
+    let mut float_bits = [0; 4];
+    for (index, value) in uniform.float_values.iter().take(4).enumerate() {
+        float_bits[index] = value.to_bits();
+    }
+    float_bits
+}
+
+fn native_vulkan_scene_effect_uniform_snapshot_int_values(
+    uniform: &NativeVulkanSceneEffectUniformSnapshot,
+) -> [i32; 4] {
+    let mut int_values = [0; 4];
+    for (index, value) in uniform.int_values.iter().take(4).enumerate() {
+        int_values[index] = *value;
+    }
+    int_values
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -4952,6 +5063,108 @@ mod tests {
         }
     }
 
+    fn scene_test_material_snapshot(
+        effect_kinds: Vec<&'static str>,
+    ) -> NativeVulkanSceneMaterialPassSnapshot {
+        NativeVulkanSceneMaterialPassSnapshot {
+            kind: "sampled-image-effect-pass",
+            shader: None,
+            blending: Some("normal".to_owned()),
+            render_state: NativeVulkanSceneRenderStateSnapshot {
+                blend: NativeVulkanSceneBlendStateSnapshot {
+                    mode: SceneBlendMode::Alpha,
+                    equation: NativeVulkanSceneBlendEquationSnapshot {
+                        src_color: "src-alpha",
+                        dst_color: "one-minus-src-alpha",
+                        color_op: "add",
+                        src_alpha: "src-alpha",
+                        dst_alpha: "one-minus-src-alpha",
+                        alpha_op: "add",
+                    },
+                },
+                depth_test: "unspecified",
+                depth_write: "unspecified",
+                cull_mode: "unspecified".to_owned(),
+            },
+            alpha_texture_slot: None,
+            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+            texture_slot_count: 1,
+            effect_kinds,
+            constant_shader_values: Default::default(),
+            constant_shader_uniforms: Vec::new(),
+            system_shader_uniforms: Vec::new(),
+            combo_keys: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn vulkanalia_material_preserves_effect_kind_and_elapsed_requirement() {
+        let static_material = native_vulkan_scene_vulkanalia_sampled_image_material(
+            scene_test_material_snapshot(vec!["iris", "opacity-mask", "clipping-mask"]),
+        );
+        assert_eq!(
+            static_material.effect_kinds,
+            vec![
+                NativeVulkanVulkanaliaSceneEffectKind::Iris,
+                NativeVulkanVulkanaliaSceneEffectKind::OpacityMask,
+                NativeVulkanVulkanaliaSceneEffectKind::ClippingMask,
+            ]
+        );
+        assert!(!static_material.uses_elapsed_push_constants);
+
+        let animated_material = native_vulkan_scene_vulkanalia_sampled_image_material(
+            NativeVulkanSceneMaterialPassSnapshot {
+                constant_shader_values: BTreeMap::from([(
+                    "strength".to_owned(),
+                    serde_json::json!(0.1),
+                )]),
+                system_shader_uniforms: vec![NativeVulkanSceneEffectUniformSnapshot {
+                    name: "g_Texture2Resolution".to_owned(),
+                    value_kind: "vec2",
+                    component_count: 2,
+                    float_values: vec![512.0_f32, 256.0_f32],
+                    int_values: Vec::new(),
+                }],
+                ..scene_test_material_snapshot(vec!["water-ripple", "scroll", "audio-bars"])
+            },
+        );
+        assert_eq!(
+            animated_material.effect_kinds,
+            vec![
+                NativeVulkanVulkanaliaSceneEffectKind::WaterRipple,
+                NativeVulkanVulkanaliaSceneEffectKind::Scroll,
+                NativeVulkanVulkanaliaSceneEffectKind::AudioBars,
+            ]
+        );
+        assert!(animated_material.uses_elapsed_push_constants);
+        assert_eq!(
+            animated_material.constant_shader_values.get("strength"),
+            Some(&serde_json::json!(0.1))
+        );
+        assert_eq!(animated_material.constant_shader_uniforms.len(), 1);
+        assert_eq!(
+            animated_material.constant_shader_uniforms[0].name,
+            "strength"
+        );
+        assert_eq!(
+            animated_material.constant_shader_uniforms[0].value_kind,
+            "float"
+        );
+        assert_eq!(
+            animated_material.constant_shader_uniforms[0].float_values(),
+            vec![0.1_f32]
+        );
+        assert_eq!(animated_material.system_shader_uniforms.len(), 1);
+        assert_eq!(
+            animated_material.system_shader_uniforms[0].name,
+            "g_Texture2Resolution"
+        );
+        assert_eq!(
+            animated_material.system_shader_uniforms[0].float_values(),
+            vec![512.0_f32, 256.0_f32]
+        );
+    }
+
     #[test]
     fn scene_runtime_snapshot_reports_native_draw_ready_layers() {
         let mut image = scene_test_layer("hero", SceneNodeKind::Image);
@@ -4988,7 +5201,10 @@ mod tests {
             texture_slots: Vec::new(),
             effect_uv_transform: None,
             combos: Default::default(),
-            constant_shader_values: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                ("speed".to_owned(), serde_json::json!(0.75)),
+                ("direction".to_owned(), serde_json::json!([1.0, 0.0])),
+            ]),
         }];
         let mut hidden_group = scene_test_layer("hidden-group", SceneNodeKind::Group);
         hidden_group.opacity = 0.0;
@@ -5086,6 +5302,18 @@ mod tests {
         assert_eq!(
             snapshot.draw_ops[2].effect_passes[0].shader.as_deref(),
             Some("effects/scroll")
+        );
+        assert_eq!(
+            snapshot.draw_ops[2].effect_passes[0]
+                .constant_shader_values
+                .get("speed"),
+            Some(&serde_json::json!(0.75))
+        );
+        assert_eq!(
+            snapshot.draw_ops[2].effect_passes[0]
+                .constant_shader_values
+                .get("direction"),
+            Some(&serde_json::json!([1.0, 0.0]))
         );
         assert_eq!(
             snapshot.draw_pass_recordable_quads[0].kind,
@@ -6242,7 +6470,10 @@ mod tests {
             }],
             effect_uv_transform: None,
             combos: Default::default(),
-            constant_shader_values: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                ("strength".to_owned(), serde_json::json!(0.1)),
+                ("ripplestrength".to_owned(), serde_json::json!(1.0)),
+            ]),
         }];
 
         let item = scene_test_item(vec![opacity, water], None);
@@ -6366,6 +6597,26 @@ mod tests {
         assert_eq!(water_ripple_input.source, "previous-graph-target");
         assert_eq!(water_ripple_input.planned_graph_resource_index, Some(5));
         assert_eq!(water_ripple_input.vulkan_effect_target_index, None);
+
+        let water_ripple_step = snapshot
+            .draw_pass_sampled_image_we_graph_steps
+            .iter()
+            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
+            .expect("water ripple graph step");
+        assert_eq!(
+            water_ripple_step
+                .pass
+                .constant_shader_values
+                .get("strength"),
+            Some(&serde_json::json!(0.1))
+        );
+        assert_eq!(
+            water_ripple_step
+                .pass
+                .constant_shader_values
+                .get("ripplestrength"),
+            Some(&serde_json::json!(1.0))
+        );
 
         let water_normal = snapshot
             .draw_pass_sampled_image_we_graph_steps

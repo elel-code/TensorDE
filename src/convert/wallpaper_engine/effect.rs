@@ -620,12 +620,18 @@ fn scene_effect_pass_uv_transform(
         .find_map(|(slot, resource)| value_to_string(resource).map(|resource| (slot, resource)))?;
     let input_extent = scene_effect_node_extent(node);
     let mask_extent = scene_effect_resource_extent(resources, &mask_resource);
+    let mask_backing_extent = scene_effect_resource_backing_extent(resources, &mask_resource);
     let (mut scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
+    // CWE reference: CPass::setupTextureUniforms feeds g_TextureNResolution from
+    // the resolved texture itself. WE iris/opacity mask UV is mask logical
+    // extent divided by mask backing extent; it is not base-node/mask extent.
     if !has_explicit_scale
-        && let (Some(input_extent), Some(mask_extent)) =
-            (input_extent.as_ref(), mask_extent.as_ref())
-        && let Some(extent_scale) =
-            scene_effect_uv_transform_scale_from_extents(input_extent, mask_extent)
+        && let (Some(mask_extent), Some(mask_backing_extent)) =
+            (mask_extent.as_ref(), mask_backing_extent.as_ref())
+        && let Some(extent_scale) = scene_effect_uv_transform_scale_from_mask_backing_extents(
+            mask_extent,
+            mask_backing_extent,
+        )
     {
         scale = extent_scale;
     }
@@ -645,7 +651,9 @@ fn scene_effect_pass_uv_transform(
         transform.insert("input_extent".to_owned(), extent);
     }
     if let Some(extent) = mask_extent {
-        transform.insert("mask_extent".to_owned(), extent.clone());
+        transform.insert("mask_extent".to_owned(), extent);
+    }
+    if let Some(extent) = mask_backing_extent {
         transform.insert("mask_backing_extent".to_owned(), extent);
     }
     Some(Value::Object(transform))
@@ -672,10 +680,12 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
             .get("g_Texture1Resolution")
             .or_else(|| values.get("Texture1Resolution"))
             .and_then(scene_effect_vec4)
-            && resolution[2].abs() > f64::EPSILON
-            && resolution[3].abs() > f64::EPSILON
+            && resolution[0].abs() > f64::EPSILON
+            && resolution[1].abs() > f64::EPSILON
         {
-            // WE's opacity vertex shader computes mask UV as base_uv * base_extent / mask_extent.
+            // CWE reference: iris.vert/opacity-style mask UV multiplies by
+            // g_Texture1Resolution.zw / g_Texture1Resolution.xy, i.e. mask
+            // logical extent over the mask backing/container extent.
             scale = [resolution[2] / resolution[0], resolution[3] / resolution[1]];
             has_explicit_scale = true;
         }
@@ -753,6 +763,24 @@ fn scene_effect_node_extent(node: &Map<String, Value>) -> Option<Value> {
 }
 
 fn scene_effect_resource_extent(resources: &[Value], resource_id: &str) -> Option<Value> {
+    scene_effect_resource_extent_from_fields(resources, resource_id, "width", "height")
+}
+
+fn scene_effect_resource_backing_extent(resources: &[Value], resource_id: &str) -> Option<Value> {
+    scene_effect_resource_extent_from_fields(
+        resources,
+        resource_id,
+        "backing_width",
+        "backing_height",
+    )
+}
+
+fn scene_effect_resource_extent_from_fields(
+    resources: &[Value],
+    resource_id: &str,
+    width_field: &str,
+    height_field: &str,
+) -> Option<Value> {
     resources
         .iter()
         .rev()
@@ -761,8 +789,8 @@ fn scene_effect_resource_extent(resources: &[Value], resource_id: &str) -> Optio
             if resource.get("id").and_then(Value::as_str) != Some(resource_id) {
                 return None;
             }
-            let width = resource.get("width").and_then(value_to_u32)?;
-            let height = resource.get("height").and_then(value_to_u32)?;
+            let width = resource.get(width_field).and_then(value_to_u32)?;
+            let height = resource.get(height_field).and_then(value_to_u32)?;
             if width == 0 || height == 0 {
                 return None;
             }
@@ -770,20 +798,20 @@ fn scene_effect_resource_extent(resources: &[Value], resource_id: &str) -> Optio
         })
 }
 
-fn scene_effect_uv_transform_scale_from_extents(
-    input_extent: &Value,
+fn scene_effect_uv_transform_scale_from_mask_backing_extents(
     mask_extent: &Value,
+    mask_backing_extent: &Value,
 ) -> Option<[f64; 2]> {
-    let input = input_extent.as_object()?;
     let mask = mask_extent.as_object()?;
-    let input_width = f64::from(input.get("width").and_then(value_to_u32)?);
-    let input_height = f64::from(input.get("height").and_then(value_to_u32)?);
+    let backing = mask_backing_extent.as_object()?;
     let mask_width = f64::from(mask.get("width").and_then(value_to_u32)?);
     let mask_height = f64::from(mask.get("height").and_then(value_to_u32)?);
-    if input_width <= f64::EPSILON || input_height <= f64::EPSILON {
+    let backing_width = f64::from(backing.get("width").and_then(value_to_u32)?);
+    let backing_height = f64::from(backing.get("height").and_then(value_to_u32)?);
+    if backing_width <= f64::EPSILON || backing_height <= f64::EPSILON {
         return None;
     }
-    Some([input_width / mask_width, input_height / mask_height])
+    Some([mask_width / backing_width, mask_height / backing_height])
 }
 
 #[cfg(test)]
@@ -791,28 +819,66 @@ mod tests {
     use super::*;
 
     #[test]
-    fn uv_transform_resolution_scale_uses_base_over_mask_extent() {
+    fn uv_transform_resolution_scale_uses_mask_over_backing_extent() {
         let pass = json!({
             "constantshadervalues": {
-                "g_Texture1Resolution": [331.0, 115.0, 663.0, 230.0]
+                "g_Texture1Resolution": [512.0, 128.0, 331.0, 115.0]
             }
         });
         let pass = pass.as_object().expect("pass object");
 
         let (scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
 
-        assert!((scale[0] - (663.0 / 331.0)).abs() < f64::EPSILON);
-        assert_eq!(scale[1], 2.0);
+        assert!((scale[0] - (331.0 / 512.0)).abs() < f64::EPSILON);
+        assert_eq!(scale[1], 115.0 / 128.0);
         assert_eq!(offset, [0.0, 0.0]);
         assert!(has_explicit_scale);
     }
 
     #[test]
-    fn uv_transform_fills_missing_resolution_scale_from_extents() {
+    fn uv_transform_fills_missing_resolution_scale_from_mask_backing_extent() {
         let node = json!({ "width": 663.0, "height": 230.0 });
         let node = node.as_object().expect("node object");
         let pass = json!({
             "textures": [null, "masks/opacity_mask"],
+            "constantshadervalues": { "alpha": 1.0 }
+        });
+        let pass = pass.as_object().expect("pass object");
+        let texture_resources = json!([null, "mask-resource"]);
+        let resources = json!([
+            {
+                "id": "mask-resource",
+                "width": 331,
+                "height": 115,
+                "backing_width": 512,
+                "backing_height": 128
+            }
+        ]);
+        let resources = resources.as_array().expect("resources array");
+
+        let transform = scene_effect_pass_uv_transform(
+            node,
+            "effects/opacity/effect.json",
+            pass,
+            Some(&texture_resources),
+            resources,
+        )
+        .expect("effect uv transform");
+
+        assert_eq!(transform["scale"][0].as_f64(), Some(331.0 / 512.0));
+        assert_eq!(transform["scale"][1].as_f64(), Some(115.0 / 128.0));
+        assert_eq!(
+            transform["mask_backing_extent"]["width"].as_u64(),
+            Some(512)
+        );
+    }
+
+    #[test]
+    fn uv_transform_does_not_fallback_to_base_over_mask_extent() {
+        let node = json!({ "width": 663.0, "height": 230.0 });
+        let node = node.as_object().expect("node object");
+        let pass = json!({
+            "textures": [null, "masks/iris_mask"],
             "constantshadervalues": { "alpha": 1.0 }
         });
         let pass = pass.as_object().expect("pass object");
@@ -828,14 +894,15 @@ mod tests {
 
         let transform = scene_effect_pass_uv_transform(
             node,
-            "effects/opacity/effect.json",
+            "effects/iris/effect.json",
             pass,
             Some(&texture_resources),
             resources,
         )
         .expect("effect uv transform");
 
-        assert_eq!(transform["scale"][0].as_f64(), Some(663.0 / 331.0));
-        assert_eq!(transform["scale"][1].as_f64(), Some(2.0));
+        assert_eq!(transform["scale"][0].as_f64(), Some(1.0));
+        assert_eq!(transform["scale"][1].as_f64(), Some(1.0));
+        assert!(transform.get("mask_backing_extent").is_none());
     }
 }

@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::core::SceneBlendMode;
@@ -64,6 +65,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_effect_pass
                     })
                     .collect(),
                 parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
+                constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
@@ -102,6 +104,7 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
                     &pass.texture_slots,
                 ),
                 parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
+                constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
@@ -173,6 +176,8 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
         alpha_texture_mode,
         texture_slot_count,
         effect_kinds: native_vulkan_scene_effect_kind_list(effect_passes),
+        constant_shader_values: native_vulkan_scene_effect_constant_shader_value_map(effect_passes),
+        system_shader_uniforms: Vec::new(),
         combo_keys: native_vulkan_scene_effect_combo_key_list(effect_passes),
     }
 }
@@ -397,6 +402,18 @@ fn native_vulkan_scene_effect_kind_list(
         }
     }
     kinds
+}
+
+fn native_vulkan_scene_effect_constant_shader_value_map(
+    passes: &[NativeVulkanSceneEffectRecord],
+) -> BTreeMap<String, serde_json::Value> {
+    let mut values = BTreeMap::new();
+    for pass in passes {
+        for (name, value) in &pass.constant_shader_values {
+            values.insert(name.clone(), value.clone());
+        }
+    }
+    values
 }
 
 fn native_vulkan_scene_effect_combo_key_list(
@@ -675,6 +692,7 @@ mod tests {
             blending: Some("normal".to_owned()),
             texture_slots: Vec::new(),
             parameter_keys: Vec::new(),
+            constant_shader_values: Default::default(),
             combo_keys: Vec::new(),
             depth_test: NativeVulkanSceneMaterialFlag::Unspecified,
             depth_write: NativeVulkanSceneMaterialFlag::Unspecified,

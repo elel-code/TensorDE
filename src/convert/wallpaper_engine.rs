@@ -6524,6 +6524,8 @@ fn scene_builtin_particle_bubble_image() -> SceneWeTexImage {
     SceneWeTexImage {
         width: SIZE,
         height: SIZE,
+        backing_width: SIZE,
+        backing_height: SIZE,
         rgba,
         r8: None,
     }
@@ -6615,6 +6617,8 @@ fn scene_builtin_particle_radial_image(
     SceneWeTexImage {
         width: SIZE,
         height: SIZE,
+        backing_width: SIZE,
+        backing_height: SIZE,
         rgba,
         r8: None,
     }
@@ -6793,6 +6797,8 @@ fn scene_copy_decoded_tex_resource_as(
         "source": package_path,
         "width": decoded.width,
         "height": decoded.height,
+        "backing_width": decoded.backing_width,
+        "backing_height": decoded.backing_height,
         "original_source": source_path,
         "role": role
     }));
@@ -6994,6 +7000,8 @@ fn scene_we_tex_crop_first_frame(
     Ok(SceneWeTexImage {
         width: layout.frame_width,
         height: layout.frame_height,
+        backing_width: image.backing_width,
+        backing_height: image.backing_height,
         rgba,
         r8,
     })
