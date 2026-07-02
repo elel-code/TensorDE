@@ -4131,7 +4131,7 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry(
             return None;
         }
         let x = vertex.x + quad.width * 0.5;
-        let y = quad.height * 0.5 - vertex.y;
+        let y = vertex.y + quad.height * 0.5;
         let uv = native_vulkan_scene_sampled_image_effect_base_mesh_uv(vertex, region);
         let position = [x as f32, y as f32];
         let effect_uv = if quad.effect_uv_space.is_some() {
@@ -7826,12 +7826,24 @@ mod tests {
             [0.25, 0.75]
         );
         assert_eq!(
+            pass_plan.sampled_image_vertices[base_first].position,
+            [321.5, 95.0]
+        );
+        assert_eq!(
             pass_plan.sampled_image_vertices[base_first + 1].uv,
             [0.5, 0.25]
         );
         assert_eq!(
+            pass_plan.sampled_image_vertices[base_first + 1].position,
+            [341.5, 95.0]
+        );
+        assert_eq!(
             pass_plan.sampled_image_vertices[base_first + 2].uv,
             [0.75, 0.5]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[base_first + 2].position,
+            [321.5, 135.0]
         );
         assert_eq!(
             iris_step.material_pass.effect_kinds,
