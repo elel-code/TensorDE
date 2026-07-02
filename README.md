@@ -46,9 +46,9 @@ any remaining boundary explicitly.
    in coverage/stability mode. Expand real-source and generated matrices for
    profiles, bit depths, reference patterns, containers, arbitrary entry
    points, loop boundaries, long-run resources, and integration regressions.
-4. Script hygiene: keep only current CI, codec smoke, real-source matrix,
-   performance, packaging, and workshop helpers. Remove one-off spike scripts
-   instead of carrying compatibility wrappers.
+4. Script hygiene: keep only codec smoke, real-source matrix, performance,
+   packaging, workshop, and actively used diagnostic helpers. Remove one-off
+   spike scripts instead of carrying compatibility wrappers.
 
 ## Repository Layout
 
@@ -81,12 +81,10 @@ any remaining boundary explicitly.
 - `scripts/native-vulkan-real-source-matrix.sh`: real-source coverage runner.
 - `scripts/performance-snapshot.sh`: CPU/RSS/PSS/USS/Private_Dirty/GPU memory
   sampler.
-- `scripts/desktop-policy-smoke.sh`: CI desktop-policy smoke.
 
 ## Commands
 
 ```sh
-scripts/install-ci-deps-ubuntu.sh
 cargo check
 cargo check --features native-vulkan-renderer
 cargo check --features native-vulkan-video --bin gilder-native-vulkan

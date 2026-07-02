@@ -30,8 +30,8 @@ zero-copy 状态。
 3. Video 覆盖和回归：核心 H.264/H.265/AV1 Vulkan Video 路径进入覆盖/稳定性阶段。
    继续扩展真实源和生成源矩阵，覆盖 profile、bit depth、reference pattern、container、
    任意入口、loop boundary、长跑资源稳定性和 audio/scene 集成回归。
-4. 脚本清理：只保留当前 CI、codec smoke、real-source matrix、performance、packaging 和
-   workshop helper。一次性试验脚本直接删除，不做兼容 wrapper。
+4. 脚本清理：只保留 codec smoke、real-source matrix、performance、packaging、workshop
+   和仍在使用的诊断 helper。一次性试验脚本直接删除，不做兼容 wrapper。
 
 ## 仓库结构
 
@@ -57,12 +57,10 @@ zero-copy 状态。
 - `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`：当前三种格式证据脚本。
 - `scripts/native-vulkan-real-source-matrix.sh`：真实源覆盖矩阵。
 - `scripts/performance-snapshot.sh`：CPU/RSS/PSS/USS/Private_Dirty/GPU memory 采样。
-- `scripts/desktop-policy-smoke.sh`：CI desktop-policy smoke。
 
 ## 常用命令
 
 ```sh
-scripts/install-ci-deps-ubuntu.sh
 cargo check
 cargo check --features native-vulkan-renderer
 cargo check --features native-vulkan-video --bin gilder-native-vulkan
