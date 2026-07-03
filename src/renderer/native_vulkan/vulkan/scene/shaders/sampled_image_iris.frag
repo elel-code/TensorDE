@@ -1,8 +1,9 @@
 #version 450
 
-// CWE reference: WallpaperEngine effects/iris is a fragment-space source
-// resample. The mesh/quad geometry stays fixed; the iris mask only gates the
-// animated UV offset used to sample g_Texture0.
+// reverse-engineered reference: WallpaperEngine effects/iris.frag keeps the
+// original source sample and mixes in the UV-offset iris sample by mask. The
+// mesh/quad geometry stays fixed; the iris mask only gates the animated source
+// resample.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -29,9 +30,11 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 112) float iris_noise_amount;
     layout(offset = 116) float iris_phase_offset;
     layout(offset = 120) uint effect_shader_code;
+    layout(offset = 228) uint output_flags;
 } pc;
 
 const float M_PI = 3.14159265359;
+const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 
 vec2 iris_motion() {
     float time = pc.time_seconds * pc.iris_speed + pc.iris_phase_offset;
@@ -54,10 +57,19 @@ vec4 apply_vertex_color(vec4 color) {
     return color;
 }
 
+vec4 finalize_output(vec4 color) {
+    if ((pc.output_flags & OUTPUT_FLAG_PREMULTIPLY_RGB) != 0u) {
+        color.rgb *= color.a;
+    }
+    return color;
+}
+
 void main() {
     float mask = 1.0;
     if ((pc.texture_resolution_mask & (1u << 1)) != 0u) {
         mask = texture(g_Texture1, v_effect_uv).r;
     }
-    out_color = apply_vertex_color(texture(g_Texture0, v_uv + iris_motion() * mask));
+    vec4 albedo = texture(g_Texture0, v_uv);
+    vec4 iris = texture(g_Texture0, v_uv + iris_motion() * mask);
+    out_color = finalize_output(apply_vertex_color(mix(albedo, iris, mask)));
 }

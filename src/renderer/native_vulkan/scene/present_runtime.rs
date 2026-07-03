@@ -6,13 +6,9 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::core::scene::{SceneImageEffectPass, SceneSnapshotSampledImageLayer, SceneTextureSlot};
-use crate::core::{
-    PackagePath, SceneAlphaTextureMode, SceneNodeKind, SceneSystemStatus, SceneTextureRegion,
-};
+use crate::core::{SceneSystemStatus, SceneTextureRegion};
 use crate::renderer::{
-    SceneBinaryRuntimeSampler, SceneRenderAlphaTextureMode, SceneRenderAudioCue,
-    SceneRenderImageEffectPass, SceneRenderLayer, SceneRenderTextureSlot, SceneWallpaperPlan,
+    SceneBinaryRuntimeSampler, SceneRenderAudioCue, SceneRenderLayer, SceneWallpaperPlan,
 };
 
 #[cfg(feature = "native-vulkan-video")]
@@ -54,7 +50,7 @@ use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot,
     native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers,
     native_vulkan_scene_runtime_snapshot,
-    native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root,
+    native_vulkan_scene_sampled_vertex_input_from_render_layers_at_with_package_root,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
 };
 
@@ -276,146 +272,11 @@ fn native_vulkan_scene_binary_sampled_geometry_from_layers(
     package_root: &Path,
     layers: &[SceneRenderLayer],
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    let mut sampled_layers = Vec::with_capacity(layers.len());
-    for layer in layers {
-        if layer.kind != SceneNodeKind::Image {
-            continue;
-        }
-        sampled_layers.push(native_vulkan_scene_binary_sampled_layer_from_render_layer(
-            package_root,
-            layer,
-        )?);
-    }
-    native_vulkan_scene_sampled_vertex_input_from_sampled_layers_at_with_package_root(
+    native_vulkan_scene_sampled_vertex_input_from_render_layers_at_with_package_root(
         Some(snapshot_time_ms),
-        &sampled_layers,
+        layers,
         Some(package_root),
     )
-}
-
-fn native_vulkan_scene_binary_sampled_layer_from_render_layer(
-    package_root: &Path,
-    layer: &SceneRenderLayer,
-) -> Result<SceneSnapshotSampledImageLayer, String> {
-    Ok(SceneSnapshotSampledImageLayer {
-        id: layer.id.clone(),
-        has_source: layer.source.is_some(),
-        texture_slots: native_vulkan_scene_binary_texture_slots_from_render_slots(
-            package_root,
-            &layer.texture_slots,
-        )?,
-        alpha_texture_slot: layer.alpha_texture_slot,
-        alpha_texture_mode: native_vulkan_scene_binary_alpha_texture_mode(layer.alpha_texture_mode),
-        image_effect_passes: native_vulkan_scene_binary_effect_passes_from_render_passes(
-            package_root,
-            &layer.image_effect_passes,
-        )?,
-        composite_key: layer.composite_key.clone(),
-        texture_region: layer.texture_region,
-        width: layer.width,
-        height: layer.height,
-        mesh: layer.mesh.clone(),
-        effect_motion: layer.effect_motion,
-        blend_mode: layer.blend_mode,
-        tint: native_vulkan_scene_binary_tint_from_color(layer.color.as_deref()),
-        fit: layer.fit,
-        opacity: layer.opacity,
-        transform: layer.transform,
-        puppet_animation_frames: Vec::new(),
-    })
-}
-
-fn native_vulkan_scene_binary_alpha_texture_mode(
-    mode: SceneRenderAlphaTextureMode,
-) -> SceneAlphaTextureMode {
-    match mode {
-        SceneRenderAlphaTextureMode::Multiply => SceneAlphaTextureMode::Multiply,
-        SceneRenderAlphaTextureMode::Inverse => SceneAlphaTextureMode::Inverse,
-        SceneRenderAlphaTextureMode::Iris => SceneAlphaTextureMode::Iris,
-        SceneRenderAlphaTextureMode::Coverage => SceneAlphaTextureMode::Coverage,
-    }
-}
-
-fn native_vulkan_scene_binary_texture_slots_from_render_slots(
-    package_root: &Path,
-    slots: &[SceneRenderTextureSlot],
-) -> Result<Vec<SceneTextureSlot>, String> {
-    slots
-        .iter()
-        .map(|slot| {
-            Ok(SceneTextureSlot {
-                slot: slot.slot,
-                source: native_vulkan_scene_binary_package_path(package_root, &slot.source)?,
-                width: slot.width,
-                height: slot.height,
-            })
-        })
-        .collect()
-}
-
-fn native_vulkan_scene_binary_effect_passes_from_render_passes(
-    package_root: &Path,
-    passes: &[SceneRenderImageEffectPass],
-) -> Result<Vec<SceneImageEffectPass>, String> {
-    passes
-        .iter()
-        .map(|pass| {
-            Ok(SceneImageEffectPass {
-                effect_file: pass.effect_file.clone(),
-                runtime: pass.runtime.clone(),
-                pass_index: pass.pass_index,
-                command: pass.command.clone(),
-                source: pass.source.clone(),
-                target: pass.target.clone(),
-                binds: pass.binds.clone(),
-                fbos: pass.fbos.clone(),
-                shader: pass.shader.clone(),
-                blending: pass.blending.clone(),
-                depthtest: pass.depthtest.clone(),
-                depthwrite: pass.depthwrite.clone(),
-                cullmode: pass.cullmode.clone(),
-                texture_slots: native_vulkan_scene_binary_texture_slots_from_render_slots(
-                    package_root,
-                    &pass.texture_slots,
-                )?,
-                effect_uv_transform: pass.effect_uv_transform,
-                combos: pass.combos.clone(),
-                constant_shader_values: pass.constant_shader_values.clone(),
-            })
-        })
-        .collect()
-}
-
-fn native_vulkan_scene_binary_package_path(
-    package_root: &Path,
-    source: &Path,
-) -> Result<PackagePath, String> {
-    let relative = source.strip_prefix(package_root).map_err(|_| {
-        format!(
-            "dynamic binary scene texture source {} is outside package root {}",
-            source.display(),
-            package_root.display()
-        )
-    })?;
-    let value = relative.to_string_lossy().replace('\\', "/");
-    PackagePath::new(value)
-        .map_err(|err| format!("dynamic binary scene texture source is not a package path: {err}"))
-}
-
-fn native_vulkan_scene_binary_tint_from_color(color: Option<&str>) -> [f32; 4] {
-    color
-        .filter(|color| !color.is_empty())
-        .and_then(|color| {
-            let hex = color.trim().strip_prefix('#')?;
-            if hex.len() != 6 {
-                return None;
-            }
-            let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
-            let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
-            let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
-            Some([r, g, b, 1.0])
-        })
-        .unwrap_or([1.0, 1.0, 1.0, 1.0])
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

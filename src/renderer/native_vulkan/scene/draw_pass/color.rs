@@ -24,7 +24,9 @@ pub(super) fn native_vulkan_scene_rgba_from_hex(color: &str, opacity: f64) -> Op
     Some([r, g, b, opacity.clamp(0.0, 1.0) as f32])
 }
 
-pub(super) fn native_vulkan_scene_tint_from_color(color: Option<&str>) -> [f32; 4] {
+pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_tint_from_color(
+    color: Option<&str>,
+) -> [f32; 4] {
     color
         .filter(|color| !color.is_empty())
         .and_then(|color| native_vulkan_scene_rgba_from_hex(color, 1.0))

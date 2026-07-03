@@ -367,9 +367,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
     pub(in crate::renderer::native_vulkan::scene) final_scene_pass: bool,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform:
+        Option<SceneEffectUvTransform>,
     pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
@@ -416,6 +419,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) scale: Option<f64>,
     pub(in crate::renderer::native_vulkan::scene) unique: bool,
     pub(in crate::renderer::native_vulkan::scene) execution: NativeVulkanSceneWeImagePassExecution,
+    pub(in crate::renderer::native_vulkan::scene) local_left: f64,
+    pub(in crate::renderer::native_vulkan::scene) local_top: f64,
     pub(in crate::renderer::native_vulkan::scene) width: u32,
     pub(in crate::renderer::native_vulkan::scene) height: u32,
     pub(in crate::renderer::native_vulkan::scene) first_write_step_index: usize,
@@ -423,6 +428,14 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) sampled_by_following_pass: bool,
     pub(in crate::renderer::native_vulkan::scene) scene_composite_source: bool,
     pub(in crate::renderer::native_vulkan::scene) clear_before_first_write: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphTargetBounds {
+    pub(in crate::renderer::native_vulkan::scene) left: f64,
+    pub(in crate::renderer::native_vulkan::scene) top: f64,
+    pub(in crate::renderer::native_vulkan::scene) width: f64,
+    pub(in crate::renderer::native_vulkan::scene) height: f64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -495,11 +508,14 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) shader: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) blending: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform:
+        Option<SceneEffectUvTransform>,
     pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
     // CWE reference: ObjectParser parses constantshadervalues and CPass applies
     // them as shader uniforms before per-pass override constants.
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
@@ -519,6 +535,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
     pub(in crate::renderer::native_vulkan::scene) system_shader_uniforms:
         Vec<NativeVulkanSceneShaderUniform>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

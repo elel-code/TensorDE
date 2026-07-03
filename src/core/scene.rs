@@ -4584,6 +4584,7 @@ fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
     match mode {
         2 => Some(SceneBlendMode::Multiply),
         3 => Some(SceneBlendMode::Multiply),
+        6 => Some(SceneBlendMode::Max),
         7 => Some(SceneBlendMode::Screen),
         8 => Some(SceneBlendMode::Screen),
         28 => Some(SceneBlendMode::Screen),
@@ -5934,7 +5935,7 @@ mod tests {
     }
 
     #[test]
-    fn native_effect_motion_uses_wallpaper_engine_speed_as_radians_per_second() {
+    fn waterwaves_effect_stays_gpu_image_space_without_native_motion() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -5979,12 +5980,11 @@ mod tests {
             &mut layers,
         );
         assert_eq!(layers.len(), 1);
-        assert!(layers[0].effect_motion.is_active());
-        assert!((layers[0].effect_motion.wave_phase - 1.0).abs() < 0.001);
+        assert!(!layers[0].effect_motion.is_active());
     }
 
     #[test]
-    fn waterwave_effect_preserves_wallpaper_engine_secondary_wave_parameters() {
+    fn waterwave_effect_preserves_parameters_in_image_effect_passes_not_native_motion() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -6033,17 +6033,20 @@ mod tests {
             &mut layers,
         );
         let motion = layers[0].effect_motion;
-        assert_eq!(motion.wave_count, 1);
-        assert_eq!(motion.wave2_count, 1);
-        assert!((motion.wave_phase - 2.0).abs() < 0.001);
-        assert!((motion.wave2_phase - 3.25).abs() < 0.001);
-        assert!(motion.wave_x > 0.19);
-        assert!(motion.wave2_y > 0.14);
-        assert!(motion.wave_spatial_frequency > motion.wave2_spatial_frequency);
+        assert_eq!(motion.wave_count, 0);
+        assert_eq!(motion.wave2_count, 0);
+        assert_eq!(
+            layers[0].image_effect_passes[0].constant_shader_values["speed2"],
+            json!(3.0)
+        );
+        assert_eq!(
+            layers[0].image_effect_passes[0].constant_shader_values["direction2"],
+            json!(1.57079632679)
+        );
     }
 
     #[test]
-    fn foliage_sway_effect_uses_wallpaper_engine_motion_parameters() {
+    fn foliage_sway_effect_stays_gpu_image_space_without_native_motion() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -6091,17 +6094,12 @@ mod tests {
             &mut layers,
         );
         let motion = layers[0].effect_motion;
-        assert_eq!(motion.sway_count, 1);
-        assert!((motion.sway_phase - 7.0).abs() < 0.001);
-        assert!((motion.sway_power - 2.0).abs() < 0.001);
-        assert!(motion.sway_amplitude > 0.99);
-        assert!(motion.sway_direction_x > 0.99);
-        assert!(motion.sway_direction_y.abs() < 0.001);
-        assert!((motion.sway_spatial_frequency - std::f64::consts::TAU / 100.0).abs() < 0.001);
+        assert_eq!(motion.sway_count, 0);
+        assert!(!motion.is_active());
     }
 
     #[test]
-    fn waterwave_effect_deforms_vertices_without_shaking_layer_origin() {
+    fn waterwave_effect_keeps_layer_origin_and_skips_native_vertex_deformation() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -6149,11 +6147,11 @@ mod tests {
         assert_eq!(layers.len(), 1);
         assert_eq!(layers[0].transform.x, 25.0);
         assert_eq!(layers[0].transform.y, 50.0);
-        assert!(layers[0].effect_motion.is_active());
+        assert!(!layers[0].effect_motion.is_active());
     }
 
     #[test]
-    fn watercaustics_effect_emits_native_visual_layers() {
+    fn watercaustics_effect_stays_on_base_layer_for_gpu_graph() {
         let document: SceneDocument = serde_json::from_value(json!({
             "nodes": [
                 {
@@ -6191,13 +6189,10 @@ mod tests {
             .iter()
             .filter(|layer| layer.id.contains("water-caustics"))
             .collect::<Vec<_>>();
-        assert_eq!(caustic_layers.len(), 5);
-        assert!(caustic_layers.iter().all(|layer| layer.opacity > 0.0));
-        assert!(
-            caustic_layers
-                .iter()
-                .any(|layer| layer.color.as_deref() == Some("#00b3ff"))
-        );
+        assert!(caustic_layers.is_empty());
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(snapshot.layers[0].id, "node-water-layer");
+        assert_eq!(snapshot.layers[0].image_effect_passes.len(), 1);
     }
 
     #[test]

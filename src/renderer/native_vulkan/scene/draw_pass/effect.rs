@@ -64,9 +64,11 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_effect_pass
                         height: slot.height,
                     })
                     .collect(),
+                effect_uv_transform: pass.effect_uv_transform,
                 parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
                 constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
+                combo_values: pass.combos.clone(),
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
                 ),
@@ -103,9 +105,11 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
                 texture_slots: native_vulkan_scene_texture_slots_from_scene_slots(
                     &pass.texture_slots,
                 ),
+                effect_uv_transform: pass.effect_uv_transform,
                 parameter_keys: pass.constant_shader_values.keys().cloned().collect(),
                 constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
+                combo_values: pass.combos.clone(),
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
                 ),
@@ -179,6 +183,7 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
         constant_shader_values: native_vulkan_scene_effect_constant_shader_value_map(effect_passes),
         system_shader_uniforms: Vec::new(),
         combo_keys: native_vulkan_scene_effect_combo_key_list(effect_passes),
+        combo_values: native_vulkan_scene_effect_combo_value_map(effect_passes),
     }
 }
 
@@ -322,9 +327,7 @@ fn native_vulkan_scene_effect_evaluation_boundary(
         NativeVulkanSceneEffectKind::OpacityMask | NativeVulkanSceneEffectKind::Iris => {
             NativeVulkanSceneEffectEvaluationBoundary::FirstClassTarget
         }
-        NativeVulkanSceneEffectKind::SwayShake
-        | NativeVulkanSceneEffectKind::FoliageSway
-        | NativeVulkanSceneEffectKind::AutoSway => {
+        NativeVulkanSceneEffectKind::SwayShake => {
             NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform
         }
         NativeVulkanSceneEffectKind::Flutter => flutter::evaluation_boundary(),
@@ -336,6 +339,8 @@ fn native_vulkan_scene_effect_evaluation_boundary(
         | NativeVulkanSceneEffectKind::WaterWaves
         | NativeVulkanSceneEffectKind::WaterFlow
         | NativeVulkanSceneEffectKind::WaterCaustics
+        | NativeVulkanSceneEffectKind::FoliageSway
+        | NativeVulkanSceneEffectKind::AutoSway
         | NativeVulkanSceneEffectKind::Scroll
         | NativeVulkanSceneEffectKind::Skew
         | NativeVulkanSceneEffectKind::CloudMotion
@@ -430,6 +435,18 @@ fn native_vulkan_scene_effect_combo_key_list(
     keys
 }
 
+fn native_vulkan_scene_effect_combo_value_map(
+    passes: &[NativeVulkanSceneEffectRecord],
+) -> BTreeMap<String, i64> {
+    let mut values = BTreeMap::new();
+    for pass in passes {
+        for (name, value) in &pass.combo_values {
+            values.insert(name.clone(), *value);
+        }
+    }
+    values
+}
+
 fn native_vulkan_scene_effect_kind_label(kinds: &[NativeVulkanSceneEffectKind]) -> String {
     if kinds.is_empty() {
         return "[]".to_owned();
@@ -510,13 +527,13 @@ mod tests {
                 None,
                 "effects/workshop/2790231929/foliagesway/effect.json",
                 NativeVulkanSceneEffectKind::FoliageSway,
-                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
                 "effects/workshop/3392386920/auto_sway/effect.json",
                 NativeVulkanSceneEffectKind::AutoSway,
-                NativeVulkanSceneEffectEvaluationBoundary::FinalFrameTransform,
+                NativeVulkanSceneEffectEvaluationBoundary::MaterialPass,
             ),
             (
                 None,
@@ -691,9 +708,11 @@ mod tests {
             shader: Some("effects/iris".to_owned()),
             blending: Some("normal".to_owned()),
             texture_slots: Vec::new(),
+            effect_uv_transform: None,
             parameter_keys: Vec::new(),
             constant_shader_values: Default::default(),
             combo_keys: Vec::new(),
+            combo_values: Default::default(),
             depth_test: NativeVulkanSceneMaterialFlag::Unspecified,
             depth_write: NativeVulkanSceneMaterialFlag::Unspecified,
             cull_mode: NativeVulkanSceneCullMode::Unspecified,

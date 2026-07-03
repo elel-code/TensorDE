@@ -168,12 +168,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaSceneVideoOv
     pub scene_fit: FitMode,
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub position: [f32; 2],
     pub rgba: [f32; 4],
 }
 
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageVertex {
     pub position: [f32; 2],
@@ -729,6 +731,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub constant_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
     pub system_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
     pub combo_keys: Vec<String>,
+    pub combo_values: BTreeMap<String, i64>,
 }
 
 impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
@@ -757,6 +760,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             constant_shader_uniforms: Vec::new(),
             system_shader_uniforms: Vec::new(),
             combo_keys: Vec::new(),
+            combo_values: BTreeMap::new(),
         }
     }
 
@@ -1508,6 +1512,7 @@ fn with_vulkanalia_scene_solid_quad_present(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
+        options.target_max_fps.is_none(),
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -1689,6 +1694,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
+        options.target_max_fps.is_none(),
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -5278,6 +5284,14 @@ fn write_scene_sampled_image_vertices_to_uploaded_buffer(
         .len()
         .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
         .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
+    if animated_uv_steps.is_empty() && viewport_transform.is_none() {
+        debug_assert_eq!(
+            std::mem::size_of::<NativeVulkanVulkanaliaSceneSampledImageVertex>(),
+            SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize
+        );
+        let bytes = unsafe { std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
+        return write_scene_uploaded_buffer(device, buffer, bytes, label);
+    }
     write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
         let mut offset = 0usize;
         for (index, vertex) in vertices.iter().enumerate() {
@@ -6745,6 +6759,12 @@ fn scene_sampled_image_resource_sampler_mode(
     implicit_fit: Option<FitMode>,
 ) -> NativeVulkanVulkanaliaSceneSampledImageSamplerMode {
     let resource_index = resource_index.min(u32::MAX as usize) as u32;
+    if draw_steps
+        .iter()
+        .any(|step| scene_sampled_image_step_uses_repeat_effect_texture(step, resource_index))
+    {
+        return NativeVulkanVulkanaliaSceneSampledImageSamplerMode::Repeat;
+    }
     draw_steps
         .iter()
         .find(|step| {
@@ -6758,6 +6778,36 @@ fn scene_sampled_image_resource_sampler_mode(
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge,
             |fit| scene_sampled_image_sampler_mode(Some(fit)),
         )
+}
+
+fn scene_sampled_image_step_uses_repeat_effect_texture(
+    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    resource_index: u32,
+) -> bool {
+    let Some(binding) = step
+        .texture_slot_bindings
+        .iter()
+        .find(|binding| binding.resource_index == resource_index)
+    else {
+        return false;
+    };
+    // reverse-engineered reference: WE effect shaders sample procedural normal,
+    // phase, noise, and caustic pattern textures with UVs that intentionally run
+    // outside [0,1]. These are tiling effect resources, not layer images or
+    // opacity masks; clamp-to-edge collapses the animated field into a mostly
+    // constant edge sample and makes the effect effectively invisible.
+    matches!(
+        (binding.slot, step.material.effect_kinds.as_slice()),
+        (
+            2,
+            [NativeVulkanVulkanaliaSceneEffectKind::WaterRipple]
+                | [NativeVulkanVulkanaliaSceneEffectKind::FoliageSway]
+                | [NativeVulkanVulkanaliaSceneEffectKind::WaterFlow]
+        ) | (
+            2..=5,
+            [NativeVulkanVulkanaliaSceneEffectKind::WaterCaustics]
+        )
+    )
 }
 
 fn scene_sampled_image_fit_geometry_input(
@@ -7335,6 +7385,22 @@ mod tests {
         assert_eq!(SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES, 0);
         assert!(head.is_empty());
         assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn sampled_image_vertex_layout_matches_gpu_stride() {
+        assert_eq!(
+            std::mem::size_of::<NativeVulkanVulkanaliaSceneSampledImageVertex>(),
+            SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize
+        );
+        assert_eq!(
+            std::mem::align_of::<NativeVulkanVulkanaliaSceneSampledImageVertex>(),
+            std::mem::align_of::<f32>()
+        );
+        assert_eq!(
+            std::mem::size_of::<NativeVulkanVulkanaliaSceneSolidQuadVertex>(),
+            SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize
+        );
     }
 
     #[test]
@@ -8913,6 +8979,130 @@ mod tests {
         assert_eq!(
             scene_sampled_image_resource_sampler_mode(1, &payload.draw_steps, None),
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::Repeat
+        );
+    }
+
+    #[test]
+    fn sampled_image_sampler_repeats_tiling_we_effect_textures() {
+        let mut ripple_material = sampled_image_material(
+            SceneBlendMode::Normal,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            2,
+        );
+        ripple_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterRipple];
+        let steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index: 0,
+            texture_slot_bindings: vec![
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 0,
+                    resource_index: 0,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 2,
+                    resource_index: 1,
+                },
+            ],
+            material: ripple_material,
+            first_index: 0,
+            index_count: 6,
+            fit: None,
+            texture_region: None,
+            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+        }];
+
+        assert_eq!(
+            scene_sampled_image_resource_sampler_mode(1, &steps, None),
+            NativeVulkanVulkanaliaSceneSampledImageSamplerMode::Repeat
+        );
+        assert_eq!(
+            scene_sampled_image_resource_sampler_mode(0, &steps, None),
+            NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge
+        );
+
+        let mut caustics_material = sampled_image_material(
+            SceneBlendMode::Normal,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            5,
+        );
+        caustics_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterCaustics];
+        let caustics_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index: 0,
+            texture_slot_bindings: vec![
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 0,
+                    resource_index: 0,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 2,
+                    resource_index: 2,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 3,
+                    resource_index: 3,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 4,
+                    resource_index: 4,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 5,
+                    resource_index: 5,
+                },
+            ],
+            material: caustics_material,
+            first_index: 0,
+            index_count: 6,
+            fit: None,
+            texture_region: None,
+            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+        }];
+
+        for resource_index in 2..=5 {
+            assert_eq!(
+                scene_sampled_image_resource_sampler_mode(resource_index, &caustics_steps, None),
+                NativeVulkanVulkanaliaSceneSampledImageSamplerMode::Repeat
+            );
+        }
+        assert_eq!(
+            scene_sampled_image_resource_sampler_mode(0, &caustics_steps, None),
+            NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge
+        );
+    }
+
+    #[test]
+    fn sampled_image_sampler_keeps_mask_slots_clamped() {
+        let mut waves_material = sampled_image_material(
+            SceneBlendMode::Normal,
+            Some(1),
+            SceneRenderAlphaTextureMode::Coverage,
+            2,
+        );
+        waves_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterWaves];
+        let steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index: 0,
+            texture_slot_bindings: vec![
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 0,
+                    resource_index: 0,
+                },
+                NativeVulkanVulkanaliaSceneTextureSlotResourceBinding {
+                    slot: 1,
+                    resource_index: 1,
+                },
+            ],
+            material: waves_material,
+            first_index: 0,
+            index_count: 6,
+            fit: None,
+            texture_region: None,
+            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+        }];
+
+        assert_eq!(
+            scene_sampled_image_resource_sampler_mode(1, &steps, None),
+            NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge
         );
     }
 

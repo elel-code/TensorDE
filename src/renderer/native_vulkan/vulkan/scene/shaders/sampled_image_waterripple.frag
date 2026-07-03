@@ -31,7 +31,10 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 112) float waterripple_direction;
     layout(offset = 116) float waterripple_ratio;
     layout(offset = 120) uint effect_shader_code;
+    layout(offset = 228) uint output_flags;
 } pc;
+
+const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 
 vec2 rotate_up(float radians) {
     return vec2(-sin(radians), cos(radians));
@@ -40,6 +43,13 @@ vec2 rotate_up(float radians) {
 vec4 apply_vertex_color(vec4 color) {
     color *= v_tint;
     color.a *= v_opacity;
+    return color;
+}
+
+vec4 finalize_output(vec4 color) {
+    if ((pc.output_flags & OUTPUT_FLAG_PREMULTIPLY_RGB) != 0u) {
+        color.rgb *= color.a;
+    }
     return color;
 }
 
@@ -74,5 +84,5 @@ void main() {
         * pc.waterripple_strength
         * mask;
 
-    out_color = apply_vertex_color(texture(g_Texture0, uv));
+    out_color = finalize_output(apply_vertex_color(texture(g_Texture0, uv)));
 }

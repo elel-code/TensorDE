@@ -3677,9 +3677,18 @@ fn scene_node_from_object(
             node.insert("resource".to_owned(), Value::String(resource_id));
         }
     }
-    let effects = effect::scene_effects_from_object(
+    let mut effects = effect::scene_effects_from_object(
         project, output_dir, object, &node, &node_id, report, context, resources,
     );
+    scene_prepare_utility_framebuffer_effects(source_model.as_ref(), &mut effects, context);
+    if let Some(blend_mode) =
+        scene_utility_framebuffer_effect_color_blend_mode(source_model.as_ref(), &effects)
+    {
+        scene_merge_node_properties(
+            &mut node,
+            json!({ "wallpaper_engine_blend": { "colorBlendMode": blend_mode } }),
+        );
+    }
     if !effects.is_empty() {
         node.insert("effects".to_owned(), Value::Array(effects));
     }
@@ -3747,6 +3756,111 @@ fn scene_apply_render_bounds_anchor_to_node(
         transform.insert("anchor_x".to_owned(), json!(bounds.anchor_x));
         transform.insert("anchor_y".to_owned(), json!(bounds.anchor_y));
     }
+}
+
+fn scene_prepare_utility_framebuffer_effects(
+    source_model: Option<&SceneSourceModelConversion>,
+    effects: &mut Vec<Value>,
+    context: &mut SceneDocumentBuildContext,
+) {
+    if !scene_builtin_util_is_composelayer(source_model)
+        || !effects.iter().any(scene_effect_value_is_watercaustics)
+    {
+        return;
+    }
+    effects.retain(scene_effect_value_is_composelayer_framebuffer_material);
+    for effect in effects
+        .iter_mut()
+        .filter(|effect| scene_effect_value_is_watercaustics(effect))
+    {
+        scene_mark_effect_as_framebuffer_overlay(effect);
+    }
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-composelayer-framebuffer-effect",
+    );
+}
+
+fn scene_utility_framebuffer_effect_color_blend_mode(
+    source_model: Option<&SceneSourceModelConversion>,
+    effects: &[Value],
+) -> Option<i64> {
+    if !scene_builtin_util_is_composelayer(source_model) {
+        return None;
+    }
+    effects
+        .iter()
+        .find(|effect| scene_effect_value_is_watercaustics(effect))
+        .and_then(scene_effect_first_blend_mode_combo)
+}
+
+fn scene_builtin_util_is_composelayer(source_model: Option<&SceneSourceModelConversion>) -> bool {
+    source_model
+        .and_then(|model| model.value.get("utility"))
+        .and_then(Value::as_str)
+        .is_some_and(|utility| utility == "composelayer")
+}
+
+fn scene_effect_value_is_composelayer_framebuffer_material(effect: &Value) -> bool {
+    scene_effect_value_is_watercaustics(effect)
+        || scene_effect_value_file_matches(effect, |file| {
+            file.contains("waterwaves")
+                || file.contains("water_waves")
+                || file == "effects/opacity/effect.json"
+                || file.ends_with("/effects/opacity/effect.json")
+        })
+}
+
+fn scene_effect_value_is_watercaustics(effect: &Value) -> bool {
+    scene_effect_value_file_matches(effect, |file| {
+        file.contains("watercaustics") || file.contains("water_caustics")
+    })
+}
+
+fn scene_effect_value_file_matches(effect: &Value, predicate: impl FnOnce(&str) -> bool) -> bool {
+    if effect
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+    {
+        return false;
+    }
+    let Some(file) = effect.get("file").and_then(Value::as_str) else {
+        return false;
+    };
+    let normalized = file.replace('\\', "/").to_ascii_lowercase();
+    predicate(&normalized)
+}
+
+fn scene_mark_effect_as_framebuffer_overlay(effect: &mut Value) {
+    let Some(passes) = effect.get_mut("passes").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for pass in passes {
+        let Some(pass) = pass.as_object_mut() else {
+            continue;
+        };
+        let combos = pass
+            .entry("combos".to_owned())
+            .or_insert_with(|| Value::Object(Map::new()));
+        if let Some(combos) = combos.as_object_mut() {
+            combos.insert("GILDER_FRAMEBUFFER_OVERLAY".to_owned(), json!(1));
+        }
+    }
+}
+
+fn scene_effect_first_blend_mode_combo(effect: &Value) -> Option<i64> {
+    effect
+        .get("passes")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter_map(|pass| {
+            pass.get("combos")
+                .and_then(Value::as_object)
+                .and_then(|combos| combos.get("BLENDMODE"))
+                .and_then(value_to_i64)
+        })
+        .next()
 }
 
 fn scene_builtin_util_script_native_ready(
@@ -4287,6 +4401,9 @@ fn scene_builtin_util_node_kind(
     {
         return source_model.render_kind;
     }
+    if source_model.render_resource.is_some() {
+        return source_model.render_kind;
+    }
     if scene_child_nodes_from_keys(object) {
         return Some("group");
     }
@@ -4406,7 +4523,10 @@ fn scene_source_model_from_object(
 ) -> Option<SceneSourceModelConversion> {
     let model_path = scene_model_path_from_object(object)?;
     let object_frame_size = scene_frame_size_from_object_size(object);
-    if let Some(model) = scene_builtin_util_model(&model_path) {
+    if let Some(mut model) = scene_builtin_util_model(&model_path) {
+        scene_prepare_builtin_util_framebuffer_source_model(
+            project, output_dir, object, &mut model, report, context, resources,
+        );
         push_unique(
             &mut context.converted_features,
             "wallpaper-engine-util-model-lowering",
@@ -4574,6 +4694,47 @@ fn scene_source_model_from_object(
         render_mesh,
         original_path: model_path,
     })
+}
+
+fn scene_prepare_builtin_util_framebuffer_source_model(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    object: &Map<String, Value>,
+    model: &mut SceneSourceModelConversion,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) {
+    if model.value.get("utility").and_then(Value::as_str) != Some("composelayer")
+        || !object
+            .get("effects")
+            .and_then(Value::as_array)
+            .is_some_and(|effects| effects.iter().any(scene_effect_value_is_watercaustics))
+    {
+        return;
+    }
+    let Some(resource) = scene_copy_decoded_tex_resource_as(
+        project,
+        output_dir,
+        "materials/util/uniform_256.tex",
+        None,
+        false,
+        report,
+        context,
+        resources,
+    ) else {
+        return;
+    };
+    model.render_kind = Some("image");
+    model.render_resource = Some(resource.resource_id);
+    model.render_properties = Some(json!({
+        "wallpaper_engine_utility": "composelayer",
+        "wallpaper_engine_framebuffer_source": "_rt_FullFrameBuffer"
+    }));
+    push_unique(
+        &mut context.converted_features,
+        "wallpaper-engine-composelayer-framebuffer-source",
+    );
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -6136,8 +6297,24 @@ fn read_scene_project_json(
             return None;
         }
     };
-    let path = project.root.join(relative);
-    let contents = match fs::read_to_string(&path) {
+    let resolved = match scene_resolve_project_resource_path(project, &relative) {
+        Some(resolved) => resolved,
+        None => {
+            let path = project.root.join(&relative);
+            scene_push_unsupported(
+                context,
+                feature,
+                "Referenced Wallpaper Engine JSON resource could not be found.",
+                Some(source_path),
+            );
+            report.warnings.push(format!(
+                "Scene JSON resource {source_path:?} was referenced but not found at {}.",
+                path.display()
+            ));
+            return None;
+        }
+    };
+    let contents = match fs::read_to_string(&resolved.path) {
         Ok(contents) => contents,
         Err(err) => {
             scene_push_unsupported(
@@ -6148,7 +6325,7 @@ fn read_scene_project_json(
             );
             report.warnings.push(format!(
                 "Scene JSON resource {source_path:?} was referenced but not read at {}: {err}.",
-                path.display()
+                resolved.path.display()
             ));
             return None;
         }
@@ -6279,8 +6456,9 @@ fn scene_copy_resource_as(
             return None;
         }
     };
-    let source = project.root.join(&relative);
-    if !source.is_file() {
+    let resolved = scene_resolve_project_resource_path(project, &relative);
+    let Some(resolved) = resolved else {
+        let source = project.root.join(&relative);
         scene_push_unsupported(
             context,
             "missing-resource",
@@ -6292,7 +6470,11 @@ fn scene_copy_resource_as(
             source.display()
         ));
         return None;
-    }
+    };
+    let SceneProjectResourcePath {
+        path: source,
+        origin,
+    } = resolved;
     let extension = source
         .extension()
         .and_then(|extension| extension.to_str())
@@ -6333,6 +6515,22 @@ fn scene_copy_resource_as(
         && let Some(object) = resource.as_object_mut()
     {
         object.insert("role".to_owned(), Value::String(role.to_owned()));
+    }
+    if origin == SceneProjectResourceOrigin::BuiltinAssets {
+        if let Some(object) = resource.as_object_mut() {
+            object.insert(
+                "resource_origin".to_owned(),
+                Value::String("we-builtin-assets".to_owned()),
+            );
+        }
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-builtin-asset-resource",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "scene-we-builtin-asset-resource",
+        );
     }
     resources.push(resource);
     Some(resource_id)
@@ -6627,7 +6825,21 @@ fn scene_copy_decoded_tex_resource_as(
         );
         return Some(resource.clone());
     }
-    let source = project.root.join(&relative);
+    let resolved = match scene_resolve_project_resource_path(project, &relative) {
+        Some(resolved) => resolved,
+        None => {
+            let source = project.root.join(&relative);
+            report.warnings.push(format!(
+                "Scene .tex resource {source_path:?} was referenced but not found at {}.",
+                source.display()
+            ));
+            return None;
+        }
+    };
+    let SceneProjectResourcePath {
+        path: source,
+        origin,
+    } = resolved;
     let bytes = match fs::read(&source) {
         Ok(bytes) => bytes,
         Err(err) => {
@@ -6775,6 +6987,22 @@ fn scene_copy_decoded_tex_resource_as(
         "original_source": source_path,
         "role": role
     }));
+    if origin == SceneProjectResourceOrigin::BuiltinAssets
+        && let Some(resource) = resources.last_mut().and_then(Value::as_object_mut)
+    {
+        resource.insert(
+            "resource_origin".to_owned(),
+            Value::String("we-builtin-assets".to_owned()),
+        );
+        push_unique(
+            &mut context.converted_features,
+            "scene-we-builtin-asset-resource",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "scene-we-builtin-asset-resource",
+        );
+    }
     push_unique(
         &mut context.converted_features,
         if decoded.r8.is_some() {
@@ -8975,6 +9203,122 @@ fn normalize_relative_path(path: &str) -> Result<PathBuf, ConversionError> {
     Ok(PathBuf::from(normalized))
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneProjectResourceOrigin {
+    Project,
+    SourceRoot,
+    BuiltinAssets,
+}
+
+#[derive(Debug, Clone)]
+struct SceneProjectResourcePath {
+    path: PathBuf,
+    origin: SceneProjectResourceOrigin,
+}
+
+fn scene_resolve_project_resource_path(
+    project: &WallpaperEngineProject,
+    relative: &Path,
+) -> Option<SceneProjectResourcePath> {
+    let mut seen = BTreeSet::new();
+    for (origin, root, candidates) in scene_project_resource_roots(project, relative) {
+        for candidate_relative in candidates {
+            let path = root.join(&candidate_relative);
+            if !seen.insert(path.clone()) {
+                continue;
+            }
+            if path.is_file() {
+                return Some(SceneProjectResourcePath { path, origin });
+            }
+        }
+    }
+    None
+}
+
+fn scene_project_resource_roots(
+    project: &WallpaperEngineProject,
+    relative: &Path,
+) -> Vec<(SceneProjectResourceOrigin, PathBuf, Vec<PathBuf>)> {
+    let mut roots = Vec::new();
+    roots.push((
+        SceneProjectResourceOrigin::Project,
+        project.root.clone(),
+        vec![relative.to_path_buf()],
+    ));
+    if project.source_root != project.root {
+        roots.push((
+            SceneProjectResourceOrigin::SourceRoot,
+            project.source_root.clone(),
+            vec![relative.to_path_buf()],
+        ));
+    }
+    for root in scene_wallpaper_engine_builtin_asset_roots(project) {
+        roots.push((
+            SceneProjectResourceOrigin::BuiltinAssets,
+            root,
+            scene_builtin_asset_relative_candidates(relative),
+        ));
+    }
+    roots
+}
+
+fn scene_wallpaper_engine_builtin_asset_roots(project: &WallpaperEngineProject) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in [
+        "GILDER_WALLPAPER_ENGINE_ASSETS_DIR",
+        "WALLPAPER_ENGINE_ASSETS_DIR",
+        "WE_ASSETS_DIR",
+    ] {
+        if let Ok(value) = env::var(name) {
+            scene_push_existing_builtin_asset_root(&mut roots, &mut seen, PathBuf::from(value));
+        }
+    }
+    for base in [&project.source_root, &project.root] {
+        for ancestor in base.ancestors() {
+            scene_push_existing_builtin_asset_root(&mut roots, &mut seen, ancestor.join("assets"));
+        }
+    }
+    if let Ok(cwd) = env::current_dir() {
+        scene_push_existing_builtin_asset_root(
+            &mut roots,
+            &mut seen,
+            cwd.join("artifacts/wallpaper-engine-workshop/steamcmd-root/assets"),
+        );
+    }
+    roots
+}
+
+fn scene_push_existing_builtin_asset_root(
+    roots: &mut Vec<PathBuf>,
+    seen: &mut BTreeSet<PathBuf>,
+    root: PathBuf,
+) {
+    if root.is_dir() && seen.insert(root.clone()) {
+        roots.push(root);
+    }
+}
+
+fn scene_builtin_asset_relative_candidates(relative: &Path) -> Vec<PathBuf> {
+    let mut candidates = vec![relative.to_path_buf()];
+    let normalized = path_to_package_string(relative).to_ascii_lowercase();
+    match normalized.as_str() {
+        // Reverse-engineered WE reference: built-in effect textures are
+        // resolved from the application asset pack when scene.pkg omits them.
+        "materials/effects/waterflowphase.tex" => candidates.push(PathBuf::from(
+            "effects/waterflow/preview/materials/effects/waterflowphase.tex",
+        )),
+        "materials/effects/waterripplenormal.tex" => candidates.push(PathBuf::from(
+            "effects/waterripple/preview/materials/effects/waterripplenormal.tex",
+        )),
+        "materials/effects/refractnormal.tex" => candidates.push(PathBuf::from(
+            "effects/refraction/preview/materials/effects/refractnormal.tex",
+        )),
+        _ => {}
+    }
+    candidates
+}
+
 fn path_to_package_string(path: &Path) -> String {
     path.components()
         .map(|component| component.as_os_str().to_string_lossy())
@@ -9206,6 +9550,7 @@ fn color_component_to_u8(value: f32) -> u8 {
 #[derive(Debug)]
 struct WallpaperEngineProject {
     root: PathBuf,
+    source_root: PathBuf,
     raw: Value,
     source_type: SourceType,
     entry_file: Option<String>,
@@ -9260,6 +9605,7 @@ impl WallpaperEngineProject {
         let authors = string_field(object, &["author", "creator"])
             .map(|author| vec![author])
             .unwrap_or_default();
+        let source_root = root.to_path_buf();
         let mut project_root = root.to_path_buf();
         let mut scene_package = None;
         if source_type == SourceType::Scene && root.join(SCENE_PACKAGE_FILE).is_file() {
@@ -9274,6 +9620,7 @@ impl WallpaperEngineProject {
 
         Ok(Self {
             root: project_root,
+            source_root,
             raw,
             source_type,
             entry_file,

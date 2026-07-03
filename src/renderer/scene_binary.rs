@@ -20,6 +20,7 @@ use crate::core::scene::binary::{
     SCENE_BINARY_PARAMETER_VALUE_INTEGER, SCENE_BINARY_PARAMETER_VALUE_STRING,
     SCENE_BINARY_PARAMETER_VALUE_VEC2, SCENE_BINARY_PARAMETER_VALUE_VEC3,
     SCENE_BINARY_PARAMETER_VALUE_VEC4, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+    SCENE_BINARY_PARTICLE_FLAG_FADE, SCENE_BINARY_PARTICLE_FLAG_LOOP,
     SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
     SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE, SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS,
     SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
@@ -29,17 +30,18 @@ use crate::core::scene::binary::{
     SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
     SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryEffectPassRecord,
     SceneBinaryEffectUvTransformRecord, SceneBinaryError, SceneBinaryGeometryRecord,
-    SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord, SceneBinaryParticleEmitterRecord,
-    SceneBinaryResourceRecord, SceneBinaryTextureSlotRecord, decode_debug_name_record,
-    decode_effect_parameter_record, decode_effect_pass_record, decode_effect_uv_transform_record,
-    decode_geometry_index_record, decode_geometry_record, decode_geometry_vertex_record,
-    decode_material_pass_record, decode_node_record, decode_particle_emitter_record,
-    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_frame_record,
-    decode_puppet_layer_record, decode_puppet_record, decode_puppet_skin_bone_record,
-    decode_puppet_skin_vertex_record, decode_render_state_record, decode_resource_record,
-    decode_scene_binary_header_table, decode_texture_slot_record, decode_transform_keyframe_record,
-    decode_transform_timeline_record, scene_binary_particle_shape_kind,
-    scene_binary_particle_transform,
+    SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord,
+    SceneBinaryParticleEmitterRecord, SceneBinaryPuppetRecord, SceneBinaryResourceRecord,
+    SceneBinaryTextureSlotRecord, SceneBinaryTransformKeyframeRecord,
+    SceneBinaryTransformTimelineRecord, decode_debug_name_record, decode_effect_parameter_record,
+    decode_effect_pass_record, decode_effect_uv_transform_record, decode_geometry_index_record,
+    decode_geometry_record, decode_geometry_vertex_record, decode_material_pass_record,
+    decode_node_record, decode_particle_emitter_record, decode_puppet_attachment_record,
+    decode_puppet_clip_record, decode_puppet_frame_record, decode_puppet_layer_record,
+    decode_puppet_record, decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
+    decode_render_state_record, decode_resource_record, decode_scene_binary_header_table,
+    decode_texture_slot_record, decode_transform_keyframe_record, decode_transform_timeline_record,
+    scene_binary_particle_shape_kind, scene_binary_particle_transform,
 };
 use crate::core::scene::{
     SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
@@ -89,6 +91,34 @@ struct BinarySceneReader {
     file: File,
     file_len: usize,
     layout: SceneBinaryLayoutPlan,
+    chunk_payload_cache: BTreeMap<SceneBinaryChunkKind, Arc<Vec<u8>>>,
+    node_records_cache: Option<Arc<Vec<SceneBinaryNodeRecord>>>,
+    geometry_records_cache: Option<Arc<Vec<SceneBinaryGeometryRecord>>>,
+    material_records_cache: Option<Arc<Vec<SceneBinaryMaterialPassRecord>>>,
+    particle_records_cache: Option<Arc<Vec<SceneBinaryParticleEmitterRecord>>>,
+    puppet_records_cache: Option<Arc<Vec<SceneBinaryPuppetRecord>>>,
+    transform_timeline_records_cache: Option<Arc<Vec<SceneBinaryTransformTimelineRecord>>>,
+    transform_keyframe_records_cache: Option<Arc<Vec<SceneBinaryTransformKeyframeRecord>>>,
+    geometry_mesh_cache: BTreeMap<(u32, u32), Arc<SceneMesh>>,
+    sampled_puppet_mesh_cache: BTreeMap<(u32, u32, u64), Arc<SceneMesh>>,
+    material_texture_slots_cache: BTreeMap<u32, Arc<Vec<SceneRenderTextureSlot>>>,
+    material_effect_passes_cache: BTreeMap<u32, Arc<Vec<SceneRenderImageEffectPass>>>,
+    particle_templates_cache: BTreeMap<u32, Arc<Vec<BinarySceneParticleTemplate>>>,
+    puppet_attachment_mesh_cache: BTreeMap<u32, Arc<SceneMesh>>,
+    puppet_attachment_delta_cache:
+        BTreeMap<(u32, u64), Option<Arc<BTreeMap<String, ScenePuppetAttachmentDelta>>>>,
+    puppet_layers_cache: BTreeMap<u32, Arc<Vec<ScenePuppetAnimationLayer>>>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BinarySceneParticleTemplate {
+    phase_ms: u64,
+    spawn_x: f64,
+    spawn_y: f64,
+    speed: f64,
+    direction_deg: f64,
+    direction_sin: f64,
+    direction_cos: f64,
 }
 
 impl BinarySceneReader {
@@ -153,6 +183,22 @@ impl BinarySceneReader {
             file,
             file_len,
             layout,
+            chunk_payload_cache: BTreeMap::new(),
+            node_records_cache: None,
+            geometry_records_cache: None,
+            material_records_cache: None,
+            particle_records_cache: None,
+            puppet_records_cache: None,
+            transform_timeline_records_cache: None,
+            transform_keyframe_records_cache: None,
+            geometry_mesh_cache: BTreeMap::new(),
+            sampled_puppet_mesh_cache: BTreeMap::new(),
+            material_texture_slots_cache: BTreeMap::new(),
+            material_effect_passes_cache: BTreeMap::new(),
+            particle_templates_cache: BTreeMap::new(),
+            puppet_attachment_mesh_cache: BTreeMap::new(),
+            puppet_attachment_delta_cache: BTreeMap::new(),
+            puppet_layers_cache: BTreeMap::new(),
         })
     }
 
@@ -162,7 +208,13 @@ impl BinarySceneReader {
             .map_or(0, |chunk| chunk.record_count as usize)
     }
 
-    fn chunk_payload(&mut self, kind: SceneBinaryChunkKind) -> Result<Vec<u8>, RendererPlanError> {
+    fn chunk_payload(
+        &mut self,
+        kind: SceneBinaryChunkKind,
+    ) -> Result<Arc<Vec<u8>>, RendererPlanError> {
+        if let Some(payload) = self.chunk_payload_cache.get(&kind) {
+            return Ok(Arc::clone(payload));
+        }
         let descriptor = self
             .layout
             .chunk(kind)
@@ -175,7 +227,13 @@ impl BinarySceneReader {
                 container_len: self.file_len,
             })
         })?;
-        binary_scene_read_exact_at(&mut self.file, descriptor.offset, length)
+        let payload = Arc::new(binary_scene_read_exact_at(
+            &mut self.file,
+            descriptor.offset,
+            length,
+        )?);
+        self.chunk_payload_cache.insert(kind, Arc::clone(&payload));
+        Ok(payload)
     }
 
     fn records<T>(
@@ -189,27 +247,6 @@ impl BinarySceneReader {
             .chunk(kind)
             .ok_or_else(|| binary_plan_error(SceneBinaryError::MissingChunk { kind }))?;
         self.record_range(kind, record_size, 0, descriptor.record_count, decode)
-    }
-
-    fn record_at<T>(
-        &mut self,
-        kind: SceneBinaryChunkKind,
-        record_size: usize,
-        record_index: u32,
-        decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
-    ) -> Result<T, RendererPlanError> {
-        let mut records = self.record_range(kind, record_size, record_index, 1, decode)?;
-        records.pop().ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record: record_index,
-                record_count: 1,
-                chunk_record_count: self
-                    .layout
-                    .chunk(kind)
-                    .map_or(0, |chunk| chunk.record_count),
-            })
-        })
     }
 
     fn record_range<T>(
@@ -278,24 +315,243 @@ impl BinarySceneReader {
                 chunk_record_count: descriptor.record_count,
             })
         })?;
-        let file_offset = descriptor
-            .offset
-            .checked_add(byte_offset as u64)
-            .ok_or_else(|| {
-                binary_plan_error(SceneBinaryError::ChunkOutOfBounds {
-                    kind,
-                    offset: descriptor.offset,
-                    length: descriptor.length,
-                    container_len: self.file_len,
-                })
-            })?;
-        let bytes = binary_scene_read_exact_at(&mut self.file, file_offset, byte_len)?;
+        let payload = self.chunk_payload(kind)?;
+        let end_offset = byte_offset.checked_add(byte_len).ok_or_else(|| {
+            binary_plan_error(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count,
+                length: payload.len(),
+            })
+        })?;
+        let bytes = payload.get(byte_offset..end_offset).ok_or_else(|| {
+            binary_plan_error(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count,
+                length: payload.len(),
+            })
+        })?;
         let mut records = Vec::with_capacity(count);
         for chunk in bytes.chunks_exact(record_size) {
             records.push(decode(chunk).map_err(binary_plan_error)?);
         }
         Ok(records)
     }
+
+    fn node_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryNodeRecord>>, RendererPlanError> {
+        if let Some(records) = self.node_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::NodeTable,
+            SCENE_BINARY_NODE_RECORD_SIZE,
+            decode_node_record,
+        )?);
+        self.node_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn geometry_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryGeometryRecord>>, RendererPlanError> {
+        if let Some(records) = self.geometry_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::Geometry,
+            SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            decode_geometry_record,
+        )?);
+        self.geometry_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn material_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryMaterialPassRecord>>, RendererPlanError> {
+        if let Some(records) = self.material_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::MaterialPass,
+            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            decode_material_pass_record,
+        )?);
+        self.material_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn particle_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryParticleEmitterRecord>>, RendererPlanError> {
+        if let Some(records) = self.particle_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::ParticleEmitter,
+            SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+            decode_particle_emitter_record,
+        )?);
+        self.particle_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn puppet_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryPuppetRecord>>, RendererPlanError> {
+        if let Some(records) = self.puppet_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::Puppet,
+            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            decode_puppet_record,
+        )?);
+        self.puppet_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn transform_timeline_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryTransformTimelineRecord>>, RendererPlanError> {
+        if let Some(records) = self.transform_timeline_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::TransformTimeline,
+            SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+            decode_transform_timeline_record,
+        )?);
+        self.transform_timeline_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn transform_keyframe_records_cached(
+        &mut self,
+    ) -> Result<Arc<Vec<SceneBinaryTransformKeyframeRecord>>, RendererPlanError> {
+        if let Some(records) = self.transform_keyframe_records_cache.as_ref() {
+            return Ok(Arc::clone(records));
+        }
+        let records = Arc::new(self.records(
+            SceneBinaryChunkKind::TransformKeyframes,
+            SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+            decode_transform_keyframe_record,
+        )?);
+        self.transform_keyframe_records_cache = Some(Arc::clone(&records));
+        Ok(records)
+    }
+
+    fn geometry_record_cached(
+        &mut self,
+        record_index: u32,
+    ) -> Result<SceneBinaryGeometryRecord, RendererPlanError> {
+        let records = self.geometry_records_cached()?;
+        binary_scene_cached_record_at(
+            &records,
+            SceneBinaryChunkKind::Geometry,
+            record_index,
+            self.chunk_count(SceneBinaryChunkKind::Geometry),
+        )
+    }
+
+    fn material_record_cached(
+        &mut self,
+        record_index: u32,
+    ) -> Result<SceneBinaryMaterialPassRecord, RendererPlanError> {
+        let records = self.material_records_cached()?;
+        binary_scene_cached_record_at(
+            &records,
+            SceneBinaryChunkKind::MaterialPass,
+            record_index,
+            self.chunk_count(SceneBinaryChunkKind::MaterialPass),
+        )
+    }
+
+    fn particle_record_cached(
+        &mut self,
+        record_index: u32,
+    ) -> Result<SceneBinaryParticleEmitterRecord, RendererPlanError> {
+        let records = self.particle_records_cached()?;
+        binary_scene_cached_record_at(
+            &records,
+            SceneBinaryChunkKind::ParticleEmitter,
+            record_index,
+            self.chunk_count(SceneBinaryChunkKind::ParticleEmitter),
+        )
+    }
+
+    fn puppet_record_cached(
+        &mut self,
+        record_index: u32,
+    ) -> Result<SceneBinaryPuppetRecord, RendererPlanError> {
+        let records = self.puppet_records_cached()?;
+        binary_scene_cached_record_at(
+            &records,
+            SceneBinaryChunkKind::Puppet,
+            record_index,
+            self.chunk_count(SceneBinaryChunkKind::Puppet),
+        )
+    }
+}
+
+fn binary_scene_cached_record_at<T: Copy>(
+    records: &[T],
+    kind: SceneBinaryChunkKind,
+    record_index: u32,
+    chunk_record_count: usize,
+) -> Result<T, RendererPlanError> {
+    records.get(record_index as usize).copied().ok_or_else(|| {
+        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
+            kind,
+            first_record: record_index,
+            record_count: 1,
+            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
+        })
+    })
+}
+
+fn binary_scene_cached_record_slice<T>(
+    records: &[T],
+    kind: SceneBinaryChunkKind,
+    first_record: u32,
+    record_count: u32,
+    chunk_record_count: usize,
+) -> Result<&[T], RendererPlanError> {
+    let first = usize::try_from(first_record).map_err(|_| {
+        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
+            kind,
+            first_record,
+            record_count,
+            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
+        })
+    })?;
+    let count = usize::try_from(record_count).map_err(|_| {
+        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
+            kind,
+            first_record,
+            record_count,
+            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
+        })
+    })?;
+    let end = first.checked_add(count).ok_or_else(|| {
+        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
+            kind,
+            first_record,
+            record_count,
+            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
+        })
+    })?;
+    records.get(first..end).ok_or_else(|| {
+        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
+            kind,
+            first_record,
+            record_count,
+            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
+        })
+    })
 }
 
 pub(crate) struct SceneBinaryRuntimeSampler {
@@ -629,25 +885,18 @@ fn binary_scene_render_layers_into(
     layers: &mut Vec<SceneRenderLayer>,
 ) -> Result<(), RendererPlanError> {
     layers.clear();
-    let node_records = reader.records(
-        SceneBinaryChunkKind::NodeTable,
-        SCENE_BINARY_NODE_RECORD_SIZE,
-        decode_node_record,
-    )?;
+    reader.puppet_attachment_delta_cache.clear();
+    reader.sampled_puppet_mesh_cache.clear();
+    let node_records = reader.node_records_cached()?;
     let mut node_geometries = Vec::with_capacity(node_records.len());
     let mut node_states = Vec::with_capacity(node_records.len());
-    for node in &node_records {
+    for node in node_records.iter().copied() {
         let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
             None
         } else {
-            Some(reader.record_at(
-                SceneBinaryChunkKind::Geometry,
-                SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-                node.geometry_index,
-                decode_geometry_record,
-            )?)
+            Some(reader.geometry_record_cached(node.geometry_index)?)
         };
-        let mut local_state = binary_scene_node_state(reader, *node, geometry, snapshot_time_ms)?;
+        let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
         let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
         binary_scene_apply_puppet_attachment_delta(
             names,
@@ -656,7 +905,7 @@ fn binary_scene_render_layers_into(
             parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
         );
         let mut effective_state =
-            binary_scene_effective_node_state(*node, local_state, parent_state);
+            binary_scene_effective_node_state(node, local_state, parent_state);
         effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
             reader,
             names,
@@ -668,7 +917,8 @@ fn binary_scene_render_layers_into(
     }
     layers.reserve(node_records.len());
     for (node, (geometry, node_state)) in node_records
-        .into_iter()
+        .iter()
+        .copied()
         .zip(node_geometries.into_iter().zip(node_states.into_iter()))
     {
         if !node_state.visible {
@@ -684,28 +934,21 @@ fn binary_scene_render_layers_into(
         let material = if node.material_index == SCENE_BINARY_NONE_ID {
             None
         } else {
-            Some(reader.record_at(
-                SceneBinaryChunkKind::MaterialPass,
-                SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-                node.material_index,
-                decode_material_pass_record,
-            )?)
+            Some(reader.material_record_cached(node.material_index)?)
         };
         if kind == SceneNodeKind::ParticleEmitter
             || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
         {
             if node.particle_index != SCENE_BINARY_NONE_ID {
-                let particle = reader.record_at(
-                    SceneBinaryChunkKind::ParticleEmitter,
-                    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
-                    node.particle_index,
-                    decode_particle_emitter_record,
-                )?;
+                let particle = reader.particle_record_cached(node.particle_index)?;
                 binary_scene_particle_render_layers(
                     reader,
+                    names,
                     resources,
                     node,
                     particle,
+                    node.particle_index,
+                    node.material_index,
                     material,
                     node_state.state,
                     snapshot_time_ms,
@@ -720,6 +963,7 @@ fn binary_scene_render_layers_into(
             resources,
             node,
             geometry,
+            node.material_index,
             material,
             kind,
             node_state.state,
@@ -733,9 +977,12 @@ fn binary_scene_render_layers_into(
 #[allow(clippy::too_many_arguments)]
 fn binary_scene_particle_render_layers(
     reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
     resources: &[BinarySceneResource],
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
     particle: SceneBinaryParticleEmitterRecord,
+    particle_index: u32,
+    material_index: u32,
     material: Option<SceneBinaryMaterialPassRecord>,
     node_state: BinarySceneNodeState,
     snapshot_time_ms: u64,
@@ -747,9 +994,13 @@ fn binary_scene_particle_render_layers(
     }
 
     let node_resource = binary_resource_by_name(resources, node.resource_name);
-    let source = node_resource.and_then(|resource| resource.source.clone());
-    let texture_slots = if let Some(material) = material {
-        let slots = binary_scene_material_texture_slots(reader, material, resources)?;
+    let material_texture_slots = if let Some(material) = material {
+        let slots = binary_scene_material_texture_slots_cached(
+            reader,
+            material_index,
+            material,
+            resources,
+        )?;
         if slots.is_empty() {
             binary_scene_particle_base_texture_slot(node_resource)
         } else {
@@ -757,6 +1008,25 @@ fn binary_scene_particle_render_layers(
         }
     } else {
         binary_scene_particle_base_texture_slot(node_resource)
+    };
+    let source = node_resource
+        .and_then(|resource| resource.source.clone())
+        .or_else(|| {
+            material_texture_slots
+                .iter()
+                .find(|slot| slot.slot == 0)
+                .map(|slot| slot.source.clone())
+        });
+    let texture_slots = if source.is_some() {
+        // The particle base image is already represented by SceneRenderLayer::source.
+        // Retaining slot 0 here clones thousands of identical paths per frame.
+        material_texture_slots
+            .iter()
+            .filter(|slot| slot.slot != 0)
+            .cloned()
+            .collect::<Vec<_>>()
+    } else {
+        material_texture_slots
     };
     let layer_kind = if source.is_some() {
         SceneNodeKind::Image
@@ -768,10 +1038,54 @@ fn binary_scene_particle_render_layers(
         .unwrap_or_default();
     let color = Some(binary_scene_rgba_hex(particle.color_rgba));
     let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
+    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
+    if let Some(source) = source {
+        if let Some(mesh) = binary_scene_particle_batch_mesh(particle, &templates, snapshot_time_ms)
+        {
+            let mut transform = node_state.transform;
+            transform.anchor_x = 0.5;
+            transform.anchor_y = 0.5;
+            layers.push(SceneRenderLayer {
+                id: binary_name(names, node.id_name)
+                    .unwrap_or("binary-particle-emitter")
+                    .to_owned(),
+                kind: SceneNodeKind::Image,
+                source: Some(source),
+                texture_slots,
+                alpha_texture_slot: None,
+                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+                image_effect_passes: Vec::new(),
+                composite_key: None,
+                texture_region: None::<SceneTextureRegion>,
+                effect_motion: Default::default(),
+                blend_mode,
+                audio: Vec::new(),
+                color,
+                stroke_color: None,
+                stroke_width: None,
+                corner_radius: None,
+                width: Some(f64::from(particle.particle_width).max(1.0)),
+                height: Some(f64::from(particle.particle_height).max(1.0)),
+                mesh: Some(Arc::new(mesh)),
+                text: None,
+                font_size: None,
+                font_family: None,
+                font_source: None,
+                font_weight: None,
+                text_align: None,
+                path_data: None,
+                path_fill_rule: ScenePathFillRule::default(),
+                fit: binary_scene_fit(node.fit),
+                opacity: node_state.opacity.clamp(0.0, 1.0),
+                transform,
+            });
+        }
+        return Ok(());
+    }
     layers.reserve(particle_count as usize);
-    for index in 0..particle_count {
+    for template in templates.iter() {
         let Some((particle_opacity, x, y, rotation_deg)) =
-            particle.opacity_and_transform_at(snapshot_time_ms, index)
+            binary_scene_particle_template_transform(particle, *template, snapshot_time_ms)
         else {
             continue;
         };
@@ -782,7 +1096,7 @@ fn binary_scene_particle_render_layers(
         layers.push(SceneRenderLayer {
             id: String::new(),
             kind: layer_kind,
-            source: source.clone(),
+            source: None,
             texture_slots: texture_slots.clone(),
             alpha_texture_slot: None,
             alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
@@ -822,6 +1136,152 @@ fn binary_scene_particle_render_layers(
     Ok(())
 }
 
+fn binary_scene_particle_batch_mesh(
+    particle: SceneBinaryParticleEmitterRecord,
+    templates: &[BinarySceneParticleTemplate],
+    snapshot_time_ms: u64,
+) -> Option<SceneMesh> {
+    let particle_width = f64::from(particle.particle_width);
+    let particle_height = f64::from(particle.particle_height);
+    if !particle_width.is_finite()
+        || !particle_height.is_finite()
+        || particle_width <= 0.0
+        || particle_height <= 0.0
+    {
+        return None;
+    }
+
+    let mut vertices = Vec::with_capacity(templates.len().saturating_mul(4));
+    let mut indices = Vec::with_capacity(templates.len().saturating_mul(6));
+    let half_width = particle_width * 0.5;
+    let half_height = particle_height * 0.5;
+    for template in templates {
+        let Some((opacity, x, y, rotation_deg)) =
+            binary_scene_particle_template_transform(particle, *template, snapshot_time_ms)
+        else {
+            continue;
+        };
+        if opacity <= 0.0 {
+            continue;
+        }
+        let base = vertices.len().min(u32::MAX as usize) as u32;
+        let rotation = rotation_deg.to_radians();
+        let (sin, cos) = rotation.sin_cos();
+        for (local_x, local_y, u, v) in [
+            (-half_width, -half_height, 0.0, 1.0),
+            (half_width, -half_height, 1.0, 1.0),
+            (-half_width, half_height, 0.0, 0.0),
+            (half_width, half_height, 1.0, 0.0),
+        ] {
+            vertices.push(SceneMeshVertex {
+                x: x + local_x.mul_add(cos, -local_y * sin),
+                y: y + local_x.mul_add(sin, local_y * cos),
+                u,
+                v,
+                opacity,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+
+    if vertices.len() < 3 || indices.len() < 3 {
+        return None;
+    }
+    Some(SceneMesh {
+        vertices,
+        indices,
+        skin: None,
+        puppet_clips: Vec::new(),
+    })
+}
+
+fn binary_scene_particle_templates_cached(
+    reader: &mut BinarySceneReader,
+    particle_index: u32,
+    particle: SceneBinaryParticleEmitterRecord,
+) -> Arc<Vec<BinarySceneParticleTemplate>> {
+    if let Some(templates) = reader.particle_templates_cache.get(&particle_index) {
+        return Arc::clone(templates);
+    }
+    let particle_count = particle.particle_count();
+    let lifetime_ms = particle.lifetime_ms.max(1);
+    let templates = Arc::new(
+        (0..particle_count)
+            .map(|index| {
+                let phase = binary_scene_particle_unit(particle.seed, index, 0);
+                let phase_ms = (phase * lifetime_ms as f64).round() as u64;
+                let spawn_x = (binary_scene_particle_unit(particle.seed, index, 1) - 0.5)
+                    * f64::from(particle.spawn_width);
+                let spawn_y = (binary_scene_particle_unit(particle.seed, index, 2) - 0.5)
+                    * f64::from(particle.spawn_height);
+                let speed = f64::from(particle.speed_min)
+                    + f64::from(particle.speed_max - particle.speed_min)
+                        * binary_scene_particle_unit(particle.seed, index, 3);
+                let direction_deg = f64::from(particle.direction_deg)
+                    + (binary_scene_particle_unit(particle.seed, index, 4) - 0.5)
+                        * f64::from(particle.spread_deg);
+                let (direction_sin, direction_cos) = direction_deg.to_radians().sin_cos();
+                BinarySceneParticleTemplate {
+                    phase_ms,
+                    spawn_x,
+                    spawn_y,
+                    speed,
+                    direction_deg,
+                    direction_sin,
+                    direction_cos,
+                }
+            })
+            .collect(),
+    );
+    reader
+        .particle_templates_cache
+        .insert(particle_index, Arc::clone(&templates));
+    templates
+}
+
+fn binary_scene_particle_template_transform(
+    particle: SceneBinaryParticleEmitterRecord,
+    template: BinarySceneParticleTemplate,
+    time_ms: u64,
+) -> Option<(f64, f64, f64, f64)> {
+    let lifetime_ms = particle.lifetime_ms.max(1);
+    let local_ms = if particle.flags & SCENE_BINARY_PARTICLE_FLAG_LOOP != 0 {
+        time_ms.wrapping_add(template.phase_ms) % lifetime_ms
+    } else {
+        let started_at = template.phase_ms.min(lifetime_ms);
+        if time_ms < started_at {
+            return None;
+        }
+        (time_ms - started_at).min(lifetime_ms)
+    };
+    let age = local_ms as f64 / 1000.0;
+    let progress = (local_ms as f64 / lifetime_ms as f64).clamp(0.0, 1.0);
+    let opacity = if particle.flags & SCENE_BINARY_PARTICLE_FLAG_FADE != 0 {
+        1.0 - progress
+    } else {
+        1.0
+    };
+    let x = template.spawn_x
+        + template.direction_cos * template.speed * age
+        + 0.5 * f64::from(particle.gravity_x) * age * age;
+    let y = template.spawn_y
+        + template.direction_sin * template.speed * age
+        + 0.5 * f64::from(particle.gravity_y) * age * age;
+    Some((opacity, x, y, template.direction_deg))
+}
+
+#[inline]
+fn binary_scene_particle_unit(seed: u64, index: u32, salt: u64) -> f64 {
+    let mut value = seed
+        ^ (u64::from(index).wrapping_mul(0x9e3779b97f4a7c15))
+        ^ salt.wrapping_mul(0xbf58476d1ce4e5b9);
+    value = value.wrapping_add(0x9e3779b97f4a7c15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94d049bb133111eb);
+    value ^= value >> 31;
+    ((value >> 11) as f64) * (1.0 / ((1u64 << 53) as f64))
+}
+
 fn binary_scene_particle_base_texture_slot(
     resource: Option<&BinarySceneResource>,
 ) -> Vec<SceneRenderTextureSlot> {
@@ -845,18 +1305,19 @@ fn binary_scene_render_layer(
     resources: &[BinarySceneResource],
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
     geometry: SceneBinaryGeometryRecord,
+    material_index: u32,
     material: Option<SceneBinaryMaterialPassRecord>,
     kind: SceneNodeKind,
     node_state: BinarySceneNodeState,
     snapshot_time_ms: u64,
 ) -> Result<SceneRenderLayer, RendererPlanError> {
     let material_texture_slots = if let Some(material) = material {
-        binary_scene_material_texture_slots(reader, material, resources)?
+        binary_scene_material_texture_slots_cached(reader, material_index, material, resources)?
     } else {
         Vec::new()
     };
     let image_effect_passes = if let Some(material) = material {
-        binary_scene_image_effect_passes(reader, names, material, resources)?
+        binary_scene_image_effect_passes_cached(reader, names, material_index, material, resources)?
     } else {
         Vec::new()
     };
@@ -899,7 +1360,14 @@ fn binary_scene_render_layer(
         corner_radius: node_state.corner_radius,
         width: node_state.width,
         height: node_state.height,
-        mesh: binary_scene_mesh(reader, names, geometry, node.puppet_index, snapshot_time_ms)?,
+        mesh: binary_scene_mesh(
+            reader,
+            names,
+            node.geometry_index,
+            geometry,
+            node.puppet_index,
+            snapshot_time_ms,
+        )?,
         text: binary_name(names, node.text_name).map(str::to_owned),
         font_size: (node.font_size > 0.0).then_some(f64::from(node.font_size)),
         font_family: binary_name(names, node.font_family_name).map(str::to_owned),
@@ -913,6 +1381,24 @@ fn binary_scene_render_layer(
         opacity: node_state.opacity,
         transform: node_state.transform,
     })
+}
+
+fn binary_scene_material_texture_slots_cached(
+    reader: &mut BinarySceneReader,
+    material_index: u32,
+    material: SceneBinaryMaterialPassRecord,
+    resources: &[BinarySceneResource],
+) -> Result<Vec<SceneRenderTextureSlot>, RendererPlanError> {
+    if let Some(slots) = reader.material_texture_slots_cache.get(&material_index) {
+        return Ok((**slots).clone());
+    }
+    let slots = Arc::new(binary_scene_material_texture_slots(
+        reader, material, resources,
+    )?);
+    reader
+        .material_texture_slots_cache
+        .insert(material_index, Arc::clone(&slots));
+    Ok((*slots).clone())
 }
 
 fn binary_scene_material_texture_slots(
@@ -930,6 +1416,25 @@ fn binary_scene_material_texture_slots(
     binary_scene_texture_slots(slots, resources, |slot| {
         slot.role_flags & BINARY_TEXTURE_ROLE_BASE_COLOR != 0
     })
+}
+
+fn binary_scene_image_effect_passes_cached(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    material_index: u32,
+    material: SceneBinaryMaterialPassRecord,
+    resources: &[BinarySceneResource],
+) -> Result<Vec<SceneRenderImageEffectPass>, RendererPlanError> {
+    if let Some(passes) = reader.material_effect_passes_cache.get(&material_index) {
+        return Ok((**passes).clone());
+    }
+    let passes = Arc::new(binary_scene_image_effect_passes(
+        reader, names, material, resources,
+    )?);
+    reader
+        .material_effect_passes_cache
+        .insert(material_index, Arc::clone(&passes));
+    Ok((*passes).clone())
 }
 
 fn binary_scene_image_effect_passes(
@@ -1135,6 +1640,7 @@ fn binary_scene_texture_slots(
 fn binary_scene_mesh(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
+    geometry_index: u32,
     geometry: SceneBinaryGeometryRecord,
     puppet_index: u32,
     snapshot_time_ms: u64,
@@ -1143,6 +1649,41 @@ fn binary_scene_mesh(
         || geometry.vertex_layout != SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY
     {
         return Ok(None);
+    }
+    let mesh =
+        binary_scene_base_mesh_cached(reader, names, geometry_index, geometry, puppet_index)?;
+    if puppet_index == SCENE_BINARY_NONE_ID {
+        return Ok(Some(mesh));
+    }
+    let puppet = reader.puppet_record_cached(puppet_index)?;
+    if puppet.animation_layer_count == 0 || puppet.bone_count == 0 || puppet.clip_count == 0 {
+        return Ok(Some(mesh));
+    }
+    let cache_key = (geometry_index, puppet_index, snapshot_time_ms);
+    if let Some(sampled) = reader.sampled_puppet_mesh_cache.get(&cache_key) {
+        return Ok(Some(Arc::clone(sampled)));
+    }
+    let layers = binary_scene_puppet_layers_cached(reader, puppet_index, puppet)?;
+    let sampled = mesh
+        .sample_puppet_animation(layers.as_slice(), snapshot_time_ms)
+        .map(Arc::new)
+        .unwrap_or(mesh);
+    reader
+        .sampled_puppet_mesh_cache
+        .insert(cache_key, Arc::clone(&sampled));
+    Ok(Some(sampled))
+}
+
+fn binary_scene_base_mesh_cached(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    geometry_index: u32,
+    geometry: SceneBinaryGeometryRecord,
+    puppet_index: u32,
+) -> Result<Arc<SceneMesh>, RendererPlanError> {
+    let cache_key = (geometry_index, puppet_index);
+    if let Some(mesh) = reader.geometry_mesh_cache.get(&cache_key) {
+        return Ok(Arc::clone(mesh));
     }
     let vertex_records = reader.record_range(
         SceneBinaryChunkKind::GeometryVertices,
@@ -1179,34 +1720,17 @@ fn binary_scene_mesh(
         puppet_clips: Vec::new(),
     };
     if puppet_index != SCENE_BINARY_NONE_ID {
-        mesh =
-            binary_scene_sampled_puppet_mesh(reader, names, mesh, puppet_index, snapshot_time_ms)?;
+        let puppet = reader.puppet_record_cached(puppet_index)?;
+        if puppet.animation_layer_count > 0 && puppet.bone_count > 0 && puppet.clip_count > 0 {
+            mesh.skin = Some(binary_scene_puppet_skin(reader, names, puppet, true)?);
+            mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
+        }
     }
-    Ok(Some(Arc::new(mesh)))
-}
-
-fn binary_scene_sampled_puppet_mesh(
-    reader: &mut BinarySceneReader,
-    names: &BinarySceneNames,
-    mut mesh: SceneMesh,
-    puppet_index: u32,
-    snapshot_time_ms: u64,
-) -> Result<SceneMesh, RendererPlanError> {
-    let puppet = reader.record_at(
-        SceneBinaryChunkKind::Puppet,
-        SCENE_BINARY_PUPPET_RECORD_SIZE,
-        puppet_index,
-        decode_puppet_record,
-    )?;
-    if puppet.animation_layer_count == 0 || puppet.bone_count == 0 || puppet.clip_count == 0 {
-        return Ok(mesh);
-    }
-    mesh.skin = Some(binary_scene_puppet_skin(reader, names, puppet, true)?);
-    mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
-    let layers = binary_scene_puppet_layers(reader, puppet)?;
-    Ok(mesh
-        .sample_puppet_animation(&layers, snapshot_time_ms)
-        .unwrap_or(mesh))
+    let mesh = Arc::new(mesh);
+    reader
+        .geometry_mesh_cache
+        .insert(cache_key, Arc::clone(&mesh));
+    Ok(mesh)
 }
 
 fn binary_scene_puppet_attachment_deltas(
@@ -1218,31 +1742,71 @@ fn binary_scene_puppet_attachment_deltas(
     if puppet_index == SCENE_BINARY_NONE_ID {
         return Ok(None);
     }
-    let puppet = reader.record_at(
-        SceneBinaryChunkKind::Puppet,
-        SCENE_BINARY_PUPPET_RECORD_SIZE,
-        puppet_index,
-        decode_puppet_record,
-    )?;
+    let cache_key = (puppet_index, snapshot_time_ms);
+    if let Some(cached) = reader.puppet_attachment_delta_cache.get(&cache_key) {
+        return Ok(cached.as_ref().map(|deltas| (**deltas).clone()));
+    }
+    let puppet = reader.puppet_record_cached(puppet_index)?;
     if puppet.attachment_count == 0
         || puppet.animation_layer_count == 0
         || puppet.bone_count == 0
         || puppet.clip_count == 0
     {
+        reader.puppet_attachment_delta_cache.insert(cache_key, None);
         return Ok(None);
     }
-    let skin = binary_scene_puppet_skin(reader, names, puppet, false)?;
-    if skin.attachments.is_empty() {
+    let mesh = binary_scene_puppet_attachment_mesh_cached(reader, names, puppet_index, puppet)?;
+    if mesh
+        .skin
+        .as_ref()
+        .is_none_or(|skin| skin.attachments.is_empty())
+    {
+        reader.puppet_attachment_delta_cache.insert(cache_key, None);
         return Ok(None);
     }
-    let mesh = SceneMesh {
+    let layers = binary_scene_puppet_layers_cached(reader, puppet_index, puppet)?;
+    let deltas = mesh.sample_puppet_attachment_deltas(layers.as_slice(), snapshot_time_ms);
+    reader.puppet_attachment_delta_cache.insert(
+        cache_key,
+        deltas.as_ref().map(|deltas| Arc::new(deltas.clone())),
+    );
+    Ok(deltas)
+}
+
+fn binary_scene_puppet_attachment_mesh_cached(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    puppet_index: u32,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Arc<SceneMesh>, RendererPlanError> {
+    if let Some(mesh) = reader.puppet_attachment_mesh_cache.get(&puppet_index) {
+        return Ok(Arc::clone(mesh));
+    }
+    let mesh = Arc::new(SceneMesh {
         vertices: Vec::new(),
         indices: Vec::new(),
-        skin: Some(skin),
+        skin: Some(binary_scene_puppet_skin(reader, names, puppet, false)?),
         puppet_clips: binary_scene_puppet_clips(reader, puppet)?,
-    };
-    let layers = binary_scene_puppet_layers(reader, puppet)?;
-    Ok(mesh.sample_puppet_attachment_deltas(&layers, snapshot_time_ms))
+    });
+    reader
+        .puppet_attachment_mesh_cache
+        .insert(puppet_index, Arc::clone(&mesh));
+    Ok(mesh)
+}
+
+fn binary_scene_puppet_layers_cached(
+    reader: &mut BinarySceneReader,
+    puppet_index: u32,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Arc<Vec<ScenePuppetAnimationLayer>>, RendererPlanError> {
+    if let Some(layers) = reader.puppet_layers_cache.get(&puppet_index) {
+        return Ok(Arc::clone(layers));
+    }
+    let layers = Arc::new(binary_scene_puppet_layers(reader, puppet)?);
+    reader
+        .puppet_layers_cache
+        .insert(puppet_index, Arc::clone(&layers));
+    Ok(layers)
 }
 
 fn binary_scene_puppet_skin(
@@ -1429,14 +1993,16 @@ fn binary_scene_node_state(
         corner_radius: (node.flags & BINARY_NODE_FLAG_CORNER_RADIUS != 0)
             .then_some(f64::from(node.corner_radius)),
     };
-    let records = reader.record_range(
+    let timeline_record_count = reader.chunk_count(SceneBinaryChunkKind::TransformTimeline);
+    let timeline_records = reader.transform_timeline_records_cached()?;
+    let records = binary_scene_cached_record_slice(
+        &timeline_records,
         SceneBinaryChunkKind::TransformTimeline,
-        SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
         node.first_transform,
         node.transform_count,
-        decode_transform_timeline_record,
+        timeline_record_count,
     )?;
-    for record in records {
+    for record in records.iter().copied() {
         if record.property == BINARY_TRANSFORM_PROPERTY_DEFAULT {
             state.transform = binary_scene_default_transform(record);
             continue;
@@ -1549,14 +2115,16 @@ fn binary_scene_transform_timeline_value(
     record: crate::core::scene::binary::SceneBinaryTransformTimelineRecord,
     snapshot_time_ms: u64,
 ) -> Result<Option<f64>, RendererPlanError> {
-    let keyframes = reader.record_range(
+    let keyframe_record_count = reader.chunk_count(SceneBinaryChunkKind::TransformKeyframes);
+    let keyframe_records = reader.transform_keyframe_records_cached()?;
+    let keyframes = binary_scene_cached_record_slice(
+        &keyframe_records,
         SceneBinaryChunkKind::TransformKeyframes,
-        SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
         record.first_keyframe,
         record.keyframe_count,
-        decode_transform_keyframe_record,
+        keyframe_record_count,
     )?;
-    let mut keyframes = keyframes.into_iter();
+    let mut keyframes = keyframes.iter().copied();
     let Some(first) = keyframes.next() else {
         return Ok(None);
     };
@@ -1890,7 +2458,7 @@ mod tests {
     use crate::core::scene::binary::encode_scene_binary_document;
 
     #[test]
-    fn gscn_direct_ingest_expands_particle_emitters_from_binary_payload() {
+    fn gscn_direct_ingest_batches_particle_emitters_from_binary_payload() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
@@ -1944,18 +2512,22 @@ mod tests {
                 .expect("binary scene plan");
         fs::remove_dir_all(root).expect("remove test dir");
 
-        assert_eq!(plan.layers.len(), 3);
-        for layer in &plan.layers {
-            assert_eq!(layer.id, "");
-            assert_eq!(layer.kind, SceneNodeKind::Image);
-            assert_eq!(layer.texture_slots.len(), 1);
-            assert_eq!(layer.color.as_deref(), Some("#aabbcc"));
-            assert_eq!(layer.width, Some(6.0));
-            assert_eq!(layer.height, Some(8.0));
-            assert!((layer.opacity - 0.4).abs() < 1e-6);
-            assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
-            assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
-        }
+        assert_eq!(plan.layers.len(), 1);
+        let layer = &plan.layers[0];
+        assert_eq!(layer.id, "spark-emitter");
+        assert_eq!(layer.kind, SceneNodeKind::Image);
+        assert_eq!(layer.texture_slots.len(), 0);
+        assert_eq!(layer.color.as_deref(), Some("#aabbcc"));
+        assert_eq!(layer.width, Some(6.0));
+        assert_eq!(layer.height, Some(8.0));
+        assert!((layer.opacity - 0.4).abs() < 1e-6);
+        assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
+        assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
+        let mesh = layer.mesh.as_ref().expect("batched particle mesh");
+        assert_eq!(mesh.vertices.len(), 12);
+        assert_eq!(mesh.indices.len(), 18);
+        assert_eq!(&mesh.indices[0..6], &[0, 1, 2, 2, 1, 3]);
+        assert!((mesh.vertices[0].opacity - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]

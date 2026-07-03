@@ -6,8 +6,9 @@ use super::{
     ConversionReport, SceneDocumentBuildContext, WallpaperEngineProject, ir::SceneOpacityEffectIr,
     number_value_field, push_unique, scene_copy_resource_as,
     scene_effect_texture_resource_from_reference, scene_i64_map_from_value, scene_next_timeline_id,
-    scene_push_unsupported, scene_record_native_script_lowering, string_field,
-    value_to_bool_unwrapped, value_to_f64_unwrapped, value_to_i64, value_to_string, value_to_u32,
+    scene_push_unsupported, scene_record_native_script_lowering,
+    scene_resolve_project_resource_path, string_field, value_to_bool_unwrapped,
+    value_to_f64_unwrapped, value_to_i64, value_to_string, value_to_u32,
 };
 
 pub(super) fn scene_effects_from_object(
@@ -259,7 +260,7 @@ fn scene_effect_file_requires_runtime(
     project: &WallpaperEngineProject,
     file: &str,
 ) -> Option<bool> {
-    let source = project.root.join(file);
+    let source = scene_resolve_project_resource_path(project, Path::new(file))?.path;
     let text = fs::read_to_string(source).ok()?;
     let value = serde_json::from_str::<Value>(&text).ok()?;
     let object = value.as_object()?;
@@ -347,7 +348,8 @@ fn scene_effect_passes_from_object(
         .filter_map(|pass_index| {
             let object_pass = object_passes.and_then(|passes| passes.get(pass_index)?.as_object());
             let file_pass = file_pass_objects.get(pass_index);
-            let pass = scene_effect_merged_pass(file_pass, object_pass);
+            let mut pass = scene_effect_merged_pass(file_pass, object_pass);
+            scene_effect_apply_default_pass_textures(effect_file, &mut pass);
             if pass.is_empty() {
                 return None;
             }
@@ -399,6 +401,72 @@ fn scene_effect_passes_from_object(
             Some(Value::Object(output))
         })
         .collect()
+}
+
+fn scene_effect_apply_default_pass_textures(effect_file: &str, pass: &mut Map<String, Value>) {
+    if scene_effect_file_is_water_caustics(effect_file) {
+        scene_effect_apply_water_caustics_default_pass_textures(pass);
+        return;
+    }
+    if pass.contains_key("textures") || !scene_effect_file_is_foliage_sway(effect_file) {
+        return;
+    }
+    if !scene_effect_foliage_sway_uses_uv_mode(pass) {
+        return;
+    }
+    // WE foliage sway's fragment shader declares g_Texture2 with
+    // default="util/noise"; scene objects often omit it from pass textures.
+    pass.insert(
+        "textures".to_owned(),
+        json!([
+            Value::Null,
+            Value::Null,
+            Value::String("util/noise".to_owned())
+        ]),
+    );
+}
+
+fn scene_effect_apply_water_caustics_default_pass_textures(pass: &mut Map<String, Value>) {
+    let defaults = [
+        Value::Null,
+        Value::Null,
+        Value::String("pattern/voronoi_local".to_owned()),
+        Value::String("util/uniform_256".to_owned()),
+        Value::String("util/perlin_256".to_owned()),
+        Value::String("pattern/voronoi".to_owned()),
+    ];
+    let mut textures = pass
+        .get("textures")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if textures.len() < defaults.len() {
+        textures.resize(defaults.len(), Value::Null);
+    }
+    for (index, default) in defaults.into_iter().enumerate() {
+        if textures[index].is_null() {
+            textures[index] = default;
+        }
+    }
+    pass.insert("textures".to_owned(), Value::Array(textures));
+}
+
+fn scene_effect_file_is_water_caustics(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file.contains("watercaustics") || file.contains("water_caustics")
+}
+
+fn scene_effect_file_is_foliage_sway(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file.contains("foliagesway") || file.contains("foliage_sway")
+}
+
+fn scene_effect_foliage_sway_uses_uv_mode(pass: &Map<String, Value>) -> bool {
+    pass.get("combos")
+        .and_then(Value::as_object)
+        .and_then(|combos| combos.get("MODE"))
+        .and_then(value_to_i64)
+        .is_none_or(|mode| mode == 0)
 }
 
 fn scene_effect_file_passes(
@@ -468,7 +536,8 @@ fn scene_effect_fbos_from_file(
 }
 
 fn scene_effect_file_value(project: &WallpaperEngineProject, effect_file: &str) -> Option<Value> {
-    fs::read_to_string(project.root.join(effect_file))
+    let path = scene_resolve_project_resource_path(project, Path::new(effect_file))?.path;
+    fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
 }
@@ -490,7 +559,8 @@ fn scene_effect_material_first_pass(
     project: &WallpaperEngineProject,
     material: &str,
 ) -> Option<Map<String, Value>> {
-    let material = fs::read_to_string(project.root.join(material)).ok()?;
+    let material_path = scene_resolve_project_resource_path(project, Path::new(material))?.path;
+    let material = fs::read_to_string(material_path).ok()?;
     let material = serde_json::from_str::<Value>(&material).ok()?;
     material
         .get("passes")?
@@ -665,6 +735,16 @@ fn scene_effect_file_uses_mask_uv(effect_file: &str) -> bool {
         || file.ends_with("/effects/opacity/effect.json")
         || file == "effects/iris/effect.json"
         || file.ends_with("/effects/iris/effect.json")
+        || file == "effects/waterwaves/effect.json"
+        || file.ends_with("/effects/waterwaves/effect.json")
+        || file == "effects/waterflow/effect.json"
+        || file.ends_with("/effects/waterflow/effect.json")
+        || file == "effects/caustics/effect.json"
+        || file.ends_with("/effects/caustics/effect.json")
+        || file == "effects/watercaustics/effect.json"
+        || file.ends_with("/effects/watercaustics/effect.json")
+        || file.ends_with("/effects/foliagesway/effect.json")
+        || file.ends_with("/effects/waterripple/effect.json")
 }
 
 fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2], [f64; 2], bool) {
@@ -833,6 +913,65 @@ mod tests {
         assert_eq!(scale[1], 115.0 / 128.0);
         assert_eq!(offset, [0.0, 0.0]);
         assert!(has_explicit_scale);
+    }
+
+    #[test]
+    fn foliage_sway_uv_mode_gets_default_noise_texture_slot() {
+        let mut pass = json!({
+            "constantshadervalues": {
+                "strength": 0.5
+            }
+        })
+        .as_object()
+        .expect("pass object")
+        .clone();
+
+        scene_effect_apply_default_pass_textures(
+            "effects/workshop/2790231929/foliagesway/effect.json",
+            &mut pass,
+        );
+
+        assert_eq!(pass["textures"], json!([null, null, "util/noise"]));
+    }
+
+    #[test]
+    fn water_caustics_fills_cwe_default_noise_and_pattern_slots() {
+        let mut pass = json!({
+            "textures": [null, null, null, null, null, "pattern/voronoi_local"]
+        })
+        .as_object()
+        .expect("pass object")
+        .clone();
+
+        scene_effect_apply_default_pass_textures("effects/watercaustics/effect.json", &mut pass);
+
+        assert_eq!(
+            pass["textures"],
+            json!([
+                null,
+                null,
+                "pattern/voronoi_local",
+                "util/uniform_256",
+                "util/perlin_256",
+                "pattern/voronoi_local"
+            ])
+        );
+    }
+
+    #[test]
+    fn foliage_sway_vertex_mode_does_not_get_noise_texture_slot() {
+        let mut pass = json!({
+            "combos": {
+                "MODE": 1
+            }
+        })
+        .as_object()
+        .expect("pass object")
+        .clone();
+
+        scene_effect_apply_default_pass_textures("effects/foliagesway/effect.json", &mut pass);
+
+        assert!(pass.get("textures").is_none());
     }
 
     #[test]

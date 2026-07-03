@@ -127,6 +127,86 @@ fn converts_scene_project_to_binary_scene() {
     );
 }
 
+#[test]
+fn composelayer_framebuffer_effects_are_marked_without_child_propagation() {
+    let source_model = scene_builtin_util_model("models/util/composelayer.json").unwrap();
+    let mut effects = serde_json::json!([
+        {
+            "file": "effects/watercaustics/effect.json",
+            "id": 641,
+            "runtime": "native-water-caustics",
+            "passes": [{
+                "combos": { "BLENDMODE": 6 },
+                "textures": [null, null, "pattern/voronoi_local"]
+            }]
+        },
+        {
+            "file": "effects/shake/effect.json",
+            "id": 413,
+            "runtime": "native-effect-motion",
+            "passes": [{}]
+        }
+    ])
+    .as_array()
+    .unwrap()
+    .clone();
+    let mut context = SceneDocumentBuildContext::default();
+
+    scene_prepare_utility_framebuffer_effects(Some(&source_model), &mut effects, &mut context);
+
+    assert_eq!(effects.len(), 1);
+    assert_eq!(
+        effects[0].get("file").and_then(Value::as_str),
+        Some("effects/watercaustics/effect.json")
+    );
+    assert_eq!(
+        effects[0]["passes"][0]["combos"]["GILDER_FRAMEBUFFER_OVERLAY"],
+        serde_json::json!(1)
+    );
+    assert_eq!(
+        scene_utility_framebuffer_effect_color_blend_mode(Some(&source_model), &effects),
+        Some(6)
+    );
+    assert!(
+        context
+            .converted_features
+            .contains(&"wallpaper-engine-composelayer-framebuffer-effect".to_owned())
+    );
+}
+
+#[test]
+fn composelayer_framebuffer_source_model_uses_image_runtime() {
+    let mut source_model = scene_builtin_util_model("models/util/composelayer.json").unwrap();
+    let node = serde_json::json!({
+        "effects": [
+            {
+                "file": "effects/watercaustics/effect.json",
+                "id": 641,
+                "runtime": "native-water-caustics",
+                "passes": [{ "textures": [null, null, "pattern/voronoi_local"] }]
+            },
+            {
+                "file": "effects/shake/effect.json",
+                "id": 413,
+                "runtime": "native-effect-motion",
+                "passes": [{}]
+            }
+        ]
+    });
+    let node = node.as_object().unwrap().clone();
+
+    assert_eq!(
+        scene_builtin_util_node_kind(&node, &source_model),
+        Some("rectangle")
+    );
+    source_model.render_resource = Some("white-placeholder".to_owned());
+    source_model.render_kind = Some("image");
+    assert_eq!(
+        scene_builtin_util_node_kind(&node, &source_model),
+        Some("image")
+    );
+}
+
 fn binary_chunk_count(path: &Path, kind: SceneBinaryChunkKind) -> u32 {
     let bytes = fs::read(path).unwrap();
     let layout = decode_scene_binary_container(&bytes).unwrap();

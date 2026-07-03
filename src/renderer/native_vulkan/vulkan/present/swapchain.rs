@@ -308,6 +308,7 @@ fn with_vulkanalia_surface_swapchain(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
+        false,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -819,6 +820,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     buffer_size: (u32, u32),
     surface_capabilities2_enabled: bool,
     feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
+    uncapped_present: bool,
 ) -> Result<NativeVulkanVulkanaliaSwapchainPlan, String> {
     let capabilities =
         unsafe { instance.get_physical_device_surface_capabilities_khr(physical_device, surface) }
@@ -855,6 +857,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     let present_mode = choose_present_mode(
         &present_modes,
         feature_selection.present_mode_fifo_latest_ready_enabled,
+        uncapped_present,
     );
     let extent = choose_swapchain_extent(&capabilities, buffer_size)?;
     let image_count = swapchain_image_count(&capabilities);
@@ -986,7 +989,16 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Surface
 fn choose_present_mode(
     present_modes: &[vk::PresentModeKHR],
     present_mode_fifo_latest_ready_enabled: bool,
+    uncapped_present: bool,
 ) -> vk::PresentModeKHR {
+    if uncapped_present {
+        if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
+            return vk::PresentModeKHR::IMMEDIATE;
+        }
+        if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
+            return vk::PresentModeKHR::MAILBOX;
+        }
+    }
     if present_mode_fifo_latest_ready_enabled
         && present_modes.contains(&vk::PresentModeKHR::FIFO_LATEST_READY)
     {
@@ -1390,6 +1402,7 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 true,
+                false,
             ),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
@@ -1401,22 +1414,24 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 false,
+                false,
             ),
             vk::PresentModeKHR::FIFO
         );
         assert_eq!(
-            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true),
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true, false),
             vk::PresentModeKHR::FIFO
         );
         assert_eq!(
             choose_present_mode(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::FIFO_RELAXED,],
                 true,
+                false,
             ),
             vk::PresentModeKHR::FIFO_RELAXED
         );
         assert_eq!(
-            choose_present_mode(&[vk::PresentModeKHR::FIFO], true),
+            choose_present_mode(&[vk::PresentModeKHR::FIFO], true, false),
             vk::PresentModeKHR::FIFO
         );
         assert_eq!(
@@ -1426,6 +1441,7 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 true,
+                false,
             ),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
@@ -1436,8 +1452,42 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 false,
+                false,
             ),
             vk::PresentModeKHR::FIFO
+        );
+        assert_eq!(
+            choose_present_mode(
+                &[
+                    vk::PresentModeKHR::FIFO,
+                    vk::PresentModeKHR::MAILBOX,
+                    vk::PresentModeKHR::FIFO_LATEST_READY,
+                ],
+                true,
+                true,
+            ),
+            vk::PresentModeKHR::MAILBOX
+        );
+        assert_eq!(
+            choose_present_mode(
+                &[
+                    vk::PresentModeKHR::FIFO,
+                    vk::PresentModeKHR::IMMEDIATE,
+                    vk::PresentModeKHR::MAILBOX,
+                    vk::PresentModeKHR::FIFO_LATEST_READY,
+                ],
+                true,
+                true,
+            ),
+            vk::PresentModeKHR::IMMEDIATE
+        );
+        assert_eq!(
+            choose_present_mode(
+                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE],
+                true,
+                true,
+            ),
+            vk::PresentModeKHR::IMMEDIATE
         );
     }
 

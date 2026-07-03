@@ -24,11 +24,21 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 32) vec2 texture_resolution[8];
     layout(offset = 96) float user_alpha;
     layout(offset = 120) uint effect_shader_code;
+    layout(offset = 228) uint output_flags;
 } pc;
+
+const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 
 vec4 apply_vertex_color(vec4 color) {
     color *= v_tint;
     color.a *= v_opacity;
+    return color;
+}
+
+vec4 finalize_output(vec4 color) {
+    if ((pc.output_flags & OUTPUT_FLAG_PREMULTIPLY_RGB) != 0u) {
+        color.rgb *= color.a;
+    }
     return color;
 }
 
@@ -39,5 +49,5 @@ void main() {
         mask = texture(g_Texture1, v_effect_uv).r;
     }
     albedo.a *= mask * pc.user_alpha;
-    out_color = apply_vertex_color(albedo);
+    out_color = finalize_output(apply_vertex_color(albedo));
 }

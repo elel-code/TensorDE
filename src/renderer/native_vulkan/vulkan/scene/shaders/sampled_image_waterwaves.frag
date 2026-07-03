@@ -1,8 +1,8 @@
 #version 450
 
-// CWE reference: WallpaperEngine effects/waterwaves keeps geometry fixed,
-// computes one or two sine-wave UV offsets in fragment space, optionally
-// gates them by mask/time-offset textures, then samples g_Texture0.
+// reverse-engineered reference: WallpaperEngine effects/waterwaves keeps
+// geometry fixed, computes one or two sine-wave UV offsets in fragment space,
+// optionally gates them by mask/time-offset textures, then samples g_Texture0.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -36,12 +36,14 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 132) float waterwaves_exponent2;
     layout(offset = 136) float waterwaves_direction2;
     layout(offset = 140) uint waterwaves_flags;
+    layout(offset = 228) uint output_flags;
 } pc;
 
 const uint WATERWAVES_FLAG_MASK = 1u;
 const uint WATERWAVES_FLAG_DUAL = 2u;
 const uint WATERWAVES_FLAG_TIMEOFFSET = 4u;
-const float M_PI_2 = 1.57079632679;
+const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
+const float M_PI_2 = 6.28318530718;
 
 vec2 rotate_up(float radians) {
     return vec2(-sin(radians), cos(radians));
@@ -58,9 +60,31 @@ vec4 apply_vertex_color(vec4 color) {
     return color;
 }
 
+vec4 finalize_output(vec4 color) {
+    if ((pc.output_flags & OUTPUT_FLAG_PREMULTIPLY_RGB) != 0u) {
+        color.rgb *= color.a;
+    }
+    return color;
+}
+
+float uv_axis_scale(float source_dx, float source_dy, float effect_dx, float effect_dy) {
+    float effect_len = length(vec2(effect_dx, effect_dy));
+    if (effect_len <= 0.000001) {
+        return 1.0;
+    }
+    return length(vec2(source_dx, source_dy)) / effect_len;
+}
+
+vec2 source_uv_scale_from_effect_uv() {
+    return vec2(
+        uv_axis_scale(dFdx(v_uv.x), dFdy(v_uv.x), dFdx(v_effect_uv.x), dFdy(v_effect_uv.x)),
+        uv_axis_scale(dFdx(v_uv.y), dFdy(v_uv.y), dFdx(v_effect_uv.y), dFdy(v_effect_uv.y))
+    );
+}
+
 void main() {
-    vec2 tex_coord = v_uv;
-    vec2 tex_coord_motion = tex_coord;
+    vec2 source_coord = v_uv;
+    vec2 tex_coord_motion = v_effect_uv;
     vec2 mask_uv = v_effect_uv;
 
     float mask = 1.0;
@@ -92,6 +116,7 @@ void main() {
         val *= signed_pow_sin(distance2, pc.waterwaves_exponent2);
     }
 
-    tex_coord += val * offset * strength * mask;
-    out_color = apply_vertex_color(texture(g_Texture0, tex_coord));
+    vec2 layer_uv_offset = val * offset * strength * mask;
+    source_coord += layer_uv_offset * source_uv_scale_from_effect_uv();
+    out_color = finalize_output(apply_vertex_color(texture(g_Texture0, source_coord)));
 }

@@ -286,6 +286,7 @@ fn with_video_present_device(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &context.present_feature_selection,
+        false,
     ) {
         Ok(plan) => plan,
         Err(err) => {
