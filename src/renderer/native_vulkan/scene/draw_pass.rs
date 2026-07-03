@@ -792,6 +792,8 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
     kind: &'static str,
 ) -> Option<NativeVulkanSceneRecordableQuad> {
     let opacity = layer.opacity.clamp(0.0, 1.0);
+    let effect_passes =
+        native_vulkan_scene_effect_passes_from_render_passes(&layer.image_effect_passes);
     let fill_color = layer
         .color
         .as_deref()
@@ -799,7 +801,8 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
         .map(str::to_owned);
     let fill_rgba = fill_color
         .as_deref()
-        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity));
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity))
+        .map(|rgba| native_vulkan_scene_apply_recordable_color_effects(rgba, &effect_passes));
     let stroke_color = layer
         .stroke_color
         .as_deref()
@@ -807,13 +810,15 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
         .map(str::to_owned);
     let stroke_rgba = stroke_color
         .as_deref()
-        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity));
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, opacity))
+        .map(|rgba| native_vulkan_scene_apply_recordable_color_effects(rgba, &effect_passes));
     let stroke_width = stroke_rgba.map(|_| layer.stroke_width.unwrap_or(1.0));
     let (color, rgba) = fill_color
         .clone()
         .zip(fill_rgba)
         .or_else(|| stroke_color.clone().zip(stroke_rgba))?;
     Some(NativeVulkanSceneRecordableQuad {
+        snapshot_time_ms: 0,
         layer_index,
         layer_id: layer.id.clone(),
         kind,
@@ -836,6 +841,7 @@ fn native_vulkan_scene_recordable_quad_from_render_layer(
         text_align: layer.text_align,
         path_data: layer.path_data.clone(),
         path_fill_rule: layer.path_fill_rule,
+        effect_passes,
         transform: layer.transform,
     })
 }
@@ -1150,6 +1156,21 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
     }
     if step.pass.final_scene_pass {
         let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+        if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
+            quad, step, plan,
+        ) {
+            if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan)
+            {
+                return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_geometry(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    scene_size,
+                    vertices,
+                    indices,
+                );
+            }
+        }
         if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan) {
             if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(&final_quad, step) {
                 return native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bounds(
@@ -1180,6 +1201,25 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
         NativeVulkanSceneWeImagePassRole::BaseMaterial => {
             native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
                 .and_then(|bounds| {
+                    if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
+                        quad, step, plan,
+                    ) {
+                        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+                        let first_index = indices.len().min(u32::MAX as usize) as u32;
+                        return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
+                            quad,
+                            bounds,
+                            first_vertex,
+                            vertices,
+                            indices,
+                        )
+                        .map(|index_count| NativeVulkanSceneSampledImageGeometryRange {
+                            first_vertex,
+                            vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
+                            first_index,
+                            index_count,
+                        });
+                    }
                     native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
                         quad, bounds, vertices, indices,
                     )
@@ -1227,6 +1267,37 @@ fn native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
     step: &NativeVulkanSceneWeImageGraphStep,
 ) -> bool {
     step.pass.final_scene_pass && native_vulkan_scene_sampled_image_quad_is_we_composelayer(quad)
+}
+
+fn native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+) -> bool {
+    quad.mesh.is_some()
+        && plan
+            .steps
+            .iter()
+            .filter(|candidate| candidate.chain_index == step.chain_index)
+            .filter(|candidate| {
+                candidate.pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
+            })
+            .all(|candidate| {
+                candidate.pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves)
+            })
+        && plan.steps.iter().any(|candidate| {
+            candidate.chain_index == step.chain_index
+                && candidate.pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves)
+        })
+}
+
+fn native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+) -> bool {
+    step.pass.final_scene_pass
+        && native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(quad, step, plan)
 }
 
 fn native_vulkan_scene_sampled_image_quad_is_we_composelayer(
@@ -3279,6 +3350,13 @@ fn native_vulkan_scene_text_geometry(
         .unwrap_or(measured_height);
     let left = -quad.transform.anchor_x * layout_width;
     let top = -quad.transform.anchor_y * layout_height;
+    let layout = NativeVulkanSceneTextLayerLayout {
+        left,
+        top,
+        width: layout_width,
+        height: layout_height,
+    };
+    let scroll = native_vulkan_scene_text_scroll_effect(quad);
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
@@ -3299,15 +3377,16 @@ fn native_vulkan_scene_text_geometry(
                     if bits & mask == 0 {
                         continue;
                     }
-                    native_vulkan_scene_push_solid_rect(
+                    native_vulkan_scene_push_text_effect_rect(
                         &mut vertices,
                         &mut indices,
+                        quad,
+                        layout,
+                        scroll,
                         cursor_x + column as f64 * cell,
                         line_top + row as f64 * cell,
                         cell,
                         cell,
-                        quad.rgba,
-                        quad.transform,
                     )?;
                 }
             }
@@ -3320,6 +3399,281 @@ fn native_vulkan_scene_text_geometry(
     } else {
         Some((vertices, indices))
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanSceneTextLayerLayout {
+    left: f64,
+    top: f64,
+    width: f64,
+    height: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanSceneTextScrollEffect {
+    repeat_x: f64,
+    repeat_y: f64,
+    scroll_x: f64,
+    scroll_y: f64,
+}
+
+fn native_vulkan_scene_text_scroll_effect(
+    quad: &NativeVulkanSceneRecordableQuad,
+) -> Option<NativeVulkanSceneTextScrollEffect> {
+    let pass = quad
+        .effect_passes
+        .iter()
+        .find(|pass| pass.kind == NativeVulkanSceneEffectKind::Scroll)?;
+    let repeat =
+        native_vulkan_scene_effect_vec2(pass.constant_shader_values.get("repeat"), [1.0, 1.0]);
+    let repeat_x = repeat[0].clamp(0.01, 10.0);
+    let repeat_y = repeat[1].clamp(0.01, 10.0);
+    let speed_x =
+        native_vulkan_scene_effect_f64(pass.constant_shader_values.get("speedx")).unwrap_or(0.2);
+    let speed_y =
+        native_vulkan_scene_effect_f64(pass.constant_shader_values.get("speedy")).unwrap_or(0.2);
+    let time_seconds = quad.snapshot_time_ms as f64 / 1000.0;
+    Some(NativeVulkanSceneTextScrollEffect {
+        repeat_x,
+        repeat_y,
+        scroll_x: native_vulkan_scene_scroll_phase(speed_x, repeat_x, time_seconds),
+        scroll_y: native_vulkan_scene_scroll_phase(speed_y, repeat_y, time_seconds),
+    })
+}
+
+fn native_vulkan_scene_scroll_phase(speed: f64, repeat: f64, time_seconds: f64) -> f64 {
+    if !speed.is_finite() || !repeat.is_finite() || repeat <= f64::EPSILON {
+        return 0.0;
+    }
+    let signed_square = speed.signum() * speed.abs() * speed.abs();
+    let period = 1.0 / repeat;
+    (signed_square * time_seconds).rem_euclid(period)
+}
+
+fn native_vulkan_scene_effect_f64(value: Option<&serde_json::Value>) -> Option<f64> {
+    match value? {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(value) => value.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|value| value.is_finite())
+}
+
+fn native_vulkan_scene_effect_vec2(
+    value: Option<&serde_json::Value>,
+    default_value: [f64; 2],
+) -> [f64; 2] {
+    match value {
+        Some(serde_json::Value::String(value)) => {
+            let mut values = value
+                .split_ascii_whitespace()
+                .filter_map(|part| part.parse::<f64>().ok())
+                .filter(|value| value.is_finite());
+            [
+                values.next().unwrap_or(default_value[0]),
+                values.next().unwrap_or(default_value[1]),
+            ]
+        }
+        Some(serde_json::Value::Array(values)) => [
+            values
+                .first()
+                .and_then(|value| native_vulkan_scene_effect_f64(Some(value)))
+                .unwrap_or(default_value[0]),
+            values
+                .get(1)
+                .and_then(|value| native_vulkan_scene_effect_f64(Some(value)))
+                .unwrap_or(default_value[1]),
+        ],
+        Some(serde_json::Value::Number(_)) => {
+            let value = native_vulkan_scene_effect_f64(value).unwrap_or(default_value[0]);
+            [value, value]
+        }
+        _ => default_value,
+    }
+}
+
+fn native_vulkan_scene_apply_recordable_color_effects(
+    mut rgba: [f32; 4],
+    effects: &[NativeVulkanSceneEffectRecord],
+) -> [f32; 4] {
+    for effect in effects {
+        if effect.kind == NativeVulkanSceneEffectKind::ColorKey {
+            rgba = native_vulkan_scene_apply_recordable_color_key(rgba, effect);
+        }
+    }
+    rgba
+}
+
+fn native_vulkan_scene_apply_recordable_color_key(
+    mut rgba: [f32; 4],
+    effect: &NativeVulkanSceneEffectRecord,
+) -> [f32; 4] {
+    let key_color = native_vulkan_scene_effect_vec3(
+        effect.constant_shader_values.get("color"),
+        [1.0, 1.0, 1.0],
+    );
+    let key_alpha =
+        native_vulkan_scene_effect_f64(effect.constant_shader_values.get("alpha")).unwrap_or(0.0);
+    let key_fuzz = native_vulkan_scene_effect_f64(effect.constant_shader_values.get("fuzziness"))
+        .unwrap_or(0.0);
+    let key_tolerance =
+        native_vulkan_scene_effect_f64(effect.constant_shader_values.get("tolerance"))
+            .unwrap_or(0.1);
+    let delta = (f64::from(rgba[0]) - key_color[0]).abs()
+        + (f64::from(rgba[1]) - key_color[1]).abs()
+        + (f64::from(rgba[2]) - key_color[2]).abs();
+    let mut blend = native_vulkan_scene_smoothstep(0.001, 0.002 + key_fuzz, delta - key_tolerance);
+    if effect.combo_values.get("INVERT").copied() == Some(1) {
+        blend = 1.0 - blend;
+    }
+    rgba[3] *= key_alpha.mix(1.0, blend).clamp(0.0, 1.0) as f32;
+    if effect.combo_values.get("FLATTEN").copied() == Some(1) {
+        rgba[0] *= rgba[3];
+        rgba[1] *= rgba[3];
+        rgba[2] *= rgba[3];
+    }
+    rgba
+}
+
+fn native_vulkan_scene_effect_vec3(
+    value: Option<&serde_json::Value>,
+    default_value: [f64; 3],
+) -> [f64; 3] {
+    match value {
+        Some(serde_json::Value::String(value)) => {
+            let mut values = value
+                .split_ascii_whitespace()
+                .filter_map(|part| part.parse::<f64>().ok())
+                .filter(|value| value.is_finite());
+            [
+                values.next().unwrap_or(default_value[0]),
+                values.next().unwrap_or(default_value[1]),
+                values.next().unwrap_or(default_value[2]),
+            ]
+        }
+        Some(serde_json::Value::Array(values)) => [
+            values
+                .first()
+                .and_then(|value| native_vulkan_scene_effect_f64(Some(value)))
+                .unwrap_or(default_value[0]),
+            values
+                .get(1)
+                .and_then(|value| native_vulkan_scene_effect_f64(Some(value)))
+                .unwrap_or(default_value[1]),
+            values
+                .get(2)
+                .and_then(|value| native_vulkan_scene_effect_f64(Some(value)))
+                .unwrap_or(default_value[2]),
+        ],
+        Some(serde_json::Value::Number(_)) => {
+            let value = native_vulkan_scene_effect_f64(value).unwrap_or(default_value[0]);
+            [value, value, value]
+        }
+        _ => default_value,
+    }
+}
+
+fn native_vulkan_scene_smoothstep(edge0: f64, edge1: f64, value: f64) -> f64 {
+    if !edge0.is_finite() || !edge1.is_finite() || !value.is_finite() {
+        return 0.0;
+    }
+    if (edge1 - edge0).abs() <= f64::EPSILON {
+        return if value >= edge1 { 1.0 } else { 0.0 };
+    }
+    let t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+trait NativeVulkanSceneMix {
+    fn mix(self, other: Self, blend: f64) -> Self;
+}
+
+impl NativeVulkanSceneMix for f64 {
+    fn mix(self, other: Self, blend: f64) -> Self {
+        self * (1.0 - blend) + other * blend
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_scene_push_text_effect_rect(
+    vertices: &mut Vec<NativeVulkanSceneQuadVertex>,
+    indices: &mut Vec<u32>,
+    quad: &NativeVulkanSceneRecordableQuad,
+    layout: NativeVulkanSceneTextLayerLayout,
+    scroll: Option<NativeVulkanSceneTextScrollEffect>,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+) -> Option<()> {
+    let Some(scroll) = scroll else {
+        return native_vulkan_scene_push_solid_rect(
+            vertices,
+            indices,
+            x,
+            y,
+            width,
+            height,
+            quad.rgba,
+            quad.transform,
+        );
+    };
+    if !layout.width.is_finite()
+        || !layout.height.is_finite()
+        || layout.width <= f64::EPSILON
+        || layout.height <= f64::EPSILON
+    {
+        return None;
+    }
+    let source_u = (x - layout.left) / layout.width;
+    let source_v = (y - layout.top) / layout.height;
+    let source_du = width / layout.width;
+    let source_dv = height / layout.height;
+    if ![source_u, source_v, source_du, source_dv]
+        .into_iter()
+        .all(f64::is_finite)
+    {
+        return None;
+    }
+    let base_u = source_u / scroll.repeat_x - scroll.scroll_x;
+    let base_v = source_v / scroll.repeat_y - scroll.scroll_y;
+    let period_u = 1.0 / scroll.repeat_x;
+    let period_v = 1.0 / scroll.repeat_y;
+    let dest_du = source_du / scroll.repeat_x;
+    let dest_dv = source_dv / scroll.repeat_y;
+    let min_ix = (((0.0 - dest_du) - base_u) / period_u).floor() as i32 - 1;
+    let max_ix = ((1.0 - base_u) / period_u).ceil() as i32 + 1;
+    let min_iy = (((0.0 - dest_dv) - base_v) / period_v).floor() as i32 - 1;
+    let max_iy = ((1.0 - base_v) / period_v).ceil() as i32 + 1;
+    for ix in min_ix.clamp(-32, 32)..=max_ix.clamp(-32, 32) {
+        let dest_u0 = base_u + f64::from(ix) * period_u;
+        let dest_u1 = dest_u0 + dest_du;
+        if dest_u0 >= 1.0 || dest_u1 <= 0.0 {
+            continue;
+        }
+        let clipped_u0 = dest_u0.max(0.0);
+        let clipped_u1 = dest_u1.min(1.0);
+        for iy in min_iy.clamp(-32, 32)..=max_iy.clamp(-32, 32) {
+            let dest_v0 = base_v + f64::from(iy) * period_v;
+            let dest_v1 = dest_v0 + dest_dv;
+            if dest_v0 >= 1.0 || dest_v1 <= 0.0 {
+                continue;
+            }
+            let clipped_v0 = dest_v0.max(0.0);
+            let clipped_v1 = dest_v1.min(1.0);
+            native_vulkan_scene_push_solid_rect(
+                vertices,
+                indices,
+                layout.left + clipped_u0 * layout.width,
+                layout.top + clipped_v0 * layout.height,
+                (clipped_u1 - clipped_u0) * layout.width,
+                (clipped_v1 - clipped_v0) * layout.height,
+                quad.rgba,
+                quad.transform,
+            )?;
+        }
+    }
+    Some(())
 }
 
 fn native_vulkan_scene_text_font_size(quad: &NativeVulkanSceneRecordableQuad) -> Option<f64> {
@@ -4125,6 +4479,84 @@ fn native_vulkan_scene_append_sampled_image_effect_final_geometry(
     native_vulkan_scene_append_sampled_image_geometry(&final_quad, scene_size, vertices, indices)
 }
 
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    let mesh = quad.mesh.as_deref()?;
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= f64::EPSILON
+        || quad.height <= f64::EPSILON
+    {
+        return None;
+    }
+    let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+    let first_index = indices.len().min(u32::MAX as usize) as u32;
+    let before_vertices = vertices.len();
+    let before_indices = indices.len();
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
+    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
+    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
+    let rotation = quad.transform.rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    let (min_u, min_v, domain_u, domain_v) =
+        native_vulkan_scene_waterwaves_uv_domain_from_bounds(quad, bounds)?;
+    vertices.reserve(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            vertices.truncate(before_vertices);
+            indices.truncate(before_indices);
+            return None;
+        }
+        let x = vertex.x + local_offset_x;
+        let y = vertex.y + local_offset_y;
+        let position =
+            native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
+        let layer_uv = [vertex.u as f32, vertex.v as f32];
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv: [
+                ((vertex.u - min_u) / domain_u) as f32,
+                ((vertex.v - min_v) / domain_v) as f32,
+            ],
+            effect_uv: native_vulkan_scene_apply_effect_uv_transform(layer_uv, effect_uv_transform),
+            opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
+            tint,
+        });
+    }
+    let mesh_vertices = &vertices[before_vertices..];
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(mesh_vertices, scene_size) {
+        vertices.truncate(before_vertices);
+        indices.truncate(before_indices);
+        return None;
+    }
+    let vertex_count = mesh_vertices.len().min(u32::MAX as usize) as u32;
+    let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+    indices.extend(
+        mesh_indices
+            .iter()
+            .map(|index| first_vertex.saturating_add(*index)),
+    );
+    Some(NativeVulkanSceneSampledImageGeometryRange {
+        first_vertex,
+        vertex_count,
+        first_index,
+        index_count,
+    })
+}
+
 fn native_vulkan_scene_append_sampled_image_effect_final_geometry_with_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
     bounds: NativeVulkanSceneWeImageGraphTargetBounds,
@@ -4268,6 +4700,32 @@ fn native_vulkan_scene_graph_target_effect_uv(
     native_vulkan_scene_apply_effect_uv_transform([u as f32, v as f32], transform)
 }
 
+fn native_vulkan_scene_waterwaves_uv_domain_from_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+) -> Option<(f64, f64, f64, f64)> {
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= f64::EPSILON
+        || quad.height <= f64::EPSILON
+    {
+        return None;
+    }
+    let min_u = bounds.left / quad.width;
+    let max_v = 1.0 - bounds.top / quad.height;
+    let domain_u = bounds.width / quad.width;
+    let domain_v = bounds.height / quad.height;
+    let min_v = max_v - domain_v;
+    (min_u.is_finite()
+        && min_v.is_finite()
+        && domain_u.is_finite()
+        && domain_v.is_finite()
+        && domain_u > f64::EPSILON
+        && domain_v > f64::EPSILON)
+        .then_some((min_u, min_v, domain_u, domain_v))
+}
+
 fn native_vulkan_scene_apply_effect_uv_transform(
     uv: [f32; 2],
     transform: Option<SceneEffectUvTransform>,
@@ -4278,6 +4736,19 @@ fn native_vulkan_scene_apply_effect_uv_transform(
     [
         (f64::from(uv[0]).mul_add(transform.scale[0], transform.offset[0])) as f32,
         (f64::from(uv[1]).mul_add(transform.scale[1], transform.offset[1])) as f32,
+    ]
+}
+
+fn native_vulkan_scene_apply_texture_region_to_uv(
+    uv: [f32; 2],
+    texture_region: Option<SceneTextureRegion>,
+) -> [f32; 2] {
+    let Some(region) = texture_region else {
+        return uv;
+    };
+    [
+        (region.u_min + (region.u_max - region.u_min) * f64::from(uv[0])) as f32,
+        (region.v_min + (region.v_max - region.v_min) * f64::from(uv[1])) as f32,
     ]
 }
 
@@ -4515,6 +4986,56 @@ fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry_with_targe
                 quad,
                 None,
             ),
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    native_vulkan_scene_append_full_sampled_image_quad_indices(first_vertex, indices);
+    Some(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
+}
+
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    first_vertex: u32,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let target_vertices = [
+        ([0.0, 0.0], [bounds.left, bounds.top]),
+        (
+            [bounds.width, 0.0],
+            [bounds.left + bounds.width, bounds.top],
+        ),
+        (
+            [0.0, bounds.height],
+            [bounds.left, bounds.top + bounds.height],
+        ),
+        (
+            [bounds.width, bounds.height],
+            [bounds.left + bounds.width, bounds.top + bounds.height],
+        ),
+    ];
+    for (position, effect_position) in target_vertices {
+        let layer_uv = native_vulkan_scene_graph_target_effect_uv(
+            effect_position[0],
+            effect_position[1],
+            quad,
+            None,
+        );
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [position[0] as f32, position[1] as f32],
+            uv: native_vulkan_scene_apply_texture_region_to_uv(layer_uv, quad.texture_region),
+            effect_uv: layer_uv,
             opacity,
             tint: quad.tint,
         });
@@ -5145,26 +5666,28 @@ fn native_vulkan_scene_video_vertices(
 
 fn native_vulkan_scene_recordable_quad(
     op: &NativeVulkanSceneDrawOp,
+    snapshot_time_ms: u64,
 ) -> Option<NativeVulkanSceneRecordableQuad> {
     match op.kind {
         NativeVulkanSceneDrawOpKind::ColorQuad => {
-            native_vulkan_scene_recordable_quad_from_op(op, "color-quad")
+            native_vulkan_scene_recordable_quad_from_op(op, "color-quad", snapshot_time_ms)
         }
         NativeVulkanSceneDrawOpKind::Rectangle => native_vulkan_scene_recordable_quad_from_op(
             op,
             native_vulkan_scene_rectangle_recordable_kind(op),
+            snapshot_time_ms,
         ),
         NativeVulkanSceneDrawOpKind::Ellipse => {
-            native_vulkan_scene_recordable_quad_from_op(op, "ellipse")
+            native_vulkan_scene_recordable_quad_from_op(op, "ellipse", snapshot_time_ms)
         }
         NativeVulkanSceneDrawOpKind::Path => {
-            native_vulkan_scene_recordable_quad_from_op(op, "path")
+            native_vulkan_scene_recordable_quad_from_op(op, "path", snapshot_time_ms)
         }
         NativeVulkanSceneDrawOpKind::Text => {
-            native_vulkan_scene_recordable_quad_from_op(op, "text")
+            native_vulkan_scene_recordable_quad_from_op(op, "text", snapshot_time_ms)
         }
         NativeVulkanSceneDrawOpKind::AudioResponse => {
-            native_vulkan_scene_recordable_quad_from_op(op, "audio-response")
+            native_vulkan_scene_recordable_quad_from_op(op, "audio-response", snapshot_time_ms)
         }
         _ => None,
     }
@@ -5236,7 +5759,10 @@ fn native_vulkan_scene_video_quad(
 fn native_vulkan_scene_recordable_quad_from_op(
     op: &NativeVulkanSceneDrawOp,
     kind: &'static str,
+    snapshot_time_ms: u64,
 ) -> Option<NativeVulkanSceneRecordableQuad> {
+    let effect_passes =
+        native_vulkan_scene_effect_passes_from_render_passes(&op.image_effect_passes);
     let fill_color = op
         .color
         .as_deref()
@@ -5244,7 +5770,8 @@ fn native_vulkan_scene_recordable_quad_from_op(
         .map(str::to_owned);
     let fill_rgba = fill_color
         .as_deref()
-        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, op.opacity));
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, op.opacity))
+        .map(|rgba| native_vulkan_scene_apply_recordable_color_effects(rgba, &effect_passes));
     let stroke_color = op
         .stroke_color
         .as_deref()
@@ -5252,13 +5779,15 @@ fn native_vulkan_scene_recordable_quad_from_op(
         .map(str::to_owned);
     let stroke_rgba = stroke_color
         .as_deref()
-        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, op.opacity));
+        .and_then(|color| native_vulkan_scene_rgba_from_hex(color, op.opacity))
+        .map(|rgba| native_vulkan_scene_apply_recordable_color_effects(rgba, &effect_passes));
     let stroke_width = stroke_rgba.map(|_| op.stroke_width.unwrap_or(1.0));
     let (color, rgba) = fill_color
         .clone()
         .zip(fill_rgba)
         .or_else(|| stroke_color.clone().zip(stroke_rgba))?;
     Some(NativeVulkanSceneRecordableQuad {
+        snapshot_time_ms,
         layer_index: op.layer_index,
         layer_id: op.layer_id.clone(),
         kind,
@@ -5281,6 +5810,7 @@ fn native_vulkan_scene_recordable_quad_from_op(
         text_align: op.text_align,
         path_data: op.path_data.clone(),
         path_fill_rule: op.path_fill_rule,
+        effect_passes,
         transform: op.transform,
     })
 }
@@ -7990,7 +8520,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_expands_effect_target_for_overhanging_puppet_mesh_once() {
+    fn draw_pass_plan_runs_waterwaves_puppet_mesh_in_layer_uv_domain() {
         let mut layer = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         layer.layer_id = "overhanging-puppet-waterwaves".to_owned();
         layer.source = Some(PathBuf::from("/tmp/body.gtex"));
@@ -8030,22 +8560,22 @@ mod tests {
                 SceneMeshVertex {
                     x: -70.0,
                     y: -60.0,
-                    u: 0.0,
-                    v: 0.0,
+                    u: -0.2,
+                    v: -0.1,
                     opacity: 1.0,
                 },
                 SceneMeshVertex {
                     x: 80.0,
                     y: -60.0,
-                    u: 1.0,
-                    v: 0.0,
+                    u: 1.1,
+                    v: -0.1,
                     opacity: 1.0,
                 },
                 SceneMeshVertex {
                     x: -70.0,
                     y: 60.0,
-                    u: 0.0,
-                    v: 1.0,
+                    u: -0.2,
+                    v: 1.2,
                     opacity: 1.0,
                 },
             ],
@@ -8067,13 +8597,13 @@ mod tests {
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
         assert_eq!(pass_plan.sampled_image_effect_targets.len(), 2);
-        assert_eq!(pass_plan.sampled_image_effect_targets[0].width, 160);
-        assert_eq!(pass_plan.sampled_image_effect_targets[0].height, 120);
-        assert_eq!(pass_plan.sampled_image_effect_targets[1].width, 160);
-        assert_eq!(pass_plan.sampled_image_effect_targets[1].height, 120);
+        assert_eq!(pass_plan.sampled_image_effect_targets[0].width, 130);
+        assert_eq!(pass_plan.sampled_image_effect_targets[0].height, 130);
+        assert_eq!(pass_plan.sampled_image_effect_targets[1].width, 130);
+        assert_eq!(pass_plan.sampled_image_effect_targets[1].height, 130);
         let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
-        assert_eq!(target.local_left, -30.0);
-        assert_eq!(target.local_top, -10.0);
+        assert!((target.local_left - -20.0).abs() < 1.0e-6);
+        assert!((target.local_top - -20.0).abs() < 1.0e-6);
         let base_step = &pass_plan.sampled_image_recording_steps[0];
         assert_eq!(base_step.material_pass.shader, None);
         assert!(base_step.material_pass.combo_keys.is_empty());
@@ -8081,33 +8611,45 @@ mod tests {
         assert!(base_step.material_pass.constant_shader_values.is_empty());
         let base_vertices = &pass_plan.sampled_image_vertices[base_step.first_vertex as usize
             ..base_step.first_vertex as usize + base_step.vertex_count as usize];
-        assert_eq!(base_vertices[0].position, [10.0, 0.0]);
-        assert_eq!(base_vertices[1].position, [160.0, 0.0]);
-        assert_eq!(base_vertices[2].position, [10.0, 120.0]);
+        assert_eq!(base_step.vertex_count, 4);
+        assert_eq!(base_vertices[0].position, [0.0, 0.0]);
+        assert_eq!(base_vertices[1].position, [130.0, 0.0]);
+        assert_eq!(base_vertices[2].position, [0.0, 130.0]);
+        assert!((base_vertices[0].uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((base_vertices[0].uv[1] - 1.2).abs() < 1.0e-6);
+        assert_eq!(base_vertices[0].effect_uv, base_vertices[0].uv);
         assert!((base_vertices[0].opacity - 0.3).abs() < 1.0e-6);
         let effect_step = &pass_plan.sampled_image_recording_steps[1];
         let effect_vertices = &pass_plan.sampled_image_vertices[effect_step.first_vertex as usize
             ..effect_step.first_vertex as usize + effect_step.vertex_count as usize];
         assert_eq!(effect_vertices[0].position, [0.0, 0.0]);
-        assert_eq!(effect_vertices[3].position, [160.0, 120.0]);
+        assert_eq!(effect_vertices[3].position, [130.0, 130.0]);
         assert_eq!(effect_vertices[0].uv, [0.0, 1.0]);
         assert_eq!(effect_vertices[3].uv, [1.0, 0.0]);
-        assert!((effect_vertices[0].effect_uv[0] - -0.3).abs() < 1.0e-6);
-        assert!((effect_vertices[0].effect_uv[1] - 1.1).abs() < 1.0e-6);
-        assert!((effect_vertices[3].effect_uv[0] - 1.3).abs() < 1.0e-6);
+        assert!((effect_vertices[0].effect_uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((effect_vertices[0].effect_uv[1] - 1.2).abs() < 1.0e-6);
+        assert!((effect_vertices[3].effect_uv[0] - 1.1).abs() < 1.0e-6);
         assert!((effect_vertices[3].effect_uv[1] - -0.1).abs() < 1.0e-6);
         assert_eq!(effect_vertices[0].opacity, 1.0);
         let final_step = &pass_plan.sampled_image_recording_steps[2];
         let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
             ..final_step.first_vertex as usize + final_step.vertex_count as usize];
-        assert_eq!(final_vertices[0].position, [-80.0, -60.0]);
-        assert_eq!(final_vertices[3].position, [80.0, 60.0]);
-        assert_eq!(final_vertices[0].uv, [0.0, 1.0]);
-        assert_eq!(final_vertices[3].uv, [1.0, 0.0]);
-        assert!((final_vertices[0].effect_uv[0] - -0.3).abs() < 1.0e-6);
-        assert!((final_vertices[0].effect_uv[1] - 1.1).abs() < 1.0e-6);
-        assert!((final_vertices[3].effect_uv[0] - 1.3).abs() < 1.0e-6);
-        assert!((final_vertices[3].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert_eq!(final_step.vertex_count, 3);
+        assert_eq!(final_vertices[0].position, [-70.0, -60.0]);
+        assert_eq!(final_vertices[1].position, [80.0, -60.0]);
+        assert_eq!(final_vertices[2].position, [-70.0, 60.0]);
+        assert!(final_vertices[0].uv[0].abs() < 1.0e-6);
+        assert!(final_vertices[0].uv[1].abs() < 1.0e-6);
+        assert!((final_vertices[1].uv[0] - 1.0).abs() < 1.0e-6);
+        assert!(final_vertices[1].uv[1].abs() < 1.0e-6);
+        assert!(final_vertices[2].uv[0].abs() < 1.0e-6);
+        assert!((final_vertices[2].uv[1] - 1.0).abs() < 1.0e-6);
+        assert!((final_vertices[0].effect_uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((final_vertices[0].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert!((final_vertices[1].effect_uv[0] - 1.1).abs() < 1.0e-6);
+        assert!((final_vertices[1].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert!((final_vertices[2].effect_uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((final_vertices[2].effect_uv[1] - 1.2).abs() < 1.0e-6);
         assert_eq!(final_vertices[0].opacity, 1.0);
     }
 
@@ -9552,6 +10094,131 @@ mod tests {
         assert!(!pass_plan.quad_indices.is_empty());
         assert_eq!(pass_plan.text_op_count, 1);
         assert!(!pass_plan.requires_text_geometry);
+    }
+
+    #[test]
+    fn draw_pass_plan_applies_we_scroll_to_recordable_text_geometry() {
+        let mut direct = draw_op(0, NativeVulkanSceneDrawOpKind::Text);
+        direct.text = Some("A".to_owned());
+        direct.color = Some("#ffffff".to_owned());
+        direct.font_size = Some(16.0);
+        direct.width = Some(128.0);
+        direct.height = Some(32.0);
+        direct.transform.anchor_x = 0.0;
+        direct.transform.anchor_y = 0.0;
+        let mut scrolled = direct.clone();
+        scrolled.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/scroll/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/scroll".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                (
+                    "repeat".to_owned(),
+                    serde_json::Value::String("1 1".to_owned()),
+                ),
+                ("speedx".to_owned(), serde_json::json!(-0.5)),
+                ("speedy".to_owned(), serde_json::json!(0.0)),
+            ]),
+        }];
+        let direct_plan = native_vulkan_scene_draw_pass_plan(&NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 1000,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![direct],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        });
+        let scrolled_plan = native_vulkan_scene_draw_pass_plan(&NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 1000,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![scrolled],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        });
+        let direct_min_x = direct_plan
+            .quad_vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let scrolled_min_x = scrolled_plan
+            .quad_vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+
+        assert_eq!(scrolled_plan.recordable_quads[0].effect_passes.len(), 1);
+        assert!((scrolled_min_x - direct_min_x - 32.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn draw_pass_plan_applies_we_colorkey_to_recordable_text_color() {
+        let mut text = draw_op(0, NativeVulkanSceneDrawOpKind::Text);
+        text.text = Some("A".to_owned());
+        text.color = Some("#000000".to_owned());
+        text.font_size = Some(16.0);
+        text.width = Some(64.0);
+        text.height = Some(32.0);
+        text.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/colorkey/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/colorkey".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                ("alpha".to_owned(), serde_json::json!(0.0)),
+                (
+                    "color".to_owned(),
+                    serde_json::Value::String("0 0 0".to_owned()),
+                ),
+                ("fuzziness".to_owned(), serde_json::json!(0.39)),
+                ("tolerance".to_owned(), serde_json::json!(2.53)),
+            ]),
+        }];
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![text],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        });
+
+        assert_eq!(pass_plan.recordable_quads[0].effect_passes.len(), 1);
+        assert_eq!(pass_plan.recordable_quads[0].rgba[3], 0.0);
+        assert!(
+            pass_plan
+                .quad_vertices
+                .iter()
+                .all(|vertex| vertex.rgba[3] == 0.0)
+        );
     }
 
     #[test]

@@ -21,17 +21,14 @@ use super::descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
 };
 pub(in crate::renderer::native_vulkan::vulkan) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources;
 pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::{
     NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
     VulkanaliaDecodedImagePresentSamplerResources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
-};
-#[cfg(feature = "native-vulkan-video")]
-pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::{
-    native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources,
-    native_vulkan_vulkanalia_update_ffmpeg_decoded_gpu_frame_present_sampler_resources,
 };
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
@@ -279,6 +276,15 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub draws_tail: Vec<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot>,
     pub frame_order_model: &'static str,
     pub present_resource_reuse_model: &'static str,
+    pub ffmpeg_retained_avframe_count: u32,
+    pub ffmpeg_retained_avframe_peak_count: u32,
+    pub descriptor_sampler_cache_entry_count: u32,
+    pub descriptor_sampler_cache_peak_entry_count: u32,
+    pub descriptor_sampler_cache_rewrite_count: u32,
+    pub descriptor_sampler_cache_recreate_count: u32,
+    pub descriptor_sampler_cache_resource_heap_bytes: u64,
+    pub descriptor_sampler_cache_sampler_heap_bytes: u64,
+    pub descriptor_sampler_cache_total_heap_bytes: u64,
     pub telemetry_retention_model: &'static str,
     pub all_zero_copy_presented: bool,
     pub uses_dynamic_rendering: bool,

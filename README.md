@@ -2,10 +2,10 @@
 
 [中文说明](README.zh-CN.md)
 
-Gilder is a native Wayland wallpaper engine for niri, Hyprland, and other
-independent compositors. The current renderer direction is FFmpeg demux/parser
-and Vulkan hardware decode feeding Gilder/Vulkanalia descriptor-heap render and
-Wayland present.
+Gilder is a native wallpaper engine for niri, Hyprland, and other independent
+compositors. The current renderer direction is FFmpeg demux/parser and Vulkan
+hardware decode feeding Gilder/Vulkanalia descriptor-heap render and Wayland
+present.
 
 Legacy GStreamer display-sink, decoded-frame CPU copy, descriptor-set fallback,
 and old planning documents have been removed. Native video evidence must use
@@ -18,13 +18,15 @@ as a performance result.
 - Daemon IPC, state persistence, package loading, and desktop-state policy are
   present.
 - Native video targets FFmpeg `h264_vulkan`, `hevc_vulkan`, and `av1_vulkan`
-  hardware decode producing `AV_PIX_FMT_VULKAN` frames.
+  hardware decode producing `AV_PIX_FMT_VULKAN`/`AVVkFrame` frames.
 - The active render path samples GPU Y/UV plane descriptors through
   `VK_EXT_descriptor_heap` and presents through Wayland without decoded-frame
-  CPU copies. The old Gilder-owned Vulkan Video submit path is compatibility
-  evidence during the migration.
-- Current 4K240 video performance gates are `average_present_fps >= 239.999`
-  and `performance_max_private_dirty_kib < 25000`.
+  CPU copies.
+- FFmpeg audio clock/output is modular and separate from video texture
+  ownership; video consumes only compact audio-master-clock pacing state.
+- Current 4K240 FFmpeg mainline evidence is roughly 240 fps with zero-copy
+  present. H.264/H.265 use more host memory than legacy; that is tracked as an
+  engineering cost unless FPS or bounded-retention telemetry regresses.
 
 ## Engineering Rule
 
@@ -37,17 +39,15 @@ any remaining boundary explicitly.
 
 ## Next Work
 
-1. Audio integration: add an FFmpeg-owned audio demux/packet queue and clock
-   serial path first, prove muted clock-only video pacing, then enable audible
-   output.
-2. Full scene wallpaper support: treat static wallpapers as a single-image
+1. FFmpeg video mainline: keep 4K240 H.264/H.265/AV1 10s matrices green, track
+   dgop memory, retained `AVFrame` refs, descriptor heap bytes, and zero-copy
+   state.
+2. Modular platform boundaries: decouple media decode, decoded-image present,
+   audio clock, surface host, and event-loop ownership so a future Win32 host
+   can replace Wayland-facing pieces without rewriting the FFmpeg/Vulkan path.
+3. Full scene wallpaper support: treat static wallpapers as a single-image
    scene case, then connect static image, video, properties, transforms, daemon
    output routing, pause/resume, and package state into one scene lifecycle.
-3. Video coverage and regression: after the FFmpeg Vulkan HW decode mainline is
-   wired through descriptor-heap present, expand real-source and generated
-   matrices for profiles, bit depths, reference patterns, containers, arbitrary
-   entry points, loop boundaries, long-run resources, and integration
-   regressions.
 4. Script hygiene: keep only codec smoke, real-source matrix, performance,
    packaging, workshop, and actively used diagnostic helpers. Remove one-off
    spike scripts instead of carrying compatibility wrappers.
@@ -72,15 +72,20 @@ any remaining boundary explicitly.
   item planning.
 - `src/renderer/native_vulkan/scene/`: scene-lite runtime planning and native
   Vulkan present entry points.
-- `src/renderer/native_vulkan/audio/`: audio policy surface for the next FFmpeg
-  clock/output integration step.
+- `src/renderer/native_vulkan/audio/`: FFmpeg audio clock/output policy and
+  runtime helpers.
+- `docs/native-vulkan-video-ffmpeg-mainline.md`: active FFmpeg Vulkan hardware
+  decode mainline plan, memory evidence, and video validation commands.
 - `docs/native-vulkan-scene-refactor-goals.md`: active native scene renderer
   architecture plan and evidence gates.
 - `docs/packaging.md`: install and distribution notes.
 - `docs/man/`: man pages.
 - `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`: current
-  codec evidence scripts.
-- `scripts/native-vulkan-real-source-matrix.sh`: real-source coverage runner.
+  legacy Vulkan Video compatibility evidence scripts.
+- `scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh`: FFmpeg Vulkan hardware
+  decode 4K240 and real-source matrix runner.
+- `scripts/native-vulkan-real-source-matrix.sh`: older real-source coverage
+  runner for the native Vulkan Video path.
 - `scripts/performance-snapshot.sh`: CPU/RSS/PSS/USS/Private_Dirty/GPU memory
   sampler.
 
@@ -107,32 +112,26 @@ packages can use `manifest.gilder.json` or authoring-friendly
 
 ## Video Evidence
 
-Performance evidence must be long enough for sampling and must pass
-`--performance-snapshot`. Functional-only smoke output is not enough for CPU,
-GPU, or memory claims. Codec smoke scripts do not provide allocator tuning
-profiles; they clear known glibc/malloc tuning variables before launching the
-video process so evidence matches untuned distribution behavior.
-Current 4K240 video performance gates are `average_present_fps >= 239.999` and
-`performance_max_private_dirty_kib < 25000`.
+Performance evidence must be long enough for sampling. Functional-only smoke
+output is not enough for CPU, GPU, memory, or zero-copy claims. For the FFmpeg
+mainline, use dgop-backed matrix runs and retain the generated CSV/telemetry
+paths in the report.
 
 Example shape:
 
 ```sh
-scripts/native-vulkan-h264-ready-prefix-video-smoke.sh \
+scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh \
   --no-build \
+  --label video-mainline-10s \
+  --duration 10 \
+  --target-fps source \
   --display wayland-1 \
-  --output HDMI-A-1 \
-  --source /path/to/source.mp4 \
-  --target-fps 60 \
-  --decode-prefix 600 \
-  --playback-frames 600 \
-  --arbitrary-entry-offset 2.3 \
-  --performance-snapshot \
-  --performance-duration 6 \
-  --performance-interval 1 \
-  --report-dir /tmp/gilder-h264-real-source
+  --output HDMI-A-1
 ```
 
-The required fields are `average_present_fps`, decoded/presented counts,
-average CPU percent, RSS/PSS/USS, `Private_Dirty`, process GPU memory,
-`descriptor_sets`, `descriptor_heap_only`, and zero-copy state.
+The required fields are `average_present_fps`, `presented_frame_count`,
+`all_zero_copy_presented`, dgop memory, smaps peak path,
+`ffmpeg_retained_avframe_peak_count`,
+`descriptor_sampler_cache_peak_entry_count`,
+`descriptor_sampler_cache_total_heap_kb`, descriptor rewrite/recreate counts,
+codec/source metadata, and the inferred codec host-memory model.

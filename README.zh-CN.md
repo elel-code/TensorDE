@@ -2,7 +2,7 @@
 
 [English README](README.md)
 
-Gilder 是面向 niri、Hyprland 等独立 Wayland compositor 的原生壁纸引擎。当前主线是
+Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。当前主线是
 FFmpeg 负责 demux/parser/packet 和 Vulkan 硬件解码，Gilder/Vulkanalia 负责
 `AV_PIX_FMT_VULKAN`/`AVVkFrame` 到 descriptor heap、渲染和 Wayland present。
 
@@ -15,23 +15,25 @@ zero-copy 状态。
 
 - 已有 daemon IPC、状态持久化、包加载和 desktop-state policy。
 - 原生 video 主线目标是 FFmpeg `h264_vulkan`、`hevc_vulkan`、`av1_vulkan` 硬解输出
-  `AV_PIX_FMT_VULKAN`。
+  `AV_PIX_FMT_VULKAN`/`AVVkFrame`。
 - 当前渲染路径通过 `VK_EXT_descriptor_heap` 采样 GPU Y/UV plane descriptor，并通过
-  Wayland present，不保留 decoded-frame CPU copy；旧 Gilder Vulkan Video submit 路径仅作
-  迁移期兼容证据。
-- 当前 4K240 video 性能门槛是 `average_present_fps >= 239.999` 和
-  `performance_max_private_dirty_kib < 25000`。
+  Wayland present，不保留 decoded-frame CPU copy。
+- FFmpeg audio clock/output 是独立模块，不绑定 video texture ownership；video 只消费很小的
+  audio-master-clock pacing 状态。
+- 当前 4K240 FFmpeg mainline 证据约为 240 fps、zero-copy present。H.264/H.265 的 host
+  memory 比 legacy 高，这先作为工程代价跟踪；只有 FPS 或 bounded-retention telemetry 退化时
+  才视为主线问题。
 
 ## 下一步计划
 
-1. Audio 集成：先加入 FFmpeg 拥有的 audio demux/packet queue 和 clock serial 路径，
-   先证明 muted clock-only 驱动 video pacing，再开启有声输出。
-2. 完整 scene 壁纸能力：把静态壁纸视为单 image layer 的 scene 特例，再把静态图、
+1. FFmpeg video 主线：保持 4K240 H.264/H.265/AV1 10s matrix 通过，持续跟踪 dgop memory、
+   retained `AVFrame` refs、descriptor heap bytes 和 zero-copy 状态。
+2. 模块化平台边界：解耦 media decode、decoded-image present、audio clock、surface host 和
+   event-loop ownership，让未来 Win32 host 能替换 Wayland 相关部分，而不重写 FFmpeg/Vulkan
+   路径。
+3. 完整 scene 壁纸能力：把静态壁纸视为单 image layer 的 scene 特例，再把静态图、
    video、properties、transform、daemon output routing、pause/resume 和 package state
    接入统一 scene lifecycle。
-3. Video 覆盖和回归：主线切到 FFmpeg Vulkan HW decode 后，继续扩展真实源和生成源矩阵，
-   覆盖 profile、bit depth、reference pattern、container、任意入口、loop boundary、长跑资源
-   稳定性和 audio/scene 集成回归。
 4. 脚本清理：只保留 codec smoke、real-source matrix、performance、packaging、workshop
    和仍在使用的诊断 helper。一次性试验脚本直接删除，不做兼容 wrapper。
 
@@ -51,13 +53,16 @@ zero-copy 状态。
   `scene/`、`video/` 拆分。
 - `src/renderer/native_vulkan/present/`：clear/static image present 和 render item 规划。
 - `src/renderer/native_vulkan/scene/`：scene-lite runtime 规划和原生 Vulkan present 入口。
-- `src/renderer/native_vulkan/audio/`：下一步 FFmpeg clock/output 集成使用的 audio policy
-  边界。
+- `src/renderer/native_vulkan/audio/`：FFmpeg audio clock/output policy 和 runtime helper。
+- `docs/native-vulkan-video-ffmpeg-mainline.md`：当前 FFmpeg Vulkan 硬解主线计划、内存证据和
+  video 验证命令。
 - `docs/native-vulkan-scene-refactor-goals.md`：当前原生 scene renderer 架构计划和证据门槛。
 - `docs/packaging.md`：安装和发行说明。
 - `docs/man/`：man pages。
-- `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`：当前三种格式证据脚本。
-- `scripts/native-vulkan-real-source-matrix.sh`：真实源覆盖矩阵。
+- `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`：旧 Vulkan Video 路径的
+  兼容证据脚本。
+- `scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh`：FFmpeg Vulkan 硬解 4K240 和真实源矩阵。
+- `scripts/native-vulkan-real-source-matrix.sh`：旧 native Vulkan Video 路径的真实源覆盖矩阵。
 - `scripts/performance-snapshot.sh`：CPU/RSS/PSS/USS/Private_Dirty/GPU memory 采样。
 
 ## 常用命令
@@ -81,30 +86,23 @@ cargo run --bin gilder-convert -- pack ./examples/wallpapers/static-demo.gwpdir 
 
 ## 视频证据要求
 
-性能证据必须播放足够长，且必须开启 `--performance-snapshot`。只跑功能 smoke 不能用于说明
-CPU、GPU 或内存占用。codec smoke 不再提供 allocator 调参 profile；启动视频进程前只会清掉
-已知 glibc/malloc 调参变量，让证据保持未调参的发行环境口径。
-当前 4K240 video 性能门槛是 `average_present_fps >= 239.999` 和
-`performance_max_private_dirty_kib < 25000`。
+性能证据必须播放足够长。只跑功能 smoke 不能用于说明 CPU、GPU、内存或 zero-copy。FFmpeg
+主线使用 dgop-backed matrix，并在报告中保留生成的 CSV/telemetry 路径。
 
 示例：
 
 ```sh
-scripts/native-vulkan-h264-ready-prefix-video-smoke.sh \
+scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh \
   --no-build \
+  --label video-mainline-10s \
+  --duration 10 \
+  --target-fps source \
   --display wayland-1 \
-  --output HDMI-A-1 \
-  --source /path/to/source.mp4 \
-  --target-fps 60 \
-  --decode-prefix 600 \
-  --playback-frames 600 \
-  --arbitrary-entry-offset 2.3 \
-  --performance-snapshot \
-  --performance-duration 6 \
-  --performance-interval 1 \
-  --report-dir /tmp/gilder-h264-real-source
+  --output HDMI-A-1
 ```
 
-必须保留的字段包括 `average_present_fps`、decoded/presented 帧数、平均 CPU、RSS/PSS/USS、
-`Private_Dirty`、进程 GPU memory、`descriptor_sets`、`descriptor_heap_only` 和 zero-copy
-状态。
+必须保留的字段包括 `average_present_fps`、`presented_frame_count`、
+`all_zero_copy_presented`、dgop memory、smaps peak path、
+`ffmpeg_retained_avframe_peak_count`、`descriptor_sampler_cache_peak_entry_count`、
+`descriptor_sampler_cache_total_heap_kb`、descriptor rewrite/recreate counts、codec/source
+metadata，以及推断出的 codec host-memory model。

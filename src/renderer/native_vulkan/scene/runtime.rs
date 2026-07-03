@@ -3853,6 +3853,7 @@ pub struct NativeVulkanSceneDrawOpSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneRecordableQuadSnapshot {
+    pub snapshot_time_ms: u64,
     pub layer_index: usize,
     pub layer_id: String,
     pub kind: &'static str,
@@ -3875,6 +3876,7 @@ pub struct NativeVulkanSceneRecordableQuadSnapshot {
     pub text_align: Option<SceneTextAlign>,
     pub path_data: Option<String>,
     pub path_fill_rule: ScenePathFillRule,
+    pub effect_passes: Vec<NativeVulkanSceneEffectRecordSnapshot>,
     pub transform: SceneTransform,
 }
 
@@ -4307,6 +4309,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .recordable_quads
             .into_iter()
             .map(|quad| NativeVulkanSceneRecordableQuadSnapshot {
+                snapshot_time_ms: quad.snapshot_time_ms,
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id,
                 kind: quad.kind,
@@ -4329,6 +4332,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 text_align: quad.text_align,
                 path_data: quad.path_data,
                 path_fill_rule: quad.path_fill_rule,
+                effect_passes: quad
+                    .effect_passes
+                    .iter()
+                    .map(native_vulkan_scene_effect_record_snapshot)
+                    .collect(),
                 transform: quad.transform,
             })
             .collect(),

@@ -540,6 +540,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRecordableQuad {
+    pub(in crate::renderer::native_vulkan::scene) snapshot_time_ms: u64,
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) kind: &'static str,
@@ -562,6 +563,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRecordable
     pub(in crate::renderer::native_vulkan::scene) text_align: Option<SceneTextAlign>,
     pub(in crate::renderer::native_vulkan::scene) path_data: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) path_fill_rule: ScenePathFillRule,
+    pub(in crate::renderer::native_vulkan::scene) effect_passes: Vec<NativeVulkanSceneEffectRecord>,
     pub(in crate::renderer::native_vulkan::scene) transform: SceneTransform,
 }
 

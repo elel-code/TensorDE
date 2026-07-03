@@ -121,7 +121,7 @@ impl NativeVulkanSceneDrawPassBuild {
         let recordable_quads = draw_plan
             .draw_ops
             .iter()
-            .filter_map(native_vulkan_scene_recordable_quad)
+            .filter_map(|op| native_vulkan_scene_recordable_quad(op, draw_plan.snapshot_time_ms))
             .collect::<Vec<_>>();
         let recordable_op_count = recordable_quads.len();
         let quad_recording_payload = native_vulkan_scene_quad_recording_payload(&recordable_quads);

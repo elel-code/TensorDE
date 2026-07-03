@@ -342,9 +342,15 @@ pub struct NativeVulkanFfmpegVulkanHwDecoderSnapshot {
     pub max_packet_size_bytes: i32,
     pub bitstream_buffer_model: &'static str,
     pub inferred_min_ffmpeg_slice_buffer_slot_bytes: u64,
+    pub codec_host_memory_model: &'static str,
+    pub inferred_codec_resolution_scaled_host_bytes: u64,
     pub h264_refstruct_model: &'static str,
     pub inferred_h264_refstruct_bytes_per_picture: u64,
     pub inferred_h264_refstruct_min_three_picture_bytes: u64,
+    pub hevc_refstruct_model: &'static str,
+    pub inferred_hevc_refstruct_bytes_per_picture: u64,
+    pub inferred_hevc_refstruct_min_three_picture_bytes: u64,
+    pub inferred_hevc_layer_tables_bytes: u64,
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanFfmpegVulkanHwDecoder {
@@ -720,6 +726,33 @@ impl NativeVulkanFfmpegVulkanHwDecoder {
     pub(in crate::renderer::native_vulkan) fn snapshot(
         &self,
     ) -> NativeVulkanFfmpegVulkanHwDecoderSnapshot {
+        let coded_extent = unsafe {
+            (
+                gilder_avcodec_context_coded_width(self.codec_context.ptr.as_ptr()),
+                gilder_avcodec_context_coded_height(self.codec_context.ptr.as_ptr()),
+            )
+        };
+        let inferred_h264_refstruct_bytes_per_picture =
+            native_vulkan_ffmpeg_infer_h264_refstruct_picture_bytes(
+                self.codec,
+                coded_extent.0,
+                coded_extent.1,
+            );
+        let inferred_h264_refstruct_min_three_picture_bytes =
+            inferred_h264_refstruct_bytes_per_picture.saturating_mul(3);
+        let inferred_hevc_refstruct_bytes_per_picture =
+            native_vulkan_ffmpeg_infer_hevc_refstruct_picture_bytes(
+                self.codec,
+                coded_extent.0,
+                coded_extent.1,
+            );
+        let inferred_hevc_refstruct_min_three_picture_bytes =
+            inferred_hevc_refstruct_bytes_per_picture.saturating_mul(3);
+        let inferred_hevc_layer_tables_bytes = native_vulkan_ffmpeg_infer_hevc_layer_table_bytes(
+            self.codec,
+            coded_extent.0,
+            coded_extent.1,
+        );
         NativeVulkanFfmpegVulkanHwDecoderSnapshot {
             binding: "ffmpeg-vulkan-hwdecode",
             route: "avcodec-send-receive-avvkframe",
@@ -731,12 +764,7 @@ impl NativeVulkanFfmpegVulkanHwDecoder {
             hw_device: self.hw_device_snapshot.clone(),
             software_decode_fallback: false,
             decoded_frame_format: "AV_PIX_FMT_VULKAN",
-            coded_extent: unsafe {
-                (
-                    gilder_avcodec_context_coded_width(self.codec_context.ptr.as_ptr()),
-                    gilder_avcodec_context_coded_height(self.codec_context.ptr.as_ptr()),
-                )
-            },
+            coded_extent,
             thread_count: unsafe {
                 gilder_avcodec_context_thread_count(self.codec_context.ptr.as_ptr())
             },
@@ -775,20 +803,23 @@ impl NativeVulkanFfmpegVulkanHwDecoder {
                 native_vulkan_ffmpeg_infer_vulkan_slice_buffer_slot_bytes(
                     self.max_packet_size_bytes,
                 ),
-            h264_refstruct_model: "ffmpeg-h264-hwaccel-still-allocates-per-picture-qscale-mbtype-motionval-refindex",
-            inferred_h264_refstruct_bytes_per_picture:
-                native_vulkan_ffmpeg_infer_h264_refstruct_picture_bytes(
+            codec_host_memory_model: native_vulkan_ffmpeg_codec_resolution_scaled_host_memory_model(
+                self.codec,
+            ),
+            inferred_codec_resolution_scaled_host_bytes:
+                native_vulkan_ffmpeg_infer_codec_resolution_scaled_host_bytes(
                     self.codec,
-                    unsafe { gilder_avcodec_context_coded_width(self.codec_context.ptr.as_ptr()) },
-                    unsafe { gilder_avcodec_context_coded_height(self.codec_context.ptr.as_ptr()) },
+                    inferred_h264_refstruct_min_three_picture_bytes,
+                    inferred_hevc_refstruct_min_three_picture_bytes,
+                    inferred_hevc_layer_tables_bytes,
                 ),
-            inferred_h264_refstruct_min_three_picture_bytes:
-                native_vulkan_ffmpeg_infer_h264_refstruct_picture_bytes(
-                    self.codec,
-                    unsafe { gilder_avcodec_context_coded_width(self.codec_context.ptr.as_ptr()) },
-                    unsafe { gilder_avcodec_context_coded_height(self.codec_context.ptr.as_ptr()) },
-                )
-                .saturating_mul(3),
+            h264_refstruct_model: "ffmpeg-h264-hwaccel-still-allocates-per-picture-qscale-mbtype-motionval-refindex",
+            inferred_h264_refstruct_bytes_per_picture,
+            inferred_h264_refstruct_min_three_picture_bytes,
+            hevc_refstruct_model: "ffmpeg-hevc-hwaccel-still-allocates-resolution-scaled-mvfield-refpiclisttab-refstruct-pools-plus-layer-tables",
+            inferred_hevc_refstruct_bytes_per_picture,
+            inferred_hevc_refstruct_min_three_picture_bytes,
+            inferred_hevc_layer_tables_bytes,
         }
     }
 
@@ -1176,6 +1207,118 @@ fn native_vulkan_ffmpeg_infer_h264_refstruct_picture_bytes(
         .saturating_add(ref_index_one_list.saturating_mul(2))
 }
 
+fn native_vulkan_ffmpeg_codec_resolution_scaled_host_memory_model(
+    codec: NativeVulkanVideoSessionCodec,
+) -> &'static str {
+    match codec {
+        NativeVulkanVideoSessionCodec::H264High8 => "ffmpeg-h264-refstruct-min-three-pictures",
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
+            "ffmpeg-hevc-refstruct-min-three-pictures-plus-layer-tables-assuming-min-pu4-ctb64"
+        }
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => {
+            "no-large-resolution-scaled-ffmpeg-av1-host-table-observed"
+        }
+    }
+}
+
+fn native_vulkan_ffmpeg_infer_codec_resolution_scaled_host_bytes(
+    codec: NativeVulkanVideoSessionCodec,
+    h264_min_three_picture_bytes: u64,
+    hevc_min_three_picture_bytes: u64,
+    hevc_layer_tables_bytes: u64,
+) -> u64 {
+    match codec {
+        NativeVulkanVideoSessionCodec::H264High8 => h264_min_three_picture_bytes,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10 => {
+            hevc_min_three_picture_bytes.saturating_add(hevc_layer_tables_bytes)
+        }
+        NativeVulkanVideoSessionCodec::Av1Main8 | NativeVulkanVideoSessionCodec::Av1Main10 => 0,
+    }
+}
+
+fn native_vulkan_ffmpeg_infer_hevc_refstruct_picture_bytes(
+    codec: NativeVulkanVideoSessionCodec,
+    coded_width: c_int,
+    coded_height: c_int,
+) -> u64 {
+    if !matches!(
+        codec,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
+    ) || coded_width <= 0
+        || coded_height <= 0
+    {
+        return 0;
+    }
+
+    // HEVC keeps motion-vector fields and CTB ref-list tables even when Vulkan
+    // owns the pixel decode. Without private HEVCSPS access we model the common
+    // main-profile shape used by our corpus: min PU 4x4 and CTB 64x64.
+    let width = u64::try_from(coded_width).unwrap_or(0);
+    let height = u64::try_from(coded_height).unwrap_or(0);
+    let min_pu_count = native_vulkan_ffmpeg_ceil_div(width, 4)
+        .saturating_mul(native_vulkan_ffmpeg_ceil_div(height, 4));
+    let ctb_count = native_vulkan_ffmpeg_ceil_div(width, 64)
+        .saturating_mul(native_vulkan_ffmpeg_ceil_div(height, 64));
+    const HEVC_MV_FIELD_BYTES: u64 = 12;
+    const HEVC_REF_PIC_LIST_TAB_BYTES: u64 = 528;
+    min_pu_count
+        .saturating_mul(HEVC_MV_FIELD_BYTES)
+        .saturating_add(ctb_count.saturating_mul(HEVC_REF_PIC_LIST_TAB_BYTES))
+}
+
+fn native_vulkan_ffmpeg_infer_hevc_layer_table_bytes(
+    codec: NativeVulkanVideoSessionCodec,
+    coded_width: c_int,
+    coded_height: c_int,
+) -> u64 {
+    if !matches!(
+        codec,
+        NativeVulkanVideoSessionCodec::H265Main8 | NativeVulkanVideoSessionCodec::H265Main10
+    ) || coded_width <= 0
+        || coded_height <= 0
+    {
+        return 0;
+    }
+
+    let width = u64::try_from(coded_width).unwrap_or(0);
+    let height = u64::try_from(coded_height).unwrap_or(0);
+    let ctb_count = native_vulkan_ffmpeg_ceil_div(width, 64)
+        .saturating_mul(native_vulkan_ffmpeg_ceil_div(height, 64));
+    let min_cb_count = native_vulkan_ffmpeg_ceil_div(width, 8)
+        .saturating_mul(native_vulkan_ffmpeg_ceil_div(height, 8));
+    let min_tb_count = native_vulkan_ffmpeg_ceil_div(width, 4)
+        .saturating_mul(native_vulkan_ffmpeg_ceil_div(height, 4));
+    let min_pu_width = native_vulkan_ffmpeg_ceil_div(width, 4);
+    let min_pu_height = native_vulkan_ffmpeg_ceil_div(height, 4);
+    let min_pu_count = min_pu_width.saturating_mul(min_pu_height);
+    let pcm_count = min_pu_width
+        .saturating_add(1)
+        .saturating_mul(min_pu_height.saturating_add(1));
+    let boundary_strength_count = width
+        .saturating_div(4)
+        .saturating_add(1)
+        .saturating_mul(height.saturating_div(4).saturating_add(1))
+        .saturating_mul(2);
+
+    const HEVC_SAO_PARAMS_BYTES: u64 = 144;
+    const HEVC_DB_PARAMS_BYTES: u64 = 8;
+    ctb_count
+        .saturating_mul(HEVC_SAO_PARAMS_BYTES.saturating_add(HEVC_DB_PARAMS_BYTES))
+        .saturating_add(min_cb_count.saturating_mul(2))
+        .saturating_add(min_tb_count)
+        .saturating_add(min_pu_count)
+        .saturating_add(pcm_count)
+        .saturating_add(ctb_count.saturating_mul(6))
+        .saturating_add(boundary_strength_count)
+}
+
+fn native_vulkan_ffmpeg_ceil_div(value: u64, divisor: u64) -> u64 {
+    if divisor == 0 {
+        return 0;
+    }
+    value.saturating_add(divisor.saturating_sub(1)) / divisor
+}
+
 fn native_vulkan_ffmpeg_video_codec_operation_labels(
     operations: vk::VideoCodecOperationFlagsKHR,
 ) -> Vec<&'static str> {
@@ -1352,5 +1495,46 @@ mod tests {
         );
 
         assert_eq!(labels, vec!["decode-h264", "decode-h265", "decode-av1"]);
+    }
+
+    #[test]
+    fn ffmpeg_hw_decode_host_memory_inference_matches_4k_shape() {
+        let h264_per_picture = native_vulkan_ffmpeg_infer_h264_refstruct_picture_bytes(
+            NativeVulkanVideoSessionCodec::H264High8,
+            3840,
+            2160,
+        );
+        assert_eq!(h264_per_picture.saturating_mul(3), 13_730_766);
+
+        let hevc_per_picture = native_vulkan_ffmpeg_infer_hevc_refstruct_picture_bytes(
+            NativeVulkanVideoSessionCodec::H265Main8,
+            3840,
+            2160,
+        );
+        let hevc_layer_tables = native_vulkan_ffmpeg_infer_hevc_layer_table_bytes(
+            NativeVulkanVideoSessionCodec::H265Main8,
+            3840,
+            2160,
+        );
+        assert_eq!(hevc_per_picture, 7_297_920);
+        assert_eq!(hevc_layer_tables, 3_178_023);
+        assert_eq!(
+            native_vulkan_ffmpeg_infer_codec_resolution_scaled_host_bytes(
+                NativeVulkanVideoSessionCodec::H265Main8,
+                0,
+                hevc_per_picture.saturating_mul(3),
+                hevc_layer_tables,
+            ),
+            25_071_783
+        );
+        assert_eq!(
+            native_vulkan_ffmpeg_infer_codec_resolution_scaled_host_bytes(
+                NativeVulkanVideoSessionCodec::Av1Main8,
+                0,
+                0,
+                0,
+            ),
+            0
+        );
     }
 }

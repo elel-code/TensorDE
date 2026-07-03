@@ -2,6 +2,8 @@
 
 use std::collections::VecDeque;
 #[cfg(feature = "native-vulkan-video")]
+use std::env;
+#[cfg(feature = "native-vulkan-video")]
 use std::path::PathBuf;
 use std::sync::{Mutex, mpsc};
 use std::thread;
@@ -86,7 +88,6 @@ use super::render_present::{
     VulkanaliaDecodedImagePresentFrameResources, VulkanaliaDecodedImagePresentImageSource,
     native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources,
     native_vulkan_vulkanalia_present_decoded_image_frame_with_sources,
-    native_vulkan_vulkanalia_update_ffmpeg_decoded_gpu_frame_present_sampler_resources,
 };
 use super::swapchain::{
     OPTIONAL_INSTANCE_EXTENSIONS, REQUIRED_INSTANCE_EXTENSIONS, create_vulkanalia_swapchain_plan,
@@ -150,7 +151,6 @@ pub(in crate::renderer::native_vulkan::vulkan) const VIDEO_PRESENT_SESSION_RETAI
     "video-present-session-retained-resource";
 const FFMPEG_VIDEO_PICTURE_QUEUE_SIZE: usize = 3;
 const FFMPEG_VULKAN_HWDECODE_FRAME_QUEUE_SIZE: usize = 0;
-const FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE: bool = false;
 const DECODED_IMAGE_PRESENT_STARTUP_PREROLL_FRAMES: usize = 1;
 const FFMPEG_SINGLE_DECODE_THREAD_COUNT: u32 = 1;
 const FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE: &str =
@@ -628,6 +628,7 @@ struct NativeVulkanFfmpegPresentedFrameRetentionQueue<'a> {
     device: &'a Device,
     frame_resources: &'a VulkanaliaDecodedImagePresentFrameResources,
     frames: VecDeque<NativeVulkanFfmpegPresentedFrameRetention>,
+    peak_frame_count: usize,
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -640,6 +641,7 @@ impl<'a> NativeVulkanFfmpegPresentedFrameRetentionQueue<'a> {
             device,
             frame_resources,
             frames: VecDeque::new(),
+            peak_frame_count: 0,
         }
     }
 
@@ -654,6 +656,7 @@ impl<'a> NativeVulkanFfmpegPresentedFrameRetentionQueue<'a> {
                 present_frame_slot,
                 _decoded_frame: decoded_frame,
             });
+        self.peak_frame_count = self.peak_frame_count.max(self.frames.len());
         self.release_completed_frames()
     }
 
@@ -700,8 +703,22 @@ impl<'a> NativeVulkanFfmpegPresentedFrameRetentionQueue<'a> {
         Ok(())
     }
 
+    fn clear_retained_frames(&mut self) {
+        while let Some(frame) = self.frames.pop_front() {
+            self.destroy_retained_frame(frame);
+        }
+    }
+
     fn destroy_retained_frame(&self, frame: NativeVulkanFfmpegPresentedFrameRetention) {
         drop(frame);
+    }
+
+    fn frame_count(&self) -> u32 {
+        self.frames.len().min(u32::MAX as usize) as u32
+    }
+
+    fn peak_frame_count(&self) -> u32 {
+        self.peak_frame_count.min(u32::MAX as usize) as u32
     }
 }
 
@@ -719,7 +736,6 @@ impl Drop for NativeVulkanFfmpegPresentedFrameRetentionQueue<'_> {
 
 #[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanFfmpegPresentSamplerCacheEntry {
-    present_frame_slot: u32,
     image: vk::Image,
     picture_format: vk::Format,
     array_layers: u32,
@@ -765,9 +781,8 @@ impl<'a> NativeVulkanFfmpegPresentSamplerCache<'a> {
         }
     }
 
-    fn ensure_for_present_frame_slot(
+    fn ensure_for_descriptor_source(
         &mut self,
-        present_frame_slot: u32,
         descriptor_source: &NativeVulkanFfmpegDecodedGpuFrameDescriptorSource,
     ) -> Result<usize, String> {
         let [plane] = descriptor_source.planes.as_slice() else {
@@ -779,24 +794,15 @@ impl<'a> NativeVulkanFfmpegPresentSamplerCache<'a> {
         if let Some(index) = self
             .entries
             .iter()
-            .position(|entry| entry.present_frame_slot == present_frame_slot)
+            .position(|entry| entry.image == plane.image)
         {
             let entry = self
                 .entries
                 .get_mut(index)
-                .expect("present-frame-slot cache index came from position");
+                .expect("image cache index came from position");
             if entry.picture_format == descriptor_source.picture_format
                 && entry.array_layers == descriptor_source.array_layers
             {
-                if entry.image != plane.image {
-                    native_vulkan_vulkanalia_update_ffmpeg_decoded_gpu_frame_present_sampler_resources(
-                        self.device,
-                        &mut entry.sampler,
-                        descriptor_source,
-                    )?;
-                    entry.image = plane.image;
-                    self.descriptor_rewrite_count = self.descriptor_rewrite_count.saturating_add(1);
-                }
                 return Ok(index);
             }
             let entry = self.entries.remove(index);
@@ -820,7 +826,6 @@ impl<'a> NativeVulkanFfmpegPresentSamplerCache<'a> {
             )?;
         self.entries
             .push(NativeVulkanFfmpegPresentSamplerCacheEntry {
-                present_frame_slot,
                 image: plane.image,
                 picture_format: descriptor_source.picture_format,
                 array_layers: descriptor_source.array_layers,
@@ -838,6 +843,34 @@ impl<'a> NativeVulkanFfmpegPresentSamplerCache<'a> {
             .get(index)
             .map(|entry| &entry.sampler)
             .ok_or_else(|| format!("FFmpeg AVVkFrame sampler cache index {index} is unavailable"))
+    }
+
+    fn entry_count(&self) -> u32 {
+        self.entries.len().min(u32::MAX as usize) as u32
+    }
+
+    fn peak_entry_count(&self) -> u32 {
+        self.peak_entry_count.min(u32::MAX as usize) as u32
+    }
+
+    fn descriptor_rewrite_count(&self) -> u32 {
+        self.descriptor_rewrite_count
+    }
+
+    fn descriptor_recreate_count(&self) -> u32 {
+        self.descriptor_recreate_count
+    }
+
+    fn resource_heap_bytes(&self) -> u64 {
+        self.entries.iter().fold(0u64, |sum, entry| {
+            sum.saturating_add(entry.sampler.descriptor_heap.plan.resource_heap_bytes)
+        })
+    }
+
+    fn sampler_heap_bytes(&self) -> u64 {
+        self.entries.iter().fold(0u64, |sum, entry| {
+            sum.saturating_add(entry.sampler.descriptor_heap.plan.sampler_heap_bytes)
+        })
     }
 }
 
@@ -1955,6 +1988,8 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
 
     let threaded_decode =
         selection.video_queue_family_index != selection.present_queue_family_index;
+    let release_frame_after_render_fence =
+        native_vulkan_ffmpeg_vulkan_hwdecode_release_frame_after_render_fence();
     let sequence_result = thread::scope(
         |scope| -> Result<
             (
@@ -1990,7 +2025,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                                     });
                                 match decoded {
                                     Ok(decoded_frame) => {
-                                        if FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE {
+                                        if release_frame_after_render_fence {
                                             let (release_sender, release_receiver) =
                                                 mpsc::sync_channel::<()>(0);
                                             if sender
@@ -2101,10 +2136,8 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                         present_frame_slot as u32,
                     )?;
                     retained_frames.release_completed_slot(present_frame_slot as u32);
-                    let sampler_index = sampler_cache.ensure_for_present_frame_slot(
-                        present_frame_slot as u32,
-                        &descriptor_source,
-                    )?;
+                    let sampler_index =
+                        sampler_cache.ensure_for_descriptor_source(&descriptor_source)?;
                     let sampler = sampler_cache.sampler(sampler_index)?;
                     if decoded_image_present_pipeline.is_none() {
                         let target_extent = swapchain_extent;
@@ -2188,7 +2221,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                 })();
                 match frame_result {
                     Ok(present_frame_slot) => {
-                        if FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE {
+                        if release_frame_after_render_fence {
                             let release_result = frame_resources
                                 .as_ref()
                                 .ok_or_else(|| {
@@ -2243,10 +2276,21 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
             }
             let final_decoder_snapshot = decode_worker_result?;
             retained_frames.drain_after_waits()?;
+            let ffmpeg_retained_avframe_count = retained_frames.frame_count();
+            let ffmpeg_retained_avframe_peak_count = retained_frames.peak_frame_count();
+            let descriptor_sampler_cache_entry_count = sampler_cache.entry_count();
+            let descriptor_sampler_cache_peak_entry_count = sampler_cache.peak_entry_count();
+            let descriptor_sampler_cache_rewrite_count = sampler_cache.descriptor_rewrite_count();
+            let descriptor_sampler_cache_recreate_count = sampler_cache.descriptor_recreate_count();
+            let descriptor_sampler_cache_resource_heap_bytes = sampler_cache.resource_heap_bytes();
+            let descriptor_sampler_cache_sampler_heap_bytes = sampler_cache.sampler_heap_bytes();
+            drop(sampler_cache);
+            retained_frames.clear_retained_frames();
             let present_handoff = native_vulkan_ffmpeg_vulkan_hwdecode_direct_handoff_snapshot(
                 options.playback_frame_count,
                 sequence_builder.presented_frame_count,
                 threaded_decode,
+                release_frame_after_render_fence,
             );
             let execution = NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
                 ffmpeg_read_thread_active: true,
@@ -2255,6 +2299,14 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                 source_count: 1,
                 decode_thread_count: FFMPEG_SINGLE_DECODE_THREAD_COUNT,
                 decode_async_exec_depth: 0,
+                ffmpeg_retained_avframe_count,
+                ffmpeg_retained_avframe_peak_count,
+                descriptor_sampler_cache_entry_count,
+                descriptor_sampler_cache_peak_entry_count,
+                descriptor_sampler_cache_rewrite_count,
+                descriptor_sampler_cache_recreate_count,
+                descriptor_sampler_cache_resource_heap_bytes,
+                descriptor_sampler_cache_sampler_heap_bytes,
             };
             let sequence = sequence_builder
                 .finish(present_handoff, execution)
@@ -2420,9 +2472,10 @@ fn native_vulkan_ffmpeg_vulkan_hwdecode_direct_handoff_snapshot(
     requested_present_frame_count: u32,
     presented_frame_count: u32,
     threaded_decode: bool,
+    release_frame_after_render_fence: bool,
 ) -> NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot {
     let (route, model, capacity_frames, peak_depth, drain_order) = if threaded_decode {
-        if FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE {
+        if release_frame_after_render_fence {
             (
                 "rendezvous-avvkframe-render-fence-release",
                 "FFmpeg avcodec send/receive runs on a dedicated Vulkan hwdecode worker; each moved AVVkFrame handoff is acknowledged only after the render fence signals so the decoder cannot run ahead with extra external frame refs",
@@ -2464,6 +2517,18 @@ fn native_vulkan_ffmpeg_vulkan_hwdecode_direct_handoff_snapshot(
         zero_copy_scope: "AVVkFrame VkImage pixels are sampled directly; only descriptor metadata is copied",
         ffmpeg_reference: FFMPEG_FFPLAY_FRAME_QUEUE_REFERENCE,
     }
+}
+
+#[cfg(feature = "native-vulkan-video")]
+fn native_vulkan_ffmpeg_vulkan_hwdecode_release_frame_after_render_fence() -> bool {
+    env::var("GILDER_FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE")
+        .ok()
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -3221,6 +3286,14 @@ fn run_multi_video_decode_present_sequence(
         source_count: source_slot_count.min(u32::MAX as usize) as u32,
         decode_thread_count: source_slot_count.min(u32::MAX as usize) as u32,
         decode_async_exec_depth: ffmpeg_decode_async_exec_depth,
+        ffmpeg_retained_avframe_count: 0,
+        ffmpeg_retained_avframe_peak_count: 0,
+        descriptor_sampler_cache_entry_count: 0,
+        descriptor_sampler_cache_peak_entry_count: 0,
+        descriptor_sampler_cache_rewrite_count: 0,
+        descriptor_sampler_cache_recreate_count: 0,
+        descriptor_sampler_cache_resource_heap_bytes: 0,
+        descriptor_sampler_cache_sampler_heap_bytes: 0,
     };
     sequence_builder
         .finish(handoff_snapshot, execution)
@@ -4104,6 +4177,14 @@ fn create_video_present_session_pieces(
                             source_count: 1,
                             decode_thread_count: FFMPEG_SINGLE_DECODE_THREAD_COUNT,
                             decode_async_exec_depth: decode_async_exec_depth_for_sequence,
+                            ffmpeg_retained_avframe_count: 0,
+                            ffmpeg_retained_avframe_peak_count: 0,
+                            descriptor_sampler_cache_entry_count: 0,
+                            descriptor_sampler_cache_peak_entry_count: 0,
+                            descriptor_sampler_cache_rewrite_count: 0,
+                            descriptor_sampler_cache_recreate_count: 0,
+                            descriptor_sampler_cache_resource_heap_bytes: 0,
+                            descriptor_sampler_cache_sampler_heap_bytes: 0,
                         };
                     // Persistent timeline semaphore shared by the decode submits and the
                     // present submits. Seed the per-frame counter from its current value so
@@ -4849,6 +4930,14 @@ struct NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
     source_count: u32,
     decode_thread_count: u32,
     decode_async_exec_depth: u32,
+    ffmpeg_retained_avframe_count: u32,
+    ffmpeg_retained_avframe_peak_count: u32,
+    descriptor_sampler_cache_entry_count: u32,
+    descriptor_sampler_cache_peak_entry_count: u32,
+    descriptor_sampler_cache_rewrite_count: u32,
+    descriptor_sampler_cache_recreate_count: u32,
+    descriptor_sampler_cache_resource_heap_bytes: u64,
+    descriptor_sampler_cache_sampler_heap_bytes: u64,
 }
 
 impl NativeVulkanVulkanaliaDecodedImagePresentExecutionEvidence {
@@ -5272,6 +5361,22 @@ impl NativeVulkanVulkanaliaDecodedImagePresentSequenceBuilder {
             draws_tail: self.draws_tail,
             frame_order_model: "FFmpeg-style display queue: decode submissions enqueue FIFO metadata carrying PTS/POC/order-hint keys with decode-index fallback; ready-prefix windows may be looped as metadata-only sampled-layer references before Vulkanalia dynamic rendering",
             present_resource_reuse_model: "one swapchain image-view set, one command pool, one semaphore pair, one fence set and one bounded decoded-frame handoff reused across decoded-image present frames",
+            ffmpeg_retained_avframe_count: execution.ffmpeg_retained_avframe_count,
+            ffmpeg_retained_avframe_peak_count: execution.ffmpeg_retained_avframe_peak_count,
+            descriptor_sampler_cache_entry_count: execution.descriptor_sampler_cache_entry_count,
+            descriptor_sampler_cache_peak_entry_count: execution
+                .descriptor_sampler_cache_peak_entry_count,
+            descriptor_sampler_cache_rewrite_count: execution
+                .descriptor_sampler_cache_rewrite_count,
+            descriptor_sampler_cache_recreate_count: execution
+                .descriptor_sampler_cache_recreate_count,
+            descriptor_sampler_cache_resource_heap_bytes: execution
+                .descriptor_sampler_cache_resource_heap_bytes,
+            descriptor_sampler_cache_sampler_heap_bytes: execution
+                .descriptor_sampler_cache_sampler_heap_bytes,
+            descriptor_sampler_cache_total_heap_bytes: execution
+                .descriptor_sampler_cache_resource_heap_bytes
+                .saturating_add(execution.descriptor_sampler_cache_sampler_heap_bytes),
             telemetry_retention_model: "compact head/tail/latest frame telemetry only; hot video runtime does not retain every draw snapshot",
             all_zero_copy_presented: self.all_zero_copy_presented,
             uses_dynamic_rendering: true,

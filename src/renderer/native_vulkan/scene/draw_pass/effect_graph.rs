@@ -650,7 +650,7 @@ fn native_vulkan_scene_we_image_graph_targets(
             })
         });
         let scale = fbo.map(|fbo| fbo.scale);
-        let bounds = native_vulkan_scene_we_image_graph_target_bounds(quad, scale);
+        let bounds = native_vulkan_scene_we_image_graph_target_bounds(quad, chain, scale);
         targets.push(NativeVulkanSceneWeImageGraphTarget {
             layer_index: quad.layer_index,
             layer_id: quad.layer_id.clone(),
@@ -687,7 +687,8 @@ fn native_vulkan_scene_we_image_graph_targets(
                 .passes
                 .iter()
                 .any(|candidate| candidate.binds.values().any(|bind| bind == &fbo.name));
-            let bounds = native_vulkan_scene_we_image_graph_target_bounds(quad, Some(fbo.scale));
+            let bounds =
+                native_vulkan_scene_we_image_graph_target_bounds(quad, chain, Some(fbo.scale));
             targets.push(NativeVulkanSceneWeImageGraphTarget {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
@@ -945,18 +946,79 @@ fn native_vulkan_scene_we_image_graph_texture_resolution(
 
 fn native_vulkan_scene_we_image_graph_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
+    chain: &NativeVulkanSceneWeImagePassChain,
     scale: Option<f64>,
 ) -> NativeVulkanSceneWeImageGraphTargetBounds {
-    let mut bounds = quad
-        .mesh
-        .as_deref()
-        .and_then(|mesh| native_vulkan_scene_we_image_graph_mesh_target_bounds(quad, mesh))
-        .unwrap_or_else(|| native_vulkan_scene_we_image_graph_nominal_target_bounds(quad));
+    let mut bounds =
+        if native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(quad, chain)
+        {
+            native_vulkan_scene_we_image_graph_layer_uv_domain_target_bounds(quad)
+        } else {
+            quad.mesh
+                .as_deref()
+                .and_then(|mesh| native_vulkan_scene_we_image_graph_mesh_target_bounds(quad, mesh))
+                .unwrap_or_else(|| native_vulkan_scene_we_image_graph_nominal_target_bounds(quad))
+        };
     if let Some(scale) = scale.filter(|scale| scale.is_finite() && *scale > 0.0) {
         bounds.width *= scale;
         bounds.height *= scale;
     }
     bounds
+}
+
+pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    chain: &NativeVulkanSceneWeImagePassChain,
+) -> bool {
+    quad.mesh.is_some()
+        && chain
+            .passes
+            .iter()
+            .filter(|pass| pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial)
+            .all(|pass| pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves))
+        && chain
+            .passes
+            .iter()
+            .any(|pass| pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves))
+}
+
+fn native_vulkan_scene_we_image_graph_layer_uv_domain_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+) -> NativeVulkanSceneWeImageGraphTargetBounds {
+    let Some(mesh) = quad.mesh.as_deref() else {
+        return native_vulkan_scene_we_image_graph_nominal_target_bounds(quad);
+    };
+    if !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= f64::EPSILON
+        || quad.height <= f64::EPSILON
+    {
+        return native_vulkan_scene_we_image_graph_nominal_target_bounds(quad);
+    }
+
+    let mut min_u = 0.0f64;
+    let mut max_u = 1.0f64;
+    let mut min_v = 0.0f64;
+    let mut max_v = 1.0f64;
+    let mut saw_mesh_uv = false;
+    for vertex in &mesh.vertices {
+        if vertex.u.is_finite() && vertex.v.is_finite() {
+            min_u = min_u.min(vertex.u);
+            max_u = max_u.max(vertex.u);
+            min_v = min_v.min(vertex.v);
+            max_v = max_v.max(vertex.v);
+            saw_mesh_uv = true;
+        }
+    }
+    if !saw_mesh_uv || max_u <= min_u || max_v <= min_v {
+        return native_vulkan_scene_we_image_graph_nominal_target_bounds(quad);
+    }
+    NativeVulkanSceneWeImageGraphTargetBounds {
+        left: min_u * quad.width,
+        top: (1.0 - max_v) * quad.height,
+        width: (max_u - min_u) * quad.width,
+        height: (max_v - min_v) * quad.height,
+    }
 }
 
 fn native_vulkan_scene_we_image_graph_nominal_target_bounds(
@@ -1284,12 +1346,98 @@ mod tests {
         later.width = 100.0;
         later.height = 100.0;
 
-        let first_bounds = native_vulkan_scene_we_image_graph_target_bounds(&first, None);
-        let later_bounds = native_vulkan_scene_we_image_graph_target_bounds(&later, None);
+        let first_chain = native_vulkan_scene_we_image_pass_chain(&first).expect("first chain");
+        let later_chain = native_vulkan_scene_we_image_pass_chain(&later).expect("later chain");
+        let first_bounds =
+            native_vulkan_scene_we_image_graph_target_bounds(&first, &first_chain, None);
+        let later_bounds =
+            native_vulkan_scene_we_image_graph_target_bounds(&later, &later_chain, None);
 
         assert_eq!(first_bounds.left, -25.0);
         assert_eq!(first_bounds.width, 150.0);
         assert_eq!(first_bounds, later_bounds);
+    }
+
+    #[test]
+    fn waterwaves_puppet_targets_follow_layer_uv_domain() {
+        let mut effect = iris_effect_record();
+        effect.kind = NativeVulkanSceneEffectKind::WaterWaves;
+        effect.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        effect.effect_file = "effects/waterwaves/effect.json".to_owned();
+        effect.runtime = Some("native-waterwaves".to_owned());
+        effect.shader = Some("effects/waterwaves".to_owned());
+        let mut quad = sampled_image_quad(Some(layer_bounds_mesh(
+            100.0, 100.0, -40.0, 0.0, 160.0, 100.0,
+        )));
+        quad.width = 100.0;
+        quad.height = 100.0;
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![effect];
+        quad.image_effect_pass_count = 1;
+
+        let chain = native_vulkan_scene_we_image_pass_chain(&quad).expect("waterwaves chain");
+        let bounds = native_vulkan_scene_we_image_graph_target_bounds(&quad, &chain, None);
+
+        assert!(
+            native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(
+                &quad, &chain
+            )
+        );
+        assert_eq!(bounds.left, 0.0);
+        assert_eq!(bounds.top, 0.0);
+        assert_eq!(bounds.width, 100.0);
+        assert_eq!(bounds.height, 100.0);
+    }
+
+    #[test]
+    fn waterwaves_puppet_targets_include_uv_overhang_without_position_bbox() {
+        let mut effect = iris_effect_record();
+        effect.kind = NativeVulkanSceneEffectKind::WaterWaves;
+        effect.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        effect.effect_file = "effects/waterwaves/effect.json".to_owned();
+        effect.runtime = Some("native-waterwaves".to_owned());
+        effect.shader = Some("effects/waterwaves".to_owned());
+        let mut quad = sampled_image_quad(Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -80.0,
+                    y: -40.0,
+                    u: -0.25,
+                    v: -0.10,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 180.0,
+                    y: -40.0,
+                    u: 1.25,
+                    v: -0.10,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -80.0,
+                    y: 140.0,
+                    u: -0.25,
+                    v: 1.10,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+        })));
+        quad.width = 100.0;
+        quad.height = 100.0;
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![effect];
+        quad.image_effect_pass_count = 1;
+
+        let chain = native_vulkan_scene_we_image_pass_chain(&quad).expect("waterwaves chain");
+        let bounds = native_vulkan_scene_we_image_graph_target_bounds(&quad, &chain, None);
+
+        assert_eq!(bounds.left, -25.0);
+        assert!((bounds.top - -10.0).abs() < 1.0e-6);
+        assert_eq!(bounds.width, 150.0);
+        assert!((bounds.height - 120.0).abs() < 1.0e-6);
     }
 
     #[test]

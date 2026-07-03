@@ -29,8 +29,18 @@ DEFAULT_SLIDER_RECTANGLES = (
     "node-33-models-util-solidlayer-json",
     "node-91-models-util-solidlayer-json",
 )
+DEFAULT_SCROLLING_TEXT_LAYERS = (
+    "node-28-text",
+    "node-29-text",
+    "node-30-text",
+)
+DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER = "node-29-text"
+DEFAULT_SCROLL_DISPLACEMENT_TEXT_LAYER = "node-30-text"
 AUTOSWAY_EFFECT = "effects/workshop/3392386920/auto_sway/effect.json"
 WATERWAVES_EFFECT = "effects/waterwaves/effect.json"
+SCROLL_EFFECT = "effects/scroll/effect.json"
+COLORKEY_EFFECT = "effects/colorkey/effect.json"
+CLIPPING_MASK_EFFECT_FRAGMENT = "clipping_mask/effect.json"
 
 
 def load_json(path: Path) -> Any:
@@ -175,8 +185,28 @@ def assert_effect_targets_cover_base_geometry(
                 f"({min(xs):.3f},{min(ys):.3f})..({max(xs):.3f},{max(ys):.3f}) "
                 f"escapes target {target_index} {width:.0f}x{height:.0f}"
             )
-        if layer_id in DEFAULT_BODY_LAYERS and width <= sizes[layer_id][0]:
-            fail(f"{layer_id} body target was not expanded horizontally ({width:.0f}px)")
+        if layer_id in DEFAULT_BODY_LAYERS:
+            min_u, max_u = vertex_component_bounds(
+                vertices[first : first + count], "effect_uv", 0, layer_id, "base layer-uv domain"
+            )
+            min_v, max_v = vertex_component_bounds(
+                vertices[first : first + count], "effect_uv", 1, layer_id, "base layer-uv domain"
+            )
+            if min_u > eps or max_u < 1.0 - eps or min_v > eps or max_v < 1.0 - eps:
+                fail(
+                    f"{layer_id} waterwaves target domain does not cover the authored layer UVs "
+                    f"({min_u:.6f}..{max_u:.6f}, {min_v:.6f}..{max_v:.6f})"
+                )
+            assert_layer_mask_uv_bounds(
+                layer_id,
+                "base layer-uv domain",
+                sizes[layer_id],
+                target,
+                min_u,
+                max_u,
+                min_v,
+                max_v,
+            )
         assert_body_effect_pass_quads_use_pass_space_source_and_layer_mask_uvs(
             layer_id, sizes[layer_id], steps, vertices, targets_by_index
         )
@@ -309,7 +339,7 @@ def assert_body_effect_pass_quads_use_pass_space_source_and_layer_mask_uvs(
                 )
 
 
-def assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(
+def assert_skirt_ribbon_uses_layer_uv_domain_puppet_waterwaves(
     runtime: dict[str, Any],
     sizes: dict[str, tuple[float, float]],
 ) -> None:
@@ -371,42 +401,35 @@ def assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(
         if target is None:
             fail(f"{layer_id} base step references missing target {target_index}")
         layer_width, layer_height = layer_size
-        local_left = f64(target.get("local_left"))
-        local_top = f64(target.get("local_top"))
-        target_width = f64(target.get("width"), -1.0)
-        target_height = f64(target.get("height"), -1.0)
-        if target_width <= layer_width or target_height <= layer_height:
-            fail(
-                f"{layer_id} target {target_index} is not expanded enough for skirt-ribbon "
-                f"overhang ({target_width:.0f}x{target_height:.0f} vs layer {layer_width:.0f}x{layer_height:.0f})"
-            )
         selected = vertex_range(base_step, vertices, layer_id, "skirt-ribbon base step")
-        layer_left = -local_left
-        layer_top = -local_top
-        layer_right = layer_left + layer_width
-        layer_bottom = layer_top + layer_height
-        outside = []
-        eps = 1.0e-3
-        for vertex in selected:
-            position = vertex.get("position")
-            if not isinstance(position, list) or len(position) < 2:
-                fail(f"{layer_id} skirt-ribbon base step has malformed position")
-            x = f64(position[0], math.nan)
-            y = f64(position[1], math.nan)
-            if not math.isfinite(x) or not math.isfinite(y):
-                fail(f"{layer_id} skirt-ribbon base step has non-finite position")
-            if (
-                x < layer_left - eps
-                or x > layer_right + eps
-                or y < layer_top - eps
-                or y > layer_bottom + eps
-            ):
-                outside.append((x, y))
-        if not outside:
+        if len(selected) != 4:
+            fail(f"{layer_id} base waterwaves source copy has {len(selected)} vertices, expected 4")
+        min_base_u, max_base_u = vertex_component_bounds(
+            selected, "effect_uv", 0, layer_id, "skirt-ribbon base step"
+        )
+        min_base_v, max_base_v = vertex_component_bounds(
+            selected, "effect_uv", 1, layer_id, "skirt-ribbon base step"
+        )
+        if (
+            min_base_u >= -1.0e-3
+            and max_base_u <= 1.0 + 1.0e-3
+            and min_base_v >= -1.0e-3
+            and max_base_v <= 1.0 + 1.0e-3
+        ):
             fail(
-                f"{layer_id} has no retained mesh vertices outside the original layer rect; "
-                "this snapshot cannot prove the alpha-aware waterwaves overhang path"
+                f"{layer_id} skirt-ribbon target did not include overhanging material UVs "
+                f"({min_base_u:.6f}..{max_base_u:.6f}, {min_base_v:.6f}..{max_base_v:.6f})"
             )
+        assert_layer_mask_uv_bounds(
+            layer_id,
+            "skirt-ribbon base layer-uv domain",
+            layer_size,
+            target,
+            min_base_u,
+            max_base_u,
+            min_base_v,
+            max_base_v,
+        )
         effect_steps = [
             step
             for step in steps
@@ -426,10 +449,74 @@ def assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(
         min_v, max_v = vertex_component_bounds(
             first_effect_quad, "effect_uv", 1, layer_id, "skirt-ribbon effect step"
         )
-        if min_u >= 0.0 or max_u <= 1.0 or min_v >= 0.0 or max_v <= 1.0:
+        assert_layer_mask_uv_bounds(
+            layer_id,
+            "skirt-ribbon effect layer-uv domain",
+            layer_size,
+            target,
+            min_u,
+            max_u,
+            min_v,
+            max_v,
+        )
+        final_steps = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and step.get("layer_id") == layer_id
+            and isinstance(step.get("render_target"), dict)
+            and step["render_target"].get("type") == "swapchain"
+        ]
+        if len(final_steps) != 1:
+            fail(f"{layer_id} has {len(final_steps)} final skirt-ribbon scene steps, expected 1")
+        final_vertices = vertex_range(final_steps[0], vertices, layer_id, "skirt-ribbon final mesh")
+        if len(final_vertices) <= 4:
+            fail(f"{layer_id} final waterwaves pass uses a quad, expected retained puppet mesh")
+        domain_u = max_base_u - min_base_u
+        domain_v = max_base_v - min_base_v
+        if domain_u <= 1.0e-6 or domain_v <= 1.0e-6:
+            fail(f"{layer_id} skirt-ribbon UV domain is degenerate")
+        max_delta = 0.0
+        min_source_u = math.inf
+        max_source_u = -math.inf
+        min_source_v = math.inf
+        max_source_v = -math.inf
+        for vertex in final_vertices:
+            uv = vertex.get("uv")
+            effect_uv = vertex.get("effect_uv")
+            if not isinstance(uv, list) or not isinstance(effect_uv, list):
+                fail(f"{layer_id} final mesh has malformed uv/effect_uv")
+            source_u = f64(uv[0], math.nan)
+            source_v = f64(uv[1], math.nan)
+            layer_u = f64(effect_uv[0], math.nan)
+            layer_v = f64(effect_uv[1], math.nan)
+            if not all(math.isfinite(value) for value in (source_u, source_v, layer_u, layer_v)):
+                fail(f"{layer_id} final mesh has non-finite uv/effect_uv")
+            min_source_u = min(min_source_u, source_u)
+            max_source_u = max(max_source_u, source_u)
+            min_source_v = min(min_source_v, source_v)
+            max_source_v = max(max_source_v, source_v)
+            expected_source_u = (layer_u - min_base_u) / domain_u
+            expected_source_v = (layer_v - min_base_v) / domain_v
+            max_delta = max(
+                max_delta,
+                abs(source_u - expected_source_u),
+                abs(source_v - expected_source_v),
+            )
+        if min_source_u < -1.0e-5 or max_source_u > 1.0 + 1.0e-5:
             fail(
-                f"{layer_id} effect UV does not cross the authored layer domain "
-                f"({min_u:.6f}..{max_u:.6f}, {min_v:.6f}..{max_v:.6f})"
+                f"{layer_id} final waterwaves source UV escaped target domain "
+                f"({min_source_u:.6f}..{max_source_u:.6f})"
+            )
+        if min_source_v < -1.0e-5 or max_source_v > 1.0 + 1.0e-5:
+            fail(
+                f"{layer_id} final waterwaves source V escaped target domain "
+                f"({min_source_v:.6f}..{max_source_v:.6f})"
+            )
+        if max_delta > 1.0e-5:
+            fail(
+                f"{layer_id} final waterwaves source UV no longer maps from material UV domain "
+                f"(max delta {max_delta:.6f})"
             )
 
 
@@ -665,6 +752,124 @@ def assert_slider_rectangles_do_not_use_fixed_screen_rectangles(
             fail(f"{layer_id} has no lowered rounded-mask corner radius")
 
 
+def quad_step_vertices(
+    runtime: dict[str, Any],
+    layer_id: str,
+    label: str,
+) -> list[dict[str, Any]]:
+    steps = runtime.get("draw_pass_quad_recording_steps") or []
+    vertices = runtime.get("draw_pass_quad_vertices") or []
+    if not isinstance(steps, list) or not isinstance(vertices, list):
+        fail(f"{label} requires quad recording steps and vertices")
+    layer_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("layer_id") == layer_id
+        and step.get("kind") == "text"
+    ]
+    if len(layer_steps) != 1:
+        fail(f"{layer_id} has {len(layer_steps)} recorded text steps, expected 1")
+    return vertex_range(layer_steps[0], vertices, layer_id, label)
+
+
+def quad_vertex_bounds(
+    runtime: dict[str, Any],
+    layer_id: str,
+    label: str,
+) -> tuple[float, float, float, float]:
+    selected = quad_step_vertices(runtime, layer_id, label)
+    min_x, max_x = vertex_component_bounds(selected, "position", 0, layer_id, label)
+    min_y, max_y = vertex_component_bounds(selected, "position", 1, layer_id, label)
+    return min_x, max_x, min_y, max_y
+
+
+def assert_scrolling_text_effects_are_recorded(
+    runtime: dict[str, Any],
+    layer_ids: tuple[str, ...] = DEFAULT_SCROLLING_TEXT_LAYERS,
+) -> None:
+    draw_ops = runtime.get("draw_ops") or []
+    quads = runtime.get("draw_pass_recordable_quads") or []
+    if not isinstance(draw_ops, list) or not isinstance(quads, list):
+        fail("text scroll validation requires draw_ops and draw_pass_recordable_quads")
+    ops_by_layer = {
+        op.get("layer_id"): op
+        for op in draw_ops
+        if isinstance(op, dict) and isinstance(op.get("layer_id"), str)
+    }
+    quads_by_layer = {
+        quad.get("layer_id"): quad
+        for quad in quads
+        if isinstance(quad, dict) and isinstance(quad.get("layer_id"), str)
+    }
+    expected_files = {
+        "node-28-text": (SCROLL_EFFECT,),
+        "node-29-text": (COLORKEY_EFFECT, SCROLL_EFFECT),
+        "node-30-text": (SCROLL_EFFECT, CLIPPING_MASK_EFFECT_FRAGMENT),
+    }
+    for layer_id in layer_ids:
+        op = ops_by_layer.get(layer_id)
+        quad = quads_by_layer.get(layer_id)
+        if op is None:
+            fail(f"{layer_id} is missing from draw_ops")
+        if quad is None:
+            fail(f"{layer_id} is missing from draw_pass_recordable_quads")
+        for source, label in ((op, "draw op"), (quad, "recordable quad")):
+            files = [effect_file(effect) for effect in effect_records(source)]
+            if not files:
+                fail(f"{layer_id} {label} dropped text effect passes")
+            for expected in expected_files[layer_id]:
+                if expected == CLIPPING_MASK_EFFECT_FRAGMENT:
+                    if not any(expected in file for file in files):
+                        fail(f"{layer_id} {label} is missing clipping-mask effect: {files!r}")
+                elif expected not in files:
+                    fail(f"{layer_id} {label} is missing {expected}: {files!r}")
+    transparent = quads_by_layer.get(DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER)
+    if transparent is None:
+        fail(f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} is missing from recordable quads")
+    rgba = transparent.get("rgba")
+    if not isinstance(rgba, list) or len(rgba) < 4:
+        fail(f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} has malformed rgba")
+    alpha = f64(rgba[3], math.nan)
+    if not math.isfinite(alpha) or abs(alpha) > 1.0e-6:
+        fail(
+            f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} colorkey alpha is {alpha:.6f}, "
+            "expected 0 after WE color-key removal"
+        )
+    quad_step_vertices(
+        runtime,
+        DEFAULT_SCROLL_DISPLACEMENT_TEXT_LAYER,
+        "scrolling DREAMLIKE text geometry",
+    )
+
+
+def assert_scrolling_text_moves_between_snapshots(
+    early: dict[str, Any],
+    later: dict[str, Any],
+    layer_id: str = DEFAULT_SCROLL_DISPLACEMENT_TEXT_LAYER,
+) -> None:
+    early_bounds = quad_vertex_bounds(early, layer_id, "early scrolling text")
+    later_bounds = quad_vertex_bounds(later, layer_id, "later scrolling text")
+    early_min_x, early_max_x, early_min_y, early_max_y = early_bounds
+    later_min_x, later_max_x, later_min_y, later_max_y = later_bounds
+    dx = max(abs(later_min_x - early_min_x), abs(later_max_x - early_max_x))
+    dy = max(abs(later_min_y - early_min_y), abs(later_max_y - early_max_y))
+    if max(dx, dy) < 16.0:
+        fail(
+            f"{layer_id} scroll displacement is too small: dx={dx:.3f}, dy={dy:.3f}; "
+            "WE scroll must move the large vertical text across runtime snapshots"
+        )
+    early_width = early_max_x - early_min_x
+    later_width = later_max_x - later_min_x
+    early_height = early_max_y - early_min_y
+    later_height = later_max_y - later_min_y
+    if abs(early_width - later_width) > 1.0 or abs(early_height - later_height) > 1.0:
+        fail(
+            f"{layer_id} scroll changed text extents "
+            f"{early_width:.3f}x{early_height:.3f} -> {later_width:.3f}x{later_height:.3f}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("snapshot", type=Path)
@@ -674,26 +879,37 @@ def main() -> None:
         dest="body_layers",
         help="Layer id that must keep nominal 1571x2621 graph targets; may repeat.",
     )
+    parser.add_argument(
+        "--later-snapshot",
+        type=Path,
+        help="Optional later runtime snapshot used to prove WE scroll moves text geometry.",
+    )
     args = parser.parse_args()
 
     runtime = runtime_snapshot(load_json(args.snapshot))
+    later_runtime = runtime_snapshot(load_json(args.later_snapshot)) if args.later_snapshot else None
     body_layers = tuple(args.body_layers or DEFAULT_BODY_LAYERS)
     sizes = layer_sizes(runtime)
     assert_we_orthogonal_projection_uses_stretch(runtime)
     assert_effect_targets_cover_base_geometry(runtime, sizes, body_layers)
-    assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(runtime, sizes)
+    assert_skirt_ribbon_uses_layer_uv_domain_puppet_waterwaves(runtime, sizes)
     assert_body_base_passes_are_generic(runtime, body_layers)
     assert_single_body_scene_composite(runtime, body_layers)
     assert_reference_invisible_effects_are_absent(runtime)
     assert_composelayer_uses_material_alpha_not_effect_blendmode(runtime)
     assert_slider_rectangles_do_not_use_fixed_screen_rectangles(runtime)
+    assert_scrolling_text_effects_are_recorded(runtime)
+    if later_runtime is not None:
+        assert_scrolling_text_effects_are_recorded(later_runtime)
+        assert_scrolling_text_moves_between_snapshots(runtime, later_runtime)
     print(
         "PASS: WE orthogonalprojection uses stretch viewport mapping, effect targets cover "
-        "retained body geometry, skirt-ribbon masks/overhang require alpha-aware clamp, "
-        "base passes stay generic, source UVs stay pass-space, layer-mask UVs undo "
-        "expanded-target padding, hidden reference effects stay absent, body layers composite "
-        "once, composelayer keeps material alpha/pass-space geometry, and slider bars are "
-        "not fixed-screen rectangles"
+        "retained body geometry, waterwaves puppet chains run in their full layer-UV domain "
+        "before the final retained mesh composite, base passes stay generic, source/effect "
+        "UVs stay pass-space in local targets, hidden reference effects stay absent, body layers "
+        "composite once, composelayer keeps material alpha/pass-space geometry, and slider "
+        "bars are not fixed-screen rectangles; WE text scroll/colorkey effect passes survive "
+        "recordable lowering and the large text moves between snapshots"
     )
 
 
