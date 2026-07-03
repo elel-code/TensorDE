@@ -52,6 +52,23 @@ MATRIX_COLUMNS = [
     "source_bit_rate",
     "source_nb_frames",
     "source_duration_seconds",
+    "audio_clock_probe_requested",
+    "audio_output_mode",
+    "audio_stream_found",
+    "audio_stream_error",
+    "audio_master_clock_enabled",
+    "audio_master_clock_start_ns",
+    "audio_video_master_clock_ready",
+    "audio_playback_target_reached",
+    "audio_playback_coverage_percent",
+    "audio_output_backend",
+    "audio_output_xrun_count",
+    "surface_host_binding",
+    "surface_host_platform_backend",
+    "surface_host_event_loop_backend",
+    "surface_host_wait_configure_roundtrips",
+    "surface_host_buffer_width",
+    "surface_host_buffer_height",
     "decoder_codec",
     "decoder_name",
     "coded_width",
@@ -84,7 +101,17 @@ MATRIX_COLUMNS = [
     "memory_sample_count",
     "ignored_memory_sample_count",
     "raw_max_memory_kb",
+    "avg_cpu_percent",
+    "max_cpu_percent",
+    "last_cpu_percent",
+    "cpu_sample_count",
     "peak_smaps_rollup",
+    "peak_smaps_rss_kb",
+    "peak_smaps_pss_kb",
+    "peak_smaps_pss_dirty_kb",
+    "peak_smaps_private_dirty_kb",
+    "peak_smaps_anonymous_kb",
+    "dgop_minus_peak_smaps_pss_dirty_kb",
     "average_present_fps",
     "average_present_teardown_inclusive_fps",
     "presented_frame_count",
@@ -94,6 +121,8 @@ MATRIX_COLUMNS = [
     "present_delta_over_8334us_count",
     "frame_sleep_count",
     "total_pacing_sleep_micros",
+    "present_sleep_guard_micros",
+    "present_spin_guard_micros",
     "present_handoff_route",
     "present_handoff_capacity_frames",
     "present_handoff_peak_depth",
@@ -224,12 +253,24 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--present-mode-policy", default="")
     parser.add_argument("--wait-after-present", action="store_true")
+    parser.add_argument("--audio-clock-probe", action="store_true")
+    parser.add_argument(
+        "--audio-output",
+        default="clock-only",
+        choices=["clock-only", "auto"],
+        help="Audio output mode when --audio-clock-probe is enabled.",
+    )
     parser.add_argument(
         "--release-frame-after-render-fence",
         action="store_true",
         help="Set GILDER_FFMPEG_VULKAN_HWDECODE_RELEASE_FRAME_AFTER_RENDER_FENCE=1.",
     )
     parser.add_argument("--sample-interval", type=float, default=0.1)
+    parser.add_argument(
+        "--sample-cpu",
+        action="store_true",
+        help="Ask dgop to calculate target CPU percent. This is diagnostic and costs more than memory-only sampling.",
+    )
     parser.add_argument("--artifact-prefix", default="gilder-ffmpeg-vulkan-hwdecode")
     parser.add_argument("--binary", default="target/release/gilder-native-vulkan")
     parser.add_argument("--no-build", action="store_true")
@@ -410,6 +451,10 @@ def run_case(
     ]
     if args.output_name:
         cmd.extend(["--output-name", args.output_name])
+    if args.audio_clock_probe:
+        cmd.append("--audio-clock-probe")
+    if args.audio_clock_probe or args.audio_output != "clock-only":
+        cmd.extend(["--audio-output", args.audio_output])
 
     env = os.environ.copy()
     env["WAYLAND_DISPLAY"] = args.display
@@ -433,6 +478,8 @@ def run_case(
                 "pid",
                 "memory_kb",
                 "memory_calculation",
+                "cpu_percent",
+                "pticks",
                 "rss_kb",
                 "pss_kb",
                 "pss_dirty_kb",
@@ -446,10 +493,13 @@ def run_case(
         sample_index = 0
         captured_smaps = False
         peak_memory_kb = 0
+        dgop_cursor = ""
         time.sleep(max(0.0, args.sample_interval))
         while process.poll() is None:
             elapsed_ms = int((time.monotonic() - started) * 1000)
-            sample = sample_dgop(process.pid, args.binary)
+            sample, dgop_cursor = sample_dgop(
+                process.pid, args.binary, dgop_cursor, args.sample_cpu
+            )
             if sample:
                 sample.update({"sample": sample_index, "elapsed_ms": elapsed_ms, "pid": process.pid})
                 samples.append(sample)
@@ -471,12 +521,17 @@ def run_case(
         status = process.wait()
 
     memory = aggregate_memory(samples)
+    cpu = aggregate_cpu(samples)
+    peak_smaps = parse_smaps_rollup(peak_rollup_path)
     telemetry = read_json(telemetry_path)
     decoder = telemetry.get("decoder") or {}
+    surface_host = telemetry.get("surface_host") or {}
     decoder_coded_extent = list_value(decoder.get("coded_extent"))
+    surface_buffer_size = list_value(surface_host.get("buffer_size"))
     codec_host_bytes = int_value(decoder.get("inferred_codec_resolution_scaled_host_bytes"))
     codec_host_kb = bytes_to_kb(codec_host_bytes)
     seq = telemetry.get("decoded_image_present_sequence") or {}
+    audio = telemetry.get("audio_clock") or {}
     present_handoff = seq.get("present_handoff") or {}
     swapchain = (telemetry.get("device") or {}).get("swapchain") or {}
     if not telemetry:
@@ -507,6 +562,27 @@ def run_case(
         "source_bit_rate": case.probe.bit_rate,
         "source_nb_frames": case.probe.nb_frames,
         "source_duration_seconds": case.probe.duration_seconds,
+        "audio_clock_probe_requested": telemetry.get(
+            "audio_clock_probe_requested", args.audio_clock_probe
+        ),
+        "audio_output_mode": telemetry.get("audio_output_mode", args.audio_output),
+        "audio_stream_found": audio.get("audio_stream_found", False),
+        "audio_stream_error": audio.get("audio_stream_error", ""),
+        "audio_master_clock_enabled": telemetry.get("audio_master_clock_enabled", False),
+        "audio_master_clock_start_ns": telemetry.get("audio_master_clock_start_ns", ""),
+        "audio_video_master_clock_ready": audio.get("video_master_clock_ready", False),
+        "audio_playback_target_reached": audio.get("playback_target_reached", False),
+        "audio_playback_coverage_percent": audio.get("playback_coverage_percent", 0),
+        "audio_output_backend": audio.get("audio_output_backend", ""),
+        "audio_output_xrun_count": audio.get("audio_output_xrun_count", 0),
+        "surface_host_binding": surface_host.get("binding", ""),
+        "surface_host_platform_backend": surface_host.get("platform_backend", ""),
+        "surface_host_event_loop_backend": surface_host.get("event_loop_backend", ""),
+        "surface_host_wait_configure_roundtrips": int_value(
+            surface_host.get("wait_configure_roundtrips")
+        ),
+        "surface_host_buffer_width": int_at(surface_buffer_size, 0),
+        "surface_host_buffer_height": int_at(surface_buffer_size, 1),
         "decoder_codec": decoder.get("codec", ""),
         "decoder_name": decoder.get("decoder_name", ""),
         "coded_width": int_at(decoder_coded_extent, 0),
@@ -555,7 +631,21 @@ def run_case(
         "memory_sample_count": memory["memory_sample_count"],
         "ignored_memory_sample_count": memory["ignored_memory_sample_count"],
         "raw_max_memory_kb": memory["raw_max_memory_kb"],
+        "avg_cpu_percent": cpu["avg_cpu_percent"],
+        "max_cpu_percent": cpu["max_cpu_percent"],
+        "last_cpu_percent": cpu["last_cpu_percent"],
+        "cpu_sample_count": cpu["cpu_sample_count"],
         "peak_smaps_rollup": str(peak_rollup_path),
+        "peak_smaps_rss_kb": peak_smaps.get("Rss", 0),
+        "peak_smaps_pss_kb": peak_smaps.get("Pss", 0),
+        "peak_smaps_pss_dirty_kb": peak_smaps.get("Pss_Dirty", 0),
+        "peak_smaps_private_dirty_kb": peak_smaps.get("Private_Dirty", 0),
+        "peak_smaps_anonymous_kb": peak_smaps.get("Anonymous", 0),
+        "dgop_minus_peak_smaps_pss_dirty_kb": (
+            memory["max_memory_kb"] - peak_smaps.get("Pss_Dirty", 0)
+        )
+        if peak_smaps.get("Pss_Dirty", 0) > 0 and memory["max_memory_kb"] > 0
+        else 0,
         "average_present_fps": seq.get("average_present_fps", 0),
         "average_present_teardown_inclusive_fps": seq.get(
             "average_present_teardown_inclusive_fps", 0
@@ -567,6 +657,8 @@ def run_case(
         "present_delta_over_8334us_count": seq.get("present_delta_over_8334us_count", 0),
         "frame_sleep_count": seq.get("frame_sleep_count", 0),
         "total_pacing_sleep_micros": seq.get("total_pacing_sleep_micros", 0),
+        "present_sleep_guard_micros": seq.get("present_sleep_guard_micros", 0),
+        "present_spin_guard_micros": seq.get("present_spin_guard_micros", 0),
         "present_handoff_route": present_handoff.get("route", ""),
         "present_handoff_capacity_frames": present_handoff.get("capacity_frames", 0),
         "present_handoff_peak_depth": present_handoff.get("peak_depth", 0),
@@ -603,11 +695,19 @@ def run_case(
     return row, str(summary_path)
 
 
-def sample_dgop(pid: int, binary: str) -> dict[str, Any] | None:
+def sample_dgop(
+    pid: int, binary: str, cursor: str, sample_cpu: bool
+) -> tuple[dict[str, Any] | None, str]:
     if not shutil.which("dgop"):
-        return None
+        return None, cursor
+    cmd = ["dgop", "processes", "--json", "--limit", "0", "--sort", "memory"]
+    if sample_cpu:
+        if cursor:
+            cmd.extend(["--cursor", cursor])
+    else:
+        cmd.append("--no-cpu")
     result = subprocess.run(
-        ["dgop", "processes", "--json", "--no-cpu", "--limit", "0", "--sort", "memory"],
+        cmd,
         check=False,
         text=True,
         stdout=subprocess.PIPE,
@@ -615,13 +715,15 @@ def sample_dgop(pid: int, binary: str) -> dict[str, Any] | None:
         timeout=3,
     )
     if result.returncode != 0:
-        return None
-    processes = json.loads(result.stdout or "{}").get("processes") or []
+        return None, cursor
+    payload = json.loads(result.stdout or "{}")
+    next_cursor = str(payload.get("cursor") or cursor)
+    processes = payload.get("processes") or []
     binary_suffix = "/" + binary
     for process in processes:
         executable = str(process.get("executablePath") or "")
         if process.get("pid") == pid or executable.endswith(binary_suffix):
-            return {
+            sample = {
                 "memory_kb": int(process.get("memoryKB") or 0),
                 "memory_calculation": process.get("memoryCalculation") or "",
                 "rss_kb": int(process.get("rssKB") or 0),
@@ -640,7 +742,11 @@ def sample_dgop(pid: int, binary: str) -> dict[str, Any] | None:
                 ),
                 "command": process.get("command") or "",
             }
-    return None
+            if sample_cpu:
+                sample["cpu_percent"] = float_value(process.get("cpu"))
+                sample["pticks"] = int_value(process.get("pticks"))
+            return sample, next_cursor
+    return None, next_cursor
 
 
 def aggregate_memory(samples: list[dict[str, Any]]) -> dict[str, Any]:
@@ -670,6 +776,29 @@ def aggregate_memory(samples: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def aggregate_cpu(samples: list[dict[str, Any]]) -> dict[str, Any]:
+    cpu_samples = [
+        float_value(sample.get("cpu_percent"))
+        for sample in samples
+        if "cpu_percent" in sample
+    ]
+    if len(cpu_samples) > 1:
+        cpu_samples = cpu_samples[1:]
+    if not cpu_samples:
+        return {
+            "avg_cpu_percent": 0,
+            "max_cpu_percent": 0,
+            "last_cpu_percent": 0,
+            "cpu_sample_count": 0,
+        }
+    return {
+        "avg_cpu_percent": round(sum(cpu_samples) / len(cpu_samples), 2),
+        "max_cpu_percent": round(max(cpu_samples), 2),
+        "last_cpu_percent": round(cpu_samples[-1], 2),
+        "cpu_sample_count": len(cpu_samples),
+    }
+
+
 def valid_memory_sample(sample: dict[str, Any]) -> bool:
     memory_kb = int_value(sample.get("memory_kb"))
     rss_kb = int_value(sample.get("rss_kb"))
@@ -687,6 +816,19 @@ def read_json(path: Path) -> dict[str, Any]:
             return json.load(file)
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def parse_smaps_rollup(path: Path) -> dict[str, int]:
+    values: dict[str, int] = {}
+    try:
+        with path.open() as file:
+            for line in file:
+                match = re.match(r"^([A-Za-z_]+):\s+(\d+)\s+kB$", line.strip())
+                if match:
+                    values[match.group(1)] = int(match.group(2))
+    except OSError:
+        return {}
+    return values
 
 
 def list_value(value: Any) -> list[Any]:

@@ -4,8 +4,8 @@ use gilder::core::{FitMode, SceneNodeKind, ScenePathFillRule, SceneSystems, Scen
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
 use gilder::renderer::native_vulkan::{
-    NativeVulkanAudioOutputMode, NativeVulkanSceneVideoBridgeOptions,
-    NativeVulkanSceneVideoBridgeSourceOptions, NativeVulkanVideoSessionSmokeOptions,
+    NativeVulkanAudioOutputMode, NativeVulkanSceneVideoPresentOptions,
+    NativeVulkanSceneVideoPresentSourceOptions, NativeVulkanVideoSessionSmokeOptions,
     native_vulkan_resolve_ffmpeg_video_session_codec, native_vulkan_video_run_route,
 };
 #[cfg(feature = "native-vulkan-renderer")]
@@ -127,7 +127,7 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
 }
 
 #[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
-fn native_vulkan_scene_video_bridge_options_from_plan(
+fn native_vulkan_scene_video_present_options_from_plan(
     plan: &SceneWallpaperPlan,
     base_options: &NativeVulkanVideoSessionSmokeOptions,
     video_width_set: bool,
@@ -136,8 +136,8 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
     duration_playback_frames: Option<u32>,
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
-) -> Result<Option<NativeVulkanSceneVideoBridgeOptions>, Box<dyn std::error::Error>> {
-    let sources = Vec::new();
+) -> Result<Option<NativeVulkanSceneVideoPresentOptions>, Box<dyn std::error::Error>> {
+    let mut sources = Vec::new();
     for layer in plan.layers.iter().filter(|layer| {
         layer.kind == SceneNodeKind::Video && layer.opacity > 0.0 && layer.source.is_some()
     }) {
@@ -146,17 +146,19 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
         };
         if sources
             .iter()
-            .any(|entry: &NativeVulkanSceneVideoBridgeSourceOptions| entry.source == *source)
+            .any(|entry: &NativeVulkanSceneVideoPresentSourceOptions| entry.source == *source)
         {
             continue;
         }
         let mut options = base_options.clone();
         options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
         if !video_width_set {
-            options.width = native_vulkan_scene_video_bridge_extent(layer.width, options.width);
+            options.width =
+                native_vulkan_scene_video_present_route_extent(layer.width, options.width);
         }
         if !video_height_set {
-            options.height = native_vulkan_scene_video_bridge_extent(layer.height, options.height);
+            options.height =
+                native_vulkan_scene_video_present_route_extent(layer.height, options.height);
         }
 
         let route = native_vulkan_video_run_route(
@@ -172,15 +174,16 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
             )
             .into());
         }
-        return Err(
-            "scene video FFmpeg Vulkan HW decode bridge is now the mainline, but the decoder worker is not wired to scene present yet; use --run-vulkanalia-ready-prefix-video only for compatibility evidence"
-                .into(),
-        );
+        sources.push(NativeVulkanSceneVideoPresentSourceOptions {
+            source: source.clone(),
+            codec: options.codec,
+            playback_frames: route.playback_frames.max(1),
+        });
     }
     if sources.is_empty() {
         return Ok(None);
     }
-    Ok(Some(NativeVulkanSceneVideoBridgeOptions {
+    Ok(Some(NativeVulkanSceneVideoPresentOptions {
         sources,
         audio_clock_probe_requested,
         audio_output_mode,
@@ -188,7 +191,7 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
 }
 
 #[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
-fn native_vulkan_scene_video_bridge_extent(layer_extent: Option<f64>, fallback: u32) -> u32 {
+fn native_vulkan_scene_video_present_route_extent(layer_extent: Option<f64>, fallback: u32) -> u32 {
     layer_extent
         .filter(|extent| extent.is_finite() && *extent > 0.0)
         .map(|extent| extent.round().clamp(1.0, f64::from(u32::MAX)) as u32)
@@ -755,7 +758,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 target_max_fps,
             )?;
             #[cfg(feature = "native-vulkan-video")]
-            let video_bridge = native_vulkan_scene_video_bridge_options_from_plan(
+            let scene_video = native_vulkan_scene_video_present_options_from_plan(
                 &plan,
                 &video_session_options,
                 video_width_set,
@@ -766,13 +769,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 audio_output_policy.resolve(_muted),
             )?;
             #[cfg(not(feature = "native-vulkan-video"))]
-            let video_bridge = None;
+            let scene_video = None;
             json!(run_scene(
                 options,
                 duration,
                 plan,
                 audio_output_policy.resolve(_muted),
-                video_bridge
+                scene_video
             )?)
         }
         NativeVulkanCliMode::RunStatic => {
@@ -824,6 +827,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             codec: video_session_options.codec,
                             playback_frame_count: route.playback_frames,
                             target_max_fps: options.target_max_fps,
+                            audio_clock_probe_requested,
+                            audio_output_mode: audio_output_policy.resolve(_muted),
                             audio_master_clock:
                                 NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
                             clear_color: options.clear_color,

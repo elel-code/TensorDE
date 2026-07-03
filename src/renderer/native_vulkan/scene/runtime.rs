@@ -1729,7 +1729,7 @@ fn native_vulkan_scene_render_layer_suppresses_unimplemented_we_effect_chain(
         )
     }) && !native_vulkan_scene_render_layer_uses_executable_material_graph(layer)
         && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
         })
 }
 
@@ -1743,7 +1743,7 @@ fn native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(
         )
     }) && !native_vulkan_scene_snapshot_layer_uses_executable_material_graph(layer)
         && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
         })
 }
 
@@ -1753,7 +1753,7 @@ fn native_vulkan_scene_sampled_layer_suppresses_unimplemented_we_effect_chain(
     !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
         && !native_vulkan_scene_sampled_layer_uses_executable_material_graph(layer)
         && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_is_unimplemented_water_chain(&pass.effect_file)
+            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
         })
 }
 
@@ -1794,6 +1794,12 @@ fn native_vulkan_scene_effect_pass_is_unimplemented_water_chain(effect_file: &st
         || native_vulkan_scene_effect_pass_is_unimplemented_water_non_ripple(effect_file)
 }
 
+fn native_vulkan_scene_effect_pass_blocks_raw_material_fallback(effect_file: &str) -> bool {
+    native_vulkan_scene_effect_pass_is_unimplemented_water_chain(effect_file)
+        || native_vulkan_scene_effect_pass_is_color_key(effect_file)
+        || native_vulkan_scene_effect_pass_is_clipping_mask(effect_file)
+}
+
 fn native_vulkan_scene_effect_pass_is_unimplemented_water_non_ripple(effect_file: &str) -> bool {
     let file = effect_file.replace('\\', "/").to_ascii_lowercase();
     file.contains("waterflow")
@@ -1804,12 +1810,30 @@ fn native_vulkan_scene_effect_pass_is_unimplemented_water_non_ripple(effect_file
 
 fn native_vulkan_scene_effect_pass_is_executable_material_graph(effect_file: &str) -> bool {
     native_vulkan_scene_effect_pass_is_opacity(effect_file)
+        || native_vulkan_scene_effect_pass_is_scroll(effect_file)
         || native_vulkan_scene_effect_pass_is_water_ripple(effect_file)
         || native_vulkan_scene_effect_pass_is_water_waves(effect_file)
         || native_vulkan_scene_effect_pass_is_water_flow(effect_file)
         || native_vulkan_scene_effect_pass_is_water_caustics(effect_file)
         || native_vulkan_scene_effect_pass_is_foliage_sway(effect_file)
         || native_vulkan_scene_effect_pass_is_auto_sway(effect_file)
+}
+
+fn native_vulkan_scene_effect_pass_is_scroll(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/scroll/effect.json" || file.ends_with("/effects/scroll/effect.json")
+}
+
+fn native_vulkan_scene_effect_pass_is_color_key(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file == "effects/colorkey/effect.json"
+        || file.ends_with("/effects/colorkey/effect.json")
+        || file.contains("color_key")
+}
+
+fn native_vulkan_scene_effect_pass_is_clipping_mask(effect_file: &str) -> bool {
+    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
+    file.contains("clipping_mask") || file.contains("clippingmask")
 }
 
 fn native_vulkan_scene_effect_pass_is_opacity(effect_file: &str) -> bool {

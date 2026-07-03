@@ -6,8 +6,8 @@ usage() {
 usage: scripts/wallpaper-engine-workshop-download.sh --item-id <id> [options] [-- matrix-args...]
 
 Download user-accessible Wallpaper Engine Workshop items with SteamCMD into a
-local ignored corpus, then optionally probe the downloaded media with the native
-Vulkan real-source matrix. The script does not copy Workshop assets into the
+local ignored corpus, then optionally probe the downloaded media with the FFmpeg
+Vulkan hwdecode matrix. The script does not copy Workshop assets into the
 tracked repository.
 
 Options:
@@ -32,17 +32,17 @@ Options:
                         Default: GILDER_STEAM_USER when set, otherwise
                         anonymous.
   --probe-after-download
-                        Run scripts/native-vulkan-real-source-matrix.sh against
+                        Run scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh against
                         the downloaded Workshop content after SteamCMD exits.
   --matrix-report-dir <dir>
                         Report directory for --probe-after-download. Default:
-                        artifacts/video-real-source-matrix/we-<timestamp>.
+                        artifacts/video-ffmpeg-vulkan-matrix/we-<timestamp>.
   --dry-run             Print the SteamCMD and matrix commands without running.
   -h, --help            Show this help text.
 
-Arguments after -- are forwarded to native-vulkan-real-source-matrix.sh, for
+Arguments after -- are forwarded to ffmpeg-vulkan-hwdecode-4k240-matrix.sh, for
 example:
-  -- --run-video --output-name HDMI-A-1 --audio-clock-probe --duration 10
+  -- --display wayland-1 --output-name HDMI-A-1 --audio-clock-probe --audio-output clock-only
 EOF
 }
 
@@ -234,7 +234,7 @@ fi
 
 timestamp="$(date +%Y%m%d-%H%M%S)-$$"
 if [[ -z "$matrix_report_dir" ]]; then
-  matrix_report_dir="$repo_root/artifacts/video-real-source-matrix/we-$timestamp"
+  matrix_report_dir="$repo_root/artifacts/video-ffmpeg-vulkan-matrix/we-$timestamp"
 fi
 summary_dir="$repo_root/artifacts/wallpaper-engine-workshop/reports/$timestamp"
 mkdir -p "$summary_dir"
@@ -254,9 +254,13 @@ done
 steamcmd_args+=(+quit)
 
 matrix_command=(
-  "$repo_root/scripts/native-vulkan-real-source-matrix.sh"
-  --workshop-dir "$content_dir"
-  --report-dir "$matrix_report_dir"
+  "$repo_root/scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh"
+  --artifact-prefix gilder-ffmpeg-vulkan-workshop
+  --work-dir "$matrix_report_dir"
+  --label workshop-download
+  --duration 10
+  --target-fps source
+  --source-dir "$content_dir"
 )
 if [[ "${#matrix_args[@]}" -gt 0 ]]; then
   matrix_command+=("${matrix_args[@]}")

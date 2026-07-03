@@ -24,19 +24,19 @@ pub struct NativeVulkanVideoInteropContract {
 
 pub fn video_interop_contract() -> NativeVulkanVideoInteropContract {
     NativeVulkanVideoInteropContract {
-        target_memory_flow: "Vulkan Video decoded image -> descriptor heap sampled YUV planes -> Vulkan composition/present",
-        current_baseline: "native Vulkan Video direct decode/render/present with FFmpeg packet frontend",
+        target_memory_flow: "FFmpeg AVVkFrame image -> descriptor heap sampled YUV planes -> Vulkan composition/present",
+        current_baseline: "FFmpeg Vulkan hwdecode owns demux/parser/codec state and yields AV_PIX_FMT_VULKAN frames for Gilder descriptor-heap present",
         vulkan_binding_policy: "vulkanalia is the native Vulkan binding; the ash dependency and runtime baseline are removed, and zero-copy evidence comes from device extension/capability/import telemetry rather than the binding choice alone",
-        vulkanalia_primary_policy: "vulkanalia owns the native-vulkan-renderer surface for instance/device ownership, Vulkan Video submit helpers, image/import resources and present telemetry",
+        vulkanalia_primary_policy: "vulkanalia owns the native-vulkan-renderer surface for instance/device ownership, FFmpeg device borrowing, AVVkFrame descriptor sampling and present telemetry",
         vulkan_1_4_value: "Vulkan 1.4 is valuable for dynamic-rendering-local-read, host image copy, push descriptors, maintenance5/6, scalar block layout, synchronization2 and stronger portable limits; it does not by itself prove Vulkan Video or zero-copy support",
         removed_ash_baseline: "ash is removed; Vulkanalia owns Vulkan 1.4, Vulkan Video and external-memory parity work",
         target_sampling: "NV12/P010/YUV planes sampled directly in Vulkan before RGB composition",
         avoids_default_rgba_upload: true,
-        decoder_policy: "prefer native Vulkan Video for H.264/H.265/AV1; FFmpeg remains demux/bitstream-filter frontend only",
+        decoder_policy: "prefer FFmpeg Vulkan hwdecode for H.264/H.265/AV1; the old Gilder Vulkan Video submit path is compatibility evidence only",
         audio_strategy: "keep audio pipeline separate from the video texture path so decoder choice does not block playback support",
         known_blockers: &[
-            "native Vulkan decode/render/present must stay under the current 4K/240 Private_Dirty and FPS evidence",
-            "packet queues and bitstream rings must remain bounded and FFmpeg-semantics aligned",
+            "FFmpeg Vulkan hwdecode must keep 4K240 FPS stable while Gilder-side AVFrame retention and descriptor heaps remain bounded",
+            "audio clock/output must stay modular and expose only pacing state to video present",
             "descriptor heap must remain the only shader resource binding model",
         ],
     }

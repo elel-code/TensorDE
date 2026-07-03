@@ -232,6 +232,95 @@ fn rounded_mask_effect_lowers_rectangle_corner_radius() {
     assert!((radius - 123.75).abs() < 1.0e-6);
 }
 
+#[test]
+fn text_outline_lowers_to_stroke_paint() {
+    let object = serde_json::json!({
+        "type": "text",
+        "outline": true,
+        "outlinecolor": "1.00000 1.00000 1.00000",
+        "outlinethickness": 7.0
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    let outline = scene_text_outline_from_object(&object).unwrap();
+
+    assert_eq!(outline.0, "#ffffff");
+    assert_eq!(outline.1, 7.0);
+}
+
+#[test]
+fn font_text_lowers_to_generated_image_texture() {
+    let fixture = Path::new("reverse-engineered/extracted/3742497499/fonts/Tourner (562).ttf");
+    if !fixture.is_file() {
+        return;
+    }
+    let source = TestDir::new("we-text-raster-source");
+    let output = TestDir::new("we-text-raster-output");
+    output.remove();
+    fs::create_dir_all(source.path().join("fonts")).unwrap();
+    fs::copy(fixture, source.path().join("fonts/Tourner (562).ttf")).unwrap();
+    source.write_file(
+        "scene.json",
+        r#"{
+            "general": { "width": 128, "height": 64 },
+            "objects": [{
+                "type": "text",
+                "name": "scrolling label",
+                "text": { "value": "DREAM" },
+                "font": "fonts/Tourner (562).ttf",
+                "pointsize": 24,
+                "size": "128 64",
+                "horizontalalign": "center",
+                "verticalalign": "center",
+                "color": "1 1 1",
+                "outline": true,
+                "outlinecolor": "0 0 0",
+                "outlinethickness": 2,
+                "effects": [{
+                    "file": "effects/scroll/effect.json",
+                    "passes": [{ "constantshadervalues": { "speedx": 0.1, "speedy": 0 } }]
+                }]
+            }]
+        }"#,
+    );
+    source.write_file(
+        PROJECT_FILE,
+        r#"{
+              "type": "scene",
+              "title": "Text Raster",
+              "file": "scene.json"
+            }"#,
+    );
+
+    convert_project(source.path(), output.path()).unwrap();
+    let report: Value = serde_json::from_str(
+        &fs::read_to_string(output.path().join("metadata/conversion-report.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(
+        report["converted_features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|feature| feature.as_str() == Some("wallpaper-engine-font-text-raster"))
+    );
+    let generated = report["generated_assets"].as_array().unwrap();
+    let text_texture = generated
+        .iter()
+        .filter_map(Value::as_str)
+        .find(|asset| asset.contains("font-text-raster") && asset.ends_with(".gtex"))
+        .expect("generated font text texture");
+    assert!(output.path().join(text_texture).is_file());
+    assert!(
+        binary_chunk_count(
+            &output.path().join("assets/scene.gscn"),
+            SceneBinaryChunkKind::ResourceTable
+        ) >= 1
+    );
+}
+
 fn binary_chunk_count(path: &Path, kind: SceneBinaryChunkKind) -> u32 {
     let bytes = fs::read(path).unwrap();
     let layout = decode_scene_binary_container(&bytes).unwrap();

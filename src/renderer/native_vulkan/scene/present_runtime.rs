@@ -12,8 +12,6 @@ use crate::renderer::{
 };
 
 #[cfg(feature = "native-vulkan-video")]
-use super::super::NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot;
-#[cfg(feature = "native-vulkan-video")]
 use super::super::NativeVulkanVulkanaliaSceneVideoOverlayInput;
 use super::super::audio::clock::NativeVulkanAudioClockRuntimeSnapshot;
 #[cfg(feature = "native-vulkan-video")]
@@ -27,7 +25,6 @@ use super::super::present::render_plan::{
 #[cfg(feature = "native-vulkan-video")]
 use super::super::video::direct::{
     NATIVE_VULKAN_AUDIO_OUTPUT_WORKER_STACK_BYTES, native_vulkan_audio_runtime_packet_budget,
-    run_vulkanalia_ready_prefix_video_sources_with_scene_overlay,
 };
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
@@ -45,6 +42,13 @@ use super::super::{
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap, run_clear,
     run_native_vulkan_vulkanalia_scene_sampled_image_present,
     run_native_vulkan_vulkanalia_scene_solid_quad_present,
+};
+#[cfg(feature = "native-vulkan-video")]
+use super::super::{
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot,
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions,
+    run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present,
 };
 use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot,
@@ -100,7 +104,7 @@ pub enum NativeVulkanScenePresentSnapshot {
 
 #[cfg(feature = "native-vulkan-video")]
 pub type NativeVulkanSceneVideoPresentRuntimeSnapshot =
-    NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot;
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot;
 
 #[cfg(not(feature = "native-vulkan-video"))]
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -280,19 +284,15 @@ fn native_vulkan_scene_binary_sampled_geometry_from_layers(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeVulkanSceneVideoBridgeSourceOptions {
+pub struct NativeVulkanSceneVideoPresentSourceOptions {
     pub source: std::path::PathBuf,
     pub codec: NativeVulkanVideoSessionCodec,
-    pub width: u32,
-    pub height: u32,
-    pub bitstream_extract_max_samples: u32,
-    pub ready_prefix_frames: u32,
     pub playback_frames: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeVulkanSceneVideoBridgeOptions {
-    pub sources: Vec<NativeVulkanSceneVideoBridgeSourceOptions>,
+pub struct NativeVulkanSceneVideoPresentOptions {
+    pub sources: Vec<NativeVulkanSceneVideoPresentSourceOptions>,
     pub audio_clock_probe_requested: bool,
     pub audio_output_mode: NativeVulkanAudioOutputMode,
 }
@@ -436,10 +436,10 @@ pub fn run_scene(
     duration: Duration,
     plan: SceneWallpaperPlan,
     scene_audio_output_mode: NativeVulkanAudioOutputMode,
-    video_bridge: Option<NativeVulkanSceneVideoBridgeOptions>,
+    scene_video: Option<NativeVulkanSceneVideoPresentOptions>,
 ) -> Result<NativeVulkanScenePresentSnapshot, NativeVulkanError> {
     #[cfg(not(feature = "native-vulkan-video"))]
-    let _ = video_bridge;
+    let _ = scene_video;
 
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator();
 
@@ -585,16 +585,16 @@ pub fn run_scene(
         }
         #[cfg(feature = "native-vulkan-video")]
         NativeVulkanScenePresentRouteKind::Video => {
-            let video_bridge = video_bridge.ok_or_else(|| {
+            let scene_video = scene_video.ok_or_else(|| {
                 NativeVulkanError::Scene(
-                    "scene video layer requires Vulkan Video bridge options".to_owned(),
+                    "scene video layer requires FFmpeg Vulkan scene-video options".to_owned(),
                 )
             })?;
             let video_geometry = runtime.take_vulkanalia_video_layer_geometry_input();
-            let video_bridge_sources = video_bridge.sources.clone();
-            if video_bridge_sources.is_empty() {
+            let scene_video_sources = scene_video.sources.clone();
+            if scene_video_sources.is_empty() {
                 return Err(NativeVulkanError::Scene(
-                    "scene video bridge requires at least one source".to_owned(),
+                    "scene video present requires at least one source".to_owned(),
                 ));
             }
             let mut overlay_source = None;
@@ -649,13 +649,29 @@ pub fn run_scene(
                 duration,
                 scene_audio_output_mode,
                 || {
-                    run_vulkanalia_ready_prefix_video_sources_with_scene_overlay(
-                        options,
-                        video_bridge_sources,
-                        video_bridge.audio_clock_probe_requested,
-                        video_bridge.audio_output_mode,
-                        scene_video_overlay,
+                    let sources = scene_video_sources
+                        .into_iter()
+                        .map(
+                            |source| NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions {
+                                source: source.source,
+                                codec: source.codec,
+                                playback_frame_count: source.playback_frames,
+                            },
+                        )
+                        .collect();
+                    run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present(
+                        NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions {
+                            host: options.host,
+                            wait_configure_roundtrips: options.wait_configure_roundtrips,
+                            target_max_fps: options.target_max_fps,
+                            audio_clock_probe_requested: scene_video.audio_clock_probe_requested,
+                            audio_output_mode: scene_video.audio_output_mode,
+                            clear_color: options.clear_color,
+                            sources,
+                            scene_video_overlay,
+                        },
                     )
+                    .map_err(NativeVulkanError::Video)
                 },
             )?;
             Ok(NativeVulkanScenePresentSnapshot::Video {

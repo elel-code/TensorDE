@@ -42,6 +42,7 @@ path = "src/bin/gilder-native-vulkan.rs"
 required-features = ["native-vulkan-renderer"]
 
 [dependencies]
+ab_glyph = "0.2.32"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"], optional = true }
 jiff = "0.2"
 png = "0.18"

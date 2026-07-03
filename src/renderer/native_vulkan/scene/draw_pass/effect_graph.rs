@@ -117,7 +117,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
     };
     let unsupported_reason = (!raw_direct_composite_allowed && !material_graph_supported)
-        .then_some("we-effect-graph-passthrough-water-not-executed");
+        .then_some("we-effect-graph-material-pass-not-executed");
     if native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
         quad,
         first_class_target,
@@ -415,6 +415,8 @@ fn native_vulkan_scene_we_image_pass_chain_allows_temporary_raw_composite(
             NativeVulkanSceneEffectKind::WaterRipple
                 | NativeVulkanSceneEffectKind::WaterFlow
                 | NativeVulkanSceneEffectKind::WaterCaustics
+                | NativeVulkanSceneEffectKind::ColorKey
+                | NativeVulkanSceneEffectKind::ClippingMask
         )
     })
 }
@@ -463,6 +465,7 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
             | NativeVulkanSceneEffectKind::WaterFlow
             | NativeVulkanSceneEffectKind::WaterCaustics
             | NativeVulkanSceneEffectKind::FoliageSway
+            | NativeVulkanSceneEffectKind::Scroll
     )
 }
 
@@ -543,6 +546,7 @@ fn native_vulkan_scene_effect_pass_has_executable_material_graph(
 ) -> bool {
     match pass.kind {
         NativeVulkanSceneEffectKind::OpacityMask
+        | NativeVulkanSceneEffectKind::Scroll
         | NativeVulkanSceneEffectKind::WaterRipple
         | NativeVulkanSceneEffectKind::WaterFlow
         | NativeVulkanSceneEffectKind::WaterWaves
@@ -1694,6 +1698,91 @@ mod tests {
         );
         assert_eq!(plan.steps[0].texture_bindings[0].slot, 0);
         assert_eq!(plan.steps[0].texture_bindings.len(), 5);
+    }
+
+    #[test]
+    fn single_terminal_scroll_executes_directly_without_raw_fallback() {
+        let mut scroll = iris_effect_record();
+        scroll.kind = NativeVulkanSceneEffectKind::Scroll;
+        scroll.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        scroll.effect_file = "effects/scroll/effect.json".to_owned();
+        scroll.runtime = None;
+        scroll.shader = Some("effects/scroll".to_owned());
+        scroll.texture_slots.clear();
+        scroll.constant_shader_values = BTreeMap::from([
+            ("speedx".to_owned(), serde_json::json!(0.1)),
+            ("speedy".to_owned(), serde_json::json!(0.0)),
+            ("repeat".to_owned(), serde_json::json!("1 1")),
+        ]);
+
+        let mut quad = sampled_image_quad(Some(full_quad_mesh(2457.0, 616.0)));
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![scroll];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+        quad.width = 2457.0;
+        quad.height = 616.0;
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("direct terminal scroll chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+        );
+        assert!(!chain.local_target_required);
+        assert_eq!(chain.passes.len(), 1);
+        assert_eq!(
+            chain.passes[0].effect_kind,
+            Some(NativeVulkanSceneEffectKind::Scroll)
+        );
+        assert_eq!(plan.first_class_target_chain_count, 1);
+        assert_eq!(plan.temporary_raw_fallback_chain_count, 0);
+        assert_eq!(plan.steps[0].step_index, 0);
+    }
+
+    #[test]
+    fn clipping_mask_chain_without_runtime_texture_is_suppressed_not_raw_static() {
+        let mut scroll = iris_effect_record();
+        scroll.kind = NativeVulkanSceneEffectKind::Scroll;
+        scroll.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        scroll.effect_file = "effects/scroll/effect.json".to_owned();
+        scroll.runtime = None;
+        scroll.shader = Some("effects/scroll".to_owned());
+        scroll.texture_slots.clear();
+
+        let mut clipping = iris_effect_record();
+        clipping.kind = NativeVulkanSceneEffectKind::ClippingMask;
+        clipping.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        clipping.effect_file = "effects/workshop/2800594362/clipping_mask/effect.json".to_owned();
+        clipping.runtime = None;
+        clipping.pass_index = 1;
+        clipping.shader = Some("workshop/2800594362/effects/clipping_mask".to_owned());
+        clipping.texture_slots.clear();
+        clipping.combo_values = BTreeMap::from([("REPEAT".to_owned(), 1)]);
+
+        let mut quad = sampled_image_quad(None);
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![scroll, clipping];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+        quad.width = 2457.0;
+        quad.height = 616.0;
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("scroll plus clipping chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
+        );
+        assert!(!chain.raw_direct_composite_allowed);
+        assert_eq!(
+            chain.unsupported_reason,
+            Some("we-effect-graph-material-pass-not-executed")
+        );
+        assert_eq!(plan.suppressed_chain_count, 1);
+        assert_eq!(plan.temporary_raw_fallback_chain_count, 0);
     }
 
     #[test]

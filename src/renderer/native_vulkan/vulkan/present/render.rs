@@ -251,6 +251,8 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot {
     pub frame_sleep_count: u32,
     pub missed_frame_pacing_count: u32,
     pub total_pacing_sleep_micros: u64,
+    pub present_sleep_guard_micros: u64,
+    pub present_spin_guard_micros: u64,
     pub total_present_call_micros: u64,
     pub max_present_call_micros: u64,
     pub total_present_wait_frame_slot_micros: u64,

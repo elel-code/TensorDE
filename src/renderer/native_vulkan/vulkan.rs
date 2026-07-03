@@ -36,6 +36,7 @@ use self::video::session as video_session;
 use self::video::session_bind as video_session_bind;
 use self::video::session_images as video_session_images;
 use self::video::session_parameters as video_session_parameters;
+use self::video::surface_host as video_surface_host;
 
 #[cfg(test)]
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_h265_std_long_term_ref_pics_sps(
@@ -192,7 +193,18 @@ pub use video_present_device::{
 };
 pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 #[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) use video_present_runtime::{
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions,
+    run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present,
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
+};
+#[cfg(feature = "native-vulkan-video")]
 pub use video_present_runtime::{
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot,
+    NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceSnapshot,
     NativeVulkanFfmpegVulkanHwVideoPresentOptions, NativeVulkanFfmpegVulkanHwVideoPresentSnapshot,
     NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
@@ -209,13 +221,6 @@ pub use video_present_runtime::{
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
-};
-#[cfg(feature = "native-vulkan-video")]
-pub(in crate::renderer::native_vulkan) use video_present_runtime::{
-    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
-    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
-    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
-    run_native_vulkan_vulkanalia_multi_streaming_video_present_decode_with_scene_video_overlay,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{
@@ -252,3 +257,4 @@ pub use video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSmokeSnapshot,
     NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
 };
+pub use video_surface_host::NativeVulkanVideoSurfaceHostSnapshot;

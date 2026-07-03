@@ -9,6 +9,8 @@ pub(in crate::renderer::native_vulkan::vulkan) mod decode_submit_h265;
 pub(in crate::renderer::native_vulkan::vulkan) mod device;
 pub(in crate::renderer::native_vulkan::vulkan) mod direct_runtime;
 pub(in crate::renderer::native_vulkan::vulkan) mod format_probe;
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) mod media_runtime;
 pub(in crate::renderer::native_vulkan::vulkan) mod present_device;
 pub(in crate::renderer::native_vulkan::vulkan) mod present_handoff;
 pub(in crate::renderer::native_vulkan::vulkan) mod present_runtime;
@@ -24,6 +26,7 @@ pub(in crate::renderer::native_vulkan::vulkan) mod session_parameters;
 pub(in crate::renderer::native_vulkan::vulkan) mod session_parameters_av1;
 pub(in crate::renderer::native_vulkan::vulkan) mod session_parameters_h264;
 pub(in crate::renderer::native_vulkan::vulkan) mod session_parameters_h265;
+pub(in crate::renderer::native_vulkan::vulkan) mod surface_host;
 
 use self::bitstream_buffer as video_bitstream_buffer;
 use self::codec as video_codec;
@@ -35,6 +38,8 @@ use self::decode_submit_h264 as video_decode_submit_h264;
 use self::decode_submit_h265 as video_decode_submit_h265;
 use self::device as video_device;
 use self::format_probe as video_format_probe;
+#[cfg(feature = "native-vulkan-video")]
+use self::media_runtime as video_media_runtime;
 use self::present_device as video_present_device;
 use self::present_handoff as video_present_handoff;
 use self::present_runtime as video_present_runtime;
@@ -50,5 +55,6 @@ use self::session_parameters as video_session_parameters;
 use self::session_parameters_av1 as video_session_parameters_av1;
 use self::session_parameters_h264 as video_session_parameters_h264;
 use self::session_parameters_h265 as video_session_parameters_h265;
+use self::surface_host as video_surface_host;
 use super::core::{features, instance, memory, queue_probe};
 use super::present::{render as render_present, swapchain};

@@ -31,11 +31,12 @@ as a performance result.
 ## Engineering Rule
 
 All implementation work must optimize for the long-term native architecture.
-Do not add short-term substitutes, sample-specific fixes, hidden compatibility
-branches, or temporary render paths to cover missing behavior. When a gap comes
-from an unsupported format, effect, material, interaction, renderer-quality, or
-runtime subsystem, design and implement that first-class subsystem, and document
-any remaining boundary explicitly.
+Native video and scene-video follow a zero-compatibility rule: do not add
+short-term substitutes, sample-specific fixes, hidden compatibility branches,
+legacy fallback routes, or temporary render paths to cover missing behavior.
+When a gap comes from an unsupported format, effect, material, interaction,
+renderer-quality, or runtime subsystem, design and implement that first-class
+subsystem, fail explicitly until it exists, and document the remaining boundary.
 
 ## Next Work
 
@@ -80,8 +81,8 @@ any remaining boundary explicitly.
   architecture plan and evidence gates.
 - `docs/packaging.md`: install and distribution notes.
 - `docs/man/`: man pages.
-- `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`: current
-  legacy Vulkan Video compatibility evidence scripts.
+- `scripts/native-vulkan-{h264,h265,av1}-ready-prefix-video-smoke.sh`:
+  deprecated Vulkan Video evidence scripts; not a scene-video runtime fallback.
 - `scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh`: FFmpeg Vulkan hardware
   decode 4K240 and real-source matrix runner.
 - `scripts/native-vulkan-real-source-matrix.sh`: older real-source coverage
@@ -134,4 +135,5 @@ The required fields are `average_present_fps`, `presented_frame_count`,
 `ffmpeg_retained_avframe_peak_count`,
 `descriptor_sampler_cache_peak_entry_count`,
 `descriptor_sampler_cache_total_heap_kb`, descriptor rewrite/recreate counts,
-codec/source metadata, and the inferred codec host-memory model.
+codec/source metadata, audio clock fields when `--audio-clock-probe` is used,
+and the inferred codec host-memory model.

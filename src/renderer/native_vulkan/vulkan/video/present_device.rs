@@ -11,9 +11,7 @@ use vulkanalia::vk::{
 };
 
 use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanVideoSessionCodec};
-use crate::renderer::native_wayland::{
-    NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
-};
+use crate::renderer::native_wayland::{NativeWaylandHostOptions, NativeWaylandSurfaceHandles};
 
 use super::features::{
     NativeVulkanVulkanaliaCoreFeatureSnapshot,
@@ -50,6 +48,9 @@ use super::video_device::{
 };
 use super::video_session::NativeVulkanVulkanaliaVideoSessionMemoryBindingSmokeSnapshot;
 use super::video_session_images::NativeVulkanVulkanaliaVideoSessionResourceImageSmokeSnapshot;
+use super::video_surface_host::{
+    NativeVulkanVideoSurfaceHost, NativeVulkanVideoSurfaceHostSnapshot,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions {
@@ -105,6 +106,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot {
     pub device_id: u32,
     pub driver_version: u32,
     pub single_logical_device_created: bool,
+    pub surface_host: Option<NativeVulkanVideoSurfaceHostSnapshot>,
     pub enabled_device_extensions: Vec<&'static str>,
     pub video_enabled_device_extensions: Vec<&'static str>,
     pub present_enabled_device_extensions: Vec<&'static str>,
@@ -127,6 +129,7 @@ pub struct NativeVulkanVulkanaliaVideoPresentSessionProbeSnapshot {
     pub route: &'static str,
     pub codec: NativeVulkanVideoSessionCodec,
     pub requested_extent: (u32, u32),
+    pub surface_host: Option<NativeVulkanVideoSurfaceHostSnapshot>,
     pub device: NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     pub video_session_created: bool,
     pub video_session_create_inline_session_parameters: bool,
@@ -215,18 +218,24 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaVide
 pub fn probe_native_vulkan_vulkanalia_video_present_device(
     options: NativeVulkanVulkanaliaVideoPresentDeviceProbeOptions,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot, String> {
-    let mut host =
-        NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
-    host.wait_until_configured(options.wait_configure_roundtrips)
-        .map_err(|err| err.to_string())?;
-    let handles = host.surface_handles().map_err(|err| err.to_string())?;
+    let surface_host = NativeVulkanVideoSurfaceHost::connect_wayland(
+        options.host.clone(),
+        options.wait_configure_roundtrips,
+    )?;
+    let handles = surface_host.handles();
+    let surface_host_snapshot = surface_host.snapshot().clone();
 
     let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
     requested_instance_extensions.extend_from_slice(OPTIONAL_INSTANCE_EXTENSIONS);
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
         &requested_instance_extensions,
     )?;
-    let result = probe_video_present_device_inner(&vulkan, handles, options.codec);
+    let result = probe_video_present_device_inner(
+        &vulkan,
+        handles,
+        options.codec,
+        Some(surface_host_snapshot),
+    );
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -247,10 +256,11 @@ fn probe_video_present_device_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
     codec: NativeVulkanVideoSessionCodec,
+    surface_host: Option<NativeVulkanVideoSurfaceHostSnapshot>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot, String> {
     let instance = &vulkan.instance;
     let surface = create_vulkanalia_wayland_surface(instance, handles)?;
-    let result = with_video_present_device(instance, surface, handles, vulkan, codec);
+    let result = with_video_present_device(instance, surface, handles, vulkan, codec, surface_host);
     unsafe {
         instance.destroy_surface_khr(surface, None);
     }
@@ -263,6 +273,7 @@ fn with_video_present_device(
     handles: NativeWaylandSurfaceHandles,
     vulkan: &NativeVulkanVulkanaliaInstance,
     codec: NativeVulkanVideoSessionCodec,
+    surface_host: Option<NativeVulkanVideoSurfaceHostSnapshot>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia video present): {err:?}"))?;
@@ -349,6 +360,7 @@ fn with_video_present_device(
         device_id: selection.properties.device_id,
         driver_version: selection.properties.driver_version,
         single_logical_device_created: true,
+        surface_host,
         enabled_device_extensions: context.enabled_device_extensions,
         video_enabled_device_extensions: context.video_enabled_device_extensions,
         present_enabled_device_extensions: context.present_enabled_device_extensions,
@@ -808,6 +820,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn device_snapshot_from_selection
         device_id: selection.properties.device_id,
         driver_version: selection.properties.driver_version,
         single_logical_device_created: true,
+        surface_host: None,
         enabled_device_extensions: context.enabled_device_extensions.clone(),
         video_enabled_device_extensions: context.video_enabled_device_extensions.clone(),
         present_enabled_device_extensions: context.present_enabled_device_extensions.clone(),

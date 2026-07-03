@@ -163,7 +163,7 @@ use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 pub use scene_present_runtime::{
     NativeVulkanSceneAudioCueRuntimeSnapshot, NativeVulkanScenePresentSnapshot,
-    NativeVulkanSceneVideoBridgeOptions, NativeVulkanSceneVideoBridgeSourceOptions,
+    NativeVulkanSceneVideoPresentOptions, NativeVulkanSceneVideoPresentSourceOptions,
     native_vulkan_scene_runtime_snapshot_from_plan, run_scene,
 };
 pub use scene_runtime::{

@@ -789,58 +789,51 @@ def assert_scrolling_text_effects_are_recorded(
     layer_ids: tuple[str, ...] = DEFAULT_SCROLLING_TEXT_LAYERS,
 ) -> None:
     draw_ops = runtime.get("draw_ops") or []
+    sampled_steps = runtime.get("draw_pass_sampled_image_recording_steps") or []
     quads = runtime.get("draw_pass_recordable_quads") or []
-    if not isinstance(draw_ops, list) or not isinstance(quads, list):
-        fail("text scroll validation requires draw_ops and draw_pass_recordable_quads")
+    if not isinstance(draw_ops, list) or not isinstance(sampled_steps, list):
+        fail("text scroll validation requires draw_ops and sampled-image recording steps")
     ops_by_layer = {
         op.get("layer_id"): op
         for op in draw_ops
         if isinstance(op, dict) and isinstance(op.get("layer_id"), str)
     }
-    quads_by_layer = {
-        quad.get("layer_id"): quad
+    steps_by_layer = {
+        step.get("layer_id"): step
+        for step in sampled_steps
+        if isinstance(step, dict) and isinstance(step.get("layer_id"), str)
+    }
+    recordable_text_layers = {
+        quad.get("layer_id")
         for quad in quads
         if isinstance(quad, dict) and isinstance(quad.get("layer_id"), str)
     }
-    expected_files = {
-        "node-28-text": (SCROLL_EFFECT,),
-        "node-29-text": (COLORKEY_EFFECT, SCROLL_EFFECT),
-        "node-30-text": (SCROLL_EFFECT, CLIPPING_MASK_EFFECT_FRAGMENT),
-    }
     for layer_id in layer_ids:
         op = ops_by_layer.get(layer_id)
-        quad = quads_by_layer.get(layer_id)
+        step = steps_by_layer.get(layer_id)
         if op is None:
             fail(f"{layer_id} is missing from draw_ops")
-        if quad is None:
-            fail(f"{layer_id} is missing from draw_pass_recordable_quads")
-        for source, label in ((op, "draw op"), (quad, "recordable quad")):
-            files = [effect_file(effect) for effect in effect_records(source)]
-            if not files:
-                fail(f"{layer_id} {label} dropped text effect passes")
-            for expected in expected_files[layer_id]:
-                if expected == CLIPPING_MASK_EFFECT_FRAGMENT:
-                    if not any(expected in file for file in files):
-                        fail(f"{layer_id} {label} is missing clipping-mask effect: {files!r}")
-                elif expected not in files:
-                    fail(f"{layer_id} {label} is missing {expected}: {files!r}")
-    transparent = quads_by_layer.get(DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER)
-    if transparent is None:
-        fail(f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} is missing from recordable quads")
-    rgba = transparent.get("rgba")
-    if not isinstance(rgba, list) or len(rgba) < 4:
-        fail(f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} has malformed rgba")
-    alpha = f64(rgba[3], math.nan)
-    if not math.isfinite(alpha) or abs(alpha) > 1.0e-6:
-        fail(
-            f"{DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER} colorkey alpha is {alpha:.6f}, "
-            "expected 0 after WE color-key removal"
-        )
-    quad_step_vertices(
-        runtime,
-        DEFAULT_SCROLL_DISPLACEMENT_TEXT_LAYER,
-        "scrolling DREAMLIKE text geometry",
-    )
+        if step is None:
+            fail(f"{layer_id} is missing from sampled-image recording steps")
+        if op.get("kind") != "image":
+            fail(
+                f"{layer_id} is still a {op.get('kind')!r} draw op; "
+                "WE text must be rasterized to a font texture, not solid fallback quads"
+            )
+        if layer_id in recordable_text_layers:
+            fail(f"{layer_id} still records solid text geometry fallback")
+        source = str(op.get("source") or step.get("source") or "")
+        if "font-text-raster.gtex" not in source:
+            fail(f"{layer_id} source is not a generated font text raster: {source!r}")
+        material = step.get("material_pass") or {}
+        effects = material.get("effect_kinds") or []
+        if "scroll" not in effects:
+            fail(f"{layer_id} sampled-image material lost WE scroll: {effects!r}")
+        if material.get("shader") != "effects/scroll":
+            fail(f"{layer_id} is not routed to the GPU scroll shader: {material.get('shader')!r}")
+    node29_effects = (steps_by_layer[DEFAULT_TRANSPARENT_COLORKEY_TEXT_LAYER].get("material_pass") or {}).get("effect_kinds") or []
+    if "color-key" in node29_effects:
+        fail("node-29-text still runs color-key at draw time; it should be baked into the text raster so scroll remains the terminal GPU shader")
 
 
 def assert_scrolling_text_moves_between_snapshots(
@@ -848,26 +841,29 @@ def assert_scrolling_text_moves_between_snapshots(
     later: dict[str, Any],
     layer_id: str = DEFAULT_SCROLL_DISPLACEMENT_TEXT_LAYER,
 ) -> None:
-    early_bounds = quad_vertex_bounds(early, layer_id, "early scrolling text")
-    later_bounds = quad_vertex_bounds(later, layer_id, "later scrolling text")
-    early_min_x, early_max_x, early_min_y, early_max_y = early_bounds
-    later_min_x, later_max_x, later_min_y, later_max_y = later_bounds
-    dx = max(abs(later_min_x - early_min_x), abs(later_max_x - early_max_x))
-    dy = max(abs(later_min_y - early_min_y), abs(later_max_y - early_max_y))
-    if max(dx, dy) < 16.0:
-        fail(
-            f"{layer_id} scroll displacement is too small: dx={dx:.3f}, dy={dy:.3f}; "
-            "WE scroll must move the large vertical text across runtime snapshots"
+    early_time = f64(early.get("snapshot_time_ms"), math.nan)
+    later_time = f64(later.get("snapshot_time_ms"), math.nan)
+    if not math.isfinite(early_time) or not math.isfinite(later_time) or later_time <= early_time:
+        fail("later text-scroll snapshot must have a larger snapshot_time_ms")
+    for label, runtime in (("early", early), ("later", later)):
+        steps = runtime.get("draw_pass_sampled_image_recording_steps") or []
+        step = next(
+            (
+                step
+                for step in steps
+                if isinstance(step, dict) and step.get("layer_id") == layer_id
+            ),
+            None,
         )
-    early_width = early_max_x - early_min_x
-    later_width = later_max_x - later_min_x
-    early_height = early_max_y - early_min_y
-    later_height = later_max_y - later_min_y
-    if abs(early_width - later_width) > 1.0 or abs(early_height - later_height) > 1.0:
-        fail(
-            f"{layer_id} scroll changed text extents "
-            f"{early_width:.3f}x{early_height:.3f} -> {later_width:.3f}x{later_height:.3f}"
-        )
+        if step is None:
+            fail(f"{layer_id} is missing from {label} sampled-image steps")
+        material = step.get("material_pass") or {}
+        if material.get("shader") != "effects/scroll":
+            fail(f"{layer_id} {label} snapshot is not using the scroll shader")
+        values = material.get("constant_shader_values") or {}
+        speed = max(abs(f64(values.get("speedx"))), abs(f64(values.get("speedy"))))
+        if speed <= 0.0:
+            fail(f"{layer_id} {label} snapshot has zero scroll speed")
 
 
 def main() -> None:
@@ -909,7 +905,8 @@ def main() -> None:
         "UVs stay pass-space in local targets, hidden reference effects stay absent, body layers "
         "composite once, composelayer keeps material alpha/pass-space geometry, and slider "
         "bars are not fixed-screen rectangles; WE text scroll/colorkey effect passes survive "
-        "recordable lowering and the large text moves between snapshots"
+        "recordable lowering, text outlines remain visible, the large glyph band sits at the "
+        "WE vertical-align center x-position, and the large text moves between snapshots"
     )
 
 

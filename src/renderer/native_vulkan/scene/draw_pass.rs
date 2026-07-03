@@ -3360,6 +3360,13 @@ fn native_vulkan_scene_text_geometry(
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
+    let line_block_top = top + (layout_height - measured_height).max(0.0) * 0.5;
+    let stroke = quad
+        .stroke_rgba
+        .zip(quad.stroke_width)
+        .filter(|(_, width)| width.is_finite() && *width > 0.0);
+    let fill = quad.fill_rgba.unwrap_or(quad.rgba);
+
     for (line_index, line) in lines.iter().enumerate() {
         let line_width = native_vulkan_scene_text_line_width(line, cell);
         let align_offset = match quad.text_align.unwrap_or_default() {
@@ -3368,7 +3375,7 @@ fn native_vulkan_scene_text_geometry(
             SceneTextAlign::End => layout_width - line_width,
         };
         let mut cursor_x = left + align_offset.max(0.0);
-        let line_top = top + line_index as f64 * line_advance;
+        let line_top = line_block_top + line_index as f64 * line_advance;
         for ch in line.chars() {
             let pattern = native_vulkan_scene_text_glyph_pattern(ch);
             for (row, bits) in pattern.iter().enumerate() {
@@ -3377,16 +3384,33 @@ fn native_vulkan_scene_text_geometry(
                     if bits & mask == 0 {
                         continue;
                     }
+                    let x = cursor_x + column as f64 * cell;
+                    let y = line_top + row as f64 * cell;
+                    if let Some((stroke_rgba, stroke_width)) = stroke {
+                        native_vulkan_scene_push_text_effect_rect(
+                            &mut vertices,
+                            &mut indices,
+                            quad,
+                            layout,
+                            scroll,
+                            x - stroke_width,
+                            y - stroke_width,
+                            cell + stroke_width * 2.0,
+                            cell + stroke_width * 2.0,
+                            stroke_rgba,
+                        )?;
+                    }
                     native_vulkan_scene_push_text_effect_rect(
                         &mut vertices,
                         &mut indices,
                         quad,
                         layout,
                         scroll,
-                        cursor_x + column as f64 * cell,
-                        line_top + row as f64 * cell,
+                        x,
+                        y,
                         cell,
                         cell,
+                        fill,
                     )?;
                 }
             }
@@ -3605,6 +3629,7 @@ fn native_vulkan_scene_push_text_effect_rect(
     y: f64,
     width: f64,
     height: f64,
+    rgba: [f32; 4],
 ) -> Option<()> {
     let Some(scroll) = scroll else {
         return native_vulkan_scene_push_solid_rect(
@@ -3614,7 +3639,7 @@ fn native_vulkan_scene_push_text_effect_rect(
             y,
             width,
             height,
-            quad.rgba,
+            rgba,
             quad.transform,
         );
     };
@@ -3668,7 +3693,7 @@ fn native_vulkan_scene_push_text_effect_rect(
                 layout.top + clipped_v0 * layout.height,
                 (clipped_u1 - clipped_u0) * layout.width,
                 (clipped_v1 - clipped_v0) * layout.height,
-                quad.rgba,
+                rgba,
                 quad.transform,
             )?;
         }
@@ -10219,6 +10244,96 @@ mod tests {
                 .iter()
                 .all(|vertex| vertex.rgba[3] == 0.0)
         );
+    }
+
+    #[test]
+    fn draw_pass_plan_centers_recordable_text_vertically_in_layout_box() {
+        let mut text = draw_op(0, NativeVulkanSceneDrawOpKind::Text);
+        text.text = Some("A".to_owned());
+        text.color = Some("#ffffff".to_owned());
+        text.font_size = Some(20.0);
+        text.width = Some(80.0);
+        text.height = Some(100.0);
+        text.transform.anchor_x = 0.0;
+        text.transform.anchor_y = 0.0;
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![text],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        });
+
+        let min_y = pass_plan
+            .quad_vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+
+        assert!((min_y - 40.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn draw_pass_plan_records_colorkey_text_outline_after_fill_keying() {
+        let mut text = draw_op(0, NativeVulkanSceneDrawOpKind::Text);
+        text.text = Some("A".to_owned());
+        text.color = Some("#000000".to_owned());
+        text.stroke_color = Some("#ffffff".to_owned());
+        text.stroke_width = Some(4.0);
+        text.font_size = Some(16.0);
+        text.width = Some(64.0);
+        text.height = Some(32.0);
+        text.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/colorkey/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/colorkey".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: BTreeMap::from([
+                ("alpha".to_owned(), serde_json::json!(0.0)),
+                (
+                    "color".to_owned(),
+                    serde_json::Value::String("0 0 0".to_owned()),
+                ),
+                ("fuzziness".to_owned(), serde_json::json!(0.39)),
+                ("tolerance".to_owned(), serde_json::json!(2.53)),
+            ]),
+        }];
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![text],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        });
+
+        assert_eq!(pass_plan.recordable_quads[0].fill_rgba.unwrap()[3], 0.0);
+        assert_eq!(
+            pass_plan.recordable_quads[0].stroke_rgba,
+            Some([1.0, 1.0, 1.0, 1.0])
+        );
+        assert!(
+            pass_plan
+                .quad_vertices
+                .iter()
+                .any(|vertex| vertex.rgba == [1.0, 1.0, 1.0, 1.0])
+        );
+        assert!(pass_plan.quad_recording_steps[0].stroke_geometry);
     }
 
     #[test]

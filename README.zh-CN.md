@@ -105,4 +105,5 @@ scripts/ffmpeg-vulkan-hwdecode-4k240-matrix.sh \
 `all_zero_copy_presented`、dgop memory、smaps peak path、
 `ffmpeg_retained_avframe_peak_count`、`descriptor_sampler_cache_peak_entry_count`、
 `descriptor_sampler_cache_total_heap_kb`、descriptor rewrite/recreate counts、codec/source
-metadata，以及推断出的 codec host-memory model。
+metadata、开启 `--audio-clock-probe` 时的 audio clock 字段，以及推断出的 codec host-memory
+model。
