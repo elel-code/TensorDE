@@ -196,9 +196,9 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
     } else {
         quad.base_blend_mode
     };
-    let base_depth_test = quad.material_pass.render_state.depth_test;
-    let base_depth_write = quad.material_pass.render_state.depth_write;
-    let base_cull_mode = quad.material_pass.render_state.cull_mode.clone();
+    let base_depth_test = NativeVulkanSceneMaterialFlag::Unspecified;
+    let base_depth_write = NativeVulkanSceneMaterialFlag::Unspecified;
+    let base_cull_mode = NativeVulkanSceneCullMode::Unspecified;
     passes.push(NativeVulkanSceneWeImagePass {
         pass_index: 0,
         role: NativeVulkanSceneWeImagePassRole::BaseMaterial,
@@ -209,8 +209,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         target_name: None,
         binds: Default::default(),
         fbos: Default::default(),
-        shader: quad.material_pass.shader.clone(),
-        blending: quad.material_pass.blending.clone(),
+        shader: None,
+        blending: None,
         scene_blend_mode: base_blend_mode,
         render_state: native_vulkan_scene_we_image_pass_render_state(
             base_blend_mode,
@@ -227,8 +227,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         effect_uv_transform: None,
         parameter_keys: Vec::new(),
         constant_shader_values: Default::default(),
-        combo_keys: quad.material_pass.combo_keys.clone(),
-        combo_values: quad.material_pass.combo_values.clone(),
+        combo_keys: Vec::new(),
+        combo_values: Default::default(),
         depth_test: base_depth_test,
         depth_write: base_depth_write,
         cull_mode: base_cull_mode,

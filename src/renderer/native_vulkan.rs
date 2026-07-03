@@ -121,6 +121,8 @@ use video::vulkan_extract;
 use video::demux;
 #[cfg(feature = "native-vulkan-video")]
 use video::demux_ffmpeg;
+#[cfg(feature = "native-vulkan-video")]
+use video::ffmpeg_hw;
 
 #[cfg(feature = "native-vulkan-video")]
 use video::codec_reference;
@@ -148,6 +150,14 @@ use codec_reference::*;
 pub use codec_snapshots::*;
 #[cfg(feature = "native-vulkan-video")]
 pub use demux_ffmpeg::native_vulkan_resolve_ffmpeg_video_session_codec;
+#[cfg(feature = "native-vulkan-video")]
+pub use ffmpeg_hw::{
+    NativeVulkanFfmpegHwDecodeBackendContract, NativeVulkanFfmpegHwDecodeCodecContract,
+    NativeVulkanFfmpegHwDecodeDevicePolicy, NativeVulkanFfmpegHwDecodeFallbackPolicy,
+    NativeVulkanFfmpegVulkanHwDecoderSnapshot, NativeVulkanFfmpegVulkanHwDeviceBorrowSnapshot,
+    NativeVulkanFfmpegVulkanHwFrameContract, native_vulkan_ffmpeg_hw_decode_backend_contract,
+    native_vulkan_ffmpeg_hw_decode_codec_contracts, native_vulkan_ffmpeg_vulkan_hw_frame_contract,
+};
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
@@ -8499,8 +8509,8 @@ pub fn wallpaper_type_support_matrix() -> Vec<NativeVulkanWallpaperTypeSupport> 
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Video,
             current_vulkan_item: true,
-            current_renderer_status: "--run-video routes H.264/H.265 through Vulkanalia streaming decode/present; AV1 waits for the continuous streaming runtime",
-            target_vulkan_path: "container demux/parser -> Vulkan Video bitstream/session parameters -> decoded NV12/P010 image -> Vulkan YUV sampling; importer paths remain fallback/comparison",
+            current_renderer_status: "--run-video targets FFmpeg Vulkan HW decode as the mainline; the legacy Vulkanalia Vulkan Video route is compatibility-only",
+            target_vulkan_path: "FFmpeg demux/parser/avcodec Vulkan hwaccel -> AV_PIX_FMT_VULKAN/AVVkFrame -> VK_EXT_descriptor_heap Y/UV sampling -> Wayland present",
         },
         NativeVulkanWallpaperTypeSupport {
             wallpaper_type: NativeVulkanWallpaperType::Web,
@@ -8543,6 +8553,8 @@ pub struct NativeVulkanBackendContract {
     pub required_device_extensions: Vec<&'static str>,
     pub video_pipeline: pipeline::NativeVulkanVideoPipelineContract,
     pub video_flow: video_flow::NativeVulkanVideoFlowContract,
+    #[cfg(feature = "native-vulkan-video")]
+    pub ffmpeg_hw_decode: NativeVulkanFfmpegHwDecodeBackendContract,
     pub video_interop: NativeVulkanVideoInteropContract,
     pub web_interop: NativeVulkanWebInteropContract,
     pub vulkan_backend: NativeVulkanBackendPlan,
@@ -8562,6 +8574,8 @@ pub fn backend_contract() -> NativeVulkanBackendContract {
         required_device_extensions: required_device_extensions(),
         video_pipeline: pipeline::native_vulkan_video_pipeline_contract(),
         video_flow: video_flow::native_vulkan_video_flow_contract(),
+        #[cfg(feature = "native-vulkan-video")]
+        ffmpeg_hw_decode: ffmpeg_hw::native_vulkan_ffmpeg_hw_decode_backend_contract(),
         video_interop: video_interop_contract(),
         web_interop: web_interop_contract(),
         vulkan_backend: native_vulkan_backend_plan(),
@@ -8580,6 +8594,12 @@ pub fn required_device_extensions() -> Vec<&'static str> {
         "VK_KHR_timeline_semaphore",
         "VK_EXT_external_memory_dma_buf",
         "VK_EXT_image_drm_format_modifier",
+        "VK_KHR_video_queue",
+        "VK_KHR_video_decode_queue",
+        "VK_KHR_video_decode_h264",
+        "VK_KHR_video_decode_h265",
+        "VK_KHR_video_decode_av1",
+        "VK_EXT_descriptor_heap",
     ]
 }
 
@@ -12231,7 +12251,7 @@ mod tests {
                 .video_pipeline
                 .stages
                 .iter()
-                .any(|stage| stage.owner == "native-vulkan-demux-boundary")
+                .any(|stage| stage.owner == "ffmpeg-decoder-boundary")
         );
         assert_eq!(contract.wallpaper_type_support.len(), 6);
     }

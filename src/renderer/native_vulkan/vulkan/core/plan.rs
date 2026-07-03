@@ -148,7 +148,7 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "create Vulkan 1.4 instance/device and report PhysicalDeviceVulkan14Features",
             "probe Wayland surface and swapchain through the native Vulkan path",
             "probe Vulkan Video H.264/H.265/AV1 profile and format parity",
-            "route H.264/H.265/AV1 direct-video submit through owned session/image/bitstream/command resources",
+            "route H.264/H.265/AV1 through FFmpeg Vulkan hwdecode on the Vulkanalia-provided device",
             "keep direct present timing telemetry on the native Vulkan main path",
             "enable maintenance7/8/9/10 on the present device when feature bits are available",
             "keep descriptor_sets=0 and descriptor_heap_only=true in video evidence",
@@ -275,11 +275,14 @@ mod tests {
                 .any(|name| { name.ends_with("VideoDecodeAV1PictureInfoKHR") })
         );
         assert_eq!(plan.direct_runtime_contract.binding, "vulkanalia");
-        assert_eq!(plan.direct_runtime_contract.route_name, "direct-video");
+        assert_eq!(
+            plan.direct_runtime_contract.route_name,
+            "ffmpeg-vulkan-hwdecode-mainline"
+        );
         assert!(
             plan.direct_runtime_contract
                 .required_submit_order
-                .contains(&"queue_submit2")
+                .contains(&"avcodec_receive_frame")
         );
         assert_eq!(plan.feature_chain_template.api, "Vulkan 1.4");
         assert_eq!(plan.device_probe_template.requested_api_version, "1.4.0");

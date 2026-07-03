@@ -3,8 +3,8 @@
 [English README](README.md)
 
 Gilder 是面向 niri、Hyprland 等独立 Wayland compositor 的原生壁纸引擎。当前主线是
-FFmpeg 负责 demux/parser/packet 语义，Vulkanalia/Vulkan Video 负责 GPU 解码、渲染和
-Wayland present。
+FFmpeg 负责 demux/parser/packet 和 Vulkan 硬件解码，Gilder/Vulkanalia 负责
+`AV_PIX_FMT_VULKAN`/`AVVkFrame` 到 descriptor heap、渲染和 Wayland present。
 
 旧的 GStreamer display-sink、decoded-frame CPU copy、descriptor set fallback 和历史迁移
 文档已经删除。视频路径必须使用 `VK_EXT_descriptor_heap`，性能证据必须报告
@@ -14,9 +14,11 @@ zero-copy 状态。
 ## 当前状态
 
 - 已有 daemon IPC、状态持久化、包加载和 desktop-state policy。
-- 原生 Vulkan video 支持 H.264、H.265 Main8/Main10、AV1 Main8/Main10。
+- 原生 video 主线目标是 FFmpeg `h264_vulkan`、`hevc_vulkan`、`av1_vulkan` 硬解输出
+  `AV_PIX_FMT_VULKAN`。
 - 当前渲染路径通过 `VK_EXT_descriptor_heap` 采样 GPU Y/UV plane descriptor，并通过
-  Wayland present，不保留 decoded-frame CPU copy。
+  Wayland present，不保留 decoded-frame CPU copy；旧 Gilder Vulkan Video submit 路径仅作
+  迁移期兼容证据。
 - 当前 4K240 video 性能门槛是 `average_present_fps >= 239.999` 和
   `performance_max_private_dirty_kib < 25000`。
 
@@ -27,9 +29,9 @@ zero-copy 状态。
 2. 完整 scene 壁纸能力：把静态壁纸视为单 image layer 的 scene 特例，再把静态图、
    video、properties、transform、daemon output routing、pause/resume 和 package state
    接入统一 scene lifecycle。
-3. Video 覆盖和回归：核心 H.264/H.265/AV1 Vulkan Video 路径进入覆盖/稳定性阶段。
-   继续扩展真实源和生成源矩阵，覆盖 profile、bit depth、reference pattern、container、
-   任意入口、loop boundary、长跑资源稳定性和 audio/scene 集成回归。
+3. Video 覆盖和回归：主线切到 FFmpeg Vulkan HW decode 后，继续扩展真实源和生成源矩阵，
+   覆盖 profile、bit depth、reference pattern、container、任意入口、loop boundary、长跑资源
+   稳定性和 audio/scene 集成回归。
 4. 脚本清理：只保留 codec smoke、real-source matrix、performance、packaging、workshop
    和仍在使用的诊断 helper。一次性试验脚本直接删除，不做兼容 wrapper。
 
@@ -43,8 +45,8 @@ zero-copy 状态。
 - `src/ipc/`：命令、协议和 socket helper。
 - `src/renderer/native_vulkan.rs`：原生 Vulkan facade 和公开 contract。
 - `src/renderer/native_vulkan/`：原生 Vulkan 子模块和共享 parser/snapshot 代码。
-- `src/renderer/native_vulkan/video/`：FFmpeg demux、codec parsing、pacing、timeline、route
-  和视频证据 helper。
+- `src/renderer/native_vulkan/video/`：FFmpeg demux、Vulkan HW decode 边界、pacing、
+  timeline、route 和视频证据 helper。
 - `src/renderer/native_vulkan/vulkan/`：唯一 Vulkanalia 后端，按 `core/`、`present/`、
   `scene/`、`video/` 拆分。
 - `src/renderer/native_vulkan/present/`：clear/static image present 和 render item 规划。

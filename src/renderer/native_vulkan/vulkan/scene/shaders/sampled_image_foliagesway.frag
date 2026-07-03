@@ -72,9 +72,10 @@ void main() {
     if ((pc.texture_resolution_mask & 1u) == 0u) {
         base_resolution = max(pc.extent, vec2(1.0));
     }
-    // CWE reference: g_Texture0Resolution.zw are reciprocal texel sizes, so
-    // z / w is texture_height / texture_width, not width / height.
-    float aspect = max(base_resolution.y, 1.0) / max(base_resolution.x, 1.0) * pc.foliage_ratio;
+    // reverse-engineered reference: foliagesway.vert uses
+    // g_Texture0Resolution.z / g_Texture0Resolution.w. WE resolution.zw are
+    // the logical texture width/height.
+    float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0) * pc.foliage_ratio;
     aspect = max(aspect, 0.0001);
 
     vec2 noise_uv = v_uv * pc.foliage_noise_scale;

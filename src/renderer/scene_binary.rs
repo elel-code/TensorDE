@@ -680,7 +680,7 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path(
         target_max_fps,
         snapshot_time_ms,
         scene_size,
-        scene_fit: fit_override.unwrap_or(FitMode::Cover),
+        scene_fit: fit_override.unwrap_or(FitMode::Stretch),
         scene_systems,
         audio_cue_count: 0,
         bound_properties: Vec::new(),
@@ -2319,14 +2319,32 @@ fn binary_scene_effect_runtime(kind: u16, effect_file: &str) -> Option<String> {
     let runtime = match kind {
         1 => "native-opacity-mask",
         2 => "native-iris-mask",
-        3..=5 | 7..=9 => "native-effect-motion",
+        3..=5 => return None,
+        7 if normalized.contains("foliagesway")
+            || normalized.contains("foliage_sway")
+            || normalized.contains("auto_sway")
+            || normalized.contains("autosway") =>
+        {
+            return None;
+        }
+        7..=9 => "native-effect-motion",
         6 => "native-water-caustics",
         _ if normalized.ends_with("effects/opacity/effect.json") => "native-opacity-mask",
         _ if normalized.ends_with("effects/iris/effect.json") => "native-iris-mask",
         _ if normalized.contains("waterripple")
             || normalized.contains("waterwaves")
-            || normalized.contains("waterflow")
-            || normalized.contains("sway")
+            || normalized.contains("waterflow") =>
+        {
+            return None;
+        }
+        _ if normalized.contains("foliagesway")
+            || normalized.contains("foliage_sway")
+            || normalized.contains("auto_sway")
+            || normalized.contains("autosway") =>
+        {
+            return None;
+        }
+        _ if normalized.contains("sway")
             || normalized.contains("shake")
             || normalized.contains("flutter")
             || normalized.contains("drift") =>
@@ -2456,6 +2474,56 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneDocument;
     use crate::core::scene::binary::encode_scene_binary_document;
+
+    #[test]
+    fn gscn_direct_ingest_defaults_to_we_projection_stretch_fit() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "size": { "width": 3840, "height": 2160 },
+            "nodes": [
+                {
+                    "id": "background",
+                    "type": "rectangle",
+                    "width": 3840.0,
+                    "height": 2160.0
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-scene-fit");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path.clone(),
+            None,
+            0,
+            None,
+        )
+        .expect("binary scene plan");
+        let cover_plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path,
+            None,
+            0,
+            Some(FitMode::Cover),
+        )
+        .expect("binary scene plan with override");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        assert_eq!(
+            plan.scene_size,
+            Some(SceneSize {
+                width: 3840,
+                height: 2160
+            })
+        );
+        assert_eq!(plan.scene_fit, FitMode::Stretch);
+        assert_eq!(cover_plan.scene_fit, FitMode::Cover);
+    }
 
     #[test]
     fn gscn_direct_ingest_batches_particle_emitters_from_binary_payload() {

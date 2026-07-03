@@ -2,6 +2,9 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+#[cfg(feature = "native-vulkan-video")]
+use crate::renderer::native_vulkan::video::ffmpeg_hw::NativeVulkanFfmpegDecodedGpuFrameDescriptorSource;
+
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
@@ -50,6 +53,15 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePres
         NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot,
 }
 
+struct VulkanaliaDecodedImagePresentDescriptorSource {
+    role: &'static str,
+    image: vk::Image,
+    picture_format: vk::Format,
+    array_layers: u32,
+    sampled_usage_declared: bool,
+    mutable_format_declared: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources(
     device: &Device,
@@ -62,24 +74,139 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     descriptor_heap_enabled: bool,
     descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
 ) -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
-    if !resource_image
-        .snapshot
-        .image_usage_flags
-        .contains(&"sampled")
-    {
-        return Err("decoded image present sampler requires SAMPLED image usage".to_owned());
-    }
-    if sampled_array_layer >= resource_image.snapshot.array_layers {
+    let source = VulkanaliaDecodedImagePresentDescriptorSource {
+        role: resource_image.snapshot.role,
+        image: resource_image.image,
+        picture_format,
+        array_layers: resource_image.snapshot.array_layers,
+        sampled_usage_declared: resource_image
+            .snapshot
+            .image_usage_flags
+            .contains(&"sampled"),
+        mutable_format_declared: resource_image
+            .snapshot
+            .image_create_flags
+            .contains(&"mutable-format"),
+    };
+    native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources_from_source(
+        device,
+        memory_properties,
+        source,
+        sampled_array_layer,
+        video_queue_family_index,
+        present_queue_family_index,
+        descriptor_heap_enabled,
+        descriptor_heap_properties,
+    )
+}
+
+#[cfg(feature = "native-vulkan-video")]
+#[allow(clippy::too_many_arguments)]
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    decoded_frame: &NativeVulkanFfmpegDecodedGpuFrameDescriptorSource,
+    sampled_array_layer: u32,
+    video_queue_family_index: u32,
+    present_queue_family_index: u32,
+    descriptor_heap_enabled: bool,
+    descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+) -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
+    let [plane] = decoded_frame.planes.as_slice() else {
         return Err(format!(
-            "decoded image present sampler layer {sampled_array_layer} is outside {} image layers",
-            resource_image.snapshot.array_layers
+            "FFmpeg AVVkFrame descriptor heap source requires one multiplane image, got {}",
+            decoded_frame.planes.len()
+        ));
+    };
+    let source = VulkanaliaDecodedImagePresentDescriptorSource {
+        role: "ffmpeg-avvkframe-multiplane-sampled-video",
+        image: plane.image,
+        picture_format: decoded_frame.picture_format,
+        array_layers: decoded_frame.array_layers,
+        sampled_usage_declared: true,
+        mutable_format_declared: true,
+    };
+    native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources_from_source(
+        device,
+        memory_properties,
+        source,
+        sampled_array_layer,
+        video_queue_family_index,
+        present_queue_family_index,
+        descriptor_heap_enabled,
+        descriptor_heap_properties,
+    )
+}
+
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_update_ffmpeg_decoded_gpu_frame_present_sampler_resources(
+    device: &Device,
+    resources: &mut VulkanaliaDecodedImagePresentSamplerResources,
+    decoded_frame: &NativeVulkanFfmpegDecodedGpuFrameDescriptorSource,
+) -> Result<(), String> {
+    let [plane] = decoded_frame.planes.as_slice() else {
+        return Err(format!(
+            "FFmpeg AVVkFrame descriptor heap update requires one multiplane image, got {}",
+            decoded_frame.planes.len()
+        ));
+    };
+    if resources.snapshot.sampled_array_layer >= decoded_frame.array_layers {
+        return Err(format!(
+            "FFmpeg AVVkFrame descriptor heap update layer {} exceeds {} image layers",
+            resources.snapshot.sampled_array_layer, decoded_frame.array_layers
         ));
     }
-    if !resource_image
+
+    let plane_formats =
+        native_vulkan_vulkanalia_decoded_image_plane_formats(decoded_frame.picture_format)?;
+    let sampler_info = native_vulkan_vulkanalia_decoded_image_descriptor_heap_sampler_create_info();
+    native_vulkan_vulkanalia_write_decoded_image_present_plane_descriptors(
+        device,
+        &mut resources.descriptor_heap,
+        plane.image,
+        plane_formats,
+        decoded_frame.array_layers,
+        &sampler_info,
+    )?;
+    resources.snapshot.picture_format = format!("{:?}", decoded_frame.picture_format);
+    resources.snapshot.y_plane_format = format!("{:?}", plane_formats.y_view_format);
+    resources.snapshot.uv_plane_format = format!("{:?}", plane_formats.uv_view_format);
+    resources
         .snapshot
-        .image_create_flags
-        .contains(&"mutable-format")
-    {
+        .descriptor_heap_resource_descriptor_written = resources
+        .descriptor_heap
+        .snapshot
+        .resource_descriptor_written;
+    resources
+        .snapshot
+        .descriptor_heap_sampler_descriptor_written = resources
+        .descriptor_heap
+        .snapshot
+        .sampler_descriptor_written;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources_from_source(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    source: VulkanaliaDecodedImagePresentDescriptorSource,
+    sampled_array_layer: u32,
+    video_queue_family_index: u32,
+    present_queue_family_index: u32,
+    descriptor_heap_enabled: bool,
+    descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+) -> Result<VulkanaliaDecodedImagePresentSamplerResources, String> {
+    if !source.sampled_usage_declared {
+        return Err("decoded image present sampler requires SAMPLED image usage".to_owned());
+    }
+    if sampled_array_layer >= source.array_layers {
+        return Err(format!(
+            "decoded image present sampler layer {sampled_array_layer} is outside {} image layers",
+            source.array_layers
+        ));
+    }
+    if !source.mutable_format_declared {
         return Err(
             "decoded image present plane sampling requires a mutable-format decoded image"
                 .to_owned(),
@@ -92,7 +219,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         );
     }
 
-    let plane_formats = native_vulkan_vulkanalia_decoded_image_plane_formats(picture_format)?;
+    let plane_formats =
+        native_vulkan_vulkanalia_decoded_image_plane_formats(source.picture_format)?;
     let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
         NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
             image_count: 2,
@@ -110,9 +238,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     let descriptor_heap = native_vulkan_vulkanalia_create_decoded_image_present_descriptor_heap(
         device,
         memory_properties,
-        resource_image.image,
+        source.image,
         plane_formats,
-        resource_image.snapshot.array_layers,
+        source.array_layers,
         &sampler_info,
         &descriptor_heap_plan,
     )?;
@@ -127,8 +255,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         snapshot: NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot {
             binding: "vulkanalia",
             route: "decoded-image-plane-sampler-present-resource",
-            source_image_role: resource_image.snapshot.role,
-            picture_format: format!("{picture_format:?}"),
+            source_image_role: source.role,
+            picture_format: format!("{:?}", source.picture_format),
             sampled_array_layer,
             y_plane_format: format!("{:?}", plane_formats.y_view_format),
             uv_plane_format: format!("{:?}", plane_formats.uv_view_format),

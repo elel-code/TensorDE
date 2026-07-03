@@ -9,7 +9,8 @@ use super::codec::NativeVulkanVideoSessionCodec;
 #[serde(rename_all = "kebab-case")]
 pub enum NativeVulkanVideoRunRouteKind {
     LegacyVideo,
-    VulkanaliaReadyPrefix,
+    FfmpegVulkanHwDecode,
+    VulkanaliaReadyPrefixCompatibility,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -57,8 +58,12 @@ pub struct NativeVulkanVideoRunRouteDecision {
 }
 
 impl NativeVulkanVideoRunRouteDecision {
+    pub fn is_ffmpeg_vulkan_hw_decode(self) -> bool {
+        self.kind == NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode
+    }
+
     pub fn is_vulkanalia_ready_prefix(self) -> bool {
-        self.kind == NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+        self.kind == NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefixCompatibility
     }
 }
 
@@ -114,7 +119,7 @@ pub fn native_vulkan_video_run_route(
     if options.width == 0 || options.height == 0 {
         return NativeVulkanVideoRunRouteDecision {
             kind: NativeVulkanVideoRunRouteKind::LegacyVideo,
-            status: "vulkanalia-ready-prefix-requires-non-zero-extent",
+            status: "ffmpeg-vulkan-hwdecode-requires-non-zero-extent",
             fallback_allowed: false,
             codec: options.codec,
             width: options.width,
@@ -125,11 +130,11 @@ pub fn native_vulkan_video_run_route(
     }
 
     NativeVulkanVideoRunRouteDecision {
-        kind: NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix,
+        kind: NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode,
         status: if counts.any() {
-            "vulkanalia-ready-prefix"
+            "ffmpeg-vulkan-hwdecode-explicit-preroll"
         } else {
-            "vulkanalia-ready-prefix-default"
+            "ffmpeg-vulkan-hwdecode-mainline-default"
         },
         fallback_allowed: false,
         codec: options.codec,
@@ -181,13 +186,13 @@ mod tests {
     }
 
     #[test]
-    fn h264_ready_prefix_routes_to_vulkanalia() {
+    fn h264_ready_prefix_routes_to_ffmpeg_vulkan_hwdecode() {
         let mut options = options(NativeVulkanVideoSessionCodec::H264High8);
         options.decode_h264_ready_prefix_frames = 5;
 
         let route = native_vulkan_video_run_route(&options, 0, None);
 
-        assert!(route.is_vulkanalia_ready_prefix());
+        assert!(route.is_ffmpeg_vulkan_hw_decode());
         assert_eq!(route.ready_prefix_frames, 5);
         assert_eq!(route.playback_frames, 5);
     }
@@ -201,7 +206,7 @@ mod tests {
 
         assert_eq!(
             route.kind,
-            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+            NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode
         );
         assert_eq!(route.ready_prefix_frames, 7);
         assert_eq!(route.playback_frames, 7);
@@ -215,7 +220,7 @@ mod tests {
 
         assert_eq!(
             route.kind,
-            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+            NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode
         );
         assert_eq!(
             route.ready_prefix_frames,
@@ -225,16 +230,16 @@ mod tests {
     }
 
     #[test]
-    fn no_ready_prefix_defaults_to_vulkanalia_ready_prefix() {
+    fn no_ready_prefix_defaults_to_ffmpeg_vulkan_hwdecode() {
         let options = options(NativeVulkanVideoSessionCodec::H265Main8);
 
         let route = native_vulkan_video_run_route(&options, 0, None);
 
         assert_eq!(
             route.kind,
-            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+            NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode
         );
-        assert_eq!(route.status, "vulkanalia-ready-prefix-default");
+        assert_eq!(route.status, "ffmpeg-vulkan-hwdecode-mainline-default");
         assert_eq!(
             route.ready_prefix_frames,
             native_vulkan_video_default_ready_prefix_frames(options.codec)
@@ -268,7 +273,7 @@ mod tests {
         assert_eq!(route.kind, NativeVulkanVideoRunRouteKind::LegacyVideo);
         assert_eq!(
             route.status,
-            "vulkanalia-ready-prefix-requires-non-zero-extent"
+            "ffmpeg-vulkan-hwdecode-requires-non-zero-extent"
         );
         assert!(!route.fallback_allowed);
     }
@@ -282,7 +287,7 @@ mod tests {
 
         assert_eq!(
             route.kind,
-            NativeVulkanVideoRunRouteKind::VulkanaliaReadyPrefix
+            NativeVulkanVideoRunRouteKind::FfmpegVulkanHwDecode
         );
         assert_eq!(route.ready_prefix_frames, 16);
         assert_eq!(route.playback_frames, 2400);

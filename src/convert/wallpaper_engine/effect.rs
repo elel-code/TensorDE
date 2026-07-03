@@ -29,6 +29,17 @@ pub(super) fn scene_effects_from_object(
         .filter_map(Value::as_object)
         .filter_map(|effect| {
             let file = string_field(effect, &["file"])?;
+            if scene_effect_is_explicitly_hidden(effect) {
+                push_unique(
+                    &mut context.converted_features,
+                    "scene-we-invisible-effect-skipped",
+                );
+                push_unique(
+                    &mut report.converted_features,
+                    "scene-we-invisible-effect-skipped",
+                );
+                return None;
+            }
             let mut output = Map::new();
             output.insert("file".to_owned(), Value::String(file.clone()));
             if let Some(id) = effect.get("id").and_then(value_to_i64) {
@@ -113,11 +124,7 @@ pub(super) fn scene_effects_from_object(
 }
 
 fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Option<&'static str> {
-    if effect
-        .get("visible")
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|visible| !visible)
-    {
+    if scene_effect_is_explicitly_hidden(effect) {
         return None;
     }
     if file.contains("watercaustics") {
@@ -129,15 +136,7 @@ fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Optio
     if file.ends_with("effects/iris/effect.json") || file == "effects/iris/effect.json" {
         return Some("native-iris-mask");
     }
-    if file.contains("waterwaves")
-        || file.contains("waterripple")
-        || file.contains("waterflow")
-        || file.contains("cloudmotion")
-        || file.contains("foliagesway")
-        || file.contains("auto_sway")
-        || file.contains("shake")
-        || file.contains("skew")
-    {
+    if file.contains("cloudmotion") || file.contains("shake") || file.contains("skew") {
         return Some("native-effect-motion");
     }
     None
@@ -160,11 +159,7 @@ fn scene_native_text_glow_effect_properties(
     if !file.replace('\\', "/").ends_with("blurprecise/effect.json") {
         return None;
     }
-    if effect
-        .get("visible")
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|visible| !visible)
-    {
+    if scene_effect_is_explicitly_hidden(effect) {
         return None;
     }
     let scale = scene_blurprecise_effect_scale(effect).unwrap_or(1.0);
@@ -202,11 +197,7 @@ fn scene_effect_requires_runtime(
     if opacity_timeline_lowered {
         return false;
     }
-    if effect
-        .get("visible")
-        .and_then(value_to_bool_unwrapped)
-        .is_some_and(|visible| !visible)
-    {
+    if scene_effect_is_explicitly_hidden(effect) {
         return false;
     }
     if scene_effect_passes_require_runtime(effect.get("passes").and_then(Value::as_array)) {
@@ -353,6 +344,17 @@ fn scene_effect_passes_from_object(
             if pass.is_empty() {
                 return None;
             }
+            if scene_effect_pass_is_explicitly_disabled(&pass) {
+                push_unique(
+                    &mut context.converted_features,
+                    "scene-we-invisible-effect-pass-skipped",
+                );
+                push_unique(
+                    &mut report.converted_features,
+                    "scene-we-invisible-effect-pass-skipped",
+                );
+                return None;
+            }
             let mut output = file_passes.get(pass_index).cloned().unwrap_or_default();
             if let Some(id) = pass.get("id").and_then(value_to_i64) {
                 output.insert("id".to_owned(), json!(id));
@@ -401,6 +403,20 @@ fn scene_effect_passes_from_object(
             Some(Value::Object(output))
         })
         .collect()
+}
+
+fn scene_effect_is_explicitly_hidden(effect: &Map<String, Value>) -> bool {
+    effect
+        .get("visible")
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|visible| !visible)
+}
+
+fn scene_effect_pass_is_explicitly_disabled(pass: &Map<String, Value>) -> bool {
+    pass.get("visible")
+        .or_else(|| pass.get("enabled"))
+        .and_then(value_to_bool_unwrapped)
+        .is_some_and(|enabled| !enabled)
 }
 
 fn scene_effect_apply_default_pass_textures(effect_file: &str, pass: &mut Map<String, Value>) {

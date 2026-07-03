@@ -137,7 +137,7 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
     audio_clock_probe_requested: bool,
     audio_output_mode: NativeVulkanAudioOutputMode,
 ) -> Result<Option<NativeVulkanSceneVideoBridgeOptions>, Box<dyn std::error::Error>> {
-    let mut sources = Vec::new();
+    let sources = Vec::new();
     for layer in plan.layers.iter().filter(|layer| {
         layer.kind == SceneNodeKind::Video && layer.opacity > 0.0 && layer.source.is_some()
     }) {
@@ -164,23 +164,18 @@ fn native_vulkan_scene_video_bridge_options_from_plan(
             ready_prefix_playback_frames,
             duration_playback_frames,
         );
-        if !route.is_vulkanalia_ready_prefix() {
+        if !route.is_ffmpeg_vulkan_hw_decode() {
             return Err(format!(
-                "scene video layer cannot use Vulkanalia ready-prefix route for {}: {}",
+                "scene video layer cannot use FFmpeg Vulkan HW decode route for {}: {}",
                 source.display(),
                 route.status
             )
             .into());
         }
-        sources.push(NativeVulkanSceneVideoBridgeSourceOptions {
-            source: source.clone(),
-            codec: route.codec,
-            width: route.width,
-            height: route.height,
-            bitstream_extract_max_samples: options.bitstream_extract_max_samples,
-            ready_prefix_frames: route.ready_prefix_frames,
-            playback_frames: route.playback_frames,
-        });
+        return Err(
+            "scene video FFmpeg Vulkan HW decode bridge is now the mainline, but the decoder worker is not wired to scene present yet; use --run-vulkanalia-ready-prefix-video only for compatibility evidence"
+                .into(),
+        );
     }
     if sources.is_empty() {
         return Ok(None);
@@ -215,10 +210,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
-        NativeVulkanVideoSessionCodec, native_vulkan_extract_av1_sequence_header_for_vulkanalia,
+        NativeVulkanFfmpegVulkanHwVideoPresentOptions, NativeVulkanVideoSessionCodec,
+        native_vulkan_extract_av1_sequence_header_for_vulkanalia,
         native_vulkan_extract_h264_parameter_sets_for_vulkanalia,
         native_vulkan_extract_h265_parameter_sets_for_vulkanalia,
-        run_vulkanalia_ready_prefix_video,
+        run_native_vulkan_ffmpeg_vulkan_hw_video_present, run_vulkanalia_ready_prefix_video,
     };
     use gilder::renderer::native_vulkan::{
         NativeVulkanVulkanaliaSurfaceSwapchainProbeOptions,
@@ -242,6 +238,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
     let mut fit = FitMode::Cover;
+    let mut fit_set = false;
     let mut background = None::<String>;
     let mut scene_color = None::<String>;
     let mut scene_text = None::<String>;
@@ -388,6 +385,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--fit" => {
                 let value = args.next().ok_or("--fit requires a value")?;
                 fit = parse_fit_mode(&value)?;
+                fit_set = true;
             }
             "--background" => {
                 background = Some(args.next().ok_or("--background requires #rrggbb")?);
@@ -710,6 +708,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_video_layer,
                 scene_root,
                 fit,
+                fit_set.then_some(fit),
                 background,
                 scene_color,
                 scene_path_data,
@@ -742,6 +741,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_video_layer,
                 scene_root,
                 fit,
+                fit_set.then_some(fit),
                 background,
                 scene_color,
                 scene_path_data,
@@ -815,23 +815,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             #[cfg(feature = "native-vulkan-video")]
             {
-                if route.is_vulkanalia_ready_prefix() {
-                    json!(run_vulkanalia_ready_prefix_video(
-                        options,
-                        video_session_options.codec,
-                        source,
-                        video_session_options.width,
-                        video_session_options.height,
-                        fit,
-                        video_session_options.bitstream_extract_max_samples,
-                        route.ready_prefix_frames,
-                        route.playback_frames,
-                        audio_clock_probe_requested,
-                        audio_output_policy.resolve(_muted),
+                if route.is_ffmpeg_vulkan_hw_decode() {
+                    json!(run_native_vulkan_ffmpeg_vulkan_hw_video_present(
+                        NativeVulkanFfmpegVulkanHwVideoPresentOptions {
+                            host: options.host,
+                            wait_configure_roundtrips: options.wait_configure_roundtrips,
+                            source,
+                            codec: video_session_options.codec,
+                            playback_frame_count: route.playback_frames,
+                            target_max_fps: options.target_max_fps,
+                            audio_master_clock:
+                                NativeVulkanVulkanaliaVideoPresentAudioMasterClock::DISABLED,
+                            clear_color: options.clear_color,
+                        },
                     )?)
                 } else {
                     return Err(format!(
-                        "--run-video cannot use Vulkanalia ready-prefix route: {}",
+                        "--run-video cannot use FFmpeg Vulkan HW decode route: {}",
                         route.status
                     )
                     .into());
@@ -841,7 +841,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             {
                 let _ = (options, source, fit, _muted, route);
                 return Err(
-                    "--run-video Vulkanalia ready-prefix route requires native-vulkan-video feature"
+                    "--run-video FFmpeg Vulkan HW decode route requires native-vulkan-video feature"
                         .into(),
                 );
             }
@@ -969,6 +969,7 @@ fn scene_cli_plan(
     source_is_video: bool,
     _scene_root: Option<PathBuf>,
     fit: FitMode,
+    gscn_fit_override: Option<FitMode>,
     background: Option<String>,
     color: Option<String>,
     path_data: Option<String>,
@@ -988,7 +989,7 @@ fn scene_cli_plan(
                 source,
                 target_max_fps,
                 snapshot_time_ms,
-                Some(fit),
+                gscn_fit_override,
             )?);
         }
         if source_is_video {
@@ -1273,6 +1274,7 @@ mod tests {
             false,
             None,
             FitMode::Contain,
+            None,
             Some("#010203".to_owned()),
             None,
             None,
@@ -1381,6 +1383,7 @@ mod tests {
             false,
             None,
             FitMode::Contain,
+            None,
             None,
             None,
             None,
@@ -1500,6 +1503,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             ScenePathFillRule::default(),
             None,
             None,
@@ -1566,6 +1570,7 @@ mod tests {
             false,
             None,
             FitMode::Contain,
+            None,
             None,
             None,
             None,
@@ -1673,6 +1678,7 @@ mod tests {
             None,
             None,
             None,
+            None,
             ScenePathFillRule::default(),
             None,
             None,
@@ -1702,6 +1708,7 @@ mod tests {
             false,
             None,
             FitMode::Cover,
+            None,
             None,
             Some("#102030".to_owned()),
             None,
@@ -1736,6 +1743,7 @@ mod tests {
             false,
             None,
             FitMode::Cover,
+            None,
             Some("#101010".to_owned()),
             None,
             None,
@@ -1776,6 +1784,7 @@ mod tests {
             false,
             None,
             FitMode::Cover,
+            None,
             Some("#101010".to_owned()),
             None,
             Some("M0 0 L96 0 L48 64 Z".to_owned()),
@@ -1818,6 +1827,7 @@ mod tests {
             true,
             None,
             FitMode::Contain,
+            None,
             Some("#101010".to_owned()),
             None,
             None,
@@ -1883,16 +1893,16 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --allocate-bitstream-buffer extends --probe-vulkanalia-video-session with an FFmpeg-sized mapped VIDEO_DECODE_SRC slices buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
 --create-session-parameters extends --probe-vulkanalia-video-session with real H.264 SPS/PPS, H.265 VPS/SPS/PPS, or AV1 sequence-header VkVideoSessionParametersKHR creation from --source.\n\
---decode-h264-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N reference-ready H.264 AU Vulkan Video decode submits.\n\
---decode-h265-ready-prefix N extends --probe-vulkanalia-video-session/--run-video with N ready H.265 AU Vulkan Video decode submits.\n\
---decode-av1-ready-prefix N extends --run-video with N visible AV1 temporal units through Vulkan Video decode/present.\n\
---playback-frames N repeats the ready-prefix AU window for N direct Vulkan Video decode/present frames.\n\
+--decode-h264-ready-prefix N configures the legacy Vulkanalia compatibility route with N reference-ready H.264 AU decode submits.\n\
+--decode-h265-ready-prefix N configures the legacy Vulkanalia compatibility route with N ready H.265 AU decode submits.\n\
+--decode-av1-ready-prefix N configures the legacy Vulkanalia compatibility route with N visible AV1 temporal units.\n\
+--playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --scene-runtime-snapshot builds the same native scene runtime snapshot as --run-scene and exits before presenting, preserving CPU geometry evidence in JSON.\n\
 --run-scene builds a scene plan from --source, --scene-root, --scene-video, --path-data, --text, or hex --color and runs the unified native scene presenter.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
---run-video uses Vulkanalia ready-prefix video. Without explicit --decode-*-ready-prefix, it uses the codec default ready-prefix window.\n\
---run-vulkanalia-ready-prefix-video decodes a streaming H.264/H.265 source through Vulkanalia CmdPipelineBarrier2/QueueSubmit2 and prints runtime JSON.\n\
+--run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
+--run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\

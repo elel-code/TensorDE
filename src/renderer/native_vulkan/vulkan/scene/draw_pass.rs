@@ -2662,18 +2662,7 @@ fn scene_sampled_image_push_constant_bytes(
         VulkanaliaSceneSampledImageShaderProgram::WaterWaves => {
             let has_mask_texture = (texture_resolution_mask & (1u32 << 1)) != 0;
             let has_time_offset_texture = (texture_resolution_mask & (1u32 << 2)) != 0;
-            let has_dual_wave = scene_sampled_image_material_combo_enabled(material, "DUALWAVES")
-                || scene_sampled_image_material_constant_any_float(
-                    material,
-                    &[
-                        "speed2",
-                        "g_Speed2",
-                        "scale2",
-                        "g_Scale2",
-                        "direction2",
-                        "g_Direction2",
-                    ],
-                );
+            let has_dual_wave = scene_sampled_image_material_combo_enabled(material, "DUALWAVES");
             let mut flags = 0u32;
             if has_mask_texture {
                 flags |= SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_MASK;
@@ -3362,15 +3351,6 @@ fn scene_sampled_image_material_constant_named_float(
                 .get(name)
                 .and_then(scene_sampled_image_constant_value_float)
         })
-}
-
-fn scene_sampled_image_material_constant_any_float(
-    material: &super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
-    names: &[&str],
-) -> bool {
-    names
-        .iter()
-        .any(|name| scene_sampled_image_material_constant_named_float(material, name).is_some())
 }
 
 fn scene_sampled_image_material_has_combo_key(
@@ -4951,7 +4931,7 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1693] =
     include!("shaders/sampled_image_waterripple.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 2227] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 2895] =
     include!("shaders/sampled_image_waterwaves.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERFLOW_FRAGMENT_SPIRV: [u32; 1765] =
     include!("shaders/sampled_image_waterflow.frag.spv.rs");
@@ -4959,7 +4939,7 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERCAUSTICS_FRAGMENT_S
     include!("shaders/sampled_image_watercaustics.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FOLIAGE_SWAY_FRAGMENT_SPIRV: [u32; 2230] =
     include!("shaders/sampled_image_foliagesway.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV: [u32; 4871] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV: [u32; 4870] =
     include!("shaders/sampled_image_autosway.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV: [u32; 945] =
     include!("shaders/sampled_image_scroll.frag.spv.rs");
@@ -5931,6 +5911,18 @@ mod tests {
             effect_vec2_uniform("g_Texture1Resolution", [331.0, 115.0]),
             effect_vec2_uniform("g_Texture2Resolution", [64.0, 64.0]),
         ];
+        material.constant_shader_uniforms = vec![
+            super::super::present::NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+                "speed2",
+                &serde_json::json!(3.5),
+            )
+            .expect("speed2"),
+            super::super::present::NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
+                "direction2",
+                &serde_json::json!(1.25),
+            )
+            .expect("direction2"),
+        ];
 
         let bytes = scene_sampled_image_push_constant_bytes(
             vk::Extent2D {
@@ -6708,49 +6700,49 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV
             ),
-            6064
+            6772
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
             ),
-            6704
+            11580
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERFLOW_FRAGMENT_SPIRV
             ),
-            6336
+            7060
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FOLIAGE_SWAY_FRAGMENT_SPIRV
             ),
-            8284
+            8920
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV
             ),
-            18832
+            19480
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV
             ),
-            2984
+            3780
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV
             ),
-            5092
+            5744
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV
             ),
-            2544
+            3284
         );
     }
 
@@ -6759,6 +6751,52 @@ mod tests {
         let source = include_str!("shaders/sampled_image_iris.frag");
         assert!(source.contains("vec4 albedo = texture(g_Texture0, v_uv);"));
         assert!(source.contains("out_color = apply_vertex_color(mix(albedo, iris, mask));"));
+    }
+
+    #[test]
+    fn sampled_image_autosway_fragment_matches_reveng_endpoint_basis() {
+        let source = include_str!("shaders/sampled_image_autosway.frag");
+        assert!(
+            source.contains(
+                "float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0);"
+            )
+        );
+        assert!(source.contains("endpoint_center.x *= aspect;"));
+        assert!(!source.contains("endpoint_center.x *= aspect;\n    this_center.x *= aspect;"));
+        assert!(source.contains("float width_mix = node.pos_x / max(node.len, 0.000001);"));
+        assert!(!source.contains("clamp(node.pos_x / max(node.len, 0.000001)"));
+    }
+
+    #[test]
+    fn sampled_image_foliagesway_fragment_matches_reveng_aspect_basis() {
+        let source = include_str!("shaders/sampled_image_foliagesway.frag");
+        assert!(source.contains(
+            "float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0) * pc.foliage_ratio;"
+        ));
+        assert!(!source.contains("base_resolution.y, 1.0) / max(base_resolution.x"));
+    }
+
+    #[test]
+    fn sampled_image_waterwaves_uses_layer_uv_basis_for_expanded_targets() {
+        let source = include_str!("shaders/sampled_image_waterwaves.frag");
+        assert!(source.contains("bool effect_uv_inside(vec2 uv)"));
+        assert!(source.contains("vec2 source_coord = v_uv;"));
+        assert!(source.contains("vec2 tex_coord_motion = v_effect_uv;"));
+        assert!(source.contains("vec2 mask_uv = v_effect_uv;"));
+        assert!(source.contains("float waterwaves_mask_sample("));
+        assert!(source.contains("float waterwaves_timeoffset_sample("));
+        assert!(source.contains("source_alpha_at(source_coord, cached_source_alpha) <= 0.001"));
+        assert!(source.contains("texture(g_Texture1, clamp(uv, vec2(0.0), vec2(1.0))).r"));
+        assert!(source.contains("vec2 target_uv_per_layer_uv()"));
+        assert!(source.contains("dFdx(v_effect_uv.x)"));
+        assert!(source.contains(
+            "mask = waterwaves_mask_sample(mask_uv, source_coord, cached_source_alpha);"
+        ));
+        assert!(source.contains(
+            "waterwaves_timeoffset_sample(mask_uv, source_coord, cached_source_alpha) * M_PI_2"
+        ));
+        assert!(source.contains("vec2 layer_uv_offset = val * offset * strength * mask;"));
+        assert!(source.contains("source_coord += layer_uv_offset * target_uv_per_layer_uv();"));
     }
 
     #[test]

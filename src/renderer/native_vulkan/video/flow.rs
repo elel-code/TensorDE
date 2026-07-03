@@ -4,6 +4,7 @@ use serde::Serialize;
 #[serde(rename_all = "kebab-case")]
 pub enum NativeVulkanVideoFlowOwner {
     FfmpegFrontend,
+    FfmpegHwDecode,
     NativePacketBoundary,
     NativeCodec,
     NativeRender,
@@ -75,26 +76,26 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
         queues: vec![
             NativeVulkanVideoFlowQueueContract {
                 kind: NativeVulkanVideoFlowQueueKind::PacketQueue,
-                owner: NativeVulkanVideoFlowOwner::NativePacketBoundary,
+                owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c PacketQueue: packet_queue_put/get/flush/start and queue serial",
                 producer: "read/demux/parser frontend",
-                consumer: "native codec decode worker",
-                payload: "encoded access unit or temporal unit with pts/duration and parameter-set snapshot",
+                consumer: "FFmpeg avcodec Vulkan hwaccel send/receive worker",
+                payload: "AVPacket refs with pts/duration and packet serial",
                 serial_rule: "flush, seek and loop advance packet serial; decode, audio and frame samples with older serial are stale",
-                capacity_rule: "bounded queue; bootstrap may retain only a keep-last prefix required to recover parameter sets and first decodable frame",
-                copy_cost_rule: "compressed payload is retained only until upload into the Vulkan Video bitstream ring",
+                capacity_rule: "bounded queue; FFmpeg parser/codec state owns recovery, reorder and reference bootstrap",
+                copy_cost_rule: "compressed payload is consumed by avcodec; Gilder does not upload a Vulkan Video bitstream ring on the mainline",
                 wake_rule: "producer wakes decode when queue becomes non-empty; consumer never busy-spins on empty queue",
             },
             NativeVulkanVideoFlowQueueContract {
                 kind: NativeVulkanVideoFlowQueueKind::DecodedFrameQueue,
-                owner: NativeVulkanVideoFlowOwner::NativeCodec,
+                owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c FrameQueue: pictq with keep_last and per-frame serial",
-                producer: "native Vulkan Video decode",
+                producer: "FFmpeg Vulkan hwaccel decode",
                 consumer: "render refresh",
-                payload: "decoded DPB/output image identity, layout, timeline/fence, pts and serial",
+                payload: "AVFrame(format=AV_PIX_FMT_VULKAN) with AVVkFrame image/layout/timeline/queue-family identity, pts and serial",
                 serial_rule: "frame serial must match the current packet queue serial before render",
-                capacity_rule: "small keep-last queue; old displayed frame may be retained for refresh without copying pixel data",
-                copy_cost_rule: "decoded images remain GPU-owned; display handoff must not copy decoded planes unless telemetry names that fallback",
+                capacity_rule: "small keep-last queue; retain AVFrame refs until present fences release sampled images",
+                copy_cost_rule: "decoded images remain FFmpeg-owned Vulkan images; no transfer/download/upload is allowed on the mainline",
                 wake_rule: "decode wakes render when a displayable frame is ready; render sleeps/paces to the selected master clock",
             },
             NativeVulkanVideoFlowQueueContract {
@@ -134,12 +135,12 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::VideoDecode,
-                owner: NativeVulkanVideoFlowOwner::NativeCodec,
+                owner: NativeVulkanVideoFlowOwner::FfmpegHwDecode,
                 ffmpeg_reference: "ffplay.c video_thread and ffmpeg_dec.c decoder_thread send/receive flow",
                 input: "packet queue boundary",
-                output: "decoded frame queue",
-                blocking_rule: "blocks on packet/frame readiness; never owns display sink or present loop",
-                replaceable_rule: "decode stays in Gilder native Vulkan Video for the supported video formats",
+                output: "AV_PIX_FMT_VULKAN decoded frame queue",
+                blocking_rule: "blocks on packet/frame readiness; never owns Gilder descriptor heap or present loop",
+                replaceable_rule: "decode stays FFmpeg Vulkan hwaccel on the mainline; unsupported software fallback is an explicit error",
             },
             NativeVulkanVideoFlowThreadContract {
                 kind: NativeVulkanVideoFlowThreadKind::AudioDecode,
@@ -171,8 +172,8 @@ pub fn native_vulkan_video_flow_contract() -> NativeVulkanVideoFlowContract {
         ],
         invariants: &[
             "FFmpeg under references/ffmpeg is the first source for queue, serial, clock and refresh semantics",
-            "FFmpeg frontend owns demux/bitstream filtering only; it must not own native Vulkan decode/render/present",
-            "PacketQueue semantics apply to compressed packets; FrameQueue semantics apply to decoded images and keep-last refresh",
+            "FFmpeg owns demux/parser/packet send and Vulkan hw decode; Gilder owns descriptor heap/render/present",
+            "PacketQueue semantics apply to compressed packets; FrameQueue semantics apply to AVVkFrame decoded images and keep-last refresh",
             "every cross-thread video/audio handoff carries a serial or is explicitly proven not to cross loop/seek state",
             "lock-free structures are optional; FFmpeg alignment requires bounded ownership, serial invalidation and sleep/wakeup behavior first",
             "copy-reduction evidence must name the boundary: compressed packet retention, bitstream upload, decoded image handoff, render or present",
@@ -218,13 +219,13 @@ mod tests {
             queue.kind == NativeVulkanVideoFlowQueueKind::PacketQueue
                 && queue.ffmpeg_reference.contains("PacketQueue")
                 && queue.serial_rule.contains("advance packet serial")
-                && queue.copy_cost_rule.contains("bitstream ring")
+                && queue.copy_cost_rule.contains("avcodec")
         }));
         assert!(contract.queues.iter().any(|queue| {
             queue.kind == NativeVulkanVideoFlowQueueKind::DecodedFrameQueue
                 && queue.ffmpeg_reference.contains("FrameQueue")
                 && queue.capacity_rule.contains("keep-last")
-                && queue.copy_cost_rule.contains("GPU-owned")
+                && queue.copy_cost_rule.contains("FFmpeg-owned Vulkan images")
         }));
         assert!(contract.threads.iter().any(|thread| {
             thread.kind == NativeVulkanVideoFlowThreadKind::Read

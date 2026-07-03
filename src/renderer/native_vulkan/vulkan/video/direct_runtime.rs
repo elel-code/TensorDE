@@ -42,7 +42,7 @@ pub fn native_vulkan_vulkanalia_direct_runtime_contract()
 -> NativeVulkanVulkanaliaDirectRuntimeContract {
     NativeVulkanVulkanaliaDirectRuntimeContract {
         binding: "vulkanalia",
-        route_name: "direct-video",
+        route_name: "ffmpeg-vulkan-hwdecode-mainline",
         owner_module: "src/renderer/native_vulkan/vulkan/video/direct_runtime.rs",
         primary_reference: FFMPEG_VULKAN_DECODE_REFERENCE,
         ffmpeg_reference_files: &[
@@ -52,30 +52,25 @@ pub fn native_vulkan_vulkanalia_direct_runtime_contract()
             FFMPEG_VULKAN_H265_REFERENCE,
             FFMPEG_VULKAN_AV1_REFERENCE,
         ],
-        resource_owner: "Vulkanalia-owned instance/device/session/images/bitstream-command resources; the old ash comparison backend is removed",
-        command_submit_model: "FFmpeg-style command lifecycle: start command buffer, CmdPipelineBarrier2, Begin/Decode/End video coding, QueueSubmit2, fence/timeline completion",
-        present_handoff_model: "decoded image handoff stays codec-neutral; zero-copy is claimed only when imported/direct image telemetry proves no CPU frame copy",
+        resource_owner: "Gilder owns the Vulkanalia instance/device/queues, descriptor heaps and present resources; FFmpeg owns codec/session/frame-pool decode state on the provided Vulkan device",
+        command_submit_model: "FFmpeg avcodec owns Vulkan hwaccel command recording/submission; Gilder waits AVVkFrame timeline semaphore values before descriptor-heap sampling",
+        present_handoff_model: "AVFrame(format=AV_PIX_FMT_VULKAN) -> AVVkFrame VkImage/layout/timeline/queue-family -> descriptor-heap Y/UV plane sampling; zero-copy is claimed only with no av_hwframe_transfer_data",
         audio_sync_boundary: "audio remains a separate runtime clock; video direct runtime publishes PTS/present timing for audio clock synchronization",
         required_submit_order: &[
-            "vkBeginCommandBuffer",
-            "cmd_pipeline_barrier2",
-            "cmd_begin_video_coding_khr",
-            "cmd_decode_video_khr",
-            "cmd_end_video_coding_khr",
-            "vkEndCommandBuffer",
-            "queue_submit2",
+            "avcodec_send_packet",
+            "avcodec_receive_frame",
+            "validate_AV_PIX_FMT_VULKAN",
+            "retain_AVFrame_until_present_fence",
+            "wait_AVVkFrame_timeline_semaphore",
+            "write_descriptor_heap_plane_descriptors",
+            "draw_dynamic_rendering_present",
         ],
         required_backend_modules: &[
-            "video_session.rs",
-            "video_session_bind.rs",
-            "video_session_images.rs",
-            "video_bitstream_buffer.rs",
-            "video_command_pool.rs",
-            "video_decode_commands.rs",
-            "video_decode_submit.rs",
-            "video_decode_submit_h264.rs",
-            "video_decode_submit_h265.rs",
-            "video_decode_submit_av1.rs",
+            "src/renderer/native_vulkan/video/ffmpeg_hw.rs",
+            "src/renderer/native_vulkan/video/demux_ffmpeg.rs",
+            "src/renderer/native_vulkan/vulkan/present/render_descriptors.rs",
+            "src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs",
+            "src/renderer/native_vulkan/vulkan/video/present_runtime.rs",
         ],
         vulkanalia_inline_session_parameter_type_evidence: vec![
             std::any::type_name::<vulkanalia::vk::PhysicalDeviceVideoMaintenance2FeaturesKHR>(),
@@ -84,7 +79,7 @@ pub fn native_vulkan_vulkanalia_direct_runtime_contract()
             std::any::type_name::<vulkanalia::vk::VideoDecodeAV1InlineSessionParametersInfoKHR>(),
         ],
         codec_plans: native_vulkan_vulkanalia_direct_codec_runtime_plans(),
-        runtime_policy: "do not reintroduce ash direct-video ownership; codec-neutral runtime resources stay Vulkanalia-owned and must be validated by continuous real-source smokes",
+        runtime_policy: "FFmpeg Vulkan hwaccel is the mainline decoder; the old Gilder Vulkan Video submit path is compatibility-only until removed, and software decode fallback is rejected",
     }
 }
 
@@ -96,45 +91,45 @@ pub fn native_vulkan_vulkanalia_direct_codec_runtime_plans()
             codec_reference: FFMPEG_VULKAN_H264_REFERENCE,
             submit_plan_module: "video_decode_submit_h264.rs",
             ready_prefix_smoke_gate: "H.264 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.264 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
-            session_parameter_strategy: "VK_KHR_video_maintenance2 inline SPS/PPS on VideoDecodeInfoKHR; no streaming VkVideoSessionParametersKHR object",
-            display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
+            direct_runtime_gate: "H.264 mainline runtime consumes AV_PIX_FMT_VULKAN frames from FFmpeg h264_vulkan",
+            session_parameter_strategy: "FFmpeg owns parser, DPB and Vulkan session parameters",
+            display_handoff_target: "AVVkFrame VkImage -> descriptor-heap Y/UV plane sampling",
         },
         NativeVulkanVulkanaliaDirectCodecRuntimePlan {
             codec: NativeVulkanVideoSessionCodec::H265Main8,
             codec_reference: FFMPEG_VULKAN_H265_REFERENCE,
             submit_plan_module: "video_decode_submit_h265.rs",
             ready_prefix_smoke_gate: "H.265 main8 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.265 main8 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
-            session_parameter_strategy: "VK_KHR_video_maintenance2 inline VPS/SPS/PPS on VideoDecodeInfoKHR; no streaming VkVideoSessionParametersKHR object",
-            display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
+            direct_runtime_gate: "H.265 main8 mainline runtime consumes AV_PIX_FMT_VULKAN frames from FFmpeg hevc_vulkan",
+            session_parameter_strategy: "FFmpeg owns parser, DPB and Vulkan session parameters",
+            display_handoff_target: "AVVkFrame VkImage -> descriptor-heap Y/UV plane sampling",
         },
         NativeVulkanVulkanaliaDirectCodecRuntimePlan {
             codec: NativeVulkanVideoSessionCodec::H265Main10,
             codec_reference: FFMPEG_VULKAN_H265_REFERENCE,
             submit_plan_module: "video_decode_submit_h265.rs",
             ready_prefix_smoke_gate: "H.265 main10 Vulkanalia ready-prefix decode smoke records and submits real access units with queue_submit2",
-            direct_runtime_gate: "H.265 main10 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
-            session_parameter_strategy: "VK_KHR_video_maintenance2 inline VPS/SPS/PPS on VideoDecodeInfoKHR; no streaming VkVideoSessionParametersKHR object",
-            display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff",
+            direct_runtime_gate: "H.265 main10 mainline runtime consumes AV_PIX_FMT_VULKAN frames from FFmpeg hevc_vulkan",
+            session_parameter_strategy: "FFmpeg owns parser, DPB and Vulkan session parameters",
+            display_handoff_target: "AVVkFrame VkImage -> descriptor-heap Y/UV plane sampling",
         },
         NativeVulkanVulkanaliaDirectCodecRuntimePlan {
             codec: NativeVulkanVideoSessionCodec::Av1Main8,
             codec_reference: FFMPEG_VULKAN_AV1_REFERENCE,
             submit_plan_module: "video_decode_submit_av1.rs",
             ready_prefix_smoke_gate: "AV1 main8 Vulkanalia decode-frame submit lowering records real temporal units with queue_submit2",
-            direct_runtime_gate: "AV1 main8 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
-            session_parameter_strategy: "VK_KHR_video_maintenance2 inline sequence header on VideoDecodeInfoKHR; no streaming VkVideoSessionParametersKHR object",
-            display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff, including show-existing/display-only reuse",
+            direct_runtime_gate: "AV1 main8 mainline runtime consumes AV_PIX_FMT_VULKAN frames from FFmpeg av1_vulkan",
+            session_parameter_strategy: "FFmpeg owns parser, DPB and Vulkan session parameters, including show-existing/display-only reuse",
+            display_handoff_target: "AVVkFrame VkImage -> descriptor-heap Y/UV plane sampling",
         },
         NativeVulkanVulkanaliaDirectCodecRuntimePlan {
             codec: NativeVulkanVideoSessionCodec::Av1Main10,
             codec_reference: FFMPEG_VULKAN_AV1_REFERENCE,
             submit_plan_module: "video_decode_submit_av1.rs",
             ready_prefix_smoke_gate: "AV1 main10 Vulkanalia decode-frame submit lowering records real temporal units with queue_submit2",
-            direct_runtime_gate: "AV1 main10 continuous direct runtime consumes the Vulkanalia submit plan and records decode work through Vulkanalia",
-            session_parameter_strategy: "VK_KHR_video_maintenance2 inline sequence header on VideoDecodeInfoKHR; no streaming VkVideoSessionParametersKHR object",
-            display_handoff_target: "decoded DPB/output image -> codec-neutral direct display handoff, including show-existing/display-only reuse",
+            direct_runtime_gate: "AV1 main10 mainline runtime consumes AV_PIX_FMT_VULKAN frames from FFmpeg av1_vulkan",
+            session_parameter_strategy: "FFmpeg owns parser, DPB and Vulkan session parameters, including show-existing/display-only reuse",
+            display_handoff_target: "AVVkFrame VkImage -> descriptor-heap Y/UV plane sampling",
         },
     ]
 }
@@ -148,7 +143,7 @@ mod tests {
         let contract = native_vulkan_vulkanalia_direct_runtime_contract();
 
         assert_eq!(contract.binding, "vulkanalia");
-        assert_eq!(contract.route_name, "direct-video");
+        assert_eq!(contract.route_name, "ffmpeg-vulkan-hwdecode-mainline");
         assert!(
             contract
                 .ffmpeg_reference_files
@@ -157,15 +152,23 @@ mod tests {
         assert!(
             contract
                 .required_submit_order
-                .contains(&"cmd_pipeline_barrier2")
+                .contains(&"avcodec_receive_frame")
         );
-        assert!(contract.required_submit_order.contains(&"queue_submit2"));
+        assert!(
+            contract
+                .required_submit_order
+                .contains(&"write_descriptor_heap_plane_descriptors")
+        );
         assert!(
             contract
                 .resource_owner
-                .contains("Vulkanalia-owned instance/device/session")
+                .contains("FFmpeg owns codec/session/frame-pool")
         );
-        assert!(contract.runtime_policy.contains("do not reintroduce ash"));
+        assert!(
+            contract
+                .runtime_policy
+                .contains("FFmpeg Vulkan hwaccel is the mainline decoder")
+        );
         assert!(
             contract
                 .vulkanalia_inline_session_parameter_type_evidence
@@ -188,7 +191,7 @@ mod tests {
         assert!(
             plans
                 .iter()
-                .all(|plan| plan.direct_runtime_gate.contains("Vulkanalia submit plan"))
+                .all(|plan| plan.direct_runtime_gate.contains("AV_PIX_FMT_VULKAN"))
         );
     }
 }

@@ -32,6 +32,9 @@ pub(super) mod demux;
 #[cfg(feature = "native-vulkan-video")]
 pub(super) mod demux_ffmpeg;
 
+#[cfg(feature = "native-vulkan-video")]
+pub(super) mod ffmpeg_hw;
+
 pub(super) mod codec;
 pub(super) mod codec_snapshots;
 pub(super) mod probe_snapshots;

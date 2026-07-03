@@ -1151,6 +1151,15 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
     if step.pass.final_scene_pass {
         let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
         if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan) {
+            if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(&final_quad, step) {
+                return native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bounds(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    vertices,
+                    indices,
+                );
+            }
             return native_vulkan_scene_append_sampled_image_effect_final_geometry_with_target_bounds(
                 &final_quad,
                 bounds,
@@ -1168,15 +1177,19 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
         );
     }
     match step.pass.role {
-        NativeVulkanSceneWeImagePassRole::BaseMaterial => native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-            .and_then(|bounds| {
-                native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
-                    quad, bounds, vertices, indices,
-                )
-            })
-            .or_else(|| {
-                native_vulkan_scene_append_sampled_image_effect_base_geometry(quad, vertices, indices)
-            }),
+        NativeVulkanSceneWeImagePassRole::BaseMaterial => {
+            native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
+                .and_then(|bounds| {
+                    native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
+                        quad, bounds, vertices, indices,
+                    )
+                })
+                .or_else(|| {
+                    native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                        quad, vertices, indices,
+                    )
+                })
+        }
         NativeVulkanSceneWeImagePassRole::EffectMaterial
         | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
             let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
@@ -1207,6 +1220,21 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
             )
         }
     }
+}
+
+fn native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> bool {
+    step.pass.final_scene_pass && native_vulkan_scene_sampled_image_quad_is_we_composelayer(quad)
+}
+
+fn native_vulkan_scene_sampled_image_quad_is_we_composelayer(
+    quad: &NativeVulkanSceneSampledImageQuad,
+) -> bool {
+    let normalized = quad.layer_id.replace('\\', "/").to_ascii_lowercase();
+    normalized.contains("models-util-composelayer")
+        || normalized.contains("models/util/composelayer")
 }
 
 fn native_vulkan_scene_we_graph_step_output_target_bounds(
@@ -4325,6 +4353,11 @@ fn native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bou
         vertices.push(NativeVulkanSceneSampledImageVertex {
             position: [position[0] as f32, position[1] as f32],
             uv,
+            // Source sampling stays in expanded target pass-space. Mask and
+            // time-offset textures are authored in the original layer/source
+            // UV basis, so undo Gilder's extra padding when deriving
+            // v_effect_uv. Otherwise body masks are compressed into the middle
+            // of expanded puppet targets.
             effect_uv: native_vulkan_scene_graph_target_effect_uv(
                 effect_position[0],
                 effect_position[1],
@@ -6075,6 +6108,86 @@ mod tests {
                 offset_v: 0.0
             }
         );
+    }
+
+    #[test]
+    fn composelayer_final_scene_pass_uses_pass_space_full_frame_geometry() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.layer_id = "node-7-models-util-composelayer-json".to_owned();
+        image.source = Some(PathBuf::from("/tmp/full-frame.gtex"));
+        image.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/full-frame.gtex"),
+            width: Some(3840),
+            height: Some(2160),
+        }];
+        image.width = Some(3840.0);
+        image.height = Some(2160.0);
+        image.transform = SceneTransform {
+            x: 1920.0,
+            y: 1071.72265625,
+            scale_x: 1.28195,
+            scale_y: 1.28195,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+            ..SceneTransform::default()
+        };
+        image.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("native-opacity-mask".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: Some("disabled".to_owned()),
+            depthwrite: Some("disabled".to_owned()),
+            cullmode: Some("nocull".to_owned()),
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: BTreeMap::new(),
+        }];
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: Some(SceneSize {
+                width: 3840,
+                height: 2160,
+            }),
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(final_step.we_graph_step_index, Some(1));
+        let vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
+            ..final_step.first_vertex as usize + final_step.vertex_count as usize];
+        let min_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::INFINITY, f32::min);
+        let max_x = vertices
+            .iter()
+            .map(|vertex| vertex.position[0])
+            .fold(f32::NEG_INFINITY, f32::max);
+        let min_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::INFINITY, f32::min);
+        let max_y = vertices
+            .iter()
+            .map(|vertex| vertex.position[1])
+            .fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!((min_x, max_x, min_y, max_y), (0.0, 3840.0, 0.0, 2160.0));
     }
 
     #[test]
@@ -7909,6 +8022,7 @@ mod tests {
         let mut second_waterwaves_pass = waterwaves_pass.clone();
         second_waterwaves_pass.pass_index = 1;
         layer.image_effect_passes = vec![waterwaves_pass, second_waterwaves_pass];
+        layer.opacity = 0.3;
         layer.width = Some(100.0);
         layer.height = Some(100.0);
         layer.mesh = Some(Arc::new(SceneMesh {
@@ -7961,11 +8075,16 @@ mod tests {
         assert_eq!(target.local_left, -30.0);
         assert_eq!(target.local_top, -10.0);
         let base_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(base_step.material_pass.shader, None);
+        assert!(base_step.material_pass.combo_keys.is_empty());
+        assert!(base_step.material_pass.combo_values.is_empty());
+        assert!(base_step.material_pass.constant_shader_values.is_empty());
         let base_vertices = &pass_plan.sampled_image_vertices[base_step.first_vertex as usize
             ..base_step.first_vertex as usize + base_step.vertex_count as usize];
         assert_eq!(base_vertices[0].position, [10.0, 0.0]);
         assert_eq!(base_vertices[1].position, [160.0, 0.0]);
         assert_eq!(base_vertices[2].position, [10.0, 120.0]);
+        assert!((base_vertices[0].opacity - 0.3).abs() < 1.0e-6);
         let effect_step = &pass_plan.sampled_image_recording_steps[1];
         let effect_vertices = &pass_plan.sampled_image_vertices[effect_step.first_vertex as usize
             ..effect_step.first_vertex as usize + effect_step.vertex_count as usize];
@@ -7977,6 +8096,7 @@ mod tests {
         assert!((effect_vertices[0].effect_uv[1] - 1.1).abs() < 1.0e-6);
         assert!((effect_vertices[3].effect_uv[0] - 1.3).abs() < 1.0e-6);
         assert!((effect_vertices[3].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert_eq!(effect_vertices[0].opacity, 1.0);
         let final_step = &pass_plan.sampled_image_recording_steps[2];
         let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
             ..final_step.first_vertex as usize + final_step.vertex_count as usize];
@@ -7988,6 +8108,7 @@ mod tests {
         assert!((final_vertices[0].effect_uv[1] - 1.1).abs() < 1.0e-6);
         assert!((final_vertices[3].effect_uv[0] - 1.3).abs() < 1.0e-6);
         assert!((final_vertices[3].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert_eq!(final_vertices[0].opacity, 1.0);
     }
 
     #[test]

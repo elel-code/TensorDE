@@ -2,6 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
 
+use serde_json::Value;
+
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
     SceneEffect, SceneEffectFbo, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform,
@@ -1755,7 +1757,11 @@ impl SceneBinaryDocumentShape {
             self.puppet_records = self.puppet_records.saturating_add(1);
             self.include_puppet_payload(node);
         }
-        for effect in &node.effects {
+        for effect in node
+            .effects
+            .iter()
+            .filter(|effect| scene_binary_effect_is_visible(effect))
+        {
             self.include_effect(effect);
         }
         if node_first_effect_pass_reuses_base_resource(node) {
@@ -2135,6 +2141,7 @@ impl<'a> SceneBinaryMaterialState<'a> {
         let first_pass = node
             .effects
             .iter()
+            .filter(|effect| scene_binary_effect_is_visible(effect))
             .flat_map(|effect| effect.passes.iter())
             .next();
         let material_source = scene_binary_base_material_pass_source(node)
@@ -2451,7 +2458,7 @@ impl SceneBinaryPayloadBuilder {
                     node_index.saturating_add(1)
                 },
                 subtree_node_count: node_subtree_count(node),
-                effect_count: saturating_u32(node.effects.len()),
+                effect_count: scene_binary_visible_effect_count(&node.effects),
                 audio_count: saturating_u32(node.audio.len()),
                 property_count: saturating_u32(node.properties.len()),
                 material_index,
@@ -2478,7 +2485,11 @@ impl SceneBinaryPayloadBuilder {
         });
         *draw_order = draw_order.saturating_add(1);
         let mut base_texture_reuse_available = base_texture_slot.is_some();
-        for effect in &node.effects {
+        for effect in node
+            .effects
+            .iter()
+            .filter(|effect| scene_binary_effect_is_visible(effect))
+        {
             self.include_effect(
                 id_name,
                 effect,
@@ -3952,7 +3963,7 @@ fn curve_code(curve: SceneCurve) -> u16 {
 fn node_flags(node: &SceneNode, effective_visible: bool) -> u16 {
     u16::from(effective_visible)
         | (u16::from(node.resource.is_some()) << 1)
-        | (u16::from(!node.effects.is_empty()) << 2)
+        | (u16::from(scene_binary_node_has_visible_effects(node)) << 2)
         | (u16::from(!node.children.is_empty()) << 3)
         | (u16::from(node.mesh.is_some()) << 4)
         | (u16::from(!node.puppet_animation_layers.is_empty()) << 5)
@@ -4171,6 +4182,9 @@ fn effect_kind_code(effect: &SceneEffect) -> u16 {
 fn effect_kind_flags(effects: &[SceneEffect]) -> u32 {
     let mut flags = 0u32;
     for effect in effects {
+        if !scene_binary_effect_is_visible(effect) {
+            continue;
+        }
         let kind = effect_kind_code(effect);
         if (1..=32).contains(&kind) {
             flags |= 1u32 << u32::from(kind - 1);
@@ -4341,6 +4355,7 @@ fn node_effect_pass_count(effects: &[SceneEffect]) -> u32 {
     saturating_u32(
         effects
             .iter()
+            .filter(|effect| scene_binary_effect_is_visible(effect))
             .map(|effect| effect.passes.len().max(1))
             .sum::<usize>(),
     )
@@ -4353,6 +4368,7 @@ fn node_effect_texture_slot_count(
 ) -> u32 {
     let total = effects
         .iter()
+        .filter(|effect| scene_binary_effect_is_visible(effect))
         .flat_map(|effect| effect.passes.iter())
         .map(|pass| scene_binary_effect_pass_texture_slot_count(pass, resource_index))
         .fold(0u32, u32::saturating_add);
@@ -4361,6 +4377,7 @@ fn node_effect_texture_slot_count(
     };
     let Some(first_pass) = effects
         .iter()
+        .filter(|effect| scene_binary_effect_is_visible(effect))
         .flat_map(|effect| effect.passes.iter())
         .next()
     else {
@@ -4417,6 +4434,9 @@ fn node_alpha_texture_state(
     resource_index: &SceneBinaryResourceIndex<'_>,
 ) -> (Option<u32>, SceneAlphaTextureMode) {
     for effect in effects {
+        if !scene_binary_effect_is_visible(effect) {
+            continue;
+        }
         let Some(effect_mode) = super::scene_effect_alpha_texture_mode(effect) else {
             continue;
         };
@@ -4897,7 +4917,9 @@ fn align_usize(value: usize, alignment: usize) -> usize {
 }
 
 fn node_has_material(node: &SceneNode) -> bool {
-    node_has_geometry(node) || node.resource.is_some() || !node.effects.is_empty()
+    node_has_geometry(node)
+        || node.resource.is_some()
+        || scene_binary_node_has_visible_effects(node)
 }
 
 fn node_first_effect_pass_reuses_base_resource(node: &SceneNode) -> bool {
@@ -4906,11 +4928,49 @@ fn node_first_effect_pass_reuses_base_resource(node: &SceneNode) -> bool {
     };
     node.effects
         .iter()
+        .filter(|effect| scene_binary_effect_is_visible(effect))
         .flat_map(|effect| effect.passes.iter())
         .next()
         .and_then(|pass| pass.texture_resources.first())
         .and_then(|value| value.as_deref())
         == Some(base_resource)
+}
+
+fn scene_binary_node_has_visible_effects(node: &SceneNode) -> bool {
+    node.effects.iter().any(scene_binary_effect_is_visible)
+}
+
+fn scene_binary_visible_effect_count(effects: &[SceneEffect]) -> u32 {
+    saturating_u32(
+        effects
+            .iter()
+            .filter(|effect| scene_binary_effect_is_visible(effect))
+            .count(),
+    )
+}
+
+fn scene_binary_effect_is_visible(effect: &SceneEffect) -> bool {
+    effect
+        .visible
+        .as_ref()
+        .and_then(scene_binary_visibility_value_bool)
+        .unwrap_or(true)
+}
+
+fn scene_binary_visibility_value_bool(value: &Value) -> Option<bool> {
+    match value.get("value").unwrap_or(value) {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_i64().map(|value| value != 0),
+        Value::String(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "1" | "true" | "yes" | "on" | "enabled" => Some(true),
+                "0" | "false" | "no" | "off" | "disabled" => Some(false),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
 }
 
 fn saturating_u32(value: usize) -> u32 {
@@ -5530,6 +5590,122 @@ mod tests {
             retained
                 .iter()
                 .any(|record| record.owner_kind == SCENE_BINARY_RETAINED_GEOMETRY)
+        );
+    }
+
+    #[test]
+    fn binary_material_omits_explicitly_hidden_effects() {
+        let document = SceneDocument {
+            version: SCENE_BINARY_VERSION as u32,
+            profile: SceneProfile::NativeVulkanFullScene,
+            source: SceneSourceMetadata::default(),
+            size: None,
+            render: SceneRenderSettings::default(),
+            camera: SceneCamera::default(),
+            import: SceneImportMetadata::default(),
+            properties: BTreeMap::new(),
+            resources: vec![SceneResource {
+                id: "image".to_owned(),
+                kind: SceneResourceKind::Image,
+                source: PackagePath::new("assets/image.gtex").unwrap(),
+                width: Some(64),
+                height: Some(64),
+                original_source: None,
+                role: None,
+            }],
+            nodes: vec![SceneNode {
+                id: "node-48-models-6-json".to_owned(),
+                kind: SceneNodeKind::Image,
+                name: None,
+                visible: true,
+                opacity: 1.0,
+                transform: SceneTransform::default(),
+                provenance: Option::<SceneNodeProvenance>::None,
+                resource: Some("image".to_owned()),
+                effects: vec![
+                    SceneEffect {
+                        file: "effects/workshop/3392386920/auto_sway/effect.json".to_owned(),
+                        runtime: Some("native-effect-motion".to_owned()),
+                        visible: Some(json!(false)),
+                        passes: vec![SceneEffectPass {
+                            shader: Some("workshop/3392386920/effects/auto_sway".to_owned()),
+                            texture_resources: vec![Some("image".to_owned())],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                    SceneEffect {
+                        file: "effects/waterwaves/effect.json".to_owned(),
+                        runtime: Some("native-effect-motion".to_owned()),
+                        visible: Some(json!(true)),
+                        passes: vec![SceneEffectPass {
+                            shader: Some("effects/waterwaves".to_owned()),
+                            blending: Some("normal".to_owned()),
+                            texture_resources: vec![Some("image".to_owned())],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ],
+                audio: Vec::<SceneAudioCue>::new(),
+                color: None,
+                stroke_color: None,
+                stroke_width: None,
+                corner_radius: None,
+                width: Some(64.0),
+                height: Some(64.0),
+                mesh: None,
+                puppet_animation_layers: Vec::new(),
+                puppet_attachment: None,
+                parallax_depth: None,
+                text: None,
+                font_size: None,
+                font_family: None,
+                font_resource: None,
+                font_weight: None,
+                text_align: None,
+                path_data: None,
+                path_fill_rule: ScenePathFillRule::default(),
+                fit: FitMode::Cover,
+                properties: BTreeMap::new(),
+                children: Vec::new(),
+            }],
+            timelines: Vec::<SceneTimeline>::new(),
+            property_bindings: Vec::<ScenePropertyBinding>::new(),
+            systems: SceneSystems::default(),
+            native_lowering: SceneNativeLowering::default(),
+            unsupported_features: Vec::new(),
+        };
+
+        let bytes = scene_binary_payloads_from_document(&document)
+            .encode_container(0)
+            .expect("encode");
+        let layout = decode_scene_binary_container(&bytes).expect("decode");
+        let debug_names = layout.debug_names(&bytes).expect("debug names");
+        let nodes = layout
+            .node_records(&bytes)
+            .expect("node records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded node records");
+        assert_eq!(nodes[0].effect_count, 1);
+        let materials = layout
+            .material_pass_records(&bytes)
+            .expect("material records")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material records");
+        assert_eq!(materials[0].effect_pass_count, 1);
+        assert_eq!(materials[0].effect_kind_flags, 1 << (4 - 1));
+        let effect_passes = layout
+            .material_effect_pass_records(&bytes, materials[0])
+            .expect("material effect pass range")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded material effect pass range");
+        assert_eq!(effect_passes.len(), 1);
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].effect_name)
+                .expect("effect name"),
+            Some("effects/waterwaves/effect.json")
         );
     }
 

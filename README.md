@@ -4,7 +4,7 @@
 
 Gilder is a native Wayland wallpaper engine for niri, Hyprland, and other
 independent compositors. The current renderer direction is FFmpeg demux/parser
-frontends feeding a Vulkanalia/Vulkan Video GPU path for decode, render, and
+and Vulkan hardware decode feeding Gilder/Vulkanalia descriptor-heap render and
 Wayland present.
 
 Legacy GStreamer display-sink, decoded-frame CPU copy, descriptor-set fallback,
@@ -17,11 +17,12 @@ as a performance result.
 
 - Daemon IPC, state persistence, package loading, and desktop-state policy are
   present.
-- Native Vulkan video supports H.264, H.265 Main8/Main10, and AV1 Main8/Main10
-  through FFmpeg packet/parsing semantics and Vulkan Video decode.
+- Native video targets FFmpeg `h264_vulkan`, `hevc_vulkan`, and `av1_vulkan`
+  hardware decode producing `AV_PIX_FMT_VULKAN` frames.
 - The active render path samples GPU Y/UV plane descriptors through
   `VK_EXT_descriptor_heap` and presents through Wayland without decoded-frame
-  CPU copies.
+  CPU copies. The old Gilder-owned Vulkan Video submit path is compatibility
+  evidence during the migration.
 - Current 4K240 video performance gates are `average_present_fps >= 239.999`
   and `performance_max_private_dirty_kib < 25000`.
 
@@ -42,10 +43,11 @@ any remaining boundary explicitly.
 2. Full scene wallpaper support: treat static wallpapers as a single-image
    scene case, then connect static image, video, properties, transforms, daemon
    output routing, pause/resume, and package state into one scene lifecycle.
-3. Video coverage and regression: the core H.264/H.265/AV1 Vulkan Video path is
-   in coverage/stability mode. Expand real-source and generated matrices for
-   profiles, bit depths, reference patterns, containers, arbitrary entry
-   points, loop boundaries, long-run resources, and integration regressions.
+3. Video coverage and regression: after the FFmpeg Vulkan HW decode mainline is
+   wired through descriptor-heap present, expand real-source and generated
+   matrices for profiles, bit depths, reference patterns, containers, arbitrary
+   entry points, loop boundaries, long-run resources, and integration
+   regressions.
 4. Script hygiene: keep only codec smoke, real-source matrix, performance,
    packaging, workshop, and actively used diagnostic helpers. Remove one-off
    spike scripts instead of carrying compatibility wrappers.
@@ -62,8 +64,8 @@ any remaining boundary explicitly.
 - `src/renderer/native_vulkan.rs`: native Vulkan facade and public contract.
 - `src/renderer/native_vulkan/`: native Vulkan submodules and shared
   parser/snapshot code.
-- `src/renderer/native_vulkan/video/`: FFmpeg demux, codec parsing, pacing,
-  timeline, route, and video evidence helpers.
+- `src/renderer/native_vulkan/video/`: FFmpeg demux, Vulkan HW decode boundary,
+  pacing, timeline, route, and video evidence helpers.
 - `src/renderer/native_vulkan/vulkan/`: the single Vulkanalia backend, split
   into `core/`, `present/`, `scene/`, and `video/`.
 - `src/renderer/native_vulkan/present/`: clear/static image present and render

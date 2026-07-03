@@ -163,10 +163,6 @@ fn composelayer_framebuffer_effects_are_marked_without_child_propagation() {
         effects[0]["passes"][0]["combos"]["GILDER_FRAMEBUFFER_OVERLAY"],
         serde_json::json!(1)
     );
-    assert_eq!(
-        scene_utility_framebuffer_effect_color_blend_mode(Some(&source_model), &effects),
-        Some(6)
-    );
     assert!(
         context
             .converted_features
@@ -205,6 +201,35 @@ fn composelayer_framebuffer_source_model_uses_image_runtime() {
         scene_builtin_util_node_kind(&node, &source_model),
         Some("image")
     );
+}
+
+#[test]
+fn rounded_mask_effect_lowers_rectangle_corner_radius() {
+    let node = serde_json::json!({
+        "width": 550.0,
+        "height": 3300.0
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let effects = serde_json::json!([
+        {
+            "file": "effects/workshop/3083593512/rounded_mask/effect.json",
+            "passes": [{
+                "constantshadervalues": {
+                    "Radius": 0.5,
+                    "Size": "0.9 0.9"
+                }
+            }]
+        }
+    ])
+    .as_array()
+    .unwrap()
+    .clone();
+
+    let radius = scene_corner_radius_from_rounded_mask_effect(&node, &effects).unwrap();
+
+    assert!((radius - 123.75).abs() < 1.0e-6);
 }
 
 fn binary_chunk_count(path: &Path, kind: SceneBinaryChunkKind) -> u32 {

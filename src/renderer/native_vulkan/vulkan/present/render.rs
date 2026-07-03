@@ -28,6 +28,11 @@ pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descrip
     native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources,
     native_vulkan_vulkanalia_retarget_decoded_image_present_sampler_layer,
 };
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan::vulkan) use super::render_present_descriptors::{
+    native_vulkan_vulkanalia_create_ffmpeg_decoded_gpu_frame_present_sampler_resources,
+    native_vulkan_vulkanalia_update_ffmpeg_decoded_gpu_frame_present_sampler_resources,
+};
 use super::video_decode_submit::FFMPEG_VULKAN_DECODE_REFERENCE;
 use super::video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 use super::video_session_images::VulkanaliaVideoSessionResourceImage;
@@ -89,6 +94,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePres
     // Timeline semaphore signalled by the video-queue decode submit and waited on by
     // the present submit, providing the decode->present cross-queue dependency.
     decode_complete: vk::Semaphore,
+    present_queue_family_index: u32,
 }
 
 impl VulkanaliaDecodedImagePresentFrameResources {
@@ -99,9 +105,29 @@ impl VulkanaliaDecodedImagePresentFrameResources {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePresentImageSource {
+    pub(in crate::renderer::native_vulkan::vulkan) image: vk::Image,
+    pub(in crate::renderer::native_vulkan::vulkan) array_layers: u32,
+    pub(in crate::renderer::native_vulkan::vulkan) current_layout: vk::ImageLayout,
+    pub(in crate::renderer::native_vulkan::vulkan) restore_layout: vk::ImageLayout,
+    pub(in crate::renderer::native_vulkan::vulkan) queue_family_index: u32,
+}
+
+impl VulkanaliaDecodedImagePresentImageSource {
+    fn from_resource_image(resource_image: &VulkanaliaVideoSessionResourceImage) -> Self {
+        Self {
+            image: resource_image.image,
+            array_layers: resource_image.snapshot.array_layers,
+            current_layout: vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+            restore_layout: vk::ImageLayout::VIDEO_DECODE_DPB_KHR,
+            queue_family_index: vk::QUEUE_FAMILY_IGNORED,
+        }
+    }
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDecodedImagePresentSource<'a> {
-    pub(in crate::renderer::native_vulkan::vulkan) resource_image:
-        &'a VulkanaliaVideoSessionResourceImage,
+    pub(in crate::renderer::native_vulkan::vulkan) image: VulkanaliaDecodedImagePresentImageSource,
     pub(in crate::renderer::native_vulkan::vulkan) sampler:
         &'a VulkanaliaDecodedImagePresentSamplerResources,
     pub(in crate::renderer::native_vulkan::vulkan) sampled_array_layer: u32,
@@ -776,6 +802,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             in_flight: std::mem::take(&mut in_flight),
             swapchain_image_in_flight: Mutex::new(vec![vk::Fence::null(); swapchain_images.len()]),
             decode_complete,
+            present_queue_family_index: queue_family_index,
         })
     })();
 
@@ -881,7 +908,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     scene_overlay_draw: Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>,
 ) -> Result<NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot, String> {
     let decoded_sources = [VulkanaliaDecodedImagePresentSource {
-        resource_image,
+        image: VulkanaliaDecodedImagePresentImageSource::from_resource_image(resource_image),
         sampler,
         sampled_array_layer,
     }];
@@ -958,10 +985,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         return Err("decoded image present requires at least one decoded source".to_owned());
     }
     for (source_index, source) in decoded_sources.iter().enumerate() {
-        if source.sampled_array_layer >= source.resource_image.snapshot.array_layers {
+        if source.sampled_array_layer >= source.image.array_layers {
             return Err(format!(
                 "decoded image present source {source_index} sampled layer {} exceeds {} image layers",
-                source.sampled_array_layer, source.resource_image.snapshot.array_layers
+                source.sampled_array_layer, source.image.array_layers
             ));
         }
     }
@@ -1080,6 +1107,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
         swapchain_view,
         swapchain_extent,
         decoded_sources,
+        frame_resources.present_queue_family_index,
         pipeline,
         clear_color,
         scene_overlay_draw,
@@ -1416,6 +1444,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
     swapchain_view: vk::ImageView,
     extent: vk::Extent2D,
     decoded_sources: &[VulkanaliaDecodedImagePresentSource<'_>],
+    present_queue_family_index: u32,
     pipeline: &VulkanaliaDecodedImagePresentPipelineResources,
     clear_color: NativeVulkanClearColor,
     scene_overlay_draw: Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>,
@@ -1439,24 +1468,31 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             })?;
 
         let mut image_barriers = Vec::with_capacity(decoded_sources.len().saturating_add(1));
-        image_barriers.extend(decoded_sources.iter().map(|source| {
-            vk::ImageMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::NONE)
-                .src_access_mask(vk::AccessFlags2::NONE)
-                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-                .old_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(source.resource_image.image)
-                .subresource_range(
-                    native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
-                        source.sampled_array_layer,
-                    ),
-                )
-                .build()
-        }));
+        for source in decoded_sources {
+            let (src_queue_family_index, dst_queue_family_index) =
+                native_vulkan_vulkanalia_decoded_image_present_queue_family_barrier_indices(
+                    source.image,
+                    present_queue_family_index,
+                )?;
+            image_barriers.push(
+                vk::ImageMemoryBarrier2::builder()
+                    .src_stage_mask(vk::PipelineStageFlags2::NONE)
+                    .src_access_mask(vk::AccessFlags2::NONE)
+                    .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .old_layout(source.image.current_layout)
+                    .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .src_queue_family_index(src_queue_family_index)
+                    .dst_queue_family_index(dst_queue_family_index)
+                    .image(source.image.image)
+                    .subresource_range(
+                        native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
+                            source.sampled_array_layer,
+                        ),
+                    )
+                    .build(),
+            );
+        }
         let swapchain_to_attachment = vk::ImageMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
             .src_access_mask(vk::AccessFlags2::empty())
@@ -1550,24 +1586,31 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
         device.cmd_end_rendering(command_buffer);
 
         let mut present_barriers = Vec::with_capacity(decoded_sources.len().saturating_add(1));
-        present_barriers.extend(decoded_sources.iter().map(|source| {
-            vk::ImageMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-                .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-                .dst_stage_mask(vk::PipelineStageFlags2::NONE)
-                .dst_access_mask(vk::AccessFlags2::NONE)
-                .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .new_layout(vk::ImageLayout::VIDEO_DECODE_DPB_KHR)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(source.resource_image.image)
-                .subresource_range(
-                    native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
-                        source.sampled_array_layer,
-                    ),
-                )
-                .build()
-        }));
+        for source in decoded_sources {
+            let (src_queue_family_index, dst_queue_family_index) =
+                native_vulkan_vulkanalia_decoded_image_present_queue_family_barrier_indices(
+                    source.image,
+                    present_queue_family_index,
+                )?;
+            present_barriers.push(
+                vk::ImageMemoryBarrier2::builder()
+                    .src_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
+                    .src_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+                    .dst_stage_mask(vk::PipelineStageFlags2::NONE)
+                    .dst_access_mask(vk::AccessFlags2::NONE)
+                    .old_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+                    .new_layout(source.image.restore_layout)
+                    .src_queue_family_index(dst_queue_family_index)
+                    .dst_queue_family_index(src_queue_family_index)
+                    .image(source.image.image)
+                    .subresource_range(
+                        native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
+                            source.sampled_array_layer,
+                        ),
+                    )
+                    .build(),
+            );
+        }
         let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
             .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
@@ -1861,6 +1904,22 @@ fn native_vulkan_vulkanalia_decoded_image_layer_subresource_range(
         .base_array_layer(sampled_array_layer)
         .layer_count(1)
         .build()
+}
+
+fn native_vulkan_vulkanalia_decoded_image_present_queue_family_barrier_indices(
+    source: VulkanaliaDecodedImagePresentImageSource,
+    present_queue_family_index: u32,
+) -> Result<(u32, u32), String> {
+    if source.queue_family_index == vk::QUEUE_FAMILY_IGNORED {
+        return Ok((vk::QUEUE_FAMILY_IGNORED, vk::QUEUE_FAMILY_IGNORED));
+    }
+    if source.queue_family_index == present_queue_family_index {
+        return Ok((vk::QUEUE_FAMILY_IGNORED, vk::QUEUE_FAMILY_IGNORED));
+    }
+    Err(format!(
+        "decoded image present source queue family {} differs from present queue family {}; FFmpeg AVVkFrame split-family handoff requires FFmpeg-created concurrent images or an explicit video-queue release",
+        source.queue_family_index, present_queue_family_index
+    ))
 }
 
 const NATIVE_VULKAN_VULKANALIA_PLANE_PRESENT_VERTEX_SPIRV: [u32; 312] = [

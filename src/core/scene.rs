@@ -4587,7 +4587,10 @@ fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
         6 => Some(SceneBlendMode::Max),
         7 => Some(SceneBlendMode::Screen),
         8 => Some(SceneBlendMode::Screen),
-        28 => Some(SceneBlendMode::Screen),
+        // WE colorBlendMode 28 is HSL Color in common_blending.h and requires
+        // a framebuffer-sampling passthrough shader. A fixed Screen blend is
+        // mathematically wrong and turns dark UI bars into bright rectangles.
+        28 => Some(SceneBlendMode::Alpha),
         31 => Some(SceneBlendMode::Additive),
         32 => Some(SceneBlendMode::Modulate),
         _ => None,
@@ -5102,7 +5105,7 @@ mod tests {
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
 
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
-        assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Screen);
+        assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Alpha);
         // WE colorBlendMode 32 = A*(1+B*a) (multiplicative brighten), now mapped to
         // Modulate; previously mis-mapped to Screen which caused the visible rectangle.
         assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Modulate);

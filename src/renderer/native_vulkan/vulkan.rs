@@ -191,22 +191,24 @@ pub use video_present_device::{
     probe_native_vulkan_vulkanalia_video_present_session,
 };
 pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
-pub use video_present_runtime::{
-    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
-    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
-    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
-};
 #[cfg(feature = "native-vulkan-video")]
 pub use video_present_runtime::{
+    NativeVulkanFfmpegVulkanHwVideoPresentOptions, NativeVulkanFfmpegVulkanHwVideoPresentSnapshot,
     NativeVulkanVulkanaliaAv1StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH264StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaH265StreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeOptions,
     NativeVulkanVulkanaliaMultiStreamingVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions,
+    run_native_vulkan_ffmpeg_vulkan_hw_video_present,
     run_native_vulkan_vulkanalia_av1_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h264_streaming_video_present_decode,
     run_native_vulkan_vulkanalia_h265_streaming_video_present_decode,
+};
+pub use video_present_runtime::{
+    NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
+    NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
 };
 #[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan) use video_present_runtime::{

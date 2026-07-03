@@ -14,11 +14,16 @@
 #include <libavcodec/packet.h>
 #include <libavformat/avformat.h>
 #include <libavutil/avutil.h>
+#include <libavutil/buffer.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/dict.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
+#include <libavutil/hwcontext.h>
+#include <libavutil/hwcontext_vulkan.h>
 #include <libavutil/mem.h>
+#include <libavutil/opt.h>
+#include <libavutil/pixfmt.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
 #include <pipewire/pipewire.h>
@@ -78,6 +83,16 @@ typedef struct GilderFfmpegObjectPool {
     int64_t frame_releases;
     int64_t frame_frees;
 } GilderFfmpegObjectPool;
+
+typedef struct GilderFfmpegVulkanHwDeviceUserData {
+    char **inst_extensions;
+    const char **inst_extension_ptrs;
+    int nb_inst_extensions;
+    char **dev_extensions;
+    const char **dev_extension_ptrs;
+    int nb_dev_extensions;
+    void *vulkan_library;
+} GilderFfmpegVulkanHwDeviceUserData;
 
 typedef struct GilderPipeWireApi {
     void *library;
@@ -231,6 +246,147 @@ static int gilder_swresample_load_once(void) {
     return 0;
 }
 
+static void gilder_free_extension_array(
+    char **storage,
+    const char **ptrs,
+    int count
+) {
+    if (storage) {
+        for (int i = 0; i < count; i++)
+            av_free(storage[i]);
+    }
+    av_free(storage);
+    av_free((void *)ptrs);
+}
+
+static int gilder_dup_extension_array(
+    const char * const *extensions,
+    int count,
+    char ***storage_out,
+    const char ***ptrs_out
+) {
+    *storage_out = NULL;
+    *ptrs_out = NULL;
+    if (count <= 0)
+        return 0;
+    if (!extensions)
+        return AVERROR(EINVAL);
+
+    char **storage = av_calloc((size_t)count, sizeof(*storage));
+    const char **ptrs = av_calloc((size_t)count, sizeof(*ptrs));
+    if (!storage || !ptrs) {
+        av_free(storage);
+        av_free((void *)ptrs);
+        return AVERROR(ENOMEM);
+    }
+
+    for (int i = 0; i < count; i++) {
+        if (!extensions[i]) {
+            gilder_free_extension_array(storage, ptrs, count);
+            return AVERROR(EINVAL);
+        }
+        storage[i] = av_strdup(extensions[i]);
+        if (!storage[i]) {
+            gilder_free_extension_array(storage, ptrs, count);
+            return AVERROR(ENOMEM);
+        }
+        ptrs[i] = storage[i];
+    }
+
+    *storage_out = storage;
+    *ptrs_out = ptrs;
+    return 0;
+}
+
+static void gilder_vulkan_hwdevice_user_data_free(
+    GilderFfmpegVulkanHwDeviceUserData *user_data
+) {
+    if (!user_data)
+        return;
+    gilder_free_extension_array(
+        user_data->inst_extensions,
+        user_data->inst_extension_ptrs,
+        user_data->nb_inst_extensions
+    );
+    gilder_free_extension_array(
+        user_data->dev_extensions,
+        user_data->dev_extension_ptrs,
+        user_data->nb_dev_extensions
+    );
+    if (user_data->vulkan_library)
+        dlclose(user_data->vulkan_library);
+    av_free(user_data);
+}
+
+static PFN_vkGetInstanceProcAddr gilder_vulkan_get_instance_proc_addr(
+    GilderFfmpegVulkanHwDeviceUserData *user_data
+) {
+    PFN_vkGetInstanceProcAddr proc =
+        (PFN_vkGetInstanceProcAddr)dlsym(RTLD_DEFAULT, "vkGetInstanceProcAddr");
+    if (proc)
+        return proc;
+
+    static const char *lib_names[] = {
+        "libvulkan.so.1",
+        "libvulkan.so",
+    };
+    for (size_t i = 0; i < sizeof(lib_names) / sizeof(lib_names[0]); i++) {
+        void *library = dlopen(lib_names[i], RTLD_NOW | RTLD_LOCAL);
+        if (!library)
+            continue;
+        proc = (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr");
+        if (proc) {
+            user_data->vulkan_library = library;
+            return proc;
+        }
+        dlclose(library);
+    }
+
+    return NULL;
+}
+
+static void gilder_vulkan_hwdevice_free(AVHWDeviceContext *ctx) {
+    if (!ctx)
+        return;
+    GilderFfmpegVulkanHwDeviceUserData *user_data = ctx->user_opaque;
+    ctx->user_opaque = NULL;
+    gilder_vulkan_hwdevice_user_data_free(user_data);
+}
+
+static enum AVPixelFormat gilder_vulkan_hw_get_format(
+    AVCodecContext *ctx,
+    const enum AVPixelFormat *pix_fmts
+) {
+    (void)ctx;
+    for (const enum AVPixelFormat *fmt = pix_fmts; *fmt != AV_PIX_FMT_NONE; fmt++) {
+        if (*fmt == AV_PIX_FMT_VULKAN)
+            return AV_PIX_FMT_VULKAN;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static uint64_t gilder_vulkan_non_dispatchable_handle_to_u64(uint64_t handle) {
+    return handle;
+}
+
+#if defined(VK_USE_64_BIT_PTR_DEFINES) && VK_USE_64_BIT_PTR_DEFINES == 1
+static uint64_t gilder_vulkan_image_to_u64(VkImage handle) {
+    return (uint64_t)(uintptr_t)handle;
+}
+
+static uint64_t gilder_vulkan_semaphore_to_u64(VkSemaphore handle) {
+    return (uint64_t)(uintptr_t)handle;
+}
+#else
+static uint64_t gilder_vulkan_image_to_u64(VkImage handle) {
+    return gilder_vulkan_non_dispatchable_handle_to_u64((uint64_t)handle);
+}
+
+static uint64_t gilder_vulkan_semaphore_to_u64(VkSemaphore handle) {
+    return gilder_vulkan_non_dispatchable_handle_to_u64((uint64_t)handle);
+}
+#endif
+
 int gilder_av_error_eof(void) {
     return AVERROR_EOF;
 }
@@ -255,8 +411,274 @@ int gilder_av_codec_id_av1(void) {
     return AV_CODEC_ID_AV1;
 }
 
+int gilder_av_hwdevice_type_vulkan(void) {
+    return AV_HWDEVICE_TYPE_VULKAN;
+}
+
+int gilder_av_pix_fmt_none(void) {
+    return AV_PIX_FMT_NONE;
+}
+
+int gilder_av_pix_fmt_vulkan(void) {
+    return AV_PIX_FMT_VULKAN;
+}
+
+int gilder_av_pix_fmt_nv12(void) {
+    return AV_PIX_FMT_NV12;
+}
+
+int gilder_av_pix_fmt_p010le(void) {
+    return AV_PIX_FMT_P010LE;
+}
+
+int gilder_av_frame_format(const AVFrame *frame) {
+    return frame ? frame->format : AV_PIX_FMT_NONE;
+}
+
+int gilder_av_frame_is_vulkan_hw(const AVFrame *frame) {
+    return frame &&
+           frame->format == AV_PIX_FMT_VULKAN &&
+           frame->hw_frames_ctx &&
+           frame->data[0] ? 1 : 0;
+}
+
+int gilder_av_frame_vulkan_image_count(const AVFrame *frame) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0])
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    int count = 0;
+    for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
+        if (vk_frame->img[i] != VK_NULL_HANDLE)
+            count++;
+    }
+    return count;
+}
+
+int gilder_av_frame_vulkan_timeline_semaphore_count(const AVFrame *frame) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0])
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    int count = 0;
+    for (int i = 0; i < AV_NUM_DATA_POINTERS; i++) {
+        if (vk_frame->sem[i] != VK_NULL_HANDLE)
+            count++;
+    }
+    return count;
+}
+
+uint64_t gilder_av_frame_vulkan_image(const AVFrame *frame, int index) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0] ||
+        index < 0 || index >= AV_NUM_DATA_POINTERS)
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    return gilder_vulkan_image_to_u64(vk_frame->img[index]);
+}
+
+int gilder_av_frame_vulkan_layout(const AVFrame *frame, int index) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0] ||
+        index < 0 || index >= AV_NUM_DATA_POINTERS)
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    return (int)vk_frame->layout[index];
+}
+
+uint64_t gilder_av_frame_vulkan_timeline_semaphore(
+    const AVFrame *frame,
+    int index
+) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0] ||
+        index < 0 || index >= AV_NUM_DATA_POINTERS)
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    return gilder_vulkan_semaphore_to_u64(vk_frame->sem[index]);
+}
+
+uint64_t gilder_av_frame_vulkan_timeline_semaphore_value(
+    const AVFrame *frame,
+    int index
+) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0] ||
+        index < 0 || index >= AV_NUM_DATA_POINTERS)
+        return 0;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    return vk_frame->sem_value[index];
+}
+
+uint32_t gilder_av_frame_vulkan_queue_family(const AVFrame *frame, int index) {
+    if (!frame || frame->format != AV_PIX_FMT_VULKAN || !frame->data[0] ||
+        index < 0 || index >= AV_NUM_DATA_POINTERS)
+        return VK_QUEUE_FAMILY_IGNORED;
+
+    const AVVkFrame *vk_frame = (const AVVkFrame *)frame->data[0];
+    return vk_frame->queue_family[index];
+}
+
+int gilder_av_frame_hw_sw_format(const AVFrame *frame) {
+    if (!frame || !frame->hw_frames_ctx || !frame->hw_frames_ctx->data)
+        return AV_PIX_FMT_NONE;
+
+    const AVHWFramesContext *frames_ctx =
+        (const AVHWFramesContext *)frame->hw_frames_ctx->data;
+    return frames_ctx->sw_format;
+}
+
+int gilder_av_frame_vulkan_nb_layers(const AVFrame *frame) {
+    if (!frame || !frame->hw_frames_ctx || !frame->hw_frames_ctx->data)
+        return 0;
+
+    const AVHWFramesContext *frames_ctx =
+        (const AVHWFramesContext *)frame->hw_frames_ctx->data;
+    const AVVulkanFramesContext *vulkan_frames_ctx =
+        (const AVVulkanFramesContext *)frames_ctx->hwctx;
+    return vulkan_frames_ctx && vulkan_frames_ctx->nb_layers > 0
+        ? vulkan_frames_ctx->nb_layers
+        : 1;
+}
+
+int gilder_av_frame_width(const AVFrame *frame) {
+    return frame ? frame->width : 0;
+}
+
+int gilder_av_frame_height(const AVFrame *frame) {
+    return frame ? frame->height : 0;
+}
+
+int64_t gilder_av_frame_pts(const AVFrame *frame) {
+    return frame ? frame->pts : AV_NOPTS_VALUE;
+}
+
+int64_t gilder_av_frame_duration(const AVFrame *frame) {
+    return frame ? frame->duration : 0;
+}
+
 int gilder_av_strerror(int errnum, char *errbuf, size_t errbuf_size) {
     return av_strerror(errnum, errbuf, errbuf_size);
+}
+
+int gilder_av_hwdevice_ctx_alloc_vulkan_existing(
+    AVBufferRef **out,
+    uintptr_t instance_handle,
+    uintptr_t physical_device_handle,
+    uintptr_t device_handle,
+    const char * const *enabled_inst_extensions,
+    int nb_enabled_inst_extensions,
+    const char * const *enabled_dev_extensions,
+    int nb_enabled_dev_extensions,
+    int video_queue_family_index,
+    int video_queue_count,
+    uint32_t video_queue_flags,
+    uint32_t video_codec_operations,
+    int present_queue_family_index,
+    int present_queue_count,
+    uint32_t present_queue_flags
+) {
+    if (!out || !instance_handle || !physical_device_handle || !device_handle ||
+        video_queue_family_index < 0 || video_queue_count <= 0)
+        return AVERROR(EINVAL);
+
+    *out = NULL;
+    AVBufferRef *ref = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_VULKAN);
+    if (!ref)
+        return AVERROR(ENOMEM);
+
+    GilderFfmpegVulkanHwDeviceUserData *user_data =
+        av_mallocz(sizeof(*user_data));
+    if (!user_data) {
+        av_buffer_unref(&ref);
+        return AVERROR(ENOMEM);
+    }
+
+    int ret = gilder_dup_extension_array(
+        enabled_inst_extensions,
+        nb_enabled_inst_extensions,
+        &user_data->inst_extensions,
+        &user_data->inst_extension_ptrs
+    );
+    if (ret < 0) {
+        gilder_vulkan_hwdevice_user_data_free(user_data);
+        av_buffer_unref(&ref);
+        return ret;
+    }
+    user_data->nb_inst_extensions = nb_enabled_inst_extensions;
+
+    ret = gilder_dup_extension_array(
+        enabled_dev_extensions,
+        nb_enabled_dev_extensions,
+        &user_data->dev_extensions,
+        &user_data->dev_extension_ptrs
+    );
+    if (ret < 0) {
+        gilder_vulkan_hwdevice_user_data_free(user_data);
+        av_buffer_unref(&ref);
+        return ret;
+    }
+    user_data->nb_dev_extensions = nb_enabled_dev_extensions;
+
+    AVHWDeviceContext *device_ctx = (AVHWDeviceContext *)ref->data;
+    AVVulkanDeviceContext *vk_ctx = (AVVulkanDeviceContext *)device_ctx->hwctx;
+    PFN_vkGetInstanceProcAddr get_proc_addr =
+        gilder_vulkan_get_instance_proc_addr(user_data);
+    if (!get_proc_addr) {
+        gilder_vulkan_hwdevice_user_data_free(user_data);
+        av_buffer_unref(&ref);
+        return AVERROR(ENOSYS);
+    }
+    device_ctx->user_opaque = user_data;
+    device_ctx->free = gilder_vulkan_hwdevice_free;
+    vk_ctx->get_proc_addr = get_proc_addr;
+    vk_ctx->inst = (VkInstance)instance_handle;
+    vk_ctx->phys_dev = (VkPhysicalDevice)physical_device_handle;
+    vk_ctx->act_dev = (VkDevice)device_handle;
+    vk_ctx->enabled_inst_extensions = user_data->inst_extension_ptrs;
+    vk_ctx->nb_enabled_inst_extensions = user_data->nb_inst_extensions;
+    vk_ctx->enabled_dev_extensions = user_data->dev_extension_ptrs;
+    vk_ctx->nb_enabled_dev_extensions = user_data->nb_dev_extensions;
+
+    uint32_t decode_flags = video_queue_flags | VK_QUEUE_VIDEO_DECODE_BIT_KHR;
+    uint32_t graphics_flags = present_queue_flags | VK_QUEUE_GRAPHICS_BIT |
+                              VK_QUEUE_TRANSFER_BIT;
+    if (present_queue_family_index >= 0 &&
+        present_queue_family_index != video_queue_family_index) {
+        vk_ctx->qf[0].idx = video_queue_family_index;
+        vk_ctx->qf[0].num = video_queue_count;
+        vk_ctx->qf[0].flags = (VkQueueFlagBits)decode_flags;
+        vk_ctx->qf[0].video_caps =
+            (VkVideoCodecOperationFlagBitsKHR)video_codec_operations;
+        vk_ctx->qf[1].idx = present_queue_family_index;
+        vk_ctx->qf[1].num = present_queue_count > 0 ? present_queue_count : 1;
+        vk_ctx->qf[1].flags = (VkQueueFlagBits)graphics_flags;
+        vk_ctx->qf[1].video_caps = 0;
+        vk_ctx->nb_qf = 2;
+    } else {
+        int queue_count = video_queue_count;
+        if (present_queue_count > queue_count)
+            queue_count = present_queue_count;
+        vk_ctx->qf[0].idx = video_queue_family_index;
+        vk_ctx->qf[0].num = queue_count;
+        vk_ctx->qf[0].flags = (VkQueueFlagBits)(decode_flags | graphics_flags);
+        vk_ctx->qf[0].video_caps =
+            (VkVideoCodecOperationFlagBitsKHR)video_codec_operations;
+        vk_ctx->nb_qf = 1;
+    }
+
+    ret = av_hwdevice_ctx_init(ref);
+    if (ret < 0) {
+        av_buffer_unref(&ref);
+        return ret;
+    }
+
+    *out = ref;
+    return 0;
+}
+
+void gilder_av_buffer_unref(AVBufferRef **ref) {
+    av_buffer_unref(ref);
 }
 
 int gilder_avformat_open_input(AVFormatContext **ctx, const char *url) {
@@ -475,7 +897,46 @@ int gilder_av_seek_stream_start(AVFormatContext *ctx, int stream_index) {
 }
 
 const AVCodec *gilder_av_stream_decoder(AVFormatContext *ctx, int stream_index) {
-    return avcodec_find_decoder(ctx->streams[stream_index]->codecpar->codec_id);
+    enum AVCodecID codec_id = ctx->streams[stream_index]->codecpar->codec_id;
+    const char *native_decoder_name = NULL;
+    switch (codec_id) {
+    case AV_CODEC_ID_H264:
+        native_decoder_name = "h264";
+        break;
+    case AV_CODEC_ID_HEVC:
+        native_decoder_name = "hevc";
+        break;
+    case AV_CODEC_ID_AV1:
+        native_decoder_name = "av1";
+        break;
+    default:
+        break;
+    }
+    if (native_decoder_name) {
+        const AVCodec *codec = avcodec_find_decoder_by_name(native_decoder_name);
+        if (codec)
+            return codec;
+    }
+    return avcodec_find_decoder(codec_id);
+}
+
+const char *gilder_avcodec_name(const AVCodec *codec) {
+    return codec && codec->name ? codec->name : "";
+}
+
+int gilder_avcodec_has_vulkan_hw_config(const AVCodec *codec) {
+    if (!codec)
+        return 0;
+
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config)
+            return 0;
+        if (config->device_type == AV_HWDEVICE_TYPE_VULKAN &&
+            config->pix_fmt == AV_PIX_FMT_VULKAN &&
+            (config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+            return 1;
+    }
 }
 
 AVCodecContext *gilder_avcodec_alloc_context3(const AVCodec *codec) {
@@ -500,12 +961,108 @@ int gilder_avcodec_open2(AVCodecContext *ctx, const AVCodec *codec) {
     return avcodec_open2(ctx, codec, NULL);
 }
 
+int gilder_avcodec_open2_vulkan_hw(
+    AVCodecContext *ctx,
+    const AVCodec *codec,
+    AVBufferRef *hw_device_ctx
+) {
+    if (!ctx || !codec || !hw_device_ctx)
+        return AVERROR(EINVAL);
+
+    ctx->thread_count = 1;
+    ctx->thread_type = 0;
+    ctx->extra_hw_frames = 0;
+    ctx->flags |= AV_CODEC_FLAG_LOW_DELAY;
+    ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+    ctx->get_format = gilder_vulkan_hw_get_format;
+    ctx->hw_device_ctx = av_buffer_ref(hw_device_ctx);
+    if (!ctx->hw_device_ctx)
+        return AVERROR(ENOMEM);
+
+    AVDictionary *opts = NULL;
+    if (codec->id == AV_CODEC_ID_H264) {
+        int opt_ret = av_dict_set(&opts, "enable_er", "0", 0);
+        if (opt_ret < 0) {
+            av_buffer_unref(&ctx->hw_device_ctx);
+            return opt_ret;
+        }
+    }
+
+    int ret = avcodec_open2(ctx, codec, &opts);
+    av_dict_free(&opts);
+    if (ret < 0)
+        av_buffer_unref(&ctx->hw_device_ctx);
+    return ret;
+}
+
+int gilder_avcodec_context_thread_count(const AVCodecContext *ctx) {
+    return ctx ? ctx->thread_count : 0;
+}
+
+int gilder_avcodec_context_thread_type(const AVCodecContext *ctx) {
+    return ctx ? ctx->thread_type : 0;
+}
+
+int gilder_avcodec_context_active_thread_type(const AVCodecContext *ctx) {
+    return ctx ? ctx->active_thread_type : 0;
+}
+
+int gilder_avcodec_context_extra_hw_frames(const AVCodecContext *ctx) {
+    return ctx ? ctx->extra_hw_frames : 0;
+}
+
+int gilder_avcodec_context_flags(const AVCodecContext *ctx) {
+    return ctx ? ctx->flags : 0;
+}
+
+int gilder_avcodec_context_flags2(const AVCodecContext *ctx) {
+    return ctx ? ctx->flags2 : 0;
+}
+
+int gilder_avcodec_context_has_b_frames(const AVCodecContext *ctx) {
+    return ctx ? ctx->has_b_frames : 0;
+}
+
+int gilder_avcodec_context_delay(const AVCodecContext *ctx) {
+    return ctx ? ctx->delay : 0;
+}
+
+int gilder_avcodec_context_hw_frames_initial_pool_size(const AVCodecContext *ctx) {
+    if (!ctx || !ctx->hw_frames_ctx || !ctx->hw_frames_ctx->data)
+        return 0;
+
+    const AVHWFramesContext *frames_ctx =
+        (const AVHWFramesContext *)ctx->hw_frames_ctx->data;
+    return frames_ctx->initial_pool_size;
+}
+
+int gilder_avcodec_context_coded_width(const AVCodecContext *ctx) {
+    return ctx ? ctx->coded_width : 0;
+}
+
+int gilder_avcodec_context_coded_height(const AVCodecContext *ctx) {
+    return ctx ? ctx->coded_height : 0;
+}
+
+int gilder_avcodec_context_h264_enable_er(const AVCodecContext *ctx) {
+    if (!ctx || ctx->codec_id != AV_CODEC_ID_H264 || !ctx->priv_data)
+        return -2;
+
+    int64_t value = 0;
+    int ret = av_opt_get_int(ctx->priv_data, "enable_er", 0, &value);
+    return ret < 0 ? -2 : (int)value;
+}
+
 int gilder_avcodec_send_packet(AVCodecContext *ctx, const AVPacket *packet) {
     return avcodec_send_packet(ctx, packet);
 }
 
 int gilder_avcodec_receive_frame(AVCodecContext *ctx, AVFrame *frame) {
     return avcodec_receive_frame(ctx, frame);
+}
+
+void gilder_avcodec_flush_buffers(AVCodecContext *ctx) {
+    avcodec_flush_buffers(ctx);
 }
 
 int gilder_avcodec_context_sample_rate(const AVCodecContext *ctx) {
@@ -518,6 +1075,18 @@ int gilder_avcodec_context_channels(const AVCodecContext *ctx) {
 
 void gilder_av_frame_unref(AVFrame *frame) {
     av_frame_unref(frame);
+}
+
+AVFrame *gilder_av_frame_alloc_owned(void) {
+    return av_frame_alloc();
+}
+
+void gilder_av_frame_move_ref(AVFrame *dst, AVFrame *src) {
+    av_frame_move_ref(dst, src);
+}
+
+void gilder_av_frame_free_owned(AVFrame **frame) {
+    av_frame_free(frame);
 }
 
 int gilder_av_frame_nb_samples(const AVFrame *frame) {

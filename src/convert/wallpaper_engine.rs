@@ -3681,12 +3681,14 @@ fn scene_node_from_object(
         project, output_dir, object, &node, &node_id, report, context, resources,
     );
     scene_prepare_utility_framebuffer_effects(source_model.as_ref(), &mut effects, context);
-    if let Some(blend_mode) =
-        scene_utility_framebuffer_effect_color_blend_mode(source_model.as_ref(), &effects)
+    if kind == "rectangle"
+        && !node.contains_key("corner_radius")
+        && let Some(radius) = scene_corner_radius_from_rounded_mask_effect(&node, &effects)
     {
-        scene_merge_node_properties(
-            &mut node,
-            json!({ "wallpaper_engine_blend": { "colorBlendMode": blend_mode } }),
+        node.insert("corner_radius".to_owned(), json!(radius));
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-rounded-mask-geometry-lowering",
         );
     }
     if !effects.is_empty() {
@@ -3781,19 +3783,6 @@ fn scene_prepare_utility_framebuffer_effects(
     );
 }
 
-fn scene_utility_framebuffer_effect_color_blend_mode(
-    source_model: Option<&SceneSourceModelConversion>,
-    effects: &[Value],
-) -> Option<i64> {
-    if !scene_builtin_util_is_composelayer(source_model) {
-        return None;
-    }
-    effects
-        .iter()
-        .find(|effect| scene_effect_value_is_watercaustics(effect))
-        .and_then(scene_effect_first_blend_mode_combo)
-}
-
 fn scene_builtin_util_is_composelayer(source_model: Option<&SceneSourceModelConversion>) -> bool {
     source_model
         .and_then(|model| model.value.get("utility"))
@@ -3815,6 +3804,43 @@ fn scene_effect_value_is_watercaustics(effect: &Value) -> bool {
     scene_effect_value_file_matches(effect, |file| {
         file.contains("watercaustics") || file.contains("water_caustics")
     })
+}
+
+fn scene_corner_radius_from_rounded_mask_effect(
+    node: &Map<String, Value>,
+    effects: &[Value],
+) -> Option<f64> {
+    let width = node.get("width").and_then(value_to_f64_unwrapped)?;
+    let height = node.get("height").and_then(value_to_f64_unwrapped)?;
+    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+        return None;
+    }
+    let pass = effects
+        .iter()
+        .filter(|effect| {
+            scene_effect_value_file_matches(effect, |file| file.contains("rounded_mask"))
+        })
+        .find_map(|effect| effect.get("passes").and_then(Value::as_array))?
+        .iter()
+        .filter_map(Value::as_object)
+        .next()?;
+    let constants = pass
+        .get("constantshadervalues")
+        .or_else(|| pass.get("constant_shader_values"))
+        .and_then(Value::as_object);
+    let radius = constants
+        .and_then(|constants| constants.get("Radius").or_else(|| constants.get("radius")))
+        .and_then(value_to_f64_unwrapped)
+        .unwrap_or(0.5)
+        .clamp(0.0, 1.0);
+    let (size_x, size_y) = constants
+        .and_then(|constants| constants.get("Size").or_else(|| constants.get("size")))
+        .and_then(vector3_components_from_value)
+        .map(|(x, y, _)| (x.clamp(0.0, 1.0), y.clamp(0.0, 1.0)))
+        .unwrap_or((1.0, 1.0));
+    let effective_min = (width * size_x).min(height * size_y);
+    let pixel_radius = radius * effective_min * 0.5;
+    (pixel_radius > 0.0 && pixel_radius.is_finite()).then_some(pixel_radius)
 }
 
 fn scene_effect_value_file_matches(effect: &Value, predicate: impl FnOnce(&str) -> bool) -> bool {
@@ -3847,20 +3873,6 @@ fn scene_mark_effect_as_framebuffer_overlay(effect: &mut Value) {
             combos.insert("GILDER_FRAMEBUFFER_OVERLAY".to_owned(), json!(1));
         }
     }
-}
-
-fn scene_effect_first_blend_mode_combo(effect: &Value) -> Option<i64> {
-    effect
-        .get("passes")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter_map(|pass| {
-            pass.get("combos")
-                .and_then(Value::as_object)
-                .and_then(|combos| combos.get("BLENDMODE"))
-                .and_then(value_to_i64)
-        })
-        .next()
 }
 
 fn scene_builtin_util_script_native_ready(

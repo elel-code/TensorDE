@@ -11,7 +11,26 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_BODY_LAYERS = ("node-59-models-json", "node-67-models-json")
+DEFAULT_BODY_LAYERS = (
+    "node-59-models-json",
+    "node-60-models-json",
+    "node-67-models-json",
+    "node-68-models-json",
+)
+DEFAULT_SKIRT_RIBBON_LAYERS = ("node-60-models-json", "node-68-models-json")
+DEFAULT_SKIRT_RIBBON_MASKS = (
+    "waterwaves_mask_5779d462",
+    "waterwaves_mask_ea0aa530",
+    "waterwaves_mask_6eb46628",
+)
+DEFAULT_INVISIBLE_EFFECT_LAYERS = ("node-48-models-6-json", "node-56-models-6-json")
+DEFAULT_COMPOSELAYER = "node-7-models-util-composelayer-json"
+DEFAULT_SLIDER_RECTANGLES = (
+    "node-33-models-util-solidlayer-json",
+    "node-91-models-util-solidlayer-json",
+)
+AUTOSWAY_EFFECT = "effects/workshop/3392386920/auto_sway/effect.json"
+WATERWAVES_EFFECT = "effects/waterwaves/effect.json"
 
 
 def load_json(path: Path) -> Any:
@@ -46,6 +65,21 @@ def fail(message: str) -> None:
 def assert_close(label: str, actual: float, expected: float, eps: float = 1.0e-3) -> None:
     if abs(actual - expected) > eps:
         fail(f"{label}: expected {expected:.6f}, got {actual:.6f}")
+
+
+def assert_we_orthogonal_projection_uses_stretch(runtime: dict[str, Any]) -> None:
+    scene_size = runtime.get("scene_size") or {}
+    width = f64(scene_size.get("width"), -1.0)
+    height = f64(scene_size.get("height"), -1.0)
+    if width <= 0.0 or height <= 0.0:
+        return
+    fit = runtime.get("scene_fit")
+    if fit != "stretch":
+        fail(
+            f"scene_fit is {fit!r}, expected 'stretch': WE orthogonalprojection maps "
+            f"0..{width:.0f} x 0..{height:.0f} directly to the viewport, while cover crops "
+            "scene X on non-16:9 outputs"
+        )
 
 
 def layer_sizes(runtime: dict[str, Any]) -> dict[str, tuple[float, float]]:
@@ -143,7 +177,7 @@ def assert_effect_targets_cover_base_geometry(
             )
         if layer_id in DEFAULT_BODY_LAYERS and width <= sizes[layer_id][0]:
             fail(f"{layer_id} body target was not expanded horizontally ({width:.0f}px)")
-        assert_body_effect_pass_quads_use_layer_uvs(
+        assert_body_effect_pass_quads_use_pass_space_source_and_layer_mask_uvs(
             layer_id, sizes[layer_id], steps, vertices, targets_by_index
         )
 
@@ -183,7 +217,7 @@ def vertex_component_bounds(
     return min(values), max(values)
 
 
-def assert_body_effect_pass_quads_use_layer_uvs(
+def assert_body_effect_pass_quads_use_pass_space_source_and_layer_mask_uvs(
     layer_id: str,
     layer_size: tuple[float, float],
     steps: list[Any],
@@ -218,21 +252,23 @@ def assert_body_effect_pass_quads_use_layer_uvs(
             assert_close(f"{layer_id} step {step_index} target max_x", max_x, width)
             assert_close(f"{layer_id} step {step_index} target min_y", min_y, 0.0)
             assert_close(f"{layer_id} step {step_index} target max_y", max_y, height)
+            min_su, max_su = vertex_component_bounds(
+                selected, "uv", 0, layer_id, f"step {step_index}"
+            )
+            min_sv, max_sv = vertex_component_bounds(
+                selected, "uv", 1, layer_id, f"step {step_index}"
+            )
+            assert_pass_space_uv_bounds(
+                layer_id, f"step {step_index} source", min_su, max_su, min_sv, max_sv
+            )
             min_u, max_u = vertex_component_bounds(
                 selected, "effect_uv", 0, layer_id, f"step {step_index}"
             )
             min_v, max_v = vertex_component_bounds(
                 selected, "effect_uv", 1, layer_id, f"step {step_index}"
             )
-            assert_layer_uv_bounds(
-                layer_id,
-                f"step {step_index}",
-                layer_size,
-                target,
-                min_u,
-                max_u,
-                min_v,
-                max_v,
+            assert_layer_mask_uv_bounds(
+                layer_id, f"step {step_index}", layer_size, target, min_u, max_u, min_v, max_v
             )
         if target_info.get("type") == "swapchain" and int(step.get("vertex_count") or 0) == 4:
             min_u, max_u = vertex_component_bounds(
@@ -258,7 +294,10 @@ def assert_body_effect_pass_quads_use_layer_uvs(
                 min_ev, max_ev = vertex_component_bounds(
                     selected, "effect_uv", 1, layer_id, f"step {step_index}"
                 )
-                assert_layer_uv_bounds(
+                assert_pass_space_uv_bounds(
+                    layer_id, f"final step {step_index} source", min_u, max_u, min_v, max_v
+                )
+                assert_layer_mask_uv_bounds(
                     layer_id,
                     f"final step {step_index}",
                     layer_size,
@@ -270,7 +309,145 @@ def assert_body_effect_pass_quads_use_layer_uvs(
                 )
 
 
-def assert_layer_uv_bounds(
+def assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(
+    runtime: dict[str, Any],
+    sizes: dict[str, tuple[float, float]],
+) -> None:
+    steps = runtime.get("draw_pass_sampled_image_recording_steps") or []
+    vertices = runtime.get("draw_pass_sampled_image_vertices") or []
+    targets = runtime.get("draw_pass_sampled_image_we_graph_targets") or []
+    graph_steps = runtime.get("draw_pass_sampled_image_we_graph_steps") or []
+    if (
+        not isinstance(steps, list)
+        or not isinstance(vertices, list)
+        or not isinstance(targets, list)
+        or not isinstance(graph_steps, list)
+    ):
+        fail("skirt ribbon overhang validation requires recording and graph arrays")
+    targets_by_index = {
+        int(target.get("target_index")): target
+        for target in targets
+        if isinstance(target, dict) and target.get("target_index") is not None
+    }
+    for layer_id in DEFAULT_SKIRT_RIBBON_LAYERS:
+        layer_size = sizes.get(layer_id)
+        if layer_size is None:
+            fail(f"{layer_id} is missing from draw_ops sizes")
+        waterwaves_steps = [
+            step
+            for step in graph_steps
+            if isinstance(step, dict)
+            and step.get("layer_id") == layer_id
+            and isinstance(step.get("pass"), dict)
+            and step["pass"].get("effect_kind") == "water-waves"
+        ]
+        if len(waterwaves_steps) != 3:
+            fail(
+                f"{layer_id} expected 3 visible skirt-ribbon waterwaves passes, "
+                f"got {len(waterwaves_steps)}"
+            )
+        mask_sources = []
+        for step in waterwaves_steps:
+            for slot in step["pass"].get("texture_slots") or []:
+                if isinstance(slot, dict) and int(slot.get("slot") or -1) == 1:
+                    mask_sources.append(str(slot.get("source") or "").replace("-", "_"))
+        for mask in DEFAULT_SKIRT_RIBBON_MASKS:
+            if not any(mask in source for source in mask_sources):
+                fail(f"{layer_id} is missing skirt-ribbon mask {mask}")
+        base_steps = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and step.get("layer_id") == layer_id
+            and step.get("we_graph_step_index") == 0
+            and isinstance(step.get("render_target"), dict)
+            and step["render_target"].get("type") == "effect-target"
+        ]
+        if len(base_steps) != 1:
+            fail(f"{layer_id} has {len(base_steps)} skirt-ribbon base target steps, expected 1")
+        base_step = base_steps[0]
+        target_index = int(base_step["render_target"].get("target_index"))
+        target = targets_by_index.get(target_index)
+        if target is None:
+            fail(f"{layer_id} base step references missing target {target_index}")
+        layer_width, layer_height = layer_size
+        local_left = f64(target.get("local_left"))
+        local_top = f64(target.get("local_top"))
+        target_width = f64(target.get("width"), -1.0)
+        target_height = f64(target.get("height"), -1.0)
+        if target_width <= layer_width or target_height <= layer_height:
+            fail(
+                f"{layer_id} target {target_index} is not expanded enough for skirt-ribbon "
+                f"overhang ({target_width:.0f}x{target_height:.0f} vs layer {layer_width:.0f}x{layer_height:.0f})"
+            )
+        selected = vertex_range(base_step, vertices, layer_id, "skirt-ribbon base step")
+        layer_left = -local_left
+        layer_top = -local_top
+        layer_right = layer_left + layer_width
+        layer_bottom = layer_top + layer_height
+        outside = []
+        eps = 1.0e-3
+        for vertex in selected:
+            position = vertex.get("position")
+            if not isinstance(position, list) or len(position) < 2:
+                fail(f"{layer_id} skirt-ribbon base step has malformed position")
+            x = f64(position[0], math.nan)
+            y = f64(position[1], math.nan)
+            if not math.isfinite(x) or not math.isfinite(y):
+                fail(f"{layer_id} skirt-ribbon base step has non-finite position")
+            if (
+                x < layer_left - eps
+                or x > layer_right + eps
+                or y < layer_top - eps
+                or y > layer_bottom + eps
+            ):
+                outside.append((x, y))
+        if not outside:
+            fail(
+                f"{layer_id} has no retained mesh vertices outside the original layer rect; "
+                "this snapshot cannot prove the alpha-aware waterwaves overhang path"
+            )
+        effect_steps = [
+            step
+            for step in steps
+            if isinstance(step, dict)
+            and step.get("layer_id") == layer_id
+            and int(step.get("we_graph_step_index") or 0) > 0
+            and int(step.get("vertex_count") or 0) == 4
+        ]
+        if not effect_steps:
+            fail(f"{layer_id} has no material effect quads for skirt-ribbon validation")
+        first_effect_quad = vertex_range(
+            effect_steps[0], vertices, layer_id, "skirt-ribbon effect step"
+        )
+        min_u, max_u = vertex_component_bounds(
+            first_effect_quad, "effect_uv", 0, layer_id, "skirt-ribbon effect step"
+        )
+        min_v, max_v = vertex_component_bounds(
+            first_effect_quad, "effect_uv", 1, layer_id, "skirt-ribbon effect step"
+        )
+        if min_u >= 0.0 or max_u <= 1.0 or min_v >= 0.0 or max_v <= 1.0:
+            fail(
+                f"{layer_id} effect UV does not cross the authored layer domain "
+                f"({min_u:.6f}..{max_u:.6f}, {min_v:.6f}..{max_v:.6f})"
+            )
+
+
+def assert_pass_space_uv_bounds(
+    layer_id: str,
+    label: str,
+    min_u: float,
+    max_u: float,
+    min_v: float,
+    max_v: float,
+) -> None:
+    assert_close(f"{layer_id} {label} effect_uv min_u", min_u, 0.0)
+    assert_close(f"{layer_id} {label} effect_uv max_u", max_u, 1.0)
+    assert_close(f"{layer_id} {label} effect_uv min_v", min_v, 0.0)
+    assert_close(f"{layer_id} {label} effect_uv max_v", max_v, 1.0)
+
+
+def assert_layer_mask_uv_bounds(
     layer_id: str,
     label: str,
     layer_size: tuple[float, float],
@@ -280,21 +457,21 @@ def assert_layer_uv_bounds(
     min_v: float,
     max_v: float,
 ) -> None:
-    layer_width, layer_height = layer_size
-    if layer_width <= 0.0 or layer_height <= 0.0:
-        fail(f"{layer_id} {label} has invalid layer size")
-    left = f64(target.get("local_left"))
-    top = f64(target.get("local_top"))
-    width = f64(target.get("width"), -1.0)
-    height = f64(target.get("height"), -1.0)
-    expected_min_u = left / layer_width
-    expected_max_u = (left + width) / layer_width
-    expected_min_v = 1.0 - (top + height) / layer_height
-    expected_max_v = 1.0 - top / layer_height
-    assert_close(f"{layer_id} {label} effect_uv min_u", min_u, expected_min_u)
-    assert_close(f"{layer_id} {label} effect_uv max_u", max_u, expected_max_u)
-    assert_close(f"{layer_id} {label} effect_uv min_v", min_v, expected_min_v)
-    assert_close(f"{layer_id} {label} effect_uv max_v", max_v, expected_max_v)
+    width, height = layer_size
+    local_left = f64(target.get("local_left"))
+    local_top = f64(target.get("local_top"))
+    target_width = f64(target.get("width"), -1.0)
+    target_height = f64(target.get("height"), -1.0)
+    if width <= 0.0 or height <= 0.0 or target_width <= 0.0 or target_height <= 0.0:
+        fail(f"{layer_id} {label} has invalid layer/target size for layer mask UV")
+    expected_min_u = local_left / width
+    expected_max_u = (local_left + target_width) / width
+    expected_min_v = 1.0 - (local_top + target_height) / height
+    expected_max_v = 1.0 - local_top / height
+    assert_close(f"{layer_id} {label} layer-mask effect_uv min_u", min_u, expected_min_u)
+    assert_close(f"{layer_id} {label} layer-mask effect_uv max_u", max_u, expected_max_u)
+    assert_close(f"{layer_id} {label} layer-mask effect_uv min_v", min_v, expected_min_v)
+    assert_close(f"{layer_id} {label} layer-mask effect_uv max_v", max_v, expected_max_v)
 
 
 def assert_single_body_scene_composite(
@@ -316,6 +493,178 @@ def assert_single_body_scene_composite(
             fail(f"{layer_id} has {len(scene_steps)} swapchain composites, expected 1")
 
 
+def assert_body_base_passes_are_generic(
+    runtime: dict[str, Any],
+    body_layers: tuple[str, ...],
+) -> None:
+    graph_steps = runtime.get("draw_pass_sampled_image_we_graph_steps") or []
+    if not isinstance(graph_steps, list):
+        fail("draw_pass_sampled_image_we_graph_steps is not an array")
+    for layer_id in body_layers:
+        base_steps = [
+            step
+            for step in graph_steps
+            if isinstance(step, dict)
+            and step.get("layer_id") == layer_id
+            and step.get("step_index") == 0
+        ]
+        if len(base_steps) != 1:
+            fail(f"{layer_id} has {len(base_steps)} graph base steps, expected 1")
+        pass_record = base_steps[0].get("pass")
+        if not isinstance(pass_record, dict):
+            fail(f"{layer_id} graph base step is missing pass record")
+        if pass_record.get("role") != "base-material":
+            fail(f"{layer_id} graph step 0 role is {pass_record.get('role')!r}, expected base-material")
+        if pass_record.get("shader") is not None:
+            fail(f"{layer_id} base material pass inherited effect shader {pass_record.get('shader')!r}")
+        if pass_record.get("effect_kind") is not None:
+            fail(f"{layer_id} base material pass inherited effect kind {pass_record.get('effect_kind')!r}")
+        for field in ("combo_keys", "parameter_keys"):
+            value = pass_record.get(field) or []
+            if value:
+                fail(f"{layer_id} base material pass inherited {field}: {value!r}")
+        for field in ("combo_values", "constant_shader_values"):
+            value = pass_record.get(field) or {}
+            if value:
+                fail(f"{layer_id} base material pass inherited {field}: {value!r}")
+
+
+def effect_records(step_or_op: dict[str, Any]) -> list[dict[str, Any]]:
+    effects = step_or_op.get("effect_passes") or []
+    if not isinstance(effects, list):
+        return []
+    return [effect for effect in effects if isinstance(effect, dict)]
+
+
+def effect_file(effect: dict[str, Any]) -> str:
+    value = effect.get("effect_file")
+    return value if isinstance(value, str) else ""
+
+
+def assert_reference_invisible_effects_are_absent(runtime: dict[str, Any]) -> None:
+    draw_ops = runtime.get("draw_ops") or []
+    steps = runtime.get("draw_pass_sampled_image_recording_steps") or []
+    if not isinstance(draw_ops, list) or not isinstance(steps, list):
+        return
+    present_layers = {
+        str(op.get("layer_id"))
+        for op in draw_ops
+        if isinstance(op, dict) and isinstance(op.get("layer_id"), str)
+    }
+    for layer_id in DEFAULT_INVISIBLE_EFFECT_LAYERS:
+        if layer_id not in present_layers:
+            continue
+        layer_ops = [
+            op for op in draw_ops if isinstance(op, dict) and op.get("layer_id") == layer_id
+        ]
+        files = [
+            effect_file(effect)
+            for op in layer_ops
+            for effect in effect_records(op)
+        ]
+        if AUTOSWAY_EFFECT in files:
+            fail(f"{layer_id} still executes hidden workshop auto_sway")
+        waterwaves_count = sum(1 for file in files if file == WATERWAVES_EFFECT)
+        if waterwaves_count != 2:
+            fail(
+                f"{layer_id} expected 2 visible waterwaves passes after skipping the hidden pass, "
+                f"got {waterwaves_count}"
+            )
+        for step in steps:
+            if not isinstance(step, dict) or step.get("layer_id") != layer_id:
+                continue
+            step_files = [effect_file(effect) for effect in effect_records(step)]
+            if AUTOSWAY_EFFECT in step_files:
+                fail(f"{layer_id} graph step still carries hidden workshop auto_sway")
+
+
+def assert_composelayer_uses_material_alpha_not_effect_blendmode(
+    runtime: dict[str, Any],
+    layer_id: str = DEFAULT_COMPOSELAYER,
+) -> None:
+    draw_ops = runtime.get("draw_ops") or []
+    steps = runtime.get("draw_pass_sampled_image_recording_steps") or []
+    vertices = runtime.get("draw_pass_sampled_image_vertices") or []
+    scene_size = runtime.get("scene_size") or {}
+    if not isinstance(draw_ops, list) or not isinstance(steps, list) or not isinstance(vertices, list):
+        return
+    width = f64(scene_size.get("width"), -1.0)
+    height = f64(scene_size.get("height"), -1.0)
+    if width <= 0.0 or height <= 0.0:
+        return
+    op = next((op for op in draw_ops if isinstance(op, dict) and op.get("layer_id") == layer_id), None)
+    if op is None:
+        return
+    if op.get("blend_mode") == "max":
+        fail(
+            f"{layer_id} still promotes watercaustics BLENDMODE to layer colorBlendMode=max; "
+            "WE keeps that combo inside the caustics shader"
+        )
+    if op.get("blend_mode") != "alpha":
+        fail(f"{layer_id} blend_mode is {op.get('blend_mode')!r}, expected material alpha")
+    scene_steps = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and step.get("layer_id") == layer_id
+        and isinstance(step.get("render_target"), dict)
+        and step["render_target"].get("type") == "swapchain"
+    ]
+    if len(scene_steps) != 1:
+        fail(f"{layer_id} has {len(scene_steps)} swapchain composites, expected 1")
+    step = scene_steps[0]
+    render_state = (step.get("material_pass") or {}).get("render_state") or {}
+    blend = render_state.get("blend") or {}
+    blend_mode = blend.get("mode")
+    if blend_mode == "max":
+        fail(f"{layer_id} final scene pass still uses fixed-function max blend")
+    if blend_mode != "alpha":
+        fail(f"{layer_id} final scene pass blend is {blend_mode!r}, expected alpha")
+    selected = vertex_range(step, vertices, layer_id, "final composelayer")
+    min_x, max_x = vertex_component_bounds(selected, "position", 0, layer_id, "final composelayer")
+    min_y, max_y = vertex_component_bounds(selected, "position", 1, layer_id, "final composelayer")
+    assert_close(f"{layer_id} final pass-space min_x", min_x, 0.0)
+    assert_close(f"{layer_id} final pass-space max_x", max_x, width)
+    assert_close(f"{layer_id} final pass-space min_y", min_y, 0.0)
+    assert_close(f"{layer_id} final pass-space max_y", max_y, height)
+
+
+def assert_slider_rectangles_do_not_use_fixed_screen_rectangles(
+    runtime: dict[str, Any],
+    layer_ids: tuple[str, ...] = DEFAULT_SLIDER_RECTANGLES,
+) -> None:
+    draw_ops = runtime.get("draw_ops") or []
+    steps = runtime.get("draw_pass_quad_recording_steps") or []
+    if not isinstance(draw_ops, list) or not isinstance(steps, list):
+        return
+    ops_by_layer = {
+        op.get("layer_id"): op
+        for op in draw_ops
+        if isinstance(op, dict) and isinstance(op.get("layer_id"), str)
+    }
+    steps_by_layer = {
+        step.get("layer_id"): step
+        for step in steps
+        if isinstance(step, dict) and isinstance(step.get("layer_id"), str)
+    }
+    for layer_id in layer_ids:
+        op = ops_by_layer.get(layer_id)
+        step = steps_by_layer.get(layer_id)
+        if op is None or step is None:
+            continue
+        if op.get("blend_mode") == "screen" or (step.get("blend") or {}).get("mode") == "screen":
+            fail(
+                f"{layer_id} still uses fixed-function screen for WE colorBlendMode 28; "
+                "that mode is shader HSL Color and screen creates a bright slanted rectangle"
+            )
+        if op.get("blend_mode") != "alpha":
+            fail(f"{layer_id} blend_mode is {op.get('blend_mode')!r}, expected alpha fallback")
+        if step.get("kind") != "rounded-rectangle":
+            fail(f"{layer_id} records {step.get('kind')!r}, expected rounded-mask geometry")
+        if f64(op.get("corner_radius"), 0.0) <= 0.0:
+            fail(f"{layer_id} has no lowered rounded-mask corner radius")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("snapshot", type=Path)
@@ -330,10 +679,21 @@ def main() -> None:
     runtime = runtime_snapshot(load_json(args.snapshot))
     body_layers = tuple(args.body_layers or DEFAULT_BODY_LAYERS)
     sizes = layer_sizes(runtime)
+    assert_we_orthogonal_projection_uses_stretch(runtime)
     assert_effect_targets_cover_base_geometry(runtime, sizes, body_layers)
+    assert_skirt_ribbon_overhang_requires_alpha_aware_mask_clamp(runtime, sizes)
+    assert_body_base_passes_are_generic(runtime, body_layers)
     assert_single_body_scene_composite(runtime, body_layers)
+    assert_reference_invisible_effects_are_absent(runtime)
+    assert_composelayer_uses_material_alpha_not_effect_blendmode(runtime)
+    assert_slider_rectangles_do_not_use_fixed_screen_rectangles(runtime)
     print(
-        "PASS: WE effect targets cover retained body geometry when present and body layers composite once"
+        "PASS: WE orthogonalprojection uses stretch viewport mapping, effect targets cover "
+        "retained body geometry, skirt-ribbon masks/overhang require alpha-aware clamp, "
+        "base passes stay generic, source UVs stay pass-space, layer-mask UVs undo "
+        "expanded-target padding, hidden reference effects stay absent, body layers composite "
+        "once, composelayer keeps material alpha/pass-space geometry, and slider bars are "
+        "not fixed-screen rectangles"
     )
 
 

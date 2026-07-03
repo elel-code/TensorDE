@@ -108,7 +108,6 @@ Node pre_calc_node(
     float this_offset,
     float next_offset
 ) {
-    endpoint_center.x *= aspect;
     this_center.x *= aspect;
     next_center.x *= aspect;
 
@@ -166,7 +165,7 @@ void apply_node(
 ) {
     root_center.x *= aspect;
     vec4 relative_tex_coord = tex_coord - root_center.xyxy;
-    float width_mix = clamp(node.pos_x / max(node.len, 0.000001), 0.0, 1.0);
+    float width_mix = node.pos_x / max(node.len, 0.000001);
     float h_boundary = mix(next_width, this_width, width_mix);
     float pos_y = abs(dot(relative_tex_coord.zw, vec2(node.direction.y, -node.direction.x)));
     auto_mask = max(
@@ -200,10 +199,10 @@ void main() {
     if ((pc.texture_resolution_mask & 1u) == 0u) {
         base_resolution = max(pc.extent, vec2(1.0));
     }
-    // CWE reference: auto_sway.vert computes v_aspect as
-    // g_Texture0Resolution.z / g_Texture0Resolution.w. Because zw are
-    // reciprocal texel sizes, this is texture_height / texture_width.
-    float aspect = max(base_resolution.y, 1.0) / max(base_resolution.x, 1.0);
+    // reverse-engineered reference: auto_sway.vert computes v_aspect as
+    // g_Texture0Resolution.z / g_Texture0Resolution.w. WE resolution.zw are
+    // the logical texture width/height, so the shader uses width / height.
+    float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0);
     float reciprocal_aspect = 1.0 / max(aspect, 0.000001);
 
     vec4 tex_coord = vec4(v_uv * vec2(aspect, 1.0), v_uv * vec2(aspect, 1.0));
@@ -214,12 +213,16 @@ void main() {
     }
 
     float motion_offset = pc.auto_inertia * pc.auto_segment_count;
+    vec2 endpoint_center = pc.auto_center1;
+    // WE AA_VERSION=2 scales endpointSpinCenter.x once in main; preCalcNode
+    // only aspect-scales this/next centers before building the endpoint vector.
+    endpoint_center.x *= aspect;
     Node node1 = pre_calc_node(
         2.0,
         tex_coord.zw,
         aspect,
         motion_offset,
-        pc.auto_center1,
+        endpoint_center,
         pc.auto_center1,
         pc.auto_center2,
         pc.auto_angle2,
@@ -232,7 +235,7 @@ void main() {
         tex_coord.zw,
         aspect,
         motion_offset,
-        pc.auto_center1,
+        endpoint_center,
         pc.auto_center2,
         pc.auto_center3,
         pc.auto_angle3,
@@ -245,7 +248,7 @@ void main() {
         tex_coord.zw,
         aspect,
         motion_offset,
-        pc.auto_center1,
+        endpoint_center,
         pc.auto_center3,
         pc.auto_center4,
         pc.auto_angle4,

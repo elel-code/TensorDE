@@ -1,8 +1,8 @@
 #version 450
 
-// CWE reference: WallpaperEngine effects/waterripple shader samples g_Texture2
-// twice as a scrolling normal map, offsets g_Texture0 UVs, and writes the
-// sampled source color without changing geometry.
+// reverse-engineered reference: WallpaperEngine effects/waterripple samples
+// g_Texture2 twice as a scrolling normal map, offsets g_Texture0 UVs, and
+// writes the sampled source color without changing geometry.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
