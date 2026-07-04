@@ -199,9 +199,9 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         NativeVulkanSceneWeImagePassEndpoint::Scene
     };
     let base_blend_mode = if first_pass_blend_moved_to_final && quad.mesh.is_some() {
-        // CWE reference: CImage::setupPasses() forces the first pass that
-        // draws puppet geometry to BlendingMode_Translucent even after
-        // CImage::setup() moves the image blend mode to the final pass.
+        // Reverse-engineered WE pass setup forces the first pass that draws
+        // puppet geometry to translucent even after the image blend mode moves
+        // to the final pass.
         SceneBlendMode::Alpha
     } else if first_pass_blend_moved_to_final {
         SceneBlendMode::Normal
@@ -1144,7 +1144,11 @@ fn native_vulkan_scene_we_image_graph_vertex_skew_bounds(
     let bottom = native_vulkan_scene_we_image_pass_constant_f64(pass, &["bottom", "g_Bottom"], 0.0);
     let left = native_vulkan_scene_we_image_pass_constant_f64(pass, &["left", "g_Left"], 0.0);
     let right = native_vulkan_scene_we_image_pass_constant_f64(pass, &["right", "g_Right"], 0.0);
-    let x_shift = [top * bounds.width, bottom * bounds.width];
+    // reverse-engineered reference:
+    // effects/skew.vert uses GLSL step(edge, x), not a top-row/bottom-row
+    // branch. In pass-space UVs the top row has a_TexCoord.y = 1, so
+    // bottom is applied to the visual top row and top to the visual bottom row.
+    let x_shift = [bottom * bounds.width, top * bounds.width];
     let y_shift = [left * bounds.height, right * bounds.height];
     let points = [
         [bounds.left + x_shift[0], bounds.top + y_shift[0]],
@@ -2114,7 +2118,7 @@ mod tests {
     }
 
     #[test]
-    fn puppet_base_pass_keeps_cwe_translucent_blend_and_final_uses_scene_blend() {
+    fn puppet_base_pass_keeps_we_translucent_blend_and_final_uses_scene_blend() {
         let chain = native_vulkan_scene_we_image_pass_chain(&sampled_image_quad(Some(mesh())))
             .expect("WE graph chain");
 

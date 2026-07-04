@@ -1,7 +1,7 @@
 #version 450
 
-// CWE reference: WallpaperEngine effects/opacity keeps the source color and
-// only gates alpha by the opacity mask and g_UserAlpha.
+// reverse-engineered reference: WallpaperEngine effects/opacity keeps the
+// source color and only gates alpha by the opacity mask and g_UserAlpha.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;

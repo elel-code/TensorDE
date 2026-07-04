@@ -517,8 +517,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) effect_uv_transform:
         Option<SceneEffectUvTransform>,
     pub(in crate::renderer::native_vulkan::scene) parameter_keys: Vec<String>,
-    // CWE reference: ObjectParser parses constantshadervalues and CPass applies
-    // them as shader uniforms before per-pass override constants.
+    // WE material/effect constants must survive as shader uniforms before
+    // per-pass override constants are applied.
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,

@@ -2709,7 +2709,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_type: "combined-image-sampler",
         descriptor_binding: 0,
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
-        push_constant_model: "scene-space pixel extent, alpha/mask state, elapsed time, CWE-style g_TextureNResolution rows, and pass-specific effect parameter rows",
+        push_constant_model: "scene-space pixel extent, alpha/mask state, elapsed time, WE g_TextureNResolution rows, and pass-specific effect parameter rows",
         blend_model: "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command; WE passthroughblend uses shader framebuffer sampling plus normal replace output",
         sampled_image_model: "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader",
         uses_pipeline_rendering_create_info: true,
@@ -6194,7 +6194,7 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV
     include!("shaders/sampled_image_autosway.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV: [u32; 945] =
     include!("shaders/sampled_image_scroll.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV: [u32; 1393] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV: [u32; 1148] =
     include!("shaders/sampled_image_skew.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV: [u32; 1436] =
     include!("shaders/sampled_image_iris.frag.spv.rs");
@@ -6598,7 +6598,7 @@ mod tests {
         assert_eq!(snapshot.push_constant_bytes, 256);
         assert_eq!(
             snapshot.push_constant_model,
-            "scene-space pixel extent, alpha/mask state, elapsed time, CWE-style g_TextureNResolution rows, and pass-specific effect parameter rows"
+            "scene-space pixel extent, alpha/mask state, elapsed time, WE g_TextureNResolution rows, and pass-specific effect parameter rows"
         );
         assert!(snapshot.descriptor_heap_mapping_enabled);
         assert!(snapshot.descriptor_heap_pipeline_flag_enabled);
@@ -6611,7 +6611,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_image_push_constants_encode_cwe_texture_resolution_rows() {
+    fn sampled_image_push_constants_encode_we_texture_resolution_rows() {
         let mut material = sampled_image_material(SceneBlendMode::Alpha);
         material.alpha_texture_slot = Some(1);
         material.alpha_texture_mode = SceneRenderAlphaTextureMode::Coverage;
@@ -8374,11 +8374,10 @@ mod tests {
     fn sampled_image_skew_fragment_matches_reveng_uv_mode() {
         let source = include_str!("shaders/sampled_image_skew.frag");
         assert!(source.contains("SKEW_FLAG_VERTEX_MODE"));
-        assert!(source.contains("vec2 layer_uv = v_effect_uv;"));
-        assert!(source.contains("float source_y = 1.0 - layer_uv.y;"));
-        assert!(source.contains("mix(pc.skew_top, pc.skew_bottom, source_y)"));
-        assert!(source.contains("texture(g_Texture0, uv)"));
-        assert!(source.contains("out_color = vec4(0.0);"));
+        assert!(source.contains("texture(g_Texture0, v_uv)"));
+        assert!(!source.contains("float source_y = 1.0 - layer_uv.y;"));
+        assert!(!source.contains("mix(pc.skew_top, pc.skew_bottom, source_y)"));
+        assert!(!source.contains("out_color = vec4(0.0);"));
         assert!(source.contains("vec2 pass_uv = vec2(v_uv.x, 1.0 - v_uv.y);"));
         assert!(source.contains("uv.x -= step(pass_uv.y, 0.5) * pc.skew_top"));
         assert!(source.contains("uv.y += step(pass_uv.x, 0.5) * pc.skew_left"));

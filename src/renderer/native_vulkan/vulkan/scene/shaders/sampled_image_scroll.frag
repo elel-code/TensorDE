@@ -1,7 +1,7 @@
 #version 450
 
-// CWE reference: WallpaperEngine effects/scroll computes a squared signed
-// scroll velocity in vertex shader and samples g_Texture0 at
+// Wallpaper Engine effects/scroll computes a squared signed scroll velocity in
+// the shader and samples g_Texture0 at
 // frac((v_TexCoord + scroll * g_Time) * g_Scale). Geometry stays fixed.
 
 layout(location = 0) in vec2 v_uv;

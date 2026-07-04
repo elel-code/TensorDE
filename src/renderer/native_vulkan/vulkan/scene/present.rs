@@ -7943,7 +7943,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_uniform_plan_converts_cwe_constant_shapes() {
+    fn effect_uniform_plan_converts_we_constant_shapes() {
         let float_uniform = NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(
             "strength",
             &serde_json::json!(0.25),

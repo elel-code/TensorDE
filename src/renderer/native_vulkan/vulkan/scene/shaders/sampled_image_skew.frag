@@ -2,14 +2,12 @@
 
 // reverse-engineered reference: WallpaperEngine effects/skew has two variants.
 // MODE=0 shears only source UVs. MODE=1 moves vertices by
-// g_Texture0Resolution.zw * top/bottom/left/right. In Gilder's graph-local
-// full-target route, MODE=1 is rendered by the mathematically equivalent inverse
-// source-coordinate transform plus transparent output outside the sheared quad.
-// For graph-local full targets the vertex-mode equivalent samples in original
-// layer UV space (`v_effect_uv`) rather than normalized target UV space. That
-// lets the renderer expand the target bounds for the moved vertices without
-// scaling the skew amount. With bottom=-0.39, lower rows sample source x+0.39,
-// so the visible lower silhouette moves left instead of being cut off.
+// g_Texture0Resolution.zw * top/bottom/left/right and leaves source UVs
+// unchanged. Gilder emits the same sheared graph-local geometry for MODE=1, so
+// the fragment shader is a pass-through for that route. For the 3742497499
+// audio mark, pass-space top vertices have a_TexCoord.y = 1.0 and GLSL
+// step(edge, x) applies g_Bottom there; bottom=-0.39 therefore shifts the
+// target's top row left before the render-target Y basis is sampled back.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -57,16 +55,7 @@ vec4 finalize_output(vec4 color) {
 
 void main() {
     if ((pc.skew_flags & SKEW_FLAG_VERTEX_MODE) != 0u) {
-        vec2 layer_uv = v_effect_uv;
-        float source_y = 1.0 - layer_uv.y;
-        vec2 uv = layer_uv;
-        uv.x -= mix(pc.skew_top, pc.skew_bottom, source_y);
-        uv.y += mix(pc.skew_left, pc.skew_right, clamp(layer_uv.x, 0.0, 1.0));
-        if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
-            out_color = vec4(0.0);
-            return;
-        }
-        out_color = finalize_output(apply_vertex_color(texture(g_Texture0, uv)));
+        out_color = finalize_output(apply_vertex_color(texture(g_Texture0, v_uv)));
         return;
     } else {
         vec2 pass_uv = vec2(v_uv.x, 1.0 - v_uv.y);

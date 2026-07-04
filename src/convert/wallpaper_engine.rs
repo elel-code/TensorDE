@@ -1140,6 +1140,7 @@ fn write_scene_document_to(
         push_unique(&mut report.converted_features, "scene-keyframe-timeline");
     }
     nodes = scene_rebuild_parent_graph(nodes);
+    scene_align_audio_mark_text_right_edges(&mut nodes, &mut context);
     scene_lower_we_image_mesh_uvs(&mut nodes, &mut context);
     scene_lower_pending_controllers(&mut nodes, &mut context);
     scene_lower_pending_audio_controllers(&mut nodes, &mut context);
@@ -2104,6 +2105,211 @@ fn scene_rebuild_parent_graph(nodes: Vec<Value>) -> Vec<Value> {
         rebuilt.extend(children);
     }
     rebuilt
+}
+
+fn scene_align_audio_mark_text_right_edges(
+    nodes: &mut [Value],
+    context: &mut SceneDocumentBuildContext,
+) {
+    scene_align_audio_mark_text_right_edges_in_siblings(nodes, context);
+    for node in nodes {
+        if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+            scene_align_audio_mark_text_right_edges(children, context);
+        }
+    }
+}
+
+fn scene_align_audio_mark_text_right_edges_in_siblings(
+    nodes: &mut [Value],
+    context: &mut SceneDocumentBuildContext,
+) {
+    let audio_right_edges = nodes
+        .iter()
+        .filter(|node| scene_node_is_audio_mark_composelayer(node))
+        .filter_map(scene_node_audio_mark_visual_right_edge)
+        .collect::<Vec<_>>();
+    if audio_right_edges.is_empty() {
+        return;
+    }
+    let mut changed = false;
+    for node in nodes {
+        if !scene_node_is_generated_font_image(node) {
+            continue;
+        }
+        let Some(text_right) = scene_node_local_right_edge(node) else {
+            continue;
+        };
+        let Some(target_right) = audio_right_edges.iter().copied().min_by(|left, right| {
+            (left - text_right)
+                .abs()
+                .partial_cmp(&(right - text_right).abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }) else {
+            continue;
+        };
+        let delta = target_right - text_right;
+        // This pass runs before parent transforms are flattened. The
+        // floating-dream logo group has a 0.471 parent scale, so the
+        // reverse-engineered centerline skew correction is about 207 local
+        // pixels while only about 98 scene pixels. Keep the guard large enough
+        // for that legitimate local-space correction, but still reject
+        // unrelated labels elsewhere in the group.
+        if !delta.is_finite() || delta.abs() > 512.0 || delta.abs() <= 0.001 {
+            continue;
+        }
+        if scene_node_translate_x(node, delta) {
+            changed = true;
+        }
+    }
+    if changed {
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-audio-mark-text-right-edge-alignment",
+        );
+    }
+}
+
+fn scene_node_is_audio_mark_composelayer(node: &Value) -> bool {
+    let Some(object) = node.as_object() else {
+        return false;
+    };
+    object
+        .get("effects")
+        .and_then(Value::as_array)
+        .is_some_and(|effects| effects.iter().any(scene_effect_value_is_audio_bars))
+}
+
+fn scene_node_audio_mark_visual_right_edge(node: &Value) -> Option<f64> {
+    let object = node.as_object()?;
+    let width = object.get("width").and_then(value_to_f64)?;
+    if !width.is_finite() || width <= 0.0 {
+        return None;
+    }
+    let skew = scene_node_audio_mark_centerline_x_skew_ratio(node).unwrap_or(0.0);
+    scene_node_local_x_at_layer_x(node, width + skew * width)
+}
+
+fn scene_node_audio_mark_centerline_x_skew_ratio(node: &Value) -> Option<f64> {
+    let effects = node.as_object()?.get("effects")?.as_array()?;
+    let skew = effects
+        .iter()
+        .find(|effect| scene_effect_value_is_skew(effect))?;
+    let pass = scene_effect_value_first_pass(skew)?;
+    if scene_effect_pass_combo_i64(pass, "MODE").unwrap_or(1) == 0 {
+        return None;
+    }
+    let constants = scene_effect_pass_constants(pass);
+    let top = scene_effect_constant_f64(constants, &["top", "g_Top"], 0.0);
+    let bottom = scene_effect_constant_f64(constants, &["bottom", "g_Bottom"], 0.0);
+    // reverse-engineered reference: effects/skew.vert uses
+    // step(a_TexCoord.y, 0.5) * g_Top + step(0.5, a_TexCoord.y) * g_Bottom.
+    // The floating-dream audio-bars shader draws the logo mark around the
+    // vertical centerline, so its visual right edge is shifted by the center
+    // of WE's top/bottom vertex-skew field rather than by the expanded target
+    // rectangle's far edge.
+    Some((top + bottom) * 0.5)
+}
+
+fn scene_effect_value_is_skew(effect: &Value) -> bool {
+    effect
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "skew")
+        || scene_effect_value_file_matches(effect, |file| file.contains("skew"))
+}
+
+fn scene_effect_value_is_audio_bars(effect: &Value) -> bool {
+    let Some(object) = effect.as_object() else {
+        return false;
+    };
+    object
+        .get("kind")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind == "audio-bars")
+        || object
+            .get("file")
+            .and_then(Value::as_str)
+            .map(|file| file.replace('\\', "/").to_ascii_lowercase())
+            .is_some_and(|file| file.contains("audio_bars"))
+}
+
+fn scene_effect_value_first_pass(effect: &Value) -> Option<&Map<String, Value>> {
+    effect
+        .get("passes")
+        .and_then(Value::as_array)?
+        .iter()
+        .find_map(Value::as_object)
+}
+
+fn scene_effect_pass_constants(pass: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    pass.get("constantshadervalues")
+        .or_else(|| pass.get("constant_shader_values"))
+        .and_then(Value::as_object)
+}
+
+fn scene_effect_pass_combo_i64(pass: &Map<String, Value>, key: &str) -> Option<i64> {
+    pass.get("combos")
+        .or_else(|| pass.get("combo_values"))
+        .and_then(Value::as_object)?
+        .get(key)?
+        .as_i64()
+}
+
+fn scene_node_is_generated_font_image(node: &Value) -> bool {
+    let Some(object) = node.as_object() else {
+        return false;
+    };
+    object
+        .get("resource")
+        .and_then(Value::as_str)
+        .is_some_and(|resource| resource.contains("font-text-raster"))
+}
+
+fn scene_node_local_right_edge(node: &Value) -> Option<f64> {
+    let width = node.as_object()?.get("width").and_then(value_to_f64)?;
+    scene_node_local_x_at_layer_x(node, width)
+}
+
+fn scene_node_local_x_at_layer_x(node: &Value, layer_x: f64) -> Option<f64> {
+    let object = node.as_object()?;
+    let transform = object.get("transform").and_then(Value::as_object)?;
+    let x = transform.get("x").and_then(value_to_f64).unwrap_or(0.0);
+    let scale_x = transform
+        .get("scale_x")
+        .and_then(value_to_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(1.0);
+    let anchor_x = transform
+        .get("anchor_x")
+        .and_then(value_to_f64)
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.5);
+    let width = object.get("width").and_then(value_to_f64)?;
+    if !x.is_finite()
+        || !scale_x.is_finite()
+        || !anchor_x.is_finite()
+        || !width.is_finite()
+        || !layer_x.is_finite()
+    {
+        return None;
+    }
+    Some(x + (layer_x - anchor_x * width) * scale_x)
+}
+
+fn scene_node_translate_x(node: &mut Value, delta: f64) -> bool {
+    let Some(object) = node.as_object_mut() else {
+        return false;
+    };
+    let Some(transform) = object.get_mut("transform").and_then(Value::as_object_mut) else {
+        return false;
+    };
+    let x = transform.get("x").and_then(value_to_f64).unwrap_or(0.0);
+    let new_x = x + delta;
+    if !new_x.is_finite() {
+        return false;
+    }
+    transform.insert("x".to_owned(), json!(new_x));
+    true
 }
 
 fn scene_attach_parented_children(
@@ -3685,6 +3891,7 @@ fn scene_node_from_object(
     {
         kind = "image";
         text_raster_baked_colorkey = text_raster.baked_colorkey;
+        scene_apply_text_raster_default_anchor_to_node(&mut node, object);
         scene_apply_generated_text_crop_to_node(&mut node, text_raster.crop);
         node.insert("type".to_owned(), Value::String("image".to_owned()));
         node.insert(
@@ -7988,6 +8195,142 @@ fn scene_font_family_from_object(object: &Map<String, Value>) -> Option<String> 
     value_field(object, &["font_family", "fontFamily", "font"])
 }
 
+fn scene_effective_text_font_family_from_object(
+    object: &Map<String, Value>,
+    context: &SceneDocumentBuildContext,
+) -> Option<(String, bool)> {
+    scene_text_user_property_font_override_from_object(object, context)
+        .map(|font| (font, true))
+        .or_else(|| scene_font_family_from_object(object).map(|font| (font, false)))
+}
+
+fn scene_text_user_property_font_override_from_object(
+    object: &Map<String, Value>,
+    context: &SceneDocumentBuildContext,
+) -> Option<String> {
+    let script = object
+        .get("text")
+        .and_then(Value::as_object)?
+        .get("script")
+        .and_then(Value::as_str)?;
+    let registered_assets = scene_script_registered_assets(script);
+    if registered_assets.is_empty() {
+        return None;
+    }
+    for (property, default_value) in &context.project_property_defaults {
+        let Some(default_value) = value_to_string_unwrapped(default_value) else {
+            continue;
+        };
+        let Some(asset_variable) =
+            scene_script_this_layer_font_assignment_for_property(script, property, &default_value)
+        else {
+            continue;
+        };
+        if let Some(font) = registered_assets.get(&asset_variable) {
+            return Some(font.clone());
+        }
+    }
+    None
+}
+
+fn scene_script_registered_assets(script: &str) -> BTreeMap<String, String> {
+    let mut assets = BTreeMap::new();
+    for line in script.lines() {
+        let Some(asset_path) = scene_script_register_asset_path(line) else {
+            continue;
+        };
+        let Some(variable) = line
+            .split_once('=')
+            .map(|(left, _)| left.trim())
+            .and_then(scene_script_let_variable_name)
+        else {
+            continue;
+        };
+        assets.insert(variable.to_owned(), asset_path);
+    }
+    assets
+}
+
+fn scene_script_register_asset_path(line: &str) -> Option<String> {
+    let marker = "engine.registerAsset";
+    let start = line.find(marker)?;
+    scene_script_first_quoted_string(&line[start + marker.len()..])
+}
+
+fn scene_script_let_variable_name(left: &str) -> Option<&str> {
+    let variable = left
+        .trim_start_matches("let ")
+        .trim_start_matches("const ")
+        .trim_start_matches("var ")
+        .split_whitespace()
+        .next()?
+        .trim_end_matches(';');
+    if variable.is_empty() {
+        None
+    } else {
+        Some(variable)
+    }
+}
+
+fn scene_script_this_layer_font_assignment_for_property(
+    script: &str,
+    property: &str,
+    default_value: &str,
+) -> Option<String> {
+    let switch_marker = format!("switch(userProperties.{property})");
+    let switch_start = script.find(&switch_marker).or_else(|| {
+        let compact = format!("switch (userProperties.{property})");
+        script.find(&compact)
+    })?;
+    let body = &script[switch_start..];
+    let mut active_case_matches_default = false;
+    for raw_line in body.lines() {
+        let line = raw_line.trim();
+        if line.starts_with("case") {
+            active_case_matches_default = scene_script_first_quoted_string(line)
+                .as_deref()
+                .is_some_and(|case_value| {
+                    normalize_project_key(case_value) == normalize_project_key(default_value)
+                });
+        }
+        if active_case_matches_default
+            && line.contains("thisLayer.font")
+            && let Some((_, rhs)) = line.split_once('=')
+        {
+            let variable = rhs.trim().trim_end_matches(';').trim();
+            if !variable.is_empty() {
+                return Some(variable.to_owned());
+            }
+        }
+    }
+    None
+}
+
+fn scene_script_first_quoted_string(value: &str) -> Option<String> {
+    let mut chars = value.char_indices();
+    while let Some((start_index, quote)) = chars.next() {
+        if quote != '"' && quote != '\'' {
+            continue;
+        }
+        let mut escaped = false;
+        for (end_index, character) in chars.by_ref() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if character == '\\' {
+                escaped = true;
+                continue;
+            }
+            if character == quote {
+                return Some(value[start_index + quote.len_utf8()..end_index].to_owned());
+            }
+        }
+        return None;
+    }
+    None
+}
+
 fn scene_copy_font_resource_if_path(
     project: &WallpaperEngineProject,
     output_dir: &Path,
@@ -8038,6 +8381,14 @@ struct SceneGeneratedTextImageResource {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct SceneTextRasterLayout {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct SceneTextRasterColorKey {
     color: [f64; 3],
     alpha: f64,
@@ -8071,7 +8422,19 @@ fn scene_generate_text_image_resource(
     if text.trim().is_empty() || scene_text_binding_from_object(object).is_some() {
         return None;
     }
-    let font = scene_font_family_from_object(object)?;
+    let (font, user_property_font_lowered) =
+        scene_effective_text_font_family_from_object(object, context)?;
+    if user_property_font_lowered {
+        scene_record_native_script_lowering(context);
+        push_unique(
+            &mut context.converted_features,
+            "wallpaper-engine-font-user-property-lowering",
+        );
+        push_unique(
+            &mut report.converted_features,
+            "wallpaper-engine-font-user-property-lowering",
+        );
+    }
     let font_path = scene_resolve_text_raster_font(project, &font, report)?;
     let width = scene_node_dimension_u32(node, "width").or_else(|| {
         scene_size_component_from_object(object, 0).and_then(scene_f64_to_u32_extent)
@@ -8084,6 +8447,7 @@ fn scene_generate_text_image_resource(
     }
     let padding = scene_text_raster_vec2_from_object(object, "padding");
     let spacing = scene_text_raster_vec2_from_object(object, "spacing");
+    let layout = scene_text_raster_layout_from_object(object, width, height);
     let fill = scene_color_from_object(object)
         .and_then(|color| scene_rgba8_from_color(&color))
         .unwrap_or([255, 255, 255, 255]);
@@ -8119,8 +8483,8 @@ fn scene_generate_text_image_resource(
         object,
         text,
         authored_font_size,
-        width,
-        height,
+        scene_f32_to_u32_layout_extent(layout.width),
+        scene_f32_to_u32_layout_extent(layout.height),
         padding,
         spacing,
         stroke.map(|(_, width)| width),
@@ -8141,6 +8505,7 @@ fn scene_generate_text_image_resource(
         font_size,
         width,
         height,
+        layout,
         horizontal_align,
         vertical_align,
         padding,
@@ -8226,6 +8591,7 @@ fn scene_rasterize_text_image(
     font_size: f64,
     width: u32,
     height: u32,
+    layout: SceneTextRasterLayout,
     horizontal_align: SceneTextRasterHorizontalAlign,
     vertical_align: SceneTextRasterVerticalAlign,
     padding: (f32, f32),
@@ -8240,6 +8606,7 @@ fn scene_rasterize_text_image(
         scale,
         width,
         height,
+        layout,
         horizontal_align,
         vertical_align,
         padding,
@@ -8286,17 +8653,25 @@ fn scene_text_raster_effective_font_size(
     stroke_width: Option<u32>,
 ) -> f64 {
     let authored = explicit_font_size.unwrap_or(16.0).max(1.0);
-    if !scene_text_raster_should_fit_effect_texture(object)
-        && !scene_text_raster_should_fit_authored_label_box(object, authored, height, padding)
-    {
+    let should_fit_effect_texture = scene_text_raster_should_fit_effect_texture(object);
+    let should_fit_label_box =
+        scene_text_raster_should_fit_authored_label_box(object, authored, height, padding);
+    if !should_fit_effect_texture && !should_fit_label_box {
         return authored;
     }
+    let fit_padding = if should_fit_label_box && scene_text_raster_can_alpha_crop(object) {
+        // WE's user-bound label text uses padding for placement/alignment, but
+        // the visible glyph crop is allowed to fill the authored label height.
+        (padding.0, 0.0)
+    } else {
+        padding
+    };
     scene_text_raster_fit_font_size(
         font,
         text,
         width,
         height,
-        padding,
+        fit_padding,
         spacing,
         stroke_width.unwrap_or(0) as f32,
     )
@@ -8523,6 +8898,88 @@ fn scene_text_raster_vec2_from_object(object: &Map<String, Value>, key: &str) ->
     )
 }
 
+fn scene_text_raster_layout_from_object(
+    object: &Map<String, Value>,
+    width: u32,
+    height: u32,
+) -> SceneTextRasterLayout {
+    let mut layout = SceneTextRasterLayout {
+        x: 0.0,
+        y: 0.0,
+        width: width as f32,
+        height: height as f32,
+    };
+    let Some(max_width) = number_value_field(
+        object,
+        &["maxwidth", "maxWidth", "max_width", "text_max_width"],
+    )
+    .filter(|value| value.is_finite() && *value > 1.0 && *value < f64::from(width)) else {
+        return layout;
+    };
+    if !scene_text_raster_should_use_authored_maxwidth_layout(object) {
+        return layout;
+    }
+    let max_width = max_width as f32;
+    layout.x = ((width as f32 - max_width) * 0.5).max(0.0);
+    layout.width = max_width.max(1.0);
+    layout
+}
+
+fn scene_text_raster_should_use_authored_maxwidth_layout(object: &Map<String, Value>) -> bool {
+    if !object
+        .get("limitwidth")
+        .or_else(|| object.get("limitWidth"))
+        .or_else(|| object.get("limit_width"))
+        .and_then(value_to_bool_unwrapped)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if !scene_text_raster_can_alpha_crop(object) {
+        return false;
+    }
+    object
+        .get("text")
+        .and_then(Value::as_object)
+        .and_then(|text| text.get("user"))
+        .is_some()
+}
+
+fn scene_apply_text_raster_default_anchor_to_node(
+    node: &mut Map<String, Value>,
+    object: &Map<String, Value>,
+) {
+    if object.get("pivot").is_some()
+        || object.get("alignment").is_some()
+        || object.get("anchor").is_some()
+    {
+        return;
+    }
+    let Some(transform) = scene_node_transform_object_mut(node) else {
+        return;
+    };
+    let anchor_x = match scene_text_raster_horizontal_align_from_object(object) {
+        SceneTextRasterHorizontalAlign::Start => 0.0,
+        SceneTextRasterHorizontalAlign::Middle => 0.5,
+        SceneTextRasterHorizontalAlign::End => 1.0,
+    };
+    let anchor_y = match scene_text_raster_vertical_align_from_object(object) {
+        SceneTextRasterVerticalAlign::Top => 0.0,
+        SceneTextRasterVerticalAlign::Middle => 0.5,
+        SceneTextRasterVerticalAlign::Bottom => 1.0,
+    };
+    transform.insert("anchor_x".to_owned(), json!(anchor_x));
+    transform.insert("anchor_y".to_owned(), json!(anchor_y));
+}
+
+fn scene_f32_to_u32_layout_extent(value: f32) -> u32 {
+    if value.is_finite() && value > 0.0 {
+        value.ceil().min(u32::MAX as f32) as u32
+    } else {
+        1
+    }
+}
+
 fn scene_text_raster_can_alpha_crop(object: &Map<String, Value>) -> bool {
     let Some(effects) = object.get("effects").and_then(Value::as_array) else {
         return true;
@@ -8689,12 +9146,22 @@ fn scene_apply_generated_text_crop_to_node(
         .and_then(value_to_f64)
         .filter(|value| value.is_finite())
         .unwrap_or(0.5);
-    let local_x = -anchor_x * f64::from(crop.original_width)
-        + f64::from(crop.x)
-        + f64::from(crop.width) * 0.5;
-    let local_y = -anchor_y * f64::from(crop.original_height)
-        + f64::from(crop.y)
-        + f64::from(crop.height) * 0.5;
+    let crop_width = f64::from(crop.width);
+    let crop_height = f64::from(crop.height);
+    let local_x = if anchor_x <= f64::EPSILON {
+        crop_width * 0.5
+    } else if (1.0 - anchor_x).abs() <= f64::EPSILON {
+        -crop_width * 0.5
+    } else {
+        -anchor_x * f64::from(crop.original_width) + f64::from(crop.x) + crop_width * 0.5
+    };
+    let local_y = if anchor_y <= f64::EPSILON {
+        crop_height * 0.5
+    } else if (1.0 - anchor_y).abs() <= f64::EPSILON {
+        -crop_height * 0.5
+    } else {
+        -anchor_y * f64::from(crop.original_height) + f64::from(crop.y) + crop_height * 0.5
+    };
     let scaled_x = local_x * scale_x;
     let scaled_y = local_y * scale_y;
     let cos = rotation.cos();
@@ -8783,6 +9250,7 @@ fn scene_rasterize_text_alpha(
     font_size: f32,
     width: u32,
     height: u32,
+    layout: SceneTextRasterLayout,
     horizontal_align: SceneTextRasterHorizontalAlign,
     vertical_align: SceneTextRasterVerticalAlign,
     padding: (f32, f32),
@@ -8797,9 +9265,10 @@ fn scene_rasterize_text_alpha(
         return Ok(alpha);
     }
     let block_height = scaled.height() + line_height * lines.len().saturating_sub(1) as f32;
-    let layout_width = (width as f32 - padding.0 * 2.0).max(0.0);
-    let layout_height = (height as f32 - padding.1 * 2.0).max(0.0);
-    let block_top = padding.1
+    let layout_width = (layout.width - padding.0 * 2.0).max(0.0);
+    let layout_height = (layout.height - padding.1 * 2.0).max(0.0);
+    let block_top = layout.y
+        + padding.1
         + match vertical_align {
             SceneTextRasterVerticalAlign::Top => 0.0,
             SceneTextRasterVerticalAlign::Middle => (layout_height - block_height) * 0.5,
@@ -8807,7 +9276,8 @@ fn scene_rasterize_text_alpha(
         };
     for (line_index, line) in lines.iter().enumerate() {
         let line_width = scene_text_raster_line_width(&scaled, line, spacing.0);
-        let left = padding.0
+        let left = layout.x
+            + padding.0
             + match horizontal_align {
                 SceneTextRasterHorizontalAlign::Start => 0.0,
                 SceneTextRasterHorizontalAlign::Middle => (layout_width - line_width) * 0.5,

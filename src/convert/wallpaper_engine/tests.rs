@@ -445,6 +445,12 @@ fn font_text_uv_effects_fit_glyphs_to_authored_layout_period() {
         font_size,
         2457,
         616,
+        SceneTextRasterLayout {
+            x: 0.0,
+            y: 0.0,
+            width: 2457.0,
+            height: 616.0,
+        },
         SceneTextRasterHorizontalAlign::Middle,
         SceneTextRasterVerticalAlign::Middle,
         (0.0, 0.0),
@@ -486,6 +492,7 @@ fn user_bound_logo_label_text_fits_authored_box() {
     let object = serde_json::json!({
         "pointsize": 18.0,
         "size": "746.00000 113.00000",
+        "maxwidth": 500.0,
         "padding": "32.00000 32.00000",
         "horizontalalign": "right",
         "verticalalign": "center",
@@ -497,14 +504,15 @@ fn user_bound_logo_label_text_fits_authored_box() {
     .as_object()
     .unwrap()
     .clone();
+    let layout = scene_text_raster_layout_from_object(&object, 746, 113);
 
     let font_size = scene_text_raster_effective_font_size(
         &font,
         &object,
         "A FLOATING DREAM.",
         scene_font_size_from_object(&object),
-        746,
-        113,
+        scene_f32_to_u32_layout_extent(layout.width),
+        scene_f32_to_u32_layout_extent(layout.height),
         (32.0, 32.0),
         (0.0, 0.0),
         None,
@@ -514,7 +522,217 @@ fn user_bound_logo_label_text_fits_authored_box() {
         font_size > 18.0 * 1.5,
         "logo label should not rasterize to a barely visible 18px glyph box"
     );
-    assert!(font_size < 64.0);
+    assert!(font_size < 96.0);
+
+    let mut image = scene_rasterize_text_image(
+        &font,
+        "A FLOATING DREAM.",
+        font_size,
+        746,
+        113,
+        layout,
+        SceneTextRasterHorizontalAlign::End,
+        SceneTextRasterVerticalAlign::Middle,
+        (32.0, 32.0),
+        (0.0, 0.0),
+        [255, 255, 255, 255],
+        None,
+    )
+    .unwrap();
+    let crop = scene_crop_text_image_to_alpha_bounds(&mut image).unwrap();
+    assert!(
+        crop.width > 640,
+        "logo label should fill the authored WE text box horizontally"
+    );
+}
+
+#[test]
+fn user_bound_logo_label_text_ignores_maxwidth_without_limitwidth() {
+    let font_path =
+        Path::new("reverse-engineered/extracted/3742497499/fonts/SourceHanSans-Heavy.otf");
+    let font = scene_load_text_raster_font(font_path).unwrap();
+    let object = serde_json::json!({
+        "pointsize": 18.0,
+        "size": "746.00000 113.00000",
+        "maxwidth": 500.0,
+        "padding": "32.00000 32.00000",
+        "horizontalalign": "right",
+        "verticalalign": "center",
+        "text": {
+            "user": "newproperty25",
+            "value": "A FLOATING DREAM."
+        }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let layout = scene_text_raster_layout_from_object(&object, 746, 113);
+    assert_eq!((layout.x, layout.width), (0.0, 746.0));
+
+    let font_size = scene_text_raster_effective_font_size(
+        &font,
+        &object,
+        "A FLOATING DREAM.",
+        scene_font_size_from_object(&object),
+        scene_f32_to_u32_layout_extent(layout.width),
+        scene_f32_to_u32_layout_extent(layout.height),
+        (32.0, 32.0),
+        (0.0, 0.0),
+        None,
+    );
+    let mut image = scene_rasterize_text_image(
+        &font,
+        "A FLOATING DREAM.",
+        font_size,
+        746,
+        113,
+        layout,
+        SceneTextRasterHorizontalAlign::End,
+        SceneTextRasterVerticalAlign::Middle,
+        (32.0, 32.0),
+        (0.0, 0.0),
+        [255, 255, 255, 255],
+        None,
+    )
+    .unwrap();
+    let crop = scene_crop_text_image_to_alpha_bounds(&mut image).unwrap();
+    let local_right =
+        -0.5 * f64::from(crop.original_width) + f64::from(crop.x) + f64::from(crop.width);
+
+    assert!(
+        local_right > 300.0,
+        "maxwidth is only a constraint when WE limitwidth is enabled"
+    );
+}
+
+#[test]
+fn text_font_apply_user_properties_uses_project_default_registered_asset() {
+    let object = serde_json::json!({
+        "font": "fonts/SourceHanSans-Heavy.otf",
+        "text": {
+            "value": "A FLOATING DREAM.",
+            "script": "'use strict';\nlet font1 = engine.registerAsset(\"fonts/Jost-Medium.ttf\");\nlet font2 = engine.registerAsset(\"fonts/Atami-Regular.otf\");\nexport function applyUserProperties(userProperties) {\n  if(userProperties.hasOwnProperty('text3')){\n    switch(userProperties.text3){\n      case(\"1\"):\n        thisLayer.font = font1;\n        break;\n      case(\"2\"):\n        thisLayer.font = font2;\n        break;\n    }\n  }\n}"
+        }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let mut context = SceneDocumentBuildContext::default();
+    context
+        .project_property_defaults
+        .insert("text3".to_owned(), json!("2"));
+
+    let (font, lowered) = scene_effective_text_font_family_from_object(&object, &context).unwrap();
+
+    assert!(lowered);
+    assert_eq!(font, "fonts/Atami-Regular.otf");
+}
+
+#[test]
+fn right_aligned_text_crop_uses_text_align_anchor() {
+    let mut node = Map::new();
+    node.insert("width".to_owned(), json!(746));
+    node.insert("height".to_owned(), json!(113));
+    node.insert(
+        "transform".to_owned(),
+        json!({
+            "x": 3221.0,
+            "y": 229.0,
+            "scale_x": 1.0,
+            "scale_y": 1.0,
+            "rotation_deg": 0.0,
+            "anchor_x": 0.5,
+            "anchor_y": 0.5
+        }),
+    );
+    let object = serde_json::json!({
+        "size": "746.00000 113.00000",
+        "horizontalalign": "right",
+        "verticalalign": "center"
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    scene_apply_text_raster_default_anchor_to_node(&mut node, &object);
+    scene_apply_generated_text_crop_to_node(
+        &mut node,
+        Some(SceneTextRasterCrop {
+            original_width: 746,
+            original_height: 113,
+            x: 213,
+            y: 37,
+            width: 498,
+            height: 39,
+        }),
+    );
+
+    let transform = node["transform"].as_object().unwrap();
+    assert!(
+        (transform["x"].as_f64().unwrap() - 2972.0).abs() < 1.0e-6,
+        "cropping a right-aligned WE label must keep the right boundary fixed"
+    );
+}
+
+#[test]
+fn generated_logo_text_aligns_to_audio_mark_right_edge() {
+    let mut context = SceneDocumentBuildContext::default();
+    let mut nodes = vec![
+        json!({
+            "id": "node-text",
+            "type": "image",
+            "resource": "resource-font-text-raster",
+            "width": 20.0,
+            "height": 10.0,
+            "transform": {
+                "x": 90.0,
+                "y": 0.0,
+                "scale_x": 1.0,
+                "scale_y": 1.0,
+                "anchor_x": 0.5,
+                "anchor_y": 0.5
+            }
+        }),
+        json!({
+            "id": "node-audio",
+            "type": "image",
+            "width": 100.0,
+            "height": 100.0,
+            "transform": {
+                "x": 60.0,
+                "y": 0.0,
+                "scale_x": 1.0,
+                "scale_y": 1.0,
+                "anchor_x": 0.5,
+                "anchor_y": 0.5
+            },
+            "effects": [
+                {
+                    "file": "effects/workshop/3082978660/enhanced_simple_audio_bars/effect.json"
+                },
+                {
+                    "file": "effects/skew/effect.json",
+                    "passes": [{
+                        "constantshadervalues": {
+                            "bottom": -0.4,
+                            "top": 0.0
+                        }
+                    }]
+                }
+            ]
+        }),
+    ];
+
+    scene_align_audio_mark_text_right_edges(&mut nodes, &mut context);
+
+    let text = nodes[0].as_object().unwrap();
+    let transform = text["transform"].as_object().unwrap();
+    assert!((transform["x"].as_f64().unwrap() - 80.0).abs() < 1.0e-6);
+    assert!(
+        context
+            .converted_features
+            .contains(&"wallpaper-engine-audio-mark-text-right-edge-alignment".to_owned())
+    );
 }
 
 #[test]

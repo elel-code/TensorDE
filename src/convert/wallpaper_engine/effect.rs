@@ -708,8 +708,7 @@ fn scene_effect_pass_uv_transform(
     let mask_extent = scene_effect_resource_extent(resources, &mask_resource);
     let mask_backing_extent = scene_effect_resource_backing_extent(resources, &mask_resource);
     let (mut scale, offset, has_explicit_scale) = scene_effect_pass_uv_transform_values(pass);
-    // CWE reference: CPass::setupTextureUniforms feeds g_TextureNResolution from
-    // the resolved texture itself. WE iris/opacity mask UV is mask logical
+    // WE iris/opacity mask UV is mask logical
     // extent divided by mask backing extent; it is not base-node/mask extent.
     if !has_explicit_scale
         && let (Some(mask_extent), Some(mask_backing_extent)) =
@@ -779,7 +778,7 @@ fn scene_effect_pass_uv_transform_values(pass: &Map<String, Value>) -> ([f64; 2]
             && resolution[0].abs() > f64::EPSILON
             && resolution[1].abs() > f64::EPSILON
         {
-            // CWE reference: iris.vert/opacity-style mask UV multiplies by
+            // WE iris.vert/opacity-style mask UV multiplies by
             // g_Texture1Resolution.zw / g_Texture1Resolution.xy, i.e. mask
             // logical extent over the mask backing/container extent.
             scale = [resolution[2] / resolution[0], resolution[3] / resolution[1]];
@@ -951,7 +950,7 @@ mod tests {
     }
 
     #[test]
-    fn water_caustics_fills_cwe_default_noise_and_pattern_slots() {
+    fn water_caustics_fills_we_default_noise_and_pattern_slots() {
         let mut pass = json!({
             "textures": [null, null, null, null, null, "pattern/voronoi_local"]
         })
