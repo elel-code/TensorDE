@@ -44,6 +44,7 @@ const PRESENT_ID2_EXTENSION_NAME: &str = "VK_KHR_present_id2";
 const PRESENT_WAIT2_EXTENSION_NAME: &str = "VK_KHR_present_wait2";
 const SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_swapchain_maintenance1";
 const PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME: &str = "VK_KHR_present_mode_fifo_latest_ready";
+const BLEND_OPERATION_ADVANCED_EXTENSION_NAME: &str = "VK_EXT_blend_operation_advanced";
 const MAINTENANCE7_EXTENSION_NAME: &str = "VK_KHR_maintenance7";
 const MAINTENANCE8_EXTENSION_NAME: &str = "VK_KHR_maintenance8";
 const MAINTENANCE9_EXTENSION_NAME: &str = "VK_KHR_maintenance9";
@@ -112,6 +113,9 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub dynamic_rendering_enabled: bool,
     pub descriptor_heap_available: bool,
     pub descriptor_heap_enabled: bool,
+    pub blend_operation_advanced_available: bool,
+    pub blend_operation_advanced_enabled: bool,
+    pub blend_operation_advanced_coherent_operations: bool,
     pub present_id2_available: bool,
     pub present_id2_enabled: bool,
     pub present_wait2_available: bool,
@@ -146,6 +150,7 @@ pub struct NativeVulkanVulkanaliaSurfaceCapabilitiesSnapshot {
     pub current_extent: Option<(u32, u32)>,
     pub min_image_extent: (u32, u32),
     pub max_image_extent: (u32, u32),
+    pub supports_transfer_src: bool,
     pub supports_transfer_dst: bool,
     pub supports_color_attachment: bool,
     pub present_id2_supported: bool,
@@ -215,6 +220,9 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaPres
     pub(in crate::renderer::native_vulkan::vulkan) present_wait2_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) swapchain_maintenance1_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) present_mode_fifo_latest_ready_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) blend_operation_advanced_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) blend_operation_advanced_coherent_operations:
+        bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance7_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance8_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance9_enabled: bool,
@@ -391,7 +399,7 @@ fn with_vulkanalia_surface_swapchain(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -527,6 +535,13 @@ fn present_device_extension_snapshot(
             DESCRIPTOR_HEAP_EXTENSION_NAME,
         ),
         descriptor_heap_enabled: feature_selection.core_features.descriptor_heap,
+        blend_operation_advanced_available: extension_available(
+            &selection.device_extensions,
+            BLEND_OPERATION_ADVANCED_EXTENSION_NAME,
+        ),
+        blend_operation_advanced_enabled: feature_selection.blend_operation_advanced_enabled,
+        blend_operation_advanced_coherent_operations: feature_selection
+            .blend_operation_advanced_coherent_operations,
         present_id2_available: extension_available(
             &selection.device_extensions,
             PRESENT_ID2_EXTENSION_NAME,
@@ -624,6 +639,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
         vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
             .present_mode_fifo_latest_ready(true)
             .build();
+    let mut blend_operation_advanced_features =
+        vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT::builder()
+            .advanced_blend_coherent_operations(
+                feature_selection.blend_operation_advanced_coherent_operations,
+            )
+            .build();
     let mut maintenance7_features = vk::PhysicalDeviceMaintenance7FeaturesKHR::builder()
         .maintenance7(true)
         .build();
@@ -682,6 +703,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
         device_create_info =
             device_create_info.push_next(&mut present_mode_fifo_latest_ready_features);
     }
+    if feature_selection.blend_operation_advanced_enabled {
+        device_create_info = device_create_info.push_next(&mut blend_operation_advanced_features);
+    }
     if feature_selection.maintenance7_enabled {
         device_create_info = device_create_info.push_next(&mut maintenance7_features);
     }
@@ -735,6 +759,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
             device_extensions,
             PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME,
         ) && query_present_mode_fifo_latest_ready_feature(instance, physical_device);
+    let blend_operation_advanced_enabled =
+        extension_available(device_extensions, BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
+    let blend_operation_advanced_coherent_operations = blend_operation_advanced_enabled
+        && query_blend_operation_advanced_coherent_operations(instance, physical_device);
     let maintenance7_enabled = extension_available(device_extensions, MAINTENANCE7_EXTENSION_NAME)
         && query_maintenance7_feature(instance, physical_device);
     let maintenance8_enabled = extension_available(device_extensions, MAINTENANCE8_EXTENSION_NAME)
@@ -755,6 +783,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
         present_wait2_enabled,
         swapchain_maintenance1_enabled,
         present_mode_fifo_latest_ready_enabled,
+        blend_operation_advanced_enabled,
+        blend_operation_advanced_coherent_operations,
         maintenance7_enabled,
         maintenance8_enabled,
         maintenance9_enabled,
@@ -786,6 +816,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn enabled_present_device_extensi
     }
     if feature_selection.present_mode_fifo_latest_ready_enabled {
         extensions.push(PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME);
+    }
+    if feature_selection.blend_operation_advanced_enabled {
+        extensions.push(BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
     }
     if feature_selection.core_features.descriptor_heap {
         extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -842,6 +875,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     }
     if !capabilities
         .supported_usage_flags
+        .contains(vk::ImageUsageFlags::TRANSFER_SRC)
+    {
+        return Err("Vulkanalia swapchain surface does not support TRANSFER_SRC".to_owned());
+    }
+    if !capabilities
+        .supported_usage_flags
         .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT)
     {
         return Err("Vulkanalia swapchain surface does not support COLOR_ATTACHMENT".to_owned());
@@ -889,7 +928,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
         .image_color_space(format.color_space)
         .image_extent(extent)
         .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_usage(
+            vk::ImageUsageFlags::TRANSFER_SRC
+                | vk::ImageUsageFlags::TRANSFER_DST
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+        )
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(capabilities.current_transform)
         .composite_alpha(composite_alpha)
@@ -947,6 +990,9 @@ fn surface_snapshot_from_plan(
                 capabilities.max_image_extent.width,
                 capabilities.max_image_extent.height,
             ),
+            supports_transfer_src: capabilities
+                .supported_usage_flags
+                .contains(vk::ImageUsageFlags::TRANSFER_SRC),
             supports_transfer_dst: capabilities
                 .supported_usage_flags
                 .contains(vk::ImageUsageFlags::TRANSFER_DST),
@@ -1208,6 +1254,20 @@ fn query_present_mode_fifo_latest_ready_feature(
     feature.present_mode_fifo_latest_ready != 0
 }
 
+fn query_blend_operation_advanced_coherent_operations(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.advanced_blend_coherent_operations != 0
+}
+
 fn query_maintenance7_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {
     let mut feature = vk::PhysicalDeviceMaintenance7FeaturesKHR::default();
     let mut features2 = vk::PhysicalDeviceFeatures2::builder()
@@ -1350,6 +1410,8 @@ mod tests {
             present_wait2_enabled: false,
             swapchain_maintenance1_enabled: false,
             present_mode_fifo_latest_ready_enabled: false,
+            blend_operation_advanced_enabled: false,
+            blend_operation_advanced_coherent_operations: false,
             maintenance7_enabled: false,
             maintenance8_enabled: false,
             maintenance9_enabled: false,
@@ -1374,6 +1436,11 @@ mod tests {
         };
         let fifo_latest_ready_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             present_mode_fifo_latest_ready_enabled: true,
+            ..disabled
+        };
+        let advanced_blend_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
+            blend_operation_advanced_enabled: true,
+            blend_operation_advanced_coherent_operations: true,
             ..disabled
         };
         let maintenance_roadmap_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
@@ -1411,6 +1478,10 @@ mod tests {
                 "VK_KHR_swapchain",
                 PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME,
             ]
+        );
+        assert_eq!(
+            enabled_present_device_extensions(&advanced_blend_enabled),
+            vec!["VK_KHR_swapchain", BLEND_OPERATION_ADVANCED_EXTENSION_NAME]
         );
         assert_eq!(
             enabled_present_device_extensions(&maintenance_roadmap_enabled),

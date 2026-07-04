@@ -7074,13 +7074,15 @@ mod tests {
                 "scene-solid-quad-screen-blend",
                 "scene-solid-quad-max-blend",
                 "scene-solid-quad-modulate-blend",
+                "scene-solid-quad-hsl-color-blend",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-normal-blend",
                 "scene-sampled-image-additive-blend",
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend",
-                "scene-sampled-image-modulate-blend"
+                "scene-sampled-image-modulate-blend",
+                "scene-sampled-image-hsl-color-blend"
             ]
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);

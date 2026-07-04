@@ -3908,6 +3908,8 @@ fn blend_mode_code(mode: SceneBlendMode) -> u16 {
         SceneBlendMode::Max => 5,
         SceneBlendMode::Normal => 6,
         SceneBlendMode::Modulate => 7,
+        SceneBlendMode::HslColor => 8,
+        SceneBlendMode::AlphaToCoverage => 9,
     }
 }
 

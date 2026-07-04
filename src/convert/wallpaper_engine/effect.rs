@@ -136,7 +136,7 @@ fn scene_native_effect_runtime(file: &str, effect: &Map<String, Value>) -> Optio
     if file.ends_with("effects/iris/effect.json") || file == "effects/iris/effect.json" {
         return Some("native-iris-mask");
     }
-    if file.contains("cloudmotion") || file.contains("shake") || file.contains("skew") {
+    if file.contains("cloudmotion") || file.contains("shake") {
         return Some("native-effect-motion");
     }
     None

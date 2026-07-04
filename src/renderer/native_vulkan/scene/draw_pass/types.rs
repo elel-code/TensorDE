@@ -53,6 +53,8 @@ impl NativeVulkanSceneBlendFactor {
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneBlendOp {
     Add,
     Max,
+    HslColor,
+    CoverageMask,
 }
 
 impl NativeVulkanSceneBlendOp {
@@ -60,6 +62,8 @@ impl NativeVulkanSceneBlendOp {
         match self {
             Self::Add => "add",
             Self::Max => "max",
+            Self::HslColor => "hsl-color-ext",
+            Self::CoverageMask => "coverage-mask",
         }
     }
 }
@@ -270,6 +274,7 @@ pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImageGraph
     PreviousGraphTarget,
     PassTextureSlot,
     NamedFboBind,
+    FramebufferSnapshot,
 }
 
 impl NativeVulkanSceneWeImageGraphTextureBindingSource {
@@ -279,6 +284,7 @@ impl NativeVulkanSceneWeImageGraphTextureBindingSource {
             Self::PreviousGraphTarget => "previous-graph-target",
             Self::PassTextureSlot => "pass-texture-slot",
             Self::NamedFboBind => "named-fbo-bind",
+            Self::FramebufferSnapshot => "framebuffer-snapshot",
         }
     }
 }

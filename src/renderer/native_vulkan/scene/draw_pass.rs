@@ -1439,6 +1439,12 @@ fn native_vulkan_scene_we_graph_step_texture_slot_bindings(
     for binding in &step.texture_bindings {
         let resource_index = if let Some(source_path) = binding.source_path.as_ref() {
             native_vulkan_scene_sampled_image_source_index(sources, source_path.clone())
+        } else if binding.source
+            == NativeVulkanSceneWeImageGraphTextureBindingSource::FramebufferSnapshot
+        {
+            file_source_count
+                .saturating_add(effect_targets.len())
+                .min(u32::MAX as usize) as u32
         } else if let (Some(target_index), Some(endpoint)) =
             (binding.target_index, binding.endpoint)
         {

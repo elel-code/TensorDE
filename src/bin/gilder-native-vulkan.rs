@@ -10,8 +10,13 @@ use gilder::renderer::native_vulkan::{
 };
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
-    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, scene_wallpaper_plan_from_gscn_path,
+    SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan,
+    scene_wallpaper_plan_from_gscn_path_with_properties,
 };
+#[cfg(feature = "native-vulkan-renderer")]
+use serde_json::Value;
+#[cfg(feature = "native-vulkan-renderer")]
+use std::collections::BTreeMap;
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::{Path, PathBuf};
 
@@ -253,6 +258,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_stroke_width = None::<f64>;
     let mut scene_video_layer = false;
     let mut scene_root = None::<PathBuf>;
+    let mut scene_properties = BTreeMap::<String, Value>::new();
     let mut scene_snapshot_time_ms = 0u64;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
@@ -445,6 +451,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_root = Some(PathBuf::from(
                     args.next().ok_or("--scene-root requires PATH")?,
                 ));
+            }
+            "--scene-property" => {
+                let value = args.next().ok_or("--scene-property requires KEY=VALUE")?;
+                let (key, value) = parse_scene_property_assignment(&value)?;
+                scene_properties.insert(key, value);
             }
             "--loop" => {}
             "--no-loop" => {}
@@ -723,6 +734,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_text_font_size,
                 scene_snapshot_time_ms,
                 target_max_fps,
+                &scene_properties,
             )?;
             json!(native_vulkan_scene_runtime_snapshot_from_plan(&plan)?)
         }
@@ -756,6 +768,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_text_font_size,
                 scene_snapshot_time_ms,
                 target_max_fps,
+                &scene_properties,
             )?;
             #[cfg(feature = "native-vulkan-video")]
             let scene_video = native_vulkan_scene_video_present_options_from_plan(
@@ -968,6 +981,31 @@ fn parse_color(value: &str) -> Result<NativeVulkanClearColor, Box<dyn std::error
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_scene_property_assignment(
+    assignment: &str,
+) -> Result<(String, Value), Box<dyn std::error::Error>> {
+    let Some((key, value)) = assignment.split_once('=') else {
+        return Err("--scene-property expects KEY=VALUE".into());
+    };
+    let key = key.trim();
+    if key.is_empty() {
+        return Err("--scene-property key must not be empty".into());
+    }
+    let value = value.trim();
+    let parsed = match value.to_ascii_lowercase().as_str() {
+        "true" | "on" | "yes" => Value::Bool(true),
+        "false" | "off" | "no" => Value::Bool(false),
+        _ => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(Value::Number)
+            .unwrap_or_else(|| Value::String(value.to_owned())),
+    };
+    Ok((key.to_owned(), parsed))
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn scene_cli_plan(
     output_name: String,
     source: Option<PathBuf>,
@@ -986,15 +1024,17 @@ fn scene_cli_plan(
     text_font_size: Option<f64>,
     snapshot_time_ms: u64,
     target_max_fps: Option<u32>,
+    scene_properties: &BTreeMap<String, Value>,
 ) -> Result<SceneWallpaperPlan, Box<dyn std::error::Error>> {
     if let Some(source) = source {
         if !source_is_video && scene_cli_source_is_gscn(&source) {
-            return Ok(scene_wallpaper_plan_from_gscn_path(
+            return Ok(scene_wallpaper_plan_from_gscn_path_with_properties(
                 output_name,
                 source,
                 target_max_fps,
                 snapshot_time_ms,
                 gscn_fit_override,
+                Some(scene_properties),
             )?);
         }
         if source_is_video {
@@ -1291,6 +1331,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &BTreeMap::new(),
         )
         .expect("image scene plan");
 
@@ -1400,6 +1441,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &BTreeMap::new(),
         )
         .expect("gscn scene plan");
 
@@ -1517,6 +1559,7 @@ mod tests {
             None,
             0,
             None,
+            &BTreeMap::new(),
         )
         .expect("gscn scene plan");
 
@@ -1587,6 +1630,7 @@ mod tests {
             None,
             0,
             None,
+            &BTreeMap::new(),
         )
         .expect("gscn scene plan");
 
@@ -1692,6 +1736,7 @@ mod tests {
             None,
             500,
             Some(30),
+            &BTreeMap::new(),
         )
         .expect("gscn scene plan");
 
@@ -1725,6 +1770,7 @@ mod tests {
             None,
             1357,
             None,
+            &BTreeMap::new(),
         )
         .expect("color scene plan");
 
@@ -1760,6 +1806,7 @@ mod tests {
             Some(36.0),
             975,
             Some(30),
+            &BTreeMap::new(),
         )
         .expect("text scene plan");
 
@@ -1801,6 +1848,7 @@ mod tests {
             None,
             2468,
             Some(30),
+            &BTreeMap::new(),
         )
         .expect("path scene plan");
 
@@ -1844,6 +1892,7 @@ mod tests {
             None,
             4321,
             Some(240),
+            &BTreeMap::new(),
         )
         .expect("video scene plan");
 
@@ -1912,7 +1961,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--wait-ro
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
-         [--scene-time-ms MS]\n\
+         [--scene-time-ms MS] [--scene-property KEY=VALUE]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\

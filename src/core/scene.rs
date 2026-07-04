@@ -2505,6 +2505,12 @@ pub enum SceneBlendMode {
     /// brighten that vanishes on dark backgrounds. With a premultiplied source (B*a) this
     /// is the fixed-function equation `src*DST_COLOR + dst*ONE`.
     Modulate,
+    /// Wallpaper Engine colorBlendMode 28: HSL Color. This is not a fixed-function
+    /// blend; WE evaluates it in a framebuffer-sampling passthrough shader.
+    HslColor,
+    /// Wallpaper Engine material pass `blending:"alphatocoverage"`: shader alpha
+    /// becomes the MSAA coverage mask and fixed-function color blending is disabled.
+    AlphaToCoverage,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -4587,10 +4593,7 @@ fn scene_blend_mode_from_wallpaper_engine_color_blend_mode(
         6 => Some(SceneBlendMode::Max),
         7 => Some(SceneBlendMode::Screen),
         8 => Some(SceneBlendMode::Screen),
-        // WE colorBlendMode 28 is HSL Color in common_blending.h and requires
-        // a framebuffer-sampling passthrough shader. A fixed Screen blend is
-        // mathematically wrong and turns dark UI bars into bright rectangles.
-        28 => Some(SceneBlendMode::Alpha),
+        28 => Some(SceneBlendMode::HslColor),
         31 => Some(SceneBlendMode::Additive),
         32 => Some(SceneBlendMode::Modulate),
         _ => None,
@@ -4617,6 +4620,7 @@ pub(crate) fn scene_blend_mode_from_material_blending(blending: &str) -> Option<
         "additive" | "add" => Some(SceneBlendMode::Additive),
         "multiply" => Some(SceneBlendMode::Multiply),
         "screen" => Some(SceneBlendMode::Screen),
+        "alphatocoverage" | "alpha-to-coverage" => Some(SceneBlendMode::AlphaToCoverage),
         _ => None,
     }
 }
@@ -5105,7 +5109,7 @@ mod tests {
         let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
 
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Multiply);
-        assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::Alpha);
+        assert_eq!(snapshot.layers[1].blend_mode, SceneBlendMode::HslColor);
         // WE colorBlendMode 32 = A*(1+B*a) (multiplicative brighten), now mapped to
         // Modulate; previously mis-mapped to Screen which caused the visible rectangle.
         assert_eq!(snapshot.layers[2].blend_mode, SceneBlendMode::Modulate);
@@ -5138,6 +5142,38 @@ mod tests {
 
         assert_eq!(snapshot.layers.len(), 1);
         assert_eq!(snapshot.layers[0].blend_mode, SceneBlendMode::Normal);
+    }
+
+    #[test]
+    fn wallpaper_engine_material_alphatocoverage_blend_reaches_snapshot_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "resource-cutout", "type": "image", "source": "assets/cutout.gtex" }
+            ],
+            "nodes": [
+                {
+                    "id": "node-cutout",
+                    "type": "image",
+                    "resource": "resource-cutout",
+                    "properties": {
+                        "material": {
+                            "passes": [
+                                { "shader": "genericimage4", "blending": "alphatocoverage" }
+                            ]
+                        }
+                    }
+                }
+            ]
+        }))
+        .unwrap();
+
+        let snapshot = document.snapshot_at_with_property_resolver(0, |_| None);
+
+        assert_eq!(snapshot.layers.len(), 1);
+        assert_eq!(
+            snapshot.layers[0].blend_mode,
+            SceneBlendMode::AlphaToCoverage
+        );
     }
 
     #[test]

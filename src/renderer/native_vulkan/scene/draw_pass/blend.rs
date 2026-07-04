@@ -38,6 +38,8 @@ pub(super) fn native_vulkan_scene_solid_quad_pipeline_label(
         SceneBlendMode::Screen => "solid-quad-screen-blend",
         SceneBlendMode::Max => "solid-quad-max-blend",
         SceneBlendMode::Modulate => "solid-quad-modulate-blend",
+        SceneBlendMode::HslColor => "solid-quad-hsl-color-blend",
+        SceneBlendMode::AlphaToCoverage => "solid-quad-alpha-to-coverage",
     }
 }
 
@@ -66,6 +68,8 @@ pub(super) fn native_vulkan_scene_sampled_image_pipeline_label(
         SceneBlendMode::Screen => "sampled-image-screen-blend",
         SceneBlendMode::Max => "sampled-image-max-blend",
         SceneBlendMode::Modulate => "sampled-image-modulate-blend",
+        SceneBlendMode::HslColor => "sampled-image-hsl-color-blend",
+        SceneBlendMode::AlphaToCoverage => "sampled-image-alpha-to-coverage",
     }
 }
 
@@ -130,6 +134,22 @@ fn native_vulkan_scene_blend_equation(mode: SceneBlendMode) -> NativeVulkanScene
             dst_alpha: NativeVulkanSceneBlendFactor::One,
             alpha_op: NativeVulkanSceneBlendOp::Add,
         },
+        SceneBlendMode::HslColor => NativeVulkanSceneBlendEquation {
+            src_color: NativeVulkanSceneBlendFactor::One,
+            dst_color: NativeVulkanSceneBlendFactor::Zero,
+            color_op: NativeVulkanSceneBlendOp::HslColor,
+            src_alpha: NativeVulkanSceneBlendFactor::Zero,
+            dst_alpha: NativeVulkanSceneBlendFactor::One,
+            alpha_op: NativeVulkanSceneBlendOp::Add,
+        },
+        SceneBlendMode::AlphaToCoverage => NativeVulkanSceneBlendEquation {
+            src_color: NativeVulkanSceneBlendFactor::One,
+            dst_color: NativeVulkanSceneBlendFactor::Zero,
+            color_op: NativeVulkanSceneBlendOp::CoverageMask,
+            src_alpha: NativeVulkanSceneBlendFactor::One,
+            dst_alpha: NativeVulkanSceneBlendFactor::Zero,
+            alpha_op: NativeVulkanSceneBlendOp::CoverageMask,
+        },
     }
 }
 
@@ -187,6 +207,15 @@ mod tests {
         assert_eq!(
             native_vulkan_scene_blend_equation_label(max),
             "color=one*src max one*dst alpha=one*src add one-minus-src-alpha*dst"
+        );
+
+        let hsl = native_vulkan_scene_blend_state(SceneBlendMode::HslColor);
+        assert_eq!(hsl.equation.color_op, NativeVulkanSceneBlendOp::HslColor);
+        assert_eq!(hsl.equation.src_alpha, NativeVulkanSceneBlendFactor::Zero);
+        assert_eq!(hsl.equation.dst_alpha, NativeVulkanSceneBlendFactor::One);
+        assert_eq!(
+            native_vulkan_scene_blend_equation_label(hsl),
+            "color=one*src hsl-color-ext zero*dst alpha=zero*src add one*dst"
         );
     }
 }

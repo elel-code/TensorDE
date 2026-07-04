@@ -319,6 +319,25 @@ pub fn scene_wallpaper_plan_from_gscn_path(
     )
 }
 
+#[cfg(feature = "native-vulkan-renderer")]
+pub fn scene_wallpaper_plan_from_gscn_path_with_properties(
+    output_name: String,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    snapshot_time_ms: u64,
+    fit_override: Option<FitMode>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    scene_binary::scene_wallpaper_plan_from_gscn_path_with_properties(
+        output_name,
+        source_path,
+        target_max_fps,
+        snapshot_time_ms,
+        fit_override,
+        render_properties,
+    )
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticRenderSyncPlan {
     pub plans: Vec<StaticWallpaperPlan>,
@@ -1629,7 +1648,7 @@ fn scene_wallpaper_plan(
     performance: &PerformanceDecision,
     fit_override: Option<FitMode>,
     _render_target: Option<RenderTargetSize>,
-    _render_properties: Option<&BTreeMap<String, Value>>,
+    render_properties: Option<&BTreeMap<String, Value>>,
     _cursor_parallax_input_ready: bool,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let source_path = source.join_to(&package.root);
@@ -1639,12 +1658,13 @@ fn scene_wallpaper_plan(
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gscn"))
     {
         let target_max_fps = effective_max_fps(manifest_max_fps, performance.max_fps);
-        let mut plan = scene_wallpaper_plan_from_gscn_path(
+        let mut plan = scene_wallpaper_plan_from_gscn_path_with_properties(
             output_name,
             source_path,
             target_max_fps,
             0,
             fit_override,
+            render_properties,
         )?;
         plan.manifest_max_fps = manifest_max_fps;
         plan.target_max_fps = target_max_fps;

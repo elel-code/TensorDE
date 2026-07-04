@@ -366,7 +366,7 @@ fn with_vulkanalia_clear_present(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,

@@ -78,7 +78,41 @@ pub(super) fn native_vulkan_vulkanalia_scene_color_attachment(
             .dst_alpha_blend_factor(vk::BlendFactor::ONE)
             .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
+        SceneBlendMode::HslColor => builder
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ZERO)
+            .color_blend_op(vk::BlendOp::HSL_COLOR_EXT)
+            .src_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
+        SceneBlendMode::AlphaToCoverage => vk::PipelineColorBlendAttachmentState::builder()
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B,
+            )
+            .blend_enable(false)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ZERO)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ZERO)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
     }
+}
+
+pub(super) fn native_vulkan_vulkanalia_scene_advanced_color_blend_state(
+    blend_mode: SceneBlendMode,
+) -> Option<vk::PipelineColorBlendAdvancedStateCreateInfoEXT> {
+    (blend_mode == SceneBlendMode::HslColor).then(|| {
+        vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
+            .src_premultiplied(false)
+            .dst_premultiplied(false)
+            .blend_overlap(vk::BlendOverlapEXT::UNCORRELATED)
+            .build()
+    })
 }
 
 pub(super) fn native_vulkan_vulkanalia_scene_fragment_module_for_blend(
@@ -87,9 +121,11 @@ pub(super) fn native_vulkan_vulkanalia_scene_fragment_module_for_blend(
     premultiplied_fragment_module: vk::ShaderModule,
 ) -> vk::ShaderModule {
     match blend_mode {
-        SceneBlendMode::Alpha | SceneBlendMode::Normal | SceneBlendMode::Additive => {
-            straight_fragment_module
-        }
+        SceneBlendMode::Alpha
+        | SceneBlendMode::Normal
+        | SceneBlendMode::Additive
+        | SceneBlendMode::HslColor
+        | SceneBlendMode::AlphaToCoverage => straight_fragment_module,
         SceneBlendMode::Multiply
         | SceneBlendMode::Screen
         | SceneBlendMode::Max
@@ -109,6 +145,8 @@ pub(super) fn native_vulkan_vulkanalia_scene_solid_quad_pipeline(
         SceneBlendMode::Screen => resources.screen_pipeline,
         SceneBlendMode::Max => resources.max_pipeline,
         SceneBlendMode::Modulate => resources.modulate_pipeline,
+        SceneBlendMode::HslColor => resources.hsl_color_pipeline,
+        SceneBlendMode::AlphaToCoverage => resources.alpha_to_coverage_pipeline,
     }
 }
 
@@ -134,6 +172,8 @@ pub(super) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
         SceneBlendMode::Screen => resources.screen_pipeline,
         SceneBlendMode::Max => resources.max_pipeline,
         SceneBlendMode::Modulate => resources.modulate_pipeline,
+        SceneBlendMode::HslColor => resources.hsl_color_pipeline,
+        SceneBlendMode::AlphaToCoverage => resources.alpha_to_coverage_pipeline,
     }
 }
 
@@ -148,5 +188,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_blend_mode_label(
         SceneBlendMode::Screen => "screen",
         SceneBlendMode::Max => "max",
         SceneBlendMode::Modulate => "modulate",
+        SceneBlendMode::HslColor => "hsl-color",
+        SceneBlendMode::AlphaToCoverage => "alpha-to-coverage",
     }
 }

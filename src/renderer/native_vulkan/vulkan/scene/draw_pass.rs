@@ -23,6 +23,7 @@ use super::scene_sampled_image::VulkanaliaSceneSampledImageResources;
 mod blend;
 
 use self::blend::{
+    native_vulkan_vulkanalia_scene_advanced_color_blend_state,
     native_vulkan_vulkanalia_scene_blend_mode_label,
     native_vulkan_vulkanalia_scene_color_attachment,
     native_vulkan_vulkanalia_scene_fragment_module_for_blend,
@@ -43,6 +44,8 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_UNIFORM_COUNT_OFFSET_BYTES: usize =
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_TEXTURE_RESOLUTION_BASE_OFFSET_BYTES: usize = 32;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_TEXTURE_RESOLUTION_STRIDE_BYTES: usize = 8;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES: usize = 96;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_PASSTHROUGH_BLEND_MODE_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_ANIMATION_SPEED_OFFSET_BYTES: usize = 100;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCALE_OFFSET_BYTES: usize = 104;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCROLL_SPEED_OFFSET_BYTES: usize = 108;
@@ -56,6 +59,28 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_SCROLL_REPEAT_X_OFFSET_BYTES: usize =
     SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCALE_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_SCROLL_REPEAT_Y_OFFSET_BYTES: usize =
     SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCROLL_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_TOP_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_BOTTOM_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_ANIMATION_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_LEFT_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCALE_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_RIGHT_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCROLL_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_FLAGS_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_DIRECTION_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_R_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_G_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_ANIMATION_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_B_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCALE_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_ALPHA_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_SCROLL_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SPEED_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_DIRECTION_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SKEW_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_RATIO_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_IRIS_SCALE_X_OFFSET_BYTES: usize =
     SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_IRIS_SCALE_Y_OFFSET_BYTES: usize =
@@ -122,6 +147,35 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_OFFSET2_OFFSET_BYTES: usize = 128
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_EXPONENT2_OFFSET_BYTES: usize = 132;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_DIRECTION2_OFFSET_BYTES: usize = 136;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_FLAGS_OFFSET_BYTES: usize = 140;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_RADIUS_OFFSET_BYTES: usize = 124;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_WIDTH_OFFSET_BYTES: usize = 128;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_SEGMENT_COUNT_OFFSET_BYTES: usize = 132;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_SEGMENT_WIDTH_OFFSET_BYTES: usize = 136;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_OFFSET_OFFSET_BYTES: usize = 140;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_WIDTH_OFFSET_BYTES: usize = 144;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_SEGMENT_COUNT_OFFSET_BYTES: usize = 148;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_SEGMENT_WIDTH_OFFSET_BYTES: usize = 152;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_FLAGS_OFFSET_BYTES: usize = 156;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_R_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_R_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_G_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_G_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_B_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_B_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_OPACITY_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_ALPHA_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_COUNT_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SPEED_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_VOLUME_FACTOR_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SKEW_OFFSET_BYTES;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_SPACING_OFFSET_BYTES: usize = 124;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_MIN_HEIGHT_OFFSET_BYTES: usize = 128;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_LOW_OFFSET_BYTES: usize = 132;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_HIGH_OFFSET_BYTES: usize = 136;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_FLAGS_OFFSET_BYTES: usize = 140;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_X_OFFSET_BYTES: usize = 144;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_Y_OFFSET_BYTES: usize = 148;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_RADIUS_OFFSET_BYTES: usize = 152;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CAUSTICS_BRIGHTNESS_OFFSET_BYTES: usize =
     SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CAUSTICS_GLOW_OFFSET_BYTES: usize =
@@ -161,12 +215,18 @@ const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERFLOW: u32 = 6;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_FOLIAGE_SWAY: u32 = 7;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUTO_SWAY: u32 = 8;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERCAUSTICS: u32 = 9;
+const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_SKEW: u32 = 10;
+const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_PASSTHROUGHBLEND: u32 = 11;
+const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_TECHCIRCLE: u32 = 12;
+const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUDIOBARS: u32 = 13;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_MASK: u32 = 1;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_DUAL: u32 = 2;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_TIMEOFFSET: u32 = 4;
 const SCENE_SAMPLED_IMAGE_FOLIAGE_SWAY_FLAG_MASK: u32 = 1;
 const SCENE_SAMPLED_IMAGE_AUTO_SWAY_FLAG_MASK: u32 = 1;
 const SCENE_SAMPLED_IMAGE_CAUSTICS_FLAG_FRAMEBUFFER_OVERLAY: u32 = 1 << 16;
+const SCENE_SAMPLED_IMAGE_SKEW_FLAG_REPEAT: u32 = 1;
+const SCENE_SAMPLED_IMAGE_SKEW_FLAG_VERTEX_MODE: u32 = 2;
 static SCENE_DRAW_PASS_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +299,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
     pub shader_modules_created: bool,
     pub pipeline_layout_created: bool,
     pub pipeline_created: bool,
+    pub rasterization_samples: &'static str,
     pub render_pass_compatibility: &'static str,
     pub primitive_topology: &'static str,
     pub vertex_input_binding_count: u32,
@@ -283,6 +344,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     pub pipeline_layout_created: bool,
     pub pipeline_created: bool,
     pub pass_specific_fragment_pipeline_count: u32,
+    pub rasterization_samples: &'static str,
     pub render_pass_compatibility: &'static str,
     pub primitive_topology: &'static str,
     pub vertex_input_binding_count: u32,
@@ -330,6 +392,11 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
     pub descriptor_set_bind_count: u32,
     pub push_descriptor_set_recorded_count: u32,
     pub descriptor_heap_draw_count: u32,
+    pub framebuffer_snapshot_required: bool,
+    pub framebuffer_snapshot_copy_count: u32,
+    pub solid_passthroughblend_draw_count: u32,
+    pub sampled_passthroughblend_draw_count: u32,
+    pub solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     pub descriptor_model: &'static str,
     pub push_constant_bytes: u32,
     pub swapchain_layout_transition: &'static str,
@@ -349,8 +416,19 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadPi
     pub(in crate::renderer::native_vulkan::vulkan) screen_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) max_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) modulate_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) hsl_color_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) alpha_to_coverage_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) hsl_color_passthrough_pipeline:
+        Option<vk::Pipeline>,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneMsaaColorTarget {
+    pub(in crate::renderer::native_vulkan::vulkan) image: vk::Image,
+    pub(in crate::renderer::native_vulkan::vulkan) image_view: vk::ImageView,
+    pub(in crate::renderer::native_vulkan::vulkan) sample_count: vk::SampleCountFlags,
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImagePipelineResources {
@@ -371,9 +449,17 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) scroll_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) skew_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) iris_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) opacity_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) tech_circle_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) audio_bars_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) passthroughblend_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
@@ -388,6 +474,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) screen_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) max_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) modulate_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) hsl_color_pipeline: vk::Pipeline,
+    pub(in crate::renderer::native_vulkan::vulkan) alpha_to_coverage_pipeline: vk::Pipeline,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -477,8 +565,12 @@ enum VulkanaliaSceneSampledImageShaderProgram {
     FoliageSway,
     AutoSway,
     Scroll,
+    Skew,
     Iris,
     Opacity,
+    TechCircle,
+    AudioBars,
+    PassthroughBlend,
 }
 
 #[derive(Clone, Copy)]
@@ -489,6 +581,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDr
     pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
         &'a [VulkanaliaSceneSolidQuadDrawCommand],
+    pub(in crate::renderer::native_vulkan::vulkan) framebuffer_snapshot_descriptor_group_base_index:
+        Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -549,6 +643,9 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
 fn scene_sampled_image_shader_program(
     material: &super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
 ) -> VulkanaliaSceneSampledImageShaderProgram {
+    if scene_sampled_image_material_uses_passthroughblend(material) {
+        return VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend;
+    }
     if material.effect_kinds.len() == 1
         && material.effect_kinds[0]
             == super::present::NativeVulkanVulkanaliaSceneEffectKind::WaterRipple
@@ -591,6 +688,11 @@ fn scene_sampled_image_shader_program(
         return VulkanaliaSceneSampledImageShaderProgram::Scroll;
     }
     if material.effect_kinds.len() == 1
+        && material.effect_kinds[0] == super::present::NativeVulkanVulkanaliaSceneEffectKind::Skew
+    {
+        return VulkanaliaSceneSampledImageShaderProgram::Skew;
+    }
+    if material.effect_kinds.len() == 1
         && material.effect_kinds[0] == super::present::NativeVulkanVulkanaliaSceneEffectKind::Iris
     {
         return VulkanaliaSceneSampledImageShaderProgram::Iris;
@@ -601,7 +703,28 @@ fn scene_sampled_image_shader_program(
     {
         return VulkanaliaSceneSampledImageShaderProgram::Opacity;
     }
+    if material.effect_kinds.len() == 1
+        && material.effect_kinds[0]
+            == super::present::NativeVulkanVulkanaliaSceneEffectKind::TechCircle
+    {
+        return VulkanaliaSceneSampledImageShaderProgram::TechCircle;
+    }
+    if material.effect_kinds.len() == 1
+        && material.effect_kinds[0]
+            == super::present::NativeVulkanVulkanaliaSceneEffectKind::AudioBars
+    {
+        return VulkanaliaSceneSampledImageShaderProgram::AudioBars;
+    }
     VulkanaliaSceneSampledImageShaderProgram::Generic
+}
+
+fn scene_sampled_image_material_uses_passthroughblend(
+    material: &super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
+) -> bool {
+    material.shader.as_deref() == Some("util/effectpassthrough")
+        || (material.effect_kinds.is_empty()
+            && material.combo_values.contains_key("BLENDMODE")
+            && material.texture_slot_count >= 2)
 }
 
 fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
@@ -619,8 +742,14 @@ fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
         VulkanaliaSceneSampledImageShaderProgram::FoliageSway => &resources.foliage_sway_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::AutoSway => &resources.auto_sway_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::Scroll => &resources.scroll_pipelines,
+        VulkanaliaSceneSampledImageShaderProgram::Skew => &resources.skew_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::Iris => &resources.iris_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::Opacity => &resources.opacity_pipelines,
+        VulkanaliaSceneSampledImageShaderProgram::TechCircle => &resources.tech_circle_pipelines,
+        VulkanaliaSceneSampledImageShaderProgram::AudioBars => &resources.audio_bars_pipelines,
+        VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend => {
+            &resources.passthroughblend_pipelines
+        }
     };
     native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
         pipelines,
@@ -842,6 +971,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
             "scene-solid-quad-screen-blend",
             "scene-solid-quad-max-blend",
             "scene-solid-quad-modulate-blend",
+            "scene-solid-quad-hsl-color-blend",
+            "scene-solid-quad-alpha-to-coverage",
         ]
     } else if mixed_quad_sampled_image_ready || mixed_quad_sampled_image_implicit_full_extent_ready
     {
@@ -853,6 +984,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
             "scene-solid-quad-screen-blend",
             "scene-solid-quad-max-blend",
             "scene-solid-quad-modulate-blend",
+            "scene-solid-quad-hsl-color-blend",
+            "scene-solid-quad-alpha-to-coverage",
             "scene-sampled-image-alpha-blend",
             "scene-sampled-image-normal-blend",
             "scene-sampled-image-additive-blend",
@@ -860,6 +993,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
             "scene-sampled-image-screen-blend",
             "scene-sampled-image-max-blend",
             "scene-sampled-image-modulate-blend",
+            "scene-sampled-image-hsl-color-blend",
+            "scene-sampled-image-alpha-to-coverage",
         ]
     } else if sampled_image_pending || sampled_image_implicit_full_extent_ready {
         vec![
@@ -870,6 +1005,8 @@ pub(crate) fn native_vulkan_vulkanalia_scene_draw_pass_snapshot(
             "scene-sampled-image-screen-blend",
             "scene-sampled-image-max-blend",
             "scene-sampled-image-modulate-blend",
+            "scene-sampled-image-hsl-color-blend",
+            "scene-sampled-image-alpha-to-coverage",
         ]
     } else {
         Vec::new()
@@ -1011,13 +1148,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     device: &Device,
     target_format: vk::Format,
     extent: vk::Extent2D,
+    descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
 ) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene solid quad pipeline requires non-zero extent".to_owned());
     }
 
     let push_range = vk::PushConstantRange::builder()
-        .stage_flags(vk::ShaderStageFlags::VERTEX)
+        .stage_flags(vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT)
         .offset(0)
         .size(SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES)
         .build();
@@ -1046,6 +1184,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV,
                     "scene solid quad premultiplied fragment",
                 )?;
+                let passthrough_fragment_module = if descriptor_heap_plan.is_some() {
+                    Some(native_vulkan_vulkanalia_scene_create_shader_module(
+                        device,
+                        &NATIVE_VULKAN_VULKANALIA_SCENE_SOLID_QUAD_PASSTHROUGHBLEND_FRAGMENT_SPIRV,
+                        "scene solid quad passthroughblend fragment",
+                    )?)
+                } else {
+                    None
+                };
                 let result = native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
                     device,
                     target_format,
@@ -1054,8 +1201,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     fragment_module,
                     premultiplied_fragment_module,
+                    descriptor_heap_plan,
+                    passthrough_fragment_module,
                 );
                 unsafe {
+                    if let Some(module) = passthrough_fragment_module {
+                        device.destroy_shader_module(module, None);
+                    }
                     device.destroy_shader_module(premultiplied_fragment_module, None);
                 }
                 result
@@ -1088,6 +1240,8 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     premultiplied_fragment_module: vk::ShaderModule,
+    descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
+    passthrough_fragment_module: Option<vk::ShaderModule>,
 ) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
     let shader_entry = b"main\0";
     let create_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
@@ -1161,12 +1315,18 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
             .build();
         let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
             .rasterization_samples(vk::SampleCountFlags::_1)
+            .alpha_to_coverage_enable(blend_mode == SceneBlendMode::AlphaToCoverage)
             .build();
         let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
         let color_attachments = [color_attachment];
-        let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-            .attachments(&color_attachments)
-            .build();
+        let mut advanced_blend =
+            native_vulkan_vulkanalia_scene_advanced_color_blend_state(blend_mode);
+        let mut color_blend_builder =
+            vk::PipelineColorBlendStateCreateInfo::builder().attachments(&color_attachments);
+        if let Some(advanced_blend) = advanced_blend.as_mut() {
+            color_blend_builder = color_blend_builder.push_next(advanced_blend);
+        }
+        let color_blend = color_blend_builder.build();
         let color_attachment_formats = [target_format];
         let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
             .color_attachment_formats(&color_attachment_formats)
@@ -1196,7 +1356,7 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
         Ok(pipelines[0])
     };
 
-    let mut created_pipelines = Vec::with_capacity(7);
+    let mut created_pipelines = Vec::with_capacity(9);
     let mut create_tracked_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
         let pipeline = create_pipeline(blend_mode)?;
         created_pipelines.push(pipeline);
@@ -1210,6 +1370,26 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
         let screen_pipeline = create_tracked_pipeline(SceneBlendMode::Screen)?;
         let max_pipeline = create_tracked_pipeline(SceneBlendMode::Max)?;
         let modulate_pipeline = create_tracked_pipeline(SceneBlendMode::Modulate)?;
+        let hsl_color_pipeline = create_tracked_pipeline(SceneBlendMode::HslColor)?;
+        let alpha_to_coverage_pipeline = create_tracked_pipeline(SceneBlendMode::AlphaToCoverage)?;
+        let hsl_color_passthrough_pipeline =
+            if let (Some(descriptor_heap_plan), Some(passthrough_fragment_module)) =
+                (descriptor_heap_plan, passthrough_fragment_module)
+            {
+                let pipeline =
+                    native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
+                        device,
+                        target_format,
+                        extent,
+                        descriptor_heap_plan,
+                        pipeline_layout,
+                        vertex_module,
+                        passthrough_fragment_module,
+                    )?;
+                Some(pipeline)
+            } else {
+                None
+            };
         Ok(VulkanaliaSceneSolidQuadPipelineResources {
             pipeline_layout,
             alpha_pipeline,
@@ -1219,9 +1399,13 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
             screen_pipeline,
             max_pipeline,
             modulate_pipeline,
+            hsl_color_pipeline,
+            alpha_to_coverage_pipeline,
+            hsl_color_passthrough_pipeline,
             snapshot: native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
                 target_format,
                 extent,
+                vk::SampleCountFlags::_1,
             ),
         })
     })();
@@ -1233,6 +1417,130 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
         }
     }
     result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
+    device: &Device,
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    pipeline_layout: vk::PipelineLayout,
+    vertex_module: vk::ShaderModule,
+    fragment_module: vk::ShaderModule,
+) -> Result<vk::Pipeline, String> {
+    let shader_entry = b"main\0";
+    let descriptor_heap_mapping =
+        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+            descriptor_heap_plan,
+            0,
+            0,
+        )?;
+    let descriptor_heap_mappings = [descriptor_heap_mapping];
+    let mut descriptor_heap_mapping_info =
+        vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
+            .mappings(&descriptor_heap_mappings)
+            .build();
+    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+        .stage(vk::ShaderStageFlags::FRAGMENT)
+        .module(fragment_module)
+        .name(shader_entry);
+    fragment_stage = fragment_stage.push_next(&mut descriptor_heap_mapping_info);
+    let stages = [
+        vk::PipelineShaderStageCreateInfo::builder()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex_module)
+            .name(shader_entry)
+            .build(),
+        fragment_stage.build(),
+    ];
+    let binding = vk::VertexInputBindingDescription::builder()
+        .binding(0)
+        .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
+        .input_rate(vk::VertexInputRate::VERTEX)
+        .build();
+    let attributes = [
+        vk::VertexInputAttributeDescription::builder()
+            .location(0)
+            .binding(0)
+            .format(vk::Format::R32G32_SFLOAT)
+            .offset(0)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(1)
+            .binding(0)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset(8)
+            .build(),
+    ];
+    let bindings = [binding];
+    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
+        .vertex_binding_descriptions(&bindings)
+        .vertex_attribute_descriptions(&attributes)
+        .build();
+    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
+        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .build();
+    let viewport = vk::Viewport::builder()
+        .x(0.0)
+        .y(0.0)
+        .width(extent.width as f32)
+        .height(extent.height as f32)
+        .min_depth(0.0)
+        .max_depth(1.0)
+        .build();
+    let scissor = vk::Rect2D::builder()
+        .offset(vk::Offset2D { x: 0, y: 0 })
+        .extent(extent)
+        .build();
+    let viewports = [viewport];
+    let scissors = [scissor];
+    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
+        .viewports(&viewports)
+        .scissors(&scissors)
+        .build();
+    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
+        .polygon_mode(vk::PolygonMode::FILL)
+        .cull_mode(vk::CullModeFlags::NONE)
+        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+        .line_width(1.0)
+        .build();
+    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
+        .rasterization_samples(vk::SampleCountFlags::_1)
+        .build();
+    let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Normal);
+    let color_attachments = [color_attachment];
+    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
+        .attachments(&color_attachments)
+        .build();
+    let color_attachment_formats = [target_format];
+    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
+        .color_attachment_formats(&color_attachment_formats)
+        .build();
+    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
+        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
+        .build();
+    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
+        .stages(&stages)
+        .vertex_input_state(&vertex_input)
+        .input_assembly_state(&input_assembly)
+        .viewport_state(&viewport_state)
+        .rasterization_state(&rasterization)
+        .multisample_state(&multisample)
+        .color_blend_state(&color_blend)
+        .layout(pipeline_layout)
+        .render_pass(vk::RenderPass::null())
+        .subpass(0)
+        .push_next(&mut rendering_info);
+    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
+    let pipeline_info = pipeline_info.build();
+    let (pipelines, _success_code) = unsafe {
+        device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+    }
+    .map_err(|err| {
+        format!("vkCreateGraphicsPipelines(vulkanalia scene solid passthroughblend): {err:?}")
+    })?;
+    Ok(pipelines[0])
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_scene_solid_quad_pipeline_resources(
@@ -1247,6 +1555,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
         device.destroy_pipeline(resources.screen_pipeline, None);
         device.destroy_pipeline(resources.max_pipeline, None);
         device.destroy_pipeline(resources.modulate_pipeline, None);
+        device.destroy_pipeline(resources.hsl_color_pipeline, None);
+        device.destroy_pipeline(resources.alpha_to_coverage_pipeline, None);
+        if let Some(pipeline) = resources.hsl_color_passthrough_pipeline {
+            device.destroy_pipeline(pipeline, None);
+        }
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
     }
 }
@@ -1254,6 +1567,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
     target_format: vk::Format,
     extent: vk::Extent2D,
+    sample_count: vk::SampleCountFlags,
 ) -> NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
         binding: "vulkanalia",
@@ -1263,6 +1577,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         shader_modules_created: true,
         pipeline_layout_created: true,
         pipeline_created: true,
+        rasterization_samples: scene_sample_count_label(sample_count),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-quad",
         vertex_input_binding_count: 1,
@@ -1272,11 +1587,31 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         vertex_color_format: "R32G32B32A32_SFLOAT",
         push_constant_bytes: SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
-        blend_model: "solid rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate blend pipeline selected per draw command",
+        blend_model: "solid rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
         uses_submit2: true,
+    }
+}
+
+fn scene_sample_count_label(sample_count: vk::SampleCountFlags) -> &'static str {
+    if sample_count == vk::SampleCountFlags::_1 {
+        "1x"
+    } else if sample_count == vk::SampleCountFlags::_2 {
+        "2x"
+    } else if sample_count == vk::SampleCountFlags::_4 {
+        "4x"
+    } else if sample_count == vk::SampleCountFlags::_8 {
+        "8x"
+    } else if sample_count == vk::SampleCountFlags::_16 {
+        "16x"
+    } else if sample_count == vk::SampleCountFlags::_32 {
+        "32x"
+    } else if sample_count == vk::SampleCountFlags::_64 {
+        "64x"
+    } else {
+        "unknown"
     }
 }
 
@@ -1285,6 +1620,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sample_count: vk::SampleCountFlags,
 ) -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene sampled-image pipeline requires non-zero extent".to_owned());
@@ -1359,6 +1695,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV,
             "scene sampled image scroll fragment",
         )?;
+        let skew_fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV,
+            "scene sampled image skew fragment",
+        )?;
         let iris_fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
             device,
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV,
@@ -1368,6 +1709,21 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             device,
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV,
             "scene sampled image opacity fragment",
+        )?;
+        let tech_circle_fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_TECHCIRCLE_FRAGMENT_SPIRV,
+            "scene sampled image techcircle fragment",
+        )?;
+        let audio_bars_fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUDIOBARS_FRAGMENT_SPIRV,
+            "scene sampled image audiobars fragment",
+        )?;
+        let passthroughblend_fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PASSTHROUGHBLEND_FRAGMENT_SPIRV,
+            "scene sampled image passthroughblend fragment",
         )?;
 
         let result = (|| -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
@@ -1486,6 +1842,42 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         return Err(err);
                     }
                 };
+            let skew_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    pipeline_layout,
+                    vertex_module,
+                    skew_fragment_module,
+                    skew_fragment_module,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_ripple_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_waves_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_flow_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            scroll_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
             let water_caustics_pipelines =
                 match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
                     device,
@@ -1518,6 +1910,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
                             scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
                         );
                         return Err(err);
                     }
@@ -1554,6 +1950,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
                             scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
@@ -1597,6 +1997,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
+                            skew_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
                             water_caustics_pipelines,
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
@@ -1634,6 +2038,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
                             scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
@@ -1685,6 +2093,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
+                            skew_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
                             water_flow_pipelines,
                         );
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
@@ -1706,6 +2118,198 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         return Err(err);
                     }
                 };
+            let tech_circle_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    pipeline_layout,
+                    vertex_module,
+                    tech_circle_fragment_module,
+                    tech_circle_fragment_module,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_ripple_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_waves_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_flow_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_caustics_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            foliage_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            auto_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            iris_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            opacity_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
+            let audio_bars_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    pipeline_layout,
+                    vertex_module,
+                    audio_bars_fragment_module,
+                    audio_bars_fragment_module,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_ripple_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_waves_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_flow_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_caustics_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            foliage_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            auto_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            iris_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            opacity_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            tech_circle_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
+            let passthroughblend_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    pipeline_layout,
+                    vertex_module,
+                    passthroughblend_fragment_module,
+                    passthroughblend_fragment_module,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_ripple_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_waves_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            scroll_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            skew_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_flow_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            water_caustics_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            foliage_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            auto_sway_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            iris_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            opacity_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            tech_circle_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            audio_bars_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
             Ok(VulkanaliaSceneSampledImagePipelineResources {
                 pipeline_layout,
                 generic_pipelines,
@@ -1716,18 +2320,27 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 foliage_sway_pipelines,
                 auto_sway_pipelines,
                 scroll_pipelines,
+                skew_pipelines,
                 iris_pipelines,
                 opacity_pipelines,
+                tech_circle_pipelines,
+                audio_bars_pipelines,
+                passthroughblend_pipelines,
                 snapshot: native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
                     target_format,
                     extent,
+                    sample_count,
                 ),
             })
         })();
 
         unsafe {
+            device.destroy_shader_module(passthroughblend_fragment_module, None);
+            device.destroy_shader_module(audio_bars_fragment_module, None);
+            device.destroy_shader_module(tech_circle_fragment_module, None);
             device.destroy_shader_module(opacity_fragment_module, None);
             device.destroy_shader_module(iris_fragment_module, None);
+            device.destroy_shader_module(skew_fragment_module, None);
             device.destroy_shader_module(scroll_fragment_module, None);
             device.destroy_shader_module(auto_sway_fragment_module, None);
             device.destroy_shader_module(foliage_sway_fragment_module, None);
@@ -1788,11 +2401,27 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     );
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
+        resources.skew_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
         resources.iris_pipelines,
     );
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
         resources.opacity_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.tech_circle_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.audio_bars_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.passthroughblend_pipelines,
     );
     unsafe {
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
@@ -1827,7 +2456,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
             blend_mode,
         )
     };
-    let mut created_pipelines = Vec::with_capacity(7);
+    let mut created_pipelines = Vec::with_capacity(9);
     let mut create_tracked_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
         let pipeline = create_pipeline(blend_mode)?;
         created_pipelines.push(pipeline);
@@ -1841,6 +2470,8 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
         let screen_pipeline = create_tracked_pipeline(SceneBlendMode::Screen)?;
         let max_pipeline = create_tracked_pipeline(SceneBlendMode::Max)?;
         let modulate_pipeline = create_tracked_pipeline(SceneBlendMode::Modulate)?;
+        let hsl_color_pipeline = create_tracked_pipeline(SceneBlendMode::HslColor)?;
+        let alpha_to_coverage_pipeline = create_tracked_pipeline(SceneBlendMode::AlphaToCoverage)?;
         Ok(VulkanaliaSceneSampledImagePipelineSet {
             alpha_pipeline,
             normal_pipeline,
@@ -1849,6 +2480,8 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
             screen_pipeline,
             max_pipeline,
             modulate_pipeline,
+            hsl_color_pipeline,
+            alpha_to_coverage_pipeline,
         })
     })();
     if result.is_err() {
@@ -1873,6 +2506,8 @@ fn native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device.destroy_pipeline(resources.screen_pipeline, None);
         device.destroy_pipeline(resources.max_pipeline, None);
         device.destroy_pipeline(resources.modulate_pipeline, None);
+        device.destroy_pipeline(resources.hsl_color_pipeline, None);
+        device.destroy_pipeline(resources.alpha_to_coverage_pipeline, None);
     }
 }
 
@@ -1995,12 +2630,17 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
         .build();
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
         .rasterization_samples(vk::SampleCountFlags::_1)
+        .alpha_to_coverage_enable(blend_mode == SceneBlendMode::AlphaToCoverage)
         .build();
     let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
     let color_attachments = [color_attachment];
-    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-        .attachments(&color_attachments)
-        .build();
+    let mut advanced_blend = native_vulkan_vulkanalia_scene_advanced_color_blend_state(blend_mode);
+    let mut color_blend_builder =
+        vk::PipelineColorBlendStateCreateInfo::builder().attachments(&color_attachments);
+    if let Some(advanced_blend) = advanced_blend.as_mut() {
+        color_blend_builder = color_blend_builder.push_next(advanced_blend);
+    }
+    let color_blend = color_blend_builder.build();
     let color_attachment_formats = [target_format];
     let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
         .color_attachment_formats(&color_attachment_formats)
@@ -2038,6 +2678,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
     target_format: vk::Format,
     extent: vk::Extent2D,
+    sample_count: vk::SampleCountFlags,
 ) -> NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
         binding: "vulkanalia",
@@ -2048,7 +2689,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_set_layout_created: false,
         pipeline_layout_created: true,
         pipeline_created: true,
-        pass_specific_fragment_pipeline_count: 63,
+        pass_specific_fragment_pipeline_count: 126,
+        rasterization_samples: scene_sample_count_label(sample_count),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-image-quad",
         vertex_input_binding_count: 1,
@@ -2068,8 +2710,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_binding: 0,
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         push_constant_model: "scene-space pixel extent, alpha/mask state, elapsed time, CWE-style g_TextureNResolution rows, and pass-specific effect parameter rows",
-        blend_model: "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate blend pipeline selected per draw command",
-        sampled_image_model: "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic or pass-specific fragment shader",
+        blend_model: "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command; WE passthroughblend uses shader framebuffer sampling plus normal replace output",
+        sampled_image_model: "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
         uses_synchronization2: true,
@@ -2167,7 +2809,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         device.cmd_push_constants(
             command_buffer,
             pipeline_resources.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX,
+            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
             0,
             push_constant_bytes,
         );
@@ -2206,7 +2848,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         vertex_buffer_bound: true,
         index_buffer_bound: true,
         push_constant_bytes: SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES,
-        swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
+        swapchain_layout_transition: "undefined -> color-attachment-optimal [-> transfer-src-optimal -> color-attachment-optimal for framebuffer passthrough] -> present-src-khr",
         render_model: "scene solid quad vertex/index buffers -> dynamic rendering indexed draw -> Wayland swapchain",
         command_order: native_vulkan_vulkanalia_scene_draw_pass_command_order(
             true, false, false, false,
@@ -2265,7 +2907,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 device.cmd_push_constants(
                     command_buffer,
                     solid_quad_draw.pipeline_resources.pipeline_layout,
-                    vk::ShaderStageFlags::VERTEX,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                     0,
                     solid_push_constant_bytes,
                 );
@@ -2421,7 +3063,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         device.cmd_push_constants(
                             command_buffer,
                             solid_resources.pipeline_resources.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
                             solid_push_constant_bytes,
                         );
@@ -3205,6 +3847,48 @@ fn scene_sampled_image_push_constant_bytes(
                 scroll_repeat[1],
             );
         }
+        VulkanaliaSceneSampledImageShaderProgram::Skew => {
+            let repeat_enabled =
+                scene_sampled_image_material_combo_value(material, "REPEAT").unwrap_or(1) != 0;
+            // The 3742497499 audio mark stores no MODE override but the WE
+            // reference image is the vertex-skew variant. Treat an absent MODE
+            // as Vertex while keeping explicit MODE=0 on the UV variant.
+            let vertex_mode =
+                scene_sampled_image_material_combo_value(material, "MODE").unwrap_or(1) != 0;
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_TOP_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(material, &["top", "g_Top"], 0.0),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_BOTTOM_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(material, &["bottom", "g_Bottom"], 0.0),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_LEFT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(material, &["left", "g_Left"], 0.0),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_RIGHT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(material, &["right", "g_Right"], 0.0),
+            );
+            scene_sampled_image_write_push_constant_u32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_FLAGS_OFFSET_BYTES,
+                if repeat_enabled {
+                    SCENE_SAMPLED_IMAGE_SKEW_FLAG_REPEAT
+                } else {
+                    0
+                } | if vertex_mode {
+                    SCENE_SAMPLED_IMAGE_SKEW_FLAG_VERTEX_MODE
+                } else {
+                    0
+                },
+            );
+        }
         VulkanaliaSceneSampledImageShaderProgram::Iris => {
             let iris_scale = scene_sampled_image_material_constant_vec2(
                 material,
@@ -3261,6 +3945,286 @@ fn scene_sampled_image_push_constant_bytes(
                 ),
             );
         }
+        VulkanaliaSceneSampledImageShaderProgram::TechCircle => {
+            let color = scene_sampled_image_material_constant_vec3(
+                material,
+                &["color", "ui_editor_properties_1_color", "Color"],
+                [1.0, 1.0, 1.0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_R_OFFSET_BYTES,
+                color[0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_G_OFFSET_BYTES,
+                color[1],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_COLOR_B_OFFSET_BYTES,
+                color[2],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_ALPHA_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["alpha", "ui_editor_properties_2_alpha"],
+                    1.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SPEED_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["speed", "ui_editor_properties_3_speed"],
+                    0.1,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SKEW_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["skew", "ui_editor_properties_6_skew"],
+                    0.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_RADIUS_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["ringRadius", "ui_editor_properties_4_ring_1_radius"],
+                    0.5,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_WIDTH_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["ringWidth", "ui_editor_properties_4_ring_1_width"],
+                    0.2,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_SEGMENT_COUNT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &[
+                        "ringSegmentCount",
+                        "ui_editor_properties_4_ring_2_segment_count",
+                    ],
+                    2.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_SEGMENT_WIDTH_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &[
+                        "ringSegmentWidth",
+                        "ui_editor_properties_4_ring_2_segment_width",
+                    ],
+                    0.25,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_OFFSET_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["sectorOffset", "ui_editor_properties_5_sector_1_offset"],
+                    0.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_WIDTH_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["sectorWidth", "ui_editor_properties_5_sector_1_width"],
+                    0.3,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_SEGMENT_COUNT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &[
+                        "sectorSegmentCount",
+                        "ui_editor_properties_5_sector_segment_count",
+                    ],
+                    5.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_SECTOR_SEGMENT_WIDTH_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &[
+                        "sectorSegmentWidth",
+                        "ui_editor_properties_5_sector_segment_width",
+                    ],
+                    0.75,
+                ),
+            );
+            let coord_sys = scene_sampled_image_material_combo_value(material, "COORD_SYS")
+                .unwrap_or(1)
+                .clamp(0, 3) as u32;
+            let ring_segments = u32::from(scene_sampled_image_material_combo_enabled(
+                material,
+                "RING_SEGMENTS",
+            ));
+            let sector_segments =
+                scene_sampled_image_material_combo_value(material, "SECTOR_SEGMENTS")
+                    .unwrap_or(0)
+                    .clamp(0, 3) as u32;
+            let ratio_correction = u32::from(scene_sampled_image_material_combo_enabled(
+                material,
+                "RATIO_CORRECTION",
+            ));
+            let flags =
+                coord_sys | (ring_segments << 4) | (sector_segments << 5) | (ratio_correction << 8);
+            scene_sampled_image_write_push_constant_u32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_FLAGS_OFFSET_BYTES,
+                flags,
+            );
+        }
+        VulkanaliaSceneSampledImageShaderProgram::AudioBars => {
+            let color = scene_sampled_image_material_constant_vec3(
+                material,
+                &["u_BarColor", "Bar Color", "ui_editor_properties_color"],
+                [1.0, 1.0, 1.0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_R_OFFSET_BYTES,
+                color[0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_G_OFFSET_BYTES,
+                color[1],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_COLOR_B_OFFSET_BYTES,
+                color[2],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_OPACITY_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["u_BarOpacity", "ui_editor_properties_opacity"],
+                    1.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_COUNT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["u_BarCount", "Bar Count"],
+                    32.0,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_VOLUME_FACTOR_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["u_VolumeFactor", "Volume Factor"],
+                    0.5,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_SPACING_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &["u_BarSpacing", "Bar Spacing"],
+                    0.1,
+                ),
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_MIN_HEIGHT_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(
+                    material,
+                    &[
+                        "u_minHeight",
+                        "u_minHeightForC",
+                        "Minimum Height (Will be multiplied by the bar width)",
+                        "Minimum Height (Will be multiplied by the bar width) ",
+                    ],
+                    0.0,
+                ),
+            );
+            let bounds = scene_sampled_image_material_constant_vec2(
+                material,
+                &["u_BarBounds", "Lower/Upper Bar Bounds"],
+                [0.0, 1.0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_LOW_OFFSET_BYTES,
+                bounds[0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_HIGH_OFFSET_BYTES,
+                bounds[1],
+            );
+            let shape = scene_sampled_image_material_combo_value(material, "SHAPE")
+                .unwrap_or(0)
+                .clamp(0, u32::MAX as i64) as u32;
+            scene_sampled_image_write_push_constant_u32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_FLAGS_OFFSET_BYTES,
+                shape,
+            );
+            let rounded_aa = scene_sampled_image_material_constant_vec2(
+                material,
+                &["u_rAASmoothness", "Anti-alias blurring "],
+                [0.05, 0.0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_X_OFFSET_BYTES,
+                rounded_aa[0],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_Y_OFFSET_BYTES,
+                rounded_aa[1],
+            );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_RADIUS_OFFSET_BYTES,
+                scene_sampled_image_material_constant_float(material, &["u_Radius", "Radius"], 1.0),
+            );
+        }
+        VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend => {
+            let blend_mode = scene_sampled_image_material_combo_value(material, "BLENDMODE")
+                .unwrap_or(0)
+                .clamp(0, u32::MAX as i64) as u32;
+            scene_sampled_image_write_push_constant_u32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_PASSTHROUGH_BLEND_MODE_OFFSET_BYTES,
+                blend_mode,
+            );
+        }
         VulkanaliaSceneSampledImageShaderProgram::Generic => {}
     }
     push_constant_bytes[SCENE_FULL_SAMPLED_IMAGE_PUSH_EFFECT_SHADER_CODE_OFFSET_BYTES
@@ -3298,8 +4262,12 @@ impl VulkanaliaSceneSampledImageShaderProgram {
             Self::FoliageSway => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_FOLIAGE_SWAY,
             Self::AutoSway => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUTO_SWAY,
             Self::Scroll => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_SCROLL,
+            Self::Skew => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_SKEW,
             Self::Iris => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_IRIS,
             Self::Opacity => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_OPACITY,
+            Self::TechCircle => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_TECHCIRCLE,
+            Self::AudioBars => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUDIOBARS,
+            Self::PassthroughBlend => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_PASSTHROUGHBLEND,
         }
     }
 }
@@ -3448,6 +4416,9 @@ fn scene_sampled_image_constant_value_float(value: &serde_json::Value) -> Option
             let value = value.trim().parse::<f32>().ok()?;
             value.is_finite().then_some(value)
         }
+        serde_json::Value::Object(values) => values
+            .get("value")
+            .and_then(scene_sampled_image_constant_value_float),
         _ => None,
     }
 }
@@ -3475,6 +4446,9 @@ fn scene_sampled_image_constant_value_vec3(value: &serde_json::Value) -> Option<
                 _ => None,
             }
         }
+        serde_json::Value::Object(values) => values
+            .get("value")
+            .and_then(scene_sampled_image_constant_value_vec3),
         _ => None,
     }
 }
@@ -3500,6 +4474,9 @@ fn scene_sampled_image_constant_value_vec2(value: &serde_json::Value) -> Option<
                 _ => None,
             }
         }
+        serde_json::Value::Object(values) => values
+            .get("value")
+            .and_then(scene_sampled_image_constant_value_vec2),
         _ => None,
     }
 }
@@ -3525,6 +4502,9 @@ fn scene_sampled_image_constant_value_float_list(
                 .all(|value| value.is_finite())
                 .then_some(values)
         }
+        serde_json::Value::Object(values) => values
+            .get("value")
+            .and_then(|value| scene_sampled_image_constant_value_float_list(value, limit)),
         _ => None,
     }
 }
@@ -3733,6 +4713,98 @@ fn end_scene_color_rendering(device: &Device, command_buffer: vk::CommandBuffer)
     }
 }
 
+fn copy_scene_framebuffer_to_snapshot(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    swapchain_image: vk::Image,
+    snapshot: &VulkanaliaSceneSampledImageResources,
+    extent: vk::Extent2D,
+    snapshot_old_layout: vk::ImageLayout,
+) {
+    scene_color_image_transition(
+        device,
+        command_buffer,
+        swapchain_image,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::TRANSFER_READ,
+    );
+    scene_color_image_transition(
+        device,
+        command_buffer,
+        snapshot.image,
+        snapshot_old_layout,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
+            vk::PipelineStageFlags2::TOP_OF_PIPE
+        } else {
+            vk::PipelineStageFlags2::FRAGMENT_SHADER
+        },
+        if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
+            vk::AccessFlags2::empty()
+        } else {
+            vk::AccessFlags2::SHADER_SAMPLED_READ
+        },
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::TRANSFER_WRITE,
+    );
+
+    let subresource = vk::ImageSubresourceLayers::builder()
+        .aspect_mask(vk::ImageAspectFlags::COLOR)
+        .mip_level(0)
+        .base_array_layer(0)
+        .layer_count(1)
+        .build();
+    let copy = vk::ImageCopy2::builder()
+        .src_subresource(subresource)
+        .src_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+        .dst_subresource(subresource)
+        .dst_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
+        .build();
+    let regions = [copy];
+    let copy_info = vk::CopyImageInfo2::builder()
+        .src_image(swapchain_image)
+        .src_image_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+        .dst_image(snapshot.image)
+        .dst_image_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .regions(&regions)
+        .build();
+    unsafe {
+        device.cmd_copy_image2(command_buffer, &copy_info);
+    }
+
+    scene_color_image_transition(
+        device,
+        command_buffer,
+        snapshot.image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::TRANSFER_WRITE,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+    );
+    scene_color_image_transition(
+        device,
+        command_buffer,
+        swapchain_image,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::TRANSFER_READ,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
     device: &Device,
@@ -3745,6 +4817,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     effect_target_resources: &[VulkanaliaSceneSampledImageResources],
+    framebuffer_snapshot_resource: Option<&VulkanaliaSceneSampledImageResources>,
+    framebuffer_snapshot_initial_layout: vk::ImageLayout,
     vertex_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     clear_color: [f32; 4],
@@ -3824,6 +4898,45 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     if descriptor_heap_draw.is_none() {
         return Err("scene sampled-image command requires descriptor heap resources".to_owned());
     }
+    if let Some(draw) = solid_quad_draw
+        && let Some(descriptor_group_base_index) =
+            draw.framebuffer_snapshot_descriptor_group_base_index
+    {
+        let descriptor_heap_draw = descriptor_heap_draw.expect("descriptor heap checked above");
+        let descriptor_group_end = descriptor_group_base_index as usize + 1;
+        if descriptor_group_end > descriptor_heap_draw.resources.plan.image_count {
+            return Err(format!(
+                "scene solid passthroughblend descriptor group {}..{} exceeds heap image count {}",
+                descriptor_group_base_index,
+                descriptor_group_end,
+                descriptor_heap_draw.resources.plan.image_count
+            ));
+        }
+    }
+    if solid_quad_draw.is_some_and(|draw| {
+        draw.framebuffer_snapshot_descriptor_group_base_index
+            .is_some()
+            && draw
+                .draw_commands
+                .iter()
+                .any(|draw| draw.blend.mode == SceneBlendMode::HslColor)
+    }) && framebuffer_snapshot_resource.is_none()
+    {
+        return Err(
+            "scene solid passthroughblend command requires framebuffer snapshot resource"
+                .to_owned(),
+        );
+    }
+    if draw_commands.iter().any(|draw| {
+        scene_sampled_image_shader_program(&draw.material)
+            == VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
+    }) && framebuffer_snapshot_resource.is_none()
+    {
+        return Err(
+            "scene sampled-image passthroughblend command requires framebuffer snapshot resource"
+                .to_owned(),
+        );
+    }
     if !draw_commands
         .iter()
         .any(|draw| draw.render_target == VulkanaliaSceneSampledImageRenderTarget::Swapchain)
@@ -3835,6 +4948,29 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
     let ordered_draws =
         native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands);
+    let solid_passthroughblend_draw_count = solid_quad_draw.map_or(0usize, |draw| {
+        if draw
+            .framebuffer_snapshot_descriptor_group_base_index
+            .is_none()
+        {
+            0
+        } else {
+            draw.draw_commands
+                .iter()
+                .filter(|draw| draw.blend.mode == SceneBlendMode::HslColor)
+                .count()
+        }
+    });
+    let sampled_passthroughblend_draw_count = draw_commands
+        .iter()
+        .filter(|draw| {
+            scene_sampled_image_shader_program(&draw.material)
+                == VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
+        })
+        .count();
+    let framebuffer_snapshot_copy_count =
+        solid_passthroughblend_draw_count.saturating_add(sampled_passthroughblend_draw_count);
+    let framebuffer_snapshot_required = framebuffer_snapshot_copy_count > 0;
 
     unsafe {
         device
@@ -3859,6 +4995,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         let mut active_target: Option<SceneSampledImageActiveRenderingTarget> = None;
         let mut active_extent = extent;
         let mut swapchain_started = false;
+        let mut framebuffer_snapshot_layout = framebuffer_snapshot_initial_layout;
         let mut bound_pipeline: Option<VulkanaliaSceneBoundDrawPipeline> = None;
         let mut bound_descriptor_heap_group: Option<u32> = None;
         for draw in &ordered_draws {
@@ -3998,19 +5135,69 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     let solid_draw = &solid_draw_commands[draw.command_index];
+                    let solid_resources = solid_quad_draw
+                        .as_ref()
+                        .expect("solid draw resources present");
+                    let solid_framebuffer_passthrough = solid_draw.blend.mode
+                        == SceneBlendMode::HslColor
+                        && solid_resources
+                            .framebuffer_snapshot_descriptor_group_base_index
+                            .is_some();
+                    if solid_framebuffer_passthrough {
+                        if active_target != Some(SceneSampledImageActiveRenderingTarget::Swapchain)
+                        {
+                            return Err(
+                                "scene solid passthroughblend must execute on swapchain target"
+                                    .to_owned(),
+                            );
+                        }
+                        let snapshot = framebuffer_snapshot_resource.expect(
+                            "solid passthroughblend snapshot resource checked before command recording",
+                        );
+                        end_scene_color_rendering(device, command_buffer);
+                        copy_scene_framebuffer_to_snapshot(
+                            device,
+                            command_buffer,
+                            swapchain_image,
+                            snapshot,
+                            extent,
+                            framebuffer_snapshot_layout,
+                        );
+                        framebuffer_snapshot_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                        begin_scene_color_rendering(
+                            device,
+                            command_buffer,
+                            swapchain_view,
+                            extent,
+                            vk::AttachmentLoadOp::LOAD,
+                            clear_color,
+                        );
+                        active_target = Some(SceneSampledImageActiveRenderingTarget::Swapchain);
+                        active_extent = extent;
+                        bound_pipeline = None;
+                        bound_descriptor_heap_group = None;
+                    }
                     let pipeline_key =
                         VulkanaliaSceneBoundDrawPipeline::SolidQuad(solid_draw.blend);
                     if bound_pipeline != Some(pipeline_key) {
-                        let solid_resources = solid_quad_draw
-                            .as_ref()
-                            .expect("solid draw resources present");
-                        device.cmd_bind_pipeline(
-                            command_buffer,
-                            vk::PipelineBindPoint::GRAPHICS,
+                        let pipeline = if solid_framebuffer_passthrough {
+                            solid_resources
+                                .pipeline_resources
+                                .hsl_color_passthrough_pipeline
+                                .ok_or_else(|| {
+                                    "scene solid passthroughblend pipeline was not created"
+                                        .to_owned()
+                                })?
+                        } else {
                             native_vulkan_vulkanalia_scene_solid_quad_pipeline(
                                 solid_resources.pipeline_resources,
                                 solid_draw.blend.mode,
-                            ),
+                            )
+                        };
+                        device.cmd_bind_pipeline(
+                            command_buffer,
+                            vk::PipelineBindPoint::GRAPHICS,
+                            pipeline,
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
                         let vertex_offsets = [0u64];
@@ -4029,11 +5216,26 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         device.cmd_push_constants(
                             command_buffer,
                             solid_resources.pipeline_resources.pipeline_layout,
-                            vk::ShaderStageFlags::VERTEX,
+                            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
                             0,
                             solid_push_constant_bytes,
                         );
                         bound_pipeline = Some(pipeline_key);
+                    }
+                    if let Some(descriptor_group_base_index) = solid_resources
+                        .framebuffer_snapshot_descriptor_group_base_index
+                        .filter(|_| solid_framebuffer_passthrough)
+                        && bound_descriptor_heap_group != Some(descriptor_group_base_index)
+                    {
+                        let descriptor_heap_draw =
+                            descriptor_heap_draw.expect("descriptor heap draw resources present");
+                        bind_scene_sampled_image_descriptor_heap_for_descriptor_group(
+                            device,
+                            command_buffer,
+                            descriptor_heap_draw,
+                            descriptor_group_base_index,
+                        )?;
+                        bound_descriptor_heap_group = Some(descriptor_group_base_index);
                     }
                     device.cmd_draw_indexed(
                         command_buffer,
@@ -4046,6 +5248,42 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 }
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
                     let sampled_draw = &draw_commands[draw.command_index];
+                    if scene_sampled_image_shader_program(&sampled_draw.material)
+                        == VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
+                    {
+                        if active_target != Some(SceneSampledImageActiveRenderingTarget::Swapchain)
+                        {
+                            return Err(
+                                "scene sampled-image passthroughblend must execute on swapchain target"
+                                    .to_owned(),
+                            );
+                        }
+                        let snapshot = framebuffer_snapshot_resource.expect(
+                            "passthroughblend snapshot resource checked before command recording",
+                        );
+                        end_scene_color_rendering(device, command_buffer);
+                        copy_scene_framebuffer_to_snapshot(
+                            device,
+                            command_buffer,
+                            swapchain_image,
+                            snapshot,
+                            extent,
+                            framebuffer_snapshot_layout,
+                        );
+                        framebuffer_snapshot_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
+                        begin_scene_color_rendering(
+                            device,
+                            command_buffer,
+                            swapchain_view,
+                            extent,
+                            vk::AttachmentLoadOp::LOAD,
+                            clear_color,
+                        );
+                        active_target = Some(SceneSampledImageActiveRenderingTarget::Swapchain);
+                        active_extent = extent;
+                        bound_pipeline = None;
+                        bound_descriptor_heap_group = None;
+                    }
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage {
                         blend: sampled_draw.material.render_state.blend,
                         shader_program: scene_sampled_image_shader_program(&sampled_draw.material),
@@ -4148,17 +5386,21 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
     let descriptor_set_bind_count = 0;
     let push_descriptor_set_recorded_count = 0;
+    let sampled_descriptor_heap_draw_count = draw_commands
+        .iter()
+        .filter(|draw| {
+            matches!(
+                draw.descriptor_binding,
+                VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { .. }
+            )
+        })
+        .count();
     let descriptor_heap_draw_count = saturating_u32(
-        draw_commands
-            .iter()
-            .filter(|draw| {
-                matches!(
-                    draw.descriptor_binding,
-                    VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap { .. }
-                )
-            })
-            .count(),
+        sampled_descriptor_heap_draw_count.saturating_add(solid_passthroughblend_draw_count),
     );
+    let framebuffer_snapshot_copy_count = saturating_u32(framebuffer_snapshot_copy_count);
+    let solid_passthroughblend_draw_count = saturating_u32(solid_passthroughblend_draw_count);
+    let sampled_passthroughblend_draw_count = saturating_u32(sampled_passthroughblend_draw_count);
     let sampled_image_index_count = draw_commands
         .iter()
         .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count));
@@ -4207,14 +5449,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         descriptor_set_bind_count,
         push_descriptor_set_recorded_count,
         descriptor_heap_draw_count,
+        framebuffer_snapshot_required,
+        framebuffer_snapshot_copy_count,
+        solid_passthroughblend_draw_count,
+        sampled_passthroughblend_draw_count,
+        solid_framebuffer_snapshot_descriptor_group_base_index: solid_quad_draw
+            .and_then(|draw| draw.framebuffer_snapshot_descriptor_group_base_index),
         descriptor_model: "VK_EXT_descriptor_heap",
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
         sampled_image_layout: "shader-read-only-optimal",
         render_model: if solid_quad_draw.is_some() {
-            "scene solid quad buffers then sampled image buffers/descriptor heap -> one dynamic rendering pass -> Wayland swapchain"
+            "scene solid quad buffers then sampled image buffers/descriptor heap -> dynamic rendering with framebuffer snapshot sampling where WE passthroughblend requires it -> Wayland swapchain"
         } else {
-            "scene sampled image vertex/index buffers + VK_EXT_descriptor_heap combined-image-sampler mapping -> dynamic rendering indexed draw -> Wayland swapchain"
+            "scene sampled image vertex/index buffers + VK_EXT_descriptor_heap combined-image-sampler mapping -> dynamic rendering indexed draw, with framebuffer snapshot sampling where WE passthroughblend requires it -> Wayland swapchain"
         },
         command_order: native_vulkan_vulkanalia_scene_draw_pass_command_order(
             false,
@@ -4361,6 +5609,9 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIR
     12, 20, 14, 19, 327745, 17, 21, 11, 16, 262205, 6, 22, 21, 327761, 6, 23, 20, 0, 327761, 6, 24,
     20, 1, 327761, 6, 25, 20, 2, 458832, 7, 26, 23, 24, 25, 22, 196670, 9, 26, 65789, 65592,
 ];
+
+const NATIVE_VULKAN_VULKANALIA_SCENE_SOLID_QUAD_PASSTHROUGHBLEND_FRAGMENT_SPIRV: [u32; 1785] =
+    include!("shaders/solid_quad_passthroughblend.frag.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 506] = [
     0x07230203, 0x00010000, 0x0008000b, 0x0000003d, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
@@ -4943,10 +6194,18 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV
     include!("shaders/sampled_image_autosway.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV: [u32; 945] =
     include!("shaders/sampled_image_scroll.frag.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV: [u32; 1393] =
+    include!("shaders/sampled_image_skew.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV: [u32; 1436] =
     include!("shaders/sampled_image_iris.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV: [u32; 821] =
     include!("shaders/sampled_image_opacity.frag.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_TECHCIRCLE_FRAGMENT_SPIRV: [u32; 2909] =
+    include!("shaders/sampled_image_techcircle.frag.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUDIOBARS_FRAGMENT_SPIRV: [u32; 4074] =
+    include!("shaders/sampled_image_audiobars.frag.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PASSTHROUGHBLEND_FRAGMENT_SPIRV: [u32;
+    9663] = include!("shaders/sampled_image_passthroughblend.frag.spv.rs");
 
 #[cfg(test)]
 mod tests {
@@ -5051,7 +6310,9 @@ mod tests {
                 "scene-solid-quad-multiply-blend",
                 "scene-solid-quad-screen-blend",
                 "scene-solid-quad-max-blend",
-                "scene-solid-quad-modulate-blend"
+                "scene-solid-quad-modulate-blend",
+                "scene-solid-quad-hsl-color-blend",
+                "scene-solid-quad-alpha-to-coverage"
             ]
         );
         assert_eq!(snapshot.vertex_buffer_bytes, 96);
@@ -5107,7 +6368,9 @@ mod tests {
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend",
-                "scene-sampled-image-modulate-blend"
+                "scene-sampled-image-modulate-blend",
+                "scene-sampled-image-hsl-color-blend",
+                "scene-sampled-image-alpha-to-coverage"
             ]
         );
         assert_eq!(snapshot.descriptor_set_count, 0);
@@ -5159,7 +6422,9 @@ mod tests {
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend",
-                "scene-sampled-image-modulate-blend"
+                "scene-sampled-image-modulate-blend",
+                "scene-sampled-image-hsl-color-blend",
+                "scene-sampled-image-alpha-to-coverage"
             ]
         );
         assert_eq!(
@@ -5205,13 +6470,17 @@ mod tests {
                 "scene-solid-quad-screen-blend",
                 "scene-solid-quad-max-blend",
                 "scene-solid-quad-modulate-blend",
+                "scene-solid-quad-hsl-color-blend",
+                "scene-solid-quad-alpha-to-coverage",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-normal-blend",
                 "scene-sampled-image-additive-blend",
                 "scene-sampled-image-multiply-blend",
                 "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend",
-                "scene-sampled-image-modulate-blend"
+                "scene-sampled-image-modulate-blend",
+                "scene-sampled-image-hsl-color-blend",
+                "scene-sampled-image-alpha-to-coverage"
             ]
         );
         assert_eq!(snapshot.draw_indexed_count, 2);
@@ -5269,6 +6538,7 @@ mod tests {
                 width: 3840,
                 height: 2160,
             },
+            vk::SampleCountFlags::_1,
         );
 
         assert_eq!(snapshot.target_format, "B8G8R8A8_SRGB");
@@ -5297,6 +6567,7 @@ mod tests {
                 width: 3840,
                 height: 2160,
             },
+            vk::SampleCountFlags::_1,
         );
 
         assert_eq!(snapshot.target_format, "B8G8R8A8_SRGB");
@@ -5315,9 +6586,9 @@ mod tests {
         assert_eq!(snapshot.vertex_tint_format, "R32G32B32A32_SFLOAT");
         assert_eq!(
             snapshot.sampled_image_model,
-            "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic or pass-specific fragment shader"
+            "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader"
         );
-        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 63);
+        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 108);
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
@@ -5333,7 +6604,7 @@ mod tests {
         assert!(snapshot.descriptor_heap_pipeline_flag_enabled);
         assert_eq!(
             snapshot.blend_model,
-            "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate blend pipeline selected per draw command"
+            "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command; WE passthroughblend uses shader framebuffer sampling plus normal replace output"
         );
         assert!(snapshot.descriptor_set_layout_create_flags.is_empty());
         assert!(!snapshot.uses_push_descriptor_fast_path);
@@ -5465,12 +6736,77 @@ mod tests {
     }
 
     #[test]
+    fn sampled_image_push_constants_encode_passthrough_blend_mode() {
+        let mut material = sampled_image_material(SceneBlendMode::Normal);
+        material.shader = Some("util/effectpassthrough".to_owned());
+        material.texture_slot_count = 2;
+        material.combo_values.insert("BLENDMODE".to_owned(), 28);
+
+        let bytes = scene_sampled_image_push_constant_bytes(
+            vk::Extent2D {
+                width: 1280,
+                height: 720,
+            },
+            &material,
+            0,
+        );
+
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_PASSTHROUGH_BLEND_MODE_OFFSET_BYTES
+            ),
+            28
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_EFFECT_SHADER_CODE_OFFSET_BYTES
+            ),
+            SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_PASSTHROUGHBLEND
+        );
+    }
+
+    #[test]
+    fn passthroughblend_fragments_cover_we_apply_blending_modes() {
+        let sampled_source = include_str!("shaders/sampled_image_passthroughblend.frag");
+        let solid_source = include_str!("shaders/solid_quad_passthroughblend.frag");
+
+        for mode in 1..=32 {
+            assert!(
+                sampled_source.contains(&format!("mode == {mode}u")) || matches!(mode, 20 | 22),
+                "sampled passthroughblend should cover WE ApplyBlending mode {mode}"
+            );
+        }
+        assert!(sampled_source.contains("mode == 4u || mode == 20u"));
+        assert!(sampled_source.contains("mode == 22u"));
+        assert!(sampled_source.contains("out_color.a = screen.a;"));
+        assert!(solid_source.contains("apply_blending(28u, screen.rgb, v_color.rgb, v_color.a)"));
+        assert!(solid_source.contains("out_color.a = screen.a;"));
+    }
+
+    #[test]
     fn sampled_image_shader_program_selects_pass_specific_single_effect_kinds() {
         let mut material = sampled_image_material(SceneBlendMode::Normal);
         assert_eq!(
             scene_sampled_image_shader_program(&material),
             VulkanaliaSceneSampledImageShaderProgram::Generic
         );
+
+        material.shader = Some("util/effectpassthrough".to_owned());
+        material.combo_values.insert("BLENDMODE".to_owned(), 28);
+        material.texture_slot_count = 2;
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
+        );
+        material.shader = None;
+        material.combo_values.clear();
+        material.texture_slot_count = 1;
 
         material.effect_kinds =
             vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::WaterRipple];
@@ -5522,6 +6858,20 @@ mod tests {
         );
 
         material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::Skew];
+        material.combo_values.clear();
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::Skew
+        );
+        material.combo_values.insert("MODE".to_owned(), 1);
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::Skew
+        );
+        material.combo_values.clear();
+
+        material.effect_kinds =
             vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::Iris];
         assert_eq!(
             scene_sampled_image_shader_program(&material),
@@ -5536,6 +6886,20 @@ mod tests {
         );
 
         material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::TechCircle];
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::TechCircle
+        );
+
+        material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::AudioBars];
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::AudioBars
+        );
+
+        material.effect_kinds =
             vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::Iris];
         material
             .effect_kinds
@@ -5543,6 +6907,112 @@ mod tests {
         assert_eq!(
             scene_sampled_image_shader_program(&material),
             VulkanaliaSceneSampledImageShaderProgram::Generic
+        );
+    }
+
+    #[test]
+    fn sampled_image_push_constants_encode_audiobars_shape_constants() {
+        let mut material = sampled_image_material(SceneBlendMode::Normal);
+        material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::AudioBars];
+        material.combo_values.insert("SHAPE".to_owned(), 7);
+        material.system_shader_uniforms = vec![effect_vec2_uniform(
+            "g_Texture0Resolution",
+            [1000.0, 1000.0],
+        )];
+        material.constant_shader_values = serde_json::from_value(serde_json::json!({
+            "Bar Count": 12.0,
+            "Bar Spacing": 0.31,
+            "Lower/Upper Bar Bounds": "0.1 0.1",
+            "Minimum Height (Will be multiplied by the bar width) ": 1.0,
+            "Radius": 1.0,
+            "Volume Factor": 0.5,
+            "Anti-alias blurring ": "0.01 0.04"
+        }))
+        .expect("audio bars constant shader values");
+
+        let bytes = scene_sampled_image_push_constant_bytes(
+            vk::Extent2D {
+                width: 1280,
+                height: 720,
+            },
+            &material,
+            5000,
+        );
+
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::AudioBars
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_EFFECT_SHADER_CODE_OFFSET_BYTES
+            ),
+            SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUDIOBARS
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_FLAGS_OFFSET_BYTES
+            ),
+            7
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_COUNT_OFFSET_BYTES
+            ) - 12.0)
+                .abs()
+                < f32::EPSILON
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BAR_SPACING_OFFSET_BYTES
+            ) - 0.31)
+                .abs()
+                < 0.00001
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_LOW_OFFSET_BYTES
+            ) - 0.1)
+                .abs()
+                < 0.00001
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_BOUNDS_HIGH_OFFSET_BYTES
+            ) - 0.1)
+                .abs()
+                < 0.00001
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_X_OFFSET_BYTES
+            ) - 0.01)
+                .abs()
+                < 0.00001
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_Y_OFFSET_BYTES
+            ) - 0.04)
+                .abs()
+                < 0.00001
+        );
+        assert!(
+            (push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_RADIUS_OFFSET_BYTES
+            ) - 1.0)
+                .abs()
+                < f32::EPSILON
         );
     }
 
@@ -6413,8 +7883,87 @@ mod tests {
     }
 
     #[test]
-    fn scene_blend_attachments_cover_alpha_normal_additive_multiply_screen_max_and_modulate_modes()
-    {
+    fn sampled_image_push_constants_encode_skew_constants() {
+        let mut material = sampled_image_material(SceneBlendMode::Normal);
+        material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::Skew];
+        material.combo_values =
+            std::collections::BTreeMap::from([("REPEAT".to_owned(), 0), ("MODE".to_owned(), 0)]);
+        material.constant_shader_values = serde_json::from_value(serde_json::json!({
+            "top": 0.1,
+            "bottom": -0.39,
+            "left": 0.2,
+            "right": -0.3
+        }))
+        .expect("skew constants");
+
+        let bytes = scene_sampled_image_push_constant_bytes(
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            &material,
+            500,
+        );
+
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_EFFECT_SHADER_CODE_OFFSET_BYTES
+            ),
+            SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_SKEW
+        );
+        assert_eq!(
+            push_f32(&bytes, SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_TOP_OFFSET_BYTES),
+            0.1
+        );
+        assert_eq!(
+            push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_BOTTOM_OFFSET_BYTES
+            ),
+            -0.39
+        );
+        assert_eq!(
+            push_f32(&bytes, SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_LEFT_OFFSET_BYTES),
+            0.2
+        );
+        assert_eq!(
+            push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_RIGHT_OFFSET_BYTES
+            ),
+            -0.3
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_FLAGS_OFFSET_BYTES
+            ),
+            0
+        );
+
+        material.combo_values.remove("MODE");
+        let bytes = scene_sampled_image_push_constant_bytes(
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            &material,
+            500,
+        );
+        assert_eq!(
+            push_u32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_SKEW_FLAGS_OFFSET_BYTES
+            ),
+            SCENE_SAMPLED_IMAGE_SKEW_FLAG_VERTEX_MODE
+        );
+    }
+
+    #[test]
+    fn scene_blend_attachments_cover_alpha_normal_additive_multiply_screen_max_modulate_hsl_and_alpha_to_coverage_modes()
+     {
         let alpha = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Alpha);
         let normal = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Normal);
         let additive = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Additive);
@@ -6422,6 +7971,9 @@ mod tests {
         let screen = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Screen);
         let max = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Max);
         let modulate = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Modulate);
+        let hsl = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::HslColor);
+        let alpha_to_coverage =
+            native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::AlphaToCoverage);
 
         assert_eq!(alpha.src_color_blend_factor, vk::BlendFactor::SRC_ALPHA);
         assert_eq!(
@@ -6469,6 +8021,25 @@ mod tests {
         assert_eq!(modulate.src_alpha_blend_factor, vk::BlendFactor::ZERO);
         assert_eq!(modulate.dst_alpha_blend_factor, vk::BlendFactor::ONE);
         assert_eq!(modulate.alpha_blend_op, vk::BlendOp::ADD);
+        assert_eq!(hsl.src_color_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(hsl.dst_color_blend_factor, vk::BlendFactor::ZERO);
+        assert_eq!(hsl.color_blend_op, vk::BlendOp::HSL_COLOR_EXT);
+        assert_eq!(hsl.src_alpha_blend_factor, vk::BlendFactor::ZERO);
+        assert_eq!(hsl.dst_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(hsl.alpha_blend_op, vk::BlendOp::ADD);
+        assert_eq!(alpha_to_coverage.blend_enable, vk::FALSE);
+        assert!(alpha_to_coverage.color_write_mask.contains(
+            vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B
+        ));
+        assert!(
+            !alpha_to_coverage
+                .color_write_mask
+                .contains(vk::ColorComponentFlags::A)
+        );
+        assert!(
+            native_vulkan_vulkanalia_scene_advanced_color_blend_state(SceneBlendMode::HslColor)
+                .is_some()
+        );
     }
 
     #[test]
@@ -6495,6 +8066,14 @@ mod tests {
         assert_eq!(
             native_vulkan_vulkanalia_scene_fragment_module_for_blend(
                 SceneBlendMode::Additive,
+                straight,
+                premultiplied
+            ),
+            straight
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_fragment_module_for_blend(
+                SceneBlendMode::AlphaToCoverage,
                 straight,
                 premultiplied
             ),
@@ -6542,6 +8121,7 @@ mod tests {
                 width: 3840,
                 height: 2160,
             },
+            vk::SampleCountFlags::_1,
         );
 
         assert_eq!(snapshot.descriptor_set_count, 0);
@@ -6657,6 +8237,10 @@ mod tests {
             0x0723_0203
         );
         assert_eq!(
+            NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV[0],
+            0x0723_0203
+        );
+        assert_eq!(
             NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV[0],
             0x0723_0203
         );
@@ -6734,6 +8318,12 @@ mod tests {
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV
+            ),
+            5572
+        );
+        assert_eq!(
+            native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV
             ),
             5744
@@ -6750,7 +8340,11 @@ mod tests {
     fn sampled_image_iris_fragment_matches_we_masked_mix_semantics() {
         let source = include_str!("shaders/sampled_image_iris.frag");
         assert!(source.contains("vec4 albedo = texture(g_Texture0, v_uv);"));
-        assert!(source.contains("out_color = apply_vertex_color(mix(albedo, iris, mask));"));
+        assert!(
+            source.contains(
+                "out_color = finalize_output(apply_vertex_color(mix(albedo, iris, mask)));"
+            )
+        );
     }
 
     #[test]
@@ -6774,6 +8368,23 @@ mod tests {
             "float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0) * pc.foliage_ratio;"
         ));
         assert!(!source.contains("base_resolution.y, 1.0) / max(base_resolution.x"));
+    }
+
+    #[test]
+    fn sampled_image_skew_fragment_matches_reveng_uv_mode() {
+        let source = include_str!("shaders/sampled_image_skew.frag");
+        assert!(source.contains("SKEW_FLAG_VERTEX_MODE"));
+        assert!(source.contains("vec2 layer_uv = v_effect_uv;"));
+        assert!(source.contains("float source_y = 1.0 - layer_uv.y;"));
+        assert!(source.contains("mix(pc.skew_top, pc.skew_bottom, source_y)"));
+        assert!(source.contains("texture(g_Texture0, uv)"));
+        assert!(source.contains("out_color = vec4(0.0);"));
+        assert!(source.contains("vec2 pass_uv = vec2(v_uv.x, 1.0 - v_uv.y);"));
+        assert!(source.contains("uv.x -= step(pass_uv.y, 0.5) * pc.skew_top"));
+        assert!(source.contains("uv.y += step(pass_uv.x, 0.5) * pc.skew_left"));
+        assert!(source.contains("vec2 sample_uv = vec2(uv.x, 1.0 - uv.y);"));
+        assert!(source.contains("uv = fract(uv);"));
+        assert!(!source.contains("time_seconds *"));
     }
 
     #[test]
@@ -6845,6 +8456,10 @@ mod tests {
                 "scroll",
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV
                     as &[u32],
+            ),
+            (
+                "skew",
+                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV as &[u32],
             ),
             (
                 "iris",

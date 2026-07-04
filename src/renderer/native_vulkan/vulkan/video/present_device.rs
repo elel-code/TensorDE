@@ -428,7 +428,7 @@ fn with_video_present_device(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: super::swapchain::swapchain_create_flag_labels(
                 swapchain_plan.create_flags,
             ),
@@ -720,6 +720,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
         vk::PhysicalDevicePresentModeFifoLatestReadyFeaturesKHR::builder()
             .present_mode_fifo_latest_ready(true)
             .build();
+    let mut blend_operation_advanced_features =
+        vk::PhysicalDeviceBlendOperationAdvancedFeaturesEXT::builder()
+            .advanced_blend_coherent_operations(
+                present_feature_selection.blend_operation_advanced_coherent_operations,
+            )
+            .build();
 
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
@@ -766,6 +772,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     if present_feature_selection.present_mode_fifo_latest_ready_enabled {
         device_create_info =
             device_create_info.push_next(&mut present_mode_fifo_latest_ready_features);
+    }
+    if present_feature_selection.blend_operation_advanced_enabled {
+        device_create_info = device_create_info.push_next(&mut blend_operation_advanced_features);
     }
 
     let device =
@@ -904,7 +913,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn swapchain_plan_snapshot(
         image_count,
         min_image_count: swapchain_plan.image_count,
         composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-        image_usage: vec!["transfer-dst", "color-attachment"],
+        image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
         create_flags: super::swapchain::swapchain_create_flag_labels(swapchain_plan.create_flags),
         present_id2_enabled: swapchain_plan.present_id2_enabled,
         present_wait2_enabled: swapchain_plan.present_wait2_enabled,

@@ -324,6 +324,7 @@ fn scene_native_effect_is_gpu_image_space_effect(file: &str) -> bool {
         || file.contains("waterflow")
         || file.contains("foliagesway")
         || file.contains("auto_sway")
+        || file.contains("skew")
 }
 
 fn scene_native_effect_apply_cloudmotion(

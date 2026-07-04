@@ -4,6 +4,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::scene::binary::{
@@ -561,6 +562,7 @@ pub(crate) struct SceneBinaryRuntimeSampler {
     package_root: PathBuf,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
+    dynamic_state: Option<BinarySceneDynamicState>,
     layers_scratch: Vec<SceneRenderLayer>,
 }
 
@@ -584,6 +586,10 @@ impl SceneBinaryRuntimeSampler {
         let package_root = binary_scene_package_root(source_path);
         let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
         let scene_size = binary_scene_size(&mut reader)?;
+        let dynamic_state = binary_scene_dynamic_state_from_source_path(
+            source_path,
+            Some(&plan.scene_input_properties),
+        )?;
         Ok(Some(Self {
             reader,
             names,
@@ -591,6 +597,7 @@ impl SceneBinaryRuntimeSampler {
             package_root,
             scene_size,
             scene_fit: plan.scene_fit,
+            dynamic_state,
             layers_scratch: Vec::new(),
         }))
     }
@@ -604,6 +611,7 @@ impl SceneBinaryRuntimeSampler {
             &self.names,
             &self.resources,
             time_ms,
+            self.dynamic_state.as_ref(),
             &mut self.layers_scratch,
         )?;
         Ok(SceneBinaryRuntimeFrame {
@@ -647,6 +655,396 @@ impl BinarySceneNames {
     }
 }
 
+#[derive(Debug, Clone)]
+struct BinarySceneDynamicState {
+    nodes: BTreeMap<String, BinarySceneDynamicNode>,
+    property_bindings: Vec<BinarySceneDynamicPropertyBinding>,
+    properties: BTreeMap<String, Value>,
+    bound_properties: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BinarySceneDynamicNode {
+    visible: bool,
+    visibility_condition: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct BinarySceneDynamicPropertyBinding {
+    property: String,
+    target_node: Option<String>,
+    target: u16,
+    scale: f64,
+    offset: f64,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinarySceneRuntimeMetadata {
+    #[allow(dead_code)]
+    version: Option<u32>,
+    #[serde(default)]
+    properties: BTreeMap<String, Value>,
+    #[serde(default)]
+    nodes: Vec<BinarySceneRuntimeMetadataNode>,
+    #[serde(default)]
+    property_bindings: Vec<BinarySceneRuntimeMetadataPropertyBinding>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinarySceneRuntimeMetadataNode {
+    id: String,
+    #[serde(default = "binary_scene_runtime_metadata_default_visible")]
+    visible: bool,
+    #[serde(default)]
+    visibility_condition: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BinarySceneRuntimeMetadataPropertyBinding {
+    property: String,
+    #[serde(default)]
+    target_node: Option<String>,
+    target: String,
+    #[serde(default = "binary_scene_runtime_metadata_default_scale")]
+    scale: f64,
+    #[serde(default)]
+    offset: f64,
+}
+
+fn binary_scene_runtime_metadata_default_visible() -> bool {
+    true
+}
+
+fn binary_scene_runtime_metadata_default_scale() -> f64 {
+    1.0
+}
+
+fn binary_scene_dynamic_state_from_source_path(
+    source_path: &Path,
+    render_properties: Option<&BTreeMap<String, Value>>,
+) -> Result<Option<BinarySceneDynamicState>, RendererPlanError> {
+    let metadata_path = binary_scene_runtime_metadata_path(source_path);
+    if !metadata_path.is_file() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&metadata_path).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to read binary scene runtime metadata {}: {err}",
+            metadata_path.display()
+        ))
+    })?;
+    let metadata: BinarySceneRuntimeMetadata = serde_json::from_slice(&bytes).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to parse binary scene runtime metadata {}: {err}",
+            metadata_path.display()
+        ))
+    })?;
+    Ok(Some(BinarySceneDynamicState::from_metadata(
+        metadata,
+        render_properties,
+    )))
+}
+
+fn binary_scene_runtime_metadata_path(source_path: &Path) -> PathBuf {
+    let mut path = source_path.as_os_str().to_os_string();
+    path.push(".runtime.json");
+    PathBuf::from(path)
+}
+
+impl BinarySceneDynamicState {
+    fn from_metadata(
+        metadata: BinarySceneRuntimeMetadata,
+        render_properties: Option<&BTreeMap<String, Value>>,
+    ) -> Self {
+        let mut properties = binary_scene_runtime_default_properties(&metadata.properties);
+        if let Some(render_properties) = render_properties {
+            for (property, value) in render_properties {
+                let value = binary_scene_coerce_runtime_property_override(
+                    properties.get(property),
+                    value.clone(),
+                );
+                properties.insert(property.clone(), value);
+            }
+        }
+        let nodes = metadata
+            .nodes
+            .into_iter()
+            .map(|node| {
+                (
+                    node.id,
+                    BinarySceneDynamicNode {
+                        visible: node.visible,
+                        visibility_condition: node.visibility_condition,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let property_bindings = metadata
+            .property_bindings
+            .into_iter()
+            .filter_map(BinarySceneDynamicPropertyBinding::from_metadata)
+            .collect::<Vec<_>>();
+        let mut bound_properties = Vec::new();
+        for node in nodes.values() {
+            if let Some(property) = node
+                .visibility_condition
+                .as_ref()
+                .and_then(Value::as_object)
+                .and_then(|condition| condition.get("property"))
+                .and_then(Value::as_str)
+            {
+                binary_scene_push_unique_property(&mut bound_properties, property);
+            }
+        }
+        for binding in &property_bindings {
+            binary_scene_push_unique_property(&mut bound_properties, &binding.property);
+        }
+        Self {
+            nodes,
+            property_bindings,
+            properties,
+            bound_properties,
+        }
+    }
+
+    fn property_number(&self, property: &str) -> Option<f64> {
+        binary_scene_property_number(self.properties.get(property)?)
+    }
+
+    fn property_value(&self, property: &str) -> Option<&Value> {
+        self.properties.get(property)
+    }
+
+    fn property_text(&self, property: &str) -> Option<String> {
+        binary_scene_property_text(self.properties.get(property)?).map(str::to_owned)
+    }
+
+    fn node_visible(&self, node_id: &str) -> Option<bool> {
+        let node = self.nodes.get(node_id)?;
+        if !node.visible {
+            return Some(false);
+        }
+        let Some(condition) = node.visibility_condition.as_ref() else {
+            return Some(true);
+        };
+        Some(binary_scene_dynamic_visibility_condition_matches(
+            condition,
+            |property| self.property_number(property),
+            |property| self.property_text(property),
+        ))
+    }
+}
+
+impl BinarySceneDynamicPropertyBinding {
+    fn from_metadata(binding: BinarySceneRuntimeMetadataPropertyBinding) -> Option<Self> {
+        Some(Self {
+            property: binding.property,
+            target_node: binding.target_node,
+            target: binary_scene_dynamic_property_target(&binding.target)?,
+            scale: binding.scale,
+            offset: binding.offset,
+        })
+    }
+}
+
+fn binary_scene_coerce_runtime_property_override(default: Option<&Value>, value: Value) -> Value {
+    if default.is_some_and(Value::is_string) && !value.is_string() {
+        return Value::String(
+            binary_scene_value_string(&value).unwrap_or_else(|| value.to_string()),
+        );
+    }
+    if default.is_some_and(Value::is_boolean)
+        && let Some(value) = binary_scene_value_bool(&value)
+    {
+        return Value::Bool(value);
+    }
+    value
+}
+
+fn binary_scene_runtime_default_properties(
+    properties: &BTreeMap<String, Value>,
+) -> BTreeMap<String, Value> {
+    properties
+        .iter()
+        .filter_map(|(name, spec)| {
+            let value = spec
+                .as_object()
+                .and_then(|spec| spec.get("default"))
+                .cloned()
+                .unwrap_or_else(|| spec.clone());
+            (!value.is_null()).then(|| (name.clone(), value))
+        })
+        .collect()
+}
+
+fn binary_scene_push_unique_property(properties: &mut Vec<String>, property: &str) {
+    if !properties.iter().any(|existing| existing == property) {
+        properties.push(property.to_owned());
+    }
+}
+
+fn binary_scene_dynamic_property_target(target: &str) -> Option<u16> {
+    match target {
+        "x" => Some(BINARY_TRANSFORM_PROPERTY_X),
+        "y" => Some(BINARY_TRANSFORM_PROPERTY_Y),
+        "scale_x" | "scaleX" | "scalex" => Some(BINARY_TRANSFORM_PROPERTY_SCALE_X),
+        "scale_y" | "scaleY" | "scaley" => Some(BINARY_TRANSFORM_PROPERTY_SCALE_Y),
+        "opacity" | "alpha" => Some(BINARY_TRANSFORM_PROPERTY_OPACITY),
+        "rotation" | "rotation_deg" | "angle" => Some(BINARY_TRANSFORM_PROPERTY_ROTATION_DEG),
+        "width" => Some(BINARY_TRANSFORM_PROPERTY_WIDTH),
+        "height" => Some(BINARY_TRANSFORM_PROPERTY_HEIGHT),
+        "corner_radius" | "cornerRadius" => Some(BINARY_TRANSFORM_PROPERTY_CORNER_RADIUS),
+        _ => None,
+    }
+}
+
+fn binary_scene_property_number(value: &Value) -> Option<f64> {
+    if let Some(number) = value.as_f64() {
+        return Some(number);
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(if value { 1.0 } else { 0.0 });
+    }
+    None
+}
+
+fn binary_scene_property_text(value: &Value) -> Option<&str> {
+    value.as_str()
+}
+
+fn binary_scene_dynamic_visibility_condition_matches<N, T>(
+    condition: &Value,
+    resolve_number: N,
+    resolve_text: T,
+) -> bool
+where
+    N: Fn(&str) -> Option<f64>,
+    T: Fn(&str) -> Option<String>,
+{
+    let Some(condition) = condition.as_object() else {
+        return true;
+    };
+    if condition
+        .get("runtime")
+        .and_then(Value::as_str)
+        .is_some_and(|runtime| runtime != "wallpaper-engine-user-condition")
+    {
+        return true;
+    }
+    let default_visible = condition
+        .get("default_visible")
+        .and_then(binary_scene_value_bool)
+        .unwrap_or_else(|| {
+            condition
+                .get("authored_value")
+                .and_then(binary_scene_value_bool)
+                .unwrap_or(true)
+        });
+    let Some(property) = condition
+        .get("property")
+        .and_then(binary_scene_value_string)
+    else {
+        return default_visible;
+    };
+    let Some(expected) = condition.get("condition") else {
+        return default_visible;
+    };
+    let actual_number = resolve_number(&property);
+    let actual_text = resolve_text(&property);
+    if actual_number.is_none() && actual_text.is_none() {
+        return default_visible;
+    }
+    binary_scene_dynamic_expected_matches(expected, actual_number, actual_text.as_deref())
+}
+
+fn binary_scene_dynamic_expected_matches(
+    expected: &Value,
+    actual_number: Option<f64>,
+    actual_text: Option<&str>,
+) -> bool {
+    let expected = expected.get("value").unwrap_or(expected);
+    if let Some(expected_bool) = binary_scene_value_bool(expected) {
+        if let Some(actual_number) = actual_number {
+            return (actual_number.abs() > f64::EPSILON) == expected_bool;
+        }
+        return actual_text
+            .and_then(binary_scene_text_bool)
+            .is_some_and(|actual| actual == expected_bool);
+    }
+    if let Some(expected_number) = binary_scene_value_number(expected) {
+        if let Some(actual_number) = actual_number {
+            return (actual_number - expected_number).abs() <= 0.000_001;
+        }
+        return actual_text
+            .and_then(binary_scene_text_number)
+            .is_some_and(|actual| (actual - expected_number).abs() <= 0.000_001);
+    }
+    let Some(expected_text) = binary_scene_value_string(expected) else {
+        return false;
+    };
+    if let Some(actual_text) = actual_text
+        && binary_scene_normalized_text(actual_text) == binary_scene_normalized_text(&expected_text)
+    {
+        return true;
+    }
+    if let Some(expected_number) = binary_scene_text_number(&expected_text)
+        && let Some(actual_number) = actual_number
+    {
+        return (actual_number - expected_number).abs() <= 0.000_001;
+    }
+    false
+}
+
+fn binary_scene_value_bool(value: &Value) -> Option<bool> {
+    value
+        .as_bool()
+        .or_else(|| binary_scene_text_bool(value.as_str()?))
+}
+
+fn binary_scene_text_bool(value: &str) -> Option<bool> {
+    match binary_scene_normalized_text(value).as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn binary_scene_value_number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .or_else(|| binary_scene_text_number(value.as_str()?))
+}
+
+fn binary_scene_text_number(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok()
+}
+
+fn binary_scene_value_string(value: &Value) -> Option<String> {
+    if let Some(value) = value.as_str() {
+        return Some(value.to_owned());
+    }
+    if let Some(value) = value.as_bool() {
+        return Some(if value { "1" } else { "0" }.to_owned());
+    }
+    if let Some(value) = value.as_i64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_u64() {
+        return Some(value.to_string());
+    }
+    if let Some(value) = value.as_f64() {
+        if value.is_finite() && (value.fract()).abs() <= f64::EPSILON {
+            return Some(format!("{value:.0}"));
+        }
+        return Some(value.to_string());
+    }
+    None
+}
+
+fn binary_scene_normalized_text(value: &str) -> String {
+    value.trim().to_ascii_lowercase()
+}
+
 pub(super) fn scene_wallpaper_plan_from_gscn_path(
     output_name: String,
     source_path: PathBuf,
@@ -654,12 +1052,38 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path(
     snapshot_time_ms: u64,
     fit_override: Option<FitMode>,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
+    scene_wallpaper_plan_from_gscn_path_with_properties(
+        output_name,
+        source_path,
+        target_max_fps,
+        snapshot_time_ms,
+        fit_override,
+        None,
+    )
+}
+
+pub(super) fn scene_wallpaper_plan_from_gscn_path_with_properties(
+    output_name: String,
+    source_path: PathBuf,
+    target_max_fps: Option<u32>,
+    snapshot_time_ms: u64,
+    fit_override: Option<FitMode>,
+    render_properties: Option<&BTreeMap<String, Value>>,
+) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let mut reader = BinarySceneReader::open(&source_path)?;
     let names = binary_scene_names(&mut reader)?;
     let package_root = binary_scene_package_root(&source_path);
     let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
     let scene_size = binary_scene_size(&mut reader)?;
-    let layers = binary_scene_render_layers(&mut reader, &names, &resources, snapshot_time_ms)?;
+    let dynamic_state =
+        binary_scene_dynamic_state_from_source_path(&source_path, render_properties)?;
+    let layers = binary_scene_render_layers(
+        &mut reader,
+        &names,
+        &resources,
+        snapshot_time_ms,
+        dynamic_state.as_ref(),
+    )?;
     let (timeline_animation_count, timeline_animated_layer_count) =
         binary_scene_timeline_counts(&mut reader)?;
     let puppet_animation_layer_count = binary_scene_puppet_animation_layer_count(&mut reader)?;
@@ -683,13 +1107,22 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path(
         scene_fit: fit_override.unwrap_or(FitMode::Stretch),
         scene_systems,
         audio_cue_count: 0,
-        bound_properties: Vec::new(),
+        bound_properties: dynamic_state
+            .as_ref()
+            .map(|state| state.bound_properties.clone())
+            .unwrap_or_default(),
         timeline_animation_count,
         timeline_animated_layer_count,
         puppet_animation_layer_count,
-        property_binding_count: 0,
+        property_binding_count: dynamic_state
+            .as_ref()
+            .map(|state| state.property_bindings.len())
+            .unwrap_or_default(),
         cursor_parallax_input_ready: false,
-        scene_input_properties: BTreeMap::new(),
+        scene_input_properties: dynamic_state
+            .as_ref()
+            .map(|state| state.properties.clone())
+            .unwrap_or_default(),
         scene_scenescript_binding_count: 0,
         scene_material_graph_count: reader.chunk_count(SceneBinaryChunkKind::MaterialPass),
         scene_material_graph_resource_count: resources.len(),
@@ -871,9 +1304,17 @@ fn binary_scene_render_layers(
     names: &BinarySceneNames,
     resources: &[BinarySceneResource],
     snapshot_time_ms: u64,
+    dynamic_state: Option<&BinarySceneDynamicState>,
 ) -> Result<Vec<SceneRenderLayer>, RendererPlanError> {
     let mut layers = Vec::new();
-    binary_scene_render_layers_into(reader, names, resources, snapshot_time_ms, &mut layers)?;
+    binary_scene_render_layers_into(
+        reader,
+        names,
+        resources,
+        snapshot_time_ms,
+        dynamic_state,
+        &mut layers,
+    )?;
     Ok(layers)
 }
 
@@ -882,6 +1323,7 @@ fn binary_scene_render_layers_into(
     names: &BinarySceneNames,
     resources: &[BinarySceneResource],
     snapshot_time_ms: u64,
+    dynamic_state: Option<&BinarySceneDynamicState>,
     layers: &mut Vec<SceneRenderLayer>,
 ) -> Result<(), RendererPlanError> {
     layers.clear();
@@ -897,6 +1339,11 @@ fn binary_scene_render_layers_into(
             Some(reader.geometry_record_cached(node.geometry_index)?)
         };
         let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
+        if let Some(dynamic_state) = dynamic_state
+            && let Some(node_id) = binary_name(names, node.id_name)
+        {
+            binary_scene_apply_dynamic_property_bindings(&mut local_state, node_id, dynamic_state);
+        }
         let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
         binary_scene_apply_puppet_attachment_delta(
             names,
@@ -904,8 +1351,13 @@ fn binary_scene_render_layers_into(
             node.puppet_attachment_name,
             parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
         );
-        let mut effective_state =
-            binary_scene_effective_node_state(node, local_state, parent_state);
+        let mut effective_state = binary_scene_effective_node_state(
+            names,
+            node,
+            local_state,
+            parent_state,
+            dynamic_state,
+        );
         effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
             reader,
             names,
@@ -922,6 +1374,9 @@ fn binary_scene_render_layers_into(
         .zip(node_geometries.into_iter().zip(node_states.into_iter()))
     {
         if !node_state.visible {
+            continue;
+        }
+        if node_state.state.opacity <= f64::EPSILON {
             continue;
         }
         let Some(geometry) = geometry else { continue };
@@ -2035,12 +2490,18 @@ fn binary_scene_parent_node_state(
 }
 
 fn binary_scene_effective_node_state(
+    names: &BinarySceneNames,
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
     local: BinarySceneNodeState,
     parent: Option<&BinarySceneEffectiveNodeState>,
+    dynamic_state: Option<&BinarySceneDynamicState>,
 ) -> BinarySceneEffectiveNodeState {
-    let visible =
-        node.flags & BINARY_NODE_FLAG_VISIBLE != 0 && parent.is_none_or(|parent| parent.visible);
+    let local_visible = dynamic_state
+        .and_then(|state| {
+            binary_name(names, node.id_name).and_then(|node_id| state.node_visible(node_id))
+        })
+        .unwrap_or(node.flags & BINARY_NODE_FLAG_VISIBLE != 0);
+    let visible = local_visible && parent.is_none_or(|parent| parent.visible);
     let Some(parent) = parent else {
         return BinarySceneEffectiveNodeState {
             visible,
@@ -2058,6 +2519,38 @@ fn binary_scene_effective_node_state(
             corner_radius: local.corner_radius,
         },
         puppet_attachment_deltas: None,
+    }
+}
+
+fn binary_scene_apply_dynamic_property_bindings(
+    state: &mut BinarySceneNodeState,
+    node_id: &str,
+    dynamic_state: &BinarySceneDynamicState,
+) {
+    for binding in &dynamic_state.property_bindings {
+        if binding
+            .target_node
+            .as_deref()
+            .is_some_and(|target| target != node_id)
+        {
+            continue;
+        }
+        let Some(raw_value) = dynamic_state.property_value(&binding.property) else {
+            continue;
+        };
+        if binding.target == BINARY_TRANSFORM_PROPERTY_OPACITY
+            && let Some(visible) = raw_value.as_bool()
+        {
+            state.opacity *= if visible { 1.0 } else { 0.0 };
+            continue;
+        }
+        let Some(raw_value) = binary_scene_property_number(raw_value) else {
+            continue;
+        };
+        let value = raw_value * binding.scale + binding.offset;
+        if value.is_finite() {
+            binary_scene_apply_timeline_value(state, binding.target, value);
+        }
     }
 }
 
@@ -2261,6 +2754,8 @@ fn binary_scene_blend_mode(code: u16) -> SceneBlendMode {
         5 => SceneBlendMode::Max,
         6 => SceneBlendMode::Normal,
         7 => SceneBlendMode::Modulate,
+        8 => SceneBlendMode::HslColor,
+        9 => SceneBlendMode::AlphaToCoverage,
         _ => SceneBlendMode::Alpha,
     }
 }
@@ -2523,6 +3018,40 @@ mod tests {
         );
         assert_eq!(plan.scene_fit, FitMode::Stretch);
         assert_eq!(cover_plan.scene_fit, FitMode::Cover);
+    }
+
+    #[test]
+    fn gscn_direct_ingest_preserves_hsl_color_blend_from_binary_payload() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "size": { "width": 3840, "height": 2160 },
+            "nodes": [
+                {
+                    "id": "hsl-color-bar",
+                    "type": "rectangle",
+                    "width": 550.0,
+                    "height": 3300.0,
+                    "color": "#003ca4",
+                    "properties": {
+                        "wallpaper_engine_blend": { "colorBlendMode": 28 }
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-hsl-color-blend");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        assert_eq!(plan.layers.len(), 1);
+        assert_eq!(plan.layers[0].blend_mode, SceneBlendMode::HslColor);
     }
 
     #[test]

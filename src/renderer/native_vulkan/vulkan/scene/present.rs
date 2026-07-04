@@ -72,6 +72,7 @@ use super::scene_sampled_image::{
     VulkanaliaSceneTransferImageResources,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_create_scene_effect_target_resources,
+    native_vulkan_vulkanalia_create_scene_framebuffer_snapshot_resources,
     native_vulkan_vulkanalia_create_scene_sampled_image_resources,
     native_vulkan_vulkanalia_create_scene_transfer_image_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_resources,
@@ -494,6 +495,22 @@ fn native_vulkan_vulkanalia_scene_blend_equation(
             dst_alpha: "one",
             alpha_op: "add",
         },
+        SceneBlendMode::HslColor => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "one",
+            dst_color: "zero",
+            color_op: "hsl-color-ext",
+            src_alpha: "zero",
+            dst_alpha: "one",
+            alpha_op: "add",
+        },
+        SceneBlendMode::AlphaToCoverage => NativeVulkanVulkanaliaSceneBlendEquation {
+            src_color: "one",
+            dst_color: "zero",
+            color_op: "coverage-mask",
+            src_alpha: "one",
+            dst_alpha: "zero",
+            alpha_op: "coverage-mask",
+        },
     }
 }
 
@@ -515,6 +532,8 @@ impl NativeVulkanVulkanaliaSceneRenderState {
             SceneBlendMode::Screen => "sampled-image-screen-blend",
             SceneBlendMode::Max => "sampled-image-max-blend",
             SceneBlendMode::Modulate => "sampled-image-modulate-blend",
+            SceneBlendMode::HslColor => "sampled-image-hsl-color-blend",
+            SceneBlendMode::AlphaToCoverage => "sampled-image-alpha-to-coverage",
         }
     }
 }
@@ -620,7 +639,6 @@ impl NativeVulkanVulkanaliaSceneEffectKind {
                 | Self::Flutter
                 | Self::Drift
                 | Self::Scroll
-                | Self::Skew
                 | Self::CloudMotion
                 | Self::LightShafts
                 | Self::TechCircle
@@ -1567,6 +1585,7 @@ fn with_vulkanalia_scene_solid_quad_present(
         device,
         swapchain_plan.format.format,
         swapchain_plan.extent,
+        None,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -1866,12 +1885,28 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
+    let sampled_source_resource_count = sampled_image_sources.len().max(1);
+    let sampled_framebuffer_snapshot_required =
+        scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+            &geometry_payload.draw_steps,
+            sampled_source_resource_count,
+            geometry_payload.effect_targets.len(),
+        );
+    let solid_framebuffer_snapshot_required =
+        options.solid_geometry.as_ref().is_some_and(|geometry| {
+            scene_solid_quad_draw_steps_need_framebuffer_snapshot(&geometry.draw_steps)
+        });
+    let framebuffer_snapshot_required =
+        sampled_framebuffer_snapshot_required || solid_framebuffer_snapshot_required;
+    let framebuffer_snapshot_resource_index =
+        sampled_source_resource_count.saturating_add(geometry_payload.effect_targets.len());
+    let mut descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
         &geometry_payload.draw_steps,
-        sampled_image_sources
-            .len()
-            .max(1)
-            .saturating_add(geometry_payload.effect_targets.len()),
+        scene_sampled_image_resource_count(
+            sampled_source_resource_count,
+            geometry_payload.effect_targets.len(),
+            framebuffer_snapshot_required,
+        ),
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -1883,6 +1918,19 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
+    let solid_framebuffer_snapshot_descriptor_group_base_index =
+        if solid_framebuffer_snapshot_required {
+            let group_base_index = descriptor_slot_plan
+                .descriptor_slots
+                .len()
+                .min(u32::MAX as usize) as u32;
+            descriptor_slot_plan
+                .descriptor_slots
+                .push(framebuffer_snapshot_resource_index.min(u32::MAX as usize) as u32);
+            Some(group_base_index)
+        } else {
+            None
+        };
     let descriptor_strategy = native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy(
         present_device.feature_selection.core_features,
         present_device.feature_selection.vulkan_1_4_properties,
@@ -1913,6 +1961,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         swapchain_plan.format.format,
         swapchain_plan.extent,
         &descriptor_heap_plan,
+        vk::SampleCountFlags::_1,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -2014,6 +2063,53 @@ fn with_vulkanalia_scene_sampled_image_present(
         };
         sampled_images.push(resource);
     }
+    if framebuffer_snapshot_required {
+        let resource = match native_vulkan_vulkanalia_create_scene_framebuffer_snapshot_resources(
+            device,
+            &memory_properties,
+            swapchain_plan.extent,
+            swapchain_plan.format.format,
+        ) {
+            Ok(resources) => resources,
+            Err(err) => {
+                for resource in sampled_images.drain(..) {
+                    native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(
+                        device, resource,
+                    );
+                }
+                destroy_scene_sampled_image_geometry_resources(device, geometry);
+                native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
+                    device, pipeline,
+                );
+                destroy_scene_solid_quad_frame_resources(device, frame_resources);
+                unsafe {
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        };
+        let actual_index = sampled_images.len();
+        if actual_index != framebuffer_snapshot_resource_index {
+            native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
+            for resource in sampled_images.drain(..) {
+                native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
+            }
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
+            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
+                device, pipeline,
+            );
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(format!(
+                "scene framebuffer snapshot resource index {actual_index} does not match planned index {framebuffer_snapshot_resource_index}"
+            ));
+        }
+        sampled_images.push(resource);
+    }
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
     let descriptor_heap = if use_descriptor_heap_primary_path {
         match create_scene_sampled_image_descriptor_heap_resources(
@@ -2078,6 +2174,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             device,
             swapchain_plan.format.format,
             swapchain_plan.extent,
+            Some(&descriptor_heap_plan),
         ) {
             Ok(pipeline) => Some(pipeline),
             Err(err) => {
@@ -2197,8 +2294,8 @@ fn with_vulkanalia_scene_sampled_image_present(
         swapchain_plan.present_wait2_enabled,
     );
 
-    let release_static_sources_after_first_present =
-        scene_sampled_image_can_release_sources_after_first_present(&options, &geometry);
+    let release_static_sources_after_first_present = !framebuffer_snapshot_required
+        && scene_sampled_image_can_release_sources_after_first_present(&options, &geometry);
     let mut pipeline = Some(pipeline);
     let mut geometry = Some(geometry);
     let mut solid_pipeline = solid_pipeline;
@@ -2226,6 +2323,7 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .take()
                 .expect("sampled images are live before static-source release loop"),
             &draw_commands,
+            solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.take(),
             descriptor_strategy,
             &selection,
@@ -2255,6 +2353,7 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .as_ref()
                 .expect("sampled images are live before retained loop"),
             &draw_commands,
+            solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.as_ref(),
             descriptor_strategy,
             &selection,
@@ -2416,6 +2515,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     swapchain_format,
                     extent,
                     &descriptor_heap_plan,
+                    vk::SampleCountFlags::_1,
                 )?,
             );
             sampled_geometry = Some(create_scene_sampled_image_geometry_resources(
@@ -2465,6 +2565,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     device,
                     swapchain_format,
                     extent,
+                    None,
                 )?,
             );
             let geometry_payload = scene_solid_quad_geometry_payload(
@@ -2650,6 +2751,7 @@ impl VulkanaliaSceneVideoOverlayResources {
                     vertex_buffer,
                     index_buffer: geometry.index_buffer,
                     draw_commands: &self.solid_draw_commands,
+                    framebuffer_snapshot_descriptor_group_base_index: None,
                 })
             }
             (None, None) => None,
@@ -2936,7 +3038,7 @@ fn run_scene_solid_quad_present_loop(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -2981,6 +3083,7 @@ fn run_scene_sampled_image_present_loop(
     solid_geometry: Option<&VulkanaliaSceneSolidQuadGeometryResources>,
     sampled_images: &[VulkanaliaSceneSampledImageResources],
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
     descriptor_strategy: NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
@@ -3023,6 +3126,8 @@ fn run_scene_sampled_image_present_loop(
                 vertex_buffer,
                 index_buffer: geometry.index_buffer,
                 draw_commands,
+                framebuffer_snapshot_descriptor_group_base_index:
+                    solid_framebuffer_snapshot_descriptor_group_base_index,
             })
         }
         (None, None, None) => None,
@@ -3051,8 +3156,28 @@ fn run_scene_sampled_image_present_loop(
             geometry.effect_targets.len()
         ));
     }
-    let reuse_recorded_commands =
-        scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands);
+    let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+        &geometry.draw_steps,
+        effect_target_resource_base,
+        geometry.effect_targets.len(),
+    ) || solid_framebuffer_snapshot_descriptor_group_base_index
+        .is_some();
+    let framebuffer_snapshot_resource_index =
+        effect_target_resource_base.saturating_add(geometry.effect_targets.len());
+    let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
+        Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
+            format!(
+                "scene framebuffer snapshot resource index {} exceeds sampled image resource count {}",
+                framebuffer_snapshot_resource_index,
+                sampled_images.len()
+            )
+        })?)
+    } else {
+        None
+    };
+    let reuse_recorded_commands = solid_framebuffer_snapshot_descriptor_group_base_index.is_none()
+        && scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands);
+    let mut framebuffer_snapshot_initialized = false;
     let mut recorded_commands = vec![None; swapchain_images.len()];
     let mut command_buffer_record_count = 0u64;
     let mut command_buffer_reuse_count = 0u64;
@@ -3161,6 +3286,8 @@ fn run_scene_sampled_image_present_loop(
                     vertex_buffer: solid_vertex_buffer,
                     index_buffer: draw.index_buffer,
                     draw_commands: draw.draw_commands,
+                    framebuffer_snapshot_descriptor_group_base_index:
+                        solid_framebuffer_snapshot_descriptor_group_base_index,
                 })
             }
             _ => None,
@@ -3189,6 +3316,12 @@ fn run_scene_sampled_image_present_loop(
                 pipeline,
                 draw_commands,
                 effect_target_resources,
+                framebuffer_snapshot_resource,
+                if framebuffer_snapshot_initialized {
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
+                } else {
+                    vk::ImageLayout::UNDEFINED
+                },
                 vertex_buffer,
                 geometry.index_buffer,
                 [
@@ -3202,6 +3335,7 @@ fn run_scene_sampled_image_present_loop(
             command_record_micros = command_record_micros
                 .saturating_add(scene_duration_micros(command_record_started_at.elapsed()));
             command_buffer_record_count = command_buffer_record_count.saturating_add(1);
+            framebuffer_snapshot_initialized |= framebuffer_snapshot_required;
             if reuse_recorded_commands
                 && let Some(slot) = recorded_commands.get_mut(image_index_usize)
             {
@@ -3325,7 +3459,7 @@ fn run_scene_sampled_image_present_loop(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -3716,7 +3850,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -4051,6 +4185,11 @@ fn record_scene_sampled_image_static_transfer_command_buffer(
         descriptor_set_bind_count: 0,
         push_descriptor_set_recorded_count: 0,
         descriptor_heap_draw_count: 0,
+        framebuffer_snapshot_required: false,
+        framebuffer_snapshot_copy_count: 0,
+        solid_passthroughblend_draw_count: 0,
+        sampled_passthroughblend_draw_count: 0,
+        solid_framebuffer_snapshot_descriptor_group_base_index: None,
         descriptor_model: "none-transfer-only",
         push_constant_bytes: 0,
         swapchain_layout_transition: "undefined -> transfer-dst-optimal -> present-src-khr",
@@ -4141,6 +4280,7 @@ fn scene_static_transfer_pipeline_snapshot(
         pipeline_layout_created: false,
         pipeline_created: false,
         pass_specific_fragment_pipeline_count: 0,
+        rasterization_samples: "not-used-transfer-only",
         render_pass_compatibility: "not-used-transfer-only",
         primitive_topology: "none-transfer-only",
         vertex_input_binding_count: 0,
@@ -4185,6 +4325,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     solid_geometry: Option<VulkanaliaSceneSolidQuadGeometryResources>,
     mut sampled_images: Vec<VulkanaliaSceneSampledImageResources>,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     mut descriptor_heap: Option<VulkanaliaDescriptorHeapImageSamplerResources>,
     descriptor_strategy: NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
@@ -4232,6 +4373,25 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             geometry.effect_targets.len()
         ));
     }
+    let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+        &geometry.draw_steps,
+        effect_target_resource_base,
+        geometry.effect_targets.len(),
+    ) || solid_framebuffer_snapshot_descriptor_group_base_index
+        .is_some();
+    let framebuffer_snapshot_resource_index =
+        effect_target_resource_base.saturating_add(geometry.effect_targets.len());
+    let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
+        Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
+            format!(
+                "scene framebuffer snapshot resource index {} exceeds sampled image resource count {}",
+                framebuffer_snapshot_resource_index,
+                sampled_images.len()
+            )
+        })?)
+    } else {
+        None
+    };
     let sampled_image_resource_count = sampled_images.len().min(u32::MAX as usize) as u32;
     let mut geometry_snapshot = geometry.snapshot.clone();
     geometry_snapshot.retained_across_frames = false;
@@ -4317,6 +4477,8 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                     vertex_buffer: solid_vertex_buffer,
                     index_buffer: geometry.index_buffer,
                     draw_commands,
+                    framebuffer_snapshot_descriptor_group_base_index:
+                        solid_framebuffer_snapshot_descriptor_group_base_index,
                 })
             }
             (None, None, None) => None,
@@ -4342,6 +4504,8 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             &pipeline,
             draw_commands,
             effect_target_resources,
+            framebuffer_snapshot_resource,
+            vk::ImageLayout::UNDEFINED,
             vertex_buffer,
             geometry.index_buffer,
             [
@@ -4485,7 +4649,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-dst", "color-attachment"],
+            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -5527,12 +5691,20 @@ fn update_scene_sampled_image_geometry_input_for_time(
         } else {
             input.effect_targets.len()
         };
-        let resource_count = source_count.saturating_add(effect_target_count);
         let draw_steps = if input.draw_steps.is_empty() {
             geometry.draw_steps.as_slice()
         } else {
             input.draw_steps.as_slice()
         };
+        let resource_count = scene_sampled_image_resource_count(
+            source_count,
+            effect_target_count,
+            scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+                draw_steps,
+                source_count,
+                effect_target_count,
+            ),
+        );
         for (step_index, step) in draw_steps.iter().enumerate() {
             let _ = scene_sampled_image_draw_step_primary_resource_index(step, step_index)?;
             if step.texture_slot_bindings.is_empty() {
@@ -6669,9 +6841,10 @@ fn scene_sampled_image_draw_commands_can_merge(
 fn scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
 ) -> bool {
-    !draw_commands
-        .iter()
-        .any(|draw| draw.material.uses_elapsed_push_constants)
+    !draw_commands.iter().any(|draw| {
+        draw.material.uses_elapsed_push_constants
+            || scene_sampled_image_material_uses_framebuffer_passthrough(&draw.material)
+    })
 }
 
 fn scene_video_layer_draw_commands(
@@ -6896,7 +7069,16 @@ fn scene_sampled_image_geometry_payload_from_input(
         input.effect_targets.len(),
     )?;
     let source_count = input.sources.len().max(1);
-    let resource_count = source_count.saturating_add(input.effect_targets.len());
+    let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+        &input.draw_steps,
+        source_count,
+        input.effect_targets.len(),
+    );
+    let resource_count = scene_sampled_image_resource_count(
+        source_count,
+        input.effect_targets.len(),
+        framebuffer_snapshot_required,
+    );
     let we_graph_resource_count = input.we_graph_resources.len().min(u32::MAX as usize) as u32;
     let we_graph_texture_resource_count = input
         .we_graph_resources
@@ -6975,6 +7157,7 @@ fn scene_sampled_image_geometry_payload_from_input(
     let vertex_count = input.vertices.len() as u32;
     let index_count = input.indices.len() as u32;
     let quad_count = (input.indices.len() / SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT as usize) as u32;
+    let effect_target_count = input.effect_targets.len().min(u32::MAX as usize) as u32;
     Ok(VulkanaliaSceneSampledImageGeometryPayload {
         vertices: input.vertices,
         indices: input.indices,
@@ -6986,9 +7169,7 @@ fn scene_sampled_image_geometry_payload_from_input(
         index_count,
         quad_count,
         source_count: source_count.min(u32::MAX as usize) as u32,
-        effect_target_count: resource_count
-            .saturating_sub(source_count)
-            .min(u32::MAX as usize) as u32,
+        effect_target_count,
         we_graph_resources: input.we_graph_resources,
         we_graph_resource_count,
         we_graph_texture_resource_count,
@@ -6998,6 +7179,48 @@ fn scene_sampled_image_geometry_payload_from_input(
         draw_steps: input.draw_steps,
         source_label: input.source_label,
     })
+}
+
+fn scene_sampled_image_material_uses_framebuffer_passthrough(
+    material: &NativeVulkanVulkanaliaSceneSampledImageMaterial,
+) -> bool {
+    material.shader.as_deref() == Some("util/effectpassthrough")
+        || (material.effect_kinds.is_empty()
+            && material.combo_values.contains_key("BLENDMODE")
+            && material.texture_slot_count >= 2)
+}
+
+fn scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    source_count: usize,
+    effect_target_count: usize,
+) -> bool {
+    let snapshot_resource_index = source_count.saturating_add(effect_target_count);
+    draw_steps.iter().any(|step| {
+        scene_sampled_image_material_uses_framebuffer_passthrough(&step.material)
+            && step
+                .texture_slot_bindings
+                .iter()
+                .any(|binding| binding.resource_index as usize == snapshot_resource_index)
+    })
+}
+
+fn scene_solid_quad_draw_steps_need_framebuffer_snapshot(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSolidQuadDrawStep],
+) -> bool {
+    draw_steps
+        .iter()
+        .any(|step| step.blend.mode == SceneBlendMode::HslColor)
+}
+
+fn scene_sampled_image_resource_count(
+    source_count: usize,
+    effect_target_count: usize,
+    framebuffer_snapshot_required: bool,
+) -> usize {
+    source_count
+        .saturating_add(effect_target_count)
+        .saturating_add(usize::from(framebuffer_snapshot_required))
 }
 
 fn scene_sampled_image_validate_we_graph_resources(
@@ -7714,6 +7937,7 @@ mod tests {
         assert!(NativeVulkanVulkanaliaSceneEffectKind::Scroll.uses_elapsed_push_constants());
         assert!(NativeVulkanVulkanaliaSceneEffectKind::AudioBars.uses_elapsed_push_constants());
         assert!(NativeVulkanVulkanaliaSceneEffectKind::Iris.uses_elapsed_push_constants());
+        assert!(!NativeVulkanVulkanaliaSceneEffectKind::Skew.uses_elapsed_push_constants());
         assert!(!NativeVulkanVulkanaliaSceneEffectKind::OpacityMask.uses_elapsed_push_constants());
         assert!(!NativeVulkanVulkanaliaSceneEffectKind::ClippingMask.uses_elapsed_push_constants());
     }

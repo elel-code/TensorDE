@@ -1,5 +1,8 @@
+use std::collections::BTreeMap;
+
 use crate::core::SceneBlendMode;
 use crate::core::scene::{SceneMesh, scene_blend_mode_from_material_blending};
+use serde_json::Value;
 
 use super::blend::native_vulkan_scene_render_state;
 use super::{
@@ -97,7 +100,11 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
     let has_effect_passes = !quad.effect_passes.is_empty();
     let color_blend_passthrough =
         native_vulkan_scene_we_image_pass_chain_uses_color_blend_passthrough(quad.base_blend_mode)
-            && (first_class_target || has_effect_passes);
+            && (first_class_target
+                || has_effect_passes
+                || native_vulkan_scene_we_image_pass_chain_supports_framebuffer_passthrough(
+                    quad.base_blend_mode,
+                ));
     let local_target_required = first_class_target || color_blend_passthrough || has_effect_passes;
     if !local_target_required {
         return None;
@@ -109,13 +116,18 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         native_vulkan_scene_we_image_pass_chain_allows_temporary_raw_composite(quad);
     let color_blend_passthrough_folded = color_blend_passthrough
         && native_vulkan_scene_we_image_pass_chain_can_fold_color_blend_passthrough(quad);
-    let execution = if first_class_target || material_graph_supported {
-        NativeVulkanSceneWeImagePassExecution::FirstClassTarget
-    } else if raw_direct_composite_allowed {
-        NativeVulkanSceneWeImagePassExecution::TemporaryRawFallback
-    } else {
-        NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
-    };
+    let framebuffer_passthrough_supported = color_blend_passthrough
+        && native_vulkan_scene_we_image_pass_chain_supports_framebuffer_passthrough(
+            quad.base_blend_mode,
+        );
+    let execution =
+        if first_class_target || material_graph_supported || framebuffer_passthrough_supported {
+            NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+        } else if raw_direct_composite_allowed {
+            NativeVulkanSceneWeImagePassExecution::TemporaryRawFallback
+        } else {
+            NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
+        };
     let unsupported_reason = (!raw_direct_composite_allowed && !material_graph_supported)
         .then_some("we-effect-graph-material-pass-not-executed");
     if native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
@@ -304,6 +316,11 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         let passthrough_depth_test = NativeVulkanSceneMaterialFlag::Disabled;
         let passthrough_depth_write = NativeVulkanSceneMaterialFlag::Disabled;
         let passthrough_cull_mode = quad.material_pass.render_state.cull_mode.clone();
+        let mut passthrough_combo_values = BTreeMap::new();
+        passthrough_combo_values.insert(
+            "BLENDMODE".to_owned(),
+            native_vulkan_scene_we_color_blend_mode_code(quad.base_blend_mode),
+        );
         passes.push(NativeVulkanSceneWeImagePass {
             pass_index: passes.len(),
             role: NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough,
@@ -316,9 +333,9 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             fbos: Default::default(),
             shader: Some("util/effectpassthrough".to_owned()),
             blending: Some("normal".to_owned()),
-            scene_blend_mode: quad.base_blend_mode,
+            scene_blend_mode: SceneBlendMode::Normal,
             render_state: native_vulkan_scene_we_image_pass_render_state(
-                quad.base_blend_mode,
+                SceneBlendMode::Normal,
                 passthrough_depth_test,
                 passthrough_depth_write,
                 &passthrough_cull_mode,
@@ -332,8 +349,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             effect_uv_transform: None,
             parameter_keys: Vec::new(),
             constant_shader_values: Default::default(),
-            combo_keys: Vec::new(),
-            combo_values: Default::default(),
+            combo_keys: vec!["BLENDMODE".to_owned()],
+            combo_values: passthrough_combo_values,
             depth_test: passthrough_depth_test,
             depth_write: passthrough_depth_write,
             cull_mode: passthrough_cull_mode,
@@ -400,7 +417,30 @@ fn native_vulkan_scene_we_image_pass_render_state(
 fn native_vulkan_scene_we_image_pass_chain_uses_color_blend_passthrough(
     blend_mode: SceneBlendMode,
 ) -> bool {
-    !matches!(blend_mode, SceneBlendMode::Alpha | SceneBlendMode::Normal)
+    !matches!(
+        blend_mode,
+        SceneBlendMode::Alpha | SceneBlendMode::Normal | SceneBlendMode::AlphaToCoverage
+    )
+}
+
+fn native_vulkan_scene_we_image_pass_chain_supports_framebuffer_passthrough(
+    blend_mode: SceneBlendMode,
+) -> bool {
+    matches!(blend_mode, SceneBlendMode::HslColor)
+}
+
+fn native_vulkan_scene_we_color_blend_mode_code(blend_mode: SceneBlendMode) -> i64 {
+    match blend_mode {
+        SceneBlendMode::Multiply => 2,
+        SceneBlendMode::Screen => 7,
+        SceneBlendMode::HslColor => 28,
+        SceneBlendMode::Additive => 31,
+        SceneBlendMode::Modulate => 32,
+        SceneBlendMode::Alpha
+        | SceneBlendMode::Normal
+        | SceneBlendMode::Max
+        | SceneBlendMode::AlphaToCoverage => 0,
+    }
 }
 
 fn native_vulkan_scene_we_image_pass_chain_allows_temporary_raw_composite(
@@ -458,6 +498,11 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
     {
         return false;
     }
+    if effect.kind == NativeVulkanSceneEffectKind::Skew
+        && native_vulkan_scene_we_image_pass_is_vertex_skew_effect_record(effect)
+    {
+        return false;
+    }
     matches!(
         effect.kind,
         NativeVulkanSceneEffectKind::WaterRipple
@@ -466,6 +511,8 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
             | NativeVulkanSceneEffectKind::WaterCaustics
             | NativeVulkanSceneEffectKind::FoliageSway
             | NativeVulkanSceneEffectKind::Scroll
+            | NativeVulkanSceneEffectKind::Skew
+            | NativeVulkanSceneEffectKind::TechCircle
     )
 }
 
@@ -563,6 +610,8 @@ fn native_vulkan_scene_effect_pass_has_executable_material_graph(
                 && !native_vulkan_scene_effect_combo_enabled(pass, "EXPONENT")
                 && !native_vulkan_scene_effect_combo_enabled(pass, "AUTO_TIMEOFFSET_INTERPOLATION")
         }
+        NativeVulkanSceneEffectKind::Skew => true,
+        NativeVulkanSceneEffectKind::TechCircle | NativeVulkanSceneEffectKind::AudioBars => true,
         _ => false,
     }
 }
@@ -654,7 +703,12 @@ fn native_vulkan_scene_we_image_graph_targets(
             })
         });
         let scale = fbo.map(|fbo| fbo.scale);
-        let bounds = native_vulkan_scene_we_image_graph_target_bounds(quad, chain, scale);
+        let bounds = native_vulkan_scene_we_image_graph_target_bounds_for_write(
+            quad,
+            chain,
+            scale,
+            first_write_step_index,
+        );
         targets.push(NativeVulkanSceneWeImageGraphTarget {
             layer_index: quad.layer_index,
             layer_id: quad.layer_id.clone(),
@@ -691,8 +745,12 @@ fn native_vulkan_scene_we_image_graph_targets(
                 .passes
                 .iter()
                 .any(|candidate| candidate.binds.values().any(|bind| bind == &fbo.name));
-            let bounds =
-                native_vulkan_scene_we_image_graph_target_bounds(quad, chain, Some(fbo.scale));
+            let bounds = native_vulkan_scene_we_image_graph_target_bounds_for_write(
+                quad,
+                chain,
+                Some(fbo.scale),
+                chain.passes.len(),
+            );
             targets.push(NativeVulkanSceneWeImageGraphTarget {
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
@@ -765,6 +823,20 @@ fn native_vulkan_scene_we_image_graph_texture_bindings(
                 input_target_index,
                 pass.binds.get(&0),
             );
+            if pass.role == NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough {
+                bindings.push(NativeVulkanSceneWeImageGraphTextureBinding {
+                    slot: 1,
+                    uniform: native_vulkan_scene_we_image_graph_texture_uniform(1),
+                    source: NativeVulkanSceneWeImageGraphTextureBindingSource::FramebufferSnapshot,
+                    target_index: None,
+                    endpoint: None,
+                    bind_name: Some("framebuffer".to_owned()),
+                    source_path: None,
+                    width: None,
+                    height: None,
+                    resolution: None,
+                });
+            }
         }
     }
 
@@ -953,21 +1025,192 @@ fn native_vulkan_scene_we_image_graph_target_bounds(
     chain: &NativeVulkanSceneWeImagePassChain,
     scale: Option<f64>,
 ) -> NativeVulkanSceneWeImageGraphTargetBounds {
-    let mut bounds =
-        if native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(quad, chain)
-        {
-            native_vulkan_scene_we_image_graph_layer_uv_domain_target_bounds(quad)
+    native_vulkan_scene_we_image_graph_target_bounds_for_write(
+        quad,
+        chain,
+        scale,
+        chain.passes.len(),
+    )
+}
+
+fn native_vulkan_scene_we_image_graph_base_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    chain: &NativeVulkanSceneWeImagePassChain,
+) -> NativeVulkanSceneWeImageGraphTargetBounds {
+    if native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(quad, chain) {
+        native_vulkan_scene_we_image_graph_layer_uv_domain_target_bounds(quad)
+    } else {
+        quad.mesh
+            .as_deref()
+            .and_then(|mesh| native_vulkan_scene_we_image_graph_mesh_target_bounds(quad, mesh))
+            .unwrap_or_else(|| native_vulkan_scene_we_image_graph_nominal_target_bounds(quad))
+    }
+}
+
+fn native_vulkan_scene_we_image_graph_target_bounds_for_write(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    chain: &NativeVulkanSceneWeImagePassChain,
+    scale: Option<f64>,
+    write_step_index: usize,
+) -> NativeVulkanSceneWeImageGraphTargetBounds {
+    let base_bounds = native_vulkan_scene_we_image_graph_base_target_bounds(quad, chain);
+    let mut graph_bounds: Vec<(
+        NativeVulkanSceneWeImagePassEndpoint,
+        Option<String>,
+        NativeVulkanSceneWeImageGraphTargetBounds,
+    )> = Vec::new();
+    let mut requested_target = None;
+    for (step_index, pass) in chain.passes.iter().enumerate() {
+        if step_index > write_step_index {
+            break;
+        }
+        let input_bounds = native_vulkan_scene_we_image_graph_endpoint_bounds(
+            &graph_bounds,
+            pass.input,
+            pass.input_name.as_deref(),
+        )
+        .unwrap_or(base_bounds);
+        let mut output_bounds = if pass.role == NativeVulkanSceneWeImagePassRole::BaseMaterial {
+            base_bounds
         } else {
-            quad.mesh
-                .as_deref()
-                .and_then(|mesh| native_vulkan_scene_we_image_graph_mesh_target_bounds(quad, mesh))
-                .unwrap_or_else(|| native_vulkan_scene_we_image_graph_nominal_target_bounds(quad))
+            input_bounds
         };
+        if native_vulkan_scene_we_image_pass_is_vertex_skew(pass) {
+            output_bounds =
+                native_vulkan_scene_we_image_graph_vertex_skew_bounds(input_bounds, pass);
+        }
+        if pass.target.is_graph_target() {
+            native_vulkan_scene_we_image_graph_store_endpoint_bounds(
+                &mut graph_bounds,
+                pass.target,
+                pass.target_name.as_deref(),
+                output_bounds,
+            );
+        }
+        if step_index == write_step_index {
+            requested_target = native_vulkan_scene_we_image_graph_endpoint_bounds(
+                &graph_bounds,
+                pass.target,
+                pass.target_name.as_deref(),
+            );
+        }
+    }
+    let mut bounds = requested_target
+        .or_else(|| graph_bounds.last().map(|(_, _, bounds)| *bounds))
+        .unwrap_or(base_bounds);
     if let Some(scale) = scale.filter(|scale| scale.is_finite() && *scale > 0.0) {
         bounds.width *= scale;
         bounds.height *= scale;
     }
     bounds
+}
+
+fn native_vulkan_scene_we_image_graph_endpoint_bounds(
+    graph_bounds: &[(
+        NativeVulkanSceneWeImagePassEndpoint,
+        Option<String>,
+        NativeVulkanSceneWeImageGraphTargetBounds,
+    )],
+    endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    name: Option<&str>,
+) -> Option<NativeVulkanSceneWeImageGraphTargetBounds> {
+    graph_bounds
+        .iter()
+        .rev()
+        .find(|(candidate_endpoint, candidate_name, _)| {
+            *candidate_endpoint == endpoint && candidate_name.as_deref() == name
+        })
+        .map(|(_, _, bounds)| *bounds)
+}
+
+fn native_vulkan_scene_we_image_graph_store_endpoint_bounds(
+    graph_bounds: &mut Vec<(
+        NativeVulkanSceneWeImagePassEndpoint,
+        Option<String>,
+        NativeVulkanSceneWeImageGraphTargetBounds,
+    )>,
+    endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    name: Option<&str>,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+) {
+    graph_bounds.push((endpoint, name.map(ToOwned::to_owned), bounds));
+}
+
+fn native_vulkan_scene_we_image_graph_vertex_skew_bounds(
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    pass: &NativeVulkanSceneWeImagePass,
+) -> NativeVulkanSceneWeImageGraphTargetBounds {
+    let top = native_vulkan_scene_we_image_pass_constant_f64(pass, &["top", "g_Top"], 0.0);
+    let bottom = native_vulkan_scene_we_image_pass_constant_f64(pass, &["bottom", "g_Bottom"], 0.0);
+    let left = native_vulkan_scene_we_image_pass_constant_f64(pass, &["left", "g_Left"], 0.0);
+    let right = native_vulkan_scene_we_image_pass_constant_f64(pass, &["right", "g_Right"], 0.0);
+    let x_shift = [top * bounds.width, bottom * bounds.width];
+    let y_shift = [left * bounds.height, right * bounds.height];
+    let points = [
+        [bounds.left + x_shift[0], bounds.top + y_shift[0]],
+        [
+            bounds.left + bounds.width + x_shift[0],
+            bounds.top + y_shift[1],
+        ],
+        [
+            bounds.left + x_shift[1],
+            bounds.top + bounds.height + y_shift[0],
+        ],
+        [
+            bounds.left + bounds.width + x_shift[1],
+            bounds.top + bounds.height + y_shift[1],
+        ],
+    ];
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for [x, y] in points {
+        min_x = min_x.min(x);
+        min_y = min_y.min(y);
+        max_x = max_x.max(x);
+        max_y = max_y.max(y);
+    }
+    if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+        return bounds;
+    }
+    NativeVulkanSceneWeImageGraphTargetBounds {
+        left: min_x,
+        top: min_y,
+        width: (max_x - min_x).max(1.0),
+        height: (max_y - min_y).max(1.0),
+    }
+}
+
+fn native_vulkan_scene_we_image_pass_is_vertex_skew(pass: &NativeVulkanSceneWeImagePass) -> bool {
+    pass.effect_kind == Some(NativeVulkanSceneEffectKind::Skew)
+        && pass.combo_values.get("MODE").copied().unwrap_or(1) != 0
+}
+
+fn native_vulkan_scene_we_image_pass_is_vertex_skew_effect_record(
+    pass: &NativeVulkanSceneEffectRecord,
+) -> bool {
+    pass.kind == NativeVulkanSceneEffectKind::Skew
+        && pass.combo_values.get("MODE").copied().unwrap_or(1) != 0
+}
+
+fn native_vulkan_scene_we_image_pass_constant_f64(
+    pass: &NativeVulkanSceneWeImagePass,
+    keys: &[&str],
+    default: f64,
+) -> f64 {
+    keys.iter()
+        .filter_map(|key| pass.constant_shader_values.get(*key))
+        .find_map(native_vulkan_scene_we_image_pass_value_f64)
+        .unwrap_or(default)
+}
+
+fn native_vulkan_scene_we_image_pass_value_f64(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(number) => number.as_f64(),
+        Value::String(text) => text.split_whitespace().next()?.parse::<f64>().ok(),
+        _ => None,
+    }
 }
 
 pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pass_chain_uses_layer_uv_domain_puppet_targets(
@@ -1442,6 +1685,50 @@ mod tests {
         assert!((bounds.top - -10.0).abs() < 1.0e-6);
         assert_eq!(bounds.width, 150.0);
         assert!((bounds.height - 120.0).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn vertex_skew_expands_graph_target_bounds() {
+        let mut audio = iris_effect_record();
+        audio.kind = NativeVulkanSceneEffectKind::AudioBars;
+        audio.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        audio.effect_file =
+            "effects/workshop/3082978660/enhanced_simple_audio_bars/effect.json".to_owned();
+        audio.runtime = None;
+        audio.shader = Some("workshop/3082978660/effects/Simple_Audio_Bars".to_owned());
+        let mut effect = iris_effect_record();
+        effect.kind = NativeVulkanSceneEffectKind::Skew;
+        effect.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        effect.effect_file = "effects/skew/effect.json".to_owned();
+        effect.runtime = None;
+        effect.shader = Some("effects/skew".to_owned());
+        effect.constant_shader_values =
+            BTreeMap::from([("bottom".to_owned(), serde_json::json!(-0.39))]);
+        let mut opacity = iris_effect_record();
+        opacity.kind = NativeVulkanSceneEffectKind::OpacityMask;
+        opacity.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        opacity.effect_file = "effects/opacity/effect.json".to_owned();
+        opacity.runtime = Some("native-opacity-mask".to_owned());
+        opacity.shader = Some("effects/opacity".to_owned());
+        let mut quad = sampled_image_quad(None);
+        quad.width = 100.0;
+        quad.height = 100.0;
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![audio, effect, opacity];
+        quad.image_effect_pass_count = 3;
+
+        let chain = native_vulkan_scene_we_image_pass_chain(&quad).expect("skew chain");
+        assert!(!matches!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::Direct
+        ));
+        let skew_bounds =
+            native_vulkan_scene_we_image_graph_target_bounds_for_write(&quad, &chain, None, 2);
+
+        assert!((skew_bounds.left - -39.0).abs() < 1.0e-6);
+        assert_eq!(skew_bounds.top, 0.0);
+        assert!((skew_bounds.width - 139.0).abs() < 1.0e-6);
+        assert_eq!(skew_bounds.height, 100.0);
     }
 
     #[test]

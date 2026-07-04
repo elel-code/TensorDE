@@ -204,6 +204,31 @@ fn composelayer_framebuffer_source_model_uses_image_runtime() {
 }
 
 #[test]
+fn composelayer_effect_only_sources_use_image_runtime() {
+    let mut source_model = scene_builtin_util_model("models/util/composelayer.json").unwrap();
+    let node = serde_json::json!({
+        "effects": [
+            {
+                "file": "effects/workshop/2123274886/tech_circle/effect.json",
+                "passes": [{}]
+            }
+        ]
+    });
+    let node = node.as_object().unwrap().clone();
+
+    assert_eq!(
+        scene_builtin_util_node_kind(&node, &source_model),
+        Some("rectangle")
+    );
+    source_model.render_resource = Some("white-placeholder".to_owned());
+    source_model.render_kind = Some("image");
+    assert_eq!(
+        scene_builtin_util_node_kind(&node, &source_model),
+        Some("image")
+    );
+}
+
+#[test]
 fn rounded_mask_effect_lowers_rectangle_corner_radius() {
     let node = serde_json::json!({
         "width": 550.0,
@@ -319,6 +344,216 @@ fn font_text_lowers_to_generated_image_texture() {
             SceneBinaryChunkKind::ResourceTable
         ) >= 1
     );
+}
+
+#[test]
+fn font_text_alpha_crop_trims_transparent_layout_box() {
+    let mut image = SceneWeTexImage {
+        width: 6,
+        height: 4,
+        backing_width: 6,
+        backing_height: 4,
+        rgba: vec![0; 6 * 4 * 4],
+        r8: None,
+    };
+    for (x, y) in [(2usize, 1usize), (4, 2)] {
+        image.rgba[(y * 6 + x) * 4 + 3] = 255;
+    }
+
+    let crop = scene_crop_text_image_to_alpha_bounds(&mut image).expect("crop");
+
+    assert_eq!(
+        crop,
+        SceneTextRasterCrop {
+            original_width: 6,
+            original_height: 4,
+            x: 2,
+            y: 1,
+            width: 3,
+            height: 2,
+        }
+    );
+    assert_eq!((image.width, image.height), (3, 2));
+    assert_eq!(image.rgba.len(), 3 * 2 * 4);
+    assert_eq!(image.rgba[3], 255);
+    assert_eq!(image.rgba[(2 * 3 - 1) * 4 + 3], 255);
+}
+
+#[test]
+fn font_text_uv_effects_preserve_layout_box() {
+    let scroll_text = serde_json::json!({
+        "effects": [{
+            "file": "effects/scroll/effect.json",
+            "visible": true
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+    let colorkey_text = serde_json::json!({
+        "effects": [{
+            "file": "effects/colorkey/effect.json",
+            "visible": true
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    assert!(!scene_text_raster_can_alpha_crop(&scroll_text));
+    assert!(scene_text_raster_can_alpha_crop(&colorkey_text));
+}
+
+#[test]
+fn font_text_uv_effects_fit_glyphs_to_authored_layout_period() {
+    let font_path =
+        Path::new("reverse-engineered/extracted/3742497499/fonts/SourceHanSans-Heavy.otf");
+    let font = scene_load_text_raster_font(font_path).unwrap();
+    let object = serde_json::json!({
+        "pointsize": 96.0,
+        "size": "2457.00000 616.00000",
+        "padding": "0.00000 0.00000",
+        "spacing": "16.00000 16.00000",
+        "effects": [{
+            "file": "effects/scroll/effect.json",
+            "visible": true
+        }]
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    let font_size = scene_text_raster_effective_font_size(
+        &font,
+        &object,
+        "DREAMLIKE",
+        scene_font_size_from_object(&object),
+        2457,
+        616,
+        (0.0, 0.0),
+        (16.0, 16.0),
+        None,
+    );
+    assert!(
+        font_size > 96.0 * 2.0,
+        "scroll text should use the authored effect-texture period, not the small pointsize"
+    );
+
+    let image = scene_rasterize_text_image(
+        &font,
+        "DREAMLIKE",
+        font_size,
+        2457,
+        616,
+        SceneTextRasterHorizontalAlign::Middle,
+        SceneTextRasterVerticalAlign::Middle,
+        (0.0, 0.0),
+        (16.0, 16.0),
+        [255, 255, 255, 255],
+        None,
+    )
+    .unwrap();
+    let (min_x, min_y, max_x, max_y) =
+        scene_text_image_alpha_bounds(&image.rgba, image.width, image.height).unwrap();
+    assert!(max_x - min_x > 2457 * 3 / 4);
+    assert!(max_y - min_y > 616 / 3);
+
+    let plain = serde_json::json!({ "pointsize": 96.0 })
+        .as_object()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        scene_text_raster_effective_font_size(
+            &font,
+            &plain,
+            "DREAMLIKE",
+            scene_font_size_from_object(&plain),
+            2457,
+            616,
+            (0.0, 0.0),
+            (16.0, 16.0),
+            None,
+        ),
+        96.0
+    );
+}
+
+#[test]
+fn user_bound_logo_label_text_fits_authored_box() {
+    let font_path =
+        Path::new("reverse-engineered/extracted/3742497499/fonts/SourceHanSans-Heavy.otf");
+    let font = scene_load_text_raster_font(font_path).unwrap();
+    let object = serde_json::json!({
+        "pointsize": 18.0,
+        "size": "746.00000 113.00000",
+        "padding": "32.00000 32.00000",
+        "horizontalalign": "right",
+        "verticalalign": "center",
+        "text": {
+            "user": "newproperty25",
+            "value": "A FLOATING DREAM."
+        }
+    })
+    .as_object()
+    .unwrap()
+    .clone();
+
+    let font_size = scene_text_raster_effective_font_size(
+        &font,
+        &object,
+        "A FLOATING DREAM.",
+        scene_font_size_from_object(&object),
+        746,
+        113,
+        (32.0, 32.0),
+        (0.0, 0.0),
+        None,
+    );
+
+    assert!(
+        font_size > 18.0 * 1.5,
+        "logo label should not rasterize to a barely visible 18px glyph box"
+    );
+    assert!(font_size < 64.0);
+}
+
+#[test]
+fn font_text_crop_reanchors_node_to_visible_bounds() {
+    let mut node = Map::new();
+    node.insert("width".to_owned(), json!(100));
+    node.insert("height".to_owned(), json!(40));
+    node.insert(
+        "transform".to_owned(),
+        json!({
+            "x": 10.0,
+            "y": 20.0,
+            "scale_x": 2.0,
+            "scale_y": 3.0,
+            "rotation_deg": 0.0,
+            "anchor_x": 0.5,
+            "anchor_y": 0.5
+        }),
+    );
+
+    scene_apply_generated_text_crop_to_node(
+        &mut node,
+        Some(SceneTextRasterCrop {
+            original_width: 100,
+            original_height: 40,
+            x: 60,
+            y: 15,
+            width: 20,
+            height: 10,
+        }),
+    );
+
+    assert_eq!(node["width"], json!(20));
+    assert_eq!(node["height"], json!(10));
+    let transform = node["transform"].as_object().unwrap();
+    assert_eq!(transform["anchor_x"], json!(0.5));
+    assert_eq!(transform["anchor_y"], json!(0.5));
+    assert!((transform["x"].as_f64().unwrap() - 50.0).abs() < 1.0e-6);
+    assert!((transform["y"].as_f64().unwrap() - 20.0).abs() < 1.0e-6);
 }
 
 fn binary_chunk_count(path: &Path, kind: SceneBinaryChunkKind) -> u32 {
