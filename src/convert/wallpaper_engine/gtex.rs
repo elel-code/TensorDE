@@ -8,14 +8,12 @@ pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK: u32 = 1;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK: u32 = 3;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
 pub(super) const GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM: u32 = 9;
+pub(super) const GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM: u32 = 37;
 
-const GILDER_SCENE_TEXTURE_MIP_COUNT: u32 = 1;
 const BC_BLOCK_TEXELS: u32 = 4;
 const BC1_BLOCK_BYTES: usize = 8;
 const BC3_BLOCK_BYTES: usize = 16;
 const BC7_BLOCK_BYTES: usize = 16;
-const BC7_MODE6_INDEX_WEIGHTS: [u16; 16] =
-    [0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64];
 
 pub(super) fn read_png_as_rgba(path: &Path) -> Result<SceneWeTexImage, String> {
     let file = fs::File::open(path).map_err(|err| format!("failed to open PNG: {err}"))?;
@@ -93,7 +91,7 @@ pub(super) fn flip_rgba_rows_vertically(
     Ok(())
 }
 
-pub(super) fn write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
+pub(super) fn write_rgba8_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(), String> {
     let expected_len = tex::rgba_len(image.width, image.height)?;
     if image.rgba.len() != expected_len {
         return Err(format!(
@@ -101,22 +99,17 @@ pub(super) fn write_bc7_gtex(path: &Path, image: &SceneWeTexImage) -> Result<(),
             image.rgba.len()
         ));
     }
-    let payload = encode_bc7(&image.rgba, image.width, image.height)?;
-    write_bc7_payload_gtex(path, image.width, image.height, &payload)
-}
-
-pub(super) fn write_bc7_payload_gtex(
-    path: &Path,
-    width: u32,
-    height: u32,
-    payload: &[u8],
-) -> Result<(), String> {
-    write_bc_payload_gtex(
+    let mip_rgba = rgba_mip_chain(&image.rgba, image.width, image.height)?;
+    let payloads = mip_rgba
+        .into_iter()
+        .map(|level| level.rgba)
+        .collect::<Vec<_>>();
+    write_uncompressed_mip_payload_gtex(
         path,
-        width,
-        height,
-        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK,
-        payload,
+        image.width,
+        image.height,
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+        &payloads,
     )
 }
 
@@ -126,32 +119,97 @@ pub(super) fn write_r8_gtex(
     height: u32,
     payload: &[u8],
 ) -> Result<(), String> {
-    write_uncompressed_payload_gtex(
+    write_uncompressed_mip_payload_gtex(
         path,
         width,
         height,
         GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM,
-        payload,
+        &r8_mip_chain(payload, width, height)?,
     )
 }
 
-fn write_uncompressed_payload_gtex(
+fn write_uncompressed_mip_payload_gtex(
     path: &Path,
     width: u32,
     height: u32,
     format: u32,
-    payload: &[u8],
+    payloads: &[Vec<u8>],
 ) -> Result<(), String> {
     let format_label = gtex_format_label(format)?;
-    let expected_len = usize::try_from(uncompressed_payload_len(format, width, height)?)
-        .map_err(|_| format!("{format_label} payload length exceeds usize"))?;
-    if payload.len() != expected_len {
+    validate_gtex_mip_payloads(
+        format_label,
+        width,
+        height,
+        payloads,
+        |level_width, level_height| uncompressed_payload_len(format, level_width, level_height),
+    )?;
+    write_gtex_mip_payloads(path, width, height, format, payloads)
+}
+
+fn validate_gtex_mip_payloads(
+    format_label: &str,
+    width: u32,
+    height: u32,
+    payloads: &[Vec<u8>],
+    mut expected_len: impl FnMut(u32, u32) -> Result<u64, String>,
+) -> Result<(), String> {
+    if payloads.is_empty() {
+        return Err(format!("{format_label} mip payload list must not be empty"));
+    }
+    let expected_mip_count = gtex_mip_count(width, height)?;
+    if payloads.len() > expected_mip_count as usize {
         return Err(format!(
-            "{format_label} payload has {} bytes, expected {expected_len}",
-            payload.len()
+            "{format_label} mip payload list has {} levels, but {width}x{height} supports at most {expected_mip_count}",
+            payloads.len()
         ));
     }
-    write_gtex_payload(path, width, height, format, payload)
+    for (level, payload) in payloads.iter().enumerate() {
+        let (level_width, level_height) = gtex_mip_extent(width, height, level as u32)?;
+        let expected_len = usize::try_from(expected_len(level_width, level_height)?)
+            .map_err(|_| format!("{format_label} mip {level} payload length exceeds usize"))?;
+        if payload.len() != expected_len {
+            return Err(format!(
+                "{format_label} mip {level} payload has {} bytes, expected {expected_len}",
+                payload.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn rgba8_mip_chain_payload_len(width: u32, height: u32) -> Result<u64, String> {
+    uncompressed_mip_chain_payload_len(
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+        width,
+        height,
+        gtex_mip_count(width, height)?,
+    )
+}
+
+fn uncompressed_mip_chain_payload_len(
+    format: u32,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Result<u64, String> {
+    if mip_count == 0 {
+        return Err("uncompressed mip chain must contain at least one level".to_owned());
+    }
+    let format_label = gtex_format_label(format)?;
+    let max_mip_count = gtex_mip_count(width, height)?;
+    if mip_count > max_mip_count {
+        return Err(format!(
+            "{format_label} mip count {mip_count} exceeds {width}x{height} maximum {max_mip_count}"
+        ));
+    }
+    let mut total = 0u64;
+    for level in 0..mip_count {
+        let (level_width, level_height) = gtex_mip_extent(width, height, level)?;
+        total = total
+            .checked_add(uncompressed_payload_len(format, level_width, level_height)?)
+            .ok_or_else(|| format!("{format_label} mip chain payload size overflowed"))?;
+    }
+    Ok(total)
 }
 
 pub(super) fn write_bc_payload_gtex(
@@ -170,16 +228,23 @@ pub(super) fn write_bc_payload_gtex(
             payload.len()
         ));
     }
-    write_gtex_payload(path, width, height, format, payload)
+    write_gtex_mip_payloads(path, width, height, format, &[payload.to_vec()])
 }
 
-fn write_gtex_payload(
+fn write_gtex_mip_payloads(
     path: &Path,
     width: u32,
     height: u32,
     format: u32,
-    payload: &[u8],
+    payloads: &[Vec<u8>],
 ) -> Result<(), String> {
+    let mip_count = u32::try_from(payloads.len())
+        .map_err(|_| "native .gtex mip count exceeds u32".to_owned())?;
+    let payload_len = payloads.iter().try_fold(0u64, |total, payload| {
+        total
+            .checked_add(payload.len() as u64)
+            .ok_or_else(|| "native .gtex payload size overflowed".to_owned())
+    })?;
     let mut file = fs::File::create(path).map_err(|err| err.to_string())?;
     file.write_all(GILDER_SCENE_TEXTURE_MAGIC)
         .map_err(|err| err.to_string())?;
@@ -189,11 +254,14 @@ fn write_gtex_payload(
         .map_err(|err| err.to_string())?;
     file.write_all(&format.to_le_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(&GILDER_SCENE_TEXTURE_MIP_COUNT.to_le_bytes())
+    file.write_all(&mip_count.to_le_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(&(payload.len() as u64).to_le_bytes())
+    file.write_all(&payload_len.to_le_bytes())
         .map_err(|err| err.to_string())?;
-    file.write_all(&payload).map_err(|err| err.to_string())
+    for payload in payloads {
+        file.write_all(payload).map_err(|err| err.to_string())?;
+    }
+    Ok(())
 }
 
 fn uncompressed_payload_len(format: u32, width: u32, height: u32) -> Result<u64, String> {
@@ -205,6 +273,7 @@ fn uncompressed_payload_len(format: u32, width: u32, height: u32) -> Result<u64,
     }
     let bytes_per_texel = match format {
         GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM => 1u64,
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM => 4u64,
         _ => {
             return Err(format!(
                 "unsupported uncompressed native .gtex format id {format}"
@@ -233,8 +302,34 @@ pub(super) fn bc_payload_len(format: u32, width: u32, height: u32) -> Result<u64
         .ok_or_else(|| format!("{format_label} payload size overflowed"))
 }
 
-pub(super) fn bc7_payload_len(width: u32, height: u32) -> Result<u64, String> {
-    bc_payload_len(GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK, width, height)
+pub(super) fn gtex_mip_count(width: u32, height: u32) -> Result<u32, String> {
+    if width == 0 || height == 0 {
+        return Err("native .gtex texture dimensions must be non-zero".to_owned());
+    }
+    let mut levels = 1u32;
+    let mut level_width = width;
+    let mut level_height = height;
+    while level_width > 1 || level_height > 1 {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+        levels = levels
+            .checked_add(1)
+            .ok_or_else(|| "native .gtex mip count overflowed".to_owned())?;
+    }
+    Ok(levels)
+}
+
+pub(super) fn gtex_mip_extent(width: u32, height: u32, level: u32) -> Result<(u32, u32), String> {
+    if width == 0 || height == 0 {
+        return Err("native .gtex mip extent requires non-zero base dimensions".to_owned());
+    }
+    let mut level_width = width;
+    let mut level_height = height;
+    for _ in 0..level {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+    }
+    Ok((level_width, level_height))
 }
 
 pub(super) fn bc_block_bytes(format: u32) -> Result<u32, String> {
@@ -254,6 +349,7 @@ pub(super) fn gtex_format_label(format: u32) -> Result<&'static str, String> {
         GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Ok("BC3_UNORM_BLOCK"),
         GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Ok("BC7_UNORM_BLOCK"),
         GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM => Ok("R8_UNORM"),
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM => Ok("R8G8B8A8_UNORM"),
         _ => Err(format!("unsupported native .gtex format id {format}")),
     }
 }
@@ -343,10 +439,13 @@ fn png_frame_to_rgba(
     }
 }
 
-fn encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    if width == 0 || height == 0 {
-        return Err("BC7 texture dimensions must be non-zero".to_owned());
-    }
+struct RgbaMipLevel {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+fn rgba_mip_chain(rgba: &[u8], width: u32, height: u32) -> Result<Vec<RgbaMipLevel>, String> {
     let expected_len = tex::rgba_len(width, height)?;
     if rgba.len() != expected_len {
         return Err(format!(
@@ -354,182 +453,181 @@ fn encode_bc7(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
             rgba.len()
         ));
     }
-    let blocks_w = width.div_ceil(BC_BLOCK_TEXELS);
-    let blocks_h = height.div_ceil(BC_BLOCK_TEXELS);
-    let block_count = usize::try_from(blocks_w)
-        .ok()
-        .and_then(|w| {
-            usize::try_from(blocks_h)
-                .ok()
-                .and_then(|h| w.checked_mul(h))
-        })
-        .ok_or_else(|| "BC7 block count overflowed".to_owned())?;
-    let mut out = Vec::with_capacity(
-        block_count
-            .checked_mul(BC7_BLOCK_BYTES)
-            .ok_or_else(|| "BC7 payload size overflowed".to_owned())?,
-    );
-    for block_y in 0..blocks_h {
-        for block_x in 0..blocks_w {
-            encode_bc7_block(rgba, width, height, block_x, block_y, &mut out)?;
+    let mut levels = Vec::with_capacity(gtex_mip_count(width, height)? as usize);
+    levels.push(RgbaMipLevel {
+        width,
+        height,
+        rgba: rgba.to_vec(),
+    });
+    while levels
+        .last()
+        .map(|level| level.width > 1 || level.height > 1)
+        .unwrap_or(false)
+    {
+        let previous = levels.last().expect("mip level");
+        let next_width = (previous.width / 2).max(1);
+        let next_height = (previous.height / 2).max(1);
+        let next = downsample_rgba_mip(
+            &previous.rgba,
+            previous.width,
+            previous.height,
+            next_width,
+            next_height,
+        )?;
+        levels.push(RgbaMipLevel {
+            width: next_width,
+            height: next_height,
+            rgba: next,
+        });
+    }
+    Ok(levels)
+}
+
+fn downsample_rgba_mip(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    next_width: u32,
+    next_height: u32,
+) -> Result<Vec<u8>, String> {
+    let mut out = vec![0u8; tex::rgba_len(next_width, next_height)?];
+    for y in 0..next_height {
+        for x in 0..next_width {
+            let (src_x0, src_x1) = mip_source_range(x, width, next_width)?;
+            let (src_y0, src_y1) = mip_source_range(y, height, next_height)?;
+            let mut sample_count = 0u32;
+            let mut alpha_sum = 0u32;
+            let mut premul = [0u32; 3];
+            let mut raw_rgb = [0u32; 3];
+            for src_y in src_y0..src_y1 {
+                for src_x in src_x0..src_x1 {
+                    let offset = rgba_offset(width, src_x, src_y)?;
+                    let alpha = u32::from(rgba[offset + 3]);
+                    for channel in 0..3 {
+                        let value = u32::from(rgba[offset + channel]);
+                        raw_rgb[channel] += value;
+                        premul[channel] += value * alpha;
+                    }
+                    alpha_sum += alpha;
+                    sample_count += 1;
+                }
+            }
+            let dst = rgba_offset(next_width, x, y)?;
+            let averaged_alpha = (alpha_sum + sample_count / 2) / sample_count;
+            for channel in 0..3 {
+                out[dst + channel] = if alpha_sum == 0 {
+                    ((raw_rgb[channel] + sample_count / 2) / sample_count) as u8
+                } else {
+                    ((premul[channel] + alpha_sum / 2) / alpha_sum) as u8
+                };
+            }
+            out[dst + 3] = averaged_alpha as u8;
         }
     }
     Ok(out)
 }
 
-fn encode_bc7_block(
-    rgba: &[u8],
+fn r8_mip_chain(payload: &[u8], width: u32, height: u32) -> Result<Vec<Vec<u8>>, String> {
+    let expected_len = usize::try_from(uncompressed_payload_len(
+        GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM,
+        width,
+        height,
+    )?)
+    .map_err(|_| "R8 payload length exceeds usize".to_owned())?;
+    if payload.len() != expected_len {
+        return Err(format!(
+            "R8_UNORM payload has {} bytes, expected {expected_len}",
+            payload.len()
+        ));
+    }
+    let mut levels = Vec::with_capacity(gtex_mip_count(width, height)? as usize);
+    levels.push(payload.to_vec());
+    let mut level_width = width;
+    let mut level_height = height;
+    while level_width > 1 || level_height > 1 {
+        let next_width = (level_width / 2).max(1);
+        let next_height = (level_height / 2).max(1);
+        let next = downsample_r8_mip(
+            levels.last().expect("r8 mip level"),
+            level_width,
+            level_height,
+            next_width,
+            next_height,
+        )?;
+        levels.push(next);
+        level_width = next_width;
+        level_height = next_height;
+    }
+    Ok(levels)
+}
+
+fn downsample_r8_mip(
+    bytes: &[u8],
     width: u32,
     height: u32,
-    block_x: u32,
-    block_y: u32,
-    out: &mut Vec<u8>,
-) -> Result<(), String> {
-    let mut pixels = [[0u8; 4]; 16];
-    for y in 0..BC_BLOCK_TEXELS {
-        for x in 0..BC_BLOCK_TEXELS {
-            let src_x = (block_x * BC_BLOCK_TEXELS + x).min(width - 1);
-            let src_y = (block_y * BC_BLOCK_TEXELS + y).min(height - 1);
-            let src = usize::try_from(src_y)
+    next_width: u32,
+    next_height: u32,
+) -> Result<Vec<u8>, String> {
+    let out_len = usize::try_from(next_width)
+        .ok()
+        .and_then(|width| {
+            usize::try_from(next_height)
                 .ok()
-                .and_then(|row| {
-                    usize::try_from(width)
-                        .ok()
-                        .and_then(|stride| row.checked_mul(stride))
-                })
-                .and_then(|base| {
-                    usize::try_from(src_x)
-                        .ok()
-                        .and_then(|x| base.checked_add(x))
-                })
-                .and_then(|pixel| pixel.checked_mul(4))
-                .ok_or_else(|| "BC7 source pixel offset overflowed".to_owned())?;
-            let dst = usize::try_from(y * BC_BLOCK_TEXELS + x)
-                .map_err(|_| "BC7 block pixel index overflowed".to_owned())?;
-            pixels[dst].copy_from_slice(
-                rgba.get(src..src + 4)
-                    .ok_or_else(|| "BC7 source pixel range exceeded RGBA payload".to_owned())?,
-            );
-        }
-    }
-    let (mut endpoint_a, mut endpoint_b) = bc7_mode6_endpoints(&pixels);
-    let palette = bc7_mode6_palette(endpoint_a, endpoint_b);
-    let mut indices = bc7_mode6_indices(&pixels, &palette);
-    if indices[0] >= 8 {
-        std::mem::swap(&mut endpoint_a, &mut endpoint_b);
-        for index in &mut indices {
-            *index = 15 - *index;
-        }
-    }
-    pack_bc7_mode6_block(endpoint_a, endpoint_b, &indices, out);
-    Ok(())
-}
-
-fn bc7_mode6_endpoints(pixels: &[[u8; 4]; 16]) -> ([u8; 4], [u8; 4]) {
-    let mut min_rgba = [255u8; 4];
-    let mut max_rgba = [0u8; 4];
-    for pixel in pixels {
-        for channel in 0..4 {
-            min_rgba[channel] = min_rgba[channel].min(pixel[channel]);
-            max_rgba[channel] = max_rgba[channel].max(pixel[channel]);
-        }
-    }
-    let endpoint_a = bc7_endpoint_with_majority_pbit(min_rgba);
-    let endpoint_b = bc7_endpoint_with_majority_pbit(max_rgba);
-    (endpoint_a, endpoint_b)
-}
-
-fn bc7_endpoint_with_majority_pbit(endpoint: [u8; 4]) -> [u8; 4] {
-    let pbit = u8::from(
-        endpoint
-            .iter()
-            .filter(|component| **component & 1 != 0)
-            .count()
-            >= 2,
-    );
-    [
-        bc7_quantize_7_with_pbit(endpoint[0], pbit),
-        bc7_quantize_7_with_pbit(endpoint[1], pbit),
-        bc7_quantize_7_with_pbit(endpoint[2], pbit),
-        bc7_quantize_7_with_pbit(endpoint[3], pbit),
-    ]
-}
-
-fn bc7_quantize_7_with_pbit(value: u8, pbit: u8) -> u8 {
-    let adjusted = value.saturating_add(1);
-    ((adjusted >> 1) << 1) | (pbit & 1)
-}
-
-fn bc7_mode6_palette(endpoint_a: [u8; 4], endpoint_b: [u8; 4]) -> [[u8; 4]; 16] {
-    let mut palette = [[0u8; 4]; 16];
-    for (index, weight) in BC7_MODE6_INDEX_WEIGHTS.iter().copied().enumerate() {
-        for channel in 0..4 {
-            let a = u16::from(endpoint_a[channel]);
-            let b = u16::from(endpoint_b[channel]);
-            palette[index][channel] = (((64 - weight) * a + weight * b + 32) >> 6) as u8;
-        }
-    }
-    palette
-}
-
-fn bc7_mode6_indices(pixels: &[[u8; 4]; 16], palette: &[[u8; 4]; 16]) -> [u8; 16] {
-    let mut indices = [0u8; 16];
-    for (pixel_index, pixel) in pixels.iter().enumerate() {
-        indices[pixel_index] = palette
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, candidate)| rgba_distance_squared(pixel, candidate))
-            .map(|(index, _)| index as u8)
-            .unwrap_or(0);
-    }
-    indices
-}
-
-fn rgba_distance_squared(lhs: &[u8; 4], rhs: &[u8; 4]) -> u32 {
-    (0..4)
-        .map(|channel| {
-            let delta = i32::from(lhs[channel]) - i32::from(rhs[channel]);
-            (delta * delta) as u32
+                .and_then(|height| width.checked_mul(height))
         })
-        .sum()
-}
-
-fn pack_bc7_mode6_block(
-    endpoint_a: [u8; 4],
-    endpoint_b: [u8; 4],
-    indices: &[u8; 16],
-    out: &mut Vec<u8>,
-) {
-    let mut block = [0u8; 16];
-    let mut bit = 0usize;
-    bc7_set_bits(&mut block, &mut bit, 6, 0);
-    bc7_set_bits(&mut block, &mut bit, 1, 1);
-    for channel in 0..4 {
-        bc7_set_bits(&mut block, &mut bit, 7, endpoint_a[channel] >> 1);
-        bc7_set_bits(&mut block, &mut bit, 7, endpoint_b[channel] >> 1);
-    }
-    bc7_set_bits(&mut block, &mut bit, 1, endpoint_a[0] & 1);
-    bc7_set_bits(&mut block, &mut bit, 1, endpoint_b[0] & 1);
-    for (pixel_index, index) in indices.iter().copied().enumerate() {
-        let width = if pixel_index == 0 { 3 } else { 4 };
-        bc7_set_bits(&mut block, &mut bit, width, index);
-    }
-    debug_assert_eq!(bit, 128);
-    out.extend_from_slice(&block);
-}
-
-fn bc7_set_bits(block: &mut [u8; 16], bit: &mut usize, width: usize, value: u8) {
-    if width == 0 {
-        return;
-    }
-    debug_assert!(*bit + width <= 128);
-    debug_assert!(width <= 8);
-    debug_assert!(u16::from(value) < (1u16 << width));
-    for offset in 0..width {
-        if value & (1u8 << offset) != 0 {
-            let absolute = *bit + offset;
-            block[absolute >> 3] |= 1u8 << (absolute & 7);
+        .ok_or_else(|| "R8 mip byte count overflowed".to_owned())?;
+    let mut out = vec![0u8; out_len];
+    for y in 0..next_height {
+        for x in 0..next_width {
+            let (src_x0, src_x1) = mip_source_range(x, width, next_width)?;
+            let (src_y0, src_y1) = mip_source_range(y, height, next_height)?;
+            let mut sample_count = 0u32;
+            let mut sum = 0u32;
+            for src_y in src_y0..src_y1 {
+                for src_x in src_x0..src_x1 {
+                    let offset = r8_offset(width, src_x, src_y)?;
+                    sum += u32::from(bytes[offset]);
+                    sample_count += 1;
+                }
+            }
+            let dst = r8_offset(next_width, x, y)?;
+            out[dst] = ((sum + sample_count / 2) / sample_count) as u8;
         }
     }
-    *bit += width;
+    Ok(out)
+}
+
+fn mip_source_range(index: u32, source_len: u32, target_len: u32) -> Result<(u32, u32), String> {
+    if target_len == 0 {
+        return Err("mip target dimension must be non-zero".to_owned());
+    }
+    let start = ((u64::from(index) * u64::from(source_len)) / u64::from(target_len)) as u32;
+    let end =
+        (((u64::from(index) + 1) * u64::from(source_len)).div_ceil(u64::from(target_len))) as u32;
+    Ok((start.min(source_len), end.max(start + 1).min(source_len)))
+}
+
+fn rgba_offset(width: u32, x: u32, y: u32) -> Result<usize, String> {
+    usize::try_from(y)
+        .ok()
+        .and_then(|row| {
+            usize::try_from(width)
+                .ok()
+                .and_then(|stride| row.checked_mul(stride))
+        })
+        .and_then(|base| usize::try_from(x).ok().and_then(|x| base.checked_add(x)))
+        .and_then(|pixel| pixel.checked_mul(4))
+        .ok_or_else(|| "RGBA mip offset overflowed".to_owned())
+}
+
+fn r8_offset(width: u32, x: u32, y: u32) -> Result<usize, String> {
+    usize::try_from(y)
+        .ok()
+        .and_then(|row| {
+            usize::try_from(width)
+                .ok()
+                .and_then(|stride| row.checked_mul(stride))
+        })
+        .and_then(|base| usize::try_from(x).ok().and_then(|x| base.checked_add(x)))
+        .ok_or_else(|| "R8 mip offset overflowed".to_owned())
 }

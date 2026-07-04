@@ -28,6 +28,7 @@ layout(push_constant) uniform ScenePush {
 } pc;
 
 const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
+const uint ALPHA_TEXTURE_MODE_COVERAGE = 3u;
 
 vec4 apply_vertex_color(vec4 color) {
     color *= v_tint;
@@ -36,6 +37,9 @@ vec4 apply_vertex_color(vec4 color) {
 }
 
 vec4 finalize_output(vec4 color) {
+    if (pc.alpha_texture_mode == ALPHA_TEXTURE_MODE_COVERAGE) {
+        color.a = clamp((color.a - 0.5) / max(fwidth(color.a), 0.0001) + 0.5, 0.0, 1.0);
+    }
     if ((pc.output_flags & OUTPUT_FLAG_PREMULTIPLY_RGB) != 0u) {
         color.rgb *= color.a;
     }

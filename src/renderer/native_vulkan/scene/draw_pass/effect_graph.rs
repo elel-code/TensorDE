@@ -1439,6 +1439,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         })
     }
 
@@ -1477,6 +1478,7 @@ mod tests {
             indices: vec![0, 1, 2, 2, 1, 3],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         })
     }
 
@@ -1581,6 +1583,7 @@ mod tests {
             indices: vec![0, 1, 2, 2, 1, 3],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         })
     }
 
@@ -1675,6 +1678,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         })));
         quad.width = 100.0;
         quad.height = 100.0;

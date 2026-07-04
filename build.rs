@@ -88,6 +88,7 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", out_dir.display());
     println!("cargo:rustc-link-lib=static=gilder_demux_ffmpeg_shim");
     println!("cargo:rustc-link-lib=dl");
+    println!("cargo:rustc-link-lib=m");
     println!("cargo:rustc-link-arg-bin=gilder-native-vulkan=-Wl,--gc-sections");
     println!("cargo:rustc-link-arg-bin=gilder-native-vulkan=-Wl,-z,pack-relative-relocs");
     for flag in flags {

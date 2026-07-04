@@ -128,6 +128,34 @@ fn converts_scene_project_to_binary_scene() {
 }
 
 #[test]
+fn parses_eye_puppet_clipping_records_before_mdls() {
+    let fixture = Path::new("reverse-engineered/extracted/3742497499/models/眼睛_puppet.mdl");
+    if !fixture.is_file() {
+        return;
+    }
+    let bytes = fs::read(fixture).unwrap();
+    let frame_size = SceneWeModelFrameSize {
+        width: 663,
+        height: 230,
+    };
+    let map = scene_parse_puppet_attachment_map(&bytes, frame_size).unwrap();
+    let mesh = map.mesh.expect("eye puppet mesh");
+
+    assert_eq!(mesh.clipping_records.len(), 4);
+    assert_eq!(
+        mesh.clipping_records[0].mask,
+        "masks/clipping_mask_42ff01af"
+    );
+    assert_eq!(mesh.clipping_records[0].duration_frames, 1680);
+    assert_eq!(
+        mesh.clipping_records[0].frame_keys,
+        (0..10).collect::<Vec<_>>()
+    );
+    assert!(mesh.clipping_records[0].bones.contains(&42));
+    assert!(mesh.clipping_records[0].bones.contains(&43));
+}
+
+#[test]
 fn composelayer_framebuffer_effects_are_marked_without_child_propagation() {
     let source_model = scene_builtin_util_model("models/util/composelayer.json").unwrap();
     let mut effects = serde_json::json!([

@@ -123,14 +123,14 @@ pub fn convert_png_to_native_gtex(
         fs::create_dir_all(parent)
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
-    let payload_bytes = gtex::bc7_payload_len(image.width, image.height)?;
-    gtex::write_bc7_gtex(output, &image)?;
+    let payload_bytes = gtex::rgba8_mip_chain_payload_len(image.width, image.height)?;
+    gtex::write_rgba8_gtex(output, &image)?;
     Ok(NativeGtexConversionSummary {
         source: source.to_path_buf(),
         output: output.to_path_buf(),
         width: image.width,
         height: image.height,
-        format: "BC7_UNORM_BLOCK",
+        format: "R8G8B8A8_UNORM",
         payload_bytes,
     })
 }
@@ -350,14 +350,14 @@ fn convert_static_image_audio_scene_texture(
     let dest = dest_dir.join("wallpaper.gtex");
     convert_png_to_native_gtex(&source_path, &dest).map_err(|err| {
         ConversionError::InvalidProject(format!(
-            "static image audio scene requires an image that can be converted offline to native BC7 .gtex: {}: {err}",
+            "static image audio scene requires an image that can be converted offline to native RGBA8 .gtex: {}: {err}",
             source_path.display()
         ))
     })?;
     let package_path = path_to_package_string(dest.strip_prefix(output_dir).unwrap_or(&dest));
     push_unique(
         &mut report.converted_features,
-        "static-image-bc7-gtex-conversion",
+        "static-image-rgba8-gtex-conversion",
     );
     report.generated_assets.push(package_path.clone());
     Ok(package_path)
@@ -1637,6 +1637,7 @@ struct ScenePuppetMesh {
     skin_vertices: Vec<ScenePuppetSkinVertex>,
     skin: Option<ScenePuppetSkin>,
     clips: Vec<ScenePuppetAnimationClip>,
+    clipping_records: Vec<ScenePuppetClippingRecord>,
 }
 
 impl ScenePuppetMesh {
@@ -1669,7 +1670,49 @@ impl ScenePuppetMesh {
                 ),
             );
         }
+        if !self.clipping_records.is_empty() {
+            mesh.insert(
+                "puppet_clipping_records".to_owned(),
+                Value::Array(
+                    self.clipping_records
+                        .iter()
+                        .map(ScenePuppetClippingRecord::to_value)
+                        .collect(),
+                ),
+            );
+        }
         Value::Object(mesh)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetClippingRecord {
+    mask: String,
+    mask_resource: Option<String>,
+    duration_frames: u32,
+    flags: u32,
+    bones: Vec<usize>,
+    frame_keys: Vec<u32>,
+}
+
+impl ScenePuppetClippingRecord {
+    fn to_value(&self) -> Value {
+        let mut value = json!({
+            "mask": self.mask,
+            "duration_frames": self.duration_frames,
+            "flags": self.flags,
+            "bones": self.bones,
+            "frame_keys": self.frame_keys
+        });
+        if let Some(mask_resource) = &self.mask_resource
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert(
+                "mask_resource".to_owned(),
+                Value::String(mask_resource.clone()),
+            );
+        }
+        value
     }
 }
 
@@ -5136,7 +5179,10 @@ fn scene_insert_puppet_model_conversion(
                 "wallpaper-engine-puppet-attachment-lowering",
             );
         }
-        if let Some(mesh) = attachments.mesh.clone() {
+        if let Some(mut mesh) = attachments.mesh.clone() {
+            scene_prepare_puppet_clipping_resources(
+                project, output_dir, &mut mesh, report, context, resources,
+            );
             model.insert("puppet_mesh_bounds".to_owned(), mesh.bounds.to_value());
             if !mesh.clips.is_empty() {
                 model.insert(
@@ -5153,6 +5199,21 @@ fn scene_insert_puppet_model_conversion(
                     "wallpaper-engine-puppet-animation-clips",
                 );
             }
+            if !mesh.clipping_records.is_empty() {
+                model.insert(
+                    "puppet_clipping_records".to_owned(),
+                    Value::Array(
+                        mesh.clipping_records
+                            .iter()
+                            .map(ScenePuppetClippingRecord::to_value)
+                            .collect(),
+                    ),
+                );
+                push_unique(
+                    &mut context.converted_features,
+                    "wallpaper-engine-puppet-clipping-records",
+                );
+            }
             push_unique(
                 &mut context.converted_features,
                 "wallpaper-engine-puppet-mesh-lowering",
@@ -5167,6 +5228,52 @@ fn scene_insert_puppet_model_conversion(
         }
     }
     None
+}
+
+fn scene_prepare_puppet_clipping_resources(
+    project: &WallpaperEngineProject,
+    output_dir: &Path,
+    mesh: &mut ScenePuppetMesh,
+    report: &mut ConversionReport,
+    context: &mut SceneDocumentBuildContext,
+    resources: &mut Vec<Value>,
+) {
+    for record in &mut mesh.clipping_records {
+        if record.mask_resource.is_some() {
+            continue;
+        }
+        let texture = scene_material_texture_path(&record.mask);
+        let Some(decoded) = scene_copy_decoded_tex_resource_as(
+            project, output_dir, &texture, None, false, report, context, resources,
+        ) else {
+            scene_push_unsupported(
+                context,
+                "we-puppet-clipping-mask-texture",
+                "Wallpaper Engine puppet clipping mask texture was preserved as model metadata but was not emitted as a native scene texture resource.",
+                Some(&record.mask),
+            );
+            continue;
+        };
+        if let Some(source) = scene_resource_source_by_id(resources, &decoded.resource_id) {
+            record.mask_resource = Some(source);
+            push_unique(
+                &mut context.converted_features,
+                "wallpaper-engine-puppet-clipping-mask-resource",
+            );
+        }
+    }
+}
+
+fn scene_resource_source_by_id(resources: &[Value], resource_id: &str) -> Option<String> {
+    resources.iter().rev().find_map(|resource| {
+        let object = resource.as_object()?;
+        (object.get("id").and_then(Value::as_str) == Some(resource_id)).then(|| {
+            object
+                .get("source")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })?
+    })
 }
 
 fn scene_puppet_attachment_map_for_model_path(
@@ -5296,6 +5403,7 @@ fn scene_parse_puppet_attachment_map(
         });
         mesh.clips =
             scene_parse_puppet_animation_clips(bytes, mdls_end, bone_count).unwrap_or_default();
+        mesh.clipping_records = scene_parse_puppet_clipping_records(bytes, mdls_offset, bone_count);
     }
 
     let Some(mdat_offset) = scene_find_mdl_section_after(bytes, b"MDAT", mdls_end) else {
@@ -5510,7 +5618,129 @@ fn scene_puppet_mesh_from_block(
         skin_vertices,
         skin: None,
         clips: Vec::new(),
+        clipping_records: Vec::new(),
     })
+}
+
+fn scene_parse_puppet_clipping_records(
+    bytes: &[u8],
+    mdls_offset: usize,
+    bone_count: usize,
+) -> Vec<ScenePuppetClippingRecord> {
+    let needle = b"masks/clipping_mask_";
+    let Some(first_path) = bytes.get(..mdls_offset).and_then(|prefix| {
+        prefix
+            .windows(needle.len())
+            .position(|window| window == needle)
+    }) else {
+        return Vec::new();
+    };
+    if first_path < 12 {
+        return Vec::new();
+    }
+    let Some(record_count) =
+        scene_read_u32_le_at(bytes, first_path.saturating_sub(12)).map(|count| count as usize)
+    else {
+        return Vec::new();
+    };
+    if record_count == 0 || record_count > 256 {
+        return Vec::new();
+    }
+    let mut position = first_path.saturating_sub(8);
+    let mut records = Vec::with_capacity(record_count);
+    for _ in 0..record_count {
+        if position.checked_add(8).is_none_or(|end| end > mdls_offset) {
+            break;
+        }
+        let duration_frames = scene_take_u32_le(
+            bytes,
+            &mut position,
+            mdls_offset,
+            "puppet clipping duration",
+        )
+        .unwrap_or(0);
+        let flags = scene_take_u32_le(bytes, &mut position, mdls_offset, "puppet clipping flags")
+            .unwrap_or(0);
+        let Ok(mask) =
+            scene_take_mdl_c_string(bytes, &mut position, mdls_offset, "puppet clipping mask")
+        else {
+            break;
+        };
+        let Some((next_position, bones, frame_keys)) =
+            scene_puppet_clipping_record_lists(bytes, position, mdls_offset, bone_count)
+        else {
+            break;
+        };
+        position = next_position;
+        if mask.is_empty() || bones.is_empty() || frame_keys.is_empty() {
+            continue;
+        }
+        records.push(ScenePuppetClippingRecord {
+            mask,
+            mask_resource: None,
+            duration_frames,
+            flags,
+            bones,
+            frame_keys,
+        });
+    }
+    records
+}
+
+fn scene_puppet_clipping_record_lists(
+    bytes: &[u8],
+    offset: usize,
+    limit: usize,
+    bone_count: usize,
+) -> Option<(usize, Vec<usize>, Vec<u32>)> {
+    for shift in 0..8usize {
+        let start = offset.checked_add(shift)?;
+        if start.checked_add(8)? > limit {
+            continue;
+        }
+        let clipped_bone_count = usize::try_from(scene_read_u32_le_at(bytes, start)?).ok()?;
+        if clipped_bone_count == 0 || clipped_bone_count > bone_count {
+            continue;
+        }
+        let bones_start = start.checked_add(4)?;
+        let frame_count_offset = bones_start.checked_add(clipped_bone_count.checked_mul(4)?)?;
+        if frame_count_offset.checked_add(4)? > limit {
+            continue;
+        }
+        let frame_count = usize::try_from(scene_read_u32_le_at(bytes, frame_count_offset)?).ok()?;
+        if frame_count == 0 || frame_count > 10_000 {
+            continue;
+        }
+        let frames_start = frame_count_offset.checked_add(4)?;
+        let frames_end = frames_start.checked_add(frame_count.checked_mul(4)?)?;
+        if frames_end > limit {
+            continue;
+        }
+        let mut bones = Vec::with_capacity(clipped_bone_count);
+        let mut valid = true;
+        for index in 0..clipped_bone_count {
+            let Some(bone) = scene_read_u32_le_at(bytes, bones_start + index * 4)
+                .and_then(|bone| usize::try_from(bone).ok())
+            else {
+                valid = false;
+                break;
+            };
+            if bone >= bone_count {
+                valid = false;
+                break;
+            }
+            bones.push(bone);
+        }
+        if !valid {
+            continue;
+        }
+        let mut frame_keys = Vec::with_capacity(frame_count);
+        for index in 0..frame_count {
+            frame_keys.push(scene_read_u32_le_at(bytes, frames_start + index * 4)?);
+        }
+        return Some((frames_end, bones, frame_keys));
+    }
+    None
 }
 
 fn scene_puppet_attachment_chain_position(
@@ -6940,7 +7170,7 @@ fn scene_generate_builtin_particle_texture_resource(
     }
     let dest = dest_dir.join(format!("{resource_id}.gtex"));
     let image = scene_builtin_particle_texture_image(builtin.kind);
-    if let Err(err) = gtex::write_bc7_gtex(&dest, &image) {
+    if let Err(err) = gtex::write_rgba8_gtex(&dest, &image) {
         report.errors.push(format!(
             "Failed to write built-in Wallpaper Engine particle texture {source_path:?} to {}: {err}.",
             dest.display()
@@ -7338,7 +7568,7 @@ fn scene_copy_decoded_tex_resource_as(
     let write_result = if let Some(r8) = decoded.r8.as_deref() {
         gtex::write_r8_gtex(&dest, decoded.width, decoded.height, r8)
     } else {
-        gtex::write_bc7_gtex(&dest, &decoded)
+        gtex::write_rgba8_gtex(&dest, &decoded)
     };
     if let Err(err) = write_result {
         report.errors.push(format!(
@@ -7382,7 +7612,7 @@ fn scene_copy_decoded_tex_resource_as(
         if decoded.r8.is_some() {
             "scene-we-tex-r8-gpu-texture"
         } else {
-            "scene-we-tex-bc7-gpu-texture"
+            "scene-we-tex-rgba8-gpu-texture"
         },
     );
     let resource = SceneDecodedTexResource {
@@ -8549,7 +8779,7 @@ fn scene_generate_text_image_resource(
         return None;
     }
     let dest = dest_dir.join(format!("{resource_id}.gtex"));
-    if let Err(err) = gtex::write_bc7_gtex(&dest, &image) {
+    if let Err(err) = gtex::write_rgba8_gtex(&dest, &image) {
         report.errors.push(format!(
             "Failed to write generated Wallpaper Engine text texture {}: {err}.",
             dest.display()
@@ -9697,13 +9927,17 @@ fn scene_full_scene_status(
             &mut status.completed_boundaries,
             "native-audio-response-visual-runtime",
         );
+        push_unique(
+            &mut status.completed_boundaries,
+            "pipewire-audio-rms-input-source",
+        );
+        push_unique(
+            &mut status.completed_boundaries,
+            "pipewire-audio-spectrum-input-source",
+        );
         status
             .pending_boundaries
             .retain(|boundary| boundary != "audio-response-runtime");
-        push_unique(
-            &mut status.pending_boundaries,
-            "pipewire-audio-spectrum-input-source",
-        );
     } else if report
         .detected_features
         .iter()
@@ -11627,7 +11861,7 @@ impl FullSceneConversionStatus {
             current_runtime: "native-vulkan-scene-runtime".to_owned(),
             progress_estimate_percent: 100,
             full_scene_complete: true,
-            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native BC7 .gtex GPU textures, WE DXT1/DXT5/BC7 GPU textures into native BC .gtex payloads, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
+            execution_model: "original scene metadata preserved in first-class gscene; native Vulkan full-scene boundaries now lower layer order, WE scene.pkg containers, WE parent ids into gscene children, native scene graph transform/opacity execution, WE text/value wrappers, visible property bindings, shape/solid/radius objects, native deterministic particle emitter expansion, WE particle runtime fields, script/value wrappers, deterministic numeric SceneScript expressions, explicit keyframe timelines, embedded WE property keyframes, deterministic animation-layer keyframes, per-frame fixed-topology timeline geometry updates, geometry field animation, parallax depth, WE TEXV0005/TEXB0004 RGBA textures into native RGBA8 .gtex GPU textures, WE DXT1/DXT5/BC7 GPU textures into native BC .gtex payloads, and WE TEXB0004 video payloads into native gscene video resources including spritesheet atlases into gscene text/property/shape/timeline/camera/image/video fields, render clear color into snapshot layers, retained sampled-image resources with UV-frame animation, clear-background composition, rounded-rectangle/simple/concave-path tessellation, cubic/smooth-cubic/quadratic/smooth-quadratic/arc path flattening, compound even-odd path fill, stroke geometry, deterministic text glyph geometry, single-video-layer Vulkan Video scene composition, time-sampled scene state, scene timeline animation, property updates, pause/resume policy, package state persistence, scene audio cues resolved into the renderer and played by the native FFmpeg/PipeWire scene present runtime, and explicit unsupported Wallpaper Engine systems without legacy fallback or preview-image scene substitution".to_owned(),
             source_scene_metadata: Vec::new(),
             completed_boundaries: vec![
                 "package-scene-detection".to_owned(),
@@ -11646,7 +11880,7 @@ impl FullSceneConversionStatus {
                 "wallpaper-engine-explicit-keyframe-timeline-lowering".to_owned(),
                 "wallpaper-engine-embedded-property-timeline-lowering".to_owned(),
                 "wallpaper-engine-animation-layer-keyframe-lowering".to_owned(),
-                "wallpaper-engine-tex-bc7-gtex-conversion".to_owned(),
+                "wallpaper-engine-tex-rgba8-gtex-conversion".to_owned(),
                 "wallpaper-engine-tex-bc-gtex-passthrough".to_owned(),
                 "scene-we-spritesheet-atlas-runtime".to_owned(),
                 "scene-geometry-field-animation-runtime".to_owned(),

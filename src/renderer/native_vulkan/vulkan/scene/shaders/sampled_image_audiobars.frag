@@ -2,10 +2,11 @@
 
 // reverse-engineered reference:
 // reverse-engineered/extracted/3742497499/shaders/workshop/3082978660/effects/Simple_Audio_Bars.frag
-// This is the first-class GPU path for effect-only composelayers. Real audio
-// spectrum uniforms are not plumbed into Vulkan yet, so the shader keeps the WE
-// rounded-bar geometry on the GPU and feeds it with a small deterministic
-// spectrum until g_AudioSpectrum* buffers are wired to push/SSBO data.
+// This is the first-class GPU path for effect-only composelayers. When the
+// native FFmpeg/PipeWire audio clock has decoded PCM, a packed 32-band
+// spectrum is pushed into this shader; otherwise it falls back to a decoded
+// RMS signal or a deterministic preview signal so non-audio tests and static
+// previews still draw visible bars.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -40,6 +41,8 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 144) float aa_x;
     layout(offset = 148) float aa_y;
     layout(offset = 152) float radius;
+    layout(offset = 156) float signal_level;
+    layout(offset = 160) uint spectrum32_packed[16];
     layout(offset = 228) uint output_flags;
 } pc;
 
@@ -49,6 +52,8 @@ const uint AUDIO_SHAPE_LEFT = 2u;
 const uint AUDIO_SHAPE_RIGHT = 3u;
 const uint AUDIO_SHAPE_CENTER_H = 6u;
 const uint AUDIO_SHAPE_CENTER_V = 7u;
+const uint AUDIO_FLAG_HAS_SIGNAL = 1u << 16;
+const uint AUDIO_FLAG_HAS_SPECTRUM32 = 1u << 17;
 const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 
 float saturate(float value) {
@@ -68,6 +73,24 @@ float pseudo_audio(float index) {
 
 float remap_volume(float volume) {
     return volume;
+}
+
+float audio_spectrum32(float index) {
+    uint band = uint(clamp(floor(index), 0.0, 31.0));
+    uint packed = pc.spectrum32_packed[band >> 1u];
+    uint raw = ((band & 1u) == 0u) ? (packed & 0xffffu) : (packed >> 16);
+    return float(raw & 0xffffu) / 65535.0;
+}
+
+float audio_signal(float index) {
+    if ((pc.audio_flags & AUDIO_FLAG_HAS_SPECTRUM32) != 0u) {
+        return audio_spectrum32(index);
+    }
+    if ((pc.audio_flags & AUDIO_FLAG_HAS_SIGNAL) == 0u) {
+        return pseudo_audio(index);
+    }
+    float profile = 0.68 + 0.32 * hash01(index + 19.0);
+    return saturate(pc.signal_level * profile);
 }
 
 float rounded_box_sdf(vec2 cur_position, vec3 size, float deformity) {
@@ -131,9 +154,11 @@ void main() {
         }
     }
 
-    float left_audio = remap_volume(mix(pseudo_audio(bar_freq1), pseudo_audio(bar_freq2), audio_mix))
+    float right_freq1 = ((pc.audio_flags & AUDIO_FLAG_HAS_SPECTRUM32) != 0u) ? bar_freq1 : bar_freq1 + 17.0;
+    float right_freq2 = ((pc.audio_flags & AUDIO_FLAG_HAS_SPECTRUM32) != 0u) ? bar_freq2 : bar_freq2 + 17.0;
+    float left_audio = remap_volume(mix(audio_signal(bar_freq1), audio_signal(bar_freq2), audio_mix))
         * max(pc.volume_factor, 0.0);
-    float right_audio = remap_volume(mix(pseudo_audio(bar_freq1 + 17.0), pseudo_audio(bar_freq2 + 17.0), audio_mix))
+    float right_audio = remap_volume(mix(audio_signal(right_freq1), audio_signal(right_freq2), audio_mix))
         * max(pc.volume_factor, 0.0);
     float min_height = pc.min_height * r_width * deformity;
     float aa_factor = 15.0 / max(1.0, min(tex0_resolution.x, tex0_resolution.y));

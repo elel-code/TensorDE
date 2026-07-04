@@ -10,11 +10,13 @@ use std::ptr::{self, NonNull};
 #[cfg(feature = "native-vulkan-video")]
 use std::num::NonZeroI32;
 #[cfg(feature = "native-vulkan-video")]
-use std::os::raw::{c_char, c_int, c_longlong};
+use std::os::raw::{c_char, c_int, c_longlong, c_uint};
 #[cfg(feature = "native-vulkan-video")]
 use std::os::unix::ffi::OsStrExt;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "native-vulkan-video")]
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{Arc, Once};
 
 use serde::Serialize;
 
@@ -27,6 +29,48 @@ const FFMPEG_AUDIO_CLOCK_REFERENCE: &str =
     "references/ffmpeg/fftools/ffplay.c:114-123,1375-1483,1629-1740";
 const AUDIO_CLOCK_QUEUE_POLICY: &str = "FFmpeg-style PacketQueue serial metadata; clock-only packets are consumed as timestamp metadata and AVPacket payloads are unref'd immediately";
 const AUDIO_CLOCK_MODEL: &str = "muted clock-only audio master: packet PTS/duration advances a serial-scoped audio clock; serial changes invalidate stale samples across loop/seek";
+const NATIVE_VULKAN_AUDIO_SIGNAL_SCALE: f32 = 1_000_000.0;
+const NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS: usize = 16;
+static NATIVE_VULKAN_AUDIO_SIGNAL_READY: AtomicBool = AtomicBool::new(false);
+static NATIVE_VULKAN_AUDIO_SIGNAL_LEVEL_MICROS: AtomicU32 = AtomicU32::new(0);
+static NATIVE_VULKAN_AUDIO_SPECTRUM32_READY: AtomicBool = AtomicBool::new(false);
+static NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED: Mutex<
+    [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+> = Mutex::new([0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]);
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_signal_level() -> Option<f32> {
+    NATIVE_VULKAN_AUDIO_SIGNAL_READY
+        .load(Ordering::Relaxed)
+        .then(|| {
+            NATIVE_VULKAN_AUDIO_SIGNAL_LEVEL_MICROS.load(Ordering::Relaxed) as f32
+                / NATIVE_VULKAN_AUDIO_SIGNAL_SCALE
+        })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_audio_spectrum32_packed()
+-> Option<[u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]> {
+    if !NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.load(Ordering::Relaxed) {
+        return None;
+    }
+    NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED
+        .lock()
+        .ok()
+        .map(|spectrum| *spectrum)
+}
+
+fn native_vulkan_audio_publish_signal_level(level_micros: u32) {
+    NATIVE_VULKAN_AUDIO_SIGNAL_LEVEL_MICROS.store(level_micros.min(1_000_000), Ordering::Relaxed);
+    NATIVE_VULKAN_AUDIO_SIGNAL_READY.store(true, Ordering::Relaxed);
+}
+
+fn native_vulkan_audio_publish_spectrum32_packed(
+    spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+) {
+    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED.lock() {
+        *spectrum = spectrum32_packed;
+        NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.store(true, Ordering::Relaxed);
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockProbeOptions {
@@ -105,6 +149,10 @@ pub struct NativeVulkanAudioClockRuntimeSnapshot {
     pub playback_target_reached: bool,
     pub decoded_frames: u32,
     pub decoded_samples: u64,
+    pub audio_signal_level_micros: u32,
+    pub audio_signal_model: &'static str,
+    pub audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
+    pub audio_spectrum_model: &'static str,
     pub audio_sample_rate_hz: Option<u32>,
     pub audio_channel_count: Option<u32>,
     pub capacity: u32,
@@ -142,6 +190,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockPacket {
     pub(in crate::renderer::native_vulkan) payload_bytes: u32,
     pub(in crate::renderer::native_vulkan) decoded_frames: u32,
     pub(in crate::renderer::native_vulkan) decoded_samples: u32,
+    pub(in crate::renderer::native_vulkan) audio_signal_level_micros: u32,
+    pub(in crate::renderer::native_vulkan) audio_spectrum32_packed:
+        [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
     pub(in crate::renderer::native_vulkan) sample_rate_hz: Option<u32>,
     pub(in crate::renderer::native_vulkan) channel_count: Option<u32>,
     pub(in crate::renderer::native_vulkan) output_frames: u32,
@@ -310,6 +361,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     clock: NativeVulkanAudioClock,
     decoded_frames: u32,
     decoded_samples: u64,
+    audio_signal_level_micros: u32,
+    audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
     audio_sample_rate_hz: Option<u32>,
     audio_channel_count: Option<u32>,
     audio_output_frames: u32,
@@ -354,6 +407,8 @@ impl NativeVulkanAudioClockRuntime {
             clock: NativeVulkanAudioClock::new(),
             decoded_frames: 0,
             decoded_samples: 0,
+            audio_signal_level_micros: 0,
+            audio_spectrum32_packed: [0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
             audio_sample_rate_hz: None,
             audio_channel_count: None,
             audio_output_frames: 0,
@@ -425,6 +480,18 @@ impl NativeVulkanAudioClockRuntime {
         self.decoded_samples = self
             .decoded_samples
             .saturating_add(u64::from(packet.decoded_samples));
+        self.audio_signal_level_micros = self
+            .audio_signal_level_micros
+            .max(packet.audio_signal_level_micros);
+        let has_output_pcm = packet.output_bytes > 0 && packet.output_samples > 0;
+        if has_output_pcm {
+            self.audio_spectrum32_packed = packet.audio_spectrum32_packed;
+            #[cfg(not(test))]
+            {
+                native_vulkan_audio_publish_signal_level(packet.audio_signal_level_micros);
+                native_vulkan_audio_publish_spectrum32_packed(packet.audio_spectrum32_packed);
+            }
+        }
         if self.audio_sample_rate_hz.is_none() {
             self.audio_sample_rate_hz = packet.sample_rate_hz;
         }
@@ -597,6 +664,10 @@ impl NativeVulkanAudioClockRuntime {
             playback_target_reached,
             decoded_frames: self.decoded_frames,
             decoded_samples: self.decoded_samples,
+            audio_signal_level_micros: self.audio_signal_level_micros,
+            audio_signal_model: "decoded-s16le-frame-rms",
+            audio_spectrum32_packed: self.audio_spectrum32_packed,
+            audio_spectrum_model: "decoded-s16le-goertzel-spectrum32-average",
             audio_sample_rate_hz: self.audio_sample_rate_hz,
             audio_channel_count: self.audio_channel_count,
             capacity: self.queue.capacity.min(u32::MAX as usize) as u32,
@@ -843,6 +914,8 @@ unsafe extern "C" {
         state_changes: *mut c_longlong,
         ready_state_changes: *mut c_longlong,
         stream_state: *mut c_int,
+        signal_level_micros: *mut c_int,
+        spectrum32_packed: *mut c_uint,
     ) -> c_int;
 }
 
@@ -960,6 +1033,8 @@ impl NativeVulkanFfmpegAudioClockReader {
                     payload_bytes: native_vulkan_audio_ffmpeg_packet_size(input),
                     decoded_frames: decoded.decoded_frames,
                     decoded_samples: decoded.decoded_samples,
+                    audio_signal_level_micros: decoded.audio_signal_level_micros,
+                    audio_spectrum32_packed: decoded.audio_spectrum32_packed,
                     sample_rate_hz: decoded
                         .sample_rate_hz
                         .or_else(|| self.decoder_sample_rate_hz()),
@@ -1085,6 +1160,8 @@ impl NativeVulkanFfmpegAudioClockReader {
 struct NativeVulkanFfmpegAudioDecodedPacket {
     decoded_frames: u32,
     decoded_samples: u32,
+    audio_signal_level_micros: u32,
+    audio_spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
     sample_rate_hz: Option<u32>,
     channel_count: Option<u32>,
     output_frames: u32,
@@ -1277,6 +1354,8 @@ impl NativeVulkanFfmpegAudioDecoder {
         let mut state_changes: c_longlong = 0;
         let mut ready_state_changes: c_longlong = 0;
         let mut stream_state: c_int = 0;
+        let mut signal_level_micros: c_int = 0;
+        let mut spectrum32_packed = [0u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS];
         let ret = unsafe {
             gilder_audio_output_write_frame(
                 output.as_ptr(),
@@ -1295,6 +1374,8 @@ impl NativeVulkanFfmpegAudioDecoder {
                 &mut state_changes,
                 &mut ready_state_changes,
                 &mut stream_state,
+                &mut signal_level_micros,
+                spectrum32_packed.as_mut_ptr(),
             )
         };
         if ret < 0 {
@@ -1311,6 +1392,10 @@ impl NativeVulkanFfmpegAudioDecoder {
                 .output_samples
                 .saturating_add(native_vulkan_audio_positive_c_longlong_u32(samples_written));
             decoded.output_bytes = decoded.output_bytes.saturating_add(output_bytes);
+            decoded.audio_signal_level_micros = decoded
+                .audio_signal_level_micros
+                .max(native_vulkan_audio_positive_c_int(signal_level_micros).unwrap_or(0));
+            decoded.audio_spectrum32_packed = spectrum32_packed;
         }
         if decoded.output_sample_rate_hz.is_none() {
             decoded.output_sample_rate_hz = native_vulkan_audio_positive_c_int(sample_rate);
@@ -1716,6 +1801,8 @@ mod tests {
                 payload_bytes: 512,
                 decoded_frames: 1,
                 decoded_samples: 1008,
+                audio_signal_level_micros: 0,
+                audio_spectrum32_packed: [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 ..NativeVulkanAudioClockPacket::default()
@@ -1788,6 +1875,8 @@ mod tests {
                 payload_bytes: 512,
                 decoded_frames: 1,
                 decoded_samples: 1008,
+                audio_signal_level_micros: 123_456,
+                audio_spectrum32_packed: [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 output_frames: 1,
@@ -1804,6 +1893,7 @@ mod tests {
                 output_ready_state_changes: 1,
                 output_stream_state: 3,
                 output_stream_ready: true,
+                ..NativeVulkanAudioClockPacket::default()
             },
         );
 
@@ -1828,6 +1918,16 @@ mod tests {
         assert_eq!(snapshot.audio_output_ready_state_changes, 1);
         assert_eq!(snapshot.audio_output_stream_state, "streaming");
         assert!(snapshot.audio_output_stream_ready);
+        assert_eq!(snapshot.audio_signal_level_micros, 123_456);
+        assert_eq!(snapshot.audio_signal_model, "decoded-s16le-frame-rms");
+        assert_eq!(
+            snapshot.audio_spectrum32_packed,
+            [0x0002_0001; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS]
+        );
+        assert_eq!(
+            snapshot.audio_spectrum_model,
+            "decoded-s16le-goertzel-spectrum32-average"
+        );
         assert_eq!(
             snapshot.audio_output_lifecycle_model,
             "pipewire-thread-loop-stream-state-owned-by-audio-runtime"
@@ -1855,6 +1955,7 @@ mod tests {
                 payload_bytes: 512,
                 decoded_frames: 1,
                 decoded_samples: 1008,
+                audio_signal_level_micros: 0,
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 output_frames: 1,
@@ -1871,6 +1972,7 @@ mod tests {
                 output_ready_state_changes: 1,
                 output_stream_state: 3,
                 output_stream_ready: true,
+                ..NativeVulkanAudioClockPacket::default()
             },
         );
 
@@ -1889,6 +1991,7 @@ mod tests {
                 payload_bytes: 512,
                 decoded_frames: 1,
                 decoded_samples: 1008,
+                audio_signal_level_micros: 0,
                 sample_rate_hz: Some(48_000),
                 channel_count: Some(2),
                 output_frames: 1,
@@ -1905,6 +2008,7 @@ mod tests {
                 output_ready_state_changes: 1,
                 output_stream_state: 3,
                 output_stream_ready: true,
+                ..NativeVulkanAudioClockPacket::default()
             },
         );
 

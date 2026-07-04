@@ -7,6 +7,9 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
 
 use crate::core::SceneBlendMode;
+use crate::renderer::native_vulkan::audio::clock::{
+    native_vulkan_audio_signal_level, native_vulkan_audio_spectrum32_packed,
+};
 use crate::renderer::native_vulkan::effect_debug::{
     native_vulkan_effect_debug_enabled, native_vulkan_effect_debug_log_limited,
 };
@@ -176,6 +179,8 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_FLAGS_OFFSET_BYTES: usize = 140;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_X_OFFSET_BYTES: usize = 144;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_AA_Y_OFFSET_BYTES: usize = 148;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_RADIUS_OFFSET_BYTES: usize = 152;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_SIGNAL_OFFSET_BYTES: usize = 156;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_SPECTRUM32_OFFSET_BYTES: usize = 160;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CAUSTICS_BRIGHTNESS_OFFSET_BYTES: usize =
     SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERRIPPLE_STRENGTH_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CAUSTICS_GLOW_OFFSET_BYTES: usize =
@@ -300,6 +305,8 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
     pub pipeline_layout_created: bool,
     pub pipeline_created: bool,
     pub rasterization_samples: &'static str,
+    pub sample_shading_enabled: bool,
+    pub min_sample_shading: &'static str,
     pub render_pass_compatibility: &'static str,
     pub primitive_topology: &'static str,
     pub vertex_input_binding_count: u32,
@@ -322,6 +329,9 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot {
     pub route: &'static str,
     pub extent: (u32, u32),
     pub index_count: u32,
+    pub rasterization_samples: &'static str,
+    pub uses_msaa_color_target: bool,
+    pub resolve_mode: &'static str,
     pub command_buffer_recorded: bool,
     pub vertex_buffer_bound: bool,
     pub index_buffer_bound: bool,
@@ -345,6 +355,8 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     pub pipeline_created: bool,
     pub pass_specific_fragment_pipeline_count: u32,
     pub rasterization_samples: &'static str,
+    pub sample_shading_enabled: bool,
+    pub min_sample_shading: &'static str,
     pub render_pass_compatibility: &'static str,
     pub primitive_topology: &'static str,
     pub vertex_input_binding_count: u32,
@@ -379,6 +391,10 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
     pub route: &'static str,
     pub extent: (u32, u32),
     pub index_count: u32,
+    pub rasterization_samples: &'static str,
+    pub uses_msaa_color_target: bool,
+    pub effect_msaa_target_count: u32,
+    pub resolve_mode: &'static str,
     pub command_buffer_recorded: bool,
     pub vertex_buffer_bound: bool,
     pub index_buffer_bound: bool,
@@ -420,6 +436,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadPi
     pub(in crate::renderer::native_vulkan::vulkan) alpha_to_coverage_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) hsl_color_passthrough_pipeline:
         Option<vk::Pipeline>,
+    pub(in crate::renderer::native_vulkan::vulkan) sample_count: vk::SampleCountFlags,
+    pub(in crate::renderer::native_vulkan::vulkan) sample_shading_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
 }
@@ -428,6 +446,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadPi
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneMsaaColorTarget {
     pub(in crate::renderer::native_vulkan::vulkan) image: vk::Image,
     pub(in crate::renderer::native_vulkan::vulkan) image_view: vk::ImageView,
+    pub(in crate::renderer::native_vulkan::vulkan) extent: vk::Extent2D,
     pub(in crate::renderer::native_vulkan::vulkan) sample_count: vk::SampleCountFlags,
 }
 
@@ -461,6 +480,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) passthroughblend_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) sample_count: vk::SampleCountFlags,
+    pub(in crate::renderer::native_vulkan::vulkan) sample_shading_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
 }
@@ -1148,6 +1169,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     device: &Device,
     target_format: vk::Format,
     extent: vk::Extent2D,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
     descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
 ) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
@@ -1197,6 +1220,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     device,
                     target_format,
                     extent,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     fragment_module,
@@ -1236,6 +1261,8 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
     device: &Device,
     target_format: vk::Format,
     extent: vk::Extent2D,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
     pipeline_layout: vk::PipelineLayout,
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
@@ -1313,8 +1340,11 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .line_width(1.0)
             .build();
+        let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
         let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-            .rasterization_samples(vk::SampleCountFlags::_1)
+            .rasterization_samples(sample_count)
+            .sample_shading_enable(sample_shading)
+            .min_sample_shading(scene_min_sample_shading_value(sample_shading))
             .alpha_to_coverage_enable(blend_mode == SceneBlendMode::AlphaToCoverage)
             .build();
         let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
@@ -1382,6 +1412,8 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
                         target_format,
                         extent,
                         descriptor_heap_plan,
+                        sample_count,
+                        sample_shading_enabled,
                         pipeline_layout,
                         vertex_module,
                         passthrough_fragment_module,
@@ -1402,10 +1434,16 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
             hsl_color_pipeline,
             alpha_to_coverage_pipeline,
             hsl_color_passthrough_pipeline,
+            sample_count,
+            sample_shading_enabled: scene_sample_shading_enabled(
+                sample_count,
+                sample_shading_enabled,
+            ),
             snapshot: native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
                 target_format,
                 extent,
-                vk::SampleCountFlags::_1,
+                sample_count,
+                sample_shading_enabled,
             ),
         })
     })();
@@ -1425,6 +1463,8 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
     pipeline_layout: vk::PipelineLayout,
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
@@ -1505,8 +1545,11 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0)
         .build();
+    let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(vk::SampleCountFlags::_1)
+        .rasterization_samples(sample_count)
+        .sample_shading_enable(sample_shading)
+        .min_sample_shading(scene_min_sample_shading_value(sample_shading))
         .build();
     let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Normal);
     let color_attachments = [color_attachment];
@@ -1568,7 +1611,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
     target_format: vk::Format,
     extent: vk::Extent2D,
     sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
 ) -> NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
+    let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot {
         binding: "vulkanalia",
         route: "scene-solid-quad-dynamic-rendering-pipeline",
@@ -1578,6 +1623,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         pipeline_layout_created: true,
         pipeline_created: true,
         rasterization_samples: scene_sample_count_label(sample_count),
+        sample_shading_enabled: sample_shading,
+        min_sample_shading: scene_min_sample_shading_label(sample_shading),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-quad",
         vertex_input_binding_count: 1,
@@ -1615,12 +1662,28 @@ fn scene_sample_count_label(sample_count: vk::SampleCountFlags) -> &'static str 
     }
 }
 
+fn scene_sample_shading_enabled(
+    sample_count: vk::SampleCountFlags,
+    sample_rate_shading_available: bool,
+) -> bool {
+    sample_rate_shading_available && sample_count != vk::SampleCountFlags::_1
+}
+
+fn scene_min_sample_shading_value(sample_shading_enabled: bool) -> f32 {
+    if sample_shading_enabled { 1.0 } else { 0.0 }
+}
+
+fn scene_min_sample_shading_label(sample_shading_enabled: bool) -> &'static str {
+    if sample_shading_enabled { "1.0" } else { "0.0" }
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
     device: &Device,
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
 ) -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene sampled-image pipeline requires non-zero extent".to_owned());
@@ -1733,6 +1796,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     fragment_module,
@@ -1744,6 +1809,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     water_ripple_fragment_module,
@@ -1764,6 +1831,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     water_waves_fragment_module,
@@ -1788,6 +1857,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     water_flow_fragment_module,
@@ -1816,6 +1887,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     scroll_fragment_module,
@@ -1848,6 +1921,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     skew_fragment_module,
@@ -1884,6 +1959,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     water_caustics_fragment_module,
@@ -1924,6 +2001,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     foliage_sway_fragment_module,
@@ -1968,6 +2047,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     auto_sway_fragment_module,
@@ -2016,6 +2097,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     iris_fragment_module,
@@ -2068,6 +2151,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     opacity_fragment_module,
@@ -2124,6 +2209,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     tech_circle_fragment_module,
@@ -2184,6 +2271,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     audio_bars_fragment_module,
@@ -2248,6 +2337,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     target_format,
                     extent,
                     descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
                     pipeline_layout,
                     vertex_module,
                     passthroughblend_fragment_module,
@@ -2326,10 +2417,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 tech_circle_pipelines,
                 audio_bars_pipelines,
                 passthroughblend_pipelines,
+                sample_count,
+                sample_shading_enabled: scene_sample_shading_enabled(
+                    sample_count,
+                    sample_shading_enabled,
+                ),
                 snapshot: native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
                     target_format,
                     extent,
                     sample_count,
+                    sample_shading_enabled,
                 ),
             })
         })();
@@ -2434,6 +2531,8 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
     pipeline_layout: vk::PipelineLayout,
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
@@ -2450,6 +2549,8 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
             target_format,
             extent,
             descriptor_heap_plan,
+            sample_count,
+            sample_shading_enabled,
             pipeline_layout,
             vertex_module,
             selected_fragment_module,
@@ -2517,6 +2618,8 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
     pipeline_layout: vk::PipelineLayout,
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
@@ -2628,8 +2731,11 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
         .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
         .line_width(1.0)
         .build();
+    let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(vk::SampleCountFlags::_1)
+        .rasterization_samples(sample_count)
+        .sample_shading_enable(sample_shading)
+        .min_sample_shading(scene_min_sample_shading_value(sample_shading))
         .alpha_to_coverage_enable(blend_mode == SceneBlendMode::AlphaToCoverage)
         .build();
     let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(blend_mode);
@@ -2679,7 +2785,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
     target_format: vk::Format,
     extent: vk::Extent2D,
     sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
 ) -> NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
+    let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
     NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
         binding: "vulkanalia",
         route: "scene-sampled-image-dynamic-rendering-pipeline",
@@ -2691,6 +2799,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         pipeline_created: true,
         pass_specific_fragment_pipeline_count: 126,
         rasterization_samples: scene_sample_count_label(sample_count),
+        sample_shading_enabled: sample_shading,
+        min_sample_shading: scene_min_sample_shading_label(sample_shading),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-image-quad",
         vertex_input_binding_count: 1,
@@ -2726,6 +2836,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     command_buffer: vk::CommandBuffer,
     swapchain_image: vk::Image,
     swapchain_view: vk::ImageView,
+    swapchain_msaa_target: Option<&VulkanaliaSceneMsaaColorTarget>,
     extent: vk::Extent2D,
     pipeline_resources: &VulkanaliaSceneSolidQuadPipelineResources,
     vertex_buffer: vk::Buffer,
@@ -2739,6 +2850,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     if index_count == 0 {
         return Err("scene solid quad command requires at least one index".to_owned());
     }
+    validate_scene_msaa_color_target(
+        "solid quad swapchain",
+        swapchain_msaa_target,
+        extent,
+        pipeline_resources.sample_count,
+    )?;
 
     unsafe {
         device
@@ -2768,30 +2885,29 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             .image_memory_barriers(&image_barriers)
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        if let Some(msaa_target) = swapchain_msaa_target {
+            scene_color_image_transition(
+                device,
+                command_buffer,
+                msaa_target.image,
+                vk::ImageLayout::UNDEFINED,
+                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                vk::AccessFlags2::empty(),
+                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            );
+        }
 
-        let clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: clear_color,
-            },
-        };
-        let color_attachment = vk::RenderingAttachmentInfo::builder()
-            .image_view(swapchain_view)
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(clear_value)
-            .build();
-        let color_attachments = [color_attachment];
-        let render_area = vk::Rect2D::builder()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(extent)
-            .build();
-        let rendering_info = vk::RenderingInfo::builder()
-            .render_area(render_area)
-            .layer_count(1)
-            .color_attachments(&color_attachments)
-            .build();
-        device.cmd_begin_rendering(command_buffer, &rendering_info);
+        begin_scene_color_rendering(
+            device,
+            command_buffer,
+            swapchain_view,
+            swapchain_msaa_target,
+            extent,
+            vk::AttachmentLoadOp::CLEAR,
+            clear_color,
+        );
         device.cmd_bind_pipeline(
             command_buffer,
             vk::PipelineBindPoint::GRAPHICS,
@@ -2844,6 +2960,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         route: "scene-solid-quad-dynamic-rendering-command-buffer",
         extent: (extent.width, extent.height),
         index_count,
+        rasterization_samples: scene_sample_count_label(pipeline_resources.sample_count),
+        uses_msaa_color_target: swapchain_msaa_target.is_some(),
+        resolve_mode: if swapchain_msaa_target.is_some() {
+            "average"
+        } else {
+            "none"
+        },
         command_buffer_recorded: true,
         vertex_buffer_bound: true,
         index_buffer_bound: true,
@@ -4189,10 +4312,32 @@ fn scene_sampled_image_push_constant_bytes(
             let shape = scene_sampled_image_material_combo_value(material, "SHAPE")
                 .unwrap_or(0)
                 .clamp(0, u32::MAX as i64) as u32;
+            let mut audio_flags = shape;
+            if let Some(spectrum32_packed) = native_vulkan_audio_spectrum32_packed() {
+                audio_flags |= 1u32 << 17;
+                for (index, packed) in spectrum32_packed.iter().enumerate() {
+                    scene_sampled_image_write_push_constant_u32(
+                        &mut push_constant_bytes,
+                        SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_SPECTRUM32_OFFSET_BYTES
+                            + index * std::mem::size_of::<u32>(),
+                        *packed,
+                    );
+                }
+            }
+            if let Some(signal_level) =
+                native_vulkan_audio_signal_level().filter(|level| *level > f32::EPSILON)
+            {
+                audio_flags |= 1u32 << 16;
+                scene_sampled_image_push_constant_f32(
+                    &mut push_constant_bytes,
+                    SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_SIGNAL_OFFSET_BYTES,
+                    signal_level.clamp(0.0, 1.0),
+                );
+            }
             scene_sampled_image_write_push_constant_u32(
                 &mut push_constant_bytes,
                 SCENE_FULL_SAMPLED_IMAGE_PUSH_AUDIO_FLAGS_OFFSET_BYTES,
-                shape,
+                audio_flags,
             );
             let rounded_aa = scene_sampled_image_material_constant_vec2(
                 material,
@@ -4639,6 +4784,37 @@ enum SceneSampledImageActiveRenderingTarget {
     EffectTarget(u32),
 }
 
+fn validate_scene_msaa_color_target(
+    label: &'static str,
+    target: Option<&VulkanaliaSceneMsaaColorTarget>,
+    extent: vk::Extent2D,
+    sample_count: vk::SampleCountFlags,
+) -> Result<(), String> {
+    if sample_count == vk::SampleCountFlags::_1 {
+        return Ok(());
+    }
+    let Some(target) = target else {
+        return Err(format!(
+            "scene {label} render uses {} pipelines but has no MSAA color target",
+            scene_sample_count_label(sample_count)
+        ));
+    };
+    if target.sample_count != sample_count {
+        return Err(format!(
+            "scene {label} MSAA target sample count {} does not match pipeline sample count {}",
+            scene_sample_count_label(target.sample_count),
+            scene_sample_count_label(sample_count)
+        ));
+    }
+    if target.extent.width != extent.width || target.extent.height != extent.height {
+        return Err(format!(
+            "scene {label} MSAA target extent {}x{} does not match render extent {}x{}",
+            target.extent.width, target.extent.height, extent.width, extent.height
+        ));
+    }
+    Ok(())
+}
+
 fn scene_color_image_transition(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -4675,6 +4851,7 @@ fn begin_scene_color_rendering(
     device: &Device,
     command_buffer: vk::CommandBuffer,
     image_view: vk::ImageView,
+    msaa_target: Option<&VulkanaliaSceneMsaaColorTarget>,
     extent: vk::Extent2D,
     load_op: vk::AttachmentLoadOp,
     clear_color: [f32; 4],
@@ -4684,13 +4861,19 @@ fn begin_scene_color_rendering(
             float32: clear_color,
         },
     };
-    let color_attachment = vk::RenderingAttachmentInfo::builder()
-        .image_view(image_view)
+    let mut color_attachment = vk::RenderingAttachmentInfo::builder()
+        .image_view(msaa_target.map_or(image_view, |target| target.image_view))
         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
         .load_op(load_op)
         .store_op(vk::AttachmentStoreOp::STORE)
-        .clear_value(clear_value)
-        .build();
+        .clear_value(clear_value);
+    if msaa_target.is_some() {
+        color_attachment = color_attachment
+            .resolve_mode(vk::ResolveModeFlags::AVERAGE)
+            .resolve_image_view(image_view)
+            .resolve_image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+    }
+    let color_attachment = color_attachment.build();
     let color_attachments = [color_attachment];
     let render_area = vk::Rect2D::builder()
         .offset(vk::Offset2D { x: 0, y: 0 })
@@ -4811,12 +4994,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     command_buffer: vk::CommandBuffer,
     swapchain_image: vk::Image,
     swapchain_view: vk::ImageView,
+    swapchain_msaa_target: Option<&VulkanaliaSceneMsaaColorTarget>,
     extent: vk::Extent2D,
     solid_quad_draw: Option<VulkanaliaSceneSolidQuadDrawResources<'_>>,
     descriptor_heap_draw: Option<VulkanaliaSceneDescriptorHeapDrawResources<'_>>,
     pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     effect_target_resources: &[VulkanaliaSceneSampledImageResources],
+    effect_msaa_targets: &[VulkanaliaSceneMsaaColorTarget],
     framebuffer_snapshot_resource: Option<&VulkanaliaSceneSampledImageResources>,
     framebuffer_snapshot_initial_layout: vk::ImageLayout,
     vertex_buffer: vk::Buffer,
@@ -4943,6 +5128,33 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     {
         return Err("scene sampled-image command requires at least one swapchain draw".to_owned());
     }
+    validate_scene_msaa_color_target(
+        "sampled-image swapchain",
+        swapchain_msaa_target,
+        extent,
+        pipeline_resources.sample_count,
+    )?;
+    if pipeline_resources.sample_count != vk::SampleCountFlags::_1 {
+        if effect_msaa_targets.len() < effect_target_resources.len() {
+            return Err(format!(
+                "scene sampled-image MSAA effect target count {} is smaller than effect target resource count {}",
+                effect_msaa_targets.len(),
+                effect_target_resources.len()
+            ));
+        }
+        for (index, target) in effect_target_resources.iter().enumerate() {
+            let extent = vk::Extent2D {
+                width: target.snapshot.extent.0,
+                height: target.snapshot.extent.1,
+            };
+            validate_scene_msaa_color_target(
+                "sampled-image effect target",
+                effect_msaa_targets.get(index),
+                extent,
+                pipeline_resources.sample_count,
+            )?;
+        }
+    }
 
     let solid_draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand] =
         solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
@@ -5067,6 +5279,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                             );
+                            if let Some(msaa_target) = swapchain_msaa_target {
+                                scene_color_image_transition(
+                                    device,
+                                    command_buffer,
+                                    msaa_target.image,
+                                    vk::ImageLayout::UNDEFINED,
+                                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                    vk::PipelineStageFlags2::TOP_OF_PIPE,
+                                    vk::AccessFlags2::empty(),
+                                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                                );
+                            }
                             swapchain_started = true;
                             vk::AttachmentLoadOp::CLEAR
                         };
@@ -5075,6 +5300,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             device,
                             command_buffer,
                             swapchain_view,
+                            swapchain_msaa_target,
                             active_extent,
                             load_op,
                             clear_color,
@@ -5088,6 +5314,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             unreachable!("desired effect target came from sampled draw target");
                         };
                         let target = &effect_target_resources[target_index as usize];
+                        let effect_msaa_target = (pipeline_resources.sample_count
+                            != vk::SampleCountFlags::_1)
+                            .then(|| &effect_msaa_targets[target_index as usize]);
                         active_extent = vk::Extent2D {
                             width: target.snapshot.extent.0,
                             height: target.snapshot.extent.1,
@@ -5115,10 +5344,36 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                             vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                         );
+                        if let Some(msaa_target) = effect_msaa_target {
+                            scene_color_image_transition(
+                                device,
+                                command_buffer,
+                                msaa_target.image,
+                                if clear {
+                                    vk::ImageLayout::UNDEFINED
+                                } else {
+                                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+                                },
+                                vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                                if clear {
+                                    vk::PipelineStageFlags2::TOP_OF_PIPE
+                                } else {
+                                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT
+                                },
+                                if clear {
+                                    vk::AccessFlags2::empty()
+                                } else {
+                                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE
+                                },
+                                vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+                                vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                            );
+                        }
                         begin_scene_color_rendering(
                             device,
                             command_buffer,
                             target.image_view,
+                            effect_msaa_target,
                             active_extent,
                             if clear {
                                 vk::AttachmentLoadOp::CLEAR
@@ -5168,6 +5423,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             device,
                             command_buffer,
                             swapchain_view,
+                            swapchain_msaa_target,
                             extent,
                             vk::AttachmentLoadOp::LOAD,
                             clear_color,
@@ -5275,6 +5531,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             device,
                             command_buffer,
                             swapchain_view,
+                            swapchain_msaa_target,
                             extent,
                             vk::AttachmentLoadOp::LOAD,
                             clear_color,
@@ -5436,6 +5693,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         },
         extent: (extent.width, extent.height),
         index_count: solid_quad_index_count.saturating_add(sampled_image_index_count),
+        rasterization_samples: scene_sample_count_label(pipeline_resources.sample_count),
+        uses_msaa_color_target: swapchain_msaa_target.is_some() || !effect_msaa_targets.is_empty(),
+        effect_msaa_target_count: saturating_u32(effect_msaa_targets.len()),
+        resolve_mode: if pipeline_resources.sample_count != vk::SampleCountFlags::_1 {
+            "average"
+        } else {
+            "none"
+        },
         command_buffer_recorded: true,
         vertex_buffer_bound: true,
         index_buffer_bound: true,
@@ -5680,505 +5945,11 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 506]
     0x000100fd, 0x00010038,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 1944] = [
-    0x07230203, 0x00010000, 0x0008000b, 0x0000014f, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
-    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-    0x000a000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x000000fe, 0x00000108, 0x00000142,
-    0x00000146, 0x0000014d, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2,
-    0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00070005, 0x0000000b, 0x5f776172, 0x68706c61,
-    0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000a, 0x00007675, 0x00060005, 0x0000000e,
-    0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000d, 0x00007675, 0x00070005,
-    0x00000011, 0x73697269, 0x746f6d5f, 0x5f6e6f69, 0x7366666f, 0x00287465, 0x00060005, 0x00000015,
-    0x706d6173, 0x5f64656c, 0x6f6c6f63, 0x00002872, 0x00050005, 0x00000018, 0x6e656353, 0x73755065,
-    0x00000068, 0x00050006, 0x00000018, 0x00000000, 0x65747865, 0x0000746e, 0x00080006, 0x00000018,
-    0x00000001, 0x68706c61, 0x65745f61, 0x72757478, 0x6c735f65, 0x0000746f, 0x00080006, 0x00000018,
-    0x00000002, 0x68706c61, 0x65745f61, 0x72757478, 0x6f6d5f65, 0x00006564, 0x00070006, 0x00000018,
-    0x00000003, 0x656d6974, 0x6365735f, 0x73646e6f, 0x00000000, 0x00030005, 0x0000001a, 0x00006370,
-    0x00050005, 0x00000028, 0x65545f67, 0x72757478, 0x00003165, 0x00050005, 0x00000035, 0x65545f67,
-    0x72757478, 0x00003265, 0x00050005, 0x00000041, 0x65545f67, 0x72757478, 0x00003365, 0x00050005,
-    0x0000004d, 0x65545f67, 0x72757478, 0x00003465, 0x00050005, 0x00000059, 0x65545f67, 0x72757478,
-    0x00003565, 0x00050005, 0x00000065, 0x65545f67, 0x72757478, 0x00003665, 0x00050005, 0x00000071,
-    0x65545f67, 0x72757478, 0x00003765, 0x00040005, 0x00000082, 0x6b73616d, 0x00000000, 0x00040005,
-    0x00000083, 0x61726170, 0x0000006d, 0x00040005, 0x00000092, 0x69545f67, 0x0000656d, 0x00040005,
-    0x00000097, 0x63535f67, 0x00656c61, 0x00040005, 0x00000099, 0x70535f67, 0x00646565, 0x00040005,
-    0x0000009a, 0x6f525f67, 0x00686775, 0x00060005, 0x0000009c, 0x6f4e5f67, 0x41657369, 0x6e756f6d,
-    0x00000074, 0x00060005, 0x0000009e, 0x68505f67, 0x4f657361, 0x65736666, 0x00000074, 0x00040005,
-    0x000000a0, 0x656d6974, 0x00000000, 0x00040005, 0x000000a6, 0x44776f6c, 0x00000074, 0x00040005,
-    0x000000a9, 0x69746f6d, 0x00326e6f, 0x00040005, 0x000000b2, 0x69746f6d, 0x00346e6f, 0x00050005,
-    0x000000bd, 0x65766f6d, 0x72617453, 0x00000074, 0x00040005, 0x000000c3, 0x65766f6d, 0x00646e45,
-    0x00030005, 0x000000c9, 0x00006164, 0x00040005, 0x000000fc, 0x6b73616d, 0x00000000, 0x00050005,
-    0x000000fe, 0x66655f76, 0x74636566, 0x0076755f, 0x00040005, 0x000000ff, 0x61726170, 0x0000006d,
-    0x00050005, 0x00000102, 0x73697269, 0x66666f5f, 0x00746573, 0x00050005, 0x00000106, 0x65545f67,
-    0x72757478, 0x00003065, 0x00040005, 0x00000108, 0x76755f76, 0x00000000, 0x00050005, 0x00000119,
-    0x73697269, 0x73616d5f, 0x0000006b, 0x00040005, 0x0000011a, 0x61726170, 0x0000006d, 0x00050005,
-    0x0000011d, 0x73697269, 0x66666f5f, 0x00746573, 0x00040005, 0x00000121, 0x6f6c6f63, 0x00000072,
-    0x00040005, 0x00000131, 0x6f6c6f63, 0x00000072, 0x00040005, 0x00000135, 0x61726170, 0x0000006d,
-    0x00040005, 0x0000013f, 0x6f6c6f63, 0x00000072, 0x00040005, 0x00000142, 0x69745f76, 0x0000746e,
-    0x00050005, 0x00000146, 0x706f5f76, 0x74696361, 0x00000079, 0x00050005, 0x0000014d, 0x5f74756f,
-    0x6f6c6f63, 0x00000072, 0x00030047, 0x00000018, 0x00000002, 0x00050048, 0x00000018, 0x00000000,
-    0x00000023, 0x00000000, 0x00050048, 0x00000018, 0x00000001, 0x00000023, 0x00000008, 0x00050048,
-    0x00000018, 0x00000002, 0x00000023, 0x0000000c, 0x00050048, 0x00000018, 0x00000003, 0x00000023,
-    0x00000010, 0x00040047, 0x00000028, 0x00000021, 0x00000001, 0x00040047, 0x00000028, 0x00000022,
-    0x00000000, 0x00040047, 0x00000035, 0x00000021, 0x00000002, 0x00040047, 0x00000035, 0x00000022,
-    0x00000000, 0x00040047, 0x00000041, 0x00000021, 0x00000003, 0x00040047, 0x00000041, 0x00000022,
-    0x00000000, 0x00040047, 0x0000004d, 0x00000021, 0x00000004, 0x00040047, 0x0000004d, 0x00000022,
-    0x00000000, 0x00040047, 0x00000059, 0x00000021, 0x00000005, 0x00040047, 0x00000059, 0x00000022,
-    0x00000000, 0x00040047, 0x00000065, 0x00000021, 0x00000006, 0x00040047, 0x00000065, 0x00000022,
-    0x00000000, 0x00040047, 0x00000071, 0x00000021, 0x00000007, 0x00040047, 0x00000071, 0x00000022,
-    0x00000000, 0x00040047, 0x000000fe, 0x0000001e, 0x00000001, 0x00040047, 0x00000106, 0x00000021,
-    0x00000000, 0x00040047, 0x00000106, 0x00000022, 0x00000000, 0x00040047, 0x00000108, 0x0000001e,
-    0x00000000, 0x00040047, 0x00000142, 0x0000001e, 0x00000003, 0x00040047, 0x00000146, 0x0000001e,
-    0x00000002, 0x00040047, 0x0000014d, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021,
-    0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006,
-    0x00000002, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00040021, 0x00000009, 0x00000006,
-    0x00000008, 0x00030021, 0x00000010, 0x00000007, 0x00040017, 0x00000013, 0x00000006, 0x00000004,
-    0x00030021, 0x00000014, 0x00000013, 0x00040015, 0x00000017, 0x00000020, 0x00000000, 0x0006001e,
-    0x00000018, 0x00000007, 0x00000017, 0x00000017, 0x00000006, 0x00040020, 0x00000019, 0x00000009,
-    0x00000018, 0x0004003b, 0x00000019, 0x0000001a, 0x00000009, 0x00040015, 0x0000001b, 0x00000020,
-    0x00000001, 0x0004002b, 0x0000001b, 0x0000001c, 0x00000001, 0x00040020, 0x0000001d, 0x00000009,
-    0x00000017, 0x0004002b, 0x00000017, 0x00000020, 0x00000001, 0x00020014, 0x00000021, 0x00090019,
-    0x00000025, 0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000,
-    0x0003001b, 0x00000026, 0x00000025, 0x00040020, 0x00000027, 0x00000000, 0x00000026, 0x0004003b,
-    0x00000027, 0x00000028, 0x00000000, 0x0004002b, 0x00000017, 0x0000002c, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000031, 0x00000002, 0x0004003b, 0x00000027, 0x00000035, 0x00000000, 0x0004002b,
-    0x00000017, 0x0000003d, 0x00000003, 0x0004003b, 0x00000027, 0x00000041, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000049, 0x00000004, 0x0004003b, 0x00000027, 0x0000004d, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000055, 0x00000005, 0x0004003b, 0x00000027, 0x00000059, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000061, 0x00000006, 0x0004003b, 0x00000027, 0x00000065, 0x00000000, 0x0004002b,
-    0x00000017, 0x0000006d, 0x00000007, 0x0004003b, 0x00000027, 0x00000071, 0x00000000, 0x0004002b,
-    0x00000006, 0x00000077, 0x3f800000, 0x0004002b, 0x00000017, 0x0000007c, 0xffffffff, 0x00040020,
-    0x00000081, 0x00000007, 0x00000006, 0x0004002b, 0x0000001b, 0x00000086, 0x00000002, 0x0004002b,
-    0x0000001b, 0x00000093, 0x00000003, 0x00040020, 0x00000094, 0x00000009, 0x00000006, 0x0005002c,
-    0x00000007, 0x00000098, 0x00000077, 0x00000077, 0x0004002b, 0x00000006, 0x0000009b, 0x3e4ccccd,
-    0x0004002b, 0x00000006, 0x0000009d, 0x3f000000, 0x0004002b, 0x00000006, 0x0000009f, 0x00000000,
-    0x0004002b, 0x00000006, 0x000000aa, 0x3ff33333, 0x0005002c, 0x00000007, 0x000000ac, 0x0000009f,
-    0x00000077, 0x00040020, 0x000000b1, 0x00000007, 0x00000013, 0x0004002b, 0x00000006, 0x000000b3,
-    0x40200000, 0x0007002c, 0x00000013, 0x000000b5, 0x0000009f, 0x0000009f, 0x00000077, 0x00000077,
-    0x0004002b, 0x00000006, 0x000000b9, 0x40000000, 0x0007002c, 0x00000013, 0x000000ba, 0x00000077,
-    0x000000b9, 0x00000077, 0x000000b9, 0x0004002b, 0x00000006, 0x000000d0, 0x40490fdb, 0x0004002b,
-    0x00000006, 0x000000d3, 0xbf000000, 0x0004002b, 0x00000006, 0x000000ea, 0x3a83126f, 0x00040020,
-    0x000000fd, 0x00000001, 0x00000007, 0x0004003b, 0x000000fd, 0x000000fe, 0x00000001, 0x0004003b,
-    0x00000027, 0x00000106, 0x00000000, 0x0004003b, 0x000000fd, 0x00000108, 0x00000001, 0x00040020,
-    0x00000141, 0x00000001, 0x00000013, 0x0004003b, 0x00000141, 0x00000142, 0x00000001, 0x00040020,
-    0x00000145, 0x00000001, 0x00000006, 0x0004003b, 0x00000145, 0x00000146, 0x00000001, 0x00040020,
-    0x0000014c, 0x00000003, 0x00000013, 0x0004003b, 0x0000014c, 0x0000014d, 0x00000003, 0x00050036,
-    0x00000002, 0x00000004, 0x00000000, 0x00000003, 0x000200f8, 0x00000005, 0x0004003b, 0x000000b1,
-    0x0000013f, 0x00000007, 0x00040039, 0x00000013, 0x00000140, 0x00000015, 0x0004003d, 0x00000013,
-    0x00000143, 0x00000142, 0x00050085, 0x00000013, 0x00000144, 0x00000140, 0x00000143, 0x0003003e,
-    0x0000013f, 0x00000144, 0x0004003d, 0x00000006, 0x00000147, 0x00000146, 0x00050041, 0x00000081,
-    0x00000148, 0x0000013f, 0x0000003d, 0x0004003d, 0x00000006, 0x00000149, 0x00000148, 0x00050085,
-    0x00000006, 0x0000014a, 0x00000149, 0x00000147, 0x00050041, 0x00000081, 0x0000014b, 0x0000013f,
-    0x0000003d, 0x0003003e, 0x0000014b, 0x0000014a, 0x0004003d, 0x00000013, 0x0000014e, 0x0000013f,
-    0x0003003e, 0x0000014d, 0x0000014e, 0x000100fd, 0x00010038, 0x00050036, 0x00000006, 0x0000000b,
-    0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000a, 0x000200f8, 0x0000000c, 0x00050041,
-    0x0000001d, 0x0000001e, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000001f, 0x0000001e,
-    0x000500aa, 0x00000021, 0x00000022, 0x0000001f, 0x00000020, 0x000300f7, 0x00000024, 0x00000000,
-    0x000400fa, 0x00000022, 0x00000023, 0x00000024, 0x000200f8, 0x00000023, 0x0004003d, 0x00000026,
-    0x00000029, 0x00000028, 0x0004003d, 0x00000007, 0x0000002a, 0x0000000a, 0x00050057, 0x00000013,
-    0x0000002b, 0x00000029, 0x0000002a, 0x00050051, 0x00000006, 0x0000002d, 0x0000002b, 0x00000000,
-    0x000200fe, 0x0000002d, 0x000200f8, 0x00000024, 0x00050041, 0x0000001d, 0x0000002f, 0x0000001a,
-    0x0000001c, 0x0004003d, 0x00000017, 0x00000030, 0x0000002f, 0x000500aa, 0x00000021, 0x00000032,
-    0x00000030, 0x00000031, 0x000300f7, 0x00000034, 0x00000000, 0x000400fa, 0x00000032, 0x00000033,
-    0x00000034, 0x000200f8, 0x00000033, 0x0004003d, 0x00000026, 0x00000036, 0x00000035, 0x0004003d,
-    0x00000007, 0x00000037, 0x0000000a, 0x00050057, 0x00000013, 0x00000038, 0x00000036, 0x00000037,
-    0x00050051, 0x00000006, 0x00000039, 0x00000038, 0x00000000, 0x000200fe, 0x00000039, 0x000200f8,
-    0x00000034, 0x00050041, 0x0000001d, 0x0000003b, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017,
-    0x0000003c, 0x0000003b, 0x000500aa, 0x00000021, 0x0000003e, 0x0000003c, 0x0000003d, 0x000300f7,
-    0x00000040, 0x00000000, 0x000400fa, 0x0000003e, 0x0000003f, 0x00000040, 0x000200f8, 0x0000003f,
-    0x0004003d, 0x00000026, 0x00000042, 0x00000041, 0x0004003d, 0x00000007, 0x00000043, 0x0000000a,
-    0x00050057, 0x00000013, 0x00000044, 0x00000042, 0x00000043, 0x00050051, 0x00000006, 0x00000045,
-    0x00000044, 0x00000000, 0x000200fe, 0x00000045, 0x000200f8, 0x00000040, 0x00050041, 0x0000001d,
-    0x00000047, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x00000048, 0x00000047, 0x000500aa,
-    0x00000021, 0x0000004a, 0x00000048, 0x00000049, 0x000300f7, 0x0000004c, 0x00000000, 0x000400fa,
-    0x0000004a, 0x0000004b, 0x0000004c, 0x000200f8, 0x0000004b, 0x0004003d, 0x00000026, 0x0000004e,
-    0x0000004d, 0x0004003d, 0x00000007, 0x0000004f, 0x0000000a, 0x00050057, 0x00000013, 0x00000050,
-    0x0000004e, 0x0000004f, 0x00050051, 0x00000006, 0x00000051, 0x00000050, 0x00000000, 0x000200fe,
-    0x00000051, 0x000200f8, 0x0000004c, 0x00050041, 0x0000001d, 0x00000053, 0x0000001a, 0x0000001c,
-    0x0004003d, 0x00000017, 0x00000054, 0x00000053, 0x000500aa, 0x00000021, 0x00000056, 0x00000054,
-    0x00000055, 0x000300f7, 0x00000058, 0x00000000, 0x000400fa, 0x00000056, 0x00000057, 0x00000058,
-    0x000200f8, 0x00000057, 0x0004003d, 0x00000026, 0x0000005a, 0x00000059, 0x0004003d, 0x00000007,
-    0x0000005b, 0x0000000a, 0x00050057, 0x00000013, 0x0000005c, 0x0000005a, 0x0000005b, 0x00050051,
-    0x00000006, 0x0000005d, 0x0000005c, 0x00000000, 0x000200fe, 0x0000005d, 0x000200f8, 0x00000058,
-    0x00050041, 0x0000001d, 0x0000005f, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x00000060,
-    0x0000005f, 0x000500aa, 0x00000021, 0x00000062, 0x00000060, 0x00000061, 0x000300f7, 0x00000064,
-    0x00000000, 0x000400fa, 0x00000062, 0x00000063, 0x00000064, 0x000200f8, 0x00000063, 0x0004003d,
-    0x00000026, 0x00000066, 0x00000065, 0x0004003d, 0x00000007, 0x00000067, 0x0000000a, 0x00050057,
-    0x00000013, 0x00000068, 0x00000066, 0x00000067, 0x00050051, 0x00000006, 0x00000069, 0x00000068,
-    0x00000000, 0x000200fe, 0x00000069, 0x000200f8, 0x00000064, 0x00050041, 0x0000001d, 0x0000006b,
-    0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000006c, 0x0000006b, 0x000500aa, 0x00000021,
-    0x0000006e, 0x0000006c, 0x0000006d, 0x000300f7, 0x00000070, 0x00000000, 0x000400fa, 0x0000006e,
-    0x0000006f, 0x00000070, 0x000200f8, 0x0000006f, 0x0004003d, 0x00000026, 0x00000072, 0x00000071,
-    0x0004003d, 0x00000007, 0x00000073, 0x0000000a, 0x00050057, 0x00000013, 0x00000074, 0x00000072,
-    0x00000073, 0x00050051, 0x00000006, 0x00000075, 0x00000074, 0x00000000, 0x000200fe, 0x00000075,
-    0x000200f8, 0x00000070, 0x000200fe, 0x00000077, 0x00010038, 0x00050036, 0x00000006, 0x0000000e,
-    0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000d, 0x000200f8, 0x0000000f, 0x0004003b,
-    0x00000081, 0x00000082, 0x00000007, 0x0004003b, 0x00000008, 0x00000083, 0x00000007, 0x00050041,
-    0x0000001d, 0x0000007a, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000007b, 0x0000007a,
-    0x000500aa, 0x00000021, 0x0000007d, 0x0000007b, 0x0000007c, 0x000300f7, 0x0000007f, 0x00000000,
-    0x000400fa, 0x0000007d, 0x0000007e, 0x0000007f, 0x000200f8, 0x0000007e, 0x000200fe, 0x00000077,
-    0x000200f8, 0x0000007f, 0x0004003d, 0x00000007, 0x00000084, 0x0000000d, 0x0003003e, 0x00000083,
-    0x00000084, 0x00050039, 0x00000006, 0x00000085, 0x0000000b, 0x00000083, 0x0003003e, 0x00000082,
-    0x00000085, 0x00050041, 0x0000001d, 0x00000087, 0x0000001a, 0x00000086, 0x0004003d, 0x00000017,
-    0x00000088, 0x00000087, 0x000500aa, 0x00000021, 0x00000089, 0x00000088, 0x00000020, 0x000300f7,
-    0x0000008b, 0x00000000, 0x000400fa, 0x00000089, 0x0000008a, 0x0000008b, 0x000200f8, 0x0000008a,
-    0x0004003d, 0x00000006, 0x0000008c, 0x00000082, 0x00050083, 0x00000006, 0x0000008d, 0x00000077,
-    0x0000008c, 0x000200fe, 0x0000008d, 0x000200f8, 0x0000008b, 0x0004003d, 0x00000006, 0x0000008f,
-    0x00000082, 0x000200fe, 0x0000008f, 0x00010038, 0x00050036, 0x00000007, 0x00000011, 0x00000000,
-    0x00000010, 0x000200f8, 0x00000012, 0x0004003b, 0x00000081, 0x00000092, 0x00000007, 0x0004003b,
-    0x00000008, 0x00000097, 0x00000007, 0x0004003b, 0x00000081, 0x00000099, 0x00000007, 0x0004003b,
-    0x00000081, 0x0000009a, 0x00000007, 0x0004003b, 0x00000081, 0x0000009c, 0x00000007, 0x0004003b,
-    0x00000081, 0x0000009e, 0x00000007, 0x0004003b, 0x00000081, 0x000000a0, 0x00000007, 0x0004003b,
-    0x00000081, 0x000000a6, 0x00000007, 0x0004003b, 0x00000008, 0x000000a9, 0x00000007, 0x0004003b,
-    0x000000b1, 0x000000b2, 0x00000007, 0x0004003b, 0x00000008, 0x000000bd, 0x00000007, 0x0004003b,
-    0x00000008, 0x000000c3, 0x00000007, 0x0004003b, 0x00000008, 0x000000c9, 0x00000007, 0x00050041,
-    0x00000094, 0x00000095, 0x0000001a, 0x00000093, 0x0004003d, 0x00000006, 0x00000096, 0x00000095,
-    0x0003003e, 0x00000092, 0x00000096, 0x0003003e, 0x00000097, 0x00000098, 0x0003003e, 0x00000099,
-    0x00000077, 0x0003003e, 0x0000009a, 0x0000009b, 0x0003003e, 0x0000009c, 0x0000009d, 0x0003003e,
-    0x0000009e, 0x0000009f, 0x0004003d, 0x00000006, 0x000000a1, 0x00000092, 0x0004003d, 0x00000006,
-    0x000000a2, 0x00000099, 0x00050085, 0x00000006, 0x000000a3, 0x000000a1, 0x000000a2, 0x0004003d,
-    0x00000006, 0x000000a4, 0x0000009e, 0x00050081, 0x00000006, 0x000000a5, 0x000000a3, 0x000000a4,
-    0x0003003e, 0x000000a0, 0x000000a5, 0x0004003d, 0x00000006, 0x000000a7, 0x000000a0, 0x0006000c,
-    0x00000006, 0x000000a8, 0x00000001, 0x00000008, 0x000000a7, 0x0003003e, 0x000000a6, 0x000000a8,
-    0x0004003d, 0x00000006, 0x000000ab, 0x000000a6, 0x00050050, 0x00000007, 0x000000ad, 0x000000ab,
-    0x000000ab, 0x00050081, 0x00000007, 0x000000ae, 0x000000ad, 0x000000ac, 0x0005008e, 0x00000007,
-    0x000000af, 0x000000ae, 0x000000aa, 0x0006000c, 0x00000007, 0x000000b0, 0x00000001, 0x0000000d,
-    0x000000af, 0x0003003e, 0x000000a9, 0x000000b0, 0x0004003d, 0x00000006, 0x000000b4, 0x000000a6,
-    0x00070050, 0x00000013, 0x000000b6, 0x000000b4, 0x000000b4, 0x000000b4, 0x000000b4, 0x00050081,
-    0x00000013, 0x000000b7, 0x000000b6, 0x000000b5, 0x0005008e, 0x00000013, 0x000000b8, 0x000000b7,
-    0x000000b3, 0x00050081, 0x00000013, 0x000000bb, 0x000000b8, 0x000000ba, 0x0006000c, 0x00000013,
-    0x000000bc, 0x00000001, 0x0000000d, 0x000000bb, 0x0003003e, 0x000000b2, 0x000000bc, 0x0004003d,
-    0x00000007, 0x000000be, 0x000000a9, 0x0007004f, 0x00000007, 0x000000bf, 0x000000be, 0x000000be,
-    0x00000000, 0x00000000, 0x0004003d, 0x00000013, 0x000000c0, 0x000000b2, 0x0007004f, 0x00000007,
-    0x000000c1, 0x000000c0, 0x000000c0, 0x00000000, 0x00000001, 0x00050081, 0x00000007, 0x000000c2,
-    0x000000bf, 0x000000c1, 0x0003003e, 0x000000bd, 0x000000c2, 0x0004003d, 0x00000007, 0x000000c4,
-    0x000000a9, 0x0007004f, 0x00000007, 0x000000c5, 0x000000c4, 0x000000c4, 0x00000001, 0x00000001,
-    0x0004003d, 0x00000013, 0x000000c6, 0x000000b2, 0x0007004f, 0x00000007, 0x000000c7, 0x000000c6,
-    0x000000c6, 0x00000002, 0x00000003, 0x00050081, 0x00000007, 0x000000c8, 0x000000c5, 0x000000c7,
-    0x0003003e, 0x000000c3, 0x000000c8, 0x0004003d, 0x00000007, 0x000000ca, 0x000000bd, 0x0004003d,
-    0x00000007, 0x000000cb, 0x000000c3, 0x0004003d, 0x00000006, 0x000000cc, 0x0000009a, 0x00050083,
-    0x00000006, 0x000000cd, 0x00000077, 0x000000cc, 0x0004003d, 0x00000006, 0x000000ce, 0x000000a0,
-    0x0006000c, 0x00000006, 0x000000cf, 0x00000001, 0x0000000a, 0x000000ce, 0x00050085, 0x00000006,
-    0x000000d1, 0x000000cf, 0x000000d0, 0x0006000c, 0x00000006, 0x000000d2, 0x00000001, 0x0000000e,
-    0x000000d1, 0x00050085, 0x00000006, 0x000000d4, 0x000000d2, 0x000000d3, 0x00050081, 0x00000006,
-    0x000000d5, 0x000000d4, 0x0000009d, 0x0008000c, 0x00000006, 0x000000d6, 0x00000001, 0x00000031,
-    0x000000cd, 0x00000077, 0x000000d5, 0x00050050, 0x00000007, 0x000000d7, 0x000000d6, 0x000000d6,
-    0x0008000c, 0x00000007, 0x000000d8, 0x00000001, 0x0000002e, 0x000000ca, 0x000000cb, 0x000000d7,
-    0x0003003e, 0x000000c9, 0x000000d8, 0x0004003d, 0x00000006, 0x000000d9, 0x000000a0, 0x0006000c,
-    0x00000006, 0x000000da, 0x00000001, 0x0000000d, 0x000000d9, 0x0004003d, 0x00000006, 0x000000db,
-    0x0000009c, 0x00050085, 0x00000006, 0x000000dc, 0x000000da, 0x000000db, 0x00050041, 0x00000081,
-    0x000000dd, 0x000000c9, 0x0000002c, 0x0004003d, 0x00000006, 0x000000de, 0x000000dd, 0x00050081,
-    0x00000006, 0x000000df, 0x000000de, 0x000000dc, 0x00050041, 0x00000081, 0x000000e0, 0x000000c9,
-    0x0000002c, 0x0003003e, 0x000000e0, 0x000000df, 0x0004003d, 0x00000006, 0x000000e1, 0x000000a0,
-    0x0006000c, 0x00000006, 0x000000e2, 0x00000001, 0x0000000e, 0x000000e1, 0x0004003d, 0x00000006,
-    0x000000e3, 0x0000009c, 0x00050085, 0x00000006, 0x000000e4, 0x000000e2, 0x000000e3, 0x00050041,
-    0x00000081, 0x000000e5, 0x000000c9, 0x00000020, 0x0004003d, 0x00000006, 0x000000e6, 0x000000e5,
-    0x00050081, 0x00000006, 0x000000e7, 0x000000e6, 0x000000e4, 0x00050041, 0x00000081, 0x000000e8,
-    0x000000c9, 0x00000020, 0x0003003e, 0x000000e8, 0x000000e7, 0x0004003d, 0x00000007, 0x000000e9,
-    0x00000097, 0x0005008e, 0x00000007, 0x000000eb, 0x000000e9, 0x000000ea, 0x0004003d, 0x00000007,
-    0x000000ec, 0x000000c9, 0x00050085, 0x00000007, 0x000000ed, 0x000000ec, 0x000000eb, 0x0003003e,
-    0x000000c9, 0x000000ed, 0x0004003d, 0x00000007, 0x000000ee, 0x000000c9, 0x000200fe, 0x000000ee,
-    0x00010038, 0x00050036, 0x00000013, 0x00000015, 0x00000000, 0x00000014, 0x000200f8, 0x00000016,
-    0x0004003b, 0x00000081, 0x000000fc, 0x00000007, 0x0004003b, 0x00000008, 0x000000ff, 0x00000007,
-    0x0004003b, 0x00000008, 0x00000102, 0x00000007, 0x0004003b, 0x00000081, 0x00000119, 0x00000007,
-    0x0004003b, 0x00000008, 0x0000011a, 0x00000007, 0x0004003b, 0x00000008, 0x0000011d, 0x00000007,
-    0x0004003b, 0x000000b1, 0x00000121, 0x00000007, 0x0004003b, 0x000000b1, 0x00000131, 0x00000007,
-    0x0004003b, 0x00000008, 0x00000135, 0x00000007, 0x00050041, 0x0000001d, 0x000000f1, 0x0000001a,
-    0x0000001c, 0x0004003d, 0x00000017, 0x000000f2, 0x000000f1, 0x000500ab, 0x00000021, 0x000000f3,
-    0x000000f2, 0x0000007c, 0x000300f7, 0x000000f5, 0x00000000, 0x000400fa, 0x000000f3, 0x000000f4,
-    0x000000f5, 0x000200f8, 0x000000f4, 0x00050041, 0x0000001d, 0x000000f6, 0x0000001a, 0x00000086,
-    0x0004003d, 0x00000017, 0x000000f7, 0x000000f6, 0x000500aa, 0x00000021, 0x000000f8, 0x000000f7,
-    0x00000031, 0x000200f9, 0x000000f5, 0x000200f8, 0x000000f5, 0x000700f5, 0x00000021, 0x000000f9,
-    0x000000f3, 0x00000016, 0x000000f8, 0x000000f4, 0x000300f7, 0x000000fb, 0x00000000, 0x000400fa,
-    0x000000f9, 0x000000fa, 0x000000fb, 0x000200f8, 0x000000fa, 0x0004003d, 0x00000007, 0x00000100,
-    0x000000fe, 0x0003003e, 0x000000ff, 0x00000100, 0x00050039, 0x00000006, 0x00000101, 0x0000000b,
-    0x000000ff, 0x0003003e, 0x000000fc, 0x00000101, 0x00040039, 0x00000007, 0x00000103, 0x00000011,
-    0x0004003d, 0x00000006, 0x00000104, 0x000000fc, 0x0005008e, 0x00000007, 0x00000105, 0x00000103,
-    0x00000104, 0x0003003e, 0x00000102, 0x00000105, 0x0004003d, 0x00000026, 0x00000107, 0x00000106,
-    0x0004003d, 0x00000007, 0x00000109, 0x00000108, 0x0004003d, 0x00000007, 0x0000010a, 0x00000102,
-    0x00050081, 0x00000007, 0x0000010b, 0x00000109, 0x0000010a, 0x00050057, 0x00000013, 0x0000010c,
-    0x00000107, 0x0000010b, 0x000200fe, 0x0000010c, 0x000200f8, 0x000000fb, 0x00050041, 0x0000001d,
-    0x0000010e, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000010f, 0x0000010e, 0x000500ab,
-    0x00000021, 0x00000110, 0x0000010f, 0x0000007c, 0x000300f7, 0x00000112, 0x00000000, 0x000400fa,
-    0x00000110, 0x00000111, 0x00000112, 0x000200f8, 0x00000111, 0x00050041, 0x0000001d, 0x00000113,
-    0x0000001a, 0x00000086, 0x0004003d, 0x00000017, 0x00000114, 0x00000113, 0x000500aa, 0x00000021,
-    0x00000115, 0x00000114, 0x00000049, 0x000200f9, 0x00000112, 0x000200f8, 0x00000112, 0x000700f5,
-    0x00000021, 0x00000116, 0x00000110, 0x000000fb, 0x00000115, 0x00000111, 0x000300f7, 0x00000118,
-    0x00000000, 0x000400fa, 0x00000116, 0x00000117, 0x00000118, 0x000200f8, 0x00000117, 0x0004003d,
-    0x00000007, 0x0000011b, 0x000000fe, 0x0003003e, 0x0000011a, 0x0000011b, 0x00050039, 0x00000006,
-    0x0000011c, 0x0000000b, 0x0000011a, 0x0003003e, 0x00000119, 0x0000011c, 0x00040039, 0x00000007,
-    0x0000011e, 0x00000011, 0x0004003d, 0x00000006, 0x0000011f, 0x00000119, 0x0005008e, 0x00000007,
-    0x00000120, 0x0000011e, 0x0000011f, 0x0003003e, 0x0000011d, 0x00000120, 0x0004003d, 0x00000026,
-    0x00000122, 0x00000106, 0x0004003d, 0x00000007, 0x00000123, 0x00000108, 0x0004003d, 0x00000007,
-    0x00000124, 0x0000011d, 0x00050081, 0x00000007, 0x00000125, 0x00000123, 0x00000124, 0x00050057,
-    0x00000013, 0x00000126, 0x00000122, 0x00000125, 0x0003003e, 0x00000121, 0x00000126, 0x0004003d,
-    0x00000026, 0x00000127, 0x00000035, 0x0004003d, 0x00000007, 0x00000128, 0x000000fe, 0x00050057,
-    0x00000013, 0x00000129, 0x00000127, 0x00000128, 0x00050051, 0x00000006, 0x0000012a, 0x00000129,
-    0x00000000, 0x00050041, 0x00000081, 0x0000012b, 0x00000121, 0x0000003d, 0x0004003d, 0x00000006,
-    0x0000012c, 0x0000012b, 0x00050085, 0x00000006, 0x0000012d, 0x0000012c, 0x0000012a, 0x00050041,
-    0x00000081, 0x0000012e, 0x00000121, 0x0000003d, 0x0003003e, 0x0000012e, 0x0000012d, 0x0004003d,
-    0x00000013, 0x0000012f, 0x00000121, 0x000200fe, 0x0000012f, 0x000200f8, 0x00000118, 0x0004003d,
-    0x00000026, 0x00000132, 0x00000106, 0x0004003d, 0x00000007, 0x00000133, 0x00000108, 0x00050057,
-    0x00000013, 0x00000134, 0x00000132, 0x00000133, 0x0003003e, 0x00000131, 0x00000134, 0x0004003d,
-    0x00000007, 0x00000136, 0x000000fe, 0x0003003e, 0x00000135, 0x00000136, 0x00050039, 0x00000006,
-    0x00000137, 0x0000000e, 0x00000135, 0x00050041, 0x00000081, 0x00000138, 0x00000131, 0x0000003d,
-    0x0004003d, 0x00000006, 0x00000139, 0x00000138, 0x00050085, 0x00000006, 0x0000013a, 0x00000139,
-    0x00000137, 0x00050041, 0x00000081, 0x0000013b, 0x00000131, 0x0000003d, 0x0003003e, 0x0000013b,
-    0x0000013a, 0x0004003d, 0x00000013, 0x0000013c, 0x00000131, 0x000200fe, 0x0000013c, 0x00010038,
-];
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 1369] =
+    include!("shaders/sampled_image.frag.spv.rs");
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 2001] = [
-    0x07230203, 0x00010000, 0x0008000b, 0x0000015a, 0x00000000, 0x00020011, 0x00000001, 0x0006000b,
-    0x00000001, 0x4c534c47, 0x6474732e, 0x3035342e, 0x00000000, 0x0003000e, 0x00000000, 0x00000001,
-    0x000a000f, 0x00000004, 0x00000004, 0x6e69616d, 0x00000000, 0x000000fe, 0x00000108, 0x00000142,
-    0x00000146, 0x0000014d, 0x00030010, 0x00000004, 0x00000007, 0x00030003, 0x00000002, 0x000001c2,
-    0x00040005, 0x00000004, 0x6e69616d, 0x00000000, 0x00070005, 0x0000000b, 0x5f776172, 0x68706c61,
-    0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000a, 0x00007675, 0x00060005, 0x0000000e,
-    0x68706c61, 0x616d5f61, 0x76286b73, 0x003b3266, 0x00030005, 0x0000000d, 0x00007675, 0x00070005,
-    0x00000011, 0x73697269, 0x746f6d5f, 0x5f6e6f69, 0x7366666f, 0x00287465, 0x00060005, 0x00000015,
-    0x706d6173, 0x5f64656c, 0x6f6c6f63, 0x00002872, 0x00050005, 0x00000018, 0x6e656353, 0x73755065,
-    0x00000068, 0x00050006, 0x00000018, 0x00000000, 0x65747865, 0x0000746e, 0x00080006, 0x00000018,
-    0x00000001, 0x68706c61, 0x65745f61, 0x72757478, 0x6c735f65, 0x0000746f, 0x00080006, 0x00000018,
-    0x00000002, 0x68706c61, 0x65745f61, 0x72757478, 0x6f6d5f65, 0x00006564, 0x00070006, 0x00000018,
-    0x00000003, 0x656d6974, 0x6365735f, 0x73646e6f, 0x00000000, 0x00030005, 0x0000001a, 0x00006370,
-    0x00050005, 0x00000028, 0x65545f67, 0x72757478, 0x00003165, 0x00050005, 0x00000035, 0x65545f67,
-    0x72757478, 0x00003265, 0x00050005, 0x00000041, 0x65545f67, 0x72757478, 0x00003365, 0x00050005,
-    0x0000004d, 0x65545f67, 0x72757478, 0x00003465, 0x00050005, 0x00000059, 0x65545f67, 0x72757478,
-    0x00003565, 0x00050005, 0x00000065, 0x65545f67, 0x72757478, 0x00003665, 0x00050005, 0x00000071,
-    0x65545f67, 0x72757478, 0x00003765, 0x00040005, 0x00000082, 0x6b73616d, 0x00000000, 0x00040005,
-    0x00000083, 0x61726170, 0x0000006d, 0x00040005, 0x00000092, 0x69545f67, 0x0000656d, 0x00040005,
-    0x00000097, 0x63535f67, 0x00656c61, 0x00040005, 0x00000099, 0x70535f67, 0x00646565, 0x00040005,
-    0x0000009a, 0x6f525f67, 0x00686775, 0x00060005, 0x0000009c, 0x6f4e5f67, 0x41657369, 0x6e756f6d,
-    0x00000074, 0x00060005, 0x0000009e, 0x68505f67, 0x4f657361, 0x65736666, 0x00000074, 0x00040005,
-    0x000000a0, 0x656d6974, 0x00000000, 0x00040005, 0x000000a6, 0x44776f6c, 0x00000074, 0x00040005,
-    0x000000a9, 0x69746f6d, 0x00326e6f, 0x00040005, 0x000000b2, 0x69746f6d, 0x00346e6f, 0x00050005,
-    0x000000bd, 0x65766f6d, 0x72617453, 0x00000074, 0x00040005, 0x000000c3, 0x65766f6d, 0x00646e45,
-    0x00030005, 0x000000c9, 0x00006164, 0x00040005, 0x000000fc, 0x6b73616d, 0x00000000, 0x00050005,
-    0x000000fe, 0x66655f76, 0x74636566, 0x0076755f, 0x00040005, 0x000000ff, 0x61726170, 0x0000006d,
-    0x00050005, 0x00000102, 0x73697269, 0x66666f5f, 0x00746573, 0x00050005, 0x00000106, 0x65545f67,
-    0x72757478, 0x00003065, 0x00040005, 0x00000108, 0x76755f76, 0x00000000, 0x00050005, 0x00000119,
-    0x73697269, 0x73616d5f, 0x0000006b, 0x00040005, 0x0000011a, 0x61726170, 0x0000006d, 0x00050005,
-    0x0000011d, 0x73697269, 0x66666f5f, 0x00746573, 0x00040005, 0x00000121, 0x6f6c6f63, 0x00000072,
-    0x00040005, 0x00000131, 0x6f6c6f63, 0x00000072, 0x00040005, 0x00000135, 0x61726170, 0x0000006d,
-    0x00040005, 0x0000013f, 0x6f6c6f63, 0x00000072, 0x00040005, 0x00000142, 0x69745f76, 0x0000746e,
-    0x00050005, 0x00000146, 0x706f5f76, 0x74696361, 0x00000079, 0x00050005, 0x0000014d, 0x5f74756f,
-    0x6f6c6f63, 0x00000072, 0x00030047, 0x00000018, 0x00000002, 0x00050048, 0x00000018, 0x00000000,
-    0x00000023, 0x00000000, 0x00050048, 0x00000018, 0x00000001, 0x00000023, 0x00000008, 0x00050048,
-    0x00000018, 0x00000002, 0x00000023, 0x0000000c, 0x00050048, 0x00000018, 0x00000003, 0x00000023,
-    0x00000010, 0x00040047, 0x00000028, 0x00000021, 0x00000001, 0x00040047, 0x00000028, 0x00000022,
-    0x00000000, 0x00040047, 0x00000035, 0x00000021, 0x00000002, 0x00040047, 0x00000035, 0x00000022,
-    0x00000000, 0x00040047, 0x00000041, 0x00000021, 0x00000003, 0x00040047, 0x00000041, 0x00000022,
-    0x00000000, 0x00040047, 0x0000004d, 0x00000021, 0x00000004, 0x00040047, 0x0000004d, 0x00000022,
-    0x00000000, 0x00040047, 0x00000059, 0x00000021, 0x00000005, 0x00040047, 0x00000059, 0x00000022,
-    0x00000000, 0x00040047, 0x00000065, 0x00000021, 0x00000006, 0x00040047, 0x00000065, 0x00000022,
-    0x00000000, 0x00040047, 0x00000071, 0x00000021, 0x00000007, 0x00040047, 0x00000071, 0x00000022,
-    0x00000000, 0x00040047, 0x000000fe, 0x0000001e, 0x00000001, 0x00040047, 0x00000106, 0x00000021,
-    0x00000000, 0x00040047, 0x00000106, 0x00000022, 0x00000000, 0x00040047, 0x00000108, 0x0000001e,
-    0x00000000, 0x00040047, 0x00000142, 0x0000001e, 0x00000003, 0x00040047, 0x00000146, 0x0000001e,
-    0x00000002, 0x00040047, 0x0000014d, 0x0000001e, 0x00000000, 0x00020013, 0x00000002, 0x00030021,
-    0x00000003, 0x00000002, 0x00030016, 0x00000006, 0x00000020, 0x00040017, 0x00000007, 0x00000006,
-    0x00000002, 0x00040020, 0x00000008, 0x00000007, 0x00000007, 0x00040021, 0x00000009, 0x00000006,
-    0x00000008, 0x00030021, 0x00000010, 0x00000007, 0x00040017, 0x00000013, 0x00000006, 0x00000004,
-    0x00030021, 0x00000014, 0x00000013, 0x00040015, 0x00000017, 0x00000020, 0x00000000, 0x0006001e,
-    0x00000018, 0x00000007, 0x00000017, 0x00000017, 0x00000006, 0x00040020, 0x00000019, 0x00000009,
-    0x00000018, 0x0004003b, 0x00000019, 0x0000001a, 0x00000009, 0x00040015, 0x0000001b, 0x00000020,
-    0x00000001, 0x0004002b, 0x0000001b, 0x0000001c, 0x00000001, 0x00040020, 0x0000001d, 0x00000009,
-    0x00000017, 0x0004002b, 0x00000017, 0x00000020, 0x00000001, 0x00020014, 0x00000021, 0x00090019,
-    0x00000025, 0x00000006, 0x00000001, 0x00000000, 0x00000000, 0x00000000, 0x00000001, 0x00000000,
-    0x0003001b, 0x00000026, 0x00000025, 0x00040020, 0x00000027, 0x00000000, 0x00000026, 0x0004003b,
-    0x00000027, 0x00000028, 0x00000000, 0x0004002b, 0x00000017, 0x0000002c, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000031, 0x00000002, 0x0004003b, 0x00000027, 0x00000035, 0x00000000, 0x0004002b,
-    0x00000017, 0x0000003d, 0x00000003, 0x0004003b, 0x00000027, 0x00000041, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000049, 0x00000004, 0x0004003b, 0x00000027, 0x0000004d, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000055, 0x00000005, 0x0004003b, 0x00000027, 0x00000059, 0x00000000, 0x0004002b,
-    0x00000017, 0x00000061, 0x00000006, 0x0004003b, 0x00000027, 0x00000065, 0x00000000, 0x0004002b,
-    0x00000017, 0x0000006d, 0x00000007, 0x0004003b, 0x00000027, 0x00000071, 0x00000000, 0x0004002b,
-    0x00000006, 0x00000077, 0x3f800000, 0x0004002b, 0x00000017, 0x0000007c, 0xffffffff, 0x00040020,
-    0x00000081, 0x00000007, 0x00000006, 0x0004002b, 0x0000001b, 0x00000086, 0x00000002, 0x0004002b,
-    0x0000001b, 0x00000093, 0x00000003, 0x00040020, 0x00000094, 0x00000009, 0x00000006, 0x0005002c,
-    0x00000007, 0x00000098, 0x00000077, 0x00000077, 0x0004002b, 0x00000006, 0x0000009b, 0x3e4ccccd,
-    0x0004002b, 0x00000006, 0x0000009d, 0x3f000000, 0x0004002b, 0x00000006, 0x0000009f, 0x00000000,
-    0x0004002b, 0x00000006, 0x000000aa, 0x3ff33333, 0x0005002c, 0x00000007, 0x000000ac, 0x0000009f,
-    0x00000077, 0x00040020, 0x000000b1, 0x00000007, 0x00000013, 0x0004002b, 0x00000006, 0x000000b3,
-    0x40200000, 0x0007002c, 0x00000013, 0x000000b5, 0x0000009f, 0x0000009f, 0x00000077, 0x00000077,
-    0x0004002b, 0x00000006, 0x000000b9, 0x40000000, 0x0007002c, 0x00000013, 0x000000ba, 0x00000077,
-    0x000000b9, 0x00000077, 0x000000b9, 0x0004002b, 0x00000006, 0x000000d0, 0x40490fdb, 0x0004002b,
-    0x00000006, 0x000000d3, 0xbf000000, 0x0004002b, 0x00000006, 0x000000ea, 0x3a83126f, 0x00040020,
-    0x000000fd, 0x00000001, 0x00000007, 0x0004003b, 0x000000fd, 0x000000fe, 0x00000001, 0x0004003b,
-    0x00000027, 0x00000106, 0x00000000, 0x0004003b, 0x000000fd, 0x00000108, 0x00000001, 0x00040020,
-    0x00000141, 0x00000001, 0x00000013, 0x0004003b, 0x00000141, 0x00000142, 0x00000001, 0x00040020,
-    0x00000145, 0x00000001, 0x00000006, 0x0004003b, 0x00000145, 0x00000146, 0x00000001, 0x00040020,
-    0x0000014c, 0x00000003, 0x00000013, 0x0004003b, 0x0000014c, 0x0000014d, 0x00000003, 0x00040017,
-    0x0000014e, 0x00000006, 0x00000003, 0x00050036, 0x00000002, 0x00000004, 0x00000000, 0x00000003,
-    0x000200f8, 0x00000005, 0x0004003b, 0x000000b1, 0x0000013f, 0x00000007, 0x00040039, 0x00000013,
-    0x00000140, 0x00000015, 0x0004003d, 0x00000013, 0x00000143, 0x00000142, 0x00050085, 0x00000013,
-    0x00000144, 0x00000140, 0x00000143, 0x0003003e, 0x0000013f, 0x00000144, 0x0004003d, 0x00000006,
-    0x00000147, 0x00000146, 0x00050041, 0x00000081, 0x00000148, 0x0000013f, 0x0000003d, 0x0004003d,
-    0x00000006, 0x00000149, 0x00000148, 0x00050085, 0x00000006, 0x0000014a, 0x00000149, 0x00000147,
-    0x00050041, 0x00000081, 0x0000014b, 0x0000013f, 0x0000003d, 0x0003003e, 0x0000014b, 0x0000014a,
-    0x0004003d, 0x00000013, 0x0000014f, 0x0000013f, 0x0008004f, 0x0000014e, 0x00000150, 0x0000014f,
-    0x0000014f, 0x00000000, 0x00000001, 0x00000002, 0x00050041, 0x00000081, 0x00000151, 0x0000013f,
-    0x0000003d, 0x0004003d, 0x00000006, 0x00000152, 0x00000151, 0x0005008e, 0x0000014e, 0x00000153,
-    0x00000150, 0x00000152, 0x00050041, 0x00000081, 0x00000154, 0x0000013f, 0x0000003d, 0x0004003d,
-    0x00000006, 0x00000155, 0x00000154, 0x00050051, 0x00000006, 0x00000156, 0x00000153, 0x00000000,
-    0x00050051, 0x00000006, 0x00000157, 0x00000153, 0x00000001, 0x00050051, 0x00000006, 0x00000158,
-    0x00000153, 0x00000002, 0x00070050, 0x00000013, 0x00000159, 0x00000156, 0x00000157, 0x00000158,
-    0x00000155, 0x0003003e, 0x0000014d, 0x00000159, 0x000100fd, 0x00010038, 0x00050036, 0x00000006,
-    0x0000000b, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000a, 0x000200f8, 0x0000000c,
-    0x00050041, 0x0000001d, 0x0000001e, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000001f,
-    0x0000001e, 0x000500aa, 0x00000021, 0x00000022, 0x0000001f, 0x00000020, 0x000300f7, 0x00000024,
-    0x00000000, 0x000400fa, 0x00000022, 0x00000023, 0x00000024, 0x000200f8, 0x00000023, 0x0004003d,
-    0x00000026, 0x00000029, 0x00000028, 0x0004003d, 0x00000007, 0x0000002a, 0x0000000a, 0x00050057,
-    0x00000013, 0x0000002b, 0x00000029, 0x0000002a, 0x00050051, 0x00000006, 0x0000002d, 0x0000002b,
-    0x00000000, 0x000200fe, 0x0000002d, 0x000200f8, 0x00000024, 0x00050041, 0x0000001d, 0x0000002f,
-    0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x00000030, 0x0000002f, 0x000500aa, 0x00000021,
-    0x00000032, 0x00000030, 0x00000031, 0x000300f7, 0x00000034, 0x00000000, 0x000400fa, 0x00000032,
-    0x00000033, 0x00000034, 0x000200f8, 0x00000033, 0x0004003d, 0x00000026, 0x00000036, 0x00000035,
-    0x0004003d, 0x00000007, 0x00000037, 0x0000000a, 0x00050057, 0x00000013, 0x00000038, 0x00000036,
-    0x00000037, 0x00050051, 0x00000006, 0x00000039, 0x00000038, 0x00000000, 0x000200fe, 0x00000039,
-    0x000200f8, 0x00000034, 0x00050041, 0x0000001d, 0x0000003b, 0x0000001a, 0x0000001c, 0x0004003d,
-    0x00000017, 0x0000003c, 0x0000003b, 0x000500aa, 0x00000021, 0x0000003e, 0x0000003c, 0x0000003d,
-    0x000300f7, 0x00000040, 0x00000000, 0x000400fa, 0x0000003e, 0x0000003f, 0x00000040, 0x000200f8,
-    0x0000003f, 0x0004003d, 0x00000026, 0x00000042, 0x00000041, 0x0004003d, 0x00000007, 0x00000043,
-    0x0000000a, 0x00050057, 0x00000013, 0x00000044, 0x00000042, 0x00000043, 0x00050051, 0x00000006,
-    0x00000045, 0x00000044, 0x00000000, 0x000200fe, 0x00000045, 0x000200f8, 0x00000040, 0x00050041,
-    0x0000001d, 0x00000047, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x00000048, 0x00000047,
-    0x000500aa, 0x00000021, 0x0000004a, 0x00000048, 0x00000049, 0x000300f7, 0x0000004c, 0x00000000,
-    0x000400fa, 0x0000004a, 0x0000004b, 0x0000004c, 0x000200f8, 0x0000004b, 0x0004003d, 0x00000026,
-    0x0000004e, 0x0000004d, 0x0004003d, 0x00000007, 0x0000004f, 0x0000000a, 0x00050057, 0x00000013,
-    0x00000050, 0x0000004e, 0x0000004f, 0x00050051, 0x00000006, 0x00000051, 0x00000050, 0x00000000,
-    0x000200fe, 0x00000051, 0x000200f8, 0x0000004c, 0x00050041, 0x0000001d, 0x00000053, 0x0000001a,
-    0x0000001c, 0x0004003d, 0x00000017, 0x00000054, 0x00000053, 0x000500aa, 0x00000021, 0x00000056,
-    0x00000054, 0x00000055, 0x000300f7, 0x00000058, 0x00000000, 0x000400fa, 0x00000056, 0x00000057,
-    0x00000058, 0x000200f8, 0x00000057, 0x0004003d, 0x00000026, 0x0000005a, 0x00000059, 0x0004003d,
-    0x00000007, 0x0000005b, 0x0000000a, 0x00050057, 0x00000013, 0x0000005c, 0x0000005a, 0x0000005b,
-    0x00050051, 0x00000006, 0x0000005d, 0x0000005c, 0x00000000, 0x000200fe, 0x0000005d, 0x000200f8,
-    0x00000058, 0x00050041, 0x0000001d, 0x0000005f, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017,
-    0x00000060, 0x0000005f, 0x000500aa, 0x00000021, 0x00000062, 0x00000060, 0x00000061, 0x000300f7,
-    0x00000064, 0x00000000, 0x000400fa, 0x00000062, 0x00000063, 0x00000064, 0x000200f8, 0x00000063,
-    0x0004003d, 0x00000026, 0x00000066, 0x00000065, 0x0004003d, 0x00000007, 0x00000067, 0x0000000a,
-    0x00050057, 0x00000013, 0x00000068, 0x00000066, 0x00000067, 0x00050051, 0x00000006, 0x00000069,
-    0x00000068, 0x00000000, 0x000200fe, 0x00000069, 0x000200f8, 0x00000064, 0x00050041, 0x0000001d,
-    0x0000006b, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000006c, 0x0000006b, 0x000500aa,
-    0x00000021, 0x0000006e, 0x0000006c, 0x0000006d, 0x000300f7, 0x00000070, 0x00000000, 0x000400fa,
-    0x0000006e, 0x0000006f, 0x00000070, 0x000200f8, 0x0000006f, 0x0004003d, 0x00000026, 0x00000072,
-    0x00000071, 0x0004003d, 0x00000007, 0x00000073, 0x0000000a, 0x00050057, 0x00000013, 0x00000074,
-    0x00000072, 0x00000073, 0x00050051, 0x00000006, 0x00000075, 0x00000074, 0x00000000, 0x000200fe,
-    0x00000075, 0x000200f8, 0x00000070, 0x000200fe, 0x00000077, 0x00010038, 0x00050036, 0x00000006,
-    0x0000000e, 0x00000000, 0x00000009, 0x00030037, 0x00000008, 0x0000000d, 0x000200f8, 0x0000000f,
-    0x0004003b, 0x00000081, 0x00000082, 0x00000007, 0x0004003b, 0x00000008, 0x00000083, 0x00000007,
-    0x00050041, 0x0000001d, 0x0000007a, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000007b,
-    0x0000007a, 0x000500aa, 0x00000021, 0x0000007d, 0x0000007b, 0x0000007c, 0x000300f7, 0x0000007f,
-    0x00000000, 0x000400fa, 0x0000007d, 0x0000007e, 0x0000007f, 0x000200f8, 0x0000007e, 0x000200fe,
-    0x00000077, 0x000200f8, 0x0000007f, 0x0004003d, 0x00000007, 0x00000084, 0x0000000d, 0x0003003e,
-    0x00000083, 0x00000084, 0x00050039, 0x00000006, 0x00000085, 0x0000000b, 0x00000083, 0x0003003e,
-    0x00000082, 0x00000085, 0x00050041, 0x0000001d, 0x00000087, 0x0000001a, 0x00000086, 0x0004003d,
-    0x00000017, 0x00000088, 0x00000087, 0x000500aa, 0x00000021, 0x00000089, 0x00000088, 0x00000020,
-    0x000300f7, 0x0000008b, 0x00000000, 0x000400fa, 0x00000089, 0x0000008a, 0x0000008b, 0x000200f8,
-    0x0000008a, 0x0004003d, 0x00000006, 0x0000008c, 0x00000082, 0x00050083, 0x00000006, 0x0000008d,
-    0x00000077, 0x0000008c, 0x000200fe, 0x0000008d, 0x000200f8, 0x0000008b, 0x0004003d, 0x00000006,
-    0x0000008f, 0x00000082, 0x000200fe, 0x0000008f, 0x00010038, 0x00050036, 0x00000007, 0x00000011,
-    0x00000000, 0x00000010, 0x000200f8, 0x00000012, 0x0004003b, 0x00000081, 0x00000092, 0x00000007,
-    0x0004003b, 0x00000008, 0x00000097, 0x00000007, 0x0004003b, 0x00000081, 0x00000099, 0x00000007,
-    0x0004003b, 0x00000081, 0x0000009a, 0x00000007, 0x0004003b, 0x00000081, 0x0000009c, 0x00000007,
-    0x0004003b, 0x00000081, 0x0000009e, 0x00000007, 0x0004003b, 0x00000081, 0x000000a0, 0x00000007,
-    0x0004003b, 0x00000081, 0x000000a6, 0x00000007, 0x0004003b, 0x00000008, 0x000000a9, 0x00000007,
-    0x0004003b, 0x000000b1, 0x000000b2, 0x00000007, 0x0004003b, 0x00000008, 0x000000bd, 0x00000007,
-    0x0004003b, 0x00000008, 0x000000c3, 0x00000007, 0x0004003b, 0x00000008, 0x000000c9, 0x00000007,
-    0x00050041, 0x00000094, 0x00000095, 0x0000001a, 0x00000093, 0x0004003d, 0x00000006, 0x00000096,
-    0x00000095, 0x0003003e, 0x00000092, 0x00000096, 0x0003003e, 0x00000097, 0x00000098, 0x0003003e,
-    0x00000099, 0x00000077, 0x0003003e, 0x0000009a, 0x0000009b, 0x0003003e, 0x0000009c, 0x0000009d,
-    0x0003003e, 0x0000009e, 0x0000009f, 0x0004003d, 0x00000006, 0x000000a1, 0x00000092, 0x0004003d,
-    0x00000006, 0x000000a2, 0x00000099, 0x00050085, 0x00000006, 0x000000a3, 0x000000a1, 0x000000a2,
-    0x0004003d, 0x00000006, 0x000000a4, 0x0000009e, 0x00050081, 0x00000006, 0x000000a5, 0x000000a3,
-    0x000000a4, 0x0003003e, 0x000000a0, 0x000000a5, 0x0004003d, 0x00000006, 0x000000a7, 0x000000a0,
-    0x0006000c, 0x00000006, 0x000000a8, 0x00000001, 0x00000008, 0x000000a7, 0x0003003e, 0x000000a6,
-    0x000000a8, 0x0004003d, 0x00000006, 0x000000ab, 0x000000a6, 0x00050050, 0x00000007, 0x000000ad,
-    0x000000ab, 0x000000ab, 0x00050081, 0x00000007, 0x000000ae, 0x000000ad, 0x000000ac, 0x0005008e,
-    0x00000007, 0x000000af, 0x000000ae, 0x000000aa, 0x0006000c, 0x00000007, 0x000000b0, 0x00000001,
-    0x0000000d, 0x000000af, 0x0003003e, 0x000000a9, 0x000000b0, 0x0004003d, 0x00000006, 0x000000b4,
-    0x000000a6, 0x00070050, 0x00000013, 0x000000b6, 0x000000b4, 0x000000b4, 0x000000b4, 0x000000b4,
-    0x00050081, 0x00000013, 0x000000b7, 0x000000b6, 0x000000b5, 0x0005008e, 0x00000013, 0x000000b8,
-    0x000000b7, 0x000000b3, 0x00050081, 0x00000013, 0x000000bb, 0x000000b8, 0x000000ba, 0x0006000c,
-    0x00000013, 0x000000bc, 0x00000001, 0x0000000d, 0x000000bb, 0x0003003e, 0x000000b2, 0x000000bc,
-    0x0004003d, 0x00000007, 0x000000be, 0x000000a9, 0x0007004f, 0x00000007, 0x000000bf, 0x000000be,
-    0x000000be, 0x00000000, 0x00000000, 0x0004003d, 0x00000013, 0x000000c0, 0x000000b2, 0x0007004f,
-    0x00000007, 0x000000c1, 0x000000c0, 0x000000c0, 0x00000000, 0x00000001, 0x00050081, 0x00000007,
-    0x000000c2, 0x000000bf, 0x000000c1, 0x0003003e, 0x000000bd, 0x000000c2, 0x0004003d, 0x00000007,
-    0x000000c4, 0x000000a9, 0x0007004f, 0x00000007, 0x000000c5, 0x000000c4, 0x000000c4, 0x00000001,
-    0x00000001, 0x0004003d, 0x00000013, 0x000000c6, 0x000000b2, 0x0007004f, 0x00000007, 0x000000c7,
-    0x000000c6, 0x000000c6, 0x00000002, 0x00000003, 0x00050081, 0x00000007, 0x000000c8, 0x000000c5,
-    0x000000c7, 0x0003003e, 0x000000c3, 0x000000c8, 0x0004003d, 0x00000007, 0x000000ca, 0x000000bd,
-    0x0004003d, 0x00000007, 0x000000cb, 0x000000c3, 0x0004003d, 0x00000006, 0x000000cc, 0x0000009a,
-    0x00050083, 0x00000006, 0x000000cd, 0x00000077, 0x000000cc, 0x0004003d, 0x00000006, 0x000000ce,
-    0x000000a0, 0x0006000c, 0x00000006, 0x000000cf, 0x00000001, 0x0000000a, 0x000000ce, 0x00050085,
-    0x00000006, 0x000000d1, 0x000000cf, 0x000000d0, 0x0006000c, 0x00000006, 0x000000d2, 0x00000001,
-    0x0000000e, 0x000000d1, 0x00050085, 0x00000006, 0x000000d4, 0x000000d2, 0x000000d3, 0x00050081,
-    0x00000006, 0x000000d5, 0x000000d4, 0x0000009d, 0x0008000c, 0x00000006, 0x000000d6, 0x00000001,
-    0x00000031, 0x000000cd, 0x00000077, 0x000000d5, 0x00050050, 0x00000007, 0x000000d7, 0x000000d6,
-    0x000000d6, 0x0008000c, 0x00000007, 0x000000d8, 0x00000001, 0x0000002e, 0x000000ca, 0x000000cb,
-    0x000000d7, 0x0003003e, 0x000000c9, 0x000000d8, 0x0004003d, 0x00000006, 0x000000d9, 0x000000a0,
-    0x0006000c, 0x00000006, 0x000000da, 0x00000001, 0x0000000d, 0x000000d9, 0x0004003d, 0x00000006,
-    0x000000db, 0x0000009c, 0x00050085, 0x00000006, 0x000000dc, 0x000000da, 0x000000db, 0x00050041,
-    0x00000081, 0x000000dd, 0x000000c9, 0x0000002c, 0x0004003d, 0x00000006, 0x000000de, 0x000000dd,
-    0x00050081, 0x00000006, 0x000000df, 0x000000de, 0x000000dc, 0x00050041, 0x00000081, 0x000000e0,
-    0x000000c9, 0x0000002c, 0x0003003e, 0x000000e0, 0x000000df, 0x0004003d, 0x00000006, 0x000000e1,
-    0x000000a0, 0x0006000c, 0x00000006, 0x000000e2, 0x00000001, 0x0000000e, 0x000000e1, 0x0004003d,
-    0x00000006, 0x000000e3, 0x0000009c, 0x00050085, 0x00000006, 0x000000e4, 0x000000e2, 0x000000e3,
-    0x00050041, 0x00000081, 0x000000e5, 0x000000c9, 0x00000020, 0x0004003d, 0x00000006, 0x000000e6,
-    0x000000e5, 0x00050081, 0x00000006, 0x000000e7, 0x000000e6, 0x000000e4, 0x00050041, 0x00000081,
-    0x000000e8, 0x000000c9, 0x00000020, 0x0003003e, 0x000000e8, 0x000000e7, 0x0004003d, 0x00000007,
-    0x000000e9, 0x00000097, 0x0005008e, 0x00000007, 0x000000eb, 0x000000e9, 0x000000ea, 0x0004003d,
-    0x00000007, 0x000000ec, 0x000000c9, 0x00050085, 0x00000007, 0x000000ed, 0x000000ec, 0x000000eb,
-    0x0003003e, 0x000000c9, 0x000000ed, 0x0004003d, 0x00000007, 0x000000ee, 0x000000c9, 0x000200fe,
-    0x000000ee, 0x00010038, 0x00050036, 0x00000013, 0x00000015, 0x00000000, 0x00000014, 0x000200f8,
-    0x00000016, 0x0004003b, 0x00000081, 0x000000fc, 0x00000007, 0x0004003b, 0x00000008, 0x000000ff,
-    0x00000007, 0x0004003b, 0x00000008, 0x00000102, 0x00000007, 0x0004003b, 0x00000081, 0x00000119,
-    0x00000007, 0x0004003b, 0x00000008, 0x0000011a, 0x00000007, 0x0004003b, 0x00000008, 0x0000011d,
-    0x00000007, 0x0004003b, 0x000000b1, 0x00000121, 0x00000007, 0x0004003b, 0x000000b1, 0x00000131,
-    0x00000007, 0x0004003b, 0x00000008, 0x00000135, 0x00000007, 0x00050041, 0x0000001d, 0x000000f1,
-    0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x000000f2, 0x000000f1, 0x000500ab, 0x00000021,
-    0x000000f3, 0x000000f2, 0x0000007c, 0x000300f7, 0x000000f5, 0x00000000, 0x000400fa, 0x000000f3,
-    0x000000f4, 0x000000f5, 0x000200f8, 0x000000f4, 0x00050041, 0x0000001d, 0x000000f6, 0x0000001a,
-    0x00000086, 0x0004003d, 0x00000017, 0x000000f7, 0x000000f6, 0x000500aa, 0x00000021, 0x000000f8,
-    0x000000f7, 0x00000031, 0x000200f9, 0x000000f5, 0x000200f8, 0x000000f5, 0x000700f5, 0x00000021,
-    0x000000f9, 0x000000f3, 0x00000016, 0x000000f8, 0x000000f4, 0x000300f7, 0x000000fb, 0x00000000,
-    0x000400fa, 0x000000f9, 0x000000fa, 0x000000fb, 0x000200f8, 0x000000fa, 0x0004003d, 0x00000007,
-    0x00000100, 0x000000fe, 0x0003003e, 0x000000ff, 0x00000100, 0x00050039, 0x00000006, 0x00000101,
-    0x0000000b, 0x000000ff, 0x0003003e, 0x000000fc, 0x00000101, 0x00040039, 0x00000007, 0x00000103,
-    0x00000011, 0x0004003d, 0x00000006, 0x00000104, 0x000000fc, 0x0005008e, 0x00000007, 0x00000105,
-    0x00000103, 0x00000104, 0x0003003e, 0x00000102, 0x00000105, 0x0004003d, 0x00000026, 0x00000107,
-    0x00000106, 0x0004003d, 0x00000007, 0x00000109, 0x00000108, 0x0004003d, 0x00000007, 0x0000010a,
-    0x00000102, 0x00050081, 0x00000007, 0x0000010b, 0x00000109, 0x0000010a, 0x00050057, 0x00000013,
-    0x0000010c, 0x00000107, 0x0000010b, 0x000200fe, 0x0000010c, 0x000200f8, 0x000000fb, 0x00050041,
-    0x0000001d, 0x0000010e, 0x0000001a, 0x0000001c, 0x0004003d, 0x00000017, 0x0000010f, 0x0000010e,
-    0x000500ab, 0x00000021, 0x00000110, 0x0000010f, 0x0000007c, 0x000300f7, 0x00000112, 0x00000000,
-    0x000400fa, 0x00000110, 0x00000111, 0x00000112, 0x000200f8, 0x00000111, 0x00050041, 0x0000001d,
-    0x00000113, 0x0000001a, 0x00000086, 0x0004003d, 0x00000017, 0x00000114, 0x00000113, 0x000500aa,
-    0x00000021, 0x00000115, 0x00000114, 0x00000049, 0x000200f9, 0x00000112, 0x000200f8, 0x00000112,
-    0x000700f5, 0x00000021, 0x00000116, 0x00000110, 0x000000fb, 0x00000115, 0x00000111, 0x000300f7,
-    0x00000118, 0x00000000, 0x000400fa, 0x00000116, 0x00000117, 0x00000118, 0x000200f8, 0x00000117,
-    0x0004003d, 0x00000007, 0x0000011b, 0x000000fe, 0x0003003e, 0x0000011a, 0x0000011b, 0x00050039,
-    0x00000006, 0x0000011c, 0x0000000b, 0x0000011a, 0x0003003e, 0x00000119, 0x0000011c, 0x00040039,
-    0x00000007, 0x0000011e, 0x00000011, 0x0004003d, 0x00000006, 0x0000011f, 0x00000119, 0x0005008e,
-    0x00000007, 0x00000120, 0x0000011e, 0x0000011f, 0x0003003e, 0x0000011d, 0x00000120, 0x0004003d,
-    0x00000026, 0x00000122, 0x00000106, 0x0004003d, 0x00000007, 0x00000123, 0x00000108, 0x0004003d,
-    0x00000007, 0x00000124, 0x0000011d, 0x00050081, 0x00000007, 0x00000125, 0x00000123, 0x00000124,
-    0x00050057, 0x00000013, 0x00000126, 0x00000122, 0x00000125, 0x0003003e, 0x00000121, 0x00000126,
-    0x0004003d, 0x00000026, 0x00000127, 0x00000035, 0x0004003d, 0x00000007, 0x00000128, 0x000000fe,
-    0x00050057, 0x00000013, 0x00000129, 0x00000127, 0x00000128, 0x00050051, 0x00000006, 0x0000012a,
-    0x00000129, 0x00000000, 0x00050041, 0x00000081, 0x0000012b, 0x00000121, 0x0000003d, 0x0004003d,
-    0x00000006, 0x0000012c, 0x0000012b, 0x00050085, 0x00000006, 0x0000012d, 0x0000012c, 0x0000012a,
-    0x00050041, 0x00000081, 0x0000012e, 0x00000121, 0x0000003d, 0x0003003e, 0x0000012e, 0x0000012d,
-    0x0004003d, 0x00000013, 0x0000012f, 0x00000121, 0x000200fe, 0x0000012f, 0x000200f8, 0x00000118,
-    0x0004003d, 0x00000026, 0x00000132, 0x00000106, 0x0004003d, 0x00000007, 0x00000133, 0x00000108,
-    0x00050057, 0x00000013, 0x00000134, 0x00000132, 0x00000133, 0x0003003e, 0x00000131, 0x00000134,
-    0x0004003d, 0x00000007, 0x00000136, 0x000000fe, 0x0003003e, 0x00000135, 0x00000136, 0x00050039,
-    0x00000006, 0x00000137, 0x0000000e, 0x00000135, 0x00050041, 0x00000081, 0x00000138, 0x00000131,
-    0x0000003d, 0x0004003d, 0x00000006, 0x00000139, 0x00000138, 0x00050085, 0x00000006, 0x0000013a,
-    0x00000139, 0x00000137, 0x00050041, 0x00000081, 0x0000013b, 0x00000131, 0x0000003d, 0x0003003e,
-    0x0000013b, 0x0000013a, 0x0004003d, 0x00000013, 0x0000013c, 0x00000131, 0x000200fe, 0x0000013c,
-    0x00010038,
-];
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV: [u32; 1369] =
+    include!("shaders/sampled_image.frag.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1693] =
     include!("shaders/sampled_image_waterripple.frag.spv.rs");
@@ -6198,11 +5969,11 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV: [u3
     include!("shaders/sampled_image_skew.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV: [u32; 1436] =
     include!("shaders/sampled_image_iris.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV: [u32; 821] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV: [u32; 906] =
     include!("shaders/sampled_image_opacity.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_TECHCIRCLE_FRAGMENT_SPIRV: [u32; 2909] =
     include!("shaders/sampled_image_techcircle.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUDIOBARS_FRAGMENT_SPIRV: [u32; 4074] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUDIOBARS_FRAGMENT_SPIRV: [u32; 4680] =
     include!("shaders/sampled_image_audiobars.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PASSTHROUGHBLEND_FRAGMENT_SPIRV: [u32;
     9663] = include!("shaders/sampled_image_passthroughblend.frag.spv.rs");
@@ -6539,10 +6310,14 @@ mod tests {
                 height: 2160,
             },
             vk::SampleCountFlags::_1,
+            false,
         );
 
         assert_eq!(snapshot.target_format, "B8G8R8A8_SRGB");
         assert_eq!(snapshot.extent, (3840, 2160));
+        assert_eq!(snapshot.rasterization_samples, "1x");
+        assert!(!snapshot.sample_shading_enabled);
+        assert_eq!(snapshot.min_sample_shading, "0.0");
         assert_eq!(
             snapshot.render_pass_compatibility,
             "dynamic-rendering-no-render-pass"
@@ -6568,10 +6343,14 @@ mod tests {
                 height: 2160,
             },
             vk::SampleCountFlags::_1,
+            false,
         );
 
         assert_eq!(snapshot.target_format, "B8G8R8A8_SRGB");
         assert_eq!(snapshot.extent, (3840, 2160));
+        assert_eq!(snapshot.rasterization_samples, "1x");
+        assert!(!snapshot.sample_shading_enabled);
+        assert_eq!(snapshot.min_sample_shading, "0.0");
         assert!(!snapshot.descriptor_set_layout_created);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
         assert_eq!(snapshot.descriptor_binding, 0);
@@ -6588,7 +6367,7 @@ mod tests {
             snapshot.sampled_image_model,
             "retained native sampled image -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader"
         );
-        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 108);
+        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 126);
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
@@ -6608,6 +6387,95 @@ mod tests {
         );
         assert!(snapshot.descriptor_set_layout_create_flags.is_empty());
         assert!(!snapshot.uses_push_descriptor_fast_path);
+    }
+
+    #[test]
+    fn scene_pipeline_snapshots_record_msaa_sample_count() {
+        let extent = vk::Extent2D {
+            width: 1920,
+            height: 1080,
+        };
+        let solid = native_vulkan_vulkanalia_scene_solid_quad_pipeline_snapshot(
+            vk::Format::B8G8R8A8_UNORM,
+            extent,
+            vk::SampleCountFlags::_4,
+            true,
+        );
+        let sampled = native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
+            vk::Format::B8G8R8A8_UNORM,
+            extent,
+            vk::SampleCountFlags::_4,
+            true,
+        );
+
+        assert_eq!(solid.rasterization_samples, "4x");
+        assert_eq!(sampled.rasterization_samples, "4x");
+        assert!(solid.sample_shading_enabled);
+        assert_eq!(solid.min_sample_shading, "1.0");
+        assert!(sampled.sample_shading_enabled);
+        assert_eq!(sampled.min_sample_shading, "1.0");
+        assert!(solid.uses_dynamic_rendering);
+        assert!(sampled.uses_dynamic_rendering);
+    }
+
+    #[test]
+    fn scene_msaa_target_validation_requires_matching_multisample_target() {
+        let extent = vk::Extent2D {
+            width: 1280,
+            height: 720,
+        };
+        assert!(
+            validate_scene_msaa_color_target("unit-test", None, extent, vk::SampleCountFlags::_1,)
+                .is_ok()
+        );
+
+        let err =
+            validate_scene_msaa_color_target("unit-test", None, extent, vk::SampleCountFlags::_4)
+                .unwrap_err();
+        assert!(err.contains("uses 4x pipelines but has no MSAA color target"));
+
+        let target = VulkanaliaSceneMsaaColorTarget {
+            image: vk::Image::null(),
+            image_view: vk::ImageView::null(),
+            extent,
+            sample_count: vk::SampleCountFlags::_2,
+        };
+        let err = validate_scene_msaa_color_target(
+            "unit-test",
+            Some(&target),
+            extent,
+            vk::SampleCountFlags::_4,
+        )
+        .unwrap_err();
+        assert!(err.contains("sample count 2x does not match pipeline sample count 4x"));
+
+        let target = VulkanaliaSceneMsaaColorTarget {
+            sample_count: vk::SampleCountFlags::_4,
+            extent: vk::Extent2D {
+                width: 640,
+                height: 720,
+            },
+            ..target
+        };
+        let err = validate_scene_msaa_color_target(
+            "unit-test",
+            Some(&target),
+            extent,
+            vk::SampleCountFlags::_4,
+        )
+        .unwrap_err();
+        assert!(err.contains("MSAA target extent 640x720 does not match render extent 1280x720"));
+
+        let target = VulkanaliaSceneMsaaColorTarget { extent, ..target };
+        assert!(
+            validate_scene_msaa_color_target(
+                "unit-test",
+                Some(&target),
+                extent,
+                vk::SampleCountFlags::_4,
+            )
+            .is_ok()
+        );
     }
 
     #[test]
@@ -8122,6 +7990,7 @@ mod tests {
                 height: 2160,
             },
             vk::SampleCountFlags::_1,
+            false,
         );
 
         assert_eq!(snapshot.descriptor_set_count, 0);
@@ -8272,13 +8141,13 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV
             ),
-            7776
+            5476
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV
             ),
-            8004
+            5476
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -8320,7 +8189,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV
             ),
-            5572
+            4592
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -8332,7 +8201,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV
             ),
-            3284
+            3624
         );
     }
 

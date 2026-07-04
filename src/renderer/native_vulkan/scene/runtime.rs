@@ -29,7 +29,8 @@ use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, S
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawPlan, NativeVulkanSceneEffectUvMapping, NativeVulkanSceneEffectUvSpace,
-    native_vulkan_scene_draw_plan, native_vulkan_scene_effect_uv_space_from_transform,
+    native_vulkan_scene_draw_plan, native_vulkan_scene_draw_plan_from_layers,
+    native_vulkan_scene_effect_uv_space_from_transform,
     native_vulkan_scene_effect_uv_transform_for_scene_passes,
 };
 use super::super::vulkan::{
@@ -1323,6 +1324,55 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             Vec::new(),
             Vec::new(),
             "scene-runtime-direct-render-layer-sampled-image-retained-topology-vertices",
+        ),
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
+    snapshot_time_ms: u64,
+    scene_size: Option<SceneSize>,
+    scene_fit: FitMode,
+    layers: &[SceneRenderLayer],
+) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+    let draw_plan = native_vulkan_scene_draw_plan_from_layers(
+        snapshot_time_ms,
+        scene_size,
+        scene_fit,
+        true,
+        false,
+        layers,
+    );
+    let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+    if !pass_plan.sampled_image_recording_ready
+        || pass_plan.sampled_image_vertices.is_empty()
+        || pass_plan.sampled_image_indices.is_empty()
+    {
+        return Err(
+            "dynamic sampled-image scene produced no sampled draw-pass geometry".to_owned(),
+        );
+    }
+
+    let mut sampled_vertices = native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(
+        pass_plan.sampled_image_vertices.len(),
+    );
+    sampled_vertices.extend(pass_plan.sampled_image_vertices.iter().map(
+        |vertex: &NativeVulkanSceneSampledImageVertex| {
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
+                vertex.position,
+                vertex.uv,
+                vertex.effect_uv,
+                vertex.opacity,
+                vertex.tint,
+            )
+        },
+    ));
+    Ok(
+        NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
+            sampled_vertices,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            "scene-runtime-draw-pass-sampled-image-retained-topology-vertices",
         ),
     )
 }
@@ -5025,6 +5075,8 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
     if scene_audio_response_ready {
         completed_boundaries.push("native-audio-response-visual-runtime");
+        completed_boundaries.push("pipewire-audio-rms-input-source");
+        completed_boundaries.push("pipewire-audio-spectrum-input-source");
     }
     if cursor_parallax_input_ready {
         completed_boundaries.push("cursor-parallax-input-source");
@@ -5052,8 +5104,6 @@ fn native_vulkan_full_scene_runtime_snapshot(
     }
     if scene_audio_response_detected && !scene_audio_response_ready {
         pending_boundaries.push("pipewire-audio-response-runtime");
-    } else if scene_audio_response_ready {
-        pending_boundaries.push("pipewire-audio-spectrum-input-source");
     }
     if scene_particle_system_detected && !scene_particle_system_ready {
         pending_boundaries.push("particle-systems");
@@ -6304,6 +6354,12 @@ mod tests {
         assert!(
             snapshot
                 .full_scene
+                .completed_boundaries
+                .contains(&"pipewire-audio-spectrum-input-source")
+        );
+        assert!(
+            !snapshot
+                .full_scene
                 .pending_boundaries
                 .contains(&"pipewire-audio-spectrum-input-source")
         );
@@ -7075,6 +7131,7 @@ mod tests {
                 "scene-solid-quad-max-blend",
                 "scene-solid-quad-modulate-blend",
                 "scene-solid-quad-hsl-color-blend",
+                "scene-solid-quad-alpha-to-coverage",
                 "scene-sampled-image-alpha-blend",
                 "scene-sampled-image-normal-blend",
                 "scene-sampled-image-additive-blend",
@@ -7082,7 +7139,8 @@ mod tests {
                 "scene-sampled-image-screen-blend",
                 "scene-sampled-image-max-blend",
                 "scene-sampled-image-modulate-blend",
-                "scene-sampled-image-hsl-color-blend"
+                "scene-sampled-image-hsl-color-blend",
+                "scene-sampled-image-alpha-to-coverage"
             ]
         );
         assert_eq!(snapshot.vulkanalia_draw_pass.draw_indexed_count, 2);
@@ -7742,6 +7800,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         });
         let base = SceneSnapshotSampledImageLayer {
             id: "base-eye".to_owned(),
@@ -7827,6 +7886,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         });
         let carrier = SceneSnapshotSampledImageLayer {
             id: "opacity-eye".to_owned(),
@@ -7931,6 +7991,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         });
         let layer = SceneSnapshotSampledImageLayer {
             id: "iris-eye".to_owned(),
@@ -8064,6 +8125,106 @@ mod tests {
         );
         assert_eq!(geometry.sampled_geometry.vertices.len(), 4);
         assert_eq!(geometry.sampled_geometry.indices, vec![0, 1, 2, 2, 1, 3]);
+    }
+
+    #[test]
+    fn dynamic_sampled_vertices_use_draw_pass_effect_graph_topology() {
+        let mut image = scene_test_layer("masked-eye", SceneNodeKind::Image);
+        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        image.width = Some(663.0);
+        image.height = Some(230.0);
+        image.texture_slots = vec![
+            SceneRenderTextureSlot {
+                slot: 0,
+                source: PathBuf::from("/tmp/eye.gtex"),
+                width: Some(663),
+                height: Some(230),
+            },
+            SceneRenderTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/opacity-mask.gtex"),
+                width: Some(331),
+                height: Some(115),
+            },
+        ];
+        image.alpha_texture_slot = Some(1);
+        image.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
+        image.image_effect_passes = vec![SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: image.texture_slots.clone(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+        image.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: -20.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 10.0,
+                    y: -20.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -10.0,
+                    y: 20.0,
+                    u: 0.0,
+                    v: 1.0,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
+        }));
+
+        let mut snapshot =
+            native_vulkan_scene_runtime_snapshot(&scene_test_item(vec![image.clone()], None))
+                .expect("runtime snapshot");
+        let (_, retained_geometry) = snapshot
+            .take_vulkanalia_sampled_image_geometry_input()
+            .expect("retained sampled geometry");
+        let dynamic_vertices =
+            native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
+                1234,
+                None,
+                FitMode::Cover,
+                &[image],
+            )
+            .expect("dynamic sampled vertices");
+
+        assert_eq!(retained_geometry.draw_steps.len(), 2);
+        assert_eq!(
+            dynamic_vertices.source_label,
+            "scene-runtime-draw-pass-sampled-image-retained-topology-vertices"
+        );
+        assert!(dynamic_vertices.indices.is_empty());
+        assert!(dynamic_vertices.draw_steps.is_empty());
+        assert_eq!(
+            dynamic_vertices.vertices.len(),
+            retained_geometry.vertices.len()
+        );
+        assert_eq!(dynamic_vertices.vertices, retained_geometry.vertices);
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 #[cfg(feature = "native-vulkan-video")]
 use std::thread::{self, JoinHandle};
@@ -54,7 +53,7 @@ use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot,
     native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers,
     native_vulkan_scene_runtime_snapshot,
-    native_vulkan_scene_sampled_vertex_input_from_render_layers_at_with_package_root,
+    native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
 };
 
@@ -211,7 +210,8 @@ impl NativeVulkanSceneDynamicGeometryCache {
             .map_err(|err| format!("sample dynamic binary scene frame: {err}"))?;
         let sampled_geometry = native_vulkan_scene_binary_sampled_geometry_from_layers(
             frame.snapshot_time_ms,
-            self.sampler.package_root(),
+            frame.scene_size,
+            frame.scene_fit,
             &frame.layers,
         );
         let solid_geometry = if self.include_solid_geometry {
@@ -273,13 +273,15 @@ fn native_vulkan_scene_keep_binary_dynamic_solid_vertices_only(
 
 fn native_vulkan_scene_binary_sampled_geometry_from_layers(
     snapshot_time_ms: u64,
-    package_root: &Path,
+    scene_size: Option<crate::core::SceneSize>,
+    scene_fit: crate::core::FitMode,
     layers: &[SceneRenderLayer],
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    native_vulkan_scene_sampled_vertex_input_from_render_layers_at_with_package_root(
-        Some(snapshot_time_ms),
+    native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
+        snapshot_time_ms,
+        scene_size,
+        scene_fit,
         layers,
-        Some(package_root),
     )
 }
 

@@ -7,8 +7,9 @@ use serde_json::Value;
 use super::{
     SceneAlphaTextureMode, SceneAnimatedProperty, SceneBlendMode, SceneCurve, SceneDocument,
     SceneEffect, SceneEffectFbo, SceneEffectPass, SceneEffectUvExtent, SceneEffectUvTransform,
-    SceneKeyframe, SceneNode, SceneNodeKind, SceneParticleEmitterSettings, ScenePuppetTransform,
-    SceneResource, SceneResourceKind, SceneTextAlign, SceneTimelineChannel,
+    SceneKeyframe, SceneMeshPuppetClippingRecord, SceneNode, SceneNodeKind,
+    SceneParticleEmitterSettings, ScenePuppetTransform, SceneResource, SceneResourceKind,
+    SceneTextAlign, SceneTimelineChannel,
 };
 use crate::core::FitMode;
 
@@ -58,26 +59,30 @@ pub use self::particle::{
 };
 pub use self::puppet::{
     SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING,
-    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS,
-    SCENE_BINARY_PUPPET_FLAG_ATTACHMENTS, SCENE_BINARY_PUPPET_FLAG_CLIPS,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS, SCENE_BINARY_PUPPET_FLAG_ATTACHMENTS,
+    SCENE_BINARY_PUPPET_FLAG_CLIPPING, SCENE_BINARY_PUPPET_FLAG_CLIPS,
     SCENE_BINARY_PUPPET_FLAG_MESH, SCENE_BINARY_PUPPET_FLAG_SKIN,
     SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
     SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
     SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
     SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
-    SceneBinaryPuppetAttachmentRecord, SceneBinaryPuppetClipRecord, SceneBinaryPuppetFrameRecord,
-    SceneBinaryPuppetLayerRecord, SceneBinaryPuppetRecord, SceneBinaryPuppetSkinBoneRecord,
-    SceneBinaryPuppetSkinVertexRecord,
+    SceneBinaryPuppetAttachmentRecord, SceneBinaryPuppetClipRecord,
+    SceneBinaryPuppetClippingBoneRecord, SceneBinaryPuppetClippingFrameKeyRecord,
+    SceneBinaryPuppetClippingRecord, SceneBinaryPuppetFrameRecord, SceneBinaryPuppetLayerRecord,
+    SceneBinaryPuppetRecord, SceneBinaryPuppetSkinBoneRecord, SceneBinaryPuppetSkinVertexRecord,
 };
 pub(crate) use self::puppet::{
-    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_frame_record,
-    decode_puppet_layer_record, decode_puppet_record, decode_puppet_skin_bone_record,
-    decode_puppet_skin_vertex_record,
+    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_clipping_bone_record,
+    decode_puppet_clipping_frame_key_record, decode_puppet_clipping_record,
+    decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_record,
+    decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
 };
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
-pub const SCENE_BINARY_VERSION: u16 = 15;
+pub const SCENE_BINARY_VERSION: u16 = 16;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -148,13 +153,16 @@ pub enum SceneBinaryChunkKind {
     PuppetClips,
     PuppetFrames,
     PuppetLayers,
+    PuppetClipping,
+    PuppetClippingBones,
+    PuppetClippingFrameKeys,
     RenderState,
     RetainedGpuState,
     DebugNames,
 }
 
 impl SceneBinaryChunkKind {
-    pub const REQUIRED_ORDER: [Self; 24] = [
+    pub const REQUIRED_ORDER: [Self; 27] = [
         Self::ResourceTable,
         Self::NodeTable,
         Self::TransformTimeline,
@@ -176,6 +184,9 @@ impl SceneBinaryChunkKind {
         Self::PuppetClips,
         Self::PuppetFrames,
         Self::PuppetLayers,
+        Self::PuppetClipping,
+        Self::PuppetClippingBones,
+        Self::PuppetClippingFrameKeys,
         Self::RenderState,
         Self::RetainedGpuState,
         Self::DebugNames,
@@ -204,6 +215,9 @@ impl SceneBinaryChunkKind {
             Self::PuppetClips => u32::from_le_bytes(*b"PCLP"),
             Self::PuppetFrames => u32::from_le_bytes(*b"PFRM"),
             Self::PuppetLayers => u32::from_le_bytes(*b"PLYR"),
+            Self::PuppetClipping => u32::from_le_bytes(*b"PCLM"),
+            Self::PuppetClippingBones => u32::from_le_bytes(*b"PCBN"),
+            Self::PuppetClippingFrameKeys => u32::from_le_bytes(*b"PCFK"),
             Self::RenderState => u32::from_le_bytes(*b"RNDS"),
             Self::RetainedGpuState => u32::from_le_bytes(*b"RGPU"),
             Self::DebugNames => u32::from_le_bytes(*b"NAME"),
@@ -240,6 +254,9 @@ impl SceneBinaryChunkKind {
             Self::PuppetClips => "puppet_clips",
             Self::PuppetFrames => "puppet_frames",
             Self::PuppetLayers => "puppet_layers",
+            Self::PuppetClipping => "puppet_clipping",
+            Self::PuppetClippingBones => "puppet_clipping_bones",
+            Self::PuppetClippingFrameKeys => "puppet_clipping_frame_keys",
             Self::RenderState => "render_state",
             Self::RetainedGpuState => "retained_gpu_state",
             Self::DebugNames => "debug_names",
@@ -867,6 +884,58 @@ impl SceneBinaryLayoutPlan {
             first_record,
             record_count,
             decode_puppet_layer_record,
+        )
+    }
+
+    pub fn puppet_clipping_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        puppet: SceneBinaryPuppetRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetClippingRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(puppet.first_clipping_record, puppet.clipping_record_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetClipping,
+            SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_clipping_record,
+        )
+    }
+
+    pub fn puppet_clipping_bone_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        record: SceneBinaryPuppetClippingRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetClippingBoneRecord>, SceneBinaryError> {
+        let (first_record, record_count) =
+            binary_range_start_count(record.first_bone, record.bone_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetClippingBones,
+            SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_clipping_bone_record,
+        )
+    }
+
+    pub fn puppet_clipping_frame_key_record_range<'a>(
+        &self,
+        container: &'a [u8],
+        record: SceneBinaryPuppetClippingRecord,
+    ) -> Result<SceneBinaryRecords<'a, SceneBinaryPuppetClippingFrameKeyRecord>, SceneBinaryError>
+    {
+        let (first_record, record_count) =
+            binary_range_start_count(record.first_frame_key, record.frame_key_count);
+        self.records_range(
+            container,
+            SceneBinaryChunkKind::PuppetClippingFrameKeys,
+            SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE,
+            first_record,
+            record_count,
+            decode_puppet_clipping_frame_key_record,
         )
     }
 
@@ -1648,6 +1717,9 @@ pub struct SceneBinaryDocumentShape {
     pub puppet_clip_records: u32,
     pub puppet_frame_records: u32,
     pub puppet_layer_records: u32,
+    pub puppet_clipping_records: u32,
+    pub puppet_clipping_bone_records: u32,
+    pub puppet_clipping_frame_key_records: u32,
     pub render_state_records: u32,
     pub retained_gpu_state_records: u32,
     pub debug_name_records: u32,
@@ -1715,6 +1787,9 @@ impl SceneBinaryDocumentShape {
             SceneBinaryChunkKind::PuppetClips => self.puppet_clip_records,
             SceneBinaryChunkKind::PuppetFrames => self.puppet_frame_records,
             SceneBinaryChunkKind::PuppetLayers => self.puppet_layer_records,
+            SceneBinaryChunkKind::PuppetClipping => self.puppet_clipping_records,
+            SceneBinaryChunkKind::PuppetClippingBones => self.puppet_clipping_bone_records,
+            SceneBinaryChunkKind::PuppetClippingFrameKeys => self.puppet_clipping_frame_key_records,
             SceneBinaryChunkKind::RenderState => self.render_state_records,
             SceneBinaryChunkKind::RetainedGpuState => self.retained_gpu_state_records,
             SceneBinaryChunkKind::DebugNames => self.debug_name_records,
@@ -1844,6 +1919,29 @@ impl SceneBinaryDocumentShape {
                 .map(|bone| saturating_u32(bone.frames.len()))
                 .fold(0u32, u32::saturating_add),
         );
+        self.puppet_clipping_records = self
+            .puppet_clipping_records
+            .saturating_add(saturating_u32(mesh.puppet_clipping_records.len()));
+        self.puppet_clipping_bone_records = self.puppet_clipping_bone_records.saturating_add(
+            mesh.puppet_clipping_records
+                .iter()
+                .map(|record| saturating_u32(record.bones.len()))
+                .fold(0u32, u32::saturating_add),
+        );
+        self.puppet_clipping_frame_key_records =
+            self.puppet_clipping_frame_key_records.saturating_add(
+                mesh.puppet_clipping_records
+                    .iter()
+                    .map(|record| saturating_u32(record.frame_keys.len()))
+                    .fold(0u32, u32::saturating_add),
+            );
+        self.debug_name_records = self.debug_name_records.saturating_add(
+            mesh.puppet_clipping_records
+                .iter()
+                .filter(|record| !record.mask.is_empty())
+                .count()
+                .min(u32::MAX as usize) as u32,
+        );
     }
 }
 
@@ -1910,6 +2008,7 @@ enum SceneBinaryNameKind {
     EffectSource,
     EffectTarget,
     EffectBind,
+    PuppetClippingMask,
 }
 
 impl SceneBinaryNameKind {
@@ -1935,6 +2034,7 @@ impl SceneBinaryNameKind {
             Self::EffectSource => 18,
             Self::EffectTarget => 19,
             Self::EffectBind => 20,
+            Self::PuppetClippingMask => 21,
         }
     }
 }
@@ -2011,6 +2111,9 @@ struct SceneBinaryPayloadBuilder {
     puppet_clips: SceneBinaryChunkWriter,
     puppet_frames: SceneBinaryChunkWriter,
     puppet_layers: SceneBinaryChunkWriter,
+    puppet_clipping: SceneBinaryChunkWriter,
+    puppet_clipping_bones: SceneBinaryChunkWriter,
+    puppet_clipping_frame_keys: SceneBinaryChunkWriter,
     render_state: SceneBinaryChunkWriter,
     retained_gpu_state: SceneBinaryChunkWriter,
 }
@@ -3325,12 +3428,34 @@ impl SceneBinaryPayloadBuilder {
         }
         let animation_layer_count = self.puppet_layers.record_count.saturating_sub(first_layer);
 
+        let first_clipping_record = self.puppet_clipping.record_count;
+        let first_clipping_bone = self.puppet_clipping_bones.record_count;
+        let first_clipping_frame_key = self.puppet_clipping_frame_keys.record_count;
+        if let Some(mesh) = mesh {
+            for record in &mesh.puppet_clipping_records {
+                self.push_puppet_clipping_record(owner_name, record);
+            }
+        }
+        let clipping_record_count = self
+            .puppet_clipping
+            .record_count
+            .saturating_sub(first_clipping_record);
+        let clipping_bone_count = self
+            .puppet_clipping_bones
+            .record_count
+            .saturating_sub(first_clipping_bone);
+        let clipping_frame_key_count = self
+            .puppet_clipping_frame_keys
+            .record_count
+            .saturating_sub(first_clipping_frame_key);
+
         let flags = puppet_flags(
             mesh.is_some(),
             animation_layer_count > 0,
             bone_count > 0 && skin_vertex_count > 0,
             clip_count > 0,
             attachment_count > 0,
+            clipping_record_count > 0,
         );
         let dirty_range_count = 1
             + u32::from(bone_count > 0)
@@ -3338,7 +3463,10 @@ impl SceneBinaryPayloadBuilder {
             + u32::from(attachment_count > 0)
             + u32::from(clip_count > 0)
             + u32::from(clip_frame_count > 0)
-            + u32::from(animation_layer_count > 0);
+            + u32::from(animation_layer_count > 0)
+            + u32::from(clipping_record_count > 0)
+            + u32::from(clipping_bone_count > 0)
+            + u32::from(clipping_frame_key_count > 0);
         self.puppet.push_record(|out| {
             SceneBinaryPuppetRecord {
                 owner_name,
@@ -3356,6 +3484,18 @@ impl SceneBinaryPayloadBuilder {
                 clip_frame_count,
                 first_layer: puppet_first_record(first_layer, animation_layer_count),
                 animation_layer_count,
+                first_clipping_record: puppet_first_record(
+                    first_clipping_record,
+                    clipping_record_count,
+                ),
+                clipping_record_count,
+                first_clipping_bone: puppet_first_record(first_clipping_bone, clipping_bone_count),
+                clipping_bone_count,
+                first_clipping_frame_key: puppet_first_record(
+                    first_clipping_frame_key,
+                    clipping_frame_key_count,
+                ),
+                clipping_frame_key_count,
                 flags,
                 dirty_range_count,
             }
@@ -3363,6 +3503,60 @@ impl SceneBinaryPayloadBuilder {
         });
         self.push_retained(SCENE_BINARY_RETAINED_PUPPET, owner_name, record_index);
         record_index
+    }
+
+    fn push_puppet_clipping_record(
+        &mut self,
+        owner_name: u32,
+        record: &SceneMeshPuppetClippingRecord,
+    ) {
+        let mask_name = self.names.intern(
+            SceneBinaryNameKind::PuppetClippingMask,
+            record.mask_resource.as_deref().unwrap_or(&record.mask),
+        );
+        let first_bone = self.puppet_clipping_bones.record_count;
+        for bone in &record.bones {
+            self.puppet_clipping_bones.push_record(|out| {
+                SceneBinaryPuppetClippingBoneRecord {
+                    owner_name,
+                    bone_index: saturating_u32(*bone),
+                }
+                .encode(out)
+            });
+        }
+        let bone_count = self
+            .puppet_clipping_bones
+            .record_count
+            .saturating_sub(first_bone);
+        let first_frame_key = self.puppet_clipping_frame_keys.record_count;
+        for frame_key in &record.frame_keys {
+            self.puppet_clipping_frame_keys.push_record(|out| {
+                SceneBinaryPuppetClippingFrameKeyRecord {
+                    owner_name,
+                    frame_key: *frame_key,
+                }
+                .encode(out)
+            });
+        }
+        let frame_key_count = self
+            .puppet_clipping_frame_keys
+            .record_count
+            .saturating_sub(first_frame_key);
+        self.puppet_clipping.push_record(|out| {
+            SceneBinaryPuppetClippingRecord {
+                owner_name,
+                mask_name,
+                duration_frames: record.duration_frames,
+                flags: record.flags,
+                first_bone: puppet_first_record(first_bone, bone_count),
+                bone_count,
+                first_frame_key: puppet_first_record(first_frame_key, frame_key_count),
+                frame_key_count,
+                dirty_range_count: 1 + u32::from(bone_count > 0) + u32::from(frame_key_count > 0),
+                reserved: 0,
+            }
+            .encode(out)
+        });
     }
 
     fn push_retained(&mut self, owner_kind: u16, owner_name: u32, record_index: u32) {
@@ -3408,6 +3602,9 @@ impl SceneBinaryPayloadBuilder {
             puppet_clip_records: self.puppet_clips.record_count,
             puppet_frame_records: self.puppet_frames.record_count,
             puppet_layer_records: self.puppet_layers.record_count,
+            puppet_clipping_records: self.puppet_clipping.record_count,
+            puppet_clipping_bone_records: self.puppet_clipping_bones.record_count,
+            puppet_clipping_frame_key_records: self.puppet_clipping_frame_keys.record_count,
             render_state_records: self.render_state.record_count,
             retained_gpu_state_records: self.retained_gpu_state.record_count,
             debug_name_records,
@@ -3455,6 +3652,12 @@ impl SceneBinaryPayloadBuilder {
                     .into_payload(SceneBinaryChunkKind::PuppetFrames),
                 self.puppet_layers
                     .into_payload(SceneBinaryChunkKind::PuppetLayers),
+                self.puppet_clipping
+                    .into_payload(SceneBinaryChunkKind::PuppetClipping),
+                self.puppet_clipping_bones
+                    .into_payload(SceneBinaryChunkKind::PuppetClippingBones),
+                self.puppet_clipping_frame_keys
+                    .into_payload(SceneBinaryChunkKind::PuppetClippingFrameKeys),
                 self.render_state
                     .into_payload(SceneBinaryChunkKind::RenderState),
                 self.retained_gpu_state
@@ -6133,6 +6336,15 @@ mod tests {
                                     }
                                 ]
                             }
+                        ],
+                        "puppet_clipping_records": [
+                            {
+                                "mask": "masks/clipping_mask_eye",
+                                "duration_frames": 1680,
+                                "flags": 3,
+                                "bones": [0, 1],
+                                "frame_keys": [0, 1, 2]
+                            }
                         ]
                     },
                     "puppet_animation_layers": [
@@ -6166,6 +6378,9 @@ mod tests {
         assert_eq!(payloads.shape.puppet_clip_records, 1);
         assert_eq!(payloads.shape.puppet_frame_records, 4);
         assert_eq!(payloads.shape.puppet_layer_records, 1);
+        assert_eq!(payloads.shape.puppet_clipping_records, 1);
+        assert_eq!(payloads.shape.puppet_clipping_bone_records, 2);
+        assert_eq!(payloads.shape.puppet_clipping_frame_key_records, 3);
         assert_eq!(
             payloads
                 .chunk(SceneBinaryChunkKind::Puppet)
@@ -6214,11 +6429,15 @@ mod tests {
         assert_eq!(puppet.clip_count, 1);
         assert_eq!(puppet.clip_frame_count, 4);
         assert_eq!(puppet.animation_layer_count, 1);
+        assert_eq!(puppet.clipping_record_count, 1);
+        assert_eq!(puppet.clipping_bone_count, 2);
+        assert_eq!(puppet.clipping_frame_key_count, 3);
         assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_MESH != 0);
         assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_SKIN != 0);
         assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_CLIPS != 0);
         assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_ATTACHMENTS != 0);
         assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS != 0);
+        assert!(puppet.flags & SCENE_BINARY_PUPPET_FLAG_CLIPPING != 0);
 
         let bones = layout
             .puppet_skin_bone_record_range(&bytes, puppet)
@@ -6274,6 +6493,42 @@ mod tests {
         assert!(layers[0].flags & SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS != 0);
         assert!(layers[0].flags & SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE != 0);
         assert!((layers[0].blend - 0.75).abs() < f32::EPSILON);
+
+        let clipping = layout
+            .puppet_clipping_record_range(&bytes, puppet)
+            .expect("clipping")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded clipping");
+        assert_eq!(clipping[0].duration_frames, 1680);
+        assert_eq!(clipping[0].flags, 3);
+        assert_eq!(
+            names.name(clipping[0].mask_name).expect("clipping mask"),
+            Some("masks/clipping_mask_eye")
+        );
+        let clipping_bones = layout
+            .puppet_clipping_bone_record_range(&bytes, clipping[0])
+            .expect("clipping bones")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded clipping bones");
+        assert_eq!(
+            clipping_bones
+                .iter()
+                .map(|record| record.bone_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
+        let clipping_frame_keys = layout
+            .puppet_clipping_frame_key_record_range(&bytes, clipping[0])
+            .expect("clipping frame keys")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("decoded clipping frame keys");
+        assert_eq!(
+            clipping_frame_keys
+                .iter()
+                .map(|record| record.frame_key)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
 
         let retained = layout
             .retained_gpu_state_records(&bytes)

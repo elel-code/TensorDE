@@ -9,6 +9,7 @@ const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
 const GILDER_SCENE_TEXTURE_HEADER_BYTES: usize = 32;
 const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
 const GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM: u32 = 9;
+const GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM: u32 = 37;
 const BC_BLOCK_TEXELS: u32 = 4;
 const BC7_BLOCK_BYTES: usize = 16;
 const BC7_MODE6_INDEX_WEIGHTS: [u16; 16] =
@@ -147,6 +148,8 @@ fn native_vulkan_effect_debug_read_r8_gtex(
         .ok_or_else(|| format!("{} has no height", path.display()))?;
     let format = native_vulkan_effect_debug_read_u32(&bytes, 16)
         .ok_or_else(|| format!("{} has no format", path.display()))?;
+    let mip_count = native_vulkan_effect_debug_read_u32(&bytes, 20)
+        .ok_or_else(|| format!("{} has no mip count", path.display()))?;
     let payload_len = native_vulkan_effect_debug_read_u64(&bytes, 24)
         .ok_or_else(|| format!("{} has no payload length", path.display()))?;
     if format != GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM {
@@ -159,9 +162,10 @@ fn native_vulkan_effect_debug_read_r8_gtex(
     let expected_len = u64::from(width)
         .checked_mul(u64::from(height))
         .ok_or_else(|| format!("{} R8 dimensions overflow", path.display()))?;
-    if payload_len != expected_len {
+    let expected_total_len = native_vulkan_effect_debug_r8_mip_chain_len(width, height, mip_count)?;
+    if payload_len != expected_total_len {
         return Err(format!(
-            "{} declares R8 payload {payload_len}, expected {expected_len}",
+            "{} declares R8 payload {payload_len}, expected {expected_total_len}",
             path.display()
         ));
     }
@@ -178,7 +182,9 @@ fn native_vulkan_effect_debug_read_r8_gtex(
     Ok(NativeVulkanEffectDebugR8Texture {
         width,
         height,
-        bytes,
+        payload: bytes[GILDER_SCENE_TEXTURE_HEADER_BYTES
+            ..GILDER_SCENE_TEXTURE_HEADER_BYTES + expected_len as usize]
+            .to_vec(),
     })
 }
 
@@ -220,24 +226,25 @@ fn native_vulkan_effect_debug_read_bc7_mode6_gtex(
         .ok_or_else(|| format!("{} has no height", path.display()))?;
     let format = native_vulkan_effect_debug_read_u32(&bytes, 16)
         .ok_or_else(|| format!("{} has no format", path.display()))?;
+    let mip_count = native_vulkan_effect_debug_read_u32(&bytes, 20)
+        .ok_or_else(|| format!("{} has no mip count", path.display()))?;
     let payload_len = native_vulkan_effect_debug_read_u64(&bytes, 24)
         .ok_or_else(|| format!("{} has no payload length", path.display()))?;
-    if format != GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK {
+    if format != GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK
+        && format != GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM
+    {
         return Err(format!(
-            "{} is gtex format {}, not BC7_UNORM_BLOCK",
+            "{} is gtex format {}, not BC7_UNORM_BLOCK/R8G8B8A8_UNORM",
             path.display(),
             format
         ));
     }
-    let blocks_w = width.div_ceil(BC_BLOCK_TEXELS);
-    let blocks_h = height.div_ceil(BC_BLOCK_TEXELS);
-    let expected_len = u64::from(blocks_w)
-        .checked_mul(u64::from(blocks_h))
-        .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
-        .ok_or_else(|| format!("{} BC7 dimensions overflow", path.display()))?;
-    if payload_len != expected_len {
+    let expected_len = native_vulkan_effect_debug_rgba_base_len(width, height, format)?;
+    let expected_total_len =
+        native_vulkan_effect_debug_rgba_mip_chain_len(width, height, mip_count, format)?;
+    if payload_len != expected_total_len {
         return Err(format!(
-            "{} declares BC7 payload {payload_len}, expected {expected_len}",
+            "{} declares RGBA debug payload {payload_len}, expected {expected_total_len}",
             path.display()
         ));
     }
@@ -246,16 +253,18 @@ fn native_vulkan_effect_debug_read_bc7_mode6_gtex(
         .saturating_sub(GILDER_SCENE_TEXTURE_HEADER_BYTES);
     if payload_byte_len as u64 != payload_len {
         return Err(format!(
-            "{} contains {} BC7 payload bytes, expected {payload_len}",
+            "{} contains {} RGBA debug payload bytes, expected {payload_len}",
             path.display(),
             payload_byte_len
         ));
     }
-    let rgba = native_vulkan_effect_debug_decode_bc7_mode6_payload(
-        width,
-        height,
-        &bytes[GILDER_SCENE_TEXTURE_HEADER_BYTES..],
-    )?;
+    let base_payload = &bytes[GILDER_SCENE_TEXTURE_HEADER_BYTES
+        ..GILDER_SCENE_TEXTURE_HEADER_BYTES + expected_len as usize];
+    let rgba = if format == GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM {
+        base_payload.to_vec()
+    } else {
+        native_vulkan_effect_debug_decode_bc7_mode6_payload(width, height, base_payload)?
+    };
     Ok(NativeVulkanEffectDebugRgbaTexture {
         width,
         height,
@@ -997,6 +1006,129 @@ fn native_vulkan_effect_debug_read_u64(bytes: &[u8], offset: usize) -> Option<u6
     ))
 }
 
+fn native_vulkan_effect_debug_mip_count(width: u32, height: u32) -> Result<u32, String> {
+    if width == 0 || height == 0 {
+        return Err("debug gtex mip count requires non-zero dimensions".to_owned());
+    }
+    let mut levels = 1u32;
+    let mut level_width = width;
+    let mut level_height = height;
+    while level_width > 1 || level_height > 1 {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+        levels = levels
+            .checked_add(1)
+            .ok_or_else(|| "debug gtex mip count overflowed".to_owned())?;
+    }
+    Ok(levels)
+}
+
+fn native_vulkan_effect_debug_mip_extent(
+    width: u32,
+    height: u32,
+    level: u32,
+) -> Result<(u32, u32), String> {
+    if width == 0 || height == 0 {
+        return Err("debug gtex mip extent requires non-zero dimensions".to_owned());
+    }
+    let mut level_width = width;
+    let mut level_height = height;
+    for _ in 0..level {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+    }
+    Ok((level_width, level_height))
+}
+
+fn native_vulkan_effect_debug_r8_mip_chain_len(
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Result<u64, String> {
+    native_vulkan_effect_debug_mip_chain_len(width, height, mip_count, |width, height| {
+        u64::from(width).checked_mul(u64::from(height))
+    })
+}
+
+fn native_vulkan_effect_debug_bc7_mip_chain_len(
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Result<u64, String> {
+    native_vulkan_effect_debug_mip_chain_len(width, height, mip_count, |width, height| {
+        u64::from(width.div_ceil(BC_BLOCK_TEXELS))
+            .checked_mul(u64::from(height.div_ceil(BC_BLOCK_TEXELS)))
+            .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
+    })
+}
+
+fn native_vulkan_effect_debug_rgba_base_len(
+    width: u32,
+    height: u32,
+    format: u32,
+) -> Result<u64, String> {
+    match format {
+        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => u64::from(width.div_ceil(BC_BLOCK_TEXELS))
+            .checked_mul(u64::from(height.div_ceil(BC_BLOCK_TEXELS)))
+            .and_then(|blocks| blocks.checked_mul(BC7_BLOCK_BYTES as u64))
+            .ok_or_else(|| "debug BC7 base payload length overflowed".to_owned()),
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM => u64::from(width)
+            .checked_mul(u64::from(height))
+            .and_then(|texels| texels.checked_mul(4))
+            .ok_or_else(|| "debug RGBA8 base payload length overflowed".to_owned()),
+        _ => Err(format!("unsupported debug RGBA gtex format {format}")),
+    }
+}
+
+fn native_vulkan_effect_debug_rgba_mip_chain_len(
+    width: u32,
+    height: u32,
+    mip_count: u32,
+    format: u32,
+) -> Result<u64, String> {
+    match format {
+        GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => {
+            native_vulkan_effect_debug_bc7_mip_chain_len(width, height, mip_count)
+        }
+        GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM => {
+            native_vulkan_effect_debug_mip_chain_len(width, height, mip_count, |width, height| {
+                u64::from(width)
+                    .checked_mul(u64::from(height))
+                    .and_then(|texels| texels.checked_mul(4))
+            })
+        }
+        _ => Err(format!("unsupported debug RGBA gtex format {format}")),
+    }
+}
+
+fn native_vulkan_effect_debug_mip_chain_len(
+    width: u32,
+    height: u32,
+    mip_count: u32,
+    mut level_len: impl FnMut(u32, u32) -> Option<u64>,
+) -> Result<u64, String> {
+    if mip_count == 0 {
+        return Err("debug gtex mip chain requires at least one level".to_owned());
+    }
+    let max_mip_count = native_vulkan_effect_debug_mip_count(width, height)?;
+    if mip_count > max_mip_count {
+        return Err(format!(
+            "debug gtex mip count {mip_count} exceeds {width}x{height} maximum {max_mip_count}"
+        ));
+    }
+    let mut total = 0u64;
+    for level in 0..mip_count {
+        let (level_width, level_height) =
+            native_vulkan_effect_debug_mip_extent(width, height, level)?;
+        let mip_len = level_len(level_width, level_height)
+            .ok_or_else(|| "debug gtex mip payload length overflowed".to_owned())?;
+        total = total
+            .checked_add(mip_len)
+            .ok_or_else(|| "debug gtex mip chain payload length overflowed".to_owned())?;
+    }
+    Ok(total)
+}
+
 #[derive(Debug, Clone, Copy)]
 struct NativeVulkanEffectDebugBbox {
     min_x: u32,
@@ -1009,12 +1141,12 @@ struct NativeVulkanEffectDebugBbox {
 pub(in crate::renderer::native_vulkan) struct NativeVulkanEffectDebugR8Texture {
     width: u32,
     height: u32,
-    bytes: Vec<u8>,
+    payload: Vec<u8>,
 }
 
 impl NativeVulkanEffectDebugR8Texture {
     fn payload(&self) -> &[u8] {
-        &self.bytes[GILDER_SCENE_TEXTURE_HEADER_BYTES..]
+        &self.payload
     }
 
     pub(in crate::renderer::native_vulkan) fn sample_linear(&self, uv: [f32; 2]) -> f64 {

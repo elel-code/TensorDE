@@ -869,6 +869,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         let mut carrier = scene_layer("eye-opacity", SceneNodeKind::Image);
         carrier.source = Some(PathBuf::from("/tmp/eye.gtex"));

@@ -83,6 +83,19 @@ fn native_vulkan_scene_binary_ingest_from_layout(
         layout,
         SceneBinaryChunkKind::PuppetLayers,
     )?;
+    let puppet_clipping_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetClipping,
+    )?;
+    let puppet_clipping_bone_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
+        layout,
+        SceneBinaryChunkKind::PuppetClippingBones,
+    )?;
+    let puppet_clipping_frame_key_record_count =
+        native_vulkan_scene_binary_ingest_chunk_record_count(
+            layout,
+            SceneBinaryChunkKind::PuppetClippingFrameKeys,
+        )?;
     let material_pass_record_count = native_vulkan_scene_binary_ingest_chunk_record_count(
         layout,
         SceneBinaryChunkKind::MaterialPass,
@@ -185,6 +198,9 @@ fn native_vulkan_scene_binary_ingest_from_layout(
             puppet_clip_record_count,
             puppet_frame_record_count,
             puppet_layer_record_count,
+            puppet_clipping_record_count,
+            puppet_clipping_bone_record_count,
+            puppet_clipping_frame_key_record_count,
         )?;
     }
 
@@ -377,6 +393,9 @@ pub(super) fn native_vulkan_scene_binary_ingest_puppet_record(
     puppet_clip_record_count: u32,
     puppet_frame_record_count: u32,
     puppet_layer_record_count: u32,
+    puppet_clipping_record_count: u32,
+    puppet_clipping_bone_record_count: u32,
+    puppet_clipping_frame_key_record_count: u32,
 ) -> Result<(), SceneBinaryError> {
     summary.puppet_count = summary.puppet_count.saturating_add(1);
     summary.puppet_vertex_count = summary
@@ -388,6 +407,9 @@ pub(super) fn native_vulkan_scene_binary_ingest_puppet_record(
     summary.puppet_animation_layer_count = summary
         .puppet_animation_layer_count
         .saturating_add(puppet.animation_layer_count);
+    summary.puppet_clipping_record_count = summary
+        .puppet_clipping_record_count
+        .saturating_add(puppet.clipping_record_count);
     native_vulkan_scene_binary_ingest_validate_record_range(
         SceneBinaryChunkKind::PuppetSkinBones,
         puppet.first_bone,
@@ -423,6 +445,24 @@ pub(super) fn native_vulkan_scene_binary_ingest_puppet_record(
         puppet.first_layer,
         puppet.animation_layer_count,
         puppet_layer_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetClipping,
+        puppet.first_clipping_record,
+        puppet.clipping_record_count,
+        puppet_clipping_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetClippingBones,
+        puppet.first_clipping_bone,
+        puppet.clipping_bone_count,
+        puppet_clipping_bone_record_count,
+    )?;
+    native_vulkan_scene_binary_ingest_validate_record_range(
+        SceneBinaryChunkKind::PuppetClippingFrameKeys,
+        puppet.first_clipping_frame_key,
+        puppet.clipping_frame_key_count,
+        puppet_clipping_frame_key_record_count,
     )?;
     Ok(())
 }

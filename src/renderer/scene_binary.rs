@@ -22,14 +22,16 @@ use crate::core::scene::binary::{
     SCENE_BINARY_PARAMETER_VALUE_VEC2, SCENE_BINARY_PARAMETER_VALUE_VEC3,
     SCENE_BINARY_PARAMETER_VALUE_VEC4, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
     SCENE_BINARY_PARTICLE_FLAG_FADE, SCENE_BINARY_PARTICLE_FLAG_LOOP,
-    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE, SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS,
-    SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE, SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
-    SCENE_BINARY_RESOURCE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-    SceneBinaryChunkKind, SceneBinaryEffectParameterRecord, SceneBinaryEffectPassRecord,
+    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
+    SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
+    SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
+    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind,
+    SceneBinaryEffectParameterRecord, SceneBinaryEffectPassRecord,
     SceneBinaryEffectUvTransformRecord, SceneBinaryError, SceneBinaryGeometryRecord,
     SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord,
     SceneBinaryParticleEmitterRecord, SceneBinaryPuppetRecord, SceneBinaryResourceRecord,
@@ -38,17 +40,19 @@ use crate::core::scene::binary::{
     decode_effect_pass_record, decode_effect_uv_transform_record, decode_geometry_index_record,
     decode_geometry_record, decode_geometry_vertex_record, decode_material_pass_record,
     decode_node_record, decode_particle_emitter_record, decode_puppet_attachment_record,
-    decode_puppet_clip_record, decode_puppet_frame_record, decode_puppet_layer_record,
-    decode_puppet_record, decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
-    decode_render_state_record, decode_resource_record, decode_scene_binary_header_table,
-    decode_texture_slot_record, decode_transform_keyframe_record, decode_transform_timeline_record,
+    decode_puppet_clip_record, decode_puppet_clipping_bone_record,
+    decode_puppet_clipping_frame_key_record, decode_puppet_clipping_record,
+    decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_record,
+    decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record, decode_render_state_record,
+    decode_resource_record, decode_scene_binary_header_table, decode_texture_slot_record,
+    decode_transform_keyframe_record, decode_transform_timeline_record,
     scene_binary_particle_shape_kind, scene_binary_particle_transform,
 };
 use crate::core::scene::{
     SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
-    SceneMeshSkin, SceneMeshSkinAttachment, SceneMeshSkinBone, SceneMeshSkinVertex,
-    SceneMeshVertex, ScenePuppetAnimationBone, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
-    ScenePuppetAttachmentDelta,
+    SceneMeshPuppetClippingRecord, SceneMeshSkin, SceneMeshSkinAttachment, SceneMeshSkinBone,
+    SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetAnimationBone, ScenePuppetAnimationClip,
+    ScenePuppetAnimationLayer, ScenePuppetAttachmentDelta,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
@@ -91,6 +95,7 @@ struct BinarySceneResource {
 struct BinarySceneReader {
     file: File,
     file_len: usize,
+    package_root: PathBuf,
     layout: SceneBinaryLayoutPlan,
     chunk_payload_cache: BTreeMap<SceneBinaryChunkKind, Arc<Vec<u8>>>,
     node_records_cache: Option<Arc<Vec<SceneBinaryNodeRecord>>>,
@@ -183,6 +188,7 @@ impl BinarySceneReader {
         Ok(Self {
             file,
             file_len,
+            package_root: binary_scene_package_root(path),
             layout,
             chunk_payload_cache: BTreeMap::new(),
             node_records_cache: None,
@@ -559,7 +565,6 @@ pub(crate) struct SceneBinaryRuntimeSampler {
     reader: BinarySceneReader,
     names: BinarySceneNames,
     resources: Vec<BinarySceneResource>,
-    package_root: PathBuf,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
     dynamic_state: Option<BinarySceneDynamicState>,
@@ -594,7 +599,6 @@ impl SceneBinaryRuntimeSampler {
             reader,
             names,
             resources,
-            package_root,
             scene_size,
             scene_fit: plan.scene_fit,
             dynamic_state,
@@ -625,10 +629,6 @@ impl SceneBinaryRuntimeSampler {
     pub(crate) fn recycle_frame(&mut self, mut frame: SceneBinaryRuntimeFrame) {
         frame.layers.clear();
         self.layers_scratch = frame.layers;
-    }
-
-    pub(crate) fn package_root(&self) -> &Path {
-        &self.package_root
     }
 }
 
@@ -1647,6 +1647,7 @@ fn binary_scene_particle_batch_mesh(
         indices,
         skin: None,
         puppet_clips: Vec::new(),
+        puppet_clipping_records: Vec::new(),
     })
 }
 
@@ -2173,12 +2174,19 @@ fn binary_scene_base_mesh_cached(
         indices,
         skin: None,
         puppet_clips: Vec::new(),
+        puppet_clipping_records: Vec::new(),
     };
     if puppet_index != SCENE_BINARY_NONE_ID {
         let puppet = reader.puppet_record_cached(puppet_index)?;
-        if puppet.animation_layer_count > 0 && puppet.bone_count > 0 && puppet.clip_count > 0 {
+        if puppet.bone_count > 0 {
             mesh.skin = Some(binary_scene_puppet_skin(reader, names, puppet, true)?);
+        }
+        if puppet.animation_layer_count > 0 && puppet.bone_count > 0 && puppet.clip_count > 0 {
             mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
+        }
+        if puppet.clipping_record_count > 0 && mesh.skin.is_some() {
+            mesh.puppet_clipping_records =
+                binary_scene_puppet_clipping_records(reader, names, puppet)?;
         }
     }
     let mesh = Arc::new(mesh);
@@ -2242,6 +2250,7 @@ fn binary_scene_puppet_attachment_mesh_cached(
         indices: Vec::new(),
         skin: Some(binary_scene_puppet_skin(reader, names, puppet, false)?),
         puppet_clips: binary_scene_puppet_clips(reader, puppet)?,
+        puppet_clipping_records: binary_scene_puppet_clipping_records(reader, names, puppet)?,
     });
     reader
         .puppet_attachment_mesh_cache
@@ -2387,6 +2396,74 @@ fn binary_scene_puppet_clips(
         });
     }
     Ok(clips)
+}
+
+fn binary_scene_puppet_clipping_records(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Vec<SceneMeshPuppetClippingRecord>, RendererPlanError> {
+    let clipping_records = reader.record_range(
+        SceneBinaryChunkKind::PuppetClipping,
+        SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
+        puppet.first_clipping_record,
+        puppet.clipping_record_count,
+        decode_puppet_clipping_record,
+    )?;
+    let mut records = Vec::with_capacity(clipping_records.len());
+    for clipping in clipping_records {
+        let Some(mask) = binary_name(names, clipping.mask_name) else {
+            continue;
+        };
+        let bone_records = reader.record_range(
+            SceneBinaryChunkKind::PuppetClippingBones,
+            SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+            clipping.first_bone,
+            clipping.bone_count,
+            decode_puppet_clipping_bone_record,
+        )?;
+        let frame_key_records = reader.record_range(
+            SceneBinaryChunkKind::PuppetClippingFrameKeys,
+            SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE,
+            clipping.first_frame_key,
+            clipping.frame_key_count,
+            decode_puppet_clipping_frame_key_record,
+        )?;
+        records.push(SceneMeshPuppetClippingRecord {
+            mask: mask.to_owned(),
+            mask_resource: binary_scene_puppet_clipping_mask_resource(reader, mask),
+            duration_frames: clipping.duration_frames,
+            flags: clipping.flags,
+            bones: bone_records
+                .iter()
+                .map(|bone| bone.bone_index as usize)
+                .collect(),
+            frame_keys: frame_key_records
+                .iter()
+                .map(|frame_key| frame_key.frame_key)
+                .collect(),
+        });
+    }
+    Ok(records)
+}
+
+fn binary_scene_puppet_clipping_mask_resource(
+    reader: &BinarySceneReader,
+    mask: &str,
+) -> Option<String> {
+    if Path::new(mask).is_absolute()
+        || mask.ends_with(".gtex")
+        || mask.starts_with("assets/")
+        || mask.starts_with("assets\\")
+    {
+        Some(
+            binary_scene_resource_path(&reader.package_root, mask)
+                .to_string_lossy()
+                .into_owned(),
+        )
+    } else {
+        None
+    }
 }
 
 fn binary_scene_puppet_layers(
@@ -3262,6 +3339,148 @@ mod tests {
 
         sampler.recycle_frame(frame);
         fs::remove_dir_all(root).expect("remove test dir");
+    }
+
+    #[test]
+    fn gscn_direct_ingest_preserves_puppet_clipping_records() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 32, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "eye-node",
+                    "type": "image",
+                    "resource": "eye",
+                    "width": 32,
+                    "height": 16,
+                    "mesh": {
+                        "vertices": [
+                            { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 1.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 1.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } },
+                                { "parent": 0, "bind": { "translation": [1.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clipping_records": [
+                            {
+                                "mask": "masks/clipping_mask_eye",
+                                "duration_frames": 1680,
+                                "flags": 1,
+                                "bones": [1],
+                                "frame_keys": [0, 1, 2]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-puppet-clipping");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        let mesh = plan.layers[0].mesh.as_ref().expect("mesh");
+        assert_eq!(mesh.puppet_clipping_records.len(), 1);
+        assert_eq!(
+            mesh.puppet_clipping_records[0].mask,
+            "masks/clipping_mask_eye"
+        );
+        assert_eq!(mesh.puppet_clipping_records[0].duration_frames, 1680);
+        assert_eq!(mesh.puppet_clipping_records[0].flags, 1);
+        assert_eq!(mesh.puppet_clipping_records[0].bones, vec![1]);
+        assert_eq!(mesh.puppet_clipping_records[0].frame_keys, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn gscn_direct_ingest_resolves_puppet_clipping_mask_resource_paths() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 32, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "eye-node",
+                    "type": "image",
+                    "resource": "eye",
+                    "width": 32,
+                    "height": 16,
+                    "mesh": {
+                        "vertices": [
+                            { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 1.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 1.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } },
+                                { "parent": 0, "bind": { "translation": [1.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [1, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clipping_records": [
+                            {
+                                "mask": "masks/clipping_mask_eye",
+                                "mask_resource": "assets/clipping-mask.gtex",
+                                "duration_frames": 1680,
+                                "bones": [1],
+                                "frame_keys": [0, 1, 2]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-puppet-clipping-resource");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+        let expected_mask_resource = root
+            .join("assets/clipping-mask.gtex")
+            .to_string_lossy()
+            .into_owned();
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        let mesh = plan.layers[0].mesh.as_ref().expect("mesh");
+        assert_eq!(mesh.puppet_clipping_records.len(), 1);
+        assert_eq!(
+            mesh.puppet_clipping_records[0].mask,
+            "assets/clipping-mask.gtex"
+        );
+        assert_eq!(
+            mesh.puppet_clipping_records[0].mask_resource.as_deref(),
+            Some(expected_mask_resource.as_str())
+        );
     }
 
     #[test]

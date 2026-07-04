@@ -4,10 +4,10 @@ use super::NativeVulkanSceneEffectKind;
 use super::{drift, flutter, sway_shake, water_waves};
 
 const GRID_MIN_SEGMENTS: usize = 12;
-const GRID_MAX_SEGMENTS: usize = 20;
-const MESH_MAX_SUBDIVISION: usize = 4;
-const MESH_MAX_VERTICES: usize = 4096;
-const MESH_SAMPLES_PER_PERIOD: f64 = 4.0;
+const GRID_MAX_SEGMENTS: usize = 32;
+const MESH_MAX_SUBDIVISION: usize = 6;
+const MESH_MAX_VERTICES: usize = 16384;
+const MESH_SAMPLES_PER_PERIOD: f64 = 6.0;
 
 pub(super) fn classify(normalized_effect_file: &str) -> Option<NativeVulkanSceneEffectKind> {
     if sway_shake::matches_foliage(normalized_effect_file) {
@@ -290,6 +290,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         };
         let motion = SceneNativeEffectMotion {
             sway_amplitude: 8.0,
@@ -298,7 +299,7 @@ mod tests {
             ..Default::default()
         };
 
-        assert_eq!(mesh_subdivision(1024.0, 1024.0, motion, &mesh), Some(4));
+        assert_eq!(mesh_subdivision(1024.0, 1024.0, motion, &mesh), Some(6));
     }
 
     #[test]

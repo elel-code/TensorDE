@@ -6649,7 +6649,10 @@ fn native_vulkan_scene_point_in_triangle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::scene::{SceneEffectFbo, SceneEffectUvTransform, SceneMesh, SceneMeshVertex};
+    use crate::core::scene::{
+        SceneEffectFbo, SceneEffectUvTransform, SceneMesh, SceneMeshPuppetClippingRecord,
+        SceneMeshSkin, SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex,
+    };
     use crate::core::{FitMode, SceneBlendMode, ScenePathFillRule, SceneSize, SceneTextureRegion};
     use crate::renderer::SceneRenderTextureSlot;
     use crate::renderer::native_vulkan::present::render_plan::NativeVulkanSceneUnsupportedLayer;
@@ -7651,6 +7654,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         image.transform.x = 10.0;
         image.transform.y = 20.0;
@@ -7742,6 +7746,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
@@ -7848,6 +7853,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
@@ -7992,6 +7998,191 @@ mod tests {
         assert_eq!(pass_plan.sampled_image_vertices[6].uv, [1.0, 0.0]);
         assert_eq!(pass_plan.sampled_image_vertices[3].effect_uv, [0.0, 1.0]);
         assert_eq!(pass_plan.sampled_image_vertices[6].effect_uv, [1.0, 0.0]);
+    }
+
+    #[test]
+    fn draw_pass_plan_keeps_puppet_clipping_metadata_non_destructive() {
+        let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
+        image.blend_mode = SceneBlendMode::Normal;
+        image.texture_slots = vec![
+            SceneRenderTextureSlot {
+                slot: 0,
+                source: PathBuf::from("/tmp/eye.gtex"),
+                width: Some(64),
+                height: Some(32),
+            },
+            SceneRenderTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/opacity-mask.gtex"),
+                width: Some(64),
+                height: Some(32),
+            },
+        ];
+        image.alpha_texture_slot = Some(1);
+        image.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
+        image.image_effect_passes = vec![crate::renderer::SceneRenderImageEffectPass {
+            effect_file: "effects/opacity/effect.json".to_owned(),
+            runtime: Some("wallpaper-engine-effect".to_owned()),
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/opacity".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: image.texture_slots.clone(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        }];
+        image.width = Some(64.0);
+        image.height = Some(32.0);
+        image.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -24.0,
+                    y: -8.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -8.0,
+                    y: -8.0,
+                    u: 0.25,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -24.0,
+                    y: 8.0,
+                    u: 0.0,
+                    v: 0.5,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 8.0,
+                    y: -8.0,
+                    u: 0.75,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 24.0,
+                    y: -8.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 8.0,
+                    y: 8.0,
+                    u: 0.75,
+                    v: 0.5,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2, 3, 4, 5],
+            skin: Some(SceneMeshSkin {
+                bones: vec![
+                    SceneMeshSkinBone {
+                        parent: None,
+                        bind: Default::default(),
+                    },
+                    SceneMeshSkinBone {
+                        parent: Some(0),
+                        bind: Default::default(),
+                    },
+                ],
+                vertices: vec![
+                    SceneMeshSkinVertex {
+                        bone_indices: [0, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    SceneMeshSkinVertex {
+                        bone_indices: [0, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    SceneMeshSkinVertex {
+                        bone_indices: [0, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    SceneMeshSkinVertex {
+                        bone_indices: [1, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    SceneMeshSkinVertex {
+                        bone_indices: [1, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    SceneMeshSkinVertex {
+                        bone_indices: [1, 0, 0, 0],
+                        weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                ],
+                attachments: Vec::new(),
+            }),
+            puppet_clips: Vec::new(),
+            puppet_clipping_records: vec![SceneMeshPuppetClippingRecord {
+                mask: "masks/clipping_mask_eye".to_owned(),
+                mask_resource: Some("/tmp/clipping-mask.gtex".to_owned()),
+                duration_frames: 1680,
+                flags: 0,
+                bones: vec![1],
+                frame_keys: vec![0, 1, 2],
+            }],
+        }));
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![image],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert_eq!(
+            pass_plan.sampled_image_sources,
+            vec![
+                PathBuf::from("/tmp/eye.gtex"),
+                PathBuf::from("/tmp/opacity-mask.gtex")
+            ]
+        );
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        let base_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(base_step.we_graph_step_index, Some(0));
+        assert_eq!(
+            base_step.render_target,
+            NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
+                target_index: 0,
+                clear: true
+            }
+        );
+        assert_eq!(base_step.index_count, 6);
+        assert_eq!(base_step.material_pass.alpha_texture_slot, None);
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(final_step.we_graph_step_index, Some(1));
+        assert_eq!(
+            final_step.texture_slot_bindings,
+            vec![
+                NativeVulkanSceneTextureSlotResourceBinding {
+                    slot: 0,
+                    resource_index: 2,
+                },
+                NativeVulkanSceneTextureSlotResourceBinding {
+                    slot: 1,
+                    resource_index: 1,
+                }
+            ]
+        );
     }
 
     #[test]
@@ -8935,6 +9126,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
 
         let draw_plan = NativeVulkanSceneDrawPlan {
@@ -9069,6 +9261,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
@@ -9465,6 +9658,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
 
         let draw_plan = NativeVulkanSceneDrawPlan {
@@ -9564,6 +9758,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         image.effect_uv_space = Some(native_vulkan_scene_effect_uv_space_from_parts(
             image.width,
@@ -9623,6 +9818,7 @@ mod tests {
             indices: vec![0, 1, 2],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         let draw_plan = NativeVulkanSceneDrawPlan {
             snapshot_time_ms: 0,
@@ -9722,6 +9918,7 @@ mod tests {
             indices: vec![0, 1, 2, 2, 1, 3],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         image.effect_motion = SceneNativeEffectMotion {
             sway_amplitude: 8.0,
@@ -9800,6 +9997,7 @@ mod tests {
             indices: vec![0, 1, 4, 0, 4, 2, 1, 3, 4, 2, 4, 3],
             skin: None,
             puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
         }));
         image.effect_motion = SceneNativeEffectMotion {
             wave_x: 6.0,

@@ -45,6 +45,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneBinaryInge
     pub(in crate::renderer::native_vulkan::scene) puppet_vertex_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_index_count: u32,
     pub(in crate::renderer::native_vulkan::scene) puppet_animation_layer_count: u32,
+    pub(in crate::renderer::native_vulkan::scene) puppet_clipping_record_count: u32,
     pub(in crate::renderer::native_vulkan::scene) render_state_count: u32,
     pub(in crate::renderer::native_vulkan::scene) retained:
         NativeVulkanSceneBinaryRetainedIngestSummary,

@@ -12511,7 +12511,7 @@ mod tests {
             contract
                 .video_interop
                 .vulkanalia_primary_policy
-                .contains("Vulkan Video submit helpers")
+                .contains("AVVkFrame descriptor sampling")
         );
         assert!(
             contract

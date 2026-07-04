@@ -197,6 +197,7 @@ impl SceneRenderAlphaTextureMode {
         }
     }
 
+    #[cfg(feature = "native-vulkan-renderer")]
     pub(in crate::renderer) fn shader_code(self) -> u32 {
         match self {
             Self::Multiply => 0,
@@ -1657,18 +1658,35 @@ fn scene_wallpaper_plan(
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gscn"))
     {
-        let target_max_fps = effective_max_fps(manifest_max_fps, performance.max_fps);
-        let mut plan = scene_wallpaper_plan_from_gscn_path_with_properties(
-            output_name,
-            source_path,
-            target_max_fps,
-            0,
-            fit_override,
-            render_properties,
-        )?;
-        plan.manifest_max_fps = manifest_max_fps;
-        plan.target_max_fps = target_max_fps;
-        return Ok(plan);
+        #[cfg(not(feature = "native-vulkan-renderer"))]
+        {
+            let _ = (
+                &output_name,
+                manifest_max_fps,
+                performance,
+                fit_override,
+                render_properties,
+            );
+            return Err(RendererPlanError::PackageLoad(format!(
+                "scene manifest source {} requires the native-vulkan-renderer feature to load binary .gscn scenes",
+                source_path.display()
+            )));
+        }
+        #[cfg(feature = "native-vulkan-renderer")]
+        {
+            let target_max_fps = effective_max_fps(manifest_max_fps, performance.max_fps);
+            let mut plan = scene_wallpaper_plan_from_gscn_path_with_properties(
+                output_name,
+                source_path,
+                target_max_fps,
+                0,
+                fit_override,
+                render_properties,
+            )?;
+            plan.manifest_max_fps = manifest_max_fps;
+            plan.target_max_fps = target_max_fps;
+            return Ok(plan);
+        }
     }
 
     Err(RendererPlanError::PackageLoad(format!(

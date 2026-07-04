@@ -3542,6 +3542,8 @@ pub struct SceneMesh {
     pub skin: Option<SceneMeshSkin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub puppet_clips: Vec<ScenePuppetAnimationClip>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub puppet_clipping_records: Vec<SceneMeshPuppetClippingRecord>,
 }
 
 impl SceneMesh {
@@ -3582,6 +3584,16 @@ impl SceneMesh {
             };
             for clip in &self.puppet_clips {
                 clip.validate(node_id, skin.bones.len())?;
+            }
+        }
+        if !self.puppet_clipping_records.is_empty() {
+            let Some(skin) = &self.skin else {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh has puppet clipping records without skin"
+                )));
+            };
+            for (index, record) in self.puppet_clipping_records.iter().enumerate() {
+                record.validate(node_id, index, skin.bones.len())?;
             }
         }
         Ok(())
@@ -3656,8 +3668,9 @@ impl SceneMesh {
         Some(SceneMesh {
             vertices,
             indices: self.indices.clone(),
-            skin: None,
+            skin: self.skin.clone(),
             puppet_clips: Vec::new(),
+            puppet_clipping_records: self.puppet_clipping_records.clone(),
         })
     }
 
@@ -3803,6 +3816,44 @@ impl SceneMesh {
             has_layer = true;
         }
         has_layer.then_some((skin, local_pose))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshPuppetClippingRecord {
+    pub mask: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask_resource: Option<String>,
+    #[serde(default)]
+    pub duration_frames: u32,
+    #[serde(default)]
+    pub flags: u32,
+    #[serde(default)]
+    pub bones: Vec<usize>,
+    #[serde(default)]
+    pub frame_keys: Vec<u32>,
+}
+
+impl SceneMeshPuppetClippingRecord {
+    fn validate(&self, node_id: &str, index: usize, bone_count: usize) -> Result<(), SceneError> {
+        validate_required_text("scene mesh puppet clipping mask", &self.mask)?;
+        validate_optional_text(
+            "scene mesh puppet clipping mask resource",
+            &self.mask_resource,
+        )?;
+        if self.bones.is_empty() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh puppet clipping record {index} must reference at least one bone"
+            )));
+        }
+        for bone in &self.bones {
+            if *bone >= bone_count {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh puppet clipping record {index} bone {bone} is outside the bone array"
+                )));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -4891,6 +4942,15 @@ fn validate_required_text(field: &str, value: &str) -> Result<(), SceneError> {
     }
 }
 
+fn validate_optional_text(field: &str, value: &Option<String>) -> Result<(), SceneError> {
+    if let Some(value) = value
+        && value.trim().is_empty()
+    {
+        return Err(SceneError::invalid(format!("{field} must not be empty")));
+    }
+    Ok(())
+}
+
 fn validate_opacity(opacity: f64, owner: &str) -> Result<(), SceneError> {
     if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
         Err(SceneError::invalid(format!(
@@ -5643,6 +5703,14 @@ mod tests {
                                     }
                                 ]
                             }
+                        ],
+                        "puppet_clipping_records": [
+                            {
+                                "mask": "masks/clipping_mask_eye",
+                                "mask_resource": "assets/clipping-mask.gtex",
+                                "bones": [1],
+                                "frame_keys": [0]
+                            }
                         ]
                     },
                     "puppet_animation_layers": [
@@ -5674,6 +5742,15 @@ mod tests {
         assert!((later_mesh.vertices[0].y - 10.0).abs() < 0.000_001);
         assert_eq!(later_mesh.vertices[0].u, first_mesh.vertices[0].u);
         assert_eq!(later_mesh.vertices[0].v, first_mesh.vertices[0].v);
+        assert!(later_mesh.skin.is_some());
+        assert_eq!(later_mesh.puppet_clipping_records.len(), 1);
+        assert_eq!(
+            later_mesh.puppet_clipping_records[0]
+                .mask_resource
+                .as_deref(),
+            Some("assets/clipping-mask.gtex")
+        );
+        assert_eq!(later_mesh.puppet_clipping_records[0].bones, vec![1]);
     }
 
     #[test]

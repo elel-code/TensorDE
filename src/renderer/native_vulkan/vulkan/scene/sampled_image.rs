@@ -29,6 +29,7 @@ const GILDER_SCENE_TEXTURE_FORMAT_BC1_RGBA_UNORM_BLOCK: u32 = 1;
 const GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK: u32 = 3;
 const GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK: u32 = 7;
 const GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM: u32 = 9;
+const GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM: u32 = 37;
 const SCENE_BC_BLOCK_TEXELS: u32 = 4;
 const SCENE_BC1_BLOCK_BYTES: u64 = 8;
 const SCENE_BC3_BLOCK_BYTES: u64 = 16;
@@ -134,7 +135,18 @@ pub struct NativeVulkanVulkanaliaSceneNativeTexture {
     pub source: PathBuf,
     pub width: u32,
     pub height: u32,
+    pub mip_count: u32,
     pub format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    pub payload_offset: u64,
+    pub payload_len: u64,
+    pub mips: Vec<NativeVulkanVulkanaliaSceneNativeTextureMip>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneNativeTextureMip {
+    pub level: u32,
+    pub width: u32,
+    pub height: u32,
     pub payload_offset: u64,
     pub payload_len: u64,
 }
@@ -145,6 +157,7 @@ pub enum NativeVulkanVulkanaliaSceneNativeTextureFormat {
     Bc3UnormBlock,
     Bc7UnormBlock,
     R8Unorm,
+    R8g8b8a8Unorm,
 }
 
 impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
@@ -154,6 +167,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             GILDER_SCENE_TEXTURE_FORMAT_BC3_UNORM_BLOCK => Some(Self::Bc3UnormBlock),
             GILDER_SCENE_TEXTURE_FORMAT_BC7_UNORM_BLOCK => Some(Self::Bc7UnormBlock),
             GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM => Some(Self::R8Unorm),
+            GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM => Some(Self::R8g8b8a8Unorm),
             _ => None,
         }
     }
@@ -164,6 +178,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             Self::Bc3UnormBlock => vk::Format::BC3_UNORM_BLOCK,
             Self::Bc7UnormBlock => vk::Format::BC7_UNORM_BLOCK,
             Self::R8Unorm => vk::Format::R8_UNORM,
+            Self::R8g8b8a8Unorm => vk::Format::R8G8B8A8_UNORM,
         }
     }
 
@@ -173,6 +188,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             Self::Bc3UnormBlock => "BC3_UNORM_BLOCK",
             Self::Bc7UnormBlock => "BC7_UNORM_BLOCK",
             Self::R8Unorm => "R8_UNORM",
+            Self::R8g8b8a8Unorm => "R8G8B8A8_UNORM",
         }
     }
 
@@ -182,6 +198,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             Self::Bc3UnormBlock => SCENE_BC3_BLOCK_BYTES,
             Self::Bc7UnormBlock => SCENE_BC7_BLOCK_BYTES,
             Self::R8Unorm => 1,
+            Self::R8g8b8a8Unorm => 4,
         }
     }
 
@@ -197,7 +214,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
                         )
                     })
             }
-            Self::R8Unorm => u64::from(width)
+            Self::R8Unorm | Self::R8g8b8a8Unorm => u64::from(width)
                 .checked_mul(self.block_bytes())
                 .ok_or_else(|| {
                     format!(
@@ -213,7 +230,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             Self::Bc1RgbaUnormBlock | Self::Bc3UnormBlock | Self::Bc7UnormBlock => {
                 u64::from(height.div_ceil(SCENE_BC_BLOCK_TEXELS))
             }
-            Self::R8Unorm => u64::from(height),
+            Self::R8Unorm | Self::R8g8b8a8Unorm => u64::from(height),
         }
     }
 
@@ -222,7 +239,7 @@ impl NativeVulkanVulkanaliaSceneNativeTextureFormat {
             Self::Bc1RgbaUnormBlock | Self::Bc3UnormBlock | Self::Bc7UnormBlock => {
                 SCENE_BC_BLOCK_TEXELS
             }
-            Self::R8Unorm => 1,
+            Self::R8Unorm | Self::R8g8b8a8Unorm => 1,
         }
     }
 
@@ -244,6 +261,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot {
     pub route: &'static str,
     pub source_label: String,
     pub extent: (u32, u32),
+    pub mip_level_count: u32,
     pub texture_payload_bytes: u64,
     pub decoded_rgba_payload_retained_after_upload: bool,
     pub image_format: &'static str,
@@ -260,7 +278,14 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot {
     pub selected_staging_memory_property_flags: Vec<&'static str>,
     pub image_view_created: bool,
     pub sampler_created: bool,
+    pub sampler_min_filter: &'static str,
+    pub sampler_mag_filter: &'static str,
+    pub sampler_mipmap_mode: &'static str,
     pub sampler_address_mode: &'static str,
+    pub sampler_anisotropy_enabled: bool,
+    pub sampler_max_anisotropy_x1: u32,
+    pub sampler_min_lod: u32,
+    pub sampler_max_lod: u32,
     pub descriptor_model: &'static str,
     pub descriptor_type: &'static str,
     pub descriptor_image_layout: &'static str,
@@ -273,6 +298,40 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot {
     pub uses_copy2: bool,
     pub uses_host_image_copy: bool,
     pub retained_across_present_frames: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaSceneSamplerQuality {
+    pub(in crate::renderer::native_vulkan::vulkan) anisotropy_enabled: bool,
+    pub(in crate::renderer::native_vulkan::vulkan) max_anisotropy_x1: u32,
+}
+
+impl NativeVulkanVulkanaliaSceneSamplerQuality {
+    pub(in crate::renderer::native_vulkan::vulkan) fn disabled() -> Self {
+        Self {
+            anisotropy_enabled: false,
+            max_anisotropy_x1: 1,
+        }
+    }
+
+    fn max_anisotropy(self) -> f32 {
+        if self.anisotropy_enabled {
+            self.max_anisotropy_x1.max(1) as f32
+        } else {
+            1.0
+        }
+    }
+}
+
+pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene_sampler_quality(
+    core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
+    properties: NativeVulkanVulkanaliaVulkan14PropertySnapshot,
+) -> NativeVulkanVulkanaliaSceneSamplerQuality {
+    let max_anisotropy_x1 = properties.max_sampler_anisotropy_x1.max(1).min(16);
+    NativeVulkanVulkanaliaSceneSamplerQuality {
+        anisotropy_enabled: core_features.sampler_anisotropy && max_anisotropy_x1 > 1,
+        max_anisotropy_x1,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -384,11 +443,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             "scene effect target",
         )?;
 
-        let image_view_info = scene_sampled_image_view_create_info(image, image_format);
+        let image_view_info = scene_sampled_image_view_create_info(image, image_format, 1);
         image_view = create_scene_sampled_image_view(device, &image_view_info)?;
         image_view_live = true;
         let sampler_info = scene_sampled_image_sampler_create_info(
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge,
+            1,
+            NativeVulkanVulkanaliaSceneSamplerQuality::disabled(),
         );
         let sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
 
@@ -408,6 +469,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 route: "scene-we-image-effect-target-resource",
                 source_label,
                 extent: (extent.width, extent.height),
+                mip_level_count: 1,
                 texture_payload_bytes: 0,
                 decoded_rgba_payload_retained_after_upload: false,
                 image_format: scene_vk_format_label(image_format),
@@ -426,7 +488,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 selected_staging_memory_property_flags: Vec::new(),
                 image_view_created: true,
                 sampler_created: true,
+                sampler_min_filter: "linear",
+                sampler_mag_filter: "linear",
+                sampler_mipmap_mode: "nearest",
                 sampler_address_mode: "clamp-to-edge",
+                sampler_anisotropy_enabled: false,
+                sampler_max_anisotropy_x1: 1,
+                sampler_min_lod: 0,
+                sampler_max_lod: 0,
                 descriptor_model: "VK_EXT_descriptor_heap",
                 descriptor_type: "combined-image-sampler",
                 descriptor_image_layout: "shader-read-only-optimal",
@@ -536,11 +605,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             "scene framebuffer snapshot",
         )?;
 
-        let image_view_info = scene_sampled_image_view_create_info(image, image_format);
+        let image_view_info = scene_sampled_image_view_create_info(image, image_format, 1);
         image_view = create_scene_sampled_image_view(device, &image_view_info)?;
         image_view_live = true;
         let sampler_info = scene_sampled_image_sampler_create_info(
             NativeVulkanVulkanaliaSceneSampledImageSamplerMode::ClampToEdge,
+            1,
+            NativeVulkanVulkanaliaSceneSamplerQuality::disabled(),
         );
         let sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
 
@@ -560,6 +631,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 route: "scene-we-framebuffer-snapshot-resource",
                 source_label: "scene framebuffer snapshot".to_owned(),
                 extent: (extent.width, extent.height),
+                mip_level_count: 1,
                 texture_payload_bytes: 0,
                 decoded_rgba_payload_retained_after_upload: false,
                 image_format: scene_vk_format_label(image_format),
@@ -578,7 +650,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 selected_staging_memory_property_flags: Vec::new(),
                 image_view_created: true,
                 sampler_created: true,
+                sampler_min_filter: "linear",
+                sampler_mag_filter: "linear",
+                sampler_mipmap_mode: "nearest",
                 sampler_address_mode: "clamp-to-edge",
+                sampler_anisotropy_enabled: false,
+                sampler_max_anisotropy_x1: 1,
+                sampler_min_lod: 0,
+                sampler_max_lod: 0,
                 descriptor_model: "VK_EXT_descriptor_heap",
                 descriptor_type: "combined-image-sampler",
                 descriptor_image_layout: "shader-read-only-optimal",
@@ -665,7 +744,7 @@ pub(crate) fn native_vulkan_vulkanalia_scene_sampled_image_plan(
         descriptor_set_count: 0,
         descriptor_type: "combined-image-sampler",
         descriptor_pool_combined_image_sampler_budget: 0,
-        sampled_image_format: "BC1_RGBA/BC3/BC7/R8_UNORM",
+        sampled_image_format: "BC1_RGBA/BC3/BC7/R8/RGBA8_UNORM",
         sampled_image_usage: vec!["transfer-dst", "sampled"],
         staging_buffer_usage: vec!["transfer-src"],
         image_layout_flow: vec![
@@ -778,6 +857,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_load_
             source.display()
         )
     })?;
+    let mip_count = read_scene_texture_u32(&header, 20).ok_or_else(|| {
+        format!(
+            "scene native texture {} has truncated mip count",
+            source.display()
+        )
+    })?;
     let payload_len = read_scene_texture_u64(&header, 24).ok_or_else(|| {
         format!(
             "scene native texture {} has truncated payload length",
@@ -790,15 +875,21 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_load_
             source.display()
         ));
     }
+    if mip_count == 0 {
+        return Err(format!(
+            "scene native texture {} declares zero mip levels",
+            source.display()
+        ));
+    }
     let format = NativeVulkanVulkanaliaSceneNativeTextureFormat::from_gtex(format).ok_or_else(
         || {
             format!(
-                "scene native texture {} uses unsupported GPU format {format}; expected BC1_RGBA_UNORM_BLOCK, BC3_UNORM_BLOCK, BC7_UNORM_BLOCK, or R8_UNORM",
+                "scene native texture {} uses unsupported GPU format {format}; expected BC1_RGBA_UNORM_BLOCK, BC3_UNORM_BLOCK, BC7_UNORM_BLOCK, R8_UNORM, or R8G8B8A8_UNORM",
                 source.display()
             )
         },
     )?;
-    let expected_len = scene_texture_payload_byte_len(format, width, height)?;
+    let expected_len = scene_texture_mip_chain_payload_byte_len(format, width, height, mip_count)?;
     if payload_len != expected_len {
         return Err(format!(
             "scene native texture {} declares payload {payload_len} bytes, expected {expected_len}",
@@ -823,14 +914,23 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_load_
     if native_vulkan_effect_debug_enabled() {
         native_vulkan_debug_loaded_scene_native_texture(source, width, height, format, payload_len);
     }
+    let mips = scene_native_texture_mip_layout(
+        GILDER_SCENE_TEXTURE_HEADER_BYTES as u64,
+        format,
+        width,
+        height,
+        mip_count,
+    )?;
 
     Ok(NativeVulkanVulkanaliaSceneNativeTexture {
         source: source.to_path_buf(),
         width,
         height,
+        mip_count,
         format,
         payload_offset: GILDER_SCENE_TEXTURE_HEADER_BYTES as u64,
         payload_len,
+        mips,
     })
 }
 
@@ -872,7 +972,8 @@ fn native_vulkan_debug_loaded_scene_native_texture(
         }
         NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc1RgbaUnormBlock
         | NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc3UnormBlock
-        | NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock => {
+        | NativeVulkanVulkanaliaSceneNativeTextureFormat::Bc7UnormBlock
+        | NativeVulkanVulkanaliaSceneNativeTextureFormat::R8g8b8a8Unorm => {
             let source_label = source.to_string_lossy();
             if source_label.contains("opacity") || source_label.contains("mask") {
                 native_vulkan_effect_debug_log(
@@ -910,6 +1011,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     command_pool: vk::CommandPool,
     queue: vk::Queue,
     sampler_mode: NativeVulkanVulkanaliaSceneSampledImageSamplerMode,
+    sampler_quality: NativeVulkanVulkanaliaSceneSamplerQuality,
     source_label: impl Into<String>,
     texture: &NativeVulkanVulkanaliaSceneNativeTexture,
 ) -> Result<VulkanaliaSceneSampledImageResources, String> {
@@ -917,7 +1019,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         width: texture.width,
         height: texture.height,
     };
-    validate_scene_texture_payload_len(extent, texture.format, texture.payload_len)?;
+    validate_scene_texture_payload_len(
+        extent,
+        texture.format,
+        texture.mip_count,
+        texture.payload_len,
+    )?;
     let source_label = source_label.into();
 
     let image_usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED;
@@ -931,7 +1038,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         .image_type(vk::ImageType::_2D)
         .format(image_format)
         .extent(image_extent)
-        .mip_levels(1)
+        .mip_levels(texture.mip_count)
         .array_layers(1)
         .samples(vk::SampleCountFlags::_1)
         .tiling(vk::ImageTiling::OPTIMAL)
@@ -986,10 +1093,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             "scene sampled image",
         )?;
 
-        let image_view_info = scene_sampled_image_view_create_info(image, image_format);
+        let image_view_info =
+            scene_sampled_image_view_create_info(image, image_format, texture.mip_count);
         image_view = create_scene_sampled_image_view(device, &image_view_info)?;
         image_view_live = true;
-        let sampler_info = scene_sampled_image_sampler_create_info(sampler_mode);
+        let sampler_info = scene_sampled_image_sampler_create_info(
+            sampler_mode,
+            texture.mip_count,
+            sampler_quality,
+        );
         sampler = create_scene_sampled_image_sampler(device, &sampler_info)?;
         sampler_live = true;
 
@@ -1021,6 +1133,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 route: "scene-sampled-image-retained-resource",
                 source_label,
                 extent: (extent.width, extent.height),
+                mip_level_count: texture.mip_count,
                 texture_payload_bytes: texture.payload_len,
                 decoded_rgba_payload_retained_after_upload: false,
                 image_format: texture.format.label(),
@@ -1041,7 +1154,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 ),
                 image_view_created: true,
                 sampler_created: true,
+                sampler_min_filter: "linear",
+                sampler_mag_filter: "linear",
+                sampler_mipmap_mode: if texture.mip_count > 1 {
+                    "linear"
+                } else {
+                    "nearest"
+                },
                 sampler_address_mode: sampler_mode.label(),
+                sampler_anisotropy_enabled: sampler_quality.anisotropy_enabled,
+                sampler_max_anisotropy_x1: sampler_quality.max_anisotropy_x1,
+                sampler_min_lod: 0,
+                sampler_max_lod: texture.mip_count.saturating_sub(1),
                 descriptor_model: "VK_EXT_descriptor_heap",
                 descriptor_type: "combined-image-sampler",
                 descriptor_image_layout: "shader-read-only-optimal",
@@ -1097,7 +1221,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         width: texture.width,
         height: texture.height,
     };
-    validate_scene_texture_payload_len(extent, texture.format, texture.payload_len)?;
+    validate_scene_texture_payload_len(
+        extent,
+        texture.format,
+        texture.mip_count,
+        texture.payload_len,
+    )?;
     let source_label = source_label.into();
     let image_usage = vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::TRANSFER_SRC;
     let image_extent = vk::Extent3D {
@@ -1110,7 +1239,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
         .image_type(vk::ImageType::_2D)
         .format(image_format)
         .extent(image_extent)
-        .mip_levels(1)
+        .mip_levels(texture.mip_count)
         .array_layers(1)
         .samples(vk::SampleCountFlags::_1)
         .tiling(vk::ImageTiling::OPTIMAL)
@@ -1176,6 +1305,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 route: "scene-transfer-image-first-present-resource",
                 source_label,
                 extent: (extent.width, extent.height),
+                mip_level_count: texture.mip_count,
                 texture_payload_bytes: texture.payload_len,
                 decoded_rgba_payload_retained_after_upload: false,
                 image_format: texture.format.label(),
@@ -1196,7 +1326,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 ),
                 image_view_created: false,
                 sampler_created: false,
+                sampler_min_filter: "none-transfer-only",
+                sampler_mag_filter: "none-transfer-only",
+                sampler_mipmap_mode: "none-transfer-only",
                 sampler_address_mode: "none-transfer-only",
+                sampler_anisotropy_enabled: false,
+                sampler_max_anisotropy_x1: 1,
+                sampler_min_lod: 0,
+                sampler_max_lod: 0,
                 descriptor_model: "none-transfer-only",
                 descriptor_type: "none",
                 descriptor_image_layout: "transfer-src-optimal",
@@ -1312,20 +1449,26 @@ fn upload_scene_sampled_image_staging_from_gtex(
     texture: &NativeVulkanVulkanaliaSceneNativeTexture,
     final_layout: SceneSampledImageUploadFinalLayout,
 ) -> Result<SceneSampledImageUploadResult, String> {
-    let row_bytes = texture.format.upload_row_bytes(extent.width)?;
-    let upload_rows = texture.format.upload_row_count(extent.height);
-    let row_texel_height = texture.format.upload_row_texel_height();
-    if row_bytes > SCENE_GTEX_UPLOAD_CHUNK_BYTES as u64 {
+    let max_row_bytes = texture
+        .mips
+        .iter()
+        .map(|mip| texture.format.upload_row_bytes(mip.width))
+        .try_fold(0u64, |max_row_bytes, row_bytes| {
+            row_bytes.map(|row_bytes| max_row_bytes.max(row_bytes))
+        })?;
+    if max_row_bytes == 0 {
+        return Err("scene sampled image upload requires at least one mip level".to_owned());
+    }
+    if max_row_bytes > SCENE_GTEX_UPLOAD_CHUNK_BYTES as u64 {
         return Err(format!(
-            "scene sampled image {} row is {row_bytes} bytes; native runtime upload is capped at {SCENE_GTEX_UPLOAD_CHUNK_BYTES} bytes to avoid heap payload retention",
+            "scene sampled image {} row is {max_row_bytes} bytes; native runtime upload is capped at {SCENE_GTEX_UPLOAD_CHUNK_BYTES} bytes to avoid heap payload retention",
             texture.format.label()
         ));
     }
-    let rows_per_chunk = ((SCENE_GTEX_UPLOAD_CHUNK_BYTES as u64) / row_bytes).max(1);
     let staging_buffer_bytes = texture
         .payload_len
         .min(SCENE_GTEX_UPLOAD_CHUNK_BYTES as u64)
-        .max(row_bytes);
+        .max(max_row_bytes);
     let staging = create_scene_sampled_image_transient_staging_buffer(
         device,
         memory_properties,
@@ -1376,10 +1519,6 @@ fn upload_scene_sampled_image_staging_from_gtex(
         image,
         extent,
         texture,
-        row_bytes,
-        rows_per_chunk,
-        upload_rows,
-        row_texel_height,
         final_layout,
     );
 
@@ -1406,64 +1545,90 @@ fn upload_scene_sampled_image_staging_payload(
     image: vk::Image,
     extent: vk::Extent2D,
     texture: &NativeVulkanVulkanaliaSceneNativeTexture,
-    row_bytes: u64,
-    rows_per_chunk: u64,
-    upload_rows: u64,
-    row_texel_height: u32,
     final_layout: SceneSampledImageUploadFinalLayout,
 ) -> Result<(), String> {
+    if extent.width != texture.width || extent.height != texture.height {
+        return Err(format!(
+            "scene sampled image upload extent {}x{} does not match texture {}x{}",
+            extent.width, extent.height, texture.width, texture.height
+        ));
+    }
     let mut file = File::open(&texture.source).map_err(|err| {
         format!(
             "open scene native texture payload {}: {err}",
             texture.source.display()
         )
     })?;
-    file.seek(SeekFrom::Start(texture.payload_offset))
-        .map_err(|err| {
-            format!(
-                "seek scene native texture payload {}: {err}",
-                texture.source.display()
-            )
-        })?;
-    let mut row_index = 0u64;
     let mut uploaded_bytes = 0u64;
-    while row_index < upload_rows {
-        let rows = rows_per_chunk.min(upload_rows - row_index);
-        let chunk_bytes = rows
-            .checked_mul(row_bytes)
-            .ok_or_else(|| "scene sampled image upload chunk bytes overflowed".to_owned())?;
-        let chunk_len = usize::try_from(chunk_bytes)
-            .map_err(|_| "scene sampled image upload chunk does not fit usize".to_owned())?;
-        read_scene_sampled_image_staging_chunk(
-            device,
-            staging,
-            &mut file,
-            &texture.source,
-            texture.payload_offset + uploaded_bytes,
-            chunk_len,
-        )?;
-        let first_chunk = row_index == 0;
-        let last_chunk = row_index + rows >= upload_rows;
-        record_submit_scene_sampled_image_staging_chunk(
-            device,
-            queue,
-            command_buffer,
-            fence,
-            staging.buffer,
-            image,
-            extent,
-            row_index,
-            rows,
-            row_texel_height,
-            first_chunk,
-            last_chunk,
-            final_layout,
-        )?;
-        row_index += rows;
+    for mip in &texture.mips {
+        file.seek(SeekFrom::Start(mip.payload_offset))
+            .map_err(|err| {
+                format!(
+                    "seek scene native texture mip {} payload {}: {err}",
+                    mip.level,
+                    texture.source.display()
+                )
+            })?;
+        let row_bytes = texture.format.upload_row_bytes(mip.width)?;
+        let upload_rows = texture.format.upload_row_count(mip.height);
+        let row_texel_height = texture.format.upload_row_texel_height();
+        let rows_per_chunk = ((SCENE_GTEX_UPLOAD_CHUNK_BYTES as u64) / row_bytes).max(1);
+        let mut row_index = 0u64;
+        let mut uploaded_mip_bytes = 0u64;
+        while row_index < upload_rows {
+            let rows = rows_per_chunk.min(upload_rows - row_index);
+            let chunk_bytes = rows
+                .checked_mul(row_bytes)
+                .ok_or_else(|| "scene sampled image upload chunk bytes overflowed".to_owned())?;
+            let chunk_len = usize::try_from(chunk_bytes)
+                .map_err(|_| "scene sampled image upload chunk does not fit usize".to_owned())?;
+            read_scene_sampled_image_staging_chunk(
+                device,
+                staging,
+                &mut file,
+                &texture.source,
+                mip.payload_offset + uploaded_mip_bytes,
+                chunk_len,
+            )?;
+            let first_chunk = mip.level == 0 && row_index == 0;
+            let last_chunk = mip.level + 1 == texture.mip_count && row_index + rows >= upload_rows;
+            record_submit_scene_sampled_image_staging_chunk(
+                device,
+                queue,
+                command_buffer,
+                fence,
+                staging.buffer,
+                image,
+                vk::Extent2D {
+                    width: mip.width,
+                    height: mip.height,
+                },
+                texture.mip_count,
+                mip.level,
+                row_index,
+                rows,
+                row_texel_height,
+                first_chunk,
+                last_chunk,
+                final_layout,
+            )?;
+            row_index += rows;
+            uploaded_mip_bytes = uploaded_mip_bytes.checked_add(chunk_bytes).ok_or_else(|| {
+                "scene sampled image uploaded mip byte count overflowed".to_owned()
+            })?;
+            native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
+        }
+        if uploaded_mip_bytes != mip.payload_len {
+            return Err(format!(
+                "scene native texture {} mip {} streamed {uploaded_mip_bytes} payload bytes, expected {}",
+                texture.source.display(),
+                mip.level,
+                mip.payload_len
+            ));
+        }
         uploaded_bytes = uploaded_bytes
-            .checked_add(chunk_bytes)
+            .checked_add(uploaded_mip_bytes)
             .ok_or_else(|| "scene sampled image uploaded byte count overflowed".to_owned())?;
-        native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
     }
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
     if uploaded_bytes != texture.payload_len {
@@ -1604,6 +1769,8 @@ fn record_submit_scene_sampled_image_staging_chunk(
     staging_buffer: vk::Buffer,
     image: vk::Image,
     extent: vk::Extent2D,
+    mip_count: u32,
+    mip_level: u32,
     row_index: u64,
     row_count: u64,
     row_texel_height: u32,
@@ -1627,7 +1794,7 @@ fn record_submit_scene_sampled_image_staging_chunk(
     .min(remaining_height);
     let image_subresource = vk::ImageSubresourceLayers::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
-        .mip_level(0)
+        .mip_level(mip_level)
         .base_array_layer(0)
         .layer_count(1)
         .build();
@@ -1681,7 +1848,7 @@ fn record_submit_scene_sampled_image_staging_chunk(
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .image(image)
-                .subresource_range(scene_sampled_image_subresource_range())
+                .subresource_range(scene_sampled_image_subresource_range(mip_count))
                 .build();
             let barriers = [to_transfer];
             let dependency = vk::DependencyInfo::builder()
@@ -1715,7 +1882,7 @@ fn record_submit_scene_sampled_image_staging_chunk(
                 .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                 .image(image)
-                .subresource_range(scene_sampled_image_subresource_range())
+                .subresource_range(scene_sampled_image_subresource_range(mip_count))
                 .build();
             let barriers = [to_final_layout];
             let dependency = vk::DependencyInfo::builder()
@@ -1788,21 +1955,23 @@ fn validate_scene_texture_upload(
     format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
     texture_bytes: &[u8],
 ) -> Result<(), String> {
-    validate_scene_texture_payload_len(extent, format, texture_bytes.len() as u64)
+    validate_scene_texture_payload_len(extent, format, 1, texture_bytes.len() as u64)
 }
 
 fn validate_scene_texture_payload_len(
     extent: vk::Extent2D,
     format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    mip_count: u32,
     texture_len: u64,
 ) -> Result<(), String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene sampled image upload requires non-zero extent".to_owned());
     }
-    let expected = scene_texture_payload_byte_len(format, extent.width, extent.height)?;
+    let expected =
+        scene_texture_mip_chain_payload_byte_len(format, extent.width, extent.height, mip_count)?;
     if texture_len != expected {
         return Err(format!(
-            "scene sampled image upload expected {expected} {} bytes for {}x{}, got {}",
+            "scene sampled image upload expected {expected} {} bytes for {}x{} mip_count={mip_count}, got {}",
             format.label(),
             extent.width,
             extent.height,
@@ -1820,14 +1989,105 @@ fn scene_texture_payload_byte_len(
     format.payload_byte_len(width, height)
 }
 
+fn scene_texture_mip_chain_payload_byte_len(
+    format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Result<u64, String> {
+    if mip_count == 0 {
+        return Err("scene sampled image mip chain requires at least one level".to_owned());
+    }
+    let max_mip_count = scene_texture_max_mip_count(width, height)?;
+    if mip_count > max_mip_count {
+        return Err(format!(
+            "scene sampled image mip count {mip_count} exceeds {width}x{height} maximum {max_mip_count}"
+        ));
+    }
+    let mut total = 0u64;
+    for level in 0..mip_count {
+        let (level_width, level_height) = scene_texture_mip_extent(width, height, level)?;
+        total = total
+            .checked_add(scene_texture_payload_byte_len(
+                format,
+                level_width,
+                level_height,
+            )?)
+            .ok_or_else(|| {
+                format!(
+                    "scene sampled image {} mip chain byte count overflowed",
+                    format.label()
+                )
+            })?;
+    }
+    Ok(total)
+}
+
+fn scene_native_texture_mip_layout(
+    base_payload_offset: u64,
+    format: NativeVulkanVulkanaliaSceneNativeTextureFormat,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+) -> Result<Vec<NativeVulkanVulkanaliaSceneNativeTextureMip>, String> {
+    let mut mips = Vec::with_capacity(mip_count as usize);
+    let mut payload_offset = base_payload_offset;
+    for level in 0..mip_count {
+        let (level_width, level_height) = scene_texture_mip_extent(width, height, level)?;
+        let payload_len = scene_texture_payload_byte_len(format, level_width, level_height)?;
+        mips.push(NativeVulkanVulkanaliaSceneNativeTextureMip {
+            level,
+            width: level_width,
+            height: level_height,
+            payload_offset,
+            payload_len,
+        });
+        payload_offset = payload_offset
+            .checked_add(payload_len)
+            .ok_or_else(|| "scene sampled image mip payload offset overflowed".to_owned())?;
+    }
+    Ok(mips)
+}
+
+fn scene_texture_max_mip_count(width: u32, height: u32) -> Result<u32, String> {
+    if width == 0 || height == 0 {
+        return Err("scene sampled image mip count requires non-zero extent".to_owned());
+    }
+    let mut levels = 1u32;
+    let mut level_width = width;
+    let mut level_height = height;
+    while level_width > 1 || level_height > 1 {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+        levels = levels
+            .checked_add(1)
+            .ok_or_else(|| "scene sampled image mip count overflowed".to_owned())?;
+    }
+    Ok(levels)
+}
+
+fn scene_texture_mip_extent(width: u32, height: u32, level: u32) -> Result<(u32, u32), String> {
+    if width == 0 || height == 0 {
+        return Err("scene sampled image mip extent requires non-zero base extent".to_owned());
+    }
+    let mut level_width = width;
+    let mut level_height = height;
+    for _ in 0..level {
+        level_width = (level_width / 2).max(1);
+        level_height = (level_height / 2).max(1);
+    }
+    Ok((level_width, level_height))
+}
+
 fn scene_sampled_image_view_create_info(
     image: vk::Image,
     format: vk::Format,
+    mip_count: u32,
 ) -> vk::ImageViewCreateInfo {
     let subresource_range = vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
-        .level_count(1)
+        .level_count(mip_count)
         .base_array_layer(0)
         .layer_count(1)
         .build();
@@ -1849,16 +2109,24 @@ fn create_scene_sampled_image_view(
 
 fn scene_sampled_image_sampler_create_info(
     sampler_mode: NativeVulkanVulkanaliaSceneSampledImageSamplerMode,
+    mip_count: u32,
+    sampler_quality: NativeVulkanVulkanaliaSceneSamplerQuality,
 ) -> vk::SamplerCreateInfo {
     vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
-        .mipmap_mode(vk::SamplerMipmapMode::NEAREST)
+        .mipmap_mode(if mip_count > 1 {
+            vk::SamplerMipmapMode::LINEAR
+        } else {
+            vk::SamplerMipmapMode::NEAREST
+        })
         .address_mode_u(sampler_mode.address_mode())
         .address_mode_v(sampler_mode.address_mode())
         .address_mode_w(sampler_mode.address_mode())
+        .anisotropy_enable(sampler_quality.anisotropy_enabled)
+        .max_anisotropy(sampler_quality.max_anisotropy())
         .min_lod(0.0)
-        .max_lod(0.0)
+        .max_lod(mip_count.saturating_sub(1) as f32)
         .build()
 }
 
@@ -1870,11 +2138,11 @@ fn create_scene_sampled_image_sampler(
         .map_err(|err| format!("vkCreateSampler(vulkanalia scene sampled image): {err:?}"))
 }
 
-fn scene_sampled_image_subresource_range() -> vk::ImageSubresourceRange {
+fn scene_sampled_image_subresource_range(mip_count: u32) -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
         .base_mip_level(0)
-        .level_count(1)
+        .level_count(mip_count)
         .base_array_layer(0)
         .layer_count(1)
         .build()
@@ -2014,7 +2282,10 @@ mod tests {
         assert_eq!(snapshot.blocking_reason, None);
         assert_eq!(snapshot.descriptor_set_count, 0);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
-        assert_eq!(snapshot.sampled_image_format, "BC1_RGBA/BC3/BC7/R8_UNORM");
+        assert_eq!(
+            snapshot.sampled_image_format,
+            "BC1_RGBA/BC3/BC7/R8/RGBA8_UNORM"
+        );
         assert_eq!(
             snapshot.sampled_image_usage,
             vec!["transfer-dst", "sampled"]
@@ -2293,6 +2564,25 @@ mod tests {
             )
             .is_err()
         );
+        assert_eq!(
+            scene_texture_payload_byte_len(
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::R8g8b8a8Unorm,
+                3,
+                2
+            ),
+            Ok(24)
+        );
+        assert!(
+            validate_scene_texture_upload(
+                vk::Extent2D {
+                    width: 3,
+                    height: 2
+                },
+                NativeVulkanVulkanaliaSceneNativeTextureFormat::R8g8b8a8Unorm,
+                &[0; 24],
+            )
+            .is_ok()
+        );
         assert!(
             validate_scene_texture_upload(
                 vk::Extent2D {
@@ -2417,6 +2707,66 @@ mod tests {
             38_065,
             "r8",
         );
+        assert_native_scene_gtex_loads(
+            GILDER_SCENE_TEXTURE_FORMAT_R8G8B8A8_UNORM,
+            NativeVulkanVulkanaliaSceneNativeTextureFormat::R8g8b8a8Unorm,
+            3,
+            2,
+            24,
+            "rgba8",
+        );
+    }
+
+    #[test]
+    fn loads_native_scene_gtex_mip_chain_payloads() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "gilder-scene-r8-mip-texture-{}.gtex",
+            std::process::id(),
+        ));
+        let payload = vec![7u8; 21];
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(GILDER_SCENE_TEXTURE_MAGIC);
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&4u32.to_le_bytes());
+        bytes.extend_from_slice(&GILDER_SCENE_TEXTURE_FORMAT_R8_UNORM.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+        bytes.extend_from_slice(&payload);
+        std::fs::write(&path, bytes).expect("write test mip gtex");
+
+        let decoded =
+            native_vulkan_vulkanalia_load_scene_native_texture(&path).expect("load mip gtex");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(decoded.mip_count, 3);
+        assert_eq!(
+            decoded.mips,
+            vec![
+                NativeVulkanVulkanaliaSceneNativeTextureMip {
+                    level: 0,
+                    width: 4,
+                    height: 4,
+                    payload_offset: GILDER_SCENE_TEXTURE_HEADER_BYTES as u64,
+                    payload_len: 16,
+                },
+                NativeVulkanVulkanaliaSceneNativeTextureMip {
+                    level: 1,
+                    width: 2,
+                    height: 2,
+                    payload_offset: GILDER_SCENE_TEXTURE_HEADER_BYTES as u64 + 16,
+                    payload_len: 4,
+                },
+                NativeVulkanVulkanaliaSceneNativeTextureMip {
+                    level: 2,
+                    width: 1,
+                    height: 1,
+                    payload_offset: GILDER_SCENE_TEXTURE_HEADER_BYTES as u64 + 20,
+                    payload_len: 1,
+                },
+            ]
+        );
+        assert_eq!(decoded.payload_len, payload.len() as u64);
     }
 
     fn assert_native_scene_gtex_loads(
@@ -2448,11 +2798,14 @@ mod tests {
 
         assert_eq!(decoded.width, width);
         assert_eq!(decoded.height, height);
+        assert_eq!(decoded.mip_count, 1);
         assert_eq!(decoded.format, expected_format);
         assert_eq!(
             decoded.payload_offset,
             GILDER_SCENE_TEXTURE_HEADER_BYTES as u64
         );
         assert_eq!(decoded.payload_len, payload.len() as u64);
+        assert_eq!(decoded.mips.len(), 1);
+        assert_eq!(decoded.mips[0].payload_len, payload.len() as u64);
     }
 }

@@ -15,6 +15,8 @@ pub struct NativeVulkanVulkanaliaFeatureChainTemplate {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
+    pub sampler_anisotropy: bool,
+    pub sample_rate_shading: bool,
     pub timeline_semaphore: bool,
     pub scalar_block_layout: bool,
     pub descriptor_indexing: bool,
@@ -37,6 +39,7 @@ pub struct NativeVulkanVulkanaliaCoreFeatureSnapshot {
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaVulkan14PropertySnapshot {
+    pub max_sampler_anisotropy_x1: u32,
     pub max_push_descriptors: u32,
     pub max_combined_image_sampler_descriptor_count: u32,
     pub dynamic_rendering_local_read_depth_stencil_attachments: bool,
@@ -69,6 +72,8 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
 pub fn native_vulkan_vulkanalia_feature_chain_template()
 -> NativeVulkanVulkanaliaFeatureChainTemplate {
     let core10_features = vk::PhysicalDeviceFeatures::builder()
+        .sampler_anisotropy(true)
+        .sample_rate_shading(true)
         .texture_compression_bc(true)
         .build();
     let mut vulkan12_features = vk::PhysicalDeviceVulkan12Features::builder()
@@ -111,6 +116,8 @@ pub fn native_vulkan_vulkanalia_feature_chain_template()
         ],
         requested_feature_fields: &[
             "timeline_semaphore",
+            "sampler_anisotropy",
+            "sample_rate_shading",
             "scalar_block_layout",
             "descriptor_indexing",
             "runtime_descriptor_array",
@@ -161,6 +168,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
 
     (
         NativeVulkanVulkanaliaCoreFeatureSnapshot {
+            sampler_anisotropy: features2.features.sampler_anisotropy != 0,
+            sample_rate_shading: features2.features.sample_rate_shading != 0,
             timeline_semaphore: vulkan12_features.timeline_semaphore != 0,
             scalar_block_layout: vulkan12_features.scalar_block_layout != 0,
             descriptor_indexing: vulkan12_features.descriptor_indexing != 0,
@@ -182,6 +191,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
             texture_compression_bc: features2.features.texture_compression_bc != 0,
         },
         NativeVulkanVulkanaliaVulkan14PropertySnapshot {
+            max_sampler_anisotropy_x1: properties2
+                .properties
+                .limits
+                .max_sampler_anisotropy
+                .floor()
+                .max(1.0) as u32,
             max_push_descriptors: vulkan14_properties.max_push_descriptors,
             max_combined_image_sampler_descriptor_count: vulkan14_properties
                 .max_combined_image_sampler_descriptor_count,
@@ -225,7 +240,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_core_
 
 impl NativeVulkanVulkanaliaCoreFeatureSnapshot {
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_0_features(self) -> bool {
-        self.texture_compression_bc
+        self.sampler_anisotropy || self.sample_rate_shading || self.texture_compression_bc
     }
 
     pub(in crate::renderer::native_vulkan::vulkan) fn enables_vulkan_1_2_features(self) -> bool {
@@ -259,6 +274,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_vulka
     core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
 ) -> vk::PhysicalDeviceFeatures {
     vk::PhysicalDeviceFeatures::builder()
+        .sampler_anisotropy(core_features.sampler_anisotropy)
+        .sample_rate_shading(core_features.sample_rate_shading)
         .texture_compression_bc(core_features.texture_compression_bc)
         .build()
 }
@@ -368,6 +385,16 @@ mod tests {
         assert!(
             template
                 .requested_feature_fields
+                .contains(&"sampler_anisotropy")
+        );
+        assert!(
+            template
+                .requested_feature_fields
+                .contains(&"sample_rate_shading")
+        );
+        assert!(
+            template
+                .requested_feature_fields
                 .contains(&"texture_compression_bc")
         );
     }
@@ -375,6 +402,8 @@ mod tests {
     #[test]
     fn core_feature_snapshot_covers_vulkan_1_2_1_3_and_1_4_decisions() {
         let features = NativeVulkanVulkanaliaCoreFeatureSnapshot {
+            sampler_anisotropy: true,
+            sample_rate_shading: true,
             timeline_semaphore: true,
             scalar_block_layout: true,
             descriptor_indexing: true,
@@ -395,6 +424,7 @@ mod tests {
             texture_compression_bc: true,
         };
         let properties = NativeVulkanVulkanaliaVulkan14PropertySnapshot {
+            max_sampler_anisotropy_x1: 16,
             max_push_descriptors: 32,
             max_combined_image_sampler_descriptor_count: 1_048_576,
             dynamic_rendering_local_read_depth_stencil_attachments: true,
@@ -428,6 +458,8 @@ mod tests {
         assert!(features.dynamic_rendering_local_read);
         assert!(features.push_descriptor);
         assert!(features.descriptor_heap);
+        assert!(features.sampler_anisotropy);
+        assert_eq!(properties.max_sampler_anisotropy_x1, 16);
         assert_eq!(properties.max_push_descriptors, 32);
         assert!(properties.identical_memory_type_requirements);
         assert_eq!(descriptor_heap_properties.image_descriptor_size, 32);
@@ -437,6 +469,8 @@ mod tests {
     #[test]
     fn core_feature_snapshot_builds_device_feature_chains() {
         let features = NativeVulkanVulkanaliaCoreFeatureSnapshot {
+            sampler_anisotropy: true,
+            sample_rate_shading: true,
             timeline_semaphore: true,
             dynamic_rendering: true,
             maintenance5: true,
@@ -457,6 +491,8 @@ mod tests {
         assert!(features.enables_vulkan_1_2_features());
         assert!(features.enables_vulkan_1_3_features());
         assert!(features.enables_vulkan_1_4_features());
+        assert_ne!(vulkan10.sampler_anisotropy, 0);
+        assert_ne!(vulkan10.sample_rate_shading, 0);
         assert_ne!(vulkan10.texture_compression_bc, 0);
         assert_ne!(vulkan12.timeline_semaphore, 0);
         assert_ne!(vulkan13.dynamic_rendering, 0);

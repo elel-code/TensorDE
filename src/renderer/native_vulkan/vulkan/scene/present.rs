@@ -41,8 +41,8 @@ use super::instance::{
     native_vulkan_vulkanalia_destroy_instance,
 };
 use super::memory::{
-    native_vulkan_vulkanalia_bind_buffer_memory2, native_vulkan_vulkanalia_map_memory2,
-    native_vulkan_vulkanalia_unmap_memory2,
+    native_vulkan_vulkanalia_bind_buffer_memory2, native_vulkan_vulkanalia_bind_image_memory2,
+    native_vulkan_vulkanalia_map_memory2, native_vulkan_vulkanalia_unmap_memory2,
 };
 use super::present_timing::VulkanaliaPresentTimingConfig;
 use super::scene_draw_pass::{
@@ -51,10 +51,10 @@ use super::scene_draw_pass::{
     NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot,
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
     SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, VulkanaliaSceneDescriptorHeapDrawResources,
-    VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
-    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImageRenderTarget,
-    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
-    VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaSceneMsaaColorTarget, VulkanaliaSceneSampledImageDescriptorBinding,
+    VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImagePipelineResources,
+    VulkanaliaSceneSampledImageRenderTarget, VulkanaliaSceneSolidQuadDrawCommand,
+    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -68,8 +68,8 @@ use super::scene_sampled_image::{
     NativeVulkanVulkanaliaSceneNativeTexture, NativeVulkanVulkanaliaSceneNativeTextureFormat,
     NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     NativeVulkanVulkanaliaSceneSampledImageResourceSnapshot,
-    NativeVulkanVulkanaliaSceneSampledImageSamplerMode, VulkanaliaSceneSampledImageResources,
-    VulkanaliaSceneTransferImageResources,
+    NativeVulkanVulkanaliaSceneSampledImageSamplerMode, NativeVulkanVulkanaliaSceneSamplerQuality,
+    VulkanaliaSceneSampledImageResources, VulkanaliaSceneTransferImageResources,
     native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
     native_vulkan_vulkanalia_create_scene_effect_target_resources,
     native_vulkan_vulkanalia_create_scene_framebuffer_snapshot_resources,
@@ -79,6 +79,7 @@ use super::scene_sampled_image::{
     native_vulkan_vulkanalia_destroy_scene_transfer_image_resources,
     native_vulkan_vulkanalia_load_scene_native_texture,
     native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy,
+    native_vulkan_vulkanalia_scene_sampler_quality,
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap,
 };
 use super::swapchain::{
@@ -105,6 +106,7 @@ const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
 const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
     HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS | vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
+const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
 const SCENE_GEOMETRY_POOLED_BYTE_BUFFERS: usize = 2;
 const SCENE_GEOMETRY_MAX_RETAINED_BYTE_CAPACITY: usize = 128 * 1024;
 const SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES: usize = 0;
@@ -1236,11 +1238,17 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverla
 
 struct VulkanaliaSceneSolidQuadFrameResources {
     swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_msaa_targets: Vec<VulkanaliaSceneMsaaColorResources>,
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+}
+
+struct VulkanaliaSceneMsaaColorResources {
+    target: VulkanaliaSceneMsaaColorTarget,
+    memory: vk::DeviceMemory,
 }
 
 struct VulkanaliaSceneTransferFrameResources {
@@ -1565,11 +1573,25 @@ fn with_vulkanalia_scene_solid_quad_present(
             ));
         }
     };
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let msaa_sample_count = scene_physical_device_msaa_sample_count(unsafe {
+        instance.get_physical_device_properties(selection.physical_device)
+    });
+    let sample_shading_enabled = scene_sample_rate_shading_runtime_enabled(
+        present_device
+            .feature_selection
+            .core_features
+            .sample_rate_shading,
+    );
 
     let frame_resources = match create_scene_solid_quad_frame_resources(
         device,
+        &memory_properties,
         &swapchain_images,
         swapchain_plan.format.format,
+        swapchain_plan.extent,
+        msaa_sample_count,
         selection.queue_family_index,
     ) {
         Ok(resources) => resources,
@@ -1585,6 +1607,8 @@ fn with_vulkanalia_scene_solid_quad_present(
         device,
         swapchain_plan.format.format,
         swapchain_plan.extent,
+        msaa_sample_count,
+        sample_shading_enabled,
         None,
     ) {
         Ok(pipeline) => pipeline,
@@ -1597,8 +1621,6 @@ fn with_vulkanalia_scene_solid_quad_present(
             return Err(err);
         }
     };
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
     let geometry_payload = match scene_solid_quad_geometry_payload(
         options.geometry.take(),
         swapchain_plan.extent,
@@ -1811,11 +1833,29 @@ fn with_vulkanalia_scene_sampled_image_present(
         }
         return Err("Vulkanalia scene sampled image present requires dynamicRendering for CmdBeginRendering".to_owned());
     }
+    let memory_properties =
+        unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
+    let msaa_sample_count = scene_physical_device_msaa_sample_count(unsafe {
+        instance.get_physical_device_properties(selection.physical_device)
+    });
+    let sample_shading_enabled = scene_sample_rate_shading_runtime_enabled(
+        present_device
+            .feature_selection
+            .core_features
+            .sample_rate_shading,
+    );
+    let sampler_quality = native_vulkan_vulkanalia_scene_sampler_quality(
+        present_device.feature_selection.core_features,
+        present_device.feature_selection.vulkan_1_4_properties,
+    );
 
     let frame_resources = match create_scene_solid_quad_frame_resources(
         device,
+        &memory_properties,
         &swapchain_images,
         swapchain_plan.format.format,
+        swapchain_plan.extent,
+        msaa_sample_count,
         selection.queue_family_index,
     ) {
         Ok(resources) => resources,
@@ -1844,8 +1884,6 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .to_owned(),
         );
     }
-    let memory_properties =
-        unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
     let native_textures = match scene_sampled_image_load_sources(&sampled_image_sources) {
         Ok(native_textures) => native_textures,
         Err(err) => {
@@ -1961,7 +1999,8 @@ fn with_vulkanalia_scene_sampled_image_present(
         swapchain_plan.format.format,
         swapchain_plan.extent,
         &descriptor_heap_plan,
-        vk::SampleCountFlags::_1,
+        msaa_sample_count,
+        sample_shading_enabled,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -2006,6 +2045,7 @@ fn with_vulkanalia_scene_sampled_image_present(
                 &geometry.draw_steps,
                 options.fit,
             ),
+            sampler_quality,
             texture.source.display().to_string(),
             &texture,
         ) {
@@ -2174,6 +2214,8 @@ fn with_vulkanalia_scene_sampled_image_present(
             device,
             swapchain_plan.format.format,
             swapchain_plan.extent,
+            msaa_sample_count,
+            sample_shading_enabled,
             Some(&descriptor_heap_plan),
         ) {
             Ok(pipeline) => Some(pipeline),
@@ -2289,6 +2331,45 @@ fn with_vulkanalia_scene_sampled_image_present(
     } else {
         None
     };
+    let effect_msaa_targets = match create_scene_effect_msaa_targets(
+        device,
+        &memory_properties,
+        &geometry.effect_targets,
+        swapchain_plan.format.format,
+        msaa_sample_count,
+    ) {
+        Ok(targets) => targets,
+        Err(err) => {
+            if let Some(solid_geometry) = solid_geometry {
+                destroy_scene_solid_quad_geometry_resources(device, solid_geometry);
+            }
+            if let Some(solid_pipeline) = solid_pipeline {
+                native_vulkan_vulkanalia_destroy_scene_solid_quad_pipeline_resources(
+                    device,
+                    solid_pipeline,
+                );
+            }
+            if let Some(descriptor_heap) = descriptor_heap {
+                native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+                    device,
+                    descriptor_heap,
+                );
+            }
+            for resource in sampled_images.drain(..) {
+                native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
+            }
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
+            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
+                device, pipeline,
+            );
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
     let present_timing = VulkanaliaPresentTimingConfig::new(
         swapchain_plan.present_id2_enabled,
         swapchain_plan.present_wait2_enabled,
@@ -2322,6 +2403,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             sampled_images
                 .take()
                 .expect("sampled images are live before static-source release loop"),
+            &effect_msaa_targets,
             &draw_commands,
             solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.take(),
@@ -2352,6 +2434,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             sampled_images
                 .as_ref()
                 .expect("sampled images are live before retained loop"),
+            &effect_msaa_targets,
             &draw_commands,
             solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.as_ref(),
@@ -2379,6 +2462,9 @@ fn with_vulkanalia_scene_sampled_image_present(
             device,
             descriptor_heap,
         );
+    }
+    for target in effect_msaa_targets {
+        destroy_scene_msaa_color_resources(device, target);
     }
     if let Some(sampled_images) = sampled_images {
         for resource in sampled_images {
@@ -2516,6 +2602,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     extent,
                     &descriptor_heap_plan,
                     vk::SampleCountFlags::_1,
+                    false,
                 )?,
             );
             sampled_geometry = Some(create_scene_sampled_image_geometry_resources(
@@ -2539,6 +2626,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         &sampled_geometry_ref.draw_steps,
                         input.fit,
                     ),
+                    NativeVulkanVulkanaliaSceneSamplerQuality::disabled(),
                     texture.source.display().to_string(),
                     &texture,
                 )?;
@@ -2565,6 +2653,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     device,
                     swapchain_format,
                     extent,
+                    vk::SampleCountFlags::_1,
+                    false,
                     None,
                 )?,
             );
@@ -2914,6 +3004,10 @@ fn run_scene_solid_quad_present_loop(
             .swapchain_image_views
             .get(image_index_usize)
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
+        let swapchain_msaa_target = frame_resources
+            .swapchain_msaa_targets
+            .get(image_index_usize)
+            .map(|resources| &resources.target);
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
@@ -2935,6 +3029,7 @@ fn run_scene_solid_quad_present_loop(
             command_buffer,
             swapchain_image,
             swapchain_view,
+            swapchain_msaa_target,
             extent,
             pipeline,
             vertex_buffer,
@@ -3082,6 +3177,7 @@ fn run_scene_sampled_image_present_loop(
     solid_pipeline: Option<&VulkanaliaSceneSolidQuadPipelineResources>,
     solid_geometry: Option<&VulkanaliaSceneSolidQuadGeometryResources>,
     sampled_images: &[VulkanaliaSceneSampledImageResources],
+    effect_msaa_targets: &[VulkanaliaSceneMsaaColorResources],
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
@@ -3140,22 +3236,12 @@ fn run_scene_sampled_image_present_loop(
     let descriptor_heap_draw =
         descriptor_heap.map(|resources| VulkanaliaSceneDescriptorHeapDrawResources { resources });
     let effect_target_resource_base = geometry.sources.len().max(1);
-    let effect_target_resources = sampled_images
-        .get(effect_target_resource_base..)
-        .ok_or_else(|| {
-            format!(
-                "scene sampled-image effect target base {} exceeds sampled image resource count {}",
-                effect_target_resource_base,
-                sampled_images.len()
-            )
-        })?;
-    if effect_target_resources.len() < geometry.effect_targets.len() {
-        return Err(format!(
-            "scene sampled-image effect target resource count {} is smaller than geometry target count {}",
-            effect_target_resources.len(),
-            geometry.effect_targets.len()
-        ));
-    }
+    let effect_target_resource_range = scene_sampled_image_effect_target_resource_range(
+        effect_target_resource_base,
+        geometry.effect_targets.len(),
+        sampled_images.len(),
+    )?;
+    let effect_target_resources = &sampled_images[effect_target_resource_range];
     let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
         &geometry.draw_steps,
         effect_target_resource_base,
@@ -3188,6 +3274,10 @@ fn run_scene_sampled_image_present_loop(
     let mut queue_submit_micros = 0u64;
     let mut queue_present_micros = 0u64;
     let mut fps_sleep_micros = 0u64;
+    let effect_msaa_target_views = effect_msaa_targets
+        .iter()
+        .map(|resources| resources.target)
+        .collect::<Vec<_>>();
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -3232,6 +3322,10 @@ fn run_scene_sampled_image_present_loop(
             .swapchain_image_views
             .get(image_index_usize)
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
+        let swapchain_msaa_target = frame_resources
+            .swapchain_msaa_targets
+            .get(image_index_usize)
+            .map(|resources| &resources.target);
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let geometry_frame_slot = image_index_usize;
@@ -3310,12 +3404,14 @@ fn run_scene_sampled_image_present_loop(
                 command_buffer,
                 swapchain_image,
                 swapchain_view,
+                swapchain_msaa_target,
                 extent,
                 solid_quad_draw,
                 descriptor_heap_draw,
                 pipeline,
                 draw_commands,
                 effect_target_resources,
+                &effect_msaa_target_views,
                 framebuffer_snapshot_resource,
                 if framebuffer_snapshot_initialized {
                     vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
@@ -4172,6 +4268,10 @@ fn record_scene_sampled_image_static_transfer_command_buffer(
         route: "scene-static-transfer-blit-command",
         extent: (extent.width, extent.height),
         index_count: 0,
+        rasterization_samples: "not-used-transfer-only",
+        uses_msaa_color_target: false,
+        effect_msaa_target_count: 0,
+        resolve_mode: "none",
         command_buffer_recorded: true,
         vertex_buffer_bound: false,
         index_buffer_bound: false,
@@ -4281,6 +4381,8 @@ fn scene_static_transfer_pipeline_snapshot(
         pipeline_created: false,
         pass_specific_fragment_pipeline_count: 0,
         rasterization_samples: "not-used-transfer-only",
+        sample_shading_enabled: false,
+        min_sample_shading: "0.0",
         render_pass_compatibility: "not-used-transfer-only",
         primitive_topology: "none-transfer-only",
         vertex_input_binding_count: 0,
@@ -4324,6 +4426,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     solid_pipeline: Option<VulkanaliaSceneSolidQuadPipelineResources>,
     solid_geometry: Option<VulkanaliaSceneSolidQuadGeometryResources>,
     mut sampled_images: Vec<VulkanaliaSceneSampledImageResources>,
+    effect_msaa_targets: &[VulkanaliaSceneMsaaColorResources],
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     mut descriptor_heap: Option<VulkanaliaDescriptorHeapImageSamplerResources>,
@@ -4357,22 +4460,12 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         snapshot
     });
     let effect_target_resource_base = geometry.sources.len().max(1);
-    let effect_target_resources = sampled_images
-        .get(effect_target_resource_base..)
-        .ok_or_else(|| {
-            format!(
-                "scene sampled-image effect target base {} exceeds sampled image resource count {}",
-                effect_target_resource_base,
-                sampled_images.len()
-            )
-        })?;
-    if effect_target_resources.len() < geometry.effect_targets.len() {
-        return Err(format!(
-            "scene sampled-image effect target resource count {} is smaller than geometry target count {}",
-            effect_target_resources.len(),
-            geometry.effect_targets.len()
-        ));
-    }
+    let effect_target_resource_range = scene_sampled_image_effect_target_resource_range(
+        effect_target_resource_base,
+        geometry.effect_targets.len(),
+        sampled_images.len(),
+    )?;
+    let effect_target_resources = &sampled_images[effect_target_resource_range];
     let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
         &geometry.draw_steps,
         effect_target_resource_base,
@@ -4422,6 +4515,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
+    let effect_msaa_target_views = effect_msaa_targets
+        .iter()
+        .map(|resources| resources.target)
+        .collect::<Vec<_>>();
     let present_result = (|| -> Result<u64, String> {
         let present_frame_slot = 0usize;
         let image_available = frame_resources.image_available[present_frame_slot];
@@ -4461,6 +4558,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             .swapchain_image_views
             .get(image_index_usize)
             .ok_or_else(|| format!("swapchain view index {image_index_usize} is unavailable"))?;
+        let swapchain_msaa_target = frame_resources
+            .swapchain_msaa_targets
+            .get(image_index_usize)
+            .map(|resources| &resources.target);
 
         let vertex_buffer =
             update_scene_sampled_image_geometry_for_time(device, &geometry, 0, 0, None)?;
@@ -4498,12 +4599,14 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             command_buffer,
             swapchain_image,
             swapchain_view,
+            swapchain_msaa_target,
             extent,
             solid_quad_draw,
             descriptor_heap_draw,
             &pipeline,
             draw_commands,
             effect_target_resources,
+            &effect_msaa_target_views,
             framebuffer_snapshot_resource,
             vk::ImageLayout::UNDEFINED,
             vertex_buffer,
@@ -4706,10 +4809,206 @@ fn scene_duration_micros(duration: Duration) -> u64 {
     duration.as_micros().min(u128::from(u64::MAX)) as u64
 }
 
+fn scene_preferred_msaa_sample_count(
+    framebuffer_color_sample_counts: vk::SampleCountFlags,
+) -> vk::SampleCountFlags {
+    if framebuffer_color_sample_counts.contains(vk::SampleCountFlags::_4) {
+        vk::SampleCountFlags::_4
+    } else if framebuffer_color_sample_counts.contains(vk::SampleCountFlags::_2) {
+        vk::SampleCountFlags::_2
+    } else {
+        vk::SampleCountFlags::_1
+    }
+}
+
+fn scene_physical_device_msaa_sample_count(
+    properties: vk::PhysicalDeviceProperties,
+) -> vk::SampleCountFlags {
+    scene_preferred_msaa_sample_count(properties.limits.framebuffer_color_sample_counts)
+}
+
+fn scene_sample_rate_shading_runtime_enabled(device_feature_available: bool) -> bool {
+    device_feature_available
+        && std::env::var("GILDER_ENABLE_SAMPLE_RATE_SHADING")
+            .is_ok_and(|value| scene_sample_rate_shading_env_enabled(&value))
+}
+
+fn scene_sample_rate_shading_env_enabled(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn create_scene_msaa_color_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    extent: vk::Extent2D,
+    image_format: vk::Format,
+    sample_count: vk::SampleCountFlags,
+    label: &str,
+) -> Result<VulkanaliaSceneMsaaColorResources, String> {
+    if sample_count == vk::SampleCountFlags::_1 {
+        return Err(format!(
+            "scene MSAA color target {label} requires multisample count greater than 1x"
+        ));
+    }
+    if extent.width == 0 || extent.height == 0 {
+        return Err(format!(
+            "scene MSAA color target {label} requires non-zero extent"
+        ));
+    }
+    let image_extent = vk::Extent3D {
+        width: extent.width,
+        height: extent.height,
+        depth: 1,
+    };
+    let image_create_info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .format(image_format)
+        .extent(image_extent)
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(sample_count)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_create_info, None) }
+        .map_err(|err| format!("vkCreateImage(vulkanalia scene MSAA {label}): {err:?}"))?;
+
+    let mut image_live = true;
+    let mut memory = vk::DeviceMemory::default();
+    let mut memory_live = false;
+    let mut image_view = vk::ImageView::default();
+
+    let result = (|| -> Result<VulkanaliaSceneMsaaColorResources, String> {
+        let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let image_memory_type = scene_image_memory_type_index_excluding(
+            &memory_type_candidates,
+            memory_requirements.memory_type_bits,
+            DEVICE_LOCAL_MEMORY_FLAG_BITS,
+            HOST_VISIBLE_MEMORY_FLAG_BITS,
+        )
+        .ok_or_else(|| {
+            format!(
+                "scene MSAA color target {label} requires device-local non-host-visible memory for bits 0x{:08x}",
+                memory_requirements.memory_type_bits
+            )
+        })?;
+        let allocation_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(image_memory_type.index);
+        memory = unsafe { device.allocate_memory(&allocation_info, None) }
+            .map_err(|err| format!("vkAllocateMemory(vulkanalia scene MSAA {label}): {err:?}"))?;
+        memory_live = true;
+
+        native_vulkan_vulkanalia_bind_image_memory2(
+            device,
+            image,
+            memory,
+            0,
+            "scene MSAA color target",
+        )?;
+
+        let subresource_range = scene_color_subresource_range();
+        let image_view_info = vk::ImageViewCreateInfo::builder()
+            .image(image)
+            .view_type(vk::ImageViewType::_2D)
+            .format(image_format)
+            .subresource_range(subresource_range)
+            .build();
+        image_view = unsafe { device.create_image_view(&image_view_info, None) }
+            .map_err(|err| format!("vkCreateImageView(vulkanalia scene MSAA {label}): {err:?}"))?;
+
+        image_live = false;
+        memory_live = false;
+
+        Ok(VulkanaliaSceneMsaaColorResources {
+            target: VulkanaliaSceneMsaaColorTarget {
+                image,
+                image_view,
+                extent,
+                sample_count,
+            },
+            memory,
+        })
+    })();
+
+    if result.is_err() {
+        unsafe {
+            if image_view != vk::ImageView::null() {
+                device.destroy_image_view(image_view, None);
+            }
+            if memory_live {
+                device.free_memory(memory, None);
+            }
+            if image_live {
+                device.destroy_image(image, None);
+            }
+        }
+    }
+
+    result
+}
+
+fn create_scene_effect_msaa_targets(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    effect_targets: &[NativeVulkanVulkanaliaSceneSampledImageEffectTarget],
+    image_format: vk::Format,
+    sample_count: vk::SampleCountFlags,
+) -> Result<Vec<VulkanaliaSceneMsaaColorResources>, String> {
+    if sample_count == vk::SampleCountFlags::_1 {
+        return Ok(Vec::new());
+    }
+    let mut resources = Vec::with_capacity(effect_targets.len());
+    let result = (|| -> Result<(), String> {
+        for target in effect_targets {
+            resources.push(create_scene_msaa_color_resources(
+                device,
+                memory_properties,
+                vk::Extent2D {
+                    width: target.width,
+                    height: target.height,
+                },
+                image_format,
+                sample_count,
+                &format!("effect-target-{}", target.effect_target_index),
+            )?);
+        }
+        Ok(())
+    })();
+    if let Err(err) = result {
+        for resource in resources.drain(..) {
+            destroy_scene_msaa_color_resources(device, resource);
+        }
+        Err(err)
+    } else {
+        Ok(resources)
+    }
+}
+
+fn destroy_scene_msaa_color_resources(
+    device: &Device,
+    resources: VulkanaliaSceneMsaaColorResources,
+) {
+    unsafe {
+        device.destroy_image_view(resources.target.image_view, None);
+        device.destroy_image(resources.target.image, None);
+        device.free_memory(resources.memory, None);
+    }
+}
+
 fn create_scene_solid_quad_frame_resources(
     device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
     swapchain_images: &[vk::Image],
     swapchain_format: vk::Format,
+    extent: vk::Extent2D,
+    msaa_sample_count: vk::SampleCountFlags,
     queue_family_index: u32,
 ) -> Result<VulkanaliaSceneSolidQuadFrameResources, String> {
     if swapchain_images.is_empty() {
@@ -4717,6 +5016,7 @@ fn create_scene_solid_quad_frame_resources(
     }
 
     let mut swapchain_image_views = Vec::new();
+    let mut swapchain_msaa_targets = Vec::new();
     let mut command_pool = vk::CommandPool::null();
     let mut image_available = Vec::new();
     let mut render_finished = Vec::new();
@@ -4728,6 +5028,18 @@ fn create_scene_solid_quad_frame_resources(
             swapchain_images,
             swapchain_format,
         )?;
+        if msaa_sample_count != vk::SampleCountFlags::_1 {
+            for image_index in 0..swapchain_images.len() {
+                swapchain_msaa_targets.push(create_scene_msaa_color_resources(
+                    device,
+                    memory_properties,
+                    extent,
+                    swapchain_format,
+                    msaa_sample_count,
+                    &format!("swapchain-{image_index}"),
+                )?);
+            }
+        }
 
         let command_pool_info = vk::CommandPoolCreateInfo::builder()
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
@@ -4769,6 +5081,7 @@ fn create_scene_solid_quad_frame_resources(
 
         Ok(VulkanaliaSceneSolidQuadFrameResources {
             swapchain_image_views: std::mem::take(&mut swapchain_image_views),
+            swapchain_msaa_targets: std::mem::take(&mut swapchain_msaa_targets),
             command_pool,
             command_buffers,
             image_available: std::mem::take(&mut image_available),
@@ -4781,6 +5094,7 @@ fn create_scene_solid_quad_frame_resources(
         destroy_partial_scene_solid_quad_frame_resources(
             device,
             swapchain_image_views,
+            swapchain_msaa_targets,
             command_pool,
             image_available,
             render_finished,
@@ -4904,6 +5218,7 @@ fn destroy_scene_solid_quad_frame_resources(
     destroy_partial_scene_solid_quad_frame_resources(
         device,
         resources.swapchain_image_views,
+        resources.swapchain_msaa_targets,
         resources.command_pool,
         resources.image_available,
         resources.render_finished,
@@ -4956,6 +5271,7 @@ fn destroy_partial_scene_transfer_frame_resources(
 fn destroy_partial_scene_solid_quad_frame_resources(
     device: &Device,
     swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_msaa_targets: Vec<VulkanaliaSceneMsaaColorResources>,
     command_pool: vk::CommandPool,
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
@@ -4979,6 +5295,9 @@ fn destroy_partial_scene_solid_quad_frame_resources(
         }
         if command_pool != vk::CommandPool::null() {
             device.destroy_command_pool(command_pool, None);
+        }
+        for target in swapchain_msaa_targets {
+            destroy_scene_msaa_color_resources(device, target);
         }
         for view in swapchain_image_views {
             device.destroy_image_view(view, None);
@@ -6099,6 +6418,22 @@ fn scene_buffer_memory_type_index(
         let properties_match = candidate.property_flags_bits & required_property_flags_bits
             == required_property_flags_bits;
         allowed && properties_match
+    })
+}
+
+fn scene_image_memory_type_index_excluding(
+    memory_types: &[NativeVulkanVulkanaliaMemoryTypeCandidate],
+    allowed_memory_type_bits: u32,
+    required_property_flags_bits: u32,
+    excluded_property_flags_bits: u32,
+) -> Option<NativeVulkanVulkanaliaMemoryTypeCandidate> {
+    memory_types.iter().copied().find(|candidate| {
+        let allowed = candidate.index < u32::BITS
+            && allowed_memory_type_bits & (1u32 << candidate.index) != 0;
+        let properties_match = candidate.property_flags_bits & required_property_flags_bits
+            == required_property_flags_bits;
+        let excluded_absent = candidate.property_flags_bits & excluded_property_flags_bits == 0;
+        allowed && properties_match && excluded_absent
     })
 }
 
@@ -7223,6 +7558,23 @@ fn scene_sampled_image_resource_count(
         .saturating_add(usize::from(framebuffer_snapshot_required))
 }
 
+fn scene_sampled_image_effect_target_resource_range(
+    effect_target_resource_base: usize,
+    effect_target_count: usize,
+    sampled_image_resource_count: usize,
+) -> Result<std::ops::Range<usize>, String> {
+    let effect_target_resource_end = effect_target_resource_base
+        .checked_add(effect_target_count)
+        .ok_or_else(|| "scene sampled-image effect target resource range overflows".to_owned())?;
+    if effect_target_resource_end > sampled_image_resource_count {
+        return Err(format!(
+            "scene sampled-image effect target resource range {}..{} exceeds sampled image resource count {}",
+            effect_target_resource_base, effect_target_resource_end, sampled_image_resource_count
+        ));
+    }
+    Ok(effect_target_resource_base..effect_target_resource_end)
+}
+
 fn scene_sampled_image_validate_we_graph_resources(
     resources: &[NativeVulkanVulkanaliaSceneWeImageGraphResource],
     effect_target_count: usize,
@@ -7608,6 +7960,38 @@ mod tests {
         assert_eq!(SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES, 0);
         assert!(head.is_empty());
         assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn scene_msaa_selection_prefers_4x_then_2x_then_disabled() {
+        assert_eq!(
+            scene_preferred_msaa_sample_count(
+                vk::SampleCountFlags::_1 | vk::SampleCountFlags::_2 | vk::SampleCountFlags::_4,
+            ),
+            vk::SampleCountFlags::_4
+        );
+        assert_eq!(
+            scene_preferred_msaa_sample_count(vk::SampleCountFlags::_1 | vk::SampleCountFlags::_2,),
+            vk::SampleCountFlags::_2
+        );
+        assert_eq!(
+            scene_preferred_msaa_sample_count(vk::SampleCountFlags::_1),
+            vk::SampleCountFlags::_1
+        );
+    }
+
+    #[test]
+    fn sampled_image_effect_target_resource_range_excludes_framebuffer_snapshot() {
+        assert_eq!(
+            scene_sampled_image_effect_target_resource_range(100, 59, 160).unwrap(),
+            100..159
+        );
+        assert_eq!(scene_sampled_image_resource_count(100, 59, true), 160);
+        assert!(
+            scene_sampled_image_effect_target_resource_range(100, 60, 159)
+                .unwrap_err()
+                .contains("exceeds sampled image resource count 159")
+        );
     }
 
     #[test]
@@ -9450,6 +9834,15 @@ mod tests {
         .unwrap();
 
         assert_eq!(selected.index, 1);
+    }
+
+    #[test]
+    fn sample_rate_shading_policy_is_explicit_opt_in() {
+        assert!(scene_sample_rate_shading_env_enabled("1"));
+        assert!(scene_sample_rate_shading_env_enabled("true"));
+        assert!(scene_sample_rate_shading_env_enabled("on"));
+        assert!(!scene_sample_rate_shading_env_enabled("0"));
+        assert!(!scene_sample_rate_shading_env_enabled("false"));
     }
 
     fn static_transfer_test_options(
