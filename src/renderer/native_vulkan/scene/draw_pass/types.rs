@@ -466,8 +466,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) source_direct_chain_start_count: usize,
     pub(in crate::renderer::native_vulkan::scene) multi_step_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) max_chain_step_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) all_waterwaves_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) all_waterwaves_multi_step_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kind_counts: BTreeMap<&'static str, usize>,
+    pub(in crate::renderer::native_vulkan::scene) chain_length_counts: BTreeMap<usize, usize>,
+    pub(in crate::renderer::native_vulkan::scene) chain_signature_counts: BTreeMap<String, usize>,
     pub(in crate::renderer::native_vulkan::scene) targets: Vec<NativeVulkanSceneWeImageGraphTarget>,
     pub(in crate::renderer::native_vulkan::scene) steps: Vec<NativeVulkanSceneWeImageGraphStep>,
 }

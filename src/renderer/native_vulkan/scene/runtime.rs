@@ -125,7 +125,11 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_source_direct_chain_start_count: usize,
     pub draw_pass_sampled_image_we_graph_multi_step_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_max_chain_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_all_waterwaves_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_all_waterwaves_multi_step_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_chain_length_counts: BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_chain_signature_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_execution_pass_count: u32,
     pub draw_pass_sampled_image_we_graph_execution_dependency_count: u32,
     pub draw_pass_sampled_image_we_graph_execution_level_count: u32,
@@ -4203,12 +4207,28 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         pass_plan.sampled_image_we_graph_plan.multi_step_chain_count;
     let sampled_image_we_graph_max_chain_step_count =
         pass_plan.sampled_image_we_graph_plan.max_chain_step_count;
+    let sampled_image_we_graph_all_waterwaves_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .all_waterwaves_chain_count;
+    let sampled_image_we_graph_all_waterwaves_multi_step_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .all_waterwaves_multi_step_chain_count;
     let sampled_image_we_graph_effect_kind_counts = pass_plan
         .sampled_image_we_graph_plan
         .effect_kind_counts
         .iter()
         .map(|(kind, count)| ((*kind).to_owned(), *count))
         .collect::<BTreeMap<_, _>>();
+    let sampled_image_we_graph_chain_length_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .chain_length_counts
+        .iter()
+        .map(|(length, count)| (length.to_string(), *count))
+        .collect::<BTreeMap<_, _>>();
+    let sampled_image_we_graph_chain_signature_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .chain_signature_counts
+        .clone();
     let sampled_image_we_graph_texture_resources =
         native_vulkan_scene_we_image_graph_texture_resource_paths(
             &pass_plan.sampled_image_we_graph_plan,
@@ -4385,8 +4405,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_multi_step_chain_count,
         draw_pass_sampled_image_we_graph_max_chain_step_count:
             sampled_image_we_graph_max_chain_step_count,
+        draw_pass_sampled_image_we_graph_all_waterwaves_chain_count:
+            sampled_image_we_graph_all_waterwaves_chain_count,
+        draw_pass_sampled_image_we_graph_all_waterwaves_multi_step_chain_count:
+            sampled_image_we_graph_all_waterwaves_multi_step_chain_count,
         draw_pass_sampled_image_we_graph_effect_kind_counts:
             sampled_image_we_graph_effect_kind_counts,
+        draw_pass_sampled_image_we_graph_chain_length_counts:
+            sampled_image_we_graph_chain_length_counts,
+        draw_pass_sampled_image_we_graph_chain_signature_counts:
+            sampled_image_we_graph_chain_signature_counts,
         draw_pass_sampled_image_we_graph_execution_pass_count: engine_render_graph_execution
             .pass_count,
         draw_pass_sampled_image_we_graph_execution_dependency_count: engine_render_graph_execution
@@ -6856,6 +6884,35 @@ mod tests {
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_source_direct_chain_start_count,
             0
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_all_waterwaves_chain_count,
+            0
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_all_waterwaves_multi_step_chain_count,
+            0
+        );
+        assert_eq!(
+            snapshot
+                .draw_pass_sampled_image_we_graph_chain_length_counts
+                .get("2")
+                .copied(),
+            Some(2)
+        );
+        assert_eq!(
+            snapshot
+                .draw_pass_sampled_image_we_graph_chain_signature_counts
+                .get("base-material>opacity-mask")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot
+                .draw_pass_sampled_image_we_graph_chain_signature_counts
+                .get("base-material>water-ripple")
+                .copied(),
+            Some(1)
         );
         assert!(snapshot.draw_pass_sampled_image_we_graph_targets.is_empty());
         assert!(snapshot.draw_pass_sampled_image_we_graph_steps.is_empty());

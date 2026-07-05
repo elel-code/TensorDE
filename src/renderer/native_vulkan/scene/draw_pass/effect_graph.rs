@@ -51,8 +51,23 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
         );
         plan.targets.extend(chain_targets.iter().cloned());
         let chain_step_count = chain.passes.len();
+        *plan
+            .chain_length_counts
+            .entry(chain_step_count)
+            .or_default() += 1;
+        *plan
+            .chain_signature_counts
+            .entry(native_vulkan_scene_we_image_pass_chain_signature(&chain))
+            .or_default() += 1;
         if chain_step_count > 1 {
             plan.multi_step_chain_count = plan.multi_step_chain_count.saturating_add(1);
+        }
+        if native_vulkan_scene_we_image_pass_chain_all_effects_are_waterwaves(&chain) {
+            plan.all_waterwaves_chain_count = plan.all_waterwaves_chain_count.saturating_add(1);
+            if chain_step_count > 1 {
+                plan.all_waterwaves_multi_step_chain_count =
+                    plan.all_waterwaves_multi_step_chain_count.saturating_add(1);
+            }
         }
         if chain.passes.first().is_some_and(|pass| {
             pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
@@ -137,6 +152,40 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
     plan.engine_graph = native_vulkan_scene_engine_render_graph_from_we_plan(&plan);
     plan.engine_execution_plan = plan.engine_graph.execution_plan();
     plan
+}
+
+fn native_vulkan_scene_we_image_pass_chain_signature(
+    chain: &NativeVulkanSceneWeImagePassChain,
+) -> String {
+    chain
+        .passes
+        .iter()
+        .map(|pass| match pass.role {
+            NativeVulkanSceneWeImagePassRole::BaseMaterial => "base-material",
+            NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => "color-blend-passthrough",
+            NativeVulkanSceneWeImagePassRole::EffectMaterial => pass
+                .effect_kind
+                .map(NativeVulkanSceneEffectKind::as_str)
+                .unwrap_or("effect-material"),
+        })
+        .collect::<Vec<_>>()
+        .join(">")
+}
+
+fn native_vulkan_scene_we_image_pass_chain_all_effects_are_waterwaves(
+    chain: &NativeVulkanSceneWeImagePassChain,
+) -> bool {
+    let mut effect_step_count = 0usize;
+    for pass in &chain.passes {
+        if pass.role != NativeVulkanSceneWeImagePassRole::EffectMaterial {
+            continue;
+        }
+        effect_step_count = effect_step_count.saturating_add(1);
+        if pass.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves) {
+            return false;
+        }
+    }
+    effect_step_count > 0
 }
 
 fn native_vulkan_scene_engine_render_graph_from_we_plan(
@@ -2447,6 +2496,13 @@ mod tests {
         assert_eq!(plan.effect_kind_counts.get("auto-sway").copied(), Some(1));
         assert_eq!(plan.effect_kind_counts.get("water-waves").copied(), Some(1));
         assert_eq!(plan.source_direct_chain_start_count, 0);
+        assert_eq!(plan.chain_length_counts.get(&3).copied(), Some(1));
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("base-material>auto-sway>water-waves")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
@@ -2520,6 +2576,15 @@ mod tests {
         assert_eq!(plan.scene_target_step_count, 1);
         assert_eq!(plan.source_direct_chain_start_count, 1);
         assert_eq!(plan.direct_terminal_source_effect_step_count, 0);
+        assert_eq!(plan.all_waterwaves_chain_count, 1);
+        assert_eq!(plan.all_waterwaves_multi_step_chain_count, 1);
+        assert_eq!(plan.chain_length_counts.get(&2).copied(), Some(1));
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("water-waves>water-waves")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
