@@ -57,12 +57,12 @@ use super::scene_draw_pass::{
     SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES,
     SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, VulkanaliaSceneDescriptorHeapDrawResources,
     VulkanaliaSceneGpuTimestampCapture, VulkanaliaSceneMsaaColorTarget,
-    VulkanaliaScenePipelineBlendUsage, VulkanaliaSceneSampledImageDescriptorBinding,
-    VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImageDrawInstance,
-    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImageRenderTarget,
-    VulkanaliaSceneSampledImageVertexProgram, VulkanaliaSceneSampledImageViewportState,
-    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
-    VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaScenePipelineBlendUsage, VulkanaliaScenePipelineProgramUsage,
+    VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
+    VulkanaliaSceneSampledImageDrawInstance, VulkanaliaSceneSampledImagePipelineResources,
+    VulkanaliaSceneSampledImageRenderTarget, VulkanaliaSceneSampledImageVertexProgram,
+    VulkanaliaSceneSampledImageViewportState, VulkanaliaSceneSolidQuadDrawCommand,
+    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -2244,13 +2244,14 @@ fn with_vulkanalia_scene_sampled_image_present(
         sampled_framebuffer_snapshot_required || solid_framebuffer_snapshot_required;
     let framebuffer_snapshot_resource_index =
         sampled_source_resource_count.saturating_add(geometry_payload.effect_targets.len());
+    let sampled_image_resource_count = scene_sampled_image_resource_count(
+        sampled_source_resource_count,
+        geometry_payload.effect_targets.len(),
+        framebuffer_snapshot_required,
+    );
     let mut descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
         &geometry_payload.draw_steps,
-        scene_sampled_image_resource_count(
-            sampled_source_resource_count,
-            geometry_payload.effect_targets.len(),
-            framebuffer_snapshot_required,
-        ),
+        sampled_image_resource_count,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -2300,16 +2301,13 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .to_owned(),
         );
     }
-    let pipeline = match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
+    let mut geometry = match create_scene_sampled_image_geometry_resources(
         device,
-        swapchain_plan.format.format,
-        swapchain_plan.extent,
-        &descriptor_heap_plan,
-        msaa_sample_count,
-        sample_shading_enabled,
-        sampled_pipeline_blend_usage,
+        &memory_properties,
+        geometry_payload,
+        frame_resources.in_flight.len(),
     ) {
-        Ok(pipeline) => pipeline,
+        Ok(geometry) => geometry,
         Err(err) => {
             destroy_scene_solid_quad_frame_resources(device, frame_resources);
             unsafe {
@@ -2319,17 +2317,40 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let mut geometry = match create_scene_sampled_image_geometry_resources(
-        device,
-        &memory_properties,
-        geometry_payload,
-        frame_resources.in_flight.len(),
+    let draw_commands = match scene_sampled_image_draw_commands_for_count(
+        &geometry.draw_steps,
+        &geometry.puppet_gpu_draw_bindings,
+        &geometry.particle_gpu_draw_bindings,
+        &geometry.sampled_layer_pose_instances,
+        sampled_image_resource_count,
+        &descriptor_slot_plan.step_group_base_indices,
     ) {
-        Ok(geometry) => geometry,
+        Ok(draw_commands) => draw_commands,
         Err(err) => {
-            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
+            destroy_scene_solid_quad_frame_resources(device, frame_resources);
+            unsafe {
+                device.destroy_swapchain_khr(swapchain, None);
+                present_device.device.destroy_device(None);
+            }
+            return Err(err);
+        }
+    };
+    let sampled_pipeline_program_usage =
+        VulkanaliaScenePipelineProgramUsage::from_draw_commands(&draw_commands);
+    let pipeline = match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
+        device,
+        swapchain_plan.format.format,
+        swapchain_plan.extent,
+        &descriptor_heap_plan,
+        msaa_sample_count,
+        sample_shading_enabled,
+        sampled_pipeline_blend_usage,
+        sampled_pipeline_program_usage,
+    ) {
+        Ok(pipeline) => pipeline,
+        Err(err) => {
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
             destroy_scene_solid_quad_frame_resources(device, frame_resources);
             unsafe {
                 device.destroy_swapchain_khr(swapchain, None);
@@ -2361,10 +2382,10 @@ fn with_vulkanalia_scene_sampled_image_present(
                         device, resource,
                     );
                 }
-                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                     device, pipeline,
                 );
+                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 destroy_scene_solid_quad_frame_resources(device, frame_resources);
                 unsafe {
                     device.destroy_swapchain_khr(swapchain, None);
@@ -2394,10 +2415,10 @@ fn with_vulkanalia_scene_sampled_image_present(
                         device, resource,
                     );
                 }
-                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                     device, pipeline,
                 );
+                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 destroy_scene_solid_quad_frame_resources(device, frame_resources);
                 unsafe {
                     device.destroy_swapchain_khr(swapchain, None);
@@ -2422,10 +2443,10 @@ fn with_vulkanalia_scene_sampled_image_present(
                         device, resource,
                     );
                 }
-                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                     device, pipeline,
                 );
+                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 destroy_scene_solid_quad_frame_resources(device, frame_resources);
                 unsafe {
                     device.destroy_swapchain_khr(swapchain, None);
@@ -2440,10 +2461,10 @@ fn with_vulkanalia_scene_sampled_image_present(
             for resource in sampled_images.drain(..) {
                 native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
             }
-            destroy_scene_sampled_image_geometry_resources(device, geometry);
             native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                 device, pipeline,
             );
+            destroy_scene_sampled_image_geometry_resources(device, geometry);
             destroy_scene_solid_quad_frame_resources(device, frame_resources);
             unsafe {
                 device.destroy_swapchain_khr(swapchain, None);
@@ -2471,10 +2492,10 @@ fn with_vulkanalia_scene_sampled_image_present(
                         device, resource,
                     );
                 }
-                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
                     device, pipeline,
                 );
+                destroy_scene_sampled_image_geometry_resources(device, geometry);
                 destroy_scene_solid_quad_frame_resources(device, frame_resources);
                 unsafe {
                     device.destroy_swapchain_khr(swapchain, None);
@@ -2485,37 +2506,6 @@ fn with_vulkanalia_scene_sampled_image_present(
         }
     } else {
         None
-    };
-    let draw_commands = match scene_sampled_image_draw_commands(
-        &geometry.draw_steps,
-        &geometry.puppet_gpu_draw_bindings,
-        &geometry.particle_gpu_draw_bindings,
-        &geometry.sampled_layer_pose_instances,
-        &sampled_images,
-        &descriptor_slot_plan.step_group_base_indices,
-    ) {
-        Ok(draw_commands) => draw_commands,
-        Err(err) => {
-            if let Some(descriptor_heap) = descriptor_heap {
-                native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
-                    device,
-                    descriptor_heap,
-                );
-            }
-            for resource in sampled_images.drain(..) {
-                native_vulkan_vulkanalia_destroy_scene_sampled_image_resources(device, resource);
-            }
-            destroy_scene_sampled_image_geometry_resources(device, geometry);
-            native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources(
-                device, pipeline,
-            );
-            destroy_scene_solid_quad_frame_resources(device, frame_resources);
-            unsafe {
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
-            }
-            return Err(err);
-        }
     };
     let solid_pipeline = if options.solid_geometry.is_some() {
         match native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources(
@@ -2907,17 +2897,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     descriptor_heap_plan.blocking_reason
                 ));
             }
-            sampled_pipeline = Some(
-                native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
-                    device,
-                    swapchain_format,
-                    extent,
-                    &descriptor_heap_plan,
-                    vk::SampleCountFlags::_1,
-                    false,
-                    sampled_pipeline_blend_usage,
-                )?,
-            );
             sampled_geometry = Some(create_scene_sampled_image_geometry_resources(
                 device,
                 memory_properties,
@@ -2960,6 +2939,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 &sampled_images,
                 &descriptor_slot_plan.step_group_base_indices,
             )?;
+            sampled_pipeline = Some(
+                native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources(
+                    device,
+                    swapchain_format,
+                    extent,
+                    &descriptor_heap_plan,
+                    vk::SampleCountFlags::_1,
+                    false,
+                    sampled_pipeline_blend_usage,
+                    VulkanaliaScenePipelineProgramUsage::from_draw_commands(&sampled_draw_commands),
+                )?,
+            );
             sampled_geometry
                 .as_mut()
                 .expect("scene video overlay sampled geometry is live")
@@ -4895,6 +4886,8 @@ fn scene_static_transfer_pipeline_snapshot(
         descriptor_set_layout_created: false,
         pipeline_layout_created: false,
         pipeline_created: false,
+        sampled_image_pipeline_set_count: 0,
+        sampled_image_graphics_pipeline_count: 0,
         pass_specific_fragment_pipeline_count: 0,
         rasterization_samples: "not-used-transfer-only",
         sample_shading_enabled: false,

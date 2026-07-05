@@ -42,7 +42,9 @@ use self::order::{
     native_vulkan_vulkanalia_scene_ordered_draw_steps,
     native_vulkan_vulkanalia_scene_ordered_draw_target_stats,
 };
-pub(in crate::renderer::native_vulkan::vulkan) use self::pipeline_plan::VulkanaliaScenePipelineBlendUsage;
+pub(in crate::renderer::native_vulkan::vulkan) use self::pipeline_plan::{
+    VulkanaliaScenePipelineBlendUsage, VulkanaliaScenePipelineProgramUsage,
+};
 use self::resource_state::{
     SceneEffectTargetResourceStates, SceneEffectTargetWriteTransition,
     scene_ordered_draw_effect_target_reads_for_target_run,
@@ -414,6 +416,8 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     pub descriptor_set_layout_created: bool,
     pub pipeline_layout_created: bool,
     pub pipeline_created: bool,
+    pub sampled_image_pipeline_set_count: u32,
+    pub sampled_image_graphics_pipeline_count: u32,
     pub pass_specific_fragment_pipeline_count: u32,
     pub rasterization_samples: &'static str,
     pub sample_shading_enabled: bool,
@@ -591,6 +595,22 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) alpha_to_coverage_pipeline: vk::Pipeline,
 }
 
+impl VulkanaliaSceneSampledImagePipelineSet {
+    fn null() -> Self {
+        Self {
+            alpha_pipeline: vk::Pipeline::null(),
+            normal_pipeline: vk::Pipeline::null(),
+            additive_pipeline: vk::Pipeline::null(),
+            multiply_pipeline: vk::Pipeline::null(),
+            screen_pipeline: vk::Pipeline::null(),
+            max_pipeline: vk::Pipeline::null(),
+            modulate_pipeline: vk::Pipeline::null(),
+            hsl_color_pipeline: vk::Pipeline::null(),
+            alpha_to_coverage_pipeline: vk::Pipeline::null(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageDescriptorBinding {
     DescriptorHeap {
@@ -721,7 +741,7 @@ enum VulkanaliaSceneBoundDrawPipeline {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum VulkanaliaSceneSampledImageShaderProgram {
+pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageShaderProgram {
     Generic,
     WaterRipple,
     WaterWaves,
@@ -876,10 +896,16 @@ fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
 ) -> vk::Pipeline {
     let shader_program = scene_sampled_image_shader_program(material);
     let pipelines = scene_sampled_image_pipeline_set(resources, shader_program, vertex_program);
-    native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
+    let pipeline = native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
         pipelines,
         material.render_state.blend.mode,
-    )
+    );
+    debug_assert_ne!(
+        pipeline,
+        vk::Pipeline::null(),
+        "scene sampled-image draw selected an uncreated pipeline"
+    );
+    pipeline
 }
 
 fn scene_sampled_image_pipeline_set(
@@ -1864,6 +1890,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     sample_count: vk::SampleCountFlags,
     sample_shading_enabled: bool,
     pipeline_blend_usage: VulkanaliaScenePipelineBlendUsage,
+    pipeline_program_usage: VulkanaliaScenePipelineProgramUsage,
 ) -> Result<VulkanaliaSceneSampledImagePipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene sampled-image pipeline requires non-zero extent".to_owned());
@@ -1992,7 +2019,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     fragment_module,
                     premultiplied_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Generic,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 )?;
             let puppet_generic_pipelines =
                 match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
@@ -2006,8 +2035,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     puppet_vertex_module,
                     fragment_module,
                     premultiplied_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Generic,
                     VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2030,8 +2061,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     particle_vertex_module,
                     fragment_module,
                     premultiplied_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Generic,
                     VulkanaliaSceneSampledImageVertexProgram::ParticleGpu,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2058,8 +2091,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     puppet_vertex_module,
                     water_ripple_fragment_module,
                     water_ripple_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterRipple,
                     VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2090,8 +2125,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     puppet_vertex_module,
                     water_waves_fragment_module,
                     water_waves_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterWaves,
                     VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2122,7 +2159,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     water_ripple_fragment_module,
                     water_ripple_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterRipple,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2145,7 +2184,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     water_waves_fragment_module,
                     water_waves_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterWaves,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2172,7 +2213,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     water_flow_fragment_module,
                     water_flow_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterFlow,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2203,7 +2246,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     scroll_fragment_module,
                     scroll_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Scroll,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2238,7 +2283,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     skew_fragment_module,
                     skew_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Skew,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2277,7 +2324,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     water_caustics_fragment_module,
                     water_caustics_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::WaterCaustics,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2320,7 +2369,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     foliage_sway_fragment_module,
                     foliage_sway_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::FoliageSway,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2367,7 +2418,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     auto_sway_fragment_module,
                     auto_sway_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::AutoSway,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2418,7 +2471,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     iris_fragment_module,
                     iris_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Iris,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2473,7 +2528,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     opacity_fragment_module,
                     opacity_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::Opacity,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2532,7 +2589,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     tech_circle_fragment_module,
                     tech_circle_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::TechCircle,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2595,7 +2654,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     audio_bars_fragment_module,
                     audio_bars_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::AudioBars,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2662,7 +2723,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     passthroughblend_fragment_module,
                     passthroughblend_fragment_module,
+                    VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ) {
                     Ok(pipelines) => pipelines,
                     Err(err) => {
@@ -2752,6 +2815,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     sample_count,
                     sample_shading_enabled,
                     pipeline_blend_usage,
+                    pipeline_program_usage,
                 ),
             })
         })();
@@ -2881,7 +2945,9 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     premultiplied_fragment_module: vk::ShaderModule,
+    shader_program: VulkanaliaSceneSampledImageShaderProgram,
     pipeline_blend_usage: VulkanaliaScenePipelineBlendUsage,
+    pipeline_program_usage: VulkanaliaScenePipelineProgramUsage,
 ) -> Result<VulkanaliaSceneSampledImagePipelineSet, String> {
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
         device,
@@ -2894,8 +2960,10 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
         vertex_module,
         fragment_module,
         premultiplied_fragment_module,
+        shader_program,
         VulkanaliaSceneSampledImageVertexProgram::Sampled,
         pipeline_blend_usage,
+        pipeline_program_usage,
     )
 }
 
@@ -2911,9 +2979,15 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_p
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     premultiplied_fragment_module: vk::ShaderModule,
+    shader_program: VulkanaliaSceneSampledImageShaderProgram,
     vertex_program: VulkanaliaSceneSampledImageVertexProgram,
     pipeline_blend_usage: VulkanaliaScenePipelineBlendUsage,
+    pipeline_program_usage: VulkanaliaScenePipelineProgramUsage,
 ) -> Result<VulkanaliaSceneSampledImagePipelineSet, String> {
+    if !pipeline_program_usage.contains(shader_program, vertex_program) {
+        return Ok(VulkanaliaSceneSampledImagePipelineSet::null());
+    }
+
     let create_pipeline = |blend_mode| {
         let selected_fragment_module = native_vulkan_vulkanalia_scene_fragment_module_for_blend(
             blend_mode,
@@ -2936,7 +3010,9 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_p
     };
     let mut created_pipelines = Vec::with_capacity(9);
     let mut create_tracked_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
-        if !pipeline_blend_usage.contains(blend_mode) {
+        if !pipeline_blend_usage.contains(blend_mode)
+            || !pipeline_program_usage.contains_blend(shader_program, vertex_program, blend_mode)
+        {
             return Ok(vk::Pipeline::null());
         }
         let pipeline = create_pipeline(blend_mode)?;
@@ -3319,6 +3395,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
     sample_count: vk::SampleCountFlags,
     sample_shading_enabled: bool,
     pipeline_blend_usage: VulkanaliaScenePipelineBlendUsage,
+    pipeline_program_usage: VulkanaliaScenePipelineProgramUsage,
 ) -> NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
     let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
     NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot {
@@ -3330,8 +3407,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_set_layout_created: false,
         pipeline_layout_created: true,
         pipeline_created: true,
-        pass_specific_fragment_pipeline_count: 17u32
-            .saturating_mul(pipeline_blend_usage.enabled_count()),
+        sampled_image_pipeline_set_count: pipeline_program_usage.enabled_count(),
+        sampled_image_graphics_pipeline_count: pipeline_program_usage
+            .graphics_pipeline_count_for_blend_usage(pipeline_blend_usage),
+        pass_specific_fragment_pipeline_count: pipeline_program_usage
+            .pass_specific_graphics_pipeline_count_for_blend_usage(pipeline_blend_usage),
         rasterization_samples: scene_sample_count_label(sample_count),
         sample_shading_enabled: sample_shading,
         min_sample_shading: scene_min_sample_shading_label(sample_shading),
@@ -6657,6 +6737,35 @@ mod tests {
         )
     }
 
+    fn sampled_program_command(
+        layer_index: usize,
+        blend_mode: SceneBlendMode,
+        effect: Option<super::super::present::NativeVulkanVulkanaliaSceneEffectKind>,
+        vertex_program: VulkanaliaSceneSampledImageVertexProgram,
+    ) -> VulkanaliaSceneSampledImageDrawCommand {
+        let mut material = sampled_image_material(blend_mode);
+        if let Some(effect) = effect {
+            material.effect_kinds = vec![effect];
+        }
+        VulkanaliaSceneSampledImageDrawCommand {
+            layer_index,
+            last_layer_index: layer_index,
+            material,
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: layer_index
+                    .saturating_mul(SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT)
+                    .min(u32::MAX as usize) as u32,
+                texture_slot_bindings: texture_slot_bindings(&[0]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
+            draw_instance_index: layer_index.min(u32::MAX as usize) as u32,
+            vertex_program,
+            vertex_offset: 0,
+            first_index: layer_index.saturating_mul(6).min(u32::MAX as usize) as u32,
+            index_count: 6,
+        }
+    }
+
     fn effect_vec2_uniform(
         name: &str,
         values: [f32; 2],
@@ -7088,6 +7197,7 @@ mod tests {
             vk::SampleCountFlags::_1,
             false,
             VulkanaliaScenePipelineBlendUsage::all(),
+            VulkanaliaScenePipelineProgramUsage::all(),
         );
 
         assert_eq!(snapshot.target_format, "B8G8R8A8_SRGB");
@@ -7111,6 +7221,8 @@ mod tests {
             snapshot.sampled_image_model,
             "retained native sampled image + GPU draw-instance constants -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader"
         );
+        assert_eq!(snapshot.sampled_image_pipeline_set_count, 18);
+        assert_eq!(snapshot.sampled_image_graphics_pipeline_count, 162);
         assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 153);
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
@@ -7147,9 +7259,48 @@ mod tests {
                 SceneBlendMode::Normal,
                 SceneBlendMode::Alpha,
             ]),
+            VulkanaliaScenePipelineProgramUsage::all(),
         );
 
+        assert_eq!(snapshot.sampled_image_pipeline_set_count, 18);
+        assert_eq!(snapshot.sampled_image_graphics_pipeline_count, 36);
         assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 34);
+    }
+
+    #[test]
+    fn sampled_image_pipeline_snapshot_counts_usage_driven_program_variants() {
+        let usage = VulkanaliaScenePipelineProgramUsage::from_draw_commands(&[
+            sampled_program_command(
+                0,
+                SceneBlendMode::Alpha,
+                None,
+                VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            ),
+            sampled_program_command(
+                1,
+                SceneBlendMode::Normal,
+                Some(super::super::present::NativeVulkanVulkanaliaSceneEffectKind::WaterWaves),
+                VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            ),
+        ]);
+        let snapshot = native_vulkan_vulkanalia_scene_sampled_image_pipeline_snapshot(
+            vk::Format::B8G8R8A8_SRGB,
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            vk::SampleCountFlags::_1,
+            false,
+            VulkanaliaScenePipelineBlendUsage::from_modes([
+                SceneBlendMode::Normal,
+                SceneBlendMode::Alpha,
+            ]),
+            usage,
+        );
+
+        assert_eq!(snapshot.sampled_image_pipeline_set_count, 2);
+        assert_eq!(snapshot.sampled_image_graphics_pipeline_count, 2);
+        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 1);
     }
 
     #[test]
@@ -7170,6 +7321,7 @@ mod tests {
             vk::SampleCountFlags::_4,
             true,
             VulkanaliaScenePipelineBlendUsage::all(),
+            VulkanaliaScenePipelineProgramUsage::all(),
         );
 
         assert_eq!(solid.rasterization_samples, "4x");
@@ -8804,6 +8956,7 @@ mod tests {
             vk::SampleCountFlags::_1,
             false,
             VulkanaliaScenePipelineBlendUsage::all(),
+            VulkanaliaScenePipelineProgramUsage::all(),
         );
 
         assert_eq!(snapshot.descriptor_set_count, 0);
