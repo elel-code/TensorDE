@@ -46,7 +46,6 @@ use crate::core::scene::binary::{
     decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record, decode_render_state_record,
     decode_resource_record, decode_scene_binary_header_table, decode_texture_slot_record,
     decode_transform_keyframe_record, decode_transform_timeline_record,
-    scene_binary_particle_shape_kind, scene_binary_particle_transform,
 };
 use crate::core::scene::{
     SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
@@ -128,7 +127,6 @@ struct BinarySceneParticleTemplate {
     spawn_x: f64,
     spawn_y: f64,
     speed: f64,
-    direction_deg: f64,
     direction_sin: f64,
     direction_cos: f64,
 }
@@ -621,6 +619,7 @@ pub(crate) struct SceneBinaryRuntimeSampler {
     reader: BinarySceneReader,
     names: BinarySceneNames,
     resources: Vec<BinarySceneResource>,
+    topology: BinarySceneRetainedTopology,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
     dynamic_state: Option<BinarySceneDynamicState>,
@@ -633,6 +632,44 @@ pub(crate) struct SceneBinaryRuntimeFrame {
     pub(crate) scene_size: Option<SceneSize>,
     pub(crate) scene_fit: FitMode,
     pub(crate) layers: Vec<SceneRenderLayer>,
+}
+
+pub(crate) struct SceneBinaryRetainedGpuPayloads {
+    pub(crate) puppet_payloads: Vec<SceneBinaryPuppetGpuPayload>,
+    pub(crate) puppet_poses: Vec<SceneBinaryPuppetGpuPosePayload>,
+    pub(crate) particle_payloads: Vec<SceneBinaryParticleGpuPayload>,
+}
+
+#[derive(Debug, Clone)]
+struct BinarySceneRetainedTopology {
+    renderables: Vec<BinarySceneRetainedRenderable>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BinarySceneRetainedRenderable {
+    layer_index: usize,
+    node_index: usize,
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    geometry: SceneBinaryGeometryRecord,
+    kind: SceneNodeKind,
+    material_index: u32,
+    material: Option<SceneBinaryMaterialPassRecord>,
+    particle_index: u32,
+    particle: Option<SceneBinaryParticleEmitterRecord>,
+}
+
+impl BinarySceneRetainedRenderable {
+    fn is_particle(self) -> bool {
+        self.particle.is_some()
+    }
+
+    fn render_layer_kind(self) -> SceneNodeKind {
+        if self.is_particle() {
+            SceneNodeKind::Image
+        } else {
+            self.kind
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -737,10 +774,6 @@ impl BinarySceneRenderLayerFilter {
             ),
         }
     }
-
-    fn solid_only(self) -> bool {
-        matches!(self, Self::SolidOnly)
-    }
 }
 
 const SCENE_BINARY_PUPPET_GPU_POSE_TIMELINE_MIN_FPS: f64 = 30.0;
@@ -758,6 +791,7 @@ impl SceneBinaryRuntimeSampler {
         let names = binary_scene_names(&mut reader)?;
         let package_root = binary_scene_package_root(source_path);
         let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
+        let topology = binary_scene_retained_topology(&mut reader, &resources)?;
         let scene_size = binary_scene_size(&mut reader)?;
         let dynamic_state = binary_scene_dynamic_state_from_source_path(
             source_path,
@@ -767,6 +801,7 @@ impl SceneBinaryRuntimeSampler {
             reader,
             names,
             resources,
+            topology,
             scene_size,
             scene_fit: plan.scene_fit,
             dynamic_state,
@@ -779,33 +814,18 @@ impl SceneBinaryRuntimeSampler {
         self.gpu_only_puppet_layers = layer_indices;
     }
 
-    pub(crate) fn retained_puppet_gpu_payloads(
+    pub(crate) fn retained_gpu_payloads(
         &mut self,
         time_ms: u64,
-    ) -> Result<
-        (
-            Vec<SceneBinaryPuppetGpuPayload>,
-            Vec<SceneBinaryPuppetGpuPosePayload>,
-        ),
-        RendererPlanError,
-    > {
-        let mut retained_payloads = Vec::new();
-        let mut pose_payloads = Vec::new();
-        binary_scene_render_layers_into(
+    ) -> Result<SceneBinaryRetainedGpuPayloads, RendererPlanError> {
+        binary_scene_retained_gpu_payloads(
             &mut self.reader,
             &self.names,
             &self.resources,
+            &self.topology,
             time_ms,
             self.dynamic_state.as_ref(),
-            BinarySceneRenderLayerFilter::All,
-            true,
-            &BTreeSet::new(),
-            Some(&mut retained_payloads),
-            Some(&mut pose_payloads),
-            &mut self.layers_scratch,
-        )?;
-        self.layers_scratch.clear();
-        Ok((retained_payloads, pose_payloads))
+        )
     }
 
     pub(crate) fn sampled_layer_gpu_pose_payloads(
@@ -815,19 +835,7 @@ impl SceneBinaryRuntimeSampler {
         binary_scene_sampled_layer_gpu_pose_payloads(
             &mut self.reader,
             &self.names,
-            time_ms,
-            self.dynamic_state.as_ref(),
-        )
-    }
-
-    pub(crate) fn retained_particle_gpu_payloads(
-        &mut self,
-        time_ms: u64,
-    ) -> Result<Vec<SceneBinaryParticleGpuPayload>, RendererPlanError> {
-        binary_scene_particle_gpu_payloads(
-            &mut self.reader,
-            &self.names,
-            &self.resources,
+            &self.topology,
             time_ms,
             self.dynamic_state.as_ref(),
         )
@@ -842,6 +850,7 @@ impl SceneBinaryRuntimeSampler {
             &mut self.reader,
             &self.names,
             &self.resources,
+            &self.topology,
             time_ms,
             self.dynamic_state.as_ref(),
             BinarySceneRenderLayerFilter::All,
@@ -867,6 +876,7 @@ impl SceneBinaryRuntimeSampler {
             &mut self.reader,
             &self.names,
             &self.resources,
+            &self.topology,
             time_ms,
             self.dynamic_state.as_ref(),
             BinarySceneRenderLayerFilter::SolidOnly,
@@ -1332,6 +1342,7 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path_with_properties(
     let names = binary_scene_names(&mut reader)?;
     let package_root = binary_scene_package_root(&source_path);
     let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
+    let topology = binary_scene_retained_topology(&mut reader, &resources)?;
     let scene_size = binary_scene_size(&mut reader)?;
     let dynamic_state =
         binary_scene_dynamic_state_from_source_path(&source_path, render_properties)?;
@@ -1339,6 +1350,7 @@ pub(super) fn scene_wallpaper_plan_from_gscn_path_with_properties(
         &mut reader,
         &names,
         &resources,
+        &topology,
         snapshot_time_ms,
         dynamic_state.as_ref(),
     )?;
@@ -1561,6 +1573,7 @@ fn binary_scene_render_layers(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
     resources: &[BinarySceneResource],
+    topology: &BinarySceneRetainedTopology,
     snapshot_time_ms: u64,
     dynamic_state: Option<&BinarySceneDynamicState>,
 ) -> Result<Vec<SceneRenderLayer>, RendererPlanError> {
@@ -1569,6 +1582,7 @@ fn binary_scene_render_layers(
         reader,
         names,
         resources,
+        topology,
         snapshot_time_ms,
         dynamic_state,
         BinarySceneRenderLayerFilter::All,
@@ -1579,6 +1593,67 @@ fn binary_scene_render_layers(
         &mut layers,
     )?;
     Ok(layers)
+}
+
+fn binary_scene_retained_topology(
+    reader: &mut BinarySceneReader,
+    resources: &[BinarySceneResource],
+) -> Result<BinarySceneRetainedTopology, RendererPlanError> {
+    let node_records = reader.node_records_cached()?;
+    let mut renderables = Vec::new();
+    for (node_index, node) in node_records.iter().copied().enumerate() {
+        let Some(kind) = binary_scene_node_kind(node.kind) else {
+            continue;
+        };
+        if !binary_scene_node_kind_is_renderable(kind)
+            || node.geometry_index == SCENE_BINARY_NONE_ID
+        {
+            continue;
+        }
+        let geometry = reader.geometry_record_cached(node.geometry_index)?;
+        let material = if node.material_index == SCENE_BINARY_NONE_ID {
+            None
+        } else {
+            Some(reader.material_record_cached(node.material_index)?)
+        };
+        let particle = if binary_scene_node_is_particle_renderable(kind, geometry) {
+            if node.particle_index == SCENE_BINARY_NONE_ID {
+                None
+            } else {
+                let particle = reader.particle_record_cached(node.particle_index)?;
+                if particle.particle_count() == 0
+                    || !binary_scene_particle_has_base_texture(
+                        reader,
+                        resources,
+                        node,
+                        node.material_index,
+                        material,
+                    )?
+                {
+                    None
+                } else {
+                    Some(particle)
+                }
+            }
+        } else {
+            None
+        };
+        if binary_scene_node_is_particle_renderable(kind, geometry) && particle.is_none() {
+            continue;
+        }
+        renderables.push(BinarySceneRetainedRenderable {
+            layer_index: renderables.len(),
+            node_index,
+            node,
+            geometry,
+            kind,
+            material_index: node.material_index,
+            material,
+            particle_index: node.particle_index,
+            particle,
+        });
+    }
+    Ok(BinarySceneRetainedTopology { renderables })
 }
 
 struct BinarySceneGpuPuppetCollector<'a> {
@@ -1977,6 +2052,7 @@ fn binary_scene_render_layers_into(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
     resources: &[BinarySceneResource],
+    topology: &BinarySceneRetainedTopology,
     snapshot_time_ms: u64,
     dynamic_state: Option<&BinarySceneDynamicState>,
     filter: BinarySceneRenderLayerFilter,
@@ -1991,28 +2067,77 @@ fn binary_scene_render_layers_into(
         BinarySceneGpuPuppetCollector::new(retained_puppet_payloads, puppet_pose_payloads);
     reader.puppet_attachment_delta_cache.clear();
     reader.puppet_frame_skinning_cache.clear();
+    let node_states =
+        binary_scene_effective_node_states(reader, names, snapshot_time_ms, dynamic_state, true)?;
+    layers.reserve(topology.renderables.len());
+    for renderable in &topology.renderables {
+        if !filter.allows_kind(renderable.render_layer_kind()) {
+            continue;
+        }
+        let Some(effective_state) = node_states.get(renderable.node_index) else {
+            return Err(RendererPlanError::PackageLoad(format!(
+                "binary scene retained topology node index {} is out of range",
+                renderable.node_index
+            )));
+        };
+        let mut node_state = effective_state.state;
+        if !effective_state.visible {
+            node_state.opacity = 0.0;
+        }
+        if let Some(particle) = renderable.particle {
+            if let Some(layer) = binary_scene_particle_render_layer(
+                reader,
+                names,
+                resources,
+                renderable.node,
+                particle,
+                renderable.material_index,
+                renderable.material,
+                node_state,
+            )? {
+                layers.push(layer);
+            }
+            continue;
+        }
+        let layer = binary_scene_render_layer(
+            reader,
+            names,
+            resources,
+            renderable.layer_index,
+            gpu_only_puppet_layers,
+            renderable.node,
+            renderable.geometry,
+            renderable.material_index,
+            renderable.material,
+            renderable.kind,
+            node_state,
+            snapshot_time_ms,
+            retain_sampled_indices,
+            &mut gpu_puppets,
+        )?;
+        layers.push(layer);
+    }
+    Ok(())
+}
+
+fn binary_scene_effective_node_states(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    snapshot_time_ms: u64,
+    dynamic_state: Option<&BinarySceneDynamicState>,
+    include_sampled_pose_dynamics: bool,
+) -> Result<Vec<BinarySceneEffectiveNodeState>, RendererPlanError> {
     let node_records = reader.node_records_cached()?;
     let mut node_states = Vec::with_capacity(node_records.len());
-    if filter.solid_only() {
-        layers.reserve(16);
-    } else {
-        layers.reserve(node_records.len());
-    }
     for node in node_records.iter().copied() {
-        let kind = binary_scene_node_kind(node.kind);
-        let needs_render_geometry = kind.is_some_and(|kind| {
-            binary_scene_node_kind_is_renderable(kind) && filter.allows_kind(kind)
-        });
-        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID
-            || (filter.solid_only() && !needs_render_geometry)
-        {
+        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
             None
         } else {
             Some(reader.geometry_record_cached(node.geometry_index)?)
         };
         let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
         let node_id = binary_name(names, node.id_name);
-        let local_sampled_pose_dynamic = !filter.solid_only()
+        let local_sampled_pose_dynamic = include_sampled_pose_dynamics
             && (binary_scene_node_has_timed_transform(reader, node)?
                 || node.puppet_attachment_name != SCENE_BINARY_NONE_ID
                 || binary_scene_node_has_dynamic_property_binding(node_id, dynamic_state));
@@ -2022,14 +2147,12 @@ fn binary_scene_render_layers_into(
             binary_scene_apply_dynamic_property_bindings(&mut local_state, node_id, dynamic_state);
         }
         let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
-        if !filter.solid_only() {
-            binary_scene_apply_puppet_attachment_delta(
-                names,
-                &mut local_state.transform,
-                node.puppet_attachment_name,
-                parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
-            );
-        }
+        binary_scene_apply_puppet_attachment_delta(
+            names,
+            &mut local_state.transform,
+            node.puppet_attachment_name,
+            parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
+        );
         let mut effective_state = binary_scene_effective_node_state(
             names,
             node,
@@ -2038,239 +2161,145 @@ fn binary_scene_render_layers_into(
             dynamic_state,
             local_sampled_pose_dynamic,
         );
-        if !filter.solid_only() {
-            effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
-                reader,
-                names,
-                node.puppet_index,
-                snapshot_time_ms,
-            )?;
-        }
-        if effective_state.visible && effective_state.state.opacity > f64::EPSILON {
-            if let (Some(geometry), Some(kind)) = (geometry, kind) {
-                if binary_scene_node_kind_is_renderable(kind) && filter.allows_kind(kind) {
-                    let material = if node.material_index == SCENE_BINARY_NONE_ID {
-                        None
-                    } else {
-                        Some(reader.material_record_cached(node.material_index)?)
-                    };
-                    if kind == SceneNodeKind::ParticleEmitter
-                        || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
-                    {
-                        if node.particle_index != SCENE_BINARY_NONE_ID {
-                            let particle = reader.particle_record_cached(node.particle_index)?;
-                            binary_scene_particle_render_layers(
-                                reader,
-                                names,
-                                resources,
-                                node,
-                                particle,
-                                node.particle_index,
-                                node.material_index,
-                                material,
-                                effective_state.state,
-                                snapshot_time_ms,
-                                retain_sampled_indices,
-                                filter,
-                                layers,
-                            )?;
-                        }
-                    } else {
-                        let layer_index = layers.len();
-                        let layer = binary_scene_render_layer(
-                            reader,
-                            names,
-                            resources,
-                            layer_index,
-                            gpu_only_puppet_layers,
-                            node,
-                            geometry,
-                            node.material_index,
-                            material,
-                            kind,
-                            effective_state.state,
-                            snapshot_time_ms,
-                            retain_sampled_indices,
-                            &mut gpu_puppets,
-                        )?;
-                        layers.push(layer);
-                    }
-                }
-            }
-        }
+        effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
+            reader,
+            names,
+            node.puppet_index,
+            snapshot_time_ms,
+        )?;
         node_states.push(effective_state);
     }
-    Ok(())
+    Ok(node_states)
+}
+
+fn binary_scene_retained_gpu_payloads(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    resources: &[BinarySceneResource],
+    topology: &BinarySceneRetainedTopology,
+    snapshot_time_ms: u64,
+    dynamic_state: Option<&BinarySceneDynamicState>,
+) -> Result<SceneBinaryRetainedGpuPayloads, RendererPlanError> {
+    reader.puppet_attachment_delta_cache.clear();
+    reader.puppet_frame_skinning_cache.clear();
+    let node_states =
+        binary_scene_effective_node_states(reader, names, snapshot_time_ms, dynamic_state, true)?;
+    let mut puppet_payloads = Vec::new();
+    let mut puppet_poses = Vec::new();
+    let mut particle_payloads = Vec::new();
+    let mut gpu_puppets =
+        BinarySceneGpuPuppetCollector::new(Some(&mut puppet_payloads), Some(&mut puppet_poses));
+    for renderable in &topology.renderables {
+        let Some(effective_state) = node_states.get(renderable.node_index) else {
+            return Err(RendererPlanError::PackageLoad(format!(
+                "binary scene retained topology node index {} is out of range",
+                renderable.node_index
+            )));
+        };
+        let mut node_state = effective_state.state;
+        if !effective_state.visible {
+            node_state.opacity = 0.0;
+        }
+        if let Some(particle) = renderable.particle {
+            binary_scene_particle_gpu_payload(
+                reader,
+                names,
+                resources,
+                renderable.node,
+                particle,
+                renderable.particle_index,
+                renderable.material_index,
+                renderable.material,
+                node_state,
+                renderable.layer_index,
+                &mut particle_payloads,
+            )?;
+            continue;
+        }
+        if renderable.node.puppet_index == SCENE_BINARY_NONE_ID {
+            continue;
+        }
+        let layer_id = binary_name(names, renderable.node.id_name)
+            .unwrap_or("binary-node")
+            .to_owned();
+        let _ = binary_scene_mesh(
+            reader,
+            names,
+            renderable.layer_index,
+            &layer_id,
+            renderable.node.geometry_index,
+            renderable.geometry,
+            renderable.node.puppet_index,
+            snapshot_time_ms,
+            false,
+            node_state.width,
+            node_state.height,
+            node_state.opacity,
+            node_state.transform,
+            true,
+            &mut gpu_puppets,
+        )?;
+    }
+    Ok(SceneBinaryRetainedGpuPayloads {
+        puppet_payloads,
+        puppet_poses,
+        particle_payloads,
+    })
 }
 
 fn binary_scene_sampled_layer_gpu_pose_payloads(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
+    topology: &BinarySceneRetainedTopology,
     snapshot_time_ms: u64,
     dynamic_state: Option<&BinarySceneDynamicState>,
 ) -> Result<Vec<SceneBinarySampledLayerGpuPosePayload>, RendererPlanError> {
     reader.puppet_attachment_delta_cache.clear();
     reader.puppet_frame_skinning_cache.clear();
-    let node_records = reader.node_records_cached()?;
-    let mut node_states = Vec::with_capacity(node_records.len());
+    let node_states =
+        binary_scene_effective_node_states(reader, names, snapshot_time_ms, dynamic_state, true)?;
     let mut payloads = Vec::new();
-    let mut layer_index = 0usize;
-    for node in node_records.iter().copied() {
-        let kind = binary_scene_node_kind(node.kind);
-        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
-            None
-        } else {
-            Some(reader.geometry_record_cached(node.geometry_index)?)
+    for renderable in &topology.renderables {
+        if renderable.render_layer_kind() != SceneNodeKind::Image {
+            continue;
+        }
+        let Some(effective_state) = node_states.get(renderable.node_index) else {
+            return Err(RendererPlanError::PackageLoad(format!(
+                "binary scene retained topology node index {} is out of range",
+                renderable.node_index
+            )));
         };
-        let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
-        let node_id = binary_name(names, node.id_name);
-        let local_sampled_pose_dynamic = binary_scene_node_has_timed_transform(reader, node)?
-            || node.puppet_attachment_name != SCENE_BINARY_NONE_ID
-            || binary_scene_node_has_dynamic_property_binding(node_id, dynamic_state);
-        if let Some(dynamic_state) = dynamic_state
-            && let Some(node_id) = node_id
-        {
-            binary_scene_apply_dynamic_property_bindings(&mut local_state, node_id, dynamic_state);
+        if !effective_state.sampled_pose_dynamic {
+            continue;
         }
-        let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
-        binary_scene_apply_puppet_attachment_delta(
-            names,
-            &mut local_state.transform,
-            node.puppet_attachment_name,
-            parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
-        );
-        let mut effective_state = binary_scene_effective_node_state(
-            names,
-            node,
-            local_state,
-            parent_state,
-            dynamic_state,
-            local_sampled_pose_dynamic,
-        );
-        effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
-            reader,
-            names,
-            node.puppet_index,
-            snapshot_time_ms,
-        )?;
-        if effective_state.visible
-            && effective_state.state.opacity > f64::EPSILON
-            && let Some(kind) = kind
-            && binary_scene_node_kind_is_renderable(kind)
-            && geometry.is_some()
-        {
-            if kind == SceneNodeKind::Image && effective_state.sampled_pose_dynamic {
-                let layer_id = binary_name(names, node.id_name)
-                    .unwrap_or("binary-node")
-                    .to_owned();
-                let (position_transform_x, position_transform_y) =
-                    binary_scene_puppet_gpu_position_transform(
-                        effective_state.state.width,
-                        effective_state.state.height,
-                        effective_state.state.transform,
-                    )?;
-                payloads.push(SceneBinarySampledLayerGpuPosePayload {
-                    layer_index,
-                    layer_id,
-                    position_transform_x,
-                    position_transform_y,
-                    layer_opacity: effective_state.state.opacity.clamp(0.0, 1.0) as f32,
-                });
-            }
-            layer_index = layer_index.saturating_add(1);
+        let mut node_state = effective_state.state;
+        if !effective_state.visible {
+            node_state.opacity = 0.0;
         }
-        node_states.push(effective_state);
-    }
-    Ok(payloads)
-}
-
-fn binary_scene_particle_gpu_payloads(
-    reader: &mut BinarySceneReader,
-    names: &BinarySceneNames,
-    resources: &[BinarySceneResource],
-    snapshot_time_ms: u64,
-    dynamic_state: Option<&BinarySceneDynamicState>,
-) -> Result<Vec<SceneBinaryParticleGpuPayload>, RendererPlanError> {
-    reader.puppet_attachment_delta_cache.clear();
-    reader.puppet_frame_skinning_cache.clear();
-    let node_records = reader.node_records_cached()?;
-    let mut node_states = Vec::with_capacity(node_records.len());
-    let mut payloads = Vec::new();
-    let mut layer_index = 0usize;
-    for node in node_records.iter().copied() {
-        let kind = binary_scene_node_kind(node.kind);
-        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
-            None
+        let layer_id = binary_name(names, renderable.node.id_name)
+            .unwrap_or("binary-node")
+            .to_owned();
+        let (width, height, transform) = if let Some(particle) = renderable.particle {
+            let mut transform = node_state.transform;
+            transform.anchor_x = 0.5;
+            transform.anchor_y = 0.5;
+            (
+                Some(f64::from(particle.particle_width).max(1.0)),
+                Some(f64::from(particle.particle_height).max(1.0)),
+                transform,
+            )
         } else {
-            Some(reader.geometry_record_cached(node.geometry_index)?)
+            (node_state.width, node_state.height, node_state.transform)
         };
-        let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
-        let node_id = binary_name(names, node.id_name);
-        let local_sampled_pose_dynamic = binary_scene_node_has_timed_transform(reader, node)?
-            || node.puppet_attachment_name != SCENE_BINARY_NONE_ID
-            || binary_scene_node_has_dynamic_property_binding(node_id, dynamic_state);
-        if let Some(dynamic_state) = dynamic_state
-            && let Some(node_id) = node_id
-        {
-            binary_scene_apply_dynamic_property_bindings(&mut local_state, node_id, dynamic_state);
-        }
-        let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
-        binary_scene_apply_puppet_attachment_delta(
-            names,
-            &mut local_state.transform,
-            node.puppet_attachment_name,
-            parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
-        );
-        let mut effective_state = binary_scene_effective_node_state(
-            names,
-            node,
-            local_state,
-            parent_state,
-            dynamic_state,
-            local_sampled_pose_dynamic,
-        );
-        effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
-            reader,
-            names,
-            node.puppet_index,
-            snapshot_time_ms,
-        )?;
-        if effective_state.visible
-            && effective_state.state.opacity > f64::EPSILON
-            && let (Some(geometry), Some(kind)) = (geometry, kind)
-            && binary_scene_node_kind_is_renderable(kind)
-        {
-            if kind == SceneNodeKind::ParticleEmitter
-                || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
-            {
-                if node.particle_index != SCENE_BINARY_NONE_ID {
-                    let material = if node.material_index == SCENE_BINARY_NONE_ID {
-                        None
-                    } else {
-                        Some(reader.material_record_cached(node.material_index)?)
-                    };
-                    let particle = reader.particle_record_cached(node.particle_index)?;
-                    let emitted = binary_scene_particle_gpu_payload(
-                        reader,
-                        names,
-                        resources,
-                        node,
-                        particle,
-                        node.particle_index,
-                        node.material_index,
-                        material,
-                        effective_state.state,
-                        snapshot_time_ms,
-                        layer_index,
-                        &mut payloads,
-                    )?;
-                    layer_index = layer_index.saturating_add(emitted);
-                }
-            } else {
-                layer_index = layer_index.saturating_add(1);
-            }
-        }
-        node_states.push(effective_state);
+        let (position_transform_x, position_transform_y) =
+            binary_scene_puppet_gpu_position_transform(width, height, transform)?;
+        payloads.push(SceneBinarySampledLayerGpuPosePayload {
+            layer_index: renderable.layer_index,
+            layer_id,
+            position_transform_x,
+            position_transform_y,
+            layer_opacity: node_state.opacity.clamp(0.0, 1.0) as f32,
+        });
     }
     Ok(payloads)
 }
@@ -2286,12 +2315,11 @@ fn binary_scene_particle_gpu_payload(
     material_index: u32,
     material: Option<SceneBinaryMaterialPassRecord>,
     node_state: BinarySceneNodeState,
-    snapshot_time_ms: u64,
     layer_index: usize,
     payloads: &mut Vec<SceneBinaryParticleGpuPayload>,
 ) -> Result<usize, RendererPlanError> {
     let particle_count = particle.particle_count();
-    if particle_count == 0 || node_state.opacity <= 0.0 {
+    if particle_count == 0 {
         return Ok(0);
     }
     let node_resource = binary_resource_by_name(resources, node.resource_name);
@@ -2318,16 +2346,10 @@ fn binary_scene_particle_gpu_payload(
                 .find(|slot| slot.slot == 0)
                 .map(|slot| slot.source.clone())
         });
-    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
     if source.is_none() {
-        return Ok(templates
-            .iter()
-            .filter(|template| {
-                binary_scene_particle_template_transform(particle, **template, snapshot_time_ms)
-                    .is_some_and(|(opacity, _, _, _)| opacity > 0.0)
-            })
-            .count());
+        return Ok(0);
     }
+    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
     let Some(payload) = binary_scene_particle_gpu_payload_from_templates(
         names,
         node,
@@ -2426,24 +2448,19 @@ fn binary_scene_particle_gpu_payload_from_templates(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn binary_scene_particle_render_layers(
+fn binary_scene_particle_render_layer(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
     resources: &[BinarySceneResource],
     node: crate::core::scene::binary::SceneBinaryNodeRecord,
     particle: SceneBinaryParticleEmitterRecord,
-    particle_index: u32,
     material_index: u32,
     material: Option<SceneBinaryMaterialPassRecord>,
     node_state: BinarySceneNodeState,
-    snapshot_time_ms: u64,
-    retain_sampled_indices: bool,
-    filter: BinarySceneRenderLayerFilter,
-    layers: &mut Vec<SceneRenderLayer>,
-) -> Result<(), RendererPlanError> {
+) -> Result<Option<SceneRenderLayer>, RendererPlanError> {
     let particle_count = particle.particle_count();
-    if particle_count == 0 || node_state.opacity <= 0.0 {
-        return Ok(());
+    if particle_count == 0 {
+        return Ok(None);
     }
 
     let node_resource = binary_resource_by_name(resources, node.resource_name);
@@ -2470,132 +2487,9 @@ fn binary_scene_particle_render_layers(
                 .find(|slot| slot.slot == 0)
                 .map(|slot| slot.source.clone())
         });
-    let texture_slots = if source.is_some() {
-        // The particle base image is already represented by SceneRenderLayer::source.
-        // Retaining slot 0 here clones thousands of identical paths per frame.
-        material_texture_slots
-            .iter()
-            .filter(|slot| slot.slot != 0)
-            .cloned()
-            .collect::<Vec<_>>()
-    } else {
-        material_texture_slots
+    let Some(source) = source else {
+        return Ok(None);
     };
-    let layer_kind = if source.is_some() {
-        SceneNodeKind::Image
-    } else {
-        scene_binary_particle_shape_kind(particle.shape)
-    };
-    if !filter.allows_kind(layer_kind) {
-        return Ok(());
-    }
-    let blend_mode = material
-        .map(|material| binary_scene_blend_mode(material.blend_mode))
-        .unwrap_or_default();
-    let color = Some(binary_scene_rgba_hex(particle.color_rgba));
-    if let Some(source) = source {
-        if let Some(mesh) = binary_scene_particle_placeholder_mesh(particle, retain_sampled_indices)
-        {
-            let mut transform = node_state.transform;
-            transform.anchor_x = 0.5;
-            transform.anchor_y = 0.5;
-            layers.push(SceneRenderLayer {
-                id: binary_name(names, node.id_name)
-                    .unwrap_or("binary-particle-emitter")
-                    .to_owned(),
-                kind: SceneNodeKind::Image,
-                source: Some(source),
-                texture_slots,
-                alpha_texture_slot: None,
-                alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
-                image_effect_passes: Vec::new(),
-                composite_key: None,
-                texture_region: None::<SceneTextureRegion>,
-                effect_motion: Default::default(),
-                blend_mode,
-                audio: Vec::new(),
-                color,
-                stroke_color: None,
-                stroke_width: None,
-                corner_radius: None,
-                width: Some(f64::from(particle.particle_width).max(1.0)),
-                height: Some(f64::from(particle.particle_height).max(1.0)),
-                mesh: Some(Arc::new(mesh)),
-                text: None,
-                font_size: None,
-                font_family: None,
-                font_source: None,
-                font_weight: None,
-                text_align: None,
-                path_data: None,
-                path_fill_rule: ScenePathFillRule::default(),
-                fit: binary_scene_fit(node.fit),
-                opacity: node_state.opacity.clamp(0.0, 1.0),
-                transform,
-            });
-        }
-        return Ok(());
-    }
-    let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
-    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
-    layers.reserve(particle_count as usize);
-    for template in templates.iter() {
-        let Some((particle_opacity, x, y, rotation_deg)) =
-            binary_scene_particle_template_transform(particle, *template, snapshot_time_ms)
-        else {
-            continue;
-        };
-        let opacity = node_state.opacity * particle_opacity;
-        if opacity <= 0.0 {
-            continue;
-        }
-        layers.push(SceneRenderLayer {
-            id: String::new(),
-            kind: layer_kind,
-            source: None,
-            texture_slots: texture_slots.clone(),
-            alpha_texture_slot: None,
-            alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
-            image_effect_passes: Vec::new(),
-            composite_key: None,
-            texture_region: None::<SceneTextureRegion>,
-            effect_motion: Default::default(),
-            blend_mode,
-            audio: Vec::new(),
-            color: color.clone(),
-            stroke_color: None,
-            stroke_width: None,
-            corner_radius: None,
-            width: Some(f64::from(particle.particle_width)),
-            height: Some(f64::from(particle.particle_height)),
-            mesh: None,
-            text: None,
-            font_size: None,
-            font_family: None,
-            font_source: None,
-            font_weight: None,
-            text_align: None,
-            path_data: None,
-            path_fill_rule: ScenePathFillRule::default(),
-            fit: binary_scene_fit(node.fit),
-            opacity: opacity.clamp(0.0, 1.0),
-            transform: scene_binary_particle_transform(
-                node_state.transform,
-                parent_sin,
-                parent_cos,
-                x,
-                y,
-                rotation_deg,
-            ),
-        });
-    }
-    Ok(())
-}
-
-fn binary_scene_particle_placeholder_mesh(
-    particle: SceneBinaryParticleEmitterRecord,
-    retain_indices: bool,
-) -> Option<SceneMesh> {
     let particle_width = f64::from(particle.particle_width);
     let particle_height = f64::from(particle.particle_height);
     if !particle_width.is_finite()
@@ -2603,50 +2497,55 @@ fn binary_scene_particle_placeholder_mesh(
         || particle_width <= 0.0
         || particle_height <= 0.0
     {
-        return None;
+        return Ok(None);
     }
-    let half_width = particle_width * 0.5;
-    let half_height = particle_height * 0.5;
-    Some(SceneMesh {
-        vertices: vec![
-            SceneMeshVertex {
-                x: -half_width,
-                y: -half_height,
-                u: 0.0,
-                v: 1.0,
-                opacity: 1.0,
-            },
-            SceneMeshVertex {
-                x: half_width,
-                y: -half_height,
-                u: 1.0,
-                v: 1.0,
-                opacity: 1.0,
-            },
-            SceneMeshVertex {
-                x: -half_width,
-                y: half_height,
-                u: 0.0,
-                v: 0.0,
-                opacity: 1.0,
-            },
-            SceneMeshVertex {
-                x: half_width,
-                y: half_height,
-                u: 1.0,
-                v: 0.0,
-                opacity: 1.0,
-            },
-        ],
-        indices: if retain_indices {
-            vec![0, 1, 2, 2, 1, 3]
-        } else {
-            Vec::new()
-        },
-        skin: None,
-        puppet_clips: Vec::new(),
-        puppet_clipping_records: Vec::new(),
-    })
+    // The particle base image is already represented by SceneRenderLayer::source.
+    // Retaining slot 0 here clones thousands of identical paths per frame.
+    let texture_slots = material_texture_slots
+        .iter()
+        .filter(|slot| slot.slot != 0)
+        .cloned()
+        .collect::<Vec<_>>();
+    let blend_mode = material
+        .map(|material| binary_scene_blend_mode(material.blend_mode))
+        .unwrap_or_default();
+    let mut transform = node_state.transform;
+    transform.anchor_x = 0.5;
+    transform.anchor_y = 0.5;
+    Ok(Some(SceneRenderLayer {
+        id: binary_name(names, node.id_name)
+            .unwrap_or("binary-particle-emitter")
+            .to_owned(),
+        kind: SceneNodeKind::Image,
+        source: Some(source),
+        texture_slots,
+        alpha_texture_slot: None,
+        alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
+        image_effect_passes: Vec::new(),
+        composite_key: None,
+        texture_region: None::<SceneTextureRegion>,
+        effect_motion: Default::default(),
+        blend_mode,
+        audio: Vec::new(),
+        color: Some(binary_scene_rgba_hex(particle.color_rgba)),
+        stroke_color: None,
+        stroke_width: None,
+        corner_radius: None,
+        width: Some(particle_width.max(1.0)),
+        height: Some(particle_height.max(1.0)),
+        mesh: None,
+        text: None,
+        font_size: None,
+        font_family: None,
+        font_source: None,
+        font_weight: None,
+        text_align: None,
+        path_data: None,
+        path_fill_rule: ScenePathFillRule::default(),
+        fit: binary_scene_fit(node.fit),
+        opacity: node_state.opacity.clamp(0.0, 1.0),
+        transform,
+    }))
 }
 
 fn binary_scene_particle_templates_cached(
@@ -2680,7 +2579,6 @@ fn binary_scene_particle_templates_cached(
                     spawn_x,
                     spawn_y,
                     speed,
-                    direction_deg,
                     direction_sin,
                     direction_cos,
                 }
@@ -2691,37 +2589,6 @@ fn binary_scene_particle_templates_cached(
         .particle_templates_cache
         .insert(particle_index, Arc::clone(&templates));
     templates
-}
-
-fn binary_scene_particle_template_transform(
-    particle: SceneBinaryParticleEmitterRecord,
-    template: BinarySceneParticleTemplate,
-    time_ms: u64,
-) -> Option<(f64, f64, f64, f64)> {
-    let lifetime_ms = particle.lifetime_ms.max(1);
-    let local_ms = if particle.flags & SCENE_BINARY_PARTICLE_FLAG_LOOP != 0 {
-        time_ms.wrapping_add(template.phase_ms) % lifetime_ms
-    } else {
-        let started_at = template.phase_ms.min(lifetime_ms);
-        if time_ms < started_at {
-            return None;
-        }
-        (time_ms - started_at).min(lifetime_ms)
-    };
-    let age = local_ms as f64 / 1000.0;
-    let progress = (local_ms as f64 / lifetime_ms as f64).clamp(0.0, 1.0);
-    let opacity = if particle.flags & SCENE_BINARY_PARTICLE_FLAG_FADE != 0 {
-        1.0 - progress
-    } else {
-        1.0
-    };
-    let x = template.spawn_x
-        + template.direction_cos * template.speed * age
-        + 0.5 * f64::from(particle.gravity_x) * age * age;
-    let y = template.spawn_y
-        + template.direction_sin * template.speed * age
-        + 0.5 * f64::from(particle.gravity_y) * age * age;
-    Some((opacity, x, y, template.direction_deg))
 }
 
 #[inline]
@@ -2751,6 +2618,35 @@ fn binary_scene_particle_base_texture_slot(
         width: resource.width,
         height: resource.height,
     }]
+}
+
+fn binary_scene_node_is_particle_renderable(
+    kind: SceneNodeKind,
+    geometry: SceneBinaryGeometryRecord,
+) -> bool {
+    kind == SceneNodeKind::ParticleEmitter
+        || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
+}
+
+fn binary_scene_particle_has_base_texture(
+    reader: &mut BinarySceneReader,
+    resources: &[BinarySceneResource],
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    material_index: u32,
+    material: Option<SceneBinaryMaterialPassRecord>,
+) -> Result<bool, RendererPlanError> {
+    let node_resource = binary_resource_by_name(resources, node.resource_name);
+    if node_resource.is_some_and(|resource| resource.source.is_some()) {
+        return Ok(true);
+    }
+    let material_texture_slots = if let Some(material) = material {
+        binary_scene_material_texture_slots_cached(reader, material_index, material, resources)?
+    } else {
+        Vec::new()
+    };
+    Ok(material_texture_slots
+        .iter()
+        .any(|slot| slot.slot == 0 && !slot.source.as_os_str().is_empty()))
 }
 
 fn binary_scene_render_layer(
@@ -4288,7 +4184,7 @@ mod tests {
     }
 
     #[test]
-    fn gscn_direct_ingest_emits_retained_particle_marker_from_binary_payload() {
+    fn gscn_direct_ingest_emits_meshless_retained_particle_marker_from_binary_payload() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
@@ -4353,11 +4249,111 @@ mod tests {
         assert!((layer.opacity - 0.4).abs() < 1e-6);
         assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
         assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
-        let mesh = layer.mesh.as_ref().expect("retained particle marker mesh");
-        assert_eq!(mesh.vertices.len(), 4);
-        assert_eq!(mesh.indices.len(), 6);
-        assert_eq!(&mesh.indices[0..6], &[0, 1, 2, 2, 1, 3]);
-        assert!((mesh.vertices[0].opacity - 1.0).abs() < f64::EPSILON);
+        assert!(
+            layer.mesh.is_none(),
+            "textured retained particle marker should not carry CPU mesh vertices"
+        );
+    }
+
+    #[test]
+    fn gscn_binary_runtime_sampler_puts_dynamic_particles_on_layer_pose_timeline() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "spark-emitter",
+                    "type": "particle-emitter",
+                    "resource": "spark",
+                    "transform": { "x": 0.0, "y": 5.0 },
+                    "properties": {
+                        "particle": {
+                            "count": 3,
+                            "seed": 1,
+                            "lifetime_ms": 1000,
+                            "loop": true,
+                            "spawn_width": 0.0,
+                            "spawn_height": 0.0,
+                            "width": 6.0,
+                            "height": 8.0,
+                            "speed": 0.0,
+                            "spread_deg": 0.0,
+                            "gravity_x": 0.0,
+                            "gravity_y": 0.0,
+                            "fade": false,
+                            "color": "#ffffff"
+                        }
+                    }
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "move-emitter",
+                    "target_node": "spark-emitter",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 1000, "value": 100.0 }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-runtime-particle-pose");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path,
+            Some(60),
+            0,
+            None,
+        )
+        .expect("binary scene plan");
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .expect("binary sampler open")
+            .expect("binary sampler");
+
+        let particle_payloads = sampler
+            .retained_gpu_payloads(0)
+            .expect("retained GPU payloads")
+            .particle_payloads;
+        assert_eq!(particle_payloads.len(), 1);
+        assert_eq!(particle_payloads[0].layer_index, 0);
+        assert_eq!(particle_payloads[0].vertices.len(), 12);
+
+        let first_pose_payloads = sampler
+            .sampled_layer_gpu_pose_payloads(0)
+            .expect("first sampled-layer GPU poses");
+        let first_pose = first_pose_payloads
+            .iter()
+            .find(|pose| pose.layer_id == "spark-emitter")
+            .expect("first particle pose");
+        assert_eq!(first_pose.layer_index, 0);
+        assert!((first_pose.position_transform_x[2] - 0.0).abs() < 0.0001);
+        assert!((first_pose.position_transform_y[2] - 5.0).abs() < 0.0001);
+
+        let later_pose_payloads = sampler
+            .sampled_layer_gpu_pose_payloads(1000)
+            .expect("later sampled-layer GPU poses");
+        let later_pose = later_pose_payloads
+            .iter()
+            .find(|pose| pose.layer_id == "spark-emitter")
+            .expect("later particle pose");
+        assert_eq!(later_pose.layer_index, 0);
+        assert!((later_pose.position_transform_x[2] - 100.0).abs() < 0.0001);
+        assert!((later_pose.position_transform_y[2] - 5.0).abs() < 0.0001);
+
+        fs::remove_dir_all(root).expect("remove test dir");
     }
 
     #[test]
@@ -4494,6 +4490,47 @@ mod tests {
         assert!((frame.layers[0].transform.y - 5.0).abs() < 0.0001);
 
         sampler.recycle_frame(frame);
+        fs::remove_dir_all(root).expect("remove test dir");
+    }
+
+    #[test]
+    fn gscn_binary_runtime_topology_keeps_initially_hidden_layers() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "hero", "type": "image", "source": "assets/hero.gtex", "width": 16, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "hidden-hero",
+                    "type": "image",
+                    "resource": "hero",
+                    "visible": false,
+                    "width": 16.0,
+                    "height": 16.0,
+                    "transform": { "x": 10.0, "y": 20.0 }
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-retained-hidden");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+
+        assert_eq!(plan.layers.len(), 1);
+        let layer = &plan.layers[0];
+        assert_eq!(layer.id, "hidden-hero");
+        assert_eq!(layer.kind, SceneNodeKind::Image);
+        assert_eq!(layer.opacity, 0.0);
+        assert_eq!(layer.width, Some(16.0));
+        assert_eq!(layer.height, Some(16.0));
+
         fs::remove_dir_all(root).expect("remove test dir");
     }
 
@@ -4783,9 +4820,11 @@ mod tests {
         let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
             .expect("binary sampler open")
             .expect("binary sampler");
-        let (retained_payloads, initial_poses) = sampler
-            .retained_puppet_gpu_payloads(0)
-            .expect("retained puppet GPU payloads");
+        let retained_gpu_payloads = sampler
+            .retained_gpu_payloads(0)
+            .expect("retained GPU payloads");
+        let retained_payloads = retained_gpu_payloads.puppet_payloads;
+        let initial_poses = retained_gpu_payloads.puppet_poses;
         let body_payload = retained_payloads
             .iter()
             .find(|payload| payload.layer_id == "body")

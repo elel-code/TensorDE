@@ -11,7 +11,7 @@ mod scene_binary;
 pub(crate) use self::scene_binary::{
     SceneBinaryParticleGpuPayload, SceneBinaryParticleGpuVertexPayload,
     SceneBinaryPuppetGpuPayload, SceneBinaryPuppetGpuPosePayload,
-    SceneBinaryPuppetGpuVertexPayload, SceneBinaryRuntimeSampler,
+    SceneBinaryPuppetGpuVertexPayload, SceneBinaryRetainedGpuPayloads, SceneBinaryRuntimeSampler,
     SceneBinarySampledLayerGpuPosePayload,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
@@ -4437,6 +4437,138 @@ exit 0
         assert_eq!(
             sync.decisions[0].performance.reason,
             crate::policy::DecisionReason::OutputHidden
+        );
+    }
+
+    #[cfg(feature = "native-vulkan-renderer")]
+    #[test]
+    fn gscn_particle_emitter_with_texture_uses_meshless_retained_marker() {
+        let test_dir = TestDir::new("gilder-gscn-textured-particle-marker");
+        let assets_dir = test_dir.path.join("assets");
+        fs::create_dir_all(&assets_dir).unwrap();
+        let scene_path = assets_dir.join("scene.gscn");
+        write_test_binary_scene(
+            &scene_path,
+            r##"{
+              "version": 1,
+              "resources": [
+                {
+                  "id": "spark",
+                  "type": "image",
+                  "source": "assets/spark.gtex",
+                  "width": 16,
+                  "height": 16
+                }
+              ],
+              "nodes": [
+                {
+                  "id": "spark-emitter",
+                  "type": "particle-emitter",
+                  "resource": "spark",
+                  "opacity": 0.5,
+                  "properties": {
+                    "particle": {
+                      "count": 3,
+                      "seed": 1,
+                      "lifetime_ms": 1000,
+                      "loop": true,
+                      "width": 6.0,
+                      "height": 8.0,
+                      "speed": 0.0,
+                      "spread_deg": 0.0,
+                      "gravity_x": 0.0,
+                      "gravity_y": 0.0,
+                      "fade": false,
+                      "color": "#aabbcc"
+                    }
+                  }
+                }
+              ]
+            }"##,
+        );
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("eDP-1".to_owned(), scene_path, None, 250, None)
+                .unwrap();
+
+        assert_eq!(plan.layers.len(), 1);
+        let layer = &plan.layers[0];
+        assert_eq!(layer.id, "spark-emitter");
+        assert_eq!(layer.kind, SceneNodeKind::Image);
+        assert_eq!(layer.width, Some(6.0));
+        assert_eq!(layer.height, Some(8.0));
+        assert!(
+            layer.mesh.is_none(),
+            "retained particle marker should not carry CPU quad vertices"
+        );
+
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("binary sampler");
+        let payloads = sampler
+            .retained_gpu_payloads(250)
+            .unwrap()
+            .particle_payloads;
+        assert_eq!(payloads.len(), 1);
+        assert_eq!(payloads[0].layer_index, 0);
+        assert_eq!(payloads[0].vertices.len(), 12);
+        assert_eq!(payloads[0].indices.len(), 18);
+    }
+
+    #[cfg(feature = "native-vulkan-renderer")]
+    #[test]
+    fn gscn_particle_emitter_without_texture_does_not_expand_cpu_layers() {
+        let test_dir = TestDir::new("gilder-gscn-untextured-particle-cleanup");
+        let assets_dir = test_dir.path.join("assets");
+        fs::create_dir_all(&assets_dir).unwrap();
+        let scene_path = assets_dir.join("scene.gscn");
+        write_test_binary_scene(
+            &scene_path,
+            r##"{
+              "version": 1,
+              "nodes": [
+                {
+                  "id": "solid-emitter",
+                  "type": "particle-emitter",
+                  "properties": {
+                    "particle": {
+                      "count": 64,
+                      "seed": 7,
+                      "lifetime_ms": 1000,
+                      "loop": true,
+                      "shape": "rectangle",
+                      "width": 4.0,
+                      "height": 4.0,
+                      "speed": 1.0,
+                      "spread_deg": 45.0,
+                      "gravity_x": 0.0,
+                      "gravity_y": 0.0,
+                      "fade": true,
+                      "color": "#ffffff"
+                    }
+                  }
+                }
+              ]
+            }"##,
+        );
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("eDP-1".to_owned(), scene_path, None, 250, None)
+                .unwrap();
+
+        assert!(
+            plan.layers.is_empty(),
+            "untextured particles should not fall back to per-particle CPU layers"
+        );
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .unwrap()
+            .expect("binary sampler");
+        assert!(
+            sampler
+                .retained_gpu_payloads(250)
+                .unwrap()
+                .particle_payloads
+                .is_empty()
         );
     }
 
