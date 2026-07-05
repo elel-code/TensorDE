@@ -101,6 +101,8 @@ pub use scene_present::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneEffectKind,
     NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneParticleGpuPayload,
+    NativeVulkanVulkanaliaSceneParticleGpuVertexPayload,
     NativeVulkanVulkanaliaScenePuppetGpuPayload, NativeVulkanVulkanaliaScenePuppetGpuPosePayload,
     NativeVulkanVulkanaliaScenePuppetGpuVertexPayload, NativeVulkanVulkanaliaSceneRenderState,
     NativeVulkanVulkanaliaSceneSampledImageDrawStep,

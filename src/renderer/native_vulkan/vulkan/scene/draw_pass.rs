@@ -35,8 +35,10 @@ use self::blend::{
 };
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
+const SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES: u32 = 32;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 44;
 const SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES: u32 = 64;
+const SCENE_PARTICLE_GPU_VERTEX_STRIDE_BYTES: u32 = 48;
 pub(in crate::renderer::native_vulkan::vulkan) const SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES: u32 = 144;
 const SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES: u32 = 8;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES: u32 = 256;
@@ -496,6 +498,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) puppet_generic_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) particle_generic_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) puppet_water_ripple_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) puppet_water_waves_pipelines:
@@ -582,6 +586,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageVertexProgram {
     Sampled,
     PuppetGpu,
+    ParticleGpu,
 }
 
 #[repr(C)]
@@ -687,6 +692,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDr
         &'a VulkanaliaSceneSolidQuadPipelineResources,
     pub(in crate::renderer::native_vulkan::vulkan) vertex_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) vertex_offset_bytes: u64,
+    pub(in crate::renderer::native_vulkan::vulkan) draw_instance_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
         &'a [VulkanaliaSceneSolidQuadDrawCommand],
@@ -865,6 +871,9 @@ fn scene_sampled_image_pipeline_set(
             }
             _ => &resources.puppet_generic_pipelines,
         };
+    }
+    if vertex_program == VulkanaliaSceneSampledImageVertexProgram::ParticleGpu {
+        return &resources.particle_generic_pipelines;
     }
     match shader_program {
         VulkanaliaSceneSampledImageShaderProgram::Generic => &resources.generic_pipelines,
@@ -1399,10 +1408,15 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
                 .name(shader_entry)
                 .build(),
         ];
-        let binding = vk::VertexInputBindingDescription::builder()
+        let vertex_binding = vk::VertexInputBindingDescription::builder()
             .binding(0)
             .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
             .input_rate(vk::VertexInputRate::VERTEX)
+            .build();
+        let draw_instance_binding = vk::VertexInputBindingDescription::builder()
+            .binding(1)
+            .stride(SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES)
+            .input_rate(vk::VertexInputRate::INSTANCE)
             .build();
         let attributes = [
             vk::VertexInputAttributeDescription::builder()
@@ -1417,8 +1431,20 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
                 .format(vk::Format::R32G32B32A32_SFLOAT)
                 .offset(8)
                 .build(),
+            vk::VertexInputAttributeDescription::builder()
+                .location(2)
+                .binding(1)
+                .format(vk::Format::R32G32B32A32_UINT)
+                .offset(0)
+                .build(),
+            vk::VertexInputAttributeDescription::builder()
+                .location(3)
+                .binding(1)
+                .format(vk::Format::R32G32B32A32_UINT)
+                .offset(16)
+                .build(),
         ];
-        let bindings = [binding];
+        let bindings = [vertex_binding, draw_instance_binding];
         let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
             .vertex_binding_descriptions(&bindings)
             .vertex_attribute_descriptions(&attributes)
@@ -1604,10 +1630,15 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
             .build(),
         fragment_stage.build(),
     ];
-    let binding = vk::VertexInputBindingDescription::builder()
+    let vertex_binding = vk::VertexInputBindingDescription::builder()
         .binding(0)
         .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
         .input_rate(vk::VertexInputRate::VERTEX)
+        .build();
+    let draw_instance_binding = vk::VertexInputBindingDescription::builder()
+        .binding(1)
+        .stride(SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES)
+        .input_rate(vk::VertexInputRate::INSTANCE)
         .build();
     let attributes = [
         vk::VertexInputAttributeDescription::builder()
@@ -1622,8 +1653,20 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
             .format(vk::Format::R32G32B32A32_SFLOAT)
             .offset(8)
             .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(2)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_UINT)
+            .offset(0)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(3)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_UINT)
+            .offset(16)
+            .build(),
     ];
-    let bindings = [binding];
+    let bindings = [vertex_binding, draw_instance_binding];
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(&bindings)
         .vertex_attribute_descriptions(&attributes)
@@ -1737,13 +1780,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         min_sample_shading: scene_min_sample_shading_label(sample_shading),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-quad",
-        vertex_input_binding_count: 1,
-        vertex_input_attribute_count: 2,
+        vertex_input_binding_count: 2,
+        vertex_input_attribute_count: 4,
         vertex_stride_bytes: SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES,
         vertex_position_format: "R32G32_SFLOAT",
         vertex_color_format: "R32G32B32A32_SFLOAT",
         push_constant_bytes: SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES,
-        push_constant_model: "scene-space pixel extent -> NDC conversion in vertex shader",
+        push_constant_model: "scene-space pixel extent -> NDC conversion; retained vertex timelines read frame time and vertex payloads on GPU",
         blend_model: "solid rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -1827,6 +1870,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             device,
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV,
             "scene sampled image puppet vertex",
+        )?;
+        let particle_vertex_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PARTICLE_VERTEX_SPIRV,
+            "scene sampled image particle vertex",
         )?;
         let fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
             device,
@@ -1941,6 +1989,33 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         return Err(err);
                     }
                 };
+            let particle_generic_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
+                    pipeline_layout,
+                    particle_vertex_module,
+                    fragment_module,
+                    premultiplied_fragment_module,
+                    VulkanaliaSceneSampledImageVertexProgram::ParticleGpu,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            puppet_generic_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
             let puppet_water_ripple_pipelines =
                 match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
                     device,
@@ -1964,6 +2039,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
                             device,
                             puppet_generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            particle_generic_pipelines,
                         );
                         return Err(err);
                     }
@@ -2601,6 +2680,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 pipeline_layout,
                 generic_pipelines,
                 puppet_generic_pipelines,
+                particle_generic_pipelines,
                 puppet_water_ripple_pipelines,
                 puppet_water_waves_pipelines,
                 water_ripple_pipelines,
@@ -2646,6 +2726,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             device.destroy_shader_module(water_ripple_fragment_module, None);
             device.destroy_shader_module(premultiplied_fragment_module, None);
             device.destroy_shader_module(fragment_module, None);
+            device.destroy_shader_module(particle_vertex_module, None);
             device.destroy_shader_module(puppet_vertex_module, None);
             device.destroy_shader_module(vertex_module, None);
         }
@@ -2671,6 +2752,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
         resources.puppet_generic_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.particle_generic_pipelines,
     );
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
@@ -2911,6 +2996,9 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
             VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
                 SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES
             }
+            VulkanaliaSceneSampledImageVertexProgram::ParticleGpu => {
+                SCENE_PARTICLE_GPU_VERTEX_STRIDE_BYTES
+            }
         })
         .input_rate(vk::VertexInputRate::VERTEX)
         .build();
@@ -2985,6 +3073,40 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
                     .binding(0)
                     .format(vk::Format::R32G32B32A32_SFLOAT)
                     .offset(48)
+                    .build(),
+            ]
+        }
+        VulkanaliaSceneSampledImageVertexProgram::ParticleGpu => {
+            vec![
+                vk::VertexInputAttributeDescription::builder()
+                    .location(0)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(0)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(1)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(8)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(2)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(16)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(3)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(24)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(4)
+                    .binding(0)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(32)
                     .build(),
             ]
         }
@@ -3193,6 +3315,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     pipeline_resources: &VulkanaliaSceneSolidQuadPipelineResources,
     vertex_buffer: vk::Buffer,
     vertex_offset_bytes: u64,
+    draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     index_count: u32,
     clear_color: [f32; 4],
@@ -3266,8 +3389,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             vk::PipelineBindPoint::GRAPHICS,
             pipeline_resources.alpha_pipeline,
         );
-        let vertex_buffers = [vertex_buffer];
-        let vertex_offsets = [vertex_offset_bytes];
+        let vertex_buffers = [vertex_buffer, draw_instance_buffer];
+        let vertex_offsets = [vertex_offset_bytes, 0];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
         device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
         let push_constants = [extent.width as f32, extent.height as f32];
@@ -3371,8 +3494,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         solid_draw.blend.mode,
                     ),
                 );
-                let vertex_buffers = [solid_quad_draw.vertex_buffer];
-                let vertex_offsets = [solid_quad_draw.vertex_offset_bytes];
+                let vertex_buffers = [
+                    solid_quad_draw.vertex_buffer,
+                    solid_quad_draw.draw_instance_buffer,
+                ];
+                let vertex_offsets = [solid_quad_draw.vertex_offset_bytes, 0];
                 device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
                 device.cmd_bind_index_buffer(
                     command_buffer,
@@ -3418,6 +3544,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     vertex_buffer: vk::Buffer,
     puppet_gpu_payload_buffer: Option<vk::Buffer>,
+    particle_gpu_payload_buffer: Option<vk::Buffer>,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
 ) -> Result<u32, String> {
@@ -3446,6 +3573,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         {
             return Err(
                 "scene sampled-image puppet GPU draw requires a retained payload buffer".to_owned(),
+            );
+        }
+        if draw.vertex_program == VulkanaliaSceneSampledImageVertexProgram::ParticleGpu
+            && particle_gpu_payload_buffer.is_none()
+        {
+            return Err(
+                "scene sampled-image particle GPU draw requires a retained payload buffer"
+                    .to_owned(),
             );
         }
         if draw.render_target != VulkanaliaSceneSampledImageRenderTarget::Swapchain {
@@ -3543,8 +3678,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 solid_draw.blend.mode,
                             ),
                         );
-                        let vertex_buffers = [solid_resources.vertex_buffer];
-                        let vertex_offsets = [solid_resources.vertex_offset_bytes];
+                        let vertex_buffers = [
+                            solid_resources.vertex_buffer,
+                            solid_resources.draw_instance_buffer,
+                        ];
+                        let vertex_offsets = [solid_resources.vertex_offset_bytes, 0];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
@@ -3604,6 +3742,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             VulkanaliaSceneSampledImageVertexProgram::Sampled => vertex_buffer,
                             VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
                                 puppet_gpu_payload_buffer.expect("puppet payload buffer checked")
+                            }
+                            VulkanaliaSceneSampledImageVertexProgram::ParticleGpu => {
+                                particle_gpu_payload_buffer
+                                    .expect("particle payload buffer checked")
                             }
                         };
                         let vertex_buffers = [source_vertex_buffer, draw_instance_buffer];
@@ -5424,6 +5566,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     framebuffer_snapshot_initial_layout: vk::ImageLayout,
     vertex_buffer: vk::Buffer,
     puppet_gpu_payload_buffer: Option<vk::Buffer>,
+    particle_gpu_payload_buffer: Option<vk::Buffer>,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     clear_color: [f32; 4],
@@ -5453,6 +5596,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         {
             return Err(
                 "scene sampled-image puppet GPU draw requires a retained payload buffer".to_owned(),
+            );
+        }
+        if draw.vertex_program == VulkanaliaSceneSampledImageVertexProgram::ParticleGpu
+            && particle_gpu_payload_buffer.is_none()
+        {
+            return Err(
+                "scene sampled-image particle GPU draw requires a retained payload buffer"
+                    .to_owned(),
             );
         }
         if let VulkanaliaSceneSampledImageRenderTarget::EffectTarget { target_index, .. } =
@@ -5894,8 +6045,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineBindPoint::GRAPHICS,
                             pipeline,
                         );
-                        let vertex_buffers = [solid_resources.vertex_buffer];
-                        let vertex_offsets = [solid_resources.vertex_offset_bytes];
+                        let vertex_buffers = [
+                            solid_resources.vertex_buffer,
+                            solid_resources.draw_instance_buffer,
+                        ];
+                        let vertex_offsets = [solid_resources.vertex_offset_bytes, 0];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
@@ -6016,6 +6170,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             VulkanaliaSceneSampledImageVertexProgram::Sampled => vertex_buffer,
                             VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
                                 puppet_gpu_payload_buffer.expect("puppet payload buffer checked")
+                            }
+                            VulkanaliaSceneSampledImageVertexProgram::ParticleGpu => {
+                                particle_gpu_payload_buffer
+                                    .expect("particle payload buffer checked")
                             }
                         };
                         let vertex_buffers = [source_vertex_buffer, draw_instance_buffer];
@@ -6300,31 +6458,8 @@ fn native_vulkan_vulkanalia_scene_color_subresource_range() -> vk::ImageSubresou
         .build()
 }
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV: [u32; 379] = [
-    119734787, 65536, 524299, 54, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
-    196622, 0, 1, 589839, 0, 4, 1852399981, 0, 11, 42, 50, 52, 196611, 2, 450, 262149, 4,
-    1852399981, 0, 327685, 9, 1836216174, 2053729377, 25701, 262149, 11, 1885302377, 29551, 393221,
-    13, 1852138323, 1953057893, 1937068133, 104, 327686, 13, 0, 1702131813, 29806, 196613, 15,
-    25456, 196613, 22, 6513774, 393221, 40, 1348430951, 1700164197, 2019914866, 0, 393222, 40, 0,
-    1348430951, 1953067887, 7237481, 458758, 40, 1, 1348430951, 1953393007, 1702521171, 0, 458758,
-    40, 2, 1130327143, 1148217708, 1635021673, 6644590, 458758, 40, 3, 1130327143, 1147956341,
-    1635021673, 6644590, 196613, 42, 0, 262149, 50, 1868783478, 7499628, 327685, 52, 1667198569,
-    1919904879, 0, 262215, 11, 30, 0, 196679, 13, 2, 327752, 13, 0, 35, 0, 196679, 40, 2, 327752,
-    40, 0, 11, 0, 327752, 40, 1, 11, 1, 327752, 40, 2, 11, 3, 327752, 40, 3, 11, 4, 262215, 50, 30,
-    0, 262215, 52, 30, 1, 131091, 2, 196641, 3, 2, 196630, 6, 32, 262167, 7, 6, 2, 262176, 8, 7, 7,
-    262176, 10, 1, 7, 262203, 10, 11, 1, 196638, 13, 7, 262176, 14, 9, 13, 262203, 14, 15, 9,
-    262165, 16, 32, 1, 262187, 16, 17, 0, 262176, 18, 9, 7, 262165, 23, 32, 0, 262187, 23, 24, 0,
-    262176, 25, 7, 6, 262187, 6, 28, 1073741824, 262187, 6, 30, 1065353216, 262187, 23, 32, 1,
-    262167, 38, 6, 4, 262172, 39, 6, 32, 393246, 40, 38, 6, 39, 39, 262176, 41, 3, 40, 262203, 41,
-    42, 3, 262187, 6, 44, 0, 262176, 48, 3, 38, 262203, 48, 50, 3, 262176, 51, 1, 38, 262203, 51,
-    52, 1, 327734, 2, 4, 0, 3, 131320, 5, 262203, 8, 9, 7, 262203, 8, 22, 7, 262205, 7, 12, 11,
-    327745, 18, 19, 15, 17, 262205, 7, 20, 19, 327816, 7, 21, 12, 20, 196670, 9, 21, 327745, 25,
-    26, 9, 24, 262205, 6, 27, 26, 327813, 6, 29, 27, 28, 327811, 6, 31, 29, 30, 327745, 25, 33, 9,
-    32, 262205, 6, 34, 33, 327813, 6, 35, 34, 28, 327811, 6, 36, 30, 35, 327760, 7, 37, 31, 36,
-    196670, 22, 37, 262205, 7, 43, 22, 327761, 6, 45, 43, 0, 327761, 6, 46, 43, 1, 458832, 38, 47,
-    45, 46, 44, 30, 327745, 48, 49, 42, 17, 196670, 49, 47, 262205, 38, 53, 52, 196670, 50, 53,
-    65789, 65592,
-];
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV: [u32; 1069] =
+    include!("shaders/solid_quad.vert.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_FRAGMENT_SPIRV: [u32; 94] = [
     119734787, 65536, 524299, 13, 0, 131089, 1, 393227, 1, 1280527431, 1685353262, 808793134, 0,
@@ -6354,6 +6489,8 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 3600
     include!("shaders/sampled_image.vert.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV: [u32; 3646] =
     include!("shaders/sampled_image_puppet.vert.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PARTICLE_VERTEX_SPIRV: [u32; 2861] =
+    include!("shaders/sampled_image_particle.vert.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 1383] =
     include!("shaders/sampled_image.frag.spv.rs");
@@ -6736,13 +6873,13 @@ mod tests {
             snapshot.render_pass_compatibility,
             "dynamic-rendering-no-render-pass"
         );
-        assert_eq!(snapshot.vertex_input_binding_count, 1);
-        assert_eq!(snapshot.vertex_input_attribute_count, 2);
+        assert_eq!(snapshot.vertex_input_binding_count, 2);
+        assert_eq!(snapshot.vertex_input_attribute_count, 4);
         assert_eq!(snapshot.vertex_stride_bytes, 24);
         assert_eq!(snapshot.push_constant_bytes, 8);
         assert_eq!(
             snapshot.push_constant_model,
-            "scene-space pixel extent -> NDC conversion in vertex shader"
+            "scene-space pixel extent -> NDC conversion; retained vertex timelines read frame time and vertex payloads on GPU"
         );
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
@@ -6791,7 +6928,7 @@ mod tests {
         assert_eq!(snapshot.push_constant_bytes, 256);
         assert_eq!(
             snapshot.push_constant_model,
-            "scene-space pixel extent, fixed-function viewport vertex extent, alpha/mask state, WE g_TextureNResolution rows, and pass-specific effect parameter rows; elapsed time is streamed through draw-instance frame constants"
+            "scene-space pixel extent, fixed-function viewport vertex extent, alpha/mask state, WE g_TextureNResolution rows, and pass-specific effect parameter rows; elapsed time is read from a retained GPU frame-time buffer"
         );
         assert!(snapshot.descriptor_heap_mapping_enabled);
         assert!(snapshot.descriptor_heap_pipeline_flag_enabled);
@@ -8585,7 +8722,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV
             ),
-            1516
+            4276
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -8603,73 +8740,73 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV
             ),
-            3096
+            14400
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV
             ),
-            5584
+            5532
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_SPIRV
             ),
-            5584
+            5532
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV
             ),
-            6804
+            6752
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
             ),
-            11612
+            11560
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERFLOW_FRAGMENT_SPIRV
             ),
-            7112
+            7060
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FOLIAGE_SWAY_FRAGMENT_SPIRV
             ),
-            8952
+            8900
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_AUTO_SWAY_FRAGMENT_SPIRV
             ),
-            19544
+            19476
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SCROLL_FRAGMENT_SPIRV
             ),
-            3824
+            3772
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_SKEW_FRAGMENT_SPIRV
             ),
-            4672
+            4620
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_IRIS_FRAGMENT_SPIRV
             ),
-            5792
+            5740
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_OPACITY_FRAGMENT_SPIRV
             ),
-            3780
+            3728
         );
     }
 

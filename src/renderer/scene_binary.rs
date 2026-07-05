@@ -682,6 +682,30 @@ pub(crate) struct SceneBinarySampledLayerGpuPosePayload {
     pub(crate) layer_opacity: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct SceneBinaryParticleGpuVertexPayload {
+    pub(crate) corner: [f32; 2],
+    pub(crate) uv: [f32; 2],
+    pub(crate) spawn: [f32; 2],
+    pub(crate) velocity: [f32; 2],
+    pub(crate) constants: [f32; 4],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SceneBinaryParticleGpuPayload {
+    pub(crate) layer_index: usize,
+    pub(crate) layer_id: String,
+    pub(crate) particle_index: u32,
+    pub(crate) position_transform_x: [f32; 4],
+    pub(crate) position_transform_y: [f32; 4],
+    pub(crate) layer_opacity: f32,
+    pub(crate) tint: [f32; 4],
+    pub(crate) loop_playback: bool,
+    pub(crate) fade: bool,
+    pub(crate) vertices: Vec<SceneBinaryParticleGpuVertexPayload>,
+    pub(crate) indices: Vec<u32>,
+}
+
 #[derive(Debug)]
 struct SceneBinaryPuppetGpuPoseTimeline {
     frame_count: u32,
@@ -791,6 +815,19 @@ impl SceneBinaryRuntimeSampler {
         binary_scene_sampled_layer_gpu_pose_payloads(
             &mut self.reader,
             &self.names,
+            time_ms,
+            self.dynamic_state.as_ref(),
+        )
+    }
+
+    pub(crate) fn retained_particle_gpu_payloads(
+        &mut self,
+        time_ms: u64,
+    ) -> Result<Vec<SceneBinaryParticleGpuPayload>, RendererPlanError> {
+        binary_scene_particle_gpu_payloads(
+            &mut self.reader,
+            &self.names,
+            &self.resources,
             time_ms,
             self.dynamic_state.as_ref(),
         )
@@ -2122,10 +2159,7 @@ fn binary_scene_sampled_layer_gpu_pose_payloads(
             && binary_scene_node_kind_is_renderable(kind)
             && geometry.is_some()
         {
-            if kind == SceneNodeKind::Image
-                && node.puppet_index == SCENE_BINARY_NONE_ID
-                && effective_state.sampled_pose_dynamic
-            {
+            if kind == SceneNodeKind::Image && effective_state.sampled_pose_dynamic {
                 let layer_id = binary_name(names, node.id_name)
                     .unwrap_or("binary-node")
                     .to_owned();
@@ -2148,6 +2182,247 @@ fn binary_scene_sampled_layer_gpu_pose_payloads(
         node_states.push(effective_state);
     }
     Ok(payloads)
+}
+
+fn binary_scene_particle_gpu_payloads(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    resources: &[BinarySceneResource],
+    snapshot_time_ms: u64,
+    dynamic_state: Option<&BinarySceneDynamicState>,
+) -> Result<Vec<SceneBinaryParticleGpuPayload>, RendererPlanError> {
+    reader.puppet_attachment_delta_cache.clear();
+    reader.puppet_frame_skinning_cache.clear();
+    let node_records = reader.node_records_cached()?;
+    let mut node_states = Vec::with_capacity(node_records.len());
+    let mut payloads = Vec::new();
+    let mut layer_index = 0usize;
+    for node in node_records.iter().copied() {
+        let kind = binary_scene_node_kind(node.kind);
+        let geometry = if node.geometry_index == SCENE_BINARY_NONE_ID {
+            None
+        } else {
+            Some(reader.geometry_record_cached(node.geometry_index)?)
+        };
+        let mut local_state = binary_scene_node_state(reader, node, geometry, snapshot_time_ms)?;
+        let node_id = binary_name(names, node.id_name);
+        let local_sampled_pose_dynamic = binary_scene_node_has_timed_transform(reader, node)?
+            || node.puppet_attachment_name != SCENE_BINARY_NONE_ID
+            || binary_scene_node_has_dynamic_property_binding(node_id, dynamic_state);
+        if let Some(dynamic_state) = dynamic_state
+            && let Some(node_id) = node_id
+        {
+            binary_scene_apply_dynamic_property_bindings(&mut local_state, node_id, dynamic_state);
+        }
+        let parent_state = binary_scene_parent_node_state(&node_states, node.parent_index)?;
+        binary_scene_apply_puppet_attachment_delta(
+            names,
+            &mut local_state.transform,
+            node.puppet_attachment_name,
+            parent_state.and_then(|state| state.puppet_attachment_deltas.as_ref()),
+        );
+        let mut effective_state = binary_scene_effective_node_state(
+            names,
+            node,
+            local_state,
+            parent_state,
+            dynamic_state,
+            local_sampled_pose_dynamic,
+        );
+        effective_state.puppet_attachment_deltas = binary_scene_puppet_attachment_deltas(
+            reader,
+            names,
+            node.puppet_index,
+            snapshot_time_ms,
+        )?;
+        if effective_state.visible
+            && effective_state.state.opacity > f64::EPSILON
+            && let (Some(geometry), Some(kind)) = (geometry, kind)
+            && binary_scene_node_kind_is_renderable(kind)
+        {
+            if kind == SceneNodeKind::ParticleEmitter
+                || geometry.primitive_kind == SCENE_BINARY_GEOMETRY_PRIMITIVE_PARTICLES
+            {
+                if node.particle_index != SCENE_BINARY_NONE_ID {
+                    let material = if node.material_index == SCENE_BINARY_NONE_ID {
+                        None
+                    } else {
+                        Some(reader.material_record_cached(node.material_index)?)
+                    };
+                    let particle = reader.particle_record_cached(node.particle_index)?;
+                    let emitted = binary_scene_particle_gpu_payload(
+                        reader,
+                        names,
+                        resources,
+                        node,
+                        particle,
+                        node.particle_index,
+                        node.material_index,
+                        material,
+                        effective_state.state,
+                        snapshot_time_ms,
+                        layer_index,
+                        &mut payloads,
+                    )?;
+                    layer_index = layer_index.saturating_add(emitted);
+                }
+            } else {
+                layer_index = layer_index.saturating_add(1);
+            }
+        }
+        node_states.push(effective_state);
+    }
+    Ok(payloads)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn binary_scene_particle_gpu_payload(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    resources: &[BinarySceneResource],
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    particle: SceneBinaryParticleEmitterRecord,
+    particle_index: u32,
+    material_index: u32,
+    material: Option<SceneBinaryMaterialPassRecord>,
+    node_state: BinarySceneNodeState,
+    snapshot_time_ms: u64,
+    layer_index: usize,
+    payloads: &mut Vec<SceneBinaryParticleGpuPayload>,
+) -> Result<usize, RendererPlanError> {
+    let particle_count = particle.particle_count();
+    if particle_count == 0 || node_state.opacity <= 0.0 {
+        return Ok(0);
+    }
+    let node_resource = binary_resource_by_name(resources, node.resource_name);
+    let material_texture_slots = if let Some(material) = material {
+        let slots = binary_scene_material_texture_slots_cached(
+            reader,
+            material_index,
+            material,
+            resources,
+        )?;
+        if slots.is_empty() {
+            binary_scene_particle_base_texture_slot(node_resource)
+        } else {
+            slots
+        }
+    } else {
+        binary_scene_particle_base_texture_slot(node_resource)
+    };
+    let source = node_resource
+        .and_then(|resource| resource.source.clone())
+        .or_else(|| {
+            material_texture_slots
+                .iter()
+                .find(|slot| slot.slot == 0)
+                .map(|slot| slot.source.clone())
+        });
+    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
+    if source.is_none() {
+        return Ok(templates
+            .iter()
+            .filter(|template| {
+                binary_scene_particle_template_transform(particle, **template, snapshot_time_ms)
+                    .is_some_and(|(opacity, _, _, _)| opacity > 0.0)
+            })
+            .count());
+    }
+    let Some(payload) = binary_scene_particle_gpu_payload_from_templates(
+        names,
+        node,
+        particle,
+        particle_index,
+        node_state,
+        templates.as_slice(),
+        layer_index,
+    )?
+    else {
+        return Ok(0);
+    };
+    payloads.push(payload);
+    Ok(1)
+}
+
+fn binary_scene_particle_gpu_payload_from_templates(
+    names: &BinarySceneNames,
+    node: crate::core::scene::binary::SceneBinaryNodeRecord,
+    particle: SceneBinaryParticleEmitterRecord,
+    particle_index: u32,
+    node_state: BinarySceneNodeState,
+    templates: &[BinarySceneParticleTemplate],
+    layer_index: usize,
+) -> Result<Option<SceneBinaryParticleGpuPayload>, RendererPlanError> {
+    let particle_width = f64::from(particle.particle_width);
+    let particle_height = f64::from(particle.particle_height);
+    if !particle_width.is_finite()
+        || !particle_height.is_finite()
+        || particle_width <= 0.0
+        || particle_height <= 0.0
+        || templates.is_empty()
+    {
+        return Ok(None);
+    }
+    let mut transform = node_state.transform;
+    transform.anchor_x = 0.5;
+    transform.anchor_y = 0.5;
+    let (position_transform_x, position_transform_y) = binary_scene_puppet_gpu_position_transform(
+        Some(particle_width.max(1.0)),
+        Some(particle_height.max(1.0)),
+        transform,
+    )?;
+    let lifetime_seconds = (particle.lifetime_ms.max(1) as f32) * 0.001;
+    let half_width = particle_width as f32 * 0.5;
+    let half_height = particle_height as f32 * 0.5;
+    let gravity = [particle.gravity_x, particle.gravity_y];
+    let mut vertices = Vec::with_capacity(templates.len().saturating_mul(4));
+    let mut indices = Vec::with_capacity(templates.len().saturating_mul(6));
+    for template in templates {
+        let base = vertices.len().min(u32::MAX as usize) as u32;
+        let velocity = [
+            (template.direction_cos * template.speed) as f32,
+            (template.direction_sin * template.speed) as f32,
+        ];
+        let constants = [
+            (template.phase_ms as f32) * 0.001,
+            lifetime_seconds,
+            gravity[0],
+            gravity[1],
+        ];
+        for (corner, uv) in [
+            ([-half_width, -half_height], [0.0, 1.0]),
+            ([half_width, -half_height], [1.0, 1.0]),
+            ([-half_width, half_height], [0.0, 0.0]),
+            ([half_width, half_height], [1.0, 0.0]),
+        ] {
+            vertices.push(SceneBinaryParticleGpuVertexPayload {
+                corner,
+                uv,
+                spawn: [template.spawn_x as f32, template.spawn_y as f32],
+                velocity,
+                constants,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+    }
+    if vertices.len() < 3 || indices.len() < 3 {
+        return Ok(None);
+    }
+    Ok(Some(SceneBinaryParticleGpuPayload {
+        layer_index,
+        layer_id: binary_name(names, node.id_name)
+            .unwrap_or("binary-particle-emitter")
+            .to_owned(),
+        particle_index,
+        position_transform_x,
+        position_transform_y,
+        layer_opacity: node_state.opacity.clamp(0.0, 1.0) as f32,
+        tint: binary_scene_rgba_f32(particle.color_rgba),
+        loop_playback: particle.flags & SCENE_BINARY_PARTICLE_FLAG_LOOP != 0,
+        fade: particle.flags & SCENE_BINARY_PARTICLE_FLAG_FADE != 0,
+        vertices,
+        indices,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2218,15 +2493,9 @@ fn binary_scene_particle_render_layers(
         .map(|material| binary_scene_blend_mode(material.blend_mode))
         .unwrap_or_default();
     let color = Some(binary_scene_rgba_hex(particle.color_rgba));
-    let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
-    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
     if let Some(source) = source {
-        if let Some(mesh) = binary_scene_particle_batch_mesh(
-            particle,
-            &templates,
-            snapshot_time_ms,
-            retain_sampled_indices,
-        ) {
+        if let Some(mesh) = binary_scene_particle_placeholder_mesh(particle, retain_sampled_indices)
+        {
             let mut transform = node_state.transform;
             transform.anchor_x = 0.5;
             transform.anchor_y = 0.5;
@@ -2267,6 +2536,8 @@ fn binary_scene_particle_render_layers(
         }
         return Ok(());
     }
+    let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
+    let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
     layers.reserve(particle_count as usize);
     for template in templates.iter() {
         let Some((particle_opacity, x, y, rotation_deg)) =
@@ -2321,10 +2592,8 @@ fn binary_scene_particle_render_layers(
     Ok(())
 }
 
-fn binary_scene_particle_batch_mesh(
+fn binary_scene_particle_placeholder_mesh(
     particle: SceneBinaryParticleEmitterRecord,
-    templates: &[BinarySceneParticleTemplate],
-    snapshot_time_ms: u64,
     retain_indices: bool,
 ) -> Option<SceneMesh> {
     let particle_width = f64::from(particle.particle_width);
@@ -2336,52 +2605,44 @@ fn binary_scene_particle_batch_mesh(
     {
         return None;
     }
-
-    let mut vertices = Vec::with_capacity(templates.len().saturating_mul(4));
-    let mut indices = if retain_indices {
-        Vec::with_capacity(templates.len().saturating_mul(6))
-    } else {
-        Vec::new()
-    };
     let half_width = particle_width * 0.5;
     let half_height = particle_height * 0.5;
-    for template in templates {
-        let Some((opacity, x, y, rotation_deg)) =
-            binary_scene_particle_template_transform(particle, *template, snapshot_time_ms)
-        else {
-            continue;
-        };
-        if opacity <= 0.0 {
-            continue;
-        }
-        let base = retain_indices.then(|| vertices.len().min(u32::MAX as usize) as u32);
-        let rotation = rotation_deg.to_radians();
-        let (sin, cos) = rotation.sin_cos();
-        for (local_x, local_y, u, v) in [
-            (-half_width, -half_height, 0.0, 1.0),
-            (half_width, -half_height, 1.0, 1.0),
-            (-half_width, half_height, 0.0, 0.0),
-            (half_width, half_height, 1.0, 0.0),
-        ] {
-            vertices.push(SceneMeshVertex {
-                x: x + local_x.mul_add(cos, -local_y * sin),
-                y: y + local_x.mul_add(sin, local_y * cos),
-                u,
-                v,
-                opacity,
-            });
-        }
-        if let Some(base) = base {
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
-        }
-    }
-
-    if vertices.len() < 3 || (retain_indices && indices.len() < 3) {
-        return None;
-    }
     Some(SceneMesh {
-        vertices,
-        indices,
+        vertices: vec![
+            SceneMeshVertex {
+                x: -half_width,
+                y: -half_height,
+                u: 0.0,
+                v: 1.0,
+                opacity: 1.0,
+            },
+            SceneMeshVertex {
+                x: half_width,
+                y: -half_height,
+                u: 1.0,
+                v: 1.0,
+                opacity: 1.0,
+            },
+            SceneMeshVertex {
+                x: -half_width,
+                y: half_height,
+                u: 0.0,
+                v: 0.0,
+                opacity: 1.0,
+            },
+            SceneMeshVertex {
+                x: half_width,
+                y: half_height,
+                u: 1.0,
+                v: 0.0,
+                opacity: 1.0,
+            },
+        ],
+        indices: if retain_indices {
+            vec![0, 1, 2, 2, 1, 3]
+        } else {
+            Vec::new()
+        },
         skin: None,
         puppet_clips: Vec::new(),
         puppet_clipping_records: Vec::new(),
@@ -3846,6 +4107,15 @@ fn binary_scene_rgba_hex(rgba: u32) -> String {
     )
 }
 
+fn binary_scene_rgba_f32(rgba: u32) -> [f32; 4] {
+    [
+        ((rgba >> 24) & 0xff) as f32 / 255.0,
+        ((rgba >> 16) & 0xff) as f32 / 255.0,
+        ((rgba >> 8) & 0xff) as f32 / 255.0,
+        (rgba & 0xff) as f32 / 255.0,
+    ]
+}
+
 fn binary_name(names: &BinarySceneNames, id: u32) -> Option<&str> {
     names.name(id)
 }
@@ -4018,7 +4288,7 @@ mod tests {
     }
 
     #[test]
-    fn gscn_direct_ingest_batches_particle_emitters_from_binary_payload() {
+    fn gscn_direct_ingest_emits_retained_particle_marker_from_binary_payload() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "spark", "type": "image", "source": "assets/spark.gtex", "width": 16, "height": 16 }
@@ -4083,9 +4353,9 @@ mod tests {
         assert!((layer.opacity - 0.4).abs() < 1e-6);
         assert!((layer.transform.x - 110.0).abs() < f64::EPSILON);
         assert!((layer.transform.y - 70.0).abs() < f64::EPSILON);
-        let mesh = layer.mesh.as_ref().expect("batched particle mesh");
-        assert_eq!(mesh.vertices.len(), 12);
-        assert_eq!(mesh.indices.len(), 18);
+        let mesh = layer.mesh.as_ref().expect("retained particle marker mesh");
+        assert_eq!(mesh.vertices.len(), 4);
+        assert_eq!(mesh.indices.len(), 6);
         assert_eq!(&mesh.indices[0..6], &[0, 1, 2, 2, 1, 3]);
         assert!((mesh.vertices[0].opacity - 1.0).abs() < f64::EPSILON);
     }
@@ -4371,6 +4641,40 @@ mod tests {
 
     #[test]
     fn gscn_binary_runtime_sampler_moves_attachment_children_with_parent_puppet() {
+        let hair_mesh = json!({
+            "vertices": [
+                { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                { "x": 8.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                { "x": 0.0, "y": 4.0, "u": 0.0, "v": 1.0 }
+            ],
+            "indices": [0, 1, 2],
+            "skin": {
+                "bones": [
+                    { "bind": { "translation": [0.0, 0.0, 0.0] } }
+                ],
+                "vertices": [
+                    { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                    { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                    { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                ]
+            },
+            "puppet_clips": [
+                {
+                    "id": 9,
+                    "fps": 1.0,
+                    "frame_count": 1,
+                    "looping": true,
+                    "bones": [
+                        {
+                            "frames": [
+                                { "translation": [0.0, 0.0, 0.0] },
+                                { "translation": [0.0, 0.0, 0.0] }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        });
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "puppet", "type": "image", "source": "assets/puppet.gtex", "width": 32, "height": 32 },
@@ -4448,7 +4752,11 @@ mod tests {
                                     "type": "image",
                                     "resource": "hair",
                                     "width": 8,
-                                    "height": 4
+                                    "height": 4,
+                                    "mesh": hair_mesh,
+                                    "puppet_animation_layers": [
+                                        { "clip_id": 9, "rate": 1.0, "blend": 1.0 }
+                                    ]
                                 }
                             ]
                         }
@@ -4478,26 +4786,34 @@ mod tests {
         let (retained_payloads, initial_poses) = sampler
             .retained_puppet_gpu_payloads(0)
             .expect("retained puppet GPU payloads");
-        assert_eq!(retained_payloads.len(), 1);
-        assert_eq!(retained_payloads[0].layer_id, "body");
-        assert_eq!(retained_payloads[0].vertices.len(), 3);
-        assert_eq!(retained_payloads[0].indices, vec![0, 1, 2]);
-        assert_eq!(retained_payloads[0].bone_count, 2);
-        assert_eq!(retained_payloads[0].vertices[0].bone_indices, [1, 0, 0, 0]);
-        assert_eq!(
-            retained_payloads[0].vertices[0].bone_weights,
-            [1.0, 0.0, 0.0, 0.0]
+        let body_payload = retained_payloads
+            .iter()
+            .find(|payload| payload.layer_id == "body")
+            .expect("body puppet payload");
+        assert_eq!(body_payload.vertices.len(), 3);
+        assert_eq!(body_payload.indices, vec![0, 1, 2]);
+        assert_eq!(body_payload.bone_count, 2);
+        assert_eq!(body_payload.vertices[0].bone_indices, [1, 0, 0, 0]);
+        assert_eq!(body_payload.vertices[0].bone_weights, [1.0, 0.0, 0.0, 0.0]);
+        assert!(
+            retained_payloads
+                .iter()
+                .any(|payload| payload.layer_id == "hair-image"),
+            "attachment child puppet should keep a retained GPU payload"
         );
-        assert_eq!(initial_poses.len(), 1);
-        assert_eq!(initial_poses[0].pose_frame_bone_count, 2);
-        assert!(initial_poses[0].pose_frame_count >= 2);
+        let body_pose = initial_poses
+            .iter()
+            .find(|pose| pose.layer_id == "body")
+            .expect("body puppet pose");
+        assert_eq!(body_pose.pose_frame_bone_count, 2);
+        assert!(body_pose.pose_frame_count >= 2);
         assert_eq!(
-            initial_poses[0].skin_matrices.len(),
-            initial_poses[0].bone_opacities.len()
+            body_pose.skin_matrices.len(),
+            body_pose.bone_opacities.len()
         );
         assert_eq!(
-            initial_poses[0].skin_matrices.len(),
-            initial_poses[0].pose_frame_count as usize * 2
+            body_pose.skin_matrices.len(),
+            body_pose.pose_frame_count as usize * 2
         );
 
         let first_pose_payloads = sampler

@@ -7,6 +7,7 @@ use serde::Serialize;
 
 use crate::core::SceneSystemStatus;
 use crate::renderer::{
+    SceneBinaryParticleGpuPayload, SceneBinaryParticleGpuVertexPayload,
     SceneBinaryPuppetGpuPayload, SceneBinaryPuppetGpuPosePayload,
     SceneBinaryPuppetGpuVertexPayload, SceneBinaryRuntimeSampler,
     SceneBinarySampledLayerGpuPosePayload, SceneRenderAudioCue, SceneWallpaperPlan,
@@ -30,6 +31,8 @@ use super::super::video::direct::{
 use super::super::{
     NativeVulkanAudioOutputMode, NativeVulkanError, NativeVulkanOptions,
     NativeVulkanVideoSessionCodec, NativeVulkanVulkanaliaClearPresentSnapshot,
+    NativeVulkanVulkanaliaSceneParticleGpuPayload,
+    NativeVulkanVulkanaliaSceneParticleGpuVertexPayload,
     NativeVulkanVulkanaliaScenePuppetGpuPayload, NativeVulkanVulkanaliaScenePuppetGpuPosePayload,
     NativeVulkanVulkanaliaScenePuppetGpuVertexPayload,
     NativeVulkanVulkanaliaSceneSampledImageDrawStep,
@@ -58,8 +61,9 @@ use super::runtime::{
     native_vulkan_scene_solid_quad_vertex_update_input_from_layers,
 };
 
-const SCENE_SOLID_GPU_GEOMETRY_TIMELINE_FPS: u64 = 240;
-const SCENE_SAMPLED_LAYER_GPU_POSE_TIMELINE_FPS: u64 = 60;
+const SCENE_RETAINED_GEOMETRY_MIN_SAMPLE_RATE_HZ: u64 = 60;
+const SCENE_RETAINED_GEOMETRY_MAX_SAMPLE_RATE_HZ: u64 = 480;
+const SCENE_RETAINED_LAYER_POSE_SAMPLE_RATE_HZ: u64 = 60;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneAudioCueRuntimeSnapshot {
@@ -130,6 +134,7 @@ enum NativeVulkanScenePresentRouteKind {
 
 #[derive(Debug)]
 struct NativeVulkanSceneSolidGpuGeometryTimeline {
+    sample_rate_hz: u64,
     frames: Vec<Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>>,
 }
 
@@ -137,6 +142,7 @@ impl NativeVulkanSceneSolidGpuGeometryTimeline {
     fn vertex_timeline_payload(
         &self,
         base_geometry: &NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
+        sample_rate_hz: u64,
     ) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload>, String> {
         if self.frames.is_empty() {
             return Ok(None);
@@ -173,7 +179,7 @@ impl NativeVulkanSceneSolidGpuGeometryTimeline {
         }
         Ok(Some(
             NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload {
-                frame_rate: SCENE_SOLID_GPU_GEOMETRY_TIMELINE_FPS.min(u64::from(u32::MAX)) as u32,
+                frame_rate: sample_rate_hz.min(u64::from(u32::MAX)) as u32,
                 frame_count: self.frames.len().min(u32::MAX as usize) as u32,
                 vertices,
             },
@@ -225,6 +231,17 @@ fn native_vulkan_scene_plan_needs_binary_sampled_layer_pose_sampler(
         || plan.puppet_animation_layer_count > 0
 }
 
+fn native_vulkan_scene_retained_geometry_sample_rate_hz(plan: &SceneWallpaperPlan) -> u64 {
+    plan.target_max_fps
+        .or(plan.manifest_max_fps)
+        .map(u64::from)
+        .unwrap_or(SCENE_RETAINED_GEOMETRY_MIN_SAMPLE_RATE_HZ)
+        .clamp(
+            SCENE_RETAINED_GEOMETRY_MIN_SAMPLE_RATE_HZ,
+            SCENE_RETAINED_GEOMETRY_MAX_SAMPLE_RATE_HZ,
+        )
+}
+
 fn native_vulkan_scene_plan_uses_binary_scene(plan: &SceneWallpaperPlan) -> bool {
     plan.source
         .as_deref()
@@ -251,17 +268,17 @@ fn native_vulkan_scene_retained_solid_gpu_geometry_timeline(
     };
     sampler.set_gpu_only_puppet_layers(gpu_only_puppet_layers);
     let base_time_ms = plan.snapshot_time_ms;
+    let sample_rate_hz = native_vulkan_scene_retained_geometry_sample_rate_hz(plan);
     let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
     let frame_count = duration_ms
-        .saturating_mul(SCENE_SOLID_GPU_GEOMETRY_TIMELINE_FPS)
+        .saturating_mul(sample_rate_hz)
         .saturating_add(999)
         / 1_000
         + 2;
     let mut frames = Vec::with_capacity(frame_count.min(usize::MAX as u64) as usize);
     for frame_index in 0..frame_count {
-        let sample_time_ms = base_time_ms.saturating_add(
-            frame_index.saturating_mul(1_000) / SCENE_SOLID_GPU_GEOMETRY_TIMELINE_FPS,
-        );
+        let sample_time_ms =
+            base_time_ms.saturating_add(frame_index.saturating_mul(1_000) / sample_rate_hz);
         let frame = sampler
             .sample_solid_frame_reusing(sample_time_ms)
             .map_err(|err| {
@@ -283,7 +300,10 @@ fn native_vulkan_scene_retained_solid_gpu_geometry_timeline(
         frames.push(solid_geometry?);
     }
     native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
-    Ok(Some(NativeVulkanSceneSolidGpuGeometryTimeline { frames }))
+    Ok(Some(NativeVulkanSceneSolidGpuGeometryTimeline {
+        sample_rate_hz,
+        frames,
+    }))
 }
 
 fn native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(
@@ -312,7 +332,7 @@ fn native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(
     let base_time_ms = plan.snapshot_time_ms;
     let duration_ms = duration.as_millis().min(u128::from(u64::MAX)) as u64;
     let frame_count = duration_ms
-        .saturating_mul(SCENE_SAMPLED_LAYER_GPU_POSE_TIMELINE_FPS)
+        .saturating_mul(SCENE_RETAINED_LAYER_POSE_SAMPLE_RATE_HZ)
         .saturating_add(999)
         / 1_000
         + 2;
@@ -323,7 +343,7 @@ fn native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(
     let mut base_poses = Vec::new();
     for frame_index in 0..frame_count {
         let sample_time_ms = base_time_ms.saturating_add(
-            frame_index.saturating_mul(1_000) / SCENE_SAMPLED_LAYER_GPU_POSE_TIMELINE_FPS,
+            frame_index.saturating_mul(1_000) / SCENE_RETAINED_LAYER_POSE_SAMPLE_RATE_HZ,
         );
         let poses = sampler
             .sampled_layer_gpu_pose_payloads(sample_time_ms)
@@ -384,7 +404,7 @@ fn native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(
         base_poses,
         Some(
             NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload {
-                frame_rate: SCENE_SAMPLED_LAYER_GPU_POSE_TIMELINE_FPS.min(u64::from(u32::MAX))
+                frame_rate: SCENE_RETAINED_LAYER_POSE_SAMPLE_RATE_HZ.min(u64::from(u32::MAX))
                     as u32,
                 frame_count: frame_count.min(u64::from(u32::MAX)) as u32,
                 layer_indices,
@@ -414,7 +434,7 @@ fn native_vulkan_scene_retained_solid_quad_vertex_timeline_payload(
         return Ok(None);
     };
     timeline
-        .vertex_timeline_payload(base_geometry)
+        .vertex_timeline_payload(base_geometry, timeline.sample_rate_hz)
         .map_err(NativeVulkanError::Scene)
 }
 
@@ -453,6 +473,40 @@ fn native_vulkan_scene_retained_puppet_gpu_payloads(
             .map(native_vulkan_scene_vulkanalia_puppet_gpu_pose_payload)
             .collect(),
     ))
+}
+
+fn native_vulkan_scene_retained_particle_gpu_payloads(
+    plan: &SceneWallpaperPlan,
+) -> Result<Vec<NativeVulkanVulkanaliaSceneParticleGpuPayload>, NativeVulkanError> {
+    if !native_vulkan_scene_plan_uses_binary_scene(plan)
+        || !matches!(
+            plan.scene_systems.particles,
+            SceneSystemStatus::Detected | SceneSystemStatus::Ready
+        )
+    {
+        return Ok(Vec::new());
+    }
+    let Some(mut sampler) = SceneBinaryRuntimeSampler::from_plan(plan).map_err(|err| {
+        NativeVulkanError::Scene(format!(
+            "prepare retained binary particle GPU payloads: {err}"
+        ))
+    })?
+    else {
+        return Ok(Vec::new());
+    };
+    sampler
+        .retained_particle_gpu_payloads(plan.snapshot_time_ms)
+        .map_err(|err| {
+            NativeVulkanError::Scene(format!(
+                "build retained binary particle GPU payloads: {err}"
+            ))
+        })
+        .map(|payloads| {
+            payloads
+                .into_iter()
+                .map(native_vulkan_scene_vulkanalia_particle_gpu_payload)
+                .collect()
+        })
 }
 
 fn native_vulkan_scene_gpu_only_puppet_layers(
@@ -499,6 +553,40 @@ fn native_vulkan_scene_vulkanalia_puppet_gpu_vertex_payload(
         opacity: vertex.opacity,
         bone_indices: vertex.bone_indices,
         bone_weights: vertex.bone_weights,
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_particle_gpu_payload(
+    payload: SceneBinaryParticleGpuPayload,
+) -> NativeVulkanVulkanaliaSceneParticleGpuPayload {
+    NativeVulkanVulkanaliaSceneParticleGpuPayload {
+        layer_index: payload.layer_index,
+        layer_id: payload.layer_id,
+        particle_index: payload.particle_index,
+        position_transform_x: payload.position_transform_x,
+        position_transform_y: payload.position_transform_y,
+        layer_opacity: payload.layer_opacity,
+        tint: payload.tint,
+        loop_playback: payload.loop_playback,
+        fade: payload.fade,
+        vertices: payload
+            .vertices
+            .into_iter()
+            .map(native_vulkan_scene_vulkanalia_particle_gpu_vertex_payload)
+            .collect(),
+        indices: payload.indices,
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_particle_gpu_vertex_payload(
+    vertex: SceneBinaryParticleGpuVertexPayload,
+) -> NativeVulkanVulkanaliaSceneParticleGpuVertexPayload {
+    NativeVulkanVulkanaliaSceneParticleGpuVertexPayload {
+        corner: vertex.corner,
+        uv: vertex.uv,
+        spawn: vertex.spawn,
+        velocity: vertex.velocity,
+        constants: vertex.constants,
     }
 }
 
@@ -658,6 +746,8 @@ pub fn run_scene(
             let mut solid_geometry = runtime.take_vulkanalia_mixed_solid_quad_geometry_input();
             let (mut retained_puppet_gpu_payloads, mut retained_puppet_gpu_poses) =
                 native_vulkan_scene_retained_puppet_gpu_payloads(&plan)?;
+            let retained_particle_gpu_payloads =
+                native_vulkan_scene_retained_particle_gpu_payloads(&plan)?;
             let (retained_sampled_layer_poses, sampled_layer_pose_timeline) =
                 native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(&plan, duration)?;
             let gpu_only_puppet_layers = geometry
@@ -676,6 +766,7 @@ pub fn run_scene(
             if let Some(geometry) = geometry.as_mut() {
                 geometry.puppet_gpu_payloads = retained_puppet_gpu_payloads;
                 geometry.puppet_gpu_poses = retained_puppet_gpu_poses;
+                geometry.particle_gpu_payloads = retained_particle_gpu_payloads;
                 geometry.sampled_layer_poses = retained_sampled_layer_poses;
                 geometry.sampled_layer_pose_timeline = sampled_layer_pose_timeline;
             }
@@ -756,6 +847,8 @@ pub fn run_scene(
             if overlay_source.is_some() || overlay_geometry.is_some() {
                 let (mut retained_puppet_gpu_payloads, mut retained_puppet_gpu_poses) =
                     native_vulkan_scene_retained_puppet_gpu_payloads(&plan)?;
+                let retained_particle_gpu_payloads =
+                    native_vulkan_scene_retained_particle_gpu_payloads(&plan)?;
                 let (retained_sampled_layer_poses, sampled_layer_pose_timeline) =
                     native_vulkan_scene_retained_sampled_layer_gpu_pose_payloads(&plan, duration)?;
                 gpu_only_puppet_layers = overlay_geometry
@@ -774,6 +867,7 @@ pub fn run_scene(
                 if let Some(geometry) = overlay_geometry.as_mut() {
                     geometry.puppet_gpu_payloads = retained_puppet_gpu_payloads;
                     geometry.puppet_gpu_poses = retained_puppet_gpu_poses;
+                    geometry.particle_gpu_payloads = retained_particle_gpu_payloads;
                     geometry.sampled_layer_poses = retained_sampled_layer_poses;
                     geometry.sampled_layer_pose_timeline = sampled_layer_pose_timeline;
                 }
