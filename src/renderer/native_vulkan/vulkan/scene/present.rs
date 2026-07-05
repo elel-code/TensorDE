@@ -57,11 +57,12 @@ use super::scene_draw_pass::{
     SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES,
     SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, VulkanaliaSceneDescriptorHeapDrawResources,
     VulkanaliaSceneGpuTimestampCapture, VulkanaliaSceneMsaaColorTarget,
-    VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
-    VulkanaliaSceneSampledImageDrawInstance, VulkanaliaSceneSampledImagePipelineResources,
-    VulkanaliaSceneSampledImageRenderTarget, VulkanaliaSceneSampledImageVertexProgram,
-    VulkanaliaSceneSampledImageViewportState, VulkanaliaSceneSolidQuadDrawCommand,
-    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaScenePipelineBlendUsage, VulkanaliaSceneSampledImageDescriptorBinding,
+    VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImageDrawInstance,
+    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImageRenderTarget,
+    VulkanaliaSceneSampledImageVertexProgram, VulkanaliaSceneSampledImageViewportState,
+    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
+    VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -2227,6 +2228,8 @@ fn with_vulkanalia_scene_sampled_image_present(
         }
     };
     let sampled_source_resource_count = sampled_image_sources.len().max(1);
+    let sampled_pipeline_blend_usage =
+        scene_sampled_image_pipeline_blend_usage(&geometry_payload.draw_steps);
     let sampled_framebuffer_snapshot_required =
         scene_sampled_image_draw_steps_need_framebuffer_snapshot(
             &geometry_payload.draw_steps,
@@ -2304,6 +2307,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         &descriptor_heap_plan,
         msaa_sample_count,
         sample_shading_enabled,
+        sampled_pipeline_blend_usage,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -2885,6 +2889,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 input.fit,
                 source_extent,
             )?;
+            let sampled_pipeline_blend_usage =
+                scene_sampled_image_pipeline_blend_usage(&geometry_payload.draw_steps);
             let descriptor_slot_plan = scene_sampled_image_descriptor_slot_plan(
                 &geometry_payload.draw_steps,
                 sampled_image_sources.len(),
@@ -2909,6 +2915,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     &descriptor_heap_plan,
                     vk::SampleCountFlags::_1,
                     false,
+                    sampled_pipeline_blend_usage,
                 )?,
             );
             sampled_geometry = Some(create_scene_sampled_image_geometry_resources(
@@ -8504,6 +8511,16 @@ fn scene_sampled_image_draw_commands(
         sampled_layer_pose_instances,
         sampled_images.len(),
         descriptor_group_base_indices,
+    )
+}
+
+fn scene_sampled_image_pipeline_blend_usage(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+) -> VulkanaliaScenePipelineBlendUsage {
+    VulkanaliaScenePipelineBlendUsage::from_modes(
+        draw_steps
+            .iter()
+            .map(|step| step.material.render_state.blend.mode),
     )
 }
 
