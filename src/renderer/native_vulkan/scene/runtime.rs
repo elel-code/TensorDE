@@ -64,7 +64,6 @@ use super::draw_pass::{
     NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneWeImageGraphPlan,
     NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
     NativeVulkanSceneWeImagePassChain,
-    native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_render_layer,
@@ -589,78 +588,11 @@ impl NativeVulkanSceneRuntimeSnapshot {
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_geometry_input_from_layers(
-    snapshot_time_ms: u64,
-    scene_size: Option<SceneSize>,
-    scene_fit: FitMode,
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_solid_quad_vertex_update_input_from_layers(
     layers: &[SceneRenderLayer],
-) -> Result<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, String> {
-    let _ = (snapshot_time_ms, scene_size, scene_fit);
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let mut draw_steps = Vec::new();
-    let mut recordable_layer_count = 0usize;
-
-    for (layer_index, layer) in layers.iter().enumerate() {
-        if native_vulkan_scene_render_layer_has_no_visual_geometry(layer) {
-            continue;
-        }
-        recordable_layer_count = recordable_layer_count.saturating_add(1);
-        let Some((solid_vertices, solid_indices)) =
-            native_vulkan_scene_solid_geometry_from_render_layer(layer_index, layer).map_err(
-                |reason| format!("dynamic scene is not solid-quad recordable: {reason}"),
-            )?
-        else {
-            continue;
-        };
-        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
-        let first_index = indices.len().min(u32::MAX as usize) as u32;
-        let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
-        draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-            layer_index,
-            first_index,
-            index_count,
-            blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
-        });
-        vertices.extend(solid_vertices.into_iter().map(|vertex| {
-            NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
-        }));
-        indices.extend(
-            solid_indices
-                .into_iter()
-                .map(|index| first_vertex.saturating_add(index)),
-        );
-    }
-
-    if draw_steps.is_empty() || vertices.is_empty() || indices.is_empty() {
-        return Err("dynamic solid scene produced no quad geometry".to_owned());
-    }
-    if draw_steps.len() != recordable_layer_count {
-        return Err(
-            "dynamic scene is not solid-quad recordable: partial-solid-quad-recording-ready"
-                .to_owned(),
-        );
-    }
-    Ok(
-        NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
-            vertices,
-            indices,
-            draw_steps,
-            "scene-runtime-direct-solid-draw-plan",
-        ),
-    )
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers(
-    snapshot_time_ms: u64,
-    scene_size: Option<SceneSize>,
-    scene_fit: FitMode,
-    layers: &[SceneRenderLayer],
+    source_label: impl Into<String>,
 ) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>, String> {
-    let _ = (snapshot_time_ms, scene_size, scene_fit);
     let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-    let mut draw_steps = Vec::new();
 
     for (layer_index, layer) in layers.iter().enumerate() {
         if native_vulkan_scene_render_layer_has_no_visual_geometry(layer)
@@ -669,41 +601,27 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mixed_solid_quad_g
         {
             continue;
         }
-        let Some((solid_vertices, solid_indices)) =
+        let Some((solid_vertices, _solid_indices)) =
             native_vulkan_scene_solid_geometry_from_render_layer(layer_index, layer).map_err(
-                |reason| format!("dynamic mixed scene is not solid-quad recordable: {reason}"),
+                |reason| format!("dynamic solid vertex update is not recordable: {reason}"),
             )?
         else {
             continue;
         };
-        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
-        let first_index = indices.len().min(u32::MAX as usize) as u32;
-        let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
-        draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-            layer_index,
-            first_index,
-            index_count,
-            blend: NativeVulkanVulkanaliaSceneBlendState::from_mode(layer.blend_mode),
-        });
         vertices.extend(solid_vertices.into_iter().map(|vertex| {
             NativeVulkanVulkanaliaSceneSolidQuadVertex::new(vertex.position, vertex.rgba)
         }));
-        indices.extend(
-            solid_indices
-                .into_iter()
-                .map(|index| first_vertex.saturating_add(index)),
-        );
     }
 
-    if draw_steps.is_empty() || vertices.is_empty() || indices.is_empty() {
+    if vertices.is_empty() {
         return Ok(None);
     }
     Ok(Some(
         NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
             vertices,
-            indices,
-            draw_steps,
-            "scene-runtime-direct-mixed-solid-quad-vertex-update",
+            Vec::new(),
+            Vec::new(),
+            source_label,
         ),
     ))
 }
@@ -877,7 +795,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
         || sampled_scene_vertices.is_empty()
         || sampled_indices.is_empty()
     {
-        return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
+        return Err("retained sampled-image scene produced no sampled geometry".to_owned());
     }
     let sampled_geometry = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
         sampled_scene_vertices,
@@ -1025,7 +943,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
         || sampled_scene_vertices.is_empty()
         || sampled_indices.is_empty()
     {
-        return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
+        return Err("retained sampled-image scene produced no sampled geometry".to_owned());
     }
     let sampled_vertices = sampled_scene_vertices
         .into_iter()
@@ -1126,7 +1044,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     }
 
     if sampled_scene_vertices.is_empty() {
-        return Err("dynamic sampled-image scene produced no sampled vertices".to_owned());
+        return Err("retained sampled-image scene produced no sampled vertices".to_owned());
     }
     let sampled_vertices = sampled_scene_vertices
         .into_iter()
@@ -1243,7 +1161,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         }
     }
     if sampled_scene_vertices.is_empty() {
-        return Err("dynamic sampled-image scene produced no sampled vertices".to_owned());
+        return Err("retained sampled-image scene produced no sampled vertices".to_owned());
     }
     Ok(
         NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
@@ -1252,28 +1170,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             Vec::new(),
             Vec::new(),
             "scene-runtime-direct-render-layer-sampled-image-retained-topology-vertices",
-        ),
-    )
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers(
-    layers: &[SceneRenderLayer],
-) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    let mut sampled_scene_vertices = Vec::with_capacity(layers.len().saturating_mul(4));
-    if let Err(err) = native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers(
-        layers,
-        &mut sampled_scene_vertices,
-    ) {
-        return Err(err);
-    }
-
-    Ok(
-        NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-            sampled_scene_vertices,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            "scene-runtime-render-layer-sampled-image-retained-topology-vertices",
         ),
     )
 }
@@ -1511,7 +1407,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     }
 
     if sampled_scene_vertices.is_empty() {
-        return Err("dynamic sampled-image scene produced no sampled vertices".to_owned());
+        return Err("retained sampled-image scene produced no sampled vertices".to_owned());
     }
     if native_vulkan_effect_debug_enabled() {
         native_vulkan_scene_runtime_effect_debug_log(format_args!(
@@ -8003,101 +7899,6 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_sampled_vertices_use_draw_pass_effect_graph_topology() {
-        let mut image = scene_test_layer("masked-eye", SceneNodeKind::Image);
-        image.source = Some(PathBuf::from("/tmp/eye.gtex"));
-        image.width = Some(663.0);
-        image.height = Some(230.0);
-        image.texture_slots = vec![
-            SceneRenderTextureSlot {
-                slot: 0,
-                source: PathBuf::from("/tmp/eye.gtex"),
-                width: Some(663),
-                height: Some(230),
-            },
-            SceneRenderTextureSlot {
-                slot: 1,
-                source: PathBuf::from("/tmp/opacity-mask.gtex"),
-                width: Some(331),
-                height: Some(115),
-            },
-        ];
-        image.alpha_texture_slot = Some(1);
-        image.alpha_texture_mode = SceneRenderAlphaTextureMode::Multiply;
-        image.image_effect_passes = vec![SceneRenderImageEffectPass {
-            effect_file: "effects/opacity/effect.json".to_owned(),
-            runtime: Some("wallpaper-engine-effect".to_owned()),
-            pass_index: 0,
-            command: None,
-            source: None,
-            target: None,
-            binds: Default::default(),
-            fbos: Default::default(),
-            shader: Some("effects/opacity".to_owned()),
-            blending: Some("normal".to_owned()),
-            depthtest: None,
-            depthwrite: None,
-            cullmode: None,
-            texture_slots: image.texture_slots.clone(),
-            effect_uv_transform: None,
-            combos: Default::default(),
-            constant_shader_values: Default::default(),
-        }];
-        image.mesh = Some(Arc::new(SceneMesh {
-            vertices: vec![
-                SceneMeshVertex {
-                    x: -10.0,
-                    y: -20.0,
-                    u: 0.0,
-                    v: 0.0,
-                    opacity: 1.0,
-                },
-                SceneMeshVertex {
-                    x: 10.0,
-                    y: -20.0,
-                    u: 1.0,
-                    v: 0.0,
-                    opacity: 1.0,
-                },
-                SceneMeshVertex {
-                    x: -10.0,
-                    y: 20.0,
-                    u: 0.0,
-                    v: 1.0,
-                    opacity: 1.0,
-                },
-            ],
-            indices: vec![0, 1, 2],
-            skin: None,
-            puppet_clips: Vec::new(),
-            puppet_clipping_records: Vec::new(),
-        }));
-
-        let mut snapshot =
-            native_vulkan_scene_runtime_snapshot(&scene_test_item(vec![image.clone()], None))
-                .expect("runtime snapshot");
-        let (_, retained_geometry) = snapshot
-            .take_vulkanalia_sampled_image_geometry_input()
-            .expect("retained sampled geometry");
-        let dynamic_vertices =
-            native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers(&[image])
-                .expect("dynamic sampled vertices");
-
-        assert_eq!(retained_geometry.draw_steps.len(), 2);
-        assert_eq!(
-            dynamic_vertices.source_label,
-            "scene-runtime-render-layer-sampled-image-retained-topology-vertices"
-        );
-        assert!(dynamic_vertices.indices.is_empty());
-        assert!(dynamic_vertices.draw_steps.is_empty());
-        assert_eq!(
-            dynamic_vertices.vertices.len(),
-            retained_geometry.vertices.len()
-        );
-        assert_eq!(dynamic_vertices.vertices, retained_geometry.vertices);
-    }
-
-    #[test]
     fn dynamic_sampled_geometry_builds_directly_from_snapshot_layers() {
         let mut sprite = scene_test_snapshot_layer("sprite::particle-0", SceneNodeKind::Image);
         sprite.source = Some(PackagePath::new("assets/spark.gtex").unwrap());
@@ -8138,16 +7939,17 @@ mod tests {
         panel.height = Some(180.0);
         let audio = scene_test_layer("music", SceneNodeKind::Audio);
 
-        let solid_geometry = native_vulkan_scene_solid_quad_geometry_input_from_layers(
-            0,
-            None,
-            FitMode::Cover,
+        let solid_geometry = native_vulkan_scene_solid_quad_vertex_update_input_from_layers(
             &[panel.clone(), audio.clone()],
+            "test-solid-vertex-update",
         )
-        .expect("audio cue layers do not block direct solid geometry");
+        .expect("audio cue layers do not block direct solid vertex update")
+        .expect("solid vertex update");
 
-        assert_eq!(solid_geometry.draw_steps.len(), 1);
-        assert_eq!(solid_geometry.draw_steps[0].layer_index, 0);
+        assert_eq!(solid_geometry.source_label, "test-solid-vertex-update");
+        assert_eq!(solid_geometry.vertices.len(), 4);
+        assert!(solid_geometry.indices.is_empty());
+        assert!(solid_geometry.draw_steps.is_empty());
 
         let mut image = scene_test_layer("sprite", SceneNodeKind::Image);
         image.source = Some(PathBuf::from("/tmp/sprite.gtex"));

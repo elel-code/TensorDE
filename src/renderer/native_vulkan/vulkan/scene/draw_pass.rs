@@ -36,7 +36,8 @@ use self::blend::{
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 44;
-pub(in crate::renderer::native_vulkan::vulkan) const SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES: u32 = 48;
+const SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES: u32 = 64;
+pub(in crate::renderer::native_vulkan::vulkan) const SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES: u32 = 144;
 const SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES: u32 = 8;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES: u32 = 256;
 pub(in crate::renderer::native_vulkan::vulkan) const SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT:
@@ -493,6 +494,12 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) pipeline_layout: vk::PipelineLayout,
     pub(in crate::renderer::native_vulkan::vulkan) generic_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) puppet_generic_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) puppet_water_ripple_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
+    pub(in crate::renderer::native_vulkan::vulkan) puppet_water_waves_pipelines:
+        VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) water_ripple_pipelines:
         VulkanaliaSceneSampledImagePipelineSet,
     pub(in crate::renderer::native_vulkan::vulkan) water_waves_pipelines:
@@ -564,8 +571,17 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) render_target:
         VulkanaliaSceneSampledImageRenderTarget,
     pub(in crate::renderer::native_vulkan::vulkan) draw_instance_index: u32,
+    pub(in crate::renderer::native_vulkan::vulkan) vertex_program:
+        VulkanaliaSceneSampledImageVertexProgram,
+    pub(in crate::renderer::native_vulkan::vulkan) vertex_offset: i32,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageVertexProgram {
+    Sampled,
+    PuppetGpu,
 }
 
 #[repr(C)]
@@ -574,6 +590,12 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
     pub(in crate::renderer::native_vulkan::vulkan) position_transform_x: [f32; 4],
     pub(in crate::renderer::native_vulkan::vulkan) position_transform_y: [f32; 4],
     pub(in crate::renderer::native_vulkan::vulkan) frame_constants: [f32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) effect_uv_x: [f32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) effect_uv_y: [f32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) puppet_pose_ref: [u32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) tint: [f32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) frame_time_ref: [u32; 4],
+    pub(in crate::renderer::native_vulkan::vulkan) layer_pose_ref: [u32; 4],
 }
 
 impl VulkanaliaSceneSampledImageDrawInstance {
@@ -582,6 +604,12 @@ impl VulkanaliaSceneSampledImageDrawInstance {
             position_transform_x: [1.0, 0.0, 0.0, 0.0],
             position_transform_y: [0.0, 1.0, 0.0, 0.0],
             frame_constants: [0.0, 0.0, 0.0, 0.0],
+            effect_uv_x: [0.0, 1.0, 0.0, 0.0],
+            effect_uv_y: [1.0, 0.0, 0.0, 0.0],
+            puppet_pose_ref: [0, 0, 0, 0],
+            tint: [1.0, 1.0, 1.0, 1.0],
+            frame_time_ref: [0, 0, 0, 0],
+            layer_pose_ref: [0, 0, 0, 0],
         }
     }
 }
@@ -631,6 +659,7 @@ enum VulkanaliaSceneBoundDrawPipeline {
     SampledImage {
         blend: super::present::NativeVulkanVulkanaliaSceneBlendState,
         shader_program: VulkanaliaSceneSampledImageShaderProgram,
+        vertex_program: VulkanaliaSceneSampledImageVertexProgram,
     },
 }
 
@@ -657,6 +686,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDr
     pub(in crate::renderer::native_vulkan::vulkan) pipeline_resources:
         &'a VulkanaliaSceneSolidQuadPipelineResources,
     pub(in crate::renderer::native_vulkan::vulkan) vertex_buffer: vk::Buffer,
+    pub(in crate::renderer::native_vulkan::vulkan) vertex_offset_bytes: u64,
     pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
         &'a [VulkanaliaSceneSolidQuadDrawCommand],
@@ -714,6 +744,7 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
             VulkanaliaSceneBoundDrawPipeline::SampledImage {
                 blend: material.render_state.blend,
                 shader_program: scene_sampled_image_shader_program(material),
+                vertex_program: sampled_commands[draw.command_index].vertex_program,
             }
         }
     }
@@ -809,8 +840,33 @@ fn scene_sampled_image_material_uses_passthroughblend(
 fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
     resources: &VulkanaliaSceneSampledImagePipelineResources,
     material: &super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
+    vertex_program: VulkanaliaSceneSampledImageVertexProgram,
 ) -> vk::Pipeline {
-    let pipelines = match scene_sampled_image_shader_program(material) {
+    let shader_program = scene_sampled_image_shader_program(material);
+    let pipelines = scene_sampled_image_pipeline_set(resources, shader_program, vertex_program);
+    native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
+        pipelines,
+        material.render_state.blend.mode,
+    )
+}
+
+fn scene_sampled_image_pipeline_set(
+    resources: &VulkanaliaSceneSampledImagePipelineResources,
+    shader_program: VulkanaliaSceneSampledImageShaderProgram,
+    vertex_program: VulkanaliaSceneSampledImageVertexProgram,
+) -> &VulkanaliaSceneSampledImagePipelineSet {
+    if vertex_program == VulkanaliaSceneSampledImageVertexProgram::PuppetGpu {
+        return match shader_program {
+            VulkanaliaSceneSampledImageShaderProgram::WaterRipple => {
+                &resources.puppet_water_ripple_pipelines
+            }
+            VulkanaliaSceneSampledImageShaderProgram::WaterWaves => {
+                &resources.puppet_water_waves_pipelines
+            }
+            _ => &resources.puppet_generic_pipelines,
+        };
+    }
+    match shader_program {
         VulkanaliaSceneSampledImageShaderProgram::Generic => &resources.generic_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterRipple => &resources.water_ripple_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterWaves => &resources.water_waves_pipelines,
@@ -829,11 +885,7 @@ fn native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
         VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend => {
             &resources.passthroughblend_pipelines
         }
-    };
-    native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set(
-        pipelines,
-        material.render_state.blend.mode,
-    )
+    }
 }
 
 fn native_vulkan_vulkanalia_scene_draw_pass_backend_status_is_recordable(status: &str) -> bool {
@@ -1771,6 +1823,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV,
             "scene sampled image vertex",
         )?;
+        let puppet_vertex_module = native_vulkan_vulkanalia_scene_create_shader_module(
+            device,
+            &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV,
+            "scene sampled image puppet vertex",
+        )?;
         let fragment_module = native_vulkan_vulkanalia_scene_create_shader_module(
             device,
             &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV,
@@ -1861,6 +1918,87 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     fragment_module,
                     premultiplied_fragment_module,
                 )?;
+            let puppet_generic_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
+                    pipeline_layout,
+                    puppet_vertex_module,
+                    fragment_module,
+                    premultiplied_fragment_module,
+                    VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
+            let puppet_water_ripple_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
+                    pipeline_layout,
+                    puppet_vertex_module,
+                    water_ripple_fragment_module,
+                    water_ripple_fragment_module,
+                    VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            puppet_generic_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
+            let puppet_water_waves_pipelines =
+                match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+                    device,
+                    target_format,
+                    extent,
+                    descriptor_heap_plan,
+                    sample_count,
+                    sample_shading_enabled,
+                    pipeline_layout,
+                    puppet_vertex_module,
+                    water_waves_fragment_module,
+                    water_waves_fragment_module,
+                    VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
+                ) {
+                    Ok(pipelines) => pipelines,
+                    Err(err) => {
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            puppet_generic_pipelines,
+                        );
+                        native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+                            device,
+                            puppet_water_ripple_pipelines,
+                        );
+                        return Err(err);
+                    }
+                };
             let water_ripple_pipelines =
                 match native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
                     device,
@@ -2462,6 +2600,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             Ok(VulkanaliaSceneSampledImagePipelineResources {
                 pipeline_layout,
                 generic_pipelines,
+                puppet_generic_pipelines,
+                puppet_water_ripple_pipelines,
+                puppet_water_waves_pipelines,
                 water_ripple_pipelines,
                 water_waves_pipelines,
                 water_flow_pipelines,
@@ -2505,6 +2646,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             device.destroy_shader_module(water_ripple_fragment_module, None);
             device.destroy_shader_module(premultiplied_fragment_module, None);
             device.destroy_shader_module(fragment_module, None);
+            device.destroy_shader_module(puppet_vertex_module, None);
             device.destroy_shader_module(vertex_module, None);
         }
         result
@@ -2525,6 +2667,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
         resources.generic_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.puppet_generic_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.puppet_water_ripple_pipelines,
+    );
+    native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
+        device,
+        resources.puppet_water_waves_pipelines,
     );
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_set(
         device,
@@ -2584,6 +2738,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments)]
 fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
     device: &Device,
     target_format: vk::Format,
@@ -2595,6 +2750,35 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     premultiplied_fragment_module: vk::ShaderModule,
+) -> Result<VulkanaliaSceneSampledImagePipelineSet, String> {
+    native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+        device,
+        target_format,
+        extent,
+        descriptor_heap_plan,
+        sample_count,
+        sample_shading_enabled,
+        pipeline_layout,
+        vertex_module,
+        fragment_module,
+        premultiplied_fragment_module,
+        VulkanaliaSceneSampledImageVertexProgram::Sampled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set_for_vertex_program(
+    device: &Device,
+    target_format: vk::Format,
+    extent: vk::Extent2D,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    sample_count: vk::SampleCountFlags,
+    sample_shading_enabled: bool,
+    pipeline_layout: vk::PipelineLayout,
+    vertex_module: vk::ShaderModule,
+    fragment_module: vk::ShaderModule,
+    premultiplied_fragment_module: vk::ShaderModule,
+    vertex_program: VulkanaliaSceneSampledImageVertexProgram,
 ) -> Result<VulkanaliaSceneSampledImagePipelineSet, String> {
     let create_pipeline = |blend_mode| {
         let selected_fragment_module = native_vulkan_vulkanalia_scene_fragment_module_for_blend(
@@ -2613,6 +2797,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_set(
             vertex_module,
             selected_fragment_module,
             blend_mode,
+            vertex_program,
         )
     };
     let mut created_pipelines = Vec::with_capacity(9);
@@ -2682,6 +2867,7 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     blend_mode: SceneBlendMode,
+    vertex_program: VulkanaliaSceneSampledImageVertexProgram,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
     if descriptor_heap_plan.image_count < SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT {
@@ -2718,7 +2904,14 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
     ];
     let vertex_binding = vk::VertexInputBindingDescription::builder()
         .binding(0)
-        .stride(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES)
+        .stride(match vertex_program {
+            VulkanaliaSceneSampledImageVertexProgram::Sampled => {
+                SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES
+            }
+            VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
+                SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES
+            }
+        })
         .input_rate(vk::VertexInputRate::VERTEX)
         .build();
     let instance_binding = vk::VertexInputBindingDescription::builder()
@@ -2726,37 +2919,77 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
         .stride(SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES)
         .input_rate(vk::VertexInputRate::INSTANCE)
         .build();
-    let attributes = [
-        vk::VertexInputAttributeDescription::builder()
-            .location(0)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(0)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(1)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(8)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(2)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(16)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(3)
-            .binding(0)
-            .format(vk::Format::R32_SFLOAT)
-            .offset(24)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(4)
-            .binding(0)
-            .format(vk::Format::R32G32B32A32_SFLOAT)
-            .offset(28)
-            .build(),
+    let vertex_attributes = match vertex_program {
+        VulkanaliaSceneSampledImageVertexProgram::Sampled => {
+            vec![
+                vk::VertexInputAttributeDescription::builder()
+                    .location(0)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(0)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(1)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(8)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(2)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(16)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(3)
+                    .binding(0)
+                    .format(vk::Format::R32_SFLOAT)
+                    .offset(24)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(4)
+                    .binding(0)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(28)
+                    .build(),
+            ]
+        }
+        VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
+            vec![
+                vk::VertexInputAttributeDescription::builder()
+                    .location(0)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(0)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(1)
+                    .binding(0)
+                    .format(vk::Format::R32G32_SFLOAT)
+                    .offset(8)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(2)
+                    .binding(0)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(16)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(3)
+                    .binding(0)
+                    .format(vk::Format::R32G32B32A32_UINT)
+                    .offset(32)
+                    .build(),
+                vk::VertexInputAttributeDescription::builder()
+                    .location(4)
+                    .binding(0)
+                    .format(vk::Format::R32G32B32A32_SFLOAT)
+                    .offset(48)
+                    .build(),
+            ]
+        }
+    };
+    let instance_attributes = [
         vk::VertexInputAttributeDescription::builder()
             .location(5)
             .binding(1)
@@ -2775,7 +3008,45 @@ fn native_vulkan_vulkanalia_create_scene_sampled_image_pipeline(
             .format(vk::Format::R32G32B32A32_SFLOAT)
             .offset(32)
             .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(8)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset(48)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(9)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset(64)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(10)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_UINT)
+            .offset(80)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(11)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_SFLOAT)
+            .offset(96)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(12)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_UINT)
+            .offset(112)
+            .build(),
+        vk::VertexInputAttributeDescription::builder()
+            .location(13)
+            .binding(1)
+            .format(vk::Format::R32G32B32A32_UINT)
+            .offset(128)
+            .build(),
     ];
+    let mut attributes = vertex_attributes;
+    attributes.extend_from_slice(&instance_attributes);
     let bindings = [vertex_binding, instance_binding];
     let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
         .vertex_binding_descriptions(&bindings)
@@ -2878,14 +3149,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_set_layout_created: false,
         pipeline_layout_created: true,
         pipeline_created: true,
-        pass_specific_fragment_pipeline_count: 126,
+        pass_specific_fragment_pipeline_count: 153,
         rasterization_samples: scene_sample_count_label(sample_count),
         sample_shading_enabled: sample_shading,
         min_sample_shading: scene_min_sample_shading_label(sample_shading),
         render_pass_compatibility: "dynamic-rendering-no-render-pass",
         primitive_topology: "triangle-list-indexed-image-quad",
         vertex_input_binding_count: 2,
-        vertex_input_attribute_count: 8,
+        vertex_input_attribute_count: 14,
         vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
         vertex_position_format: "R32G32_SFLOAT",
         vertex_uv_format: "R32G32_SFLOAT",
@@ -2900,7 +3171,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         descriptor_type: "combined-image-sampler",
         descriptor_binding: 0,
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
-        push_constant_model: "scene-space pixel extent, fixed-function viewport vertex extent, alpha/mask state, WE g_TextureNResolution rows, and pass-specific effect parameter rows; elapsed time is streamed through draw-instance frame constants",
+        push_constant_model: "scene-space pixel extent, fixed-function viewport vertex extent, alpha/mask state, WE g_TextureNResolution rows, and pass-specific effect parameter rows; elapsed time is read from a retained GPU frame-time buffer",
         blend_model: "sampled rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command; WE passthroughblend uses shader framebuffer sampling plus normal replace output",
         sampled_image_model: "retained native sampled image + GPU draw-instance constants -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader",
         uses_pipeline_rendering_create_info: true,
@@ -2921,6 +3192,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     extent: vk::Extent2D,
     pipeline_resources: &VulkanaliaSceneSolidQuadPipelineResources,
     vertex_buffer: vk::Buffer,
+    vertex_offset_bytes: u64,
     index_buffer: vk::Buffer,
     index_count: u32,
     clear_color: [f32; 4],
@@ -2995,7 +3267,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             pipeline_resources.alpha_pipeline,
         );
         let vertex_buffers = [vertex_buffer];
-        let vertex_offsets = [0u64];
+        let vertex_offsets = [vertex_offset_bytes];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
         device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
         let push_constants = [extent.width as f32, extent.height as f32];
@@ -3100,7 +3372,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     ),
                 );
                 let vertex_buffers = [solid_quad_draw.vertex_buffer];
-                let vertex_offsets = [0u64];
+                let vertex_offsets = [solid_quad_draw.vertex_offset_bytes];
                 device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
                 device.cmd_bind_index_buffer(
                     command_buffer,
@@ -3145,6 +3417,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
     vertex_buffer: vk::Buffer,
+    puppet_gpu_payload_buffer: Option<vk::Buffer>,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
 ) -> Result<u32, String> {
@@ -3167,6 +3440,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     for draw in draw_commands {
         if draw.index_count == 0 {
             return Err("scene sampled-image draw requires at least one index".to_owned());
+        }
+        if draw.vertex_program == VulkanaliaSceneSampledImageVertexProgram::PuppetGpu
+            && puppet_gpu_payload_buffer.is_none()
+        {
+            return Err(
+                "scene sampled-image puppet GPU draw requires a retained payload buffer".to_owned(),
+            );
         }
         if draw.render_target != VulkanaliaSceneSampledImageRenderTarget::Swapchain {
             return Err(
@@ -3264,7 +3544,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             ),
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
-                        let vertex_offsets = [0u64];
+                        let vertex_offsets = [solid_resources.vertex_offset_bytes];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
@@ -3308,6 +3588,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage {
                         blend: sampled_draw.material.render_state.blend,
                         shader_program: scene_sampled_image_shader_program(&sampled_draw.material),
+                        vertex_program: sampled_draw.vertex_program,
                     };
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
@@ -3316,9 +3597,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
                                 pipeline_resources,
                                 &sampled_draw.material,
+                                sampled_draw.vertex_program,
                             ),
                         );
-                        let vertex_buffers = [vertex_buffer, draw_instance_buffer];
+                        let source_vertex_buffer = match sampled_draw.vertex_program {
+                            VulkanaliaSceneSampledImageVertexProgram::Sampled => vertex_buffer,
+                            VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
+                                puppet_gpu_payload_buffer.expect("puppet payload buffer checked")
+                            }
+                        };
+                        let vertex_buffers = [source_vertex_buffer, draw_instance_buffer];
                         let vertex_offsets = [0u64, 0u64];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
@@ -3362,7 +3650,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         sampled_draw.index_count,
                         1,
                         sampled_draw.first_index,
-                        0,
+                        sampled_draw.vertex_offset,
                         sampled_draw.draw_instance_index,
                     );
                 }
@@ -5135,6 +5423,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     framebuffer_snapshot_resource: Option<&VulkanaliaSceneSampledImageResources>,
     framebuffer_snapshot_initial_layout: vk::ImageLayout,
     vertex_buffer: vk::Buffer,
+    puppet_gpu_payload_buffer: Option<vk::Buffer>,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
     clear_color: [f32; 4],
@@ -5158,6 +5447,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     for draw in draw_commands {
         if draw.index_count == 0 {
             return Err("scene sampled-image draw requires at least one index".to_owned());
+        }
+        if draw.vertex_program == VulkanaliaSceneSampledImageVertexProgram::PuppetGpu
+            && puppet_gpu_payload_buffer.is_none()
+        {
+            return Err(
+                "scene sampled-image puppet GPU draw requires a retained payload buffer".to_owned(),
+            );
         }
         if let VulkanaliaSceneSampledImageRenderTarget::EffectTarget { target_index, .. } =
             draw.render_target
@@ -5599,7 +5895,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             pipeline,
                         );
                         let vertex_buffers = [solid_resources.vertex_buffer];
-                        let vertex_offsets = [0u64];
+                        let vertex_offsets = [solid_resources.vertex_offset_bytes];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
                             0,
@@ -5704,6 +6000,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SampledImage {
                         blend: sampled_draw.material.render_state.blend,
                         shader_program: scene_sampled_image_shader_program(&sampled_draw.material),
+                        vertex_program: sampled_draw.vertex_program,
                     };
                     if bound_pipeline != Some(pipeline_key) {
                         device.cmd_bind_pipeline(
@@ -5712,9 +6009,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             native_vulkan_vulkanalia_scene_sampled_image_pipeline_for_material(
                                 pipeline_resources,
                                 &sampled_draw.material,
+                                sampled_draw.vertex_program,
                             ),
                         );
-                        let vertex_buffers = [vertex_buffer, draw_instance_buffer];
+                        let source_vertex_buffer = match sampled_draw.vertex_program {
+                            VulkanaliaSceneSampledImageVertexProgram::Sampled => vertex_buffer,
+                            VulkanaliaSceneSampledImageVertexProgram::PuppetGpu => {
+                                puppet_gpu_payload_buffer.expect("puppet payload buffer checked")
+                            }
+                        };
+                        let vertex_buffers = [source_vertex_buffer, draw_instance_buffer];
                         let vertex_offsets = [0u64, 0u64];
                         device.cmd_bind_vertex_buffers(
                             command_buffer,
@@ -5766,7 +6070,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         sampled_draw.index_count,
                         1,
                         sampled_draw.first_index,
-                        0,
+                        sampled_draw.vertex_offset,
                         sampled_draw.draw_instance_index,
                     );
                 }
@@ -6046,8 +6350,10 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIR
 const NATIVE_VULKAN_VULKANALIA_SCENE_SOLID_QUAD_PASSTHROUGHBLEND_FRAGMENT_SPIRV: [u32; 1785] =
     include!("shaders/solid_quad_passthroughblend.frag.spv.rs");
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 761] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 3600] =
     include!("shaders/sampled_image.vert.spv.rs");
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV: [u32; 3646] =
+    include!("shaders/sampled_image_puppet.vert.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_FRAGMENT_SPIRV: [u32; 1383] =
     include!("shaders/sampled_image.frag.spv.rs");
@@ -6462,7 +6768,7 @@ mod tests {
         assert!(!snapshot.descriptor_set_layout_created);
         assert_eq!(snapshot.descriptor_type, "combined-image-sampler");
         assert_eq!(snapshot.descriptor_binding, 0);
-        assert_eq!(snapshot.vertex_input_attribute_count, 8);
+        assert_eq!(snapshot.vertex_input_attribute_count, 14);
         assert_eq!(
             snapshot.vertex_stride_bytes,
             SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES
@@ -6475,7 +6781,7 @@ mod tests {
             snapshot.sampled_image_model,
             "retained native sampled image + GPU draw-instance constants -> VK_EXT_descriptor_heap constant-offset mapping -> generic, framebuffer-passthrough, or pass-specific fragment shader"
         );
-        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 126);
+        assert_eq!(snapshot.pass_specific_fragment_pipeline_count, 153);
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
         assert!(snapshot.uses_synchronization2);
@@ -8181,6 +8487,8 @@ mod tests {
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 draw_instance_index: 0,
+                vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+                vertex_offset: 0,
                 first_index: 0,
                 index_count: 6,
             },
@@ -8195,6 +8503,8 @@ mod tests {
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 draw_instance_index: 0,
+                vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+                vertex_offset: 0,
                 first_index: 6,
                 index_count: 6,
             },

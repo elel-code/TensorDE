@@ -1,8 +1,7 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
-use std::ops::Range;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::AtomicUsize;
@@ -56,8 +55,9 @@ use super::scene_draw_pass::{
     VulkanaliaSceneMsaaColorTarget, VulkanaliaSceneSampledImageDescriptorBinding,
     VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImageDrawInstance,
     VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImageRenderTarget,
-    VulkanaliaSceneSampledImageViewportState, VulkanaliaSceneSolidQuadDrawCommand,
-    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaSceneSampledImageVertexProgram, VulkanaliaSceneSampledImageViewportState,
+    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
+    VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -102,8 +102,9 @@ const SCENE_FULL_SOLID_QUAD_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT: u32 = 6;
 const SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES: u32 = 44;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES: usize = 8;
-const SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES: usize = 8;
+const SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES: u32 = 64;
+const SCENE_PUPPET_GPU_POSE_STRIDE_BYTES: u32 = 80;
+const SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES: u32 = 48;
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
@@ -112,29 +113,12 @@ const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE
 const DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::DEVICE_LOCAL.bits();
 const SCENE_GEOMETRY_POOLED_BYTE_BUFFERS: usize = 2;
 const SCENE_GEOMETRY_MAX_RETAINED_BYTE_CAPACITY: usize = 128 * 1024;
-const SCENE_DYNAMIC_VERTEX_SPARSE_COPY_PAGE_BYTES: usize = 4096;
-const SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_PERCENT: usize = 90;
-const SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_WRITE_LIMIT: u32 = 2;
 const SCENE_PRESENT_ID_TELEMETRY_RETAINED_FRAMES: usize = 0;
 static SCENE_PRESENT_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static SCENE_GEOMETRY_BYTE_POOL: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
 }
-
-pub type NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry = Box<
-    dyn Fn(u64) -> Result<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput, String> + Send + Sync,
->;
-pub type NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry = Box<
-    dyn Fn(u64, &mut Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>) -> Result<(), String>
-        + Send
-        + Sync,
->;
-pub type NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry = Box<
-    dyn Fn(u64) -> Result<Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>, String>
-        + Send
-        + Sync,
->;
 
 pub struct NativeVulkanVulkanaliaSceneSolidQuadPresentOptions {
     pub host: NativeWaylandHostOptions,
@@ -143,7 +127,6 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPresentOptions {
     pub target_max_fps: Option<u32>,
     pub quad_color: NativeVulkanClearColor,
     pub geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
-    pub dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry>,
     pub scene_size: Option<SceneSize>,
     pub scene_fit: FitMode,
 }
@@ -158,8 +141,6 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
     pub fit: Option<FitMode>,
     pub solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
     pub geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
-    pub dynamic_solid_geometry: Option<NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry>,
-    pub dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
     pub scene_size: Option<SceneSize>,
     pub scene_fit: FitMode,
 }
@@ -171,8 +152,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaSceneVideoOv
     pub fit: Option<FitMode>,
     pub solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
     pub geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
-    pub dynamic_solid_geometry: Option<NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry>,
-    pub dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
     pub scene_size: Option<SceneSize>,
     pub scene_fit: FitMode,
 }
@@ -184,8 +163,70 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub rgba: [f32; 4],
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload {
+    pub frame_rate: u32,
+    pub frame_count: u32,
+    pub vertices: Vec<NativeVulkanVulkanaliaSceneSolidQuadVertex>,
+}
+
 pub type NativeVulkanVulkanaliaSceneSampledImageVertex =
     crate::renderer::native_vulkan::scene::draw_pass::NativeVulkanSceneSampledImageVertex;
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NativeVulkanVulkanaliaScenePuppetGpuVertexPayload {
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
+    pub opacity: f32,
+    pub bone_indices: [u32; 4],
+    pub bone_weights: [f32; 4],
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaScenePuppetGpuPayload {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub geometry_index: u32,
+    pub puppet_index: u32,
+    pub vertices: Vec<NativeVulkanVulkanaliaScenePuppetGpuVertexPayload>,
+    pub indices: Vec<u32>,
+    pub bone_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaScenePuppetGpuPosePayload {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub puppet_index: u32,
+    pub position_transform_x: [f32; 4],
+    pub position_transform_y: [f32; 4],
+    pub layer_opacity: f32,
+    pub layer_extent: [f32; 2],
+    pub layer_anchor: [f32; 2],
+    pub pose_frame_count: u32,
+    pub pose_frame_rate: f32,
+    pub pose_looping: bool,
+    pub pose_frame_bone_count: u32,
+    pub skin_matrices: Vec<[f32; 16]>,
+    pub bone_opacities: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload {
+    pub layer_index: usize,
+    pub layer_id: String,
+    pub position_transform_x: [f32; 4],
+    pub position_transform_y: [f32; 4],
+    pub layer_opacity: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload {
+    pub frame_rate: u32,
+    pub frame_count: u32,
+    pub layer_indices: Vec<usize>,
+    pub poses: Vec<NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload>,
+}
 
 impl NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub fn new(position: [f32; 2], rgba: [f32; 4]) -> Self {
@@ -198,6 +239,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
     pub vertices: Vec<NativeVulkanVulkanaliaSceneSolidQuadVertex>,
     pub indices: Vec<u32>,
     pub draw_steps: Vec<NativeVulkanVulkanaliaSceneSolidQuadDrawStep>,
+    pub vertex_timeline: Option<NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload>,
     pub source_label: String,
 }
 
@@ -208,6 +250,11 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
     pub sources: Vec<PathBuf>,
     pub effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
     pub we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
+    pub puppet_gpu_payloads: Vec<NativeVulkanVulkanaliaScenePuppetGpuPayload>,
+    pub puppet_gpu_poses: Vec<NativeVulkanVulkanaliaScenePuppetGpuPosePayload>,
+    pub sampled_layer_poses: Vec<NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload>,
+    pub sampled_layer_pose_timeline:
+        Option<NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload>,
     pub draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     pub source_label: String,
 }
@@ -844,6 +891,10 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources: Vec::new(),
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            puppet_gpu_payloads: Vec::new(),
+            puppet_gpu_poses: Vec::new(),
+            sampled_layer_poses: Vec::new(),
+            sampled_layer_pose_timeline: None,
             draw_steps: vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: 0,
                 first_vertex: 0,
@@ -878,6 +929,10 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            puppet_gpu_payloads: Vec::new(),
+            puppet_gpu_poses: Vec::new(),
+            sampled_layer_poses: Vec::new(),
+            sampled_layer_pose_timeline: None,
             draw_steps,
             source_label: source_label.into(),
         }
@@ -897,6 +952,10 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets,
             we_graph_resources: Vec::new(),
+            puppet_gpu_payloads: Vec::new(),
+            puppet_gpu_poses: Vec::new(),
+            sampled_layer_poses: Vec::new(),
+            sampled_layer_pose_timeline: None,
             draw_steps,
             source_label: source_label.into(),
         }
@@ -917,6 +976,10 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets,
             we_graph_resources,
+            puppet_gpu_payloads: Vec::new(),
+            puppet_gpu_poses: Vec::new(),
+            sampled_layer_poses: Vec::new(),
+            sampled_layer_pose_timeline: None,
             draw_steps,
             source_label: source_label.into(),
         }
@@ -953,6 +1016,7 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
             vertices,
             indices,
             draw_steps,
+            vertex_timeline: None,
             source_label: source_label.into(),
         }
     }
@@ -1046,8 +1110,6 @@ pub struct NativeVulkanVulkanaliaScenePresentLoopTimingSnapshot {
     pub fence_wait_reset_micros: u64,
     pub acquire_next_image_micros: u64,
     pub geometry_update_micros: u64,
-    pub sampled_dynamic_geometry_micros: u64,
-    pub sampled_vertex_upload_micros: u64,
     pub solid_dynamic_geometry_micros: u64,
     pub solid_vertex_upload_micros: u64,
     pub command_record_micros: u64,
@@ -1061,6 +1123,12 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot {
     pub source_label: String,
     pub vertex_count: u32,
     pub vertex_buffer_bytes: u64,
+    pub vertex_buffer_count: u32,
+    pub vertex_timeline_frame_count: u32,
+    pub vertex_timeline_frame_rate: u32,
+    pub vertex_timeline_frame_stride_bytes: u64,
+    pub vertex_timeline_buffer_bytes: u64,
+    pub vertex_timeline_buffer_count: u32,
     pub index_buffer_bytes: u64,
     pub index_count: u32,
     pub quad_count: u32,
@@ -1091,6 +1159,33 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
     pub we_graph_allocated_target_resource_count: u32,
     pub we_graph_planned_target_resource_count: u32,
     pub we_graph_resource_model: &'static str,
+    pub puppet_gpu_payload_count: u32,
+    pub puppet_gpu_payload_vertex_count: u32,
+    pub puppet_gpu_payload_index_count: u32,
+    pub puppet_gpu_payload_bone_count: u32,
+    pub puppet_gpu_payload_buffer_bytes: u64,
+    pub puppet_gpu_payload_buffer_count: u32,
+    pub puppet_gpu_pose_count: u32,
+    pub puppet_gpu_pose_bone_count: u32,
+    pub puppet_gpu_pose_timeline_frame_count: u32,
+    pub puppet_gpu_pose_timeline_frame_bone_count: u32,
+    pub puppet_gpu_pose_buffer_bytes: u64,
+    pub puppet_gpu_pose_buffer_count: u32,
+    pub puppet_gpu_vertex_stride_bytes: u32,
+    pub puppet_gpu_pose_stride_bytes: u32,
+    pub puppet_gpu_model: &'static str,
+    pub sampled_layer_pose_count: u32,
+    pub sampled_layer_pose_timeline_layer_count: u32,
+    pub sampled_layer_pose_timeline_frame_count: u32,
+    pub sampled_layer_pose_timeline_frame_rate: u32,
+    pub sampled_layer_pose_timeline_buffer_bytes: u64,
+    pub sampled_layer_pose_timeline_buffer_count: u32,
+    pub sampled_layer_pose_stride_bytes: u32,
+    pub draw_instance_buffer_count: u32,
+    pub draw_instance_stride_bytes: u32,
+    pub frame_time_buffer_count: u32,
+    pub frame_time_buffer_bytes: u64,
+    pub sampled_layer_pose_model: &'static str,
     pub draw_step_count: u32,
     pub vertex_stride_bytes: u32,
     pub selected_vertex_memory_type_index: u32,
@@ -1098,49 +1193,15 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
     pub vertex_memory_property_flags: Vec<&'static str>,
     pub index_memory_property_flags: Vec<&'static str>,
     pub upload_model: &'static str,
-    pub dynamic_vertex_upload: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot,
     pub retained_across_frames: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub struct NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot {
-    pub page_bytes: u32,
-    pub dense_copy_percent: u32,
-    pub dense_write_limit: u32,
-    pub write_count: u64,
-    pub sparse_write_count: u64,
-    pub dense_fallback_write_count: u64,
-    pub hashed_bytes: u64,
-    pub copied_bytes: u64,
-    pub skipped_bytes: u64,
-    pub sparse_disabled_buffer_count: u32,
-}
-
-impl NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot {
-    const fn empty() -> Self {
-        Self {
-            page_bytes: SCENE_DYNAMIC_VERTEX_SPARSE_COPY_PAGE_BYTES as u32,
-            dense_copy_percent: SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_PERCENT as u32,
-            dense_write_limit: SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_WRITE_LIMIT,
-            write_count: 0,
-            sparse_write_count: 0,
-            dense_fallback_write_count: 0,
-            hashed_bytes: 0,
-            copied_bytes: 0,
-            skipped_bytes: 0,
-            sparse_disabled_buffer_count: 0,
-        }
-    }
-}
-
-impl Default for NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot {
-    fn default() -> Self {
-        Self::empty()
-    }
 }
 
 struct VulkanaliaSceneSolidQuadGeometryResources {
     vertex_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
+    vertex_timeline_buffer: Option<VulkanaliaSceneUploadedBuffer>,
+    vertex_timeline_frame_count: u32,
+    vertex_timeline_frame_rate: u32,
+    vertex_timeline_frame_stride_bytes: u64,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSolidQuadDrawStep>,
@@ -1149,16 +1210,72 @@ struct VulkanaliaSceneSolidQuadGeometryResources {
 }
 
 struct VulkanaliaSceneSampledImageGeometryResources {
-    vertex_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
+    vertex_buffer: VulkanaliaSceneUploadedBuffer,
     draw_instance_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
+    frame_time_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
+    draw_instances: Vec<VulkanaliaSceneSampledImageDrawInstance>,
+    sampled_layer_pose_draw_instance_slots: Vec<VulkanaliaSceneSampledLayerPoseDrawInstanceSlot>,
+    puppet_layer_pose_draw_instance_slots: Vec<VulkanaliaScenePuppetLayerPoseDrawInstanceSlot>,
+    sampled_layer_pose_timeline_buffer: Option<VulkanaliaSceneUploadedBuffer>,
+    sampled_layer_pose_timeline_layer_indices: Vec<usize>,
+    sampled_layer_pose_timeline_frame_count: u32,
+    sampled_layer_pose_timeline_frame_rate: u32,
+    puppet_gpu_payload_buffer: Option<VulkanaliaSceneUploadedBuffer>,
+    puppet_gpu_pose_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
+    puppet_gpu_draw_bindings: Vec<VulkanaliaScenePuppetGpuDrawBinding>,
+    puppet_gpu_pose_instances: Vec<VulkanaliaScenePuppetGpuPoseInstance>,
+    sampled_layer_pose_instances: Vec<VulkanaliaSceneSampledImageLayerPoseInstance>,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
-    dynamic_vertex_byte_ranges: Vec<Range<usize>>,
-    animated_uv_steps: Vec<SceneSampledImageAnimatedUvStep>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
     we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
     snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VulkanaliaScenePuppetGpuDrawBinding {
+    layer_index: usize,
+    payload_vertex_offset: u32,
+    payload_vertex_count: u32,
+    payload_index_count: u32,
+    pose_bone_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VulkanaliaScenePuppetGpuPoseInstance {
+    layer_index: usize,
+    puppet_index: u32,
+    position_transform_x: [f32; 4],
+    position_transform_y: [f32; 4],
+    layer_opacity: f32,
+    layer_extent: [f32; 2],
+    pose_frame_count: u32,
+    pose_frame_rate: f32,
+    pose_looping: bool,
+    pose_frame_bone_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VulkanaliaSceneSampledImageLayerPoseInstance {
+    layer_index: usize,
+    position_transform_x: [f32; 4],
+    position_transform_y: [f32; 4],
+    layer_opacity: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VulkanaliaSceneSampledLayerPoseDrawInstanceSlot {
+    layer_index: usize,
+    instance_index: usize,
+    base_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct VulkanaliaScenePuppetLayerPoseDrawInstanceSlot {
+    layer_index: usize,
+    instance_index: usize,
+    base_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
 }
 
 #[derive(Clone, Copy)]
@@ -1190,6 +1307,7 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneVideoOverlayB
         pipeline: &'a VulkanaliaSceneSampledImagePipelineResources,
         draw_commands: &'a [VulkanaliaSceneSampledImageDrawCommand],
         vertex_buffer: vk::Buffer,
+        puppet_gpu_payload_buffer: Option<vk::Buffer>,
         draw_instance_buffer: vk::Buffer,
         index_buffer: vk::Buffer,
     },
@@ -1214,9 +1332,6 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverla
     solid_pipeline: Option<VulkanaliaSceneSolidQuadPipelineResources>,
     solid_geometry: Option<VulkanaliaSceneSolidQuadGeometryResources>,
     solid_draw_commands: Vec<VulkanaliaSceneSolidQuadDrawCommand>,
-    dynamic_solid_geometry: Option<NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry>,
-    dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
-    dynamic_sampled_vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
 }
@@ -1247,28 +1362,17 @@ struct VulkanaliaSceneTransferFrameResources {
 struct VulkanaliaSceneUploadedBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
+    device_address: vk::DeviceAddress,
     memory_type: NativeVulkanVulkanaliaMemoryTypeCandidate,
     memory_size: u64,
     mapped_ptr: Option<*mut std::ffi::c_void>,
     mapped_size: u64,
-    sparse_page_hashes: Vec<u64>,
-    sparse_range_hashes: Vec<u64>,
-    sparse_dense_write_count: u32,
-    sparse_copy_disabled: bool,
-    dynamic_upload_stats: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot,
 }
 
 // The mapped pointer belongs to a Vulkan allocation owned by this buffer. Scene
 // overlay resources move to the scoped present worker with exclusive &mut access,
 // so no concurrent host writes are introduced by making the wrapper Send.
 unsafe impl Send for VulkanaliaSceneUploadedBuffer {}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct SceneSampledImageAnimatedUvStep {
-    vertex_indices: [u32; 4],
-    base_uvs: [[f32; 2]; 4],
-    texture_region: SceneTextureRegion,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SceneStaticTransferBlitRegion {
@@ -1374,6 +1478,9 @@ fn recycle_scene_geometry_byte_buffer(mut bytes: Vec<u8>) {
 struct VulkanaliaSceneSolidQuadGeometryPayload {
     indices: Vec<u32>,
     vertex_bytes: SceneGeometryByteBuffer,
+    vertex_timeline_bytes: SceneGeometryByteBuffer,
+    vertex_timeline_frame_count: u32,
+    vertex_timeline_frame_rate: u32,
     index_bytes: SceneGeometryByteBuffer,
     vertex_count: u32,
     index_count: u32,
@@ -1388,8 +1495,16 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     indices: Vec<u32>,
     sources: Vec<PathBuf>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
+    puppet_gpu_payloads: Vec<NativeVulkanVulkanaliaScenePuppetGpuPayload>,
+    puppet_gpu_poses: Vec<NativeVulkanVulkanaliaScenePuppetGpuPosePayload>,
+    sampled_layer_poses: Vec<NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload>,
+    sampled_layer_pose_timeline:
+        Option<NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload>,
+    sampled_layer_pose_timeline_bytes: SceneGeometryByteBuffer,
     vertex_bytes: SceneGeometryByteBuffer,
     index_bytes: SceneGeometryByteBuffer,
+    puppet_gpu_payload_bytes: SceneGeometryByteBuffer,
+    puppet_gpu_pose_bytes: SceneGeometryByteBuffer,
     vertex_count: u32,
     index_count: u32,
     quad_count: u32,
@@ -1401,6 +1516,15 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     we_graph_target_resource_count: u32,
     we_graph_allocated_target_resource_count: u32,
     we_graph_planned_target_resource_count: u32,
+    puppet_gpu_payload_count: u32,
+    puppet_gpu_payload_vertex_count: u32,
+    puppet_gpu_payload_index_count: u32,
+    puppet_gpu_payload_bone_count: u32,
+    puppet_gpu_pose_count: u32,
+    puppet_gpu_pose_bone_count: u32,
+    puppet_gpu_pose_timeline_frame_count: u32,
+    puppet_gpu_pose_timeline_frame_bone_count: u32,
+    sampled_layer_pose_count: u32,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     source_label: String,
 }
@@ -1633,12 +1757,8 @@ fn with_vulkanalia_scene_solid_quad_present(
         device,
         &memory_properties,
         geometry_payload,
-        if options.dynamic_geometry.is_some() {
-            frame_resources.in_flight.len()
-        } else {
-            1
-        },
-        options.dynamic_geometry.is_some(),
+        1,
+        false,
     ) {
         Ok(geometry) => geometry,
         Err(err) => {
@@ -2001,13 +2121,11 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let sampled_image_has_dynamic_vertex_updates = options.dynamic_geometry.is_some();
     let geometry = match create_scene_sampled_image_geometry_resources(
         device,
         &memory_properties,
         geometry_payload,
         frame_resources.in_flight.len(),
-        sampled_image_has_dynamic_vertex_updates,
     ) {
         Ok(geometry) => geometry,
         Err(err) => {
@@ -2172,6 +2290,8 @@ fn with_vulkanalia_scene_sampled_image_present(
     };
     let draw_commands = match scene_sampled_image_draw_commands(
         &geometry.draw_steps,
+        &geometry.puppet_gpu_draw_bindings,
+        &geometry.sampled_layer_pose_instances,
         &sampled_images,
         &descriptor_slot_plan.step_group_base_indices,
     ) {
@@ -2279,12 +2399,8 @@ fn with_vulkanalia_scene_sampled_image_present(
             device,
             &memory_properties,
             payload,
-            if options.dynamic_solid_geometry.is_some() {
-                frame_resources.in_flight.len()
-            } else {
-                1
-            },
-            options.dynamic_solid_geometry.is_some(),
+            1,
+            false,
         ) {
             Ok(geometry) => Some(geometry),
             Err(err) => {
@@ -2365,7 +2481,7 @@ fn with_vulkanalia_scene_sampled_image_present(
     );
 
     let release_static_sources_after_first_present = !framebuffer_snapshot_required
-        && scene_sampled_image_can_release_sources_after_first_present(&options, &geometry);
+        && scene_sampled_image_can_release_sources_after_first_present(&geometry);
     let mut pipeline = Some(pipeline);
     let mut geometry = Some(geometry);
     let mut solid_pipeline = solid_pipeline;
@@ -2532,7 +2648,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 memory_properties,
                 geometry_payload,
                 frame_resource_count,
-                false,
             )?);
             video_draw_commands = scene_video_layer_draw_commands(
                 &video_geometry
@@ -2600,7 +2715,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 memory_properties,
                 geometry_payload,
                 frame_resource_count,
-                input.dynamic_geometry.is_some(),
             )?);
             let sampled_geometry_ref = sampled_geometry
                 .as_ref()
@@ -2632,6 +2746,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             )?);
             sampled_draw_commands = scene_sampled_image_draw_commands(
                 &sampled_geometry_ref.draw_steps,
+                &sampled_geometry_ref.puppet_gpu_draw_bindings,
+                &sampled_geometry_ref.sampled_layer_pose_instances,
                 &sampled_images,
                 &descriptor_slot_plan.step_group_base_indices,
             )?;
@@ -2659,12 +2775,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 device,
                 memory_properties,
                 geometry_payload,
-                if input.dynamic_solid_geometry.is_some() {
-                    frame_resource_count
-                } else {
-                    1
-                },
-                input.dynamic_solid_geometry.is_some(),
+                1,
+                false,
             )?);
             solid_draw_commands = scene_solid_quad_draw_commands(
                 &solid_geometry
@@ -2674,9 +2786,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             )?;
         }
 
-        let dynamic_sampled_vertex_capacity = sampled_geometry
-            .as_ref()
-            .map_or(0, |geometry| geometry.snapshot.vertex_count as usize);
         Ok(VulkanaliaSceneVideoOverlayResources {
             video_geometry: video_geometry.take(),
             video_draw_commands: std::mem::take(&mut video_draw_commands),
@@ -2689,9 +2798,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             solid_pipeline: solid_pipeline.take(),
             solid_geometry: solid_geometry.take(),
             solid_draw_commands: std::mem::take(&mut solid_draw_commands),
-            dynamic_solid_geometry: input.dynamic_solid_geometry.take(),
-            dynamic_geometry: input.dynamic_geometry.take(),
-            dynamic_sampled_vertices: Vec::with_capacity(dynamic_sampled_vertex_capacity),
             scene_size: input.scene_size,
             scene_fit: input.scene_fit,
         })
@@ -2785,9 +2891,7 @@ impl VulkanaliaSceneVideoOverlayResources {
             }
             Some(VulkanaliaSceneVideoLayerFrameDraw {
                 draw_commands: &self.video_draw_commands,
-                vertex_buffer: update_scene_sampled_image_geometry_for_time(
-                    device, geometry, frame_slot, elapsed_ms,
-                )?,
+                vertex_buffer: geometry.vertex_buffer.buffer,
                 index_buffer: geometry.index_buffer,
             })
         } else {
@@ -2796,44 +2900,12 @@ impl VulkanaliaSceneVideoOverlayResources {
 
         let solid_draw = match (self.solid_pipeline.as_ref(), self.solid_geometry.as_ref()) {
             (Some(pipeline), Some(geometry)) => {
-                let dynamic_solid_input = self
-                    .dynamic_solid_geometry
-                    .as_ref()
-                    .map(|dynamic_geometry| dynamic_geometry(elapsed_ms))
-                    .transpose()?
-                    .flatten();
-                let vertex_buffer = if let Some(input) = dynamic_solid_input {
-                    let vertex_bytes = input
-                        .vertices
-                        .len()
-                        .checked_mul(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize)
-                        .ok_or_else(|| {
-                            "scene video overlay dynamic solid vertex bytes overflow".to_owned()
-                        })?;
-                    if input.indices == geometry.indices
-                        && input.draw_steps == geometry.draw_steps
-                        && vertex_bytes == geometry.snapshot.vertex_buffer_bytes as usize
-                    {
-                        update_scene_solid_quad_geometry_input_for_time(
-                            device,
-                            geometry,
-                            frame_slot,
-                            input,
-                            extent,
-                            self.scene_size,
-                            self.scene_fit,
-                        )?
-                    } else {
-                        update_scene_solid_quad_geometry_for_time(
-                            device, geometry, frame_slot, None,
-                        )?
-                    }
-                } else {
-                    update_scene_solid_quad_geometry_for_time(device, geometry, frame_slot, None)?
-                };
+                let (vertex_buffer, vertex_offset_bytes) =
+                    scene_solid_quad_vertex_buffer_for_time(geometry, elapsed_ms)?;
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources: pipeline,
                     vertex_buffer,
+                    vertex_offset_bytes,
                     index_buffer: geometry.index_buffer,
                     draw_commands: &self.solid_draw_commands,
                     framebuffer_snapshot_descriptor_group_base_index: None,
@@ -2854,20 +2926,7 @@ impl VulkanaliaSceneVideoOverlayResources {
             self.descriptor_heap.as_ref(),
         ) {
             (Some(pipeline), Some(geometry), Some(descriptor_heap)) => {
-                let vertex_buffer = if let Some(dynamic_geometry) = self.dynamic_geometry.as_ref() {
-                    self.dynamic_sampled_vertices.clear();
-                    dynamic_geometry(elapsed_ms, &mut self.dynamic_sampled_vertices)?;
-                    update_scene_sampled_image_geometry_input_for_time(
-                        device,
-                        geometry,
-                        frame_slot,
-                        &self.dynamic_sampled_vertices,
-                    )?
-                } else {
-                    update_scene_sampled_image_geometry_for_time(
-                        device, geometry, frame_slot, elapsed_ms,
-                    )?
-                };
+                let vertex_buffer = geometry.vertex_buffer.buffer;
                 let draw_instance_buffer = update_scene_sampled_image_draw_instance_for_time(
                     device, geometry, frame_slot, elapsed_ms,
                 )?;
@@ -2881,6 +2940,10 @@ impl VulkanaliaSceneVideoOverlayResources {
                         pipeline,
                         draw_commands: &self.sampled_draw_commands,
                         vertex_buffer,
+                        puppet_gpu_payload_buffer: geometry
+                            .puppet_gpu_payload_buffer
+                            .as_ref()
+                            .map(|buffer| buffer.buffer),
                         draw_instance_buffer,
                         index_buffer: geometry.index_buffer,
                     }),
@@ -2942,6 +3005,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             pipeline,
             draw_commands,
             vertex_buffer,
+            puppet_gpu_payload_buffer,
             draw_instance_buffer,
             index_buffer,
         }) => native_vulkan_vulkanalia_record_scene_sampled_image_draws_inside_rendering(
@@ -2954,6 +3018,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             pipeline,
             draw_commands,
             vertex_buffer,
+            puppet_gpu_payload_buffer,
             draw_instance_buffer,
             index_buffer,
         ),
@@ -3029,19 +3094,8 @@ fn run_scene_solid_quad_present_loop(
             .map(|resources| &resources.target);
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-        let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
-            update_scene_solid_quad_geometry_input_for_time(
-                device,
-                geometry,
-                present_frame_slot,
-                dynamic_geometry(elapsed_ms)?,
-                extent,
-                options.scene_size,
-                options.scene_fit,
-            )?
-        } else {
-            update_scene_solid_quad_geometry_for_time(device, geometry, present_frame_slot, None)?
-        };
+        let (vertex_buffer, vertex_offset_bytes) =
+            scene_solid_quad_vertex_buffer_for_time(geometry, elapsed_ms)?;
 
         let command = native_vulkan_vulkanalia_record_scene_solid_quad_command_buffer(
             device,
@@ -3052,6 +3106,7 @@ fn run_scene_solid_quad_present_loop(
             extent,
             pipeline,
             vertex_buffer,
+            vertex_offset_bytes,
             geometry.index_buffer,
             geometry.snapshot.index_count,
             [
@@ -3240,6 +3295,7 @@ fn run_scene_sampled_image_present_loop(
             Some(VulkanaliaSceneSolidQuadDrawResources {
                 pipeline_resources,
                 vertex_buffer,
+                vertex_offset_bytes: 0,
                 index_buffer: geometry.index_buffer,
                 draw_commands,
                 framebuffer_snapshot_descriptor_group_base_index:
@@ -3281,8 +3337,12 @@ fn run_scene_sampled_image_present_loop(
     } else {
         None
     };
+    let solid_vertex_timeline_active = solid_geometry
+        .map(|geometry| geometry.vertex_timeline_buffer.is_some())
+        .unwrap_or(false);
     let reuse_recorded_commands =
-        scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands);
+        scene_sampled_image_draw_commands_can_reuse_recorded_command_buffers(draw_commands)
+            && !solid_vertex_timeline_active;
     let mut framebuffer_snapshot_initialized = false;
     let mut recorded_commands = vec![None; swapchain_images.len()];
     let mut command_buffer_record_count = 0u64;
@@ -3290,10 +3350,8 @@ fn run_scene_sampled_image_present_loop(
     let mut fence_wait_reset_micros = 0u64;
     let mut acquire_next_image_micros = 0u64;
     let mut geometry_update_micros = 0u64;
-    let mut sampled_dynamic_geometry_micros = 0u64;
-    let mut sampled_vertex_upload_micros = 0u64;
-    let mut solid_dynamic_geometry_micros = 0u64;
-    let mut solid_vertex_upload_micros = 0u64;
+    let solid_dynamic_geometry_micros = 0u64;
+    let solid_vertex_upload_micros = 0u64;
     let mut command_record_micros = 0u64;
     let mut queue_submit_micros = 0u64;
     let mut queue_present_micros = 0u64;
@@ -3302,7 +3360,6 @@ fn run_scene_sampled_image_present_loop(
         .iter()
         .map(|resources| resources.target)
         .collect::<Vec<_>>();
-    let mut dynamic_sampled_vertices = Vec::with_capacity(geometry.snapshot.vertex_count as usize);
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -3355,70 +3412,15 @@ fn run_scene_sampled_image_present_loop(
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         let geometry_frame_slot = image_index_usize;
         let geometry_started_at = Instant::now();
-        let vertex_buffer = if let Some(dynamic_geometry) = options.dynamic_geometry.as_ref() {
-            let dynamic_started_at = Instant::now();
-            dynamic_sampled_vertices.clear();
-            dynamic_geometry(elapsed_ms, &mut dynamic_sampled_vertices)?;
-            sampled_dynamic_geometry_micros = sampled_dynamic_geometry_micros
-                .saturating_add(scene_duration_micros(dynamic_started_at.elapsed()));
-            let upload_started_at = Instant::now();
-            let vertex_buffer = update_scene_sampled_image_geometry_input_for_time(
-                device,
-                geometry,
-                geometry_frame_slot,
-                &dynamic_sampled_vertices,
-            )?;
-            sampled_vertex_upload_micros = sampled_vertex_upload_micros
-                .saturating_add(scene_duration_micros(upload_started_at.elapsed()));
-            vertex_buffer
-        } else {
-            let upload_started_at = Instant::now();
-            let vertex_buffer = update_scene_sampled_image_geometry_for_time(
-                device,
-                geometry,
-                geometry_frame_slot,
-                elapsed_ms,
-            )?;
-            sampled_vertex_upload_micros = sampled_vertex_upload_micros
-                .saturating_add(scene_duration_micros(upload_started_at.elapsed()));
-            vertex_buffer
-        };
-        let dynamic_solid_input =
-            if let Some(dynamic_geometry) = options.dynamic_solid_geometry.as_ref() {
-                let dynamic_started_at = Instant::now();
-                let input = dynamic_geometry(elapsed_ms)?;
-                solid_dynamic_geometry_micros = solid_dynamic_geometry_micros
-                    .saturating_add(scene_duration_micros(dynamic_started_at.elapsed()));
-                input
-            } else {
-                None
-            };
+        let vertex_buffer = geometry.vertex_buffer.buffer;
         let solid_quad_draw = match (solid_quad_draw.as_ref(), solid_geometry) {
             (Some(draw), Some(geometry)) => {
-                let upload_started_at = Instant::now();
-                let solid_vertex_buffer = if let Some(input) = dynamic_solid_input {
-                    update_scene_solid_quad_geometry_input_for_time(
-                        device,
-                        geometry,
-                        geometry_frame_slot,
-                        input,
-                        extent,
-                        options.scene_size,
-                        options.scene_fit,
-                    )?
-                } else {
-                    update_scene_solid_quad_geometry_for_time(
-                        device,
-                        geometry,
-                        geometry_frame_slot,
-                        None,
-                    )?
-                };
-                solid_vertex_upload_micros = solid_vertex_upload_micros
-                    .saturating_add(scene_duration_micros(upload_started_at.elapsed()));
+                let (solid_vertex_buffer, solid_vertex_offset_bytes) =
+                    scene_solid_quad_vertex_buffer_for_time(geometry, elapsed_ms)?;
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources: draw.pipeline_resources,
                     vertex_buffer: solid_vertex_buffer,
+                    vertex_offset_bytes: solid_vertex_offset_bytes,
                     index_buffer: draw.index_buffer,
                     draw_commands: draw.draw_commands,
                     framebuffer_snapshot_descriptor_group_base_index:
@@ -3477,6 +3479,10 @@ fn run_scene_sampled_image_present_loop(
                     vk::ImageLayout::UNDEFINED
                 },
                 vertex_buffer,
+                geometry
+                    .puppet_gpu_payload_buffer
+                    .as_ref()
+                    .map(|buffer| buffer.buffer),
                 draw_instance_buffer,
                 geometry.index_buffer,
                 [
@@ -3634,8 +3640,6 @@ fn run_scene_sampled_image_present_loop(
             fence_wait_reset_micros,
             acquire_next_image_micros,
             geometry_update_micros,
-            sampled_dynamic_geometry_micros,
-            sampled_vertex_upload_micros,
             solid_dynamic_geometry_micros,
             solid_vertex_upload_micros,
             command_record_micros,
@@ -3693,12 +3697,9 @@ fn native_vulkan_vulkanalia_scene_effect_target_source_label(
 }
 
 fn scene_sampled_image_can_release_sources_after_first_present(
-    options: &NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     geometry: &VulkanaliaSceneSampledImageGeometryResources,
 ) -> bool {
-    options.dynamic_geometry.is_none()
-        && options.dynamic_solid_geometry.is_none()
-        && !scene_sampled_image_draw_steps_are_animated(&geometry.draw_steps)
+    !scene_sampled_image_draw_steps_are_animated(&geometry.draw_steps)
         && !scene_sampled_image_draw_steps_use_elapsed_time(&geometry.draw_steps)
 }
 
@@ -3707,8 +3708,6 @@ fn scene_sampled_image_can_use_static_transfer_present(
 ) -> bool {
     options.solid_geometry.is_none()
         && options.geometry.is_none()
-        && options.dynamic_solid_geometry.is_none()
-        && options.dynamic_geometry.is_none()
         && matches!(
             options.fit.unwrap_or(FitMode::Stretch),
             FitMode::Cover | FitMode::Contain | FitMode::Stretch | FitMode::Center
@@ -4385,6 +4384,33 @@ fn scene_static_transfer_geometry_snapshot()
         we_graph_allocated_target_resource_count: 0,
         we_graph_planned_target_resource_count: 0,
         we_graph_resource_model: "none",
+        puppet_gpu_payload_count: 0,
+        puppet_gpu_payload_vertex_count: 0,
+        puppet_gpu_payload_index_count: 0,
+        puppet_gpu_payload_bone_count: 0,
+        puppet_gpu_payload_buffer_bytes: 0,
+        puppet_gpu_payload_buffer_count: 0,
+        puppet_gpu_pose_count: 0,
+        puppet_gpu_pose_bone_count: 0,
+        puppet_gpu_pose_timeline_frame_count: 0,
+        puppet_gpu_pose_timeline_frame_bone_count: 0,
+        puppet_gpu_pose_buffer_bytes: 0,
+        puppet_gpu_pose_buffer_count: 0,
+        puppet_gpu_vertex_stride_bytes: SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES,
+        puppet_gpu_pose_stride_bytes: SCENE_PUPPET_GPU_POSE_STRIDE_BYTES,
+        puppet_gpu_model: "none",
+        sampled_layer_pose_count: 0,
+        sampled_layer_pose_timeline_layer_count: 0,
+        sampled_layer_pose_timeline_frame_count: 0,
+        sampled_layer_pose_timeline_frame_rate: 0,
+        sampled_layer_pose_timeline_buffer_bytes: 0,
+        sampled_layer_pose_timeline_buffer_count: 0,
+        sampled_layer_pose_stride_bytes: SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES,
+        draw_instance_buffer_count: 0,
+        draw_instance_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES,
+        frame_time_buffer_count: 0,
+        frame_time_buffer_bytes: 0,
+        sampled_layer_pose_model: "none",
         draw_step_count: 0,
         vertex_stride_bytes: 0,
         selected_vertex_memory_type_index: 0,
@@ -4392,7 +4418,6 @@ fn scene_static_transfer_geometry_snapshot()
         vertex_memory_property_flags: Vec::new(),
         index_memory_property_flags: Vec::new(),
         upload_model: "static transfer path records no host-visible scene geometry buffers",
-        dynamic_vertex_upload: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot::empty(),
         retained_across_frames: false,
     }
 }
@@ -4616,8 +4641,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             .get(image_index_usize)
             .map(|resources| &resources.target);
 
-        let vertex_buffer =
-            update_scene_sampled_image_geometry_for_time(device, &mut geometry, 0, 0)?;
+        let vertex_buffer = geometry.vertex_buffer.buffer;
         let draw_instance_buffer =
             update_scene_sampled_image_draw_instance_for_time(device, &mut geometry, 0, 0)?;
         let solid_quad_draw = match (
@@ -4631,6 +4655,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources,
                     vertex_buffer: solid_vertex_buffer,
+                    vertex_offset_bytes: 0,
                     index_buffer: geometry.index_buffer,
                     draw_commands,
                     framebuffer_snapshot_descriptor_group_base_index:
@@ -4674,6 +4699,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             framebuffer_snapshot_resource,
             vk::ImageLayout::UNDEFINED,
             vertex_buffer,
+            geometry
+                .puppet_gpu_payload_buffer
+                .as_ref()
+                .map(|buffer| buffer.buffer),
             draw_instance_buffer,
             geometry.index_buffer,
             [
@@ -5417,6 +5446,30 @@ fn create_scene_solid_quad_geometry_resources(
             return Err(err);
         }
     };
+    let vertex_timeline_buffer = if payload.vertex_timeline_bytes.len() > 0 {
+        match create_scene_uploaded_buffer(
+            device,
+            memory_properties,
+            &payload.vertex_timeline_bytes,
+            vk::BufferUsageFlags::VERTEX_BUFFER,
+            false,
+            "solid-quad retained vertex timeline",
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                unsafe {
+                    device.destroy_buffer(index.buffer, None);
+                    device.free_memory(index.memory, None);
+                }
+                for vertex in vertex_buffers {
+                    destroy_scene_uploaded_buffer(device, vertex);
+                }
+                return Err(format!("create solid-quad retained vertex timeline: {err}"));
+            }
+        }
+    } else {
+        None
+    };
     let first_vertex = vertex_buffers
         .first()
         .ok_or_else(|| "scene solid-quad geometry created no vertex buffers".to_owned())?;
@@ -5425,7 +5478,10 @@ fn create_scene_solid_quad_geometry_resources(
         memory_property_flag_labels(first_vertex.memory_type.property_flags_bits);
 
     let vertex_buffer_bytes = payload.vertex_bytes.len() as u64;
+    let vertex_timeline_buffer_bytes = payload.vertex_timeline_bytes.len() as u64;
     let index_buffer_bytes = payload.index_bytes.len() as u64;
+    let vertex_timeline_frame_stride_bytes = u64::from(payload.vertex_count)
+        .saturating_mul(u64::from(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES));
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
     let draw_steps = payload.draw_steps;
     let indices = if retain_cpu_topology {
@@ -5435,6 +5491,10 @@ fn create_scene_solid_quad_geometry_resources(
     };
     Ok(VulkanaliaSceneSolidQuadGeometryResources {
         vertex_buffers,
+        vertex_timeline_buffer,
+        vertex_timeline_frame_count: payload.vertex_timeline_frame_count,
+        vertex_timeline_frame_rate: payload.vertex_timeline_frame_rate,
+        vertex_timeline_frame_stride_bytes,
         index_buffer: index.buffer,
         index_memory: index.memory,
         draw_steps,
@@ -5443,6 +5503,12 @@ fn create_scene_solid_quad_geometry_resources(
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
             vertex_buffer_bytes,
+            vertex_buffer_count: vertex_buffer_count.min(u32::MAX as usize) as u32,
+            vertex_timeline_frame_count: payload.vertex_timeline_frame_count,
+            vertex_timeline_frame_rate: payload.vertex_timeline_frame_rate,
+            vertex_timeline_frame_stride_bytes,
+            vertex_timeline_buffer_bytes,
+            vertex_timeline_buffer_count: u32::from(vertex_timeline_buffer_bytes > 0),
             index_buffer_bytes,
             index_count: payload.index_count,
             quad_count: payload.quad_count,
@@ -5454,7 +5520,9 @@ fn create_scene_solid_quad_geometry_resources(
             index_memory_property_flags: memory_property_flag_labels(
                 index.memory_type.property_flags_bits,
             ),
-            upload_model: if vertex_buffer_count > 1 {
+            upload_model: if vertex_timeline_buffer_bytes > 0 {
+                "one-time retained solid-quad vertex timeline; present selects GPU vertex-buffer offset instead of uploading vertices per frame"
+            } else if vertex_buffer_count > 1 {
                 "persistently mapped per-frame host-visible solid-quad vertex buffers reused by frame slot"
             } else {
                 "one-time host-visible geometry upload retained across present frames"
@@ -5474,6 +5542,9 @@ fn destroy_scene_solid_quad_geometry_resources(
     }
     for vertex in resources.vertex_buffers {
         destroy_scene_uploaded_buffer(device, vertex);
+    }
+    if let Some(buffer) = resources.vertex_timeline_buffer {
+        destroy_scene_uploaded_buffer(device, buffer);
     }
 }
 
@@ -5514,6 +5585,27 @@ fn update_scene_solid_quad_geometry_for_time(
         "dynamic scene solid-quad vertex",
     )?;
     Ok(vertex.buffer)
+}
+
+fn scene_solid_quad_vertex_buffer_for_time(
+    geometry: &VulkanaliaSceneSolidQuadGeometryResources,
+    elapsed_ms: u64,
+) -> Result<(vk::Buffer, u64), String> {
+    if let Some(timeline) = geometry.vertex_timeline_buffer.as_ref() {
+        let frame_count = u64::from(geometry.vertex_timeline_frame_count.max(1));
+        let frame_rate = u64::from(geometry.vertex_timeline_frame_rate.max(1));
+        let frame_index = elapsed_ms.saturating_mul(frame_rate).saturating_add(500) / 1_000;
+        let frame_index = frame_index.min(frame_count.saturating_sub(1));
+        return Ok((
+            timeline.buffer,
+            frame_index.saturating_mul(geometry.vertex_timeline_frame_stride_bytes),
+        ));
+    }
+    let vertex = geometry
+        .vertex_buffers
+        .first()
+        .ok_or_else(|| "scene solid-quad geometry has no vertex buffers".to_owned())?;
+    Ok((vertex.buffer, 0))
 }
 
 fn update_scene_solid_quad_geometry_input_for_time(
@@ -5567,42 +5659,16 @@ fn create_scene_sampled_image_geometry_resources(
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     payload: VulkanaliaSceneSampledImageGeometryPayload,
     frame_resource_count: usize,
-    dynamic_vertex_updates: bool,
 ) -> Result<VulkanaliaSceneSampledImageGeometryResources, String> {
-    let animated_geometry = scene_sampled_image_draw_steps_are_animated(&payload.draw_steps);
-    let vertex_buffer_count = scene_sampled_image_vertex_buffer_count(
-        &payload.draw_steps,
-        frame_resource_count,
-        dynamic_vertex_updates,
-    );
-    let keep_vertex_buffers_mapped = animated_geometry || dynamic_vertex_updates;
-    let mut vertex_buffers = Vec::with_capacity(vertex_buffer_count);
-    for vertex_buffer_index in 0..vertex_buffer_count {
-        match create_scene_uploaded_buffer(
-            device,
-            memory_properties,
-            &payload.vertex_bytes,
-            vk::BufferUsageFlags::VERTEX_BUFFER,
-            keep_vertex_buffers_mapped,
-            if animated_geometry {
-                "sampled-image per-frame vertex"
-            } else if dynamic_vertex_updates {
-                "sampled-image dynamic per-frame vertex"
-            } else {
-                "sampled-image vertex"
-            },
-        ) {
-            Ok(vertex) => vertex_buffers.push(vertex),
-            Err(err) => {
-                for vertex in vertex_buffers {
-                    destroy_scene_uploaded_buffer(device, vertex);
-                }
-                return Err(format!(
-                    "create sampled-image vertex buffer slot {vertex_buffer_index}: {err}"
-                ));
-            }
-        }
-    }
+    let vertex_buffer = create_scene_uploaded_buffer(
+        device,
+        memory_properties,
+        &payload.vertex_bytes,
+        vk::BufferUsageFlags::VERTEX_BUFFER,
+        false,
+        "sampled-image retained vertex",
+    )
+    .map_err(|err| format!("create sampled-image retained vertex buffer: {err}"))?;
     let index = match create_scene_uploaded_buffer(
         device,
         memory_properties,
@@ -5613,41 +5679,166 @@ fn create_scene_sampled_image_geometry_resources(
     ) {
         Ok(index) => index,
         Err(err) => {
-            for vertex in vertex_buffers {
-                destroy_scene_uploaded_buffer(device, vertex);
-            }
+            destroy_scene_uploaded_buffer(device, vertex_buffer);
             return Err(err);
         }
     };
+    let puppet_gpu_draw_bindings = scene_sampled_image_puppet_gpu_draw_bindings(
+        &payload.puppet_gpu_payloads,
+        &payload.puppet_gpu_poses,
+    )?;
+    let sampled_layer_pose_instances =
+        scene_sampled_image_layer_pose_instances(&payload.sampled_layer_poses);
     let draw_instance_buffer_count = scene_sampled_image_draw_instance_buffer_count(
         &payload.draw_steps,
         frame_resource_count,
-        dynamic_vertex_updates,
+        !puppet_gpu_draw_bindings.is_empty(),
+        !sampled_layer_pose_instances.is_empty(),
     );
-    let draw_instance_bytes = scene_sampled_image_draw_instance_bytes(&[
-        VulkanaliaSceneSampledImageDrawInstance::identity(),
-    ])?;
-    let keep_draw_instance_buffers_mapped =
-        scene_sampled_image_draw_steps_use_elapsed_time(&payload.draw_steps)
-            || dynamic_vertex_updates;
-    let mut draw_instance_buffers = Vec::with_capacity(draw_instance_buffer_count);
-    for draw_instance_buffer_index in 0..draw_instance_buffer_count {
+    let puppet_gpu_pose_instances =
+        scene_sampled_image_puppet_gpu_pose_instances(&payload.puppet_gpu_poses);
+    let mut initial_draw_instances = scene_sampled_image_draw_instances_for_bindings(
+        &payload.draw_steps,
+        &puppet_gpu_draw_bindings,
+        &puppet_gpu_pose_instances,
+        &sampled_layer_pose_instances,
+        0,
+        0,
+    )?;
+    let sampled_layer_pose_draw_instance_slots = scene_sampled_image_layer_pose_draw_instance_slots(
+        &payload.draw_steps,
+        &puppet_gpu_draw_bindings,
+        &sampled_layer_pose_instances,
+    );
+    let puppet_layer_pose_draw_instance_slots =
+        scene_sampled_image_puppet_layer_pose_draw_instance_slots(
+            &puppet_gpu_draw_bindings,
+            &puppet_gpu_pose_instances,
+            &sampled_layer_pose_instances,
+            sampled_layer_pose_draw_instance_slots.len(),
+        )?;
+    let mut frame_time_buffers = Vec::with_capacity(draw_instance_buffer_count);
+    let frame_time_bytes = scene_sampled_image_frame_time_bytes(0);
+    for frame_time_buffer_index in 0..draw_instance_buffer_count {
         match create_scene_uploaded_buffer(
             device,
             memory_properties,
-            &draw_instance_bytes,
+            &frame_time_bytes,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            true,
+            "sampled-image retained frame-time payload",
+        ) {
+            Ok(frame_time) => frame_time_buffers.push(frame_time),
+            Err(err) => {
+                for frame_time in frame_time_buffers {
+                    destroy_scene_uploaded_buffer(device, frame_time);
+                }
+                destroy_scene_uploaded_buffer(device, vertex_buffer);
+                unsafe {
+                    device.destroy_buffer(index.buffer, None);
+                    device.free_memory(index.memory, None);
+                }
+                return Err(format!(
+                    "create sampled-image frame-time buffer slot {frame_time_buffer_index}: {err}"
+                ));
+            }
+        }
+    }
+    let sampled_layer_pose_timeline_layer_indices = payload
+        .sampled_layer_pose_timeline
+        .as_ref()
+        .map(|timeline| timeline.layer_indices.clone())
+        .unwrap_or_default();
+    let sampled_layer_pose_timeline_frame_count = payload
+        .sampled_layer_pose_timeline
+        .as_ref()
+        .map_or(0, |timeline| timeline.frame_count);
+    let sampled_layer_pose_timeline_frame_rate = payload
+        .sampled_layer_pose_timeline
+        .as_ref()
+        .map_or(0, |timeline| timeline.frame_rate);
+    let sampled_layer_pose_timeline_buffer = if payload.sampled_layer_pose_timeline_bytes.len() > 0
+    {
+        match create_scene_uploaded_buffer(
+            device,
+            memory_properties,
+            &payload.sampled_layer_pose_timeline_bytes,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            false,
+            "sampled-image retained layer pose timeline",
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                for frame_time in frame_time_buffers {
+                    destroy_scene_uploaded_buffer(device, frame_time);
+                }
+                destroy_scene_uploaded_buffer(device, vertex_buffer);
+                unsafe {
+                    device.destroy_buffer(index.buffer, None);
+                    device.free_memory(index.memory, None);
+                }
+                return Err(format!(
+                    "create sampled-image layer pose timeline buffer: {err}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(layer_pose_timeline) = sampled_layer_pose_timeline_buffer.as_ref() {
+        if let Err(err) = scene_sampled_image_update_layer_pose_refs(
+            &mut initial_draw_instances,
+            &sampled_layer_pose_draw_instance_slots,
+            &puppet_layer_pose_draw_instance_slots,
+            &sampled_layer_pose_timeline_layer_indices,
+            layer_pose_timeline.device_address,
+            sampled_layer_pose_timeline_frame_count,
+            sampled_layer_pose_timeline_frame_rate,
+        ) {
+            for frame_time in frame_time_buffers {
+                destroy_scene_uploaded_buffer(device, frame_time);
+            }
+            if let Some(buffer) = sampled_layer_pose_timeline_buffer {
+                destroy_scene_uploaded_buffer(device, buffer);
+            }
+            destroy_scene_uploaded_buffer(device, vertex_buffer);
+            unsafe {
+                device.destroy_buffer(index.buffer, None);
+                device.free_memory(index.memory, None);
+            }
+            return Err(err);
+        }
+    }
+    let mut draw_instance_buffers = Vec::with_capacity(draw_instance_buffer_count);
+    for draw_instance_buffer_index in 0..draw_instance_buffer_count {
+        let mut slot_instances = initial_draw_instances.clone();
+        if let Some(frame_time) = frame_time_buffers.get(draw_instance_buffer_index) {
+            scene_sampled_image_update_frame_time_refs(
+                &mut slot_instances,
+                frame_time.device_address,
+            );
+        }
+        let slot_draw_instance_bytes = scene_sampled_image_draw_instance_bytes(&slot_instances)?;
+        match create_scene_uploaded_buffer(
+            device,
+            memory_properties,
+            &slot_draw_instance_bytes,
             vk::BufferUsageFlags::VERTEX_BUFFER,
-            keep_draw_instance_buffers_mapped,
+            false,
             "sampled-image gpu draw-instance frame constants",
         ) {
             Ok(draw_instance) => draw_instance_buffers.push(draw_instance),
             Err(err) => {
+                for frame_time in frame_time_buffers {
+                    destroy_scene_uploaded_buffer(device, frame_time);
+                }
                 for draw_instance in draw_instance_buffers {
                     destroy_scene_uploaded_buffer(device, draw_instance);
                 }
-                for vertex in vertex_buffers {
-                    destroy_scene_uploaded_buffer(device, vertex);
+                if let Some(buffer) = sampled_layer_pose_timeline_buffer {
+                    destroy_scene_uploaded_buffer(device, buffer);
                 }
+                destroy_scene_uploaded_buffer(device, vertex_buffer);
                 unsafe {
                     device.destroy_buffer(index.buffer, None);
                     device.free_memory(index.memory, None);
@@ -5658,57 +5849,154 @@ fn create_scene_sampled_image_geometry_resources(
             }
         }
     }
-    let first_vertex = vertex_buffers
-        .first()
-        .ok_or_else(|| "scene sampled-image geometry created no vertex buffers".to_owned())?;
-    let selected_vertex_memory_type_index = first_vertex.memory_type.index;
+    if let Some(frame_time) = frame_time_buffers.first() {
+        scene_sampled_image_update_frame_time_refs(
+            &mut initial_draw_instances,
+            frame_time.device_address,
+        );
+    }
+    let puppet_gpu_payload_buffer = if payload.puppet_gpu_payload_bytes.len() > 0 {
+        match create_scene_uploaded_buffer(
+            device,
+            memory_properties,
+            &payload.puppet_gpu_payload_bytes,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::VERTEX_BUFFER,
+            false,
+            "sampled-image retained puppet gpu payload",
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                for draw_instance in draw_instance_buffers {
+                    destroy_scene_uploaded_buffer(device, draw_instance);
+                }
+                if let Some(buffer) = sampled_layer_pose_timeline_buffer {
+                    destroy_scene_uploaded_buffer(device, buffer);
+                }
+                for frame_time in frame_time_buffers {
+                    destroy_scene_uploaded_buffer(device, frame_time);
+                }
+                destroy_scene_uploaded_buffer(device, vertex_buffer);
+                unsafe {
+                    device.destroy_buffer(index.buffer, None);
+                    device.free_memory(index.memory, None);
+                }
+                return Err(format!(
+                    "create sampled-image puppet GPU payload buffer: {err}"
+                ));
+            }
+        }
+    } else {
+        None
+    };
+    let puppet_gpu_pose_buffer_count = usize::from(payload.puppet_gpu_pose_bytes.len() > 0);
+    let mut puppet_gpu_pose_buffers = Vec::with_capacity(puppet_gpu_pose_buffer_count);
+    for puppet_pose_buffer_index in 0..puppet_gpu_pose_buffer_count {
+        match create_scene_uploaded_buffer(
+            device,
+            memory_properties,
+            &payload.puppet_gpu_pose_bytes,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            false,
+            "sampled-image retained puppet gpu pose",
+        ) {
+            Ok(buffer) => puppet_gpu_pose_buffers.push(buffer),
+            Err(err) => {
+                for pose in puppet_gpu_pose_buffers {
+                    destroy_scene_uploaded_buffer(device, pose);
+                }
+                if let Some(buffer) = puppet_gpu_payload_buffer {
+                    destroy_scene_uploaded_buffer(device, buffer);
+                }
+                for draw_instance in draw_instance_buffers {
+                    destroy_scene_uploaded_buffer(device, draw_instance);
+                }
+                if let Some(buffer) = sampled_layer_pose_timeline_buffer {
+                    destroy_scene_uploaded_buffer(device, buffer);
+                }
+                for frame_time in frame_time_buffers {
+                    destroy_scene_uploaded_buffer(device, frame_time);
+                }
+                destroy_scene_uploaded_buffer(device, vertex_buffer);
+                unsafe {
+                    device.destroy_buffer(index.buffer, None);
+                    device.free_memory(index.memory, None);
+                }
+                return Err(format!(
+                    "create sampled-image puppet GPU pose buffer slot {puppet_pose_buffer_index}: {err}"
+                ));
+            }
+        }
+    }
+    if let Some(pose_buffer) = puppet_gpu_pose_buffers.first() {
+        scene_sampled_image_update_puppet_pose_refs(
+            &mut initial_draw_instances,
+            &puppet_gpu_draw_bindings,
+            &puppet_gpu_pose_instances,
+            pose_buffer.device_address,
+            sampled_layer_pose_draw_instance_slots.len(),
+        )?;
+        for (slot_index, draw_instance) in draw_instance_buffers.iter().enumerate() {
+            let mut slot_instances = initial_draw_instances.clone();
+            if let Some(frame_time) = frame_time_buffers.get(slot_index) {
+                scene_sampled_image_update_frame_time_refs(
+                    &mut slot_instances,
+                    frame_time.device_address,
+                );
+            }
+            write_scene_sampled_image_draw_instances_to_uploaded_buffer(
+                device,
+                draw_instance,
+                &slot_instances,
+                "retained sampled-image puppet pose refs",
+            )?;
+        }
+    }
+    let selected_vertex_memory_type_index = vertex_buffer.memory_type.index;
     let vertex_memory_property_flags =
-        memory_property_flag_labels(first_vertex.memory_type.property_flags_bits);
+        memory_property_flag_labels(vertex_buffer.memory_type.property_flags_bits);
 
     let vertex_buffer_bytes = payload.vertex_bytes.len() as u64;
     let index_buffer_bytes = payload.index_bytes.len() as u64;
+    let puppet_gpu_payload_buffer_bytes = payload.puppet_gpu_payload_bytes.len() as u64;
+    let puppet_gpu_pose_buffer_bytes = payload.puppet_gpu_pose_bytes.len() as u64;
+    let sampled_layer_pose_timeline_buffer_bytes =
+        payload.sampled_layer_pose_timeline_bytes.len() as u64;
+    let sampled_layer_pose_timeline_layer_count = sampled_layer_pose_timeline_layer_indices
+        .len()
+        .min(u32::MAX as usize) as u32;
+    let draw_instance_buffer_count = draw_instance_buffers.len().min(u32::MAX as usize) as u32;
+    let frame_time_buffer_count = frame_time_buffers.len().min(u32::MAX as usize) as u32;
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
-    let animated_uv_steps = scene_sampled_image_animated_uv_steps(
-        &payload.vertices,
-        &payload.indices,
-        &payload.draw_steps,
-    )?;
-    let mut dynamic_vertex_byte_ranges = scene_sampled_image_dynamic_vertex_byte_ranges(
-        &payload.draw_steps,
-        payload.vertex_count as usize,
-    )?;
-    if scene_dynamic_vertex_ranges_byte_len(&dynamic_vertex_byte_ranges)
-        >= scene_dynamic_vertex_sparse_copy_dense_threshold(payload.vertex_bytes.len())
-    {
-        dynamic_vertex_byte_ranges.clear();
-    }
-    if dynamic_vertex_updates && !dynamic_vertex_byte_ranges.is_empty() {
-        for vertex in &mut vertex_buffers {
-            vertex.sparse_range_hashes = scene_dynamic_vertex_range_hashes(
-                &payload.vertex_bytes,
-                &dynamic_vertex_byte_ranges,
-            );
-        }
-    }
     let draw_steps = payload.draw_steps;
     let effect_target_count = payload.effect_target_count;
     let effect_targets = payload.effect_targets;
     let we_graph_resources = payload.we_graph_resources;
     Ok(VulkanaliaSceneSampledImageGeometryResources {
-        vertex_buffers,
+        vertex_buffer,
         draw_instance_buffers,
+        frame_time_buffers,
+        draw_instances: initial_draw_instances,
+        sampled_layer_pose_draw_instance_slots,
+        puppet_layer_pose_draw_instance_slots,
+        sampled_layer_pose_timeline_buffer,
+        sampled_layer_pose_timeline_layer_indices,
+        sampled_layer_pose_timeline_frame_count,
+        sampled_layer_pose_timeline_frame_rate,
+        puppet_gpu_payload_buffer,
+        puppet_gpu_pose_buffers,
+        puppet_gpu_draw_bindings,
+        puppet_gpu_pose_instances,
+        sampled_layer_pose_instances,
         index_buffer: index.buffer,
         index_memory: index.memory,
         draw_steps,
-        dynamic_vertex_byte_ranges,
-        animated_uv_steps,
         effect_targets,
         we_graph_resources,
         snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
             vertex_buffer_bytes,
-            vertex_buffer_count: vertex_buffer_count.min(u32::MAX as usize) as u32,
+            vertex_buffer_count: 1,
             index_buffer_bytes,
             index_count: payload.index_count,
             quad_count: payload.quad_count,
@@ -5721,6 +6009,47 @@ fn create_scene_sampled_image_geometry_resources(
                 .we_graph_allocated_target_resource_count,
             we_graph_planned_target_resource_count: payload.we_graph_planned_target_resource_count,
             we_graph_resource_model: "planned-we-image-graph-resources-for-descriptor-and-target-executor",
+            puppet_gpu_payload_count: payload.puppet_gpu_payload_count,
+            puppet_gpu_payload_vertex_count: payload.puppet_gpu_payload_vertex_count,
+            puppet_gpu_payload_index_count: payload.puppet_gpu_payload_index_count,
+            puppet_gpu_payload_bone_count: payload.puppet_gpu_payload_bone_count,
+            puppet_gpu_payload_buffer_bytes,
+            puppet_gpu_payload_buffer_count: u32::from(puppet_gpu_payload_buffer_bytes > 0),
+            puppet_gpu_pose_count: payload.puppet_gpu_pose_count,
+            puppet_gpu_pose_bone_count: payload.puppet_gpu_pose_bone_count,
+            puppet_gpu_pose_timeline_frame_count: payload.puppet_gpu_pose_timeline_frame_count,
+            puppet_gpu_pose_timeline_frame_bone_count: payload
+                .puppet_gpu_pose_timeline_frame_bone_count,
+            puppet_gpu_pose_buffer_bytes,
+            puppet_gpu_pose_buffer_count: puppet_gpu_pose_buffer_count.min(u32::MAX as usize)
+                as u32,
+            puppet_gpu_vertex_stride_bytes: SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES,
+            puppet_gpu_pose_stride_bytes: SCENE_PUPPET_GPU_POSE_STRIDE_BYTES,
+            puppet_gpu_model: if puppet_gpu_payload_buffer_bytes > 0 {
+                "retained static mesh/skin payload plus retained GPU pose timeline; no per-frame CPU puppet pose upload"
+            } else {
+                "none"
+            },
+            sampled_layer_pose_count: payload.sampled_layer_pose_count,
+            sampled_layer_pose_timeline_layer_count,
+            sampled_layer_pose_timeline_frame_count,
+            sampled_layer_pose_timeline_frame_rate,
+            sampled_layer_pose_timeline_buffer_bytes,
+            sampled_layer_pose_timeline_buffer_count: u32::from(
+                sampled_layer_pose_timeline_buffer_bytes > 0,
+            ),
+            sampled_layer_pose_stride_bytes: SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES,
+            draw_instance_buffer_count,
+            draw_instance_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES,
+            frame_time_buffer_count,
+            frame_time_buffer_bytes: u64::from(frame_time_buffer_count) * 16,
+            sampled_layer_pose_model: if sampled_layer_pose_timeline_buffer_bytes > 0 {
+                "retained sampled-layer GPU pose timeline sampled in vertex shaders; no per-frame CPU layer-pose draw-instance upload"
+            } else if payload.sampled_layer_pose_count > 0 {
+                "retained sampled-layer pose payload initializes GPU draw-instance transforms"
+            } else {
+                "none"
+            },
             draw_step_count,
             vertex_stride_bytes: SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES,
             selected_vertex_memory_type_index,
@@ -5729,12 +6058,7 @@ fn create_scene_sampled_image_geometry_resources(
             index_memory_property_flags: memory_property_flag_labels(
                 index.memory_type.property_flags_bits,
             ),
-            upload_model: if animated_geometry || dynamic_vertex_updates {
-                "persistently mapped per-frame host-visible sampled-image vertex buffers reused by frame slot"
-            } else {
-                "one-time host-visible sampled-image geometry upload retained across present frames"
-            },
-            dynamic_vertex_upload: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot::empty(),
+            upload_model: "one-time host-visible sampled-image geometry upload retained across present frames; atlas animation and effect time run through GPU draw-instance constants",
             retained_across_frames: true,
         },
     })
@@ -5751,41 +6075,25 @@ fn destroy_scene_sampled_image_geometry_resources(
     for draw_instance in resources.draw_instance_buffers {
         destroy_scene_uploaded_buffer(device, draw_instance);
     }
-    for vertex in resources.vertex_buffers {
-        destroy_scene_uploaded_buffer(device, vertex);
+    for frame_time in resources.frame_time_buffers {
+        destroy_scene_uploaded_buffer(device, frame_time);
     }
+    if let Some(buffer) = resources.sampled_layer_pose_timeline_buffer {
+        destroy_scene_uploaded_buffer(device, buffer);
+    }
+    for pose in resources.puppet_gpu_pose_buffers {
+        destroy_scene_uploaded_buffer(device, pose);
+    }
+    if let Some(buffer) = resources.puppet_gpu_payload_buffer {
+        destroy_scene_uploaded_buffer(device, buffer);
+    }
+    destroy_scene_uploaded_buffer(device, resources.vertex_buffer);
 }
 
 fn scene_sampled_image_geometry_snapshot(
     geometry: &VulkanaliaSceneSampledImageGeometryResources,
 ) -> NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
-    let mut snapshot = geometry.snapshot.clone();
-    snapshot.dynamic_vertex_upload = scene_dynamic_vertex_upload_snapshot(&geometry.vertex_buffers);
-    snapshot
-}
-
-fn scene_dynamic_vertex_upload_snapshot(
-    buffers: &[VulkanaliaSceneUploadedBuffer],
-) -> NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot {
-    let mut snapshot = NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot::empty();
-    for buffer in buffers {
-        let stats = buffer.dynamic_upload_stats;
-        snapshot.write_count = snapshot.write_count.saturating_add(stats.write_count);
-        snapshot.sparse_write_count = snapshot
-            .sparse_write_count
-            .saturating_add(stats.sparse_write_count);
-        snapshot.dense_fallback_write_count = snapshot
-            .dense_fallback_write_count
-            .saturating_add(stats.dense_fallback_write_count);
-        snapshot.hashed_bytes = snapshot.hashed_bytes.saturating_add(stats.hashed_bytes);
-        snapshot.copied_bytes = snapshot.copied_bytes.saturating_add(stats.copied_bytes);
-        snapshot.skipped_bytes = snapshot.skipped_bytes.saturating_add(stats.skipped_bytes);
-        if buffer.sparse_copy_disabled {
-            snapshot.sparse_disabled_buffer_count =
-                snapshot.sparse_disabled_buffer_count.saturating_add(1);
-        }
-    }
-    snapshot
+    geometry.snapshot.clone()
 }
 
 fn write_scene_uploaded_buffer(
@@ -5800,306 +6108,6 @@ fn write_scene_uploaded_buffer(
         }
         Ok(())
     })
-}
-
-fn write_scene_uploaded_buffer_sparse_pages(
-    device: &Device,
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    bytes: &[u8],
-    label: &'static str,
-) -> Result<usize, String> {
-    if bytes.len() as u64 > buffer.mapped_size.max(buffer.memory_size) {
-        return Err(format!(
-            "scene {label} write {} bytes exceeds buffer mapped size {}",
-            bytes.len(),
-            buffer.mapped_size.max(buffer.memory_size)
-        ));
-    }
-    let Some(mapped_ptr) = buffer.mapped_ptr else {
-        write_scene_uploaded_buffer(device, buffer, bytes, label)?;
-        record_scene_dynamic_vertex_upload_dense(buffer, bytes.len());
-        return Ok(bytes.len());
-    };
-    if buffer.sparse_copy_disabled {
-        write_scene_uploaded_buffer(device, buffer, bytes, label)?;
-        record_scene_dynamic_vertex_upload_dense(buffer, bytes.len());
-        return Ok(bytes.len());
-    }
-    let written = copy_changed_hashed_pages(
-        mapped_ptr.cast::<u8>(),
-        bytes,
-        &mut buffer.sparse_page_hashes,
-        SCENE_DYNAMIC_VERTEX_SPARSE_COPY_PAGE_BYTES,
-    );
-    record_scene_dynamic_vertex_upload_sparse(buffer, bytes.len(), written);
-    if written == 0 {
-        return Ok(0);
-    }
-    flush_scene_uploaded_buffer_after_write(device, buffer, label)?;
-    Ok(written)
-}
-
-fn write_scene_uploaded_buffer_sparse_ranges(
-    device: &Device,
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    bytes: &[u8],
-    ranges: &[Range<usize>],
-    label: &'static str,
-) -> Result<usize, String> {
-    if bytes.len() as u64 > buffer.mapped_size.max(buffer.memory_size) {
-        return Err(format!(
-            "scene {label} write {} bytes exceeds buffer mapped size {}",
-            bytes.len(),
-            buffer.mapped_size.max(buffer.memory_size)
-        ));
-    }
-    if ranges.is_empty() {
-        return Ok(0);
-    }
-    let ranged_bytes = scene_dynamic_vertex_ranges_byte_len(ranges);
-    let Some(mapped_ptr) = buffer.mapped_ptr else {
-        write_scene_uploaded_buffer(device, buffer, bytes, label)?;
-        record_scene_dynamic_vertex_upload_dense(buffer, bytes.len());
-        return Ok(bytes.len());
-    };
-    if buffer.sparse_copy_disabled {
-        write_scene_uploaded_buffer(device, buffer, bytes, label)?;
-        record_scene_dynamic_vertex_upload_dense(buffer, bytes.len());
-        return Ok(bytes.len());
-    }
-    let written = copy_changed_hashed_ranges(
-        mapped_ptr.cast::<u8>(),
-        bytes,
-        ranges,
-        &mut buffer.sparse_range_hashes,
-    );
-    record_scene_dynamic_vertex_upload_sparse_range(buffer, ranged_bytes, written);
-    if written == 0 {
-        return Ok(0);
-    }
-    flush_scene_uploaded_buffer_after_write(device, buffer, label)?;
-    Ok(written)
-}
-
-fn flush_scene_uploaded_buffer_after_write(
-    device: &Device,
-    buffer: &VulkanaliaSceneUploadedBuffer,
-    label: &'static str,
-) -> Result<(), String> {
-    let host_coherent = buffer.memory_type.property_flags_bits
-        & vk::MemoryPropertyFlags::HOST_COHERENT.bits()
-        == vk::MemoryPropertyFlags::HOST_COHERENT.bits();
-    if host_coherent {
-        return Ok(());
-    }
-    let range = vk::MappedMemoryRange::builder()
-        .memory(buffer.memory)
-        .offset(0)
-        .size(vk::WHOLE_SIZE)
-        .build();
-    unsafe {
-        device
-            .flush_mapped_memory_ranges(&[range])
-            .map_err(|err| format!("vkFlushMappedMemoryRanges(vulkanalia {label}): {err:?}"))
-    }
-}
-
-fn record_scene_dynamic_vertex_upload_dense(
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    byte_len: usize,
-) {
-    buffer.sparse_dense_write_count = SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_WRITE_LIMIT;
-    buffer.sparse_copy_disabled = true;
-    buffer.sparse_page_hashes.clear();
-    buffer.sparse_range_hashes.clear();
-    buffer.dynamic_upload_stats.write_count =
-        buffer.dynamic_upload_stats.write_count.saturating_add(1);
-    buffer.dynamic_upload_stats.dense_fallback_write_count = buffer
-        .dynamic_upload_stats
-        .dense_fallback_write_count
-        .saturating_add(1);
-    buffer.dynamic_upload_stats.copied_bytes = buffer
-        .dynamic_upload_stats
-        .copied_bytes
-        .saturating_add(byte_len as u64);
-}
-
-fn record_scene_dynamic_vertex_upload_sparse(
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    byte_len: usize,
-    copied_bytes: usize,
-) {
-    let skipped_bytes = byte_len.saturating_sub(copied_bytes);
-    buffer.dynamic_upload_stats.write_count =
-        buffer.dynamic_upload_stats.write_count.saturating_add(1);
-    buffer.dynamic_upload_stats.sparse_write_count = buffer
-        .dynamic_upload_stats
-        .sparse_write_count
-        .saturating_add(1);
-    buffer.dynamic_upload_stats.hashed_bytes = buffer
-        .dynamic_upload_stats
-        .hashed_bytes
-        .saturating_add(byte_len as u64);
-    buffer.dynamic_upload_stats.copied_bytes = buffer
-        .dynamic_upload_stats
-        .copied_bytes
-        .saturating_add(copied_bytes as u64);
-    buffer.dynamic_upload_stats.skipped_bytes = buffer
-        .dynamic_upload_stats
-        .skipped_bytes
-        .saturating_add(skipped_bytes as u64);
-
-    let dense_threshold = scene_dynamic_vertex_sparse_copy_dense_threshold(byte_len);
-    if byte_len > 0 && copied_bytes >= dense_threshold {
-        buffer.sparse_dense_write_count = buffer.sparse_dense_write_count.saturating_add(1);
-    } else {
-        buffer.sparse_dense_write_count = 0;
-    }
-    if buffer.sparse_dense_write_count >= SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_WRITE_LIMIT {
-        buffer.sparse_copy_disabled = true;
-        buffer.sparse_page_hashes.clear();
-        buffer.sparse_range_hashes.clear();
-    }
-}
-
-fn scene_dynamic_vertex_sparse_copy_dense_threshold(byte_len: usize) -> usize {
-    byte_len
-        .saturating_mul(SCENE_DYNAMIC_VERTEX_SPARSE_COPY_DENSE_PERCENT)
-        .saturating_add(99)
-        / 100
-}
-
-fn record_scene_dynamic_vertex_upload_sparse_range(
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    byte_len: usize,
-    copied_bytes: usize,
-) {
-    let skipped_bytes = byte_len.saturating_sub(copied_bytes);
-    buffer.dynamic_upload_stats.write_count =
-        buffer.dynamic_upload_stats.write_count.saturating_add(1);
-    buffer.dynamic_upload_stats.sparse_write_count = buffer
-        .dynamic_upload_stats
-        .sparse_write_count
-        .saturating_add(1);
-    buffer.dynamic_upload_stats.hashed_bytes = buffer
-        .dynamic_upload_stats
-        .hashed_bytes
-        .saturating_add(byte_len as u64);
-    buffer.dynamic_upload_stats.copied_bytes = buffer
-        .dynamic_upload_stats
-        .copied_bytes
-        .saturating_add(copied_bytes as u64);
-    buffer.dynamic_upload_stats.skipped_bytes = buffer
-        .dynamic_upload_stats
-        .skipped_bytes
-        .saturating_add(skipped_bytes as u64);
-}
-
-fn copy_changed_hashed_pages(
-    dst: *mut u8,
-    src: &[u8],
-    page_hashes: &mut Vec<u64>,
-    page_bytes: usize,
-) -> usize {
-    let page_bytes = page_bytes.max(1);
-    let page_count = src.len().saturating_add(page_bytes - 1) / page_bytes;
-    let force_all = page_hashes.len() != page_count;
-    if force_all {
-        page_hashes.clear();
-        page_hashes.resize(page_count, 0);
-    }
-    let mut written = 0usize;
-    let mut offset = 0usize;
-    let mut page_index = 0usize;
-    while offset < src.len() {
-        let end = offset.saturating_add(page_bytes).min(src.len());
-        let hash = scene_dynamic_vertex_page_hash(&src[offset..end]);
-        if force_all || page_hashes[page_index] != hash {
-            unsafe {
-                ptr::copy_nonoverlapping(src[offset..end].as_ptr(), dst.add(offset), end - offset);
-            }
-            page_hashes[page_index] = hash;
-            written = written.saturating_add(end - offset);
-        }
-        offset = end;
-        page_index += 1;
-    }
-    written
-}
-
-fn copy_changed_hashed_ranges(
-    dst: *mut u8,
-    src: &[u8],
-    ranges: &[Range<usize>],
-    range_hashes: &mut Vec<u64>,
-) -> usize {
-    let force_all = range_hashes.len() != ranges.len();
-    if force_all {
-        range_hashes.clear();
-        range_hashes.resize(ranges.len(), 0);
-    }
-    let mut written = 0usize;
-    for (range_index, range) in ranges.iter().enumerate() {
-        debug_assert!(range.start <= range.end);
-        debug_assert!(range.end <= src.len());
-        let hash = scene_dynamic_vertex_range_hash(&src[range.clone()], range);
-        if force_all || range_hashes[range_index] != hash {
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    src[range.clone()].as_ptr(),
-                    dst.add(range.start),
-                    range.end - range.start,
-                );
-            }
-            range_hashes[range_index] = hash;
-            written = written.saturating_add(range.end - range.start);
-        }
-    }
-    written
-}
-
-fn scene_dynamic_vertex_page_hash(bytes: &[u8]) -> u64 {
-    const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-    bytes.iter().fold(FNV_OFFSET_BASIS, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(FNV_PRIME)
-    })
-}
-
-fn scene_dynamic_vertex_page_hashes(bytes: &[u8], page_bytes: usize) -> Vec<u64> {
-    let page_bytes = page_bytes.max(1);
-    bytes
-        .chunks(page_bytes)
-        .map(scene_dynamic_vertex_page_hash)
-        .collect()
-}
-
-fn scene_dynamic_vertex_range_hash(bytes: &[u8], range: &Range<usize>) -> u64 {
-    let mut hash = scene_dynamic_vertex_page_hash(bytes);
-    hash = scene_dynamic_vertex_hash_u64(hash, range.start as u64);
-    scene_dynamic_vertex_hash_u64(hash, range.end as u64)
-}
-
-fn scene_dynamic_vertex_hash_u64(mut hash: u64, value: u64) -> u64 {
-    const FNV_PRIME: u64 = 0x100000001b3;
-    for byte in value.to_ne_bytes() {
-        hash = (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME);
-    }
-    hash
-}
-
-fn scene_dynamic_vertex_range_hashes(bytes: &[u8], ranges: &[Range<usize>]) -> Vec<u64> {
-    ranges
-        .iter()
-        .map(|range| scene_dynamic_vertex_range_hash(&bytes[range.clone()], range))
-        .collect()
-}
-
-fn scene_dynamic_vertex_ranges_byte_len(ranges: &[Range<usize>]) -> usize {
-    ranges
-        .iter()
-        .map(|range| range.end.saturating_sub(range.start))
-        .sum()
 }
 
 fn write_scene_uploaded_buffer_with(
@@ -6198,164 +6206,22 @@ fn write_scene_solid_quad_vertices_to_uploaded_buffer(
     })
 }
 
-fn write_scene_sampled_image_vertices_to_uploaded_buffer(
-    device: &Device,
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
-    elapsed_ms: u64,
-    label: &'static str,
-) -> Result<(), String> {
-    scene_sampled_image_validate_animated_uv_steps(vertices.len(), animated_uv_steps)?;
-    let byte_len = vertices
-        .len()
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
-    if animated_uv_steps.is_empty() {
-        debug_assert_eq!(
-            std::mem::size_of::<NativeVulkanVulkanaliaSceneSampledImageVertex>(),
-            SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize
-        );
-        let bytes = unsafe { std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
-        write_scene_uploaded_buffer_sparse_pages(device, buffer, bytes, label)?;
-        return Ok(());
-    }
-    write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
-        let mut offset = 0usize;
-        for (index, vertex) in vertices.iter().enumerate() {
-            let uv =
-                scene_sampled_image_uv_for_time(vertex.uv, index, animated_uv_steps, elapsed_ms);
-            debug_assert!(
-                vertex
-                    .position
-                    .into_iter()
-                    .chain(uv)
-                    .chain(vertex.effect_uv)
-                    .chain([vertex.opacity])
-                    .chain(vertex.tint)
-                    .all(f32::is_finite)
-            );
-            for value in vertex
-                .position
-                .into_iter()
-                .chain(uv)
-                .chain(vertex.effect_uv)
-                .chain([vertex.opacity])
-                .chain(vertex.tint)
-            {
-                write_scene_f32_to_mapped(dst, &mut offset, value);
-            }
-        }
-        Ok(())
-    })
+fn scene_sampled_image_frame_time_bytes(elapsed_ms: u64) -> SceneGeometryByteBuffer {
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(16);
+    bytes.extend_from_slice(&((elapsed_ms as f32) * 0.001).to_ne_bytes());
+    bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    bytes
 }
 
-fn write_scene_sampled_image_dynamic_vertex_ranges_to_uploaded_buffer(
+fn write_scene_sampled_image_frame_time_to_uploaded_buffer(
     device: &Device,
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
-    ranges: &[Range<usize>],
-    label: &'static str,
-) -> Result<(), String> {
-    let byte_len = vertices
-        .len()
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
-    debug_assert_eq!(
-        std::mem::size_of::<NativeVulkanVulkanaliaSceneSampledImageVertex>(),
-        SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize
-    );
-    let bytes = unsafe { std::slice::from_raw_parts(vertices.as_ptr().cast::<u8>(), byte_len) };
-    if ranges.is_empty() {
-        write_scene_uploaded_buffer_sparse_pages(device, buffer, bytes, label)?;
-    } else {
-        write_scene_uploaded_buffer_sparse_ranges(device, buffer, bytes, ranges, label)?;
-    }
-    Ok(())
-}
-
-fn write_scene_sampled_image_animated_uvs_to_uploaded_buffer(
-    device: &Device,
-    buffer: &mut VulkanaliaSceneUploadedBuffer,
-    vertex_count: usize,
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
-    elapsed_ms: u64,
-    label: &'static str,
-) -> Result<(), String> {
-    let byte_len = vertex_count
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| format!("scene {label} vertex byte length overflows"))?;
-    let result = write_scene_uploaded_buffer_with(device, buffer, byte_len, label, |dst| {
-        let bytes = unsafe { std::slice::from_raw_parts_mut(dst, byte_len) };
-        patch_scene_sampled_image_animated_uvs_in_bytes(
-            bytes,
-            vertex_count,
-            animated_uv_steps,
-            elapsed_ms,
-        )
-    });
-    if result.is_ok() {
-        buffer.sparse_page_hashes.clear();
-        buffer.sparse_range_hashes.clear();
-    }
-    result
-}
-
-fn patch_scene_sampled_image_animated_uvs_in_bytes(
-    bytes: &mut [u8],
-    vertex_count: usize,
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
+    buffer: &VulkanaliaSceneUploadedBuffer,
     elapsed_ms: u64,
 ) -> Result<(), String> {
-    scene_sampled_image_validate_animated_uv_steps(vertex_count, animated_uv_steps)?;
-    let expected_bytes = vertex_count
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| "scene sampled-image animated vertex byte length overflows".to_owned())?;
-    if bytes.len() < expected_bytes {
-        return Err(format!(
-            "scene sampled-image animated UV patch buffer has {} bytes, expected at least {}",
-            bytes.len(),
-            expected_bytes
-        ));
-    }
-    for animated_step in animated_uv_steps {
-        for (uv_index, vertex_index) in animated_step.vertex_indices.iter().enumerate() {
-            let vertex_offset = (*vertex_index as usize)
-                .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-                .and_then(|offset| {
-                    offset.checked_add(SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_OFFSET_BYTES)
-                })
-                .ok_or_else(|| {
-                    "scene sampled-image animated UV patch offset overflows".to_owned()
-                })?;
-            let uv_end = vertex_offset
-                .checked_add(SCENE_FULL_SAMPLED_IMAGE_VERTEX_UV_BYTES)
-                .ok_or_else(|| {
-                    "scene sampled-image animated UV patch end offset overflows".to_owned()
-                })?;
-            if uv_end > bytes.len() {
-                return Err(format!(
-                    "scene sampled-image animated UV patch range {vertex_offset}..{uv_end} exceeds buffer bytes {}",
-                    bytes.len()
-                ));
-            }
-            let uv = scene_sampled_image_animated_uv_at_elapsed(
-                animated_step.base_uvs[uv_index],
-                *animated_step,
-                elapsed_ms,
-            );
-            if !uv.into_iter().all(f32::is_finite) {
-                return Err(format!(
-                    "scene sampled-image animated UV for vertex {vertex_index} contains a non-finite value"
-                ));
-            }
-            let mut offset = vertex_offset;
-            for value in uv {
-                write_scene_f32_to_mapped(bytes.as_mut_ptr(), &mut offset, value);
-            }
-        }
-    }
-    Ok(())
+    let bytes = scene_sampled_image_frame_time_bytes(elapsed_ms);
+    write_scene_uploaded_buffer(device, buffer, &bytes, "sampled-image frame-time payload")
 }
 
 fn write_scene_f32_to_mapped(dst: *mut u8, offset: &mut usize, value: f32) {
@@ -6366,84 +6232,12 @@ fn write_scene_f32_to_mapped(dst: *mut u8, offset: &mut usize, value: f32) {
     *offset += bytes.len();
 }
 
-fn update_scene_sampled_image_geometry_for_time(
-    device: &Device,
-    geometry: &mut VulkanaliaSceneSampledImageGeometryResources,
-    frame_slot: usize,
-    elapsed_ms: u64,
-) -> Result<vk::Buffer, String> {
-    if geometry.vertex_buffers.is_empty() {
-        return Err("scene sampled-image geometry has no vertex buffers".to_owned());
+fn write_scene_u32_to_mapped(dst: *mut u8, offset: &mut usize, value: u32) {
+    let bytes = value.to_ne_bytes();
+    unsafe {
+        ptr::copy_nonoverlapping(bytes.as_ptr(), dst.add(*offset), bytes.len());
     }
-    if !scene_sampled_image_geometry_is_animated(geometry) {
-        let vertex = geometry
-            .vertex_buffers
-            .get(frame_slot % geometry.vertex_buffers.len())
-            .expect("scene sampled-image vertex buffer checked non-empty");
-        return Ok(vertex.buffer);
-    }
-    let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
-    let vertex_count = geometry.snapshot.vertex_count as usize;
-    let vertex_bytes = vertex_count
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| "scene sampled-image animated vertex bytes overflow".to_owned())?;
-    if vertex_bytes != expected_bytes {
-        return Err(format!(
-            "scene sampled-image animated vertex bytes {} did not match retained buffer bytes {}",
-            vertex_bytes, expected_bytes
-        ));
-    }
-    let vertex_buffer_count = geometry.vertex_buffers.len();
-    let vertex = geometry
-        .vertex_buffers
-        .get_mut(frame_slot % vertex_buffer_count)
-        .expect("scene sampled-image vertex buffer checked non-empty");
-    let buffer = vertex.buffer;
-    write_scene_sampled_image_animated_uvs_to_uploaded_buffer(
-        device,
-        vertex,
-        vertex_count,
-        &geometry.animated_uv_steps,
-        elapsed_ms,
-        "animated scene sampled-image vertex",
-    )?;
-    Ok(buffer)
-}
-
-fn update_scene_sampled_image_geometry_input_for_time(
-    device: &Device,
-    geometry: &mut VulkanaliaSceneSampledImageGeometryResources,
-    frame_slot: usize,
-    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
-) -> Result<vk::Buffer, String> {
-    if geometry.vertex_buffers.is_empty() {
-        return Err("scene sampled-image geometry has no vertex buffers".to_owned());
-    }
-    let expected_bytes = geometry.snapshot.vertex_buffer_bytes as usize;
-    let vertex_bytes = vertices
-        .len()
-        .checked_mul(SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize)
-        .ok_or_else(|| "scene sampled-image dynamic vertex bytes overflow".to_owned())?;
-    if vertex_bytes != expected_bytes {
-        return Err(format!(
-            "scene sampled-image dynamic vertex bytes {} did not match retained buffer bytes {}",
-            vertex_bytes, expected_bytes
-        ));
-    }
-    let vertex_buffer_count = geometry.vertex_buffers.len();
-    let vertex = geometry
-        .vertex_buffers
-        .get_mut(frame_slot % vertex_buffer_count)
-        .expect("scene sampled-image vertex buffer checked non-empty");
-    let buffer = vertex.buffer;
-    write_scene_sampled_image_dynamic_vertex_ranges_to_uploaded_buffer(
-        device,
-        vertex,
-        vertices,
-        &geometry.dynamic_vertex_byte_ranges,
-        "dynamic scene sampled-image vertex",
-    )?;
-    Ok(buffer)
+    *offset += bytes.len();
 }
 
 fn update_scene_sampled_image_draw_instance_for_time(
@@ -6456,125 +6250,575 @@ fn update_scene_sampled_image_draw_instance_for_time(
         return Err("scene sampled-image geometry has no draw-instance buffers".to_owned());
     }
     let buffer_count = geometry.draw_instance_buffers.len();
+    let frame_time = geometry
+        .frame_time_buffers
+        .get(frame_slot % buffer_count)
+        .ok_or_else(|| "scene sampled-image geometry has no frame-time buffers".to_owned())?;
+    write_scene_sampled_image_frame_time_to_uploaded_buffer(device, frame_time, elapsed_ms)?;
+    let draw_instance_index = frame_slot % buffer_count;
     let draw_instance = geometry
         .draw_instance_buffers
-        .get_mut(frame_slot % buffer_count)
+        .get_mut(draw_instance_index)
         .expect("scene sampled-image draw-instance buffer checked non-empty");
-    let instance = VulkanaliaSceneSampledImageDrawInstance {
-        frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
-        ..VulkanaliaSceneSampledImageDrawInstance::identity()
-    };
     let buffer = draw_instance.buffer;
-    write_scene_sampled_image_draw_instances_to_uploaded_buffer(
-        device,
-        draw_instance,
-        &[instance],
-        "dynamic scene sampled-image draw-instance frame constants",
-    )?;
     Ok(buffer)
 }
 
-fn scene_sampled_image_geometry_is_animated(
-    geometry: &VulkanaliaSceneSampledImageGeometryResources,
-) -> bool {
-    scene_sampled_image_draw_steps_are_animated(&geometry.draw_steps)
+fn scene_sampled_image_draw_instances_for_bindings(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    pose_instances: &[VulkanaliaScenePuppetGpuPoseInstance],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
+    pose_address: vk::DeviceAddress,
+    elapsed_ms: u64,
+) -> Result<Vec<VulkanaliaSceneSampledImageDrawInstance>, String> {
+    let draw_instance_indices = scene_sampled_image_layer_pose_draw_instance_indices(
+        draw_steps,
+        bindings,
+        sampled_layer_pose_instances,
+    );
+    let mut instances = Vec::with_capacity(
+        1usize
+            .saturating_add(draw_instance_indices.len())
+            .saturating_add(bindings.len()),
+    );
+    instances.push(VulkanaliaSceneSampledImageDrawInstance {
+        frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+        ..VulkanaliaSceneSampledImageDrawInstance::identity()
+    });
+    let base_layer_poses = scene_sampled_image_layer_pose_map(sampled_layer_pose_instances);
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        if !draw_instance_indices.contains_key(&step_index) {
+            continue;
+        }
+        let base_pose = base_layer_poses.get(&step.layer_index).copied();
+        let mut instance = if let Some(base_pose) = base_pose {
+            scene_sampled_image_layer_pose_draw_instance(base_pose, base_pose, elapsed_ms)?
+        } else {
+            VulkanaliaSceneSampledImageDrawInstance {
+                frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+                ..VulkanaliaSceneSampledImageDrawInstance::identity()
+            }
+        };
+        if scene_texture_region_is_animated(step.texture_region) {
+            let texture_region = step
+                .texture_region
+                .expect("animated texture region checked present");
+            let animation =
+                scene_sampled_image_animated_region_draw_instance(texture_region, elapsed_ms);
+            instance.frame_constants = animation.frame_constants;
+            instance.effect_uv_x = animation.effect_uv_x;
+            instance.effect_uv_y = animation.effect_uv_y;
+        }
+        instances.push(instance);
+    }
+    let pose_instances = pose_instances
+        .iter()
+        .map(|pose| ((pose.layer_index, pose.puppet_index), *pose))
+        .collect::<BTreeMap<_, _>>();
+    for binding in bindings {
+        let Some(pose) = pose_instances
+            .values()
+            .find(|pose| pose.layer_index == binding.layer_index)
+            .copied()
+        else {
+            return Err(format!(
+                "scene sampled-image puppet GPU layer {} has no pose instance",
+                binding.layer_index
+            ));
+        };
+        let pose_byte_address = pose_address.saturating_add(
+            u64::from(binding.pose_bone_offset)
+                .saturating_mul(u64::from(SCENE_PUPPET_GPU_POSE_STRIDE_BYTES)),
+        );
+        let pose_ref = [
+            pose_byte_address as u32,
+            (pose_byte_address >> 32) as u32,
+            pose.pose_frame_count,
+            pose.pose_frame_bone_count,
+        ];
+        let layer_pose = base_layer_poses.get(&binding.layer_index).copied();
+        instances.push(VulkanaliaSceneSampledImageDrawInstance {
+            position_transform_x: layer_pose
+                .map(|pose| pose.position_transform_x)
+                .unwrap_or(pose.position_transform_x),
+            position_transform_y: layer_pose
+                .map(|pose| pose.position_transform_y)
+                .unwrap_or(pose.position_transform_y),
+            frame_constants: [
+                (elapsed_ms as f32) * 0.001,
+                layer_pose
+                    .map(|pose| pose.layer_opacity)
+                    .unwrap_or(pose.layer_opacity),
+                pose.pose_frame_rate,
+                if pose.pose_looping { 1.0 } else { 0.0 },
+            ],
+            effect_uv_x: if pose.layer_extent[0].abs() > f32::EPSILON {
+                [1.0 / pose.layer_extent[0], 0.0, 0.5, 0.0]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            },
+            effect_uv_y: if pose.layer_extent[1].abs() > f32::EPSILON {
+                [0.0, -1.0 / pose.layer_extent[1], 0.5, 0.0]
+            } else {
+                [0.0, 0.0, 0.0, 0.0]
+            },
+            puppet_pose_ref: pose_ref,
+            tint: [1.0, 1.0, 1.0, 1.0],
+            frame_time_ref: [0, 0, 0, 0],
+            layer_pose_ref: [0, 0, 0, 0],
+        });
+    }
+    Ok(instances)
 }
 
-fn native_vulkan_scene_apply_elapsed_texture_regions(
-    vertices: &mut [NativeVulkanVulkanaliaSceneSampledImageVertex],
-    geometry_indices: &[u32],
+fn scene_sampled_image_layer_pose_draw_instance_slots(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
-    elapsed_ms: u64,
+    bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
+) -> Vec<VulkanaliaSceneSampledLayerPoseDrawInstanceSlot> {
+    let draw_instance_indices = scene_sampled_image_layer_pose_draw_instance_indices(
+        draw_steps,
+        bindings,
+        sampled_layer_pose_instances,
+    );
+    let base_layer_poses = scene_sampled_image_layer_pose_map(sampled_layer_pose_instances);
+    let mut slots = Vec::with_capacity(draw_instance_indices.len());
+    for (step_index, instance_index) in draw_instance_indices {
+        let Some(step) = draw_steps.get(step_index) else {
+            continue;
+        };
+        let Some(base_pose) = base_layer_poses.get(&step.layer_index).copied() else {
+            continue;
+        };
+        slots.push(VulkanaliaSceneSampledLayerPoseDrawInstanceSlot {
+            layer_index: step.layer_index,
+            instance_index: instance_index as usize,
+            base_pose,
+        });
+    }
+    slots
+}
+
+fn scene_sampled_image_puppet_layer_pose_draw_instance_slots(
+    bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    pose_instances: &[VulkanaliaScenePuppetGpuPoseInstance],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
+    sampled_layer_pose_slot_count: usize,
+) -> Result<Vec<VulkanaliaScenePuppetLayerPoseDrawInstanceSlot>, String> {
+    let base_layer_poses = scene_sampled_image_layer_pose_map(sampled_layer_pose_instances);
+    let puppet_draw_instance_base = 1usize.saturating_add(sampled_layer_pose_slot_count);
+    let mut slots = Vec::with_capacity(bindings.len());
+    for (binding_index, binding) in bindings.iter().enumerate() {
+        let Some(pose) = pose_instances
+            .iter()
+            .find(|pose| pose.layer_index == binding.layer_index)
+            .copied()
+        else {
+            return Err(format!(
+                "scene sampled-image puppet GPU layer {} has no pose instance",
+                binding.layer_index
+            ));
+        };
+        let base_pose = base_layer_poses
+            .get(&binding.layer_index)
+            .copied()
+            .unwrap_or(VulkanaliaSceneSampledImageLayerPoseInstance {
+                layer_index: binding.layer_index,
+                position_transform_x: pose.position_transform_x,
+                position_transform_y: pose.position_transform_y,
+                layer_opacity: pose.layer_opacity,
+            });
+        slots.push(VulkanaliaScenePuppetLayerPoseDrawInstanceSlot {
+            layer_index: binding.layer_index,
+            instance_index: puppet_draw_instance_base.saturating_add(binding_index),
+            base_pose,
+        });
+    }
+    Ok(slots)
+}
+
+fn scene_sampled_image_update_puppet_pose_refs(
+    instances: &mut [VulkanaliaSceneSampledImageDrawInstance],
+    bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    pose_instances: &[VulkanaliaScenePuppetGpuPoseInstance],
+    pose_address: vk::DeviceAddress,
+    sampled_layer_pose_slot_count: usize,
 ) -> Result<(), String> {
-    for animated_step in
-        scene_sampled_image_animated_uv_steps(vertices, geometry_indices, draw_steps)?
-    {
-        let vertex_count = vertices.len();
-        for (uv_index, vertex_index) in animated_step.vertex_indices.iter().enumerate() {
-            let vertex = vertices.get_mut(*vertex_index as usize).ok_or_else(|| {
-                format!(
-                    "scene sampled-image animated vertex index {vertex_index} exceeds vertex count {}",
-                    vertex_count
-                )
-            })?;
-            vertex.uv = scene_sampled_image_animated_uv_at_elapsed(
-                animated_step.base_uvs[uv_index],
-                animated_step,
-                elapsed_ms,
-            );
+    let puppet_draw_instance_base = 1usize.saturating_add(sampled_layer_pose_slot_count);
+    for (binding_index, binding) in bindings.iter().enumerate() {
+        let Some(pose) = pose_instances
+            .iter()
+            .find(|pose| pose.layer_index == binding.layer_index)
+            .copied()
+        else {
+            return Err(format!(
+                "scene sampled-image puppet GPU layer {} has no pose instance",
+                binding.layer_index
+            ));
+        };
+        let instance_index = puppet_draw_instance_base.saturating_add(binding_index);
+        let Some(instance) = instances.get_mut(instance_index) else {
+            return Err(format!(
+                "scene sampled-image puppet GPU draw instance {instance_index} is out of range"
+            ));
+        };
+        let pose_byte_address = pose_address.saturating_add(
+            u64::from(binding.pose_bone_offset)
+                .saturating_mul(u64::from(SCENE_PUPPET_GPU_POSE_STRIDE_BYTES)),
+        );
+        instance.puppet_pose_ref = [
+            pose_byte_address as u32,
+            (pose_byte_address >> 32) as u32,
+            pose.pose_frame_count,
+            pose.pose_frame_bone_count,
+        ];
+    }
+    Ok(())
+}
+
+fn scene_sampled_image_update_frame_time_refs(
+    instances: &mut [VulkanaliaSceneSampledImageDrawInstance],
+    frame_time_address: vk::DeviceAddress,
+) {
+    let frame_time_ref = [
+        frame_time_address as u32,
+        (frame_time_address >> 32) as u32,
+        0,
+        0,
+    ];
+    for instance in instances {
+        instance.frame_time_ref = frame_time_ref;
+    }
+}
+
+fn scene_sampled_image_update_layer_pose_refs(
+    instances: &mut [VulkanaliaSceneSampledImageDrawInstance],
+    sampled_layer_slots: &[VulkanaliaSceneSampledLayerPoseDrawInstanceSlot],
+    puppet_layer_slots: &[VulkanaliaScenePuppetLayerPoseDrawInstanceSlot],
+    timeline_layer_indices: &[usize],
+    timeline_address: vk::DeviceAddress,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Result<(), String> {
+    if frame_count == 0 || frame_rate == 0 {
+        return Err(
+            "scene sampled-image layer pose timeline ref requires non-zero frame metadata"
+                .to_owned(),
+        );
+    }
+    let layer_slots = timeline_layer_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(slot, layer_index)| (layer_index, slot))
+        .collect::<BTreeMap<_, _>>();
+    for slot in sampled_layer_slots {
+        let pose_ref = scene_sampled_image_layer_pose_ref(
+            &layer_slots,
+            slot.layer_index,
+            timeline_address,
+            frame_count,
+            frame_rate,
+        )?;
+        let Some(instance) = instances.get_mut(slot.instance_index) else {
+            return Err(format!(
+                "scene sampled-image retained layer pose draw instance {} is out of range",
+                slot.instance_index
+            ));
+        };
+        instance.position_transform_x = slot.base_pose.position_transform_x;
+        instance.position_transform_y = slot.base_pose.position_transform_y;
+        instance.layer_pose_ref = pose_ref;
+    }
+    for slot in puppet_layer_slots {
+        let Some(pose_ref) = scene_sampled_image_optional_layer_pose_ref(
+            &layer_slots,
+            slot.layer_index,
+            timeline_address,
+            frame_count,
+            frame_rate,
+        ) else {
+            continue;
+        };
+        let Some(instance) = instances.get_mut(slot.instance_index) else {
+            return Err(format!(
+                "scene sampled-image retained puppet layer pose draw instance {} is out of range",
+                slot.instance_index
+            ));
+        };
+        instance.layer_pose_ref = pose_ref;
+    }
+    Ok(())
+}
+
+fn scene_sampled_image_layer_pose_ref(
+    layer_slots: &BTreeMap<usize, usize>,
+    layer_index: usize,
+    timeline_address: vk::DeviceAddress,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Result<[u32; 4], String> {
+    let Some(layer_slot) = layer_slots.get(&layer_index).copied() else {
+        return Err(format!(
+            "scene sampled-image layer {layer_index} has no retained GPU pose timeline slot"
+        ));
+    };
+    scene_sampled_image_layer_pose_ref_for_slot(
+        layer_slot,
+        layer_index,
+        timeline_address,
+        frame_count,
+        frame_rate,
+    )
+}
+
+fn scene_sampled_image_optional_layer_pose_ref(
+    layer_slots: &BTreeMap<usize, usize>,
+    layer_index: usize,
+    timeline_address: vk::DeviceAddress,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Option<[u32; 4]> {
+    let layer_slot = layer_slots.get(&layer_index).copied()?;
+    scene_sampled_image_layer_pose_ref_for_slot(
+        layer_slot,
+        layer_index,
+        timeline_address,
+        frame_count,
+        frame_rate,
+    )
+    .ok()
+}
+
+fn scene_sampled_image_layer_pose_ref_for_slot(
+    layer_slot: usize,
+    layer_index: usize,
+    timeline_address: vk::DeviceAddress,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Result<[u32; 4], String> {
+    let layer_byte_offset = (layer_slot as u64)
+        .checked_mul(u64::from(frame_count))
+        .and_then(|value| value.checked_mul(u64::from(SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES)))
+        .ok_or_else(|| {
+            format!("scene sampled-image layer {layer_index} pose timeline offset overflows")
+        })?;
+    let pose_address = timeline_address.saturating_add(layer_byte_offset);
+    Ok([
+        pose_address as u32,
+        (pose_address >> 32) as u32,
+        frame_count,
+        frame_rate,
+    ])
+}
+
+fn scene_sampled_image_layer_pose_instances(
+    poses: &[NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload],
+) -> Vec<VulkanaliaSceneSampledImageLayerPoseInstance> {
+    poses
+        .iter()
+        .map(scene_sampled_image_layer_pose_instance)
+        .collect()
+}
+
+fn scene_sampled_image_layer_pose_instance(
+    pose: &NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload,
+) -> VulkanaliaSceneSampledImageLayerPoseInstance {
+    VulkanaliaSceneSampledImageLayerPoseInstance {
+        layer_index: pose.layer_index,
+        position_transform_x: pose.position_transform_x,
+        position_transform_y: pose.position_transform_y,
+        layer_opacity: pose.layer_opacity.clamp(0.0, 1.0),
+    }
+}
+
+fn scene_sampled_image_layer_pose_map(
+    poses: &[VulkanaliaSceneSampledImageLayerPoseInstance],
+) -> BTreeMap<usize, VulkanaliaSceneSampledImageLayerPoseInstance> {
+    poses
+        .iter()
+        .copied()
+        .map(|pose| (pose.layer_index, pose))
+        .collect()
+}
+
+fn scene_sampled_image_validate_layer_poses(
+    poses: &[NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload],
+) -> Result<(), String> {
+    for (pose_index, pose) in poses.iter().enumerate() {
+        if !pose
+            .position_transform_x
+            .into_iter()
+            .chain(pose.position_transform_y)
+            .chain([pose.layer_opacity])
+            .all(f32::is_finite)
+        {
+            return Err(format!(
+                "scene sampled-image layer pose {pose_index} contains a non-finite value"
+            ));
         }
     }
     Ok(())
 }
 
-fn scene_sampled_image_animated_uv_steps(
-    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
-    geometry_indices: &[u32],
-    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
-) -> Result<Vec<SceneSampledImageAnimatedUvStep>, String> {
-    let mut animated_steps = Vec::new();
-    for step in draw_steps {
-        let Some(texture_region) = step.texture_region else {
-            continue;
-        };
-        if !scene_texture_region_is_animated(Some(texture_region)) {
-            continue;
-        }
-        let vertex_indices = scene_sampled_image_draw_step_unique_vertices(geometry_indices, step)?;
-        let mut base_uvs = [[0.0f32; 2]; 4];
-        for (uv_index, vertex_index) in vertex_indices.iter().enumerate() {
-            let vertex = vertices.get(*vertex_index as usize).ok_or_else(|| {
-                format!(
-                    "scene sampled-image animated vertex index {vertex_index} exceeds vertex count {}",
-                    vertices.len()
-                )
-            })?;
-            base_uvs[uv_index] = vertex.uv;
-        }
-        animated_steps.push(SceneSampledImageAnimatedUvStep {
-            vertex_indices,
-            base_uvs,
-            texture_region,
-        });
+fn scene_sampled_image_validate_layer_pose_timeline(
+    timeline: &NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload,
+) -> Result<(), String> {
+    if timeline.frame_rate == 0 {
+        return Err(
+            "scene sampled-image layer pose timeline frame rate must be non-zero".to_owned(),
+        );
     }
-    Ok(animated_steps)
-}
-
-fn scene_sampled_image_draw_step_unique_vertices(
-    geometry_indices: &[u32],
-    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
-) -> Result<[u32; 4], String> {
-    let end_index = step
-        .first_index
-        .checked_add(step.index_count)
-        .ok_or_else(|| "scene sampled-image animated index range overflows".to_owned())?;
-    let indices = geometry_indices
-        .get(step.first_index as usize..end_index as usize)
-        .ok_or_else(|| {
-            "scene sampled-image animated index range exceeds geometry indices".to_owned()
-        })?;
-    let mut unique_vertices = [0u32; 4];
-    let mut unique_count = 0usize;
-    for index in indices {
-        if unique_vertices[..unique_count].contains(index) {
-            continue;
-        }
-        if unique_count == unique_vertices.len() {
-            return Err(format!(
-                "scene sampled-image animated draw step for layer {} expected 4 unique vertices, got more than 4",
-                step.layer_index
-            ));
-        }
-        unique_vertices[unique_count] = *index;
-        unique_count += 1;
+    if timeline.frame_count == 0 {
+        return Err(
+            "scene sampled-image layer pose timeline frame count must be non-zero".to_owned(),
+        );
     }
-    if unique_count != unique_vertices.len() {
+    let expected_pose_count = timeline
+        .layer_indices
+        .len()
+        .checked_mul(timeline.frame_count as usize)
+        .ok_or_else(|| "scene sampled-image layer pose timeline pose count overflows".to_owned())?;
+    if timeline.poses.len() != expected_pose_count {
         return Err(format!(
-            "scene sampled-image animated draw step for layer {} expected 4 unique vertices, got {}",
-            step.layer_index, unique_count
+            "scene sampled-image layer pose timeline has {} poses for {} layers and {} frames",
+            timeline.poses.len(),
+            timeline.layer_indices.len(),
+            timeline.frame_count
         ));
     }
-    Ok(unique_vertices)
+    scene_sampled_image_validate_layer_poses(&timeline.poses)
+}
+
+fn scene_sampled_image_layer_pose_timeline_bytes(
+    timeline: Option<&NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload>,
+) -> Result<SceneGeometryByteBuffer, String> {
+    let Some(timeline) = timeline else {
+        return Ok(SceneGeometryByteBuffer::with_capacity(0));
+    };
+    scene_sampled_image_validate_layer_pose_timeline(timeline)?;
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        timeline
+            .poses
+            .len()
+            .checked_mul(SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES as usize)
+            .ok_or_else(|| "scene sampled-image layer pose timeline bytes overflow".to_owned())?,
+    );
+    for pose in &timeline.poses {
+        for value in pose
+            .position_transform_x
+            .into_iter()
+            .chain(pose.position_transform_y)
+        {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        bytes.extend_from_slice(&pose.layer_opacity.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    }
+    Ok(bytes)
+}
+
+fn scene_sampled_image_layer_pose_draw_instance(
+    base_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
+    current_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
+    elapsed_ms: u64,
+) -> Result<VulkanaliaSceneSampledImageDrawInstance, String> {
+    let (position_transform_x, position_transform_y) =
+        scene_sampled_image_layer_pose_delta_transform(base_pose, current_pose)?;
+    Ok(VulkanaliaSceneSampledImageDrawInstance {
+        position_transform_x,
+        position_transform_y,
+        frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+        ..VulkanaliaSceneSampledImageDrawInstance::identity()
+    })
+}
+
+fn scene_sampled_image_layer_pose_delta_transform(
+    base_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
+    current_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
+) -> Result<([f32; 4], [f32; 4]), String> {
+    let a = base_pose.position_transform_x[0];
+    let b = base_pose.position_transform_x[1];
+    let tx = base_pose.position_transform_x[2];
+    let c = base_pose.position_transform_y[0];
+    let d = base_pose.position_transform_y[1];
+    let ty = base_pose.position_transform_y[2];
+    let det = a.mul_add(d, -(b * c));
+    if !det.is_finite() || det.abs() <= f32::EPSILON {
+        return Err(format!(
+            "scene sampled-image layer {} base pose transform is not invertible",
+            base_pose.layer_index
+        ));
+    }
+    let inv_det = 1.0 / det;
+    let inv_a = d * inv_det;
+    let inv_b = -b * inv_det;
+    let inv_tx = (b * ty - d * tx) * inv_det;
+    let inv_c = -c * inv_det;
+    let inv_d = a * inv_det;
+    let inv_ty = (c * tx - a * ty) * inv_det;
+
+    let ca = current_pose.position_transform_x[0];
+    let cb = current_pose.position_transform_x[1];
+    let ctx = current_pose.position_transform_x[2];
+    let cc = current_pose.position_transform_y[0];
+    let cd = current_pose.position_transform_y[1];
+    let cty = current_pose.position_transform_y[2];
+    let row_x = [
+        ca.mul_add(inv_a, cb * inv_c),
+        ca.mul_add(inv_b, cb * inv_d),
+        ca.mul_add(inv_tx, cb.mul_add(inv_ty, ctx)),
+        0.0,
+    ];
+    let row_y = [
+        cc.mul_add(inv_a, cd * inv_c),
+        cc.mul_add(inv_b, cd * inv_d),
+        cc.mul_add(inv_tx, cd.mul_add(inv_ty, cty)),
+        0.0,
+    ];
+    if !row_x.into_iter().chain(row_y).all(f32::is_finite) {
+        return Err(format!(
+            "scene sampled-image layer {} pose delta contains a non-finite value",
+            base_pose.layer_index
+        ));
+    }
+    Ok((row_x, row_y))
+}
+
+fn scene_sampled_image_animated_region_draw_instance(
+    texture_region: SceneTextureRegion,
+    elapsed_ms: u64,
+) -> VulkanaliaSceneSampledImageDrawInstance {
+    let u_span = (texture_region.u_max - texture_region.u_min) as f32;
+    let v_span = (texture_region.v_max - texture_region.v_min) as f32;
+    VulkanaliaSceneSampledImageDrawInstance {
+        frame_constants: [
+            (elapsed_ms as f32) * 0.001,
+            1.0,
+            if texture_region.loop_playback {
+                1.0
+            } else {
+                0.0
+            },
+            0.0,
+        ],
+        effect_uv_x: [
+            texture_region.u_min as f32,
+            u_span,
+            texture_region.frame_count.max(1) as f32,
+            texture_region.fps.unwrap_or(0.0).max(0.0) as f32,
+        ],
+        effect_uv_y: [
+            texture_region.v_min as f32,
+            v_span,
+            texture_region.columns.max(1) as f32,
+            texture_region.frame_index as f32,
+        ],
+        ..VulkanaliaSceneSampledImageDrawInstance::identity()
+    }
 }
 
 fn scene_sampled_image_draw_steps_are_animated(
@@ -6593,77 +6837,51 @@ fn scene_sampled_image_draw_steps_use_elapsed_time(
         .any(|step| step.material.uses_elapsed_frame_constants)
 }
 
-fn scene_sampled_image_dynamic_vertex_byte_ranges(
+fn scene_sampled_image_animated_draw_instance_indices(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
-    vertex_count: usize,
-) -> Result<Vec<Range<usize>>, String> {
-    let stride = SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
-    let mut ranges = Vec::with_capacity(draw_steps.len());
-    for step in draw_steps {
-        if step.vertex_count == 0 {
-            continue;
-        }
-        let first_vertex = step.first_vertex as usize;
-        let end_vertex = first_vertex
-            .checked_add(step.vertex_count as usize)
-            .ok_or_else(|| {
-                format!(
-                    "scene sampled-image dynamic vertex range overflows for layer {}",
-                    step.layer_index
-                )
-            })?;
-        if end_vertex > vertex_count {
-            return Err(format!(
-                "scene sampled-image dynamic vertex range {}..{} for layer {} exceeds vertex count {}",
-                first_vertex, end_vertex, step.layer_index, vertex_count
-            ));
-        }
-        let start = first_vertex.checked_mul(stride).ok_or_else(|| {
-            format!(
-                "scene sampled-image dynamic vertex byte range overflows for layer {}",
-                step.layer_index
+    puppet_gpu_draw_bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+) -> BTreeMap<usize, u32> {
+    scene_sampled_image_layer_pose_draw_instance_indices(draw_steps, puppet_gpu_draw_bindings, &[])
+}
+
+fn scene_sampled_image_layer_pose_draw_instance_indices(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    puppet_gpu_draw_bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
+) -> BTreeMap<usize, u32> {
+    let posed_layers = sampled_layer_pose_instances
+        .iter()
+        .map(|pose| pose.layer_index)
+        .collect::<BTreeSet<_>>();
+    let mut indices = BTreeMap::new();
+    let mut next_index = 1u32;
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        if !scene_sampled_image_step_uses_any_puppet_gpu(step, puppet_gpu_draw_bindings)
+            && matches!(
+                step.render_target,
+                NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain
             )
-        })?;
-        let end = end_vertex.checked_mul(stride).ok_or_else(|| {
-            format!(
-                "scene sampled-image dynamic vertex byte range overflows for layer {}",
-                step.layer_index
-            )
-        })?;
-        ranges.push(start..end);
-    }
-    ranges.sort_by_key(|range| (range.start, range.end));
-    let mut coalesced: Vec<Range<usize>> = Vec::with_capacity(ranges.len());
-    for range in ranges {
-        if let Some(last) = coalesced.last_mut()
-            && range.start <= last.end
+            && (scene_texture_region_is_animated(step.texture_region)
+                || posed_layers.contains(&step.layer_index))
         {
-            last.end = last.end.max(range.end);
-            continue;
+            indices.insert(step_index, next_index);
+            next_index = next_index.saturating_add(1);
         }
-        coalesced.push(range);
     }
-    Ok(coalesced)
+    indices
 }
 
 fn scene_sampled_image_draw_instance_buffer_count(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
     frame_resource_count: usize,
-    dynamic_geometry: bool,
+    puppet_pose_timeline: bool,
+    sampled_layer_pose: bool,
 ) -> usize {
-    if dynamic_geometry || scene_sampled_image_draw_steps_use_elapsed_time(draw_steps) {
-        frame_resource_count.max(1)
-    } else {
-        1
-    }
-}
-
-fn scene_sampled_image_vertex_buffer_count(
-    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
-    frame_resource_count: usize,
-    dynamic_geometry: bool,
-) -> usize {
-    if dynamic_geometry || scene_sampled_image_draw_steps_are_animated(draw_steps) {
+    if puppet_pose_timeline
+        || sampled_layer_pose
+        || scene_sampled_image_draw_steps_use_elapsed_time(draw_steps)
+        || scene_sampled_image_draw_steps_are_animated(draw_steps)
+    {
         frame_resource_count.max(1)
     } else {
         1
@@ -6677,35 +6895,6 @@ fn scene_texture_region_is_animated(region: Option<SceneTextureRegion>) -> bool 
             && region.rows > 0
             && region.fps.is_some_and(|fps| fps.is_finite() && fps > 0.0)
     })
-}
-
-fn scene_texture_region_at_elapsed(
-    region: SceneTextureRegion,
-    elapsed_ms: u64,
-) -> SceneTextureRegion {
-    let Some(fps) = region.fps.filter(|fps| fps.is_finite() && *fps > 0.0) else {
-        return region;
-    };
-    let frame_delta = ((elapsed_ms as f64 / 1000.0) * fps).floor().max(0.0) as u64;
-    let frame_count = region.frame_count.max(1);
-    let frame_index = if region.loop_playback {
-        ((u64::from(region.frame_index) + frame_delta) % u64::from(frame_count)) as u32
-    } else {
-        (u64::from(region.frame_index) + frame_delta).min(u64::from(frame_count - 1)) as u32
-    };
-    let columns = region.columns.max(1);
-    let u_width = region.u_max - region.u_min;
-    let v_height = region.v_max - region.v_min;
-    let column = frame_index % columns;
-    let row = frame_index / columns;
-    SceneTextureRegion {
-        u_min: f64::from(column) * u_width,
-        v_min: f64::from(row) * v_height,
-        u_max: f64::from(column + 1) * u_width,
-        v_max: f64::from(row + 1) * v_height,
-        frame_index,
-        ..region
-    }
 }
 
 fn create_scene_uploaded_buffer(
@@ -6756,9 +6945,16 @@ fn create_scene_uploaded_buffer(
                 memory_requirements.memory_type_bits
             )
         })?;
-        let allocation_info = vk::MemoryAllocateInfo::builder()
+        let needs_device_address = usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+        let mut allocate_flags = vk::MemoryAllocateFlagsInfo::builder()
+            .flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS)
+            .build();
+        let mut allocation_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(memory_requirements.size)
             .memory_type_index(memory_type.index);
+        if needs_device_address {
+            allocation_info = allocation_info.push_next(&mut allocate_flags);
+        }
         let memory = unsafe { device.allocate_memory(&allocation_info, None) }
             .map_err(|err| format!("vkAllocateMemory(vulkanalia scene {label}): {err:?}"))?;
 
@@ -6818,26 +7014,23 @@ fn create_scene_uploaded_buffer(
             native_vulkan_vulkanalia_unmap_memory2(device, memory, label)?;
             None
         };
+        let device_address = if needs_device_address {
+            let address_info = vk::BufferDeviceAddressInfo::builder()
+                .buffer(buffer)
+                .build();
+            unsafe { device.get_buffer_device_address(&address_info) }
+        } else {
+            0
+        };
 
         Ok(VulkanaliaSceneUploadedBuffer {
             buffer,
             memory,
+            device_address,
             memory_type,
             memory_size: memory_requirements.size,
             mapped_ptr,
             mapped_size,
-            sparse_page_hashes: if keep_mapped {
-                scene_dynamic_vertex_page_hashes(
-                    payload,
-                    SCENE_DYNAMIC_VERTEX_SPARSE_COPY_PAGE_BYTES,
-                )
-            } else {
-                Vec::new()
-            },
-            sparse_range_hashes: Vec::new(),
-            sparse_dense_write_count: 0,
-            sparse_copy_disabled: false,
-            dynamic_upload_stats: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot::empty(),
         })
     })();
 
@@ -6977,6 +7170,39 @@ fn scene_solid_quad_geometry_payload_from_input(
     }
 
     let vertex_bytes = scene_solid_quad_vertex_bytes(&input.vertices)?;
+    let (vertex_timeline_bytes, vertex_timeline_frame_count, vertex_timeline_frame_rate) =
+        if let Some(timeline) = input.vertex_timeline.as_ref() {
+            if timeline.frame_rate == 0 {
+                return Err(
+                    "scene solid quad vertex timeline frame rate must be non-zero".to_owned(),
+                );
+            }
+            if timeline.frame_count == 0 {
+                return Err(
+                    "scene solid quad vertex timeline frame count must be non-zero".to_owned(),
+                );
+            }
+            let expected_vertex_count = input
+                .vertices
+                .len()
+                .checked_mul(timeline.frame_count as usize)
+                .ok_or_else(|| "scene solid quad vertex timeline count overflows".to_owned())?;
+            if timeline.vertices.len() != expected_vertex_count {
+                return Err(format!(
+                    "scene solid quad vertex timeline has {} vertices for {} base vertices and {} frames",
+                    timeline.vertices.len(),
+                    input.vertices.len(),
+                    timeline.frame_count
+                ));
+            }
+            (
+                scene_solid_quad_vertex_bytes(&timeline.vertices)?,
+                timeline.frame_count,
+                timeline.frame_rate,
+            )
+        } else {
+            (SceneGeometryByteBuffer::with_capacity(0), 0, 0)
+        };
     let index_bytes = scene_solid_quad_index_bytes(&input.indices, input.vertices.len())?;
     let vertex_count = input.vertices.len() as u32;
     let index_count = input.indices.len() as u32;
@@ -6984,6 +7210,9 @@ fn scene_solid_quad_geometry_payload_from_input(
     Ok(VulkanaliaSceneSolidQuadGeometryPayload {
         indices: input.indices,
         vertex_bytes,
+        vertex_timeline_bytes,
+        vertex_timeline_frame_count,
+        vertex_timeline_frame_rate,
         index_bytes,
         vertex_count,
         index_count,
@@ -7123,6 +7352,11 @@ fn scene_solid_quad_apply_viewport(
     for vertex in &mut geometry.vertices {
         vertex.position = scene_viewport_transform_position(vertex.position, transform);
     }
+    if let Some(timeline) = geometry.vertex_timeline.as_mut() {
+        for vertex in &mut timeline.vertices {
+            vertex.position = scene_viewport_transform_position(vertex.position, transform);
+        }
+    }
 }
 
 fn scene_sampled_image_apply_viewport(
@@ -7131,6 +7365,30 @@ fn scene_sampled_image_apply_viewport(
 ) {
     for vertex in &mut geometry.vertices {
         vertex.position = scene_viewport_transform_position(vertex.position, transform);
+    }
+    for pose in &mut geometry.sampled_layer_poses {
+        pose.position_transform_x = scene_viewport_transform_pose_row(
+            pose.position_transform_x,
+            transform.scale_x,
+            transform.offset_x,
+        );
+        pose.position_transform_y = scene_viewport_transform_pose_row(
+            pose.position_transform_y,
+            transform.scale_y,
+            transform.offset_y,
+        );
+    }
+    for pose in &mut geometry.puppet_gpu_poses {
+        pose.position_transform_x = scene_viewport_transform_pose_row(
+            pose.position_transform_x,
+            transform.scale_x,
+            transform.offset_x,
+        );
+        pose.position_transform_y = scene_viewport_transform_pose_row(
+            pose.position_transform_y,
+            transform.scale_y,
+            transform.offset_y,
+        );
     }
 }
 
@@ -7142,6 +7400,13 @@ fn scene_viewport_transform_position(
         position[0].mul_add(transform.scale_x, transform.offset_x),
         position[1].mul_add(transform.scale_y, transform.offset_y),
     ]
+}
+
+fn scene_viewport_transform_pose_row(mut row: [f32; 4], scale: f32, offset: f32) -> [f32; 4] {
+    row[0] *= scale;
+    row[1] *= scale;
+    row[2] = row[2].mul_add(scale, offset);
+    row
 }
 
 fn scene_sampled_image_full_extent_geometry_input(
@@ -7358,6 +7623,8 @@ fn scene_sampled_image_descriptor_group_slots(
 
 fn scene_sampled_image_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    puppet_gpu_draw_bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
     sampled_images: &[VulkanaliaSceneSampledImageResources],
     descriptor_group_base_indices: &[u32],
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
@@ -7380,6 +7647,8 @@ fn scene_sampled_image_draw_commands(
     }
     scene_sampled_image_draw_commands_for_count(
         draw_steps,
+        puppet_gpu_draw_bindings,
+        sampled_layer_pose_instances,
         sampled_images.len(),
         descriptor_group_base_indices,
     )
@@ -7474,6 +7743,8 @@ fn scene_sampled_image_draw_command_render_target(
 
 fn scene_sampled_image_draw_commands_for_count(
     draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    puppet_gpu_draw_bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+    sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
     sampled_image_count: usize,
     descriptor_group_base_indices: &[u32],
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawCommand>, String> {
@@ -7484,6 +7755,17 @@ fn scene_sampled_image_draw_commands_for_count(
             draw_steps.len()
         ));
     }
+    let puppet_bindings_by_layer = puppet_gpu_draw_bindings
+        .iter()
+        .enumerate()
+        .map(|(index, binding)| (binding.layer_index, (index, *binding)))
+        .collect::<BTreeMap<_, _>>();
+    let sampled_draw_instance_indices = scene_sampled_image_layer_pose_draw_instance_indices(
+        draw_steps,
+        puppet_gpu_draw_bindings,
+        sampled_layer_pose_instances,
+    );
+    let puppet_draw_instance_base = 1usize.saturating_add(sampled_draw_instance_indices.len());
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
     for (step_index, step) in draw_steps.iter().enumerate() {
         let primary_resource_index =
@@ -7523,13 +7805,47 @@ fn scene_sampled_image_draw_commands_for_count(
                 scene_sampled_image_render_target_debug_label(step.render_target)
             ));
         }
+        let (vertex_program, draw_instance_index, vertex_offset) = if let Some((
+            binding_index,
+            binding,
+        )) = puppet_bindings_by_layer
+            .get(&step.layer_index)
+            .copied()
+            .filter(|(_, binding)| scene_sampled_image_step_uses_puppet_gpu(step, *binding))
+        {
+            let offset = i64::from(binding.payload_vertex_offset) - i64::from(step.first_vertex);
+            if offset < i64::from(i32::MIN) || offset > i64::from(i32::MAX) {
+                return Err(format!(
+                    "scene sampled-image puppet GPU layer {} vertex offset {offset} exceeds i32",
+                    step.layer_index
+                ));
+            }
+            (
+                VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
+                puppet_draw_instance_base
+                    .saturating_add(binding_index)
+                    .min(u32::MAX as usize) as u32,
+                offset as i32,
+            )
+        } else {
+            (
+                VulkanaliaSceneSampledImageVertexProgram::Sampled,
+                sampled_draw_instance_indices
+                    .get(&step_index)
+                    .copied()
+                    .unwrap_or(0),
+                0,
+            )
+        };
         let command = VulkanaliaSceneSampledImageDrawCommand {
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
             material: step.material.clone(),
             descriptor_binding,
             render_target: scene_sampled_image_draw_command_render_target(step.render_target),
-            draw_instance_index: 0,
+            draw_instance_index,
+            vertex_program,
+            vertex_offset,
             first_index: step.first_index,
             index_count: step.index_count,
         };
@@ -7563,6 +7879,8 @@ fn scene_sampled_image_draw_commands_can_merge(
         && previous.descriptor_binding == next.descriptor_binding
         && previous.render_target == next.render_target
         && previous.draw_instance_index == next.draw_instance_index
+        && previous.vertex_program == next.vertex_program
+        && previous.vertex_offset == next.vertex_offset
         && previous
             .first_index
             .checked_add(previous.index_count)
@@ -7774,6 +8092,7 @@ fn scene_sampled_image_fit_geometry_input(
 fn scene_sampled_image_geometry_payload_from_input(
     input: NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
 ) -> Result<VulkanaliaSceneSampledImageGeometryPayload, String> {
+    let input = scene_sampled_image_compact_puppet_gpu_input(input)?;
     if input.vertices.is_empty() {
         return Err("scene sampled-image geometry requires at least one vertex".to_owned());
     }
@@ -7880,19 +8199,77 @@ fn scene_sampled_image_geometry_payload_from_input(
     }
 
     let vertex_bytes = scene_sampled_image_vertex_bytes(&input.vertices)?;
-    let index_bytes =
-        scene_geometry_index_bytes(&input.indices, input.vertices.len(), "sampled-image")?;
+    let index_bytes = scene_sampled_image_index_bytes(
+        &input.indices,
+        &input.draw_steps,
+        input.vertices.len(),
+        &input.puppet_gpu_payloads,
+        &input.puppet_gpu_poses,
+    )?;
+    let puppet_gpu_payload_bytes =
+        scene_sampled_image_puppet_gpu_payload_bytes(&input.puppet_gpu_payloads)?;
+    let puppet_gpu_pose_bytes = scene_sampled_image_puppet_gpu_pose_bytes(&input.puppet_gpu_poses)?;
     let vertex_count = input.vertices.len() as u32;
     let index_count = input.indices.len() as u32;
     let quad_count = (input.indices.len() / SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT as usize) as u32;
     let effect_target_count = input.effect_targets.len().min(u32::MAX as usize) as u32;
+    let puppet_gpu_payload_count = input.puppet_gpu_payloads.len().min(u32::MAX as usize) as u32;
+    let puppet_gpu_payload_vertex_count = input
+        .puppet_gpu_payloads
+        .iter()
+        .map(|payload| payload.vertices.len())
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let puppet_gpu_payload_index_count = input
+        .puppet_gpu_payloads
+        .iter()
+        .map(|payload| payload.indices.len())
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let puppet_gpu_payload_bone_count = input
+        .puppet_gpu_payloads
+        .iter()
+        .map(|payload| payload.bone_count as usize)
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let puppet_gpu_pose_count = input.puppet_gpu_poses.len().min(u32::MAX as usize) as u32;
+    let puppet_gpu_pose_bone_count = input
+        .puppet_gpu_poses
+        .iter()
+        .map(|pose| pose.skin_matrices.len())
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let puppet_gpu_pose_timeline_frame_count = input
+        .puppet_gpu_poses
+        .iter()
+        .map(|pose| pose.pose_frame_count as usize)
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    let puppet_gpu_pose_timeline_frame_bone_count = input
+        .puppet_gpu_poses
+        .iter()
+        .map(|pose| pose.pose_frame_bone_count as usize)
+        .sum::<usize>()
+        .min(u32::MAX as usize) as u32;
+    scene_sampled_image_validate_layer_poses(&input.sampled_layer_poses)?;
+    if let Some(timeline) = input.sampled_layer_pose_timeline.as_ref() {
+        scene_sampled_image_validate_layer_pose_timeline(timeline)?;
+    }
+    let sampled_layer_pose_timeline_bytes =
+        scene_sampled_image_layer_pose_timeline_bytes(input.sampled_layer_pose_timeline.as_ref())?;
+    let sampled_layer_pose_count = input.sampled_layer_poses.len().min(u32::MAX as usize) as u32;
     Ok(VulkanaliaSceneSampledImageGeometryPayload {
         vertices: input.vertices,
         indices: input.indices,
         sources: input.sources,
         effect_targets: input.effect_targets,
+        puppet_gpu_payloads: input.puppet_gpu_payloads,
+        puppet_gpu_poses: input.puppet_gpu_poses,
+        sampled_layer_poses: input.sampled_layer_poses,
         vertex_bytes,
         index_bytes,
+        puppet_gpu_payload_bytes,
+        puppet_gpu_pose_bytes,
         vertex_count,
         index_count,
         quad_count,
@@ -7904,9 +8281,201 @@ fn scene_sampled_image_geometry_payload_from_input(
         we_graph_target_resource_count,
         we_graph_allocated_target_resource_count,
         we_graph_planned_target_resource_count,
+        puppet_gpu_payload_count,
+        puppet_gpu_payload_vertex_count,
+        puppet_gpu_payload_index_count,
+        puppet_gpu_payload_bone_count,
+        puppet_gpu_pose_count,
+        puppet_gpu_pose_bone_count,
+        puppet_gpu_pose_timeline_frame_count,
+        puppet_gpu_pose_timeline_frame_bone_count,
+        sampled_layer_pose_count,
+        sampled_layer_pose_timeline: input.sampled_layer_pose_timeline,
+        sampled_layer_pose_timeline_bytes,
         draw_steps: input.draw_steps,
         source_label: input.source_label,
     })
+}
+
+fn scene_sampled_image_compact_puppet_gpu_input(
+    input: NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
+) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+    if input.puppet_gpu_payloads.is_empty() || input.puppet_gpu_poses.is_empty() {
+        return Ok(input);
+    }
+    let puppet_gpu_draw_bindings = scene_sampled_image_puppet_gpu_draw_bindings(
+        &input.puppet_gpu_payloads,
+        &input.puppet_gpu_poses,
+    )?;
+    if puppet_gpu_draw_bindings.is_empty() {
+        return Ok(input);
+    }
+    let bindings_by_layer = puppet_gpu_draw_bindings
+        .iter()
+        .copied()
+        .map(|binding| (binding.layer_index, binding))
+        .collect::<BTreeMap<_, _>>();
+    if !input.draw_steps.iter().any(|step| {
+        bindings_by_layer
+            .get(&step.layer_index)
+            .copied()
+            .is_some_and(|binding| scene_sampled_image_step_uses_puppet_gpu(step, binding))
+    }) {
+        return Ok(input);
+    }
+
+    let mut vertices = Vec::with_capacity(input.vertices.len());
+    let mut indices = Vec::with_capacity(input.indices.len());
+    let mut draw_steps = Vec::with_capacity(input.draw_steps.len());
+    for (step_index, mut step) in input.draw_steps.iter().cloned().enumerate() {
+        let first_index = step.first_index as usize;
+        let index_count = step.index_count as usize;
+        let end_index = first_index.checked_add(index_count).ok_or_else(|| {
+            format!("scene sampled-image draw step {step_index} index range overflows")
+        })?;
+        if end_index > input.indices.len() {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} index range {}..{} exceeds index count {}",
+                step.first_index,
+                end_index,
+                input.indices.len()
+            ));
+        }
+        let old_first_vertex = step.first_vertex as usize;
+        let vertex_count = step.vertex_count as usize;
+        let old_end_vertex = old_first_vertex.checked_add(vertex_count).ok_or_else(|| {
+            format!("scene sampled-image draw step {step_index} vertex range overflows")
+        })?;
+        if old_end_vertex > input.vertices.len() {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} vertex range {}..{} exceeds vertex count {}",
+                step.first_vertex,
+                old_end_vertex,
+                input.vertices.len()
+            ));
+        }
+
+        let maybe_puppet_binding = bindings_by_layer
+            .get(&step.layer_index)
+            .copied()
+            .filter(|binding| scene_sampled_image_step_uses_puppet_gpu(&step, *binding));
+        let new_first_vertex = if let Some(binding) = maybe_puppet_binding {
+            binding.payload_vertex_offset
+        } else {
+            let new_first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+            vertices.extend_from_slice(&input.vertices[old_first_vertex..old_end_vertex]);
+            new_first_vertex
+        };
+        let new_first_index = indices.len().min(u32::MAX as usize) as u32;
+        for index in &input.indices[first_index..end_index] {
+            let local_index = index.checked_sub(step.first_vertex).ok_or_else(|| {
+                format!(
+                    "scene sampled-image draw step {step_index} index {index} is before first vertex {}",
+                    step.first_vertex
+                )
+            })?;
+            if local_index >= step.vertex_count {
+                return Err(format!(
+                    "scene sampled-image draw step {step_index} index {index} exceeds vertex range {}..{}",
+                    step.first_vertex,
+                    step.first_vertex.saturating_add(step.vertex_count)
+                ));
+            }
+            indices.push(new_first_vertex.saturating_add(local_index));
+        }
+        step.first_vertex = new_first_vertex;
+        step.first_index = new_first_index;
+        draw_steps.push(step);
+    }
+    if vertices.is_empty() {
+        vertices.push(NativeVulkanVulkanaliaSceneSampledImageVertex::new(
+            [0.0, 0.0],
+            [0.0, 0.0],
+            0.0,
+        ));
+    }
+    Ok(NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
+        vertices,
+        indices,
+        draw_steps,
+        ..input
+    })
+}
+
+fn scene_sampled_image_index_bytes(
+    indices: &[u32],
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+    sampled_vertex_count: usize,
+    puppet_gpu_payloads: &[NativeVulkanVulkanaliaScenePuppetGpuPayload],
+    puppet_gpu_poses: &[NativeVulkanVulkanaliaScenePuppetGpuPosePayload],
+) -> Result<SceneGeometryByteBuffer, String> {
+    let puppet_gpu_draw_bindings = if puppet_gpu_payloads.is_empty() || puppet_gpu_poses.is_empty()
+    {
+        Vec::new()
+    } else {
+        scene_sampled_image_puppet_gpu_draw_bindings(puppet_gpu_payloads, puppet_gpu_poses)?
+    };
+    let bindings_by_layer = puppet_gpu_draw_bindings
+        .iter()
+        .copied()
+        .map(|binding| (binding.layer_index, binding))
+        .collect::<BTreeMap<_, _>>();
+    let puppet_vertex_count = puppet_gpu_payloads
+        .iter()
+        .map(|payload| payload.vertices.len())
+        .sum::<usize>();
+    for (step_index, step) in draw_steps.iter().enumerate() {
+        let first_index = step.first_index as usize;
+        let index_count = step.index_count as usize;
+        let end_index = first_index.checked_add(index_count).ok_or_else(|| {
+            format!("scene sampled-image draw step {step_index} index range overflows")
+        })?;
+        if end_index > indices.len() {
+            return Err(format!(
+                "scene sampled-image draw step {step_index} index range {}..{} exceeds index count {}",
+                step.first_index,
+                end_index,
+                indices.len()
+            ));
+        }
+        let uses_puppet_gpu = bindings_by_layer
+            .get(&step.layer_index)
+            .copied()
+            .is_some_and(|binding| scene_sampled_image_step_uses_puppet_gpu(step, binding));
+        let vertex_count = if uses_puppet_gpu {
+            puppet_vertex_count
+        } else {
+            sampled_vertex_count
+        };
+        for index in &indices[first_index..end_index] {
+            if *index as usize >= vertex_count {
+                return Err(format!(
+                    "scene sampled-image draw step {step_index} index {index} exceeds {} vertex count {vertex_count}",
+                    if uses_puppet_gpu {
+                        "puppet GPU"
+                    } else {
+                        "sampled"
+                    }
+                ));
+            }
+        }
+    }
+
+    let max_vertex_count = sampled_vertex_count.max(puppet_vertex_count);
+    if max_vertex_count == 0 {
+        return Err("scene sampled-image index bytes require a vertex domain".to_owned());
+    }
+    let max_index = (max_vertex_count - 1) as u32;
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(indices.len() * 4);
+    for index in indices {
+        if *index > max_index {
+            return Err(format!(
+                "scene sampled-image index {index} exceeds max vertex index {max_index}"
+            ));
+        }
+        bytes.extend_from_slice(&index.to_ne_bytes());
+    }
+    Ok(bytes)
 }
 
 fn scene_sampled_image_material_uses_framebuffer_passthrough(
@@ -8075,7 +8644,249 @@ fn scene_solid_quad_vertex_bytes(
 fn scene_sampled_image_vertex_bytes(
     vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
 ) -> Result<SceneGeometryByteBuffer, String> {
-    scene_sampled_image_vertex_bytes_for_time(vertices, &[], 0)
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        vertices.len() * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize,
+    );
+    for (index, vertex) in vertices.iter().enumerate() {
+        if !vertex
+            .position
+            .into_iter()
+            .chain(vertex.uv)
+            .chain(vertex.effect_uv)
+            .chain([vertex.opacity])
+            .chain(vertex.tint)
+            .all(f32::is_finite)
+        {
+            return Err(format!(
+                "scene sampled-image vertex {index} contains a non-finite value"
+            ));
+        }
+        for value in vertex
+            .position
+            .into_iter()
+            .chain(vertex.uv)
+            .chain(vertex.effect_uv)
+            .chain([vertex.opacity])
+            .chain(vertex.tint)
+        {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    Ok(bytes)
+}
+
+fn scene_sampled_image_puppet_gpu_payload_bytes(
+    payloads: &[NativeVulkanVulkanaliaScenePuppetGpuPayload],
+) -> Result<SceneGeometryByteBuffer, String> {
+    let vertex_count = payloads
+        .iter()
+        .map(|payload| payload.vertices.len())
+        .sum::<usize>();
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        vertex_count.saturating_mul(SCENE_PUPPET_GPU_VERTEX_STRIDE_BYTES as usize),
+    );
+    for (payload_index, payload) in payloads.iter().enumerate() {
+        if payload.bone_count == 0 {
+            return Err(format!(
+                "scene puppet GPU payload {payload_index} has no bones"
+            ));
+        }
+        for (vertex_index, vertex) in payload.vertices.iter().enumerate() {
+            if !vertex
+                .position
+                .into_iter()
+                .chain(vertex.uv)
+                .chain([vertex.opacity])
+                .chain(vertex.bone_weights)
+                .all(f32::is_finite)
+            {
+                return Err(format!(
+                    "scene puppet GPU payload {payload_index} vertex {vertex_index} contains a non-finite value"
+                ));
+            }
+            for value in vertex.position.into_iter().chain(vertex.uv) {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            for value in vertex.bone_weights {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            for value in vertex.bone_indices {
+                if value >= payload.bone_count {
+                    return Err(format!(
+                        "scene puppet GPU payload {payload_index} vertex {vertex_index} bone index {value} exceeds bone count {}",
+                        payload.bone_count
+                    ));
+                }
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            for value in [vertex.opacity, 0.0, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn scene_sampled_image_puppet_gpu_pose_bytes(
+    poses: &[NativeVulkanVulkanaliaScenePuppetGpuPosePayload],
+) -> Result<SceneGeometryByteBuffer, String> {
+    let bone_count = poses
+        .iter()
+        .map(|pose| pose.skin_matrices.len())
+        .sum::<usize>();
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        bone_count.saturating_mul(SCENE_PUPPET_GPU_POSE_STRIDE_BYTES as usize),
+    );
+    for (pose_index, pose) in poses.iter().enumerate() {
+        if pose.skin_matrices.len() != pose.bone_opacities.len() {
+            return Err(format!(
+                "scene puppet GPU pose {pose_index} matrix count {} does not match opacity count {}",
+                pose.skin_matrices.len(),
+                pose.bone_opacities.len()
+            ));
+        }
+        if pose.pose_frame_count == 0 || pose.pose_frame_bone_count == 0 {
+            return Err(format!(
+                "scene puppet GPU pose {pose_index} requires at least one timeline frame and one bone"
+            ));
+        }
+        if !pose.pose_frame_rate.is_finite() || pose.pose_frame_rate <= 0.0 {
+            return Err(format!(
+                "scene puppet GPU pose {pose_index} frame rate {} is invalid",
+                pose.pose_frame_rate
+            ));
+        }
+        let expected_bones = (pose.pose_frame_count as usize)
+            .checked_mul(pose.pose_frame_bone_count as usize)
+            .ok_or_else(|| {
+                format!("scene puppet GPU pose {pose_index} timeline bone count overflows")
+            })?;
+        if pose.skin_matrices.len() != expected_bones {
+            return Err(format!(
+                "scene puppet GPU pose {pose_index} timeline has {} matrix records but metadata expects {} frames * {} bones",
+                pose.skin_matrices.len(),
+                pose.pose_frame_count,
+                pose.pose_frame_bone_count
+            ));
+        }
+        for (bone_index, (matrix, opacity)) in pose
+            .skin_matrices
+            .iter()
+            .zip(&pose.bone_opacities)
+            .enumerate()
+        {
+            if !matrix.iter().copied().chain([*opacity]).all(f32::is_finite) {
+                return Err(format!(
+                    "scene puppet GPU pose {pose_index} bone {bone_index} contains a non-finite value"
+                ));
+            }
+            for value in *matrix {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+            for value in [opacity.clamp(0.0, 1.0), 0.0, 0.0, 0.0] {
+                bytes.extend_from_slice(&value.to_ne_bytes());
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+fn scene_sampled_image_puppet_gpu_draw_bindings(
+    payloads: &[NativeVulkanVulkanaliaScenePuppetGpuPayload],
+    poses: &[NativeVulkanVulkanaliaScenePuppetGpuPosePayload],
+) -> Result<Vec<VulkanaliaScenePuppetGpuDrawBinding>, String> {
+    let mut pose_offsets = BTreeMap::new();
+    let mut pose_bone_offset = 0u32;
+    for pose in poses {
+        pose_offsets.insert((pose.layer_index, pose.puppet_index), pose_bone_offset);
+        let pose_bone_count = pose.skin_matrices.len();
+        if pose_bone_count > u32::MAX as usize {
+            return Err(format!(
+                "scene puppet GPU pose layer {} puppet {} has too many timeline bone records",
+                pose.layer_index, pose.puppet_index
+            ));
+        }
+        pose_bone_offset = pose_bone_offset.saturating_add(pose_bone_count as u32);
+    }
+    let mut bindings = Vec::with_capacity(payloads.len());
+    let mut payload_vertex_offset = 0u32;
+    for payload in payloads {
+        let Some(pose_bone_offset) = pose_offsets
+            .get(&(payload.layer_index, payload.puppet_index))
+            .copied()
+        else {
+            return Err(format!(
+                "scene puppet GPU payload layer {} puppet {} has no pose payload",
+                payload.layer_index, payload.puppet_index
+            ));
+        };
+        bindings.push(VulkanaliaScenePuppetGpuDrawBinding {
+            layer_index: payload.layer_index,
+            payload_vertex_offset,
+            payload_vertex_count: payload.vertices.len().min(u32::MAX as usize) as u32,
+            payload_index_count: payload.indices.len().min(u32::MAX as usize) as u32,
+            pose_bone_offset,
+        });
+        payload_vertex_offset = payload_vertex_offset
+            .saturating_add(payload.vertices.len().min(u32::MAX as usize) as u32);
+    }
+    Ok(bindings)
+}
+
+fn scene_sampled_image_puppet_gpu_pose_instances(
+    poses: &[NativeVulkanVulkanaliaScenePuppetGpuPosePayload],
+) -> Vec<VulkanaliaScenePuppetGpuPoseInstance> {
+    poses
+        .iter()
+        .map(|pose| VulkanaliaScenePuppetGpuPoseInstance {
+            layer_index: pose.layer_index,
+            puppet_index: pose.puppet_index,
+            position_transform_x: pose.position_transform_x,
+            position_transform_y: pose.position_transform_y,
+            layer_opacity: pose.layer_opacity,
+            layer_extent: pose.layer_extent,
+            pose_frame_count: pose.pose_frame_count,
+            pose_frame_rate: pose.pose_frame_rate,
+            pose_looping: pose.pose_looping,
+            pose_frame_bone_count: pose.pose_frame_bone_count,
+        })
+        .collect()
+}
+
+fn scene_sampled_image_step_uses_puppet_gpu(
+    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    binding: VulkanaliaScenePuppetGpuDrawBinding,
+) -> bool {
+    step.layer_index == binding.layer_index
+        && matches!(
+            step.material.kind,
+            NativeVulkanVulkanaliaSceneSampledImageMaterialKind::SampledImage
+                | NativeVulkanVulkanaliaSceneSampledImageMaterialKind::SampledImageEffectBase
+                | NativeVulkanVulkanaliaSceneSampledImageMaterialKind::SampledImageEffectComposite
+        )
+        && step.vertex_count == binding.payload_vertex_count
+        && step.index_count == binding.payload_index_count
+}
+
+fn scene_sampled_image_step_uses_any_puppet_gpu(
+    step: &NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    bindings: &[VulkanaliaScenePuppetGpuDrawBinding],
+) -> bool {
+    bindings
+        .iter()
+        .copied()
+        .any(|binding| scene_sampled_image_step_uses_puppet_gpu(step, binding))
+}
+
+fn scene_sampled_image_layer_step_counts(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSampledImageDrawStep],
+) -> BTreeMap<usize, u32> {
+    let mut counts = BTreeMap::new();
+    for step in draw_steps {
+        let entry = counts.entry(step.layer_index).or_insert(0u32);
+        *entry = entry.saturating_add(1);
+    }
+    counts
 }
 
 fn scene_sampled_image_draw_instance_bytes(
@@ -8095,6 +8906,9 @@ fn scene_sampled_image_draw_instance_bytes(
             .into_iter()
             .chain(instance.position_transform_y)
             .chain(instance.frame_constants)
+            .chain(instance.effect_uv_x)
+            .chain(instance.effect_uv_y)
+            .chain(instance.tint)
             .all(f32::is_finite)
         {
             return Err(format!(
@@ -8106,7 +8920,21 @@ fn scene_sampled_image_draw_instance_bytes(
             .into_iter()
             .chain(instance.position_transform_y)
             .chain(instance.frame_constants)
+            .chain(instance.effect_uv_x)
+            .chain(instance.effect_uv_y)
         {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in instance.puppet_pose_ref {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in instance.tint {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in instance.frame_time_ref {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in instance.layer_pose_ref {
             bytes.extend_from_slice(&value.to_ne_bytes());
         }
     }
@@ -8134,6 +8962,9 @@ fn write_scene_sampled_image_draw_instances_to_uploaded_buffer(
                 .into_iter()
                 .chain(instance.position_transform_y)
                 .chain(instance.frame_constants)
+                .chain(instance.effect_uv_x)
+                .chain(instance.effect_uv_y)
+                .chain(instance.tint)
                 .all(f32::is_finite)
             {
                 return Err(format!(
@@ -8145,123 +8976,26 @@ fn write_scene_sampled_image_draw_instances_to_uploaded_buffer(
                 .into_iter()
                 .chain(instance.position_transform_y)
                 .chain(instance.frame_constants)
+                .chain(instance.effect_uv_x)
+                .chain(instance.effect_uv_y)
             {
                 write_scene_f32_to_mapped(dst, &mut offset, value);
+            }
+            for value in instance.puppet_pose_ref {
+                write_scene_u32_to_mapped(dst, &mut offset, value);
+            }
+            for value in instance.tint {
+                write_scene_f32_to_mapped(dst, &mut offset, value);
+            }
+            for value in instance.frame_time_ref {
+                write_scene_u32_to_mapped(dst, &mut offset, value);
+            }
+            for value in instance.layer_pose_ref {
+                write_scene_u32_to_mapped(dst, &mut offset, value);
             }
         }
         Ok(())
     })
-}
-
-fn scene_sampled_image_vertex_bytes_for_time(
-    vertices: &[NativeVulkanVulkanaliaSceneSampledImageVertex],
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
-    elapsed_ms: u64,
-) -> Result<SceneGeometryByteBuffer, String> {
-    scene_sampled_image_validate_animated_uv_steps(vertices.len(), animated_uv_steps)?;
-    let mut bytes = SceneGeometryByteBuffer::with_capacity(
-        vertices.len() * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize,
-    );
-    for (index, vertex) in vertices.iter().enumerate() {
-        if !vertex
-            .position
-            .into_iter()
-            .chain(vertex.uv)
-            .chain(vertex.effect_uv)
-            .chain([vertex.opacity])
-            .chain(vertex.tint)
-            .all(f32::is_finite)
-        {
-            return Err(format!(
-                "scene sampled-image vertex {index} contains a non-finite value"
-            ));
-        }
-        let uv = scene_sampled_image_uv_for_time(vertex.uv, index, animated_uv_steps, elapsed_ms);
-        for value in vertex
-            .position
-            .into_iter()
-            .chain(uv)
-            .chain(vertex.effect_uv)
-            .chain([vertex.opacity])
-            .chain(vertex.tint)
-        {
-            bytes.extend_from_slice(&value.to_ne_bytes());
-        }
-    }
-    Ok(bytes)
-}
-
-fn scene_sampled_image_validate_animated_uv_steps(
-    vertex_count: usize,
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
-) -> Result<(), String> {
-    for animated_step in animated_uv_steps {
-        for vertex_index in animated_step.vertex_indices {
-            if vertex_index as usize >= vertex_count {
-                return Err(format!(
-                    "scene sampled-image animated vertex index {vertex_index} exceeds vertex count {vertex_count}"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn scene_sampled_image_uv_for_time(
-    base_uv: [f32; 2],
-    vertex_index: usize,
-    animated_uv_steps: &[SceneSampledImageAnimatedUvStep],
-    elapsed_ms: u64,
-) -> [f32; 2] {
-    animated_uv_steps
-        .iter()
-        .find(|step| {
-            step.vertex_indices
-                .iter()
-                .any(|animated_vertex_index| *animated_vertex_index as usize == vertex_index)
-        })
-        .map(|step| scene_sampled_image_animated_uv_at_elapsed(base_uv, *step, elapsed_ms))
-        .unwrap_or(base_uv)
-}
-
-fn scene_sampled_image_animated_uv_at_elapsed(
-    base_uv: [f32; 2],
-    animated_step: SceneSampledImageAnimatedUvStep,
-    elapsed_ms: u64,
-) -> [f32; 2] {
-    let base_region = animated_step.texture_region;
-    let elapsed_region = scene_texture_region_at_elapsed(base_region, elapsed_ms);
-    [
-        scene_texture_region_remap_axis(
-            base_uv[0],
-            base_region.u_min,
-            base_region.u_max,
-            elapsed_region.u_min,
-            elapsed_region.u_max,
-        ),
-        scene_texture_region_remap_axis(
-            base_uv[1],
-            base_region.v_min,
-            base_region.v_max,
-            elapsed_region.v_min,
-            elapsed_region.v_max,
-        ),
-    ]
-}
-
-fn scene_texture_region_remap_axis(
-    value: f32,
-    base_min: f64,
-    base_max: f64,
-    elapsed_min: f64,
-    elapsed_max: f64,
-) -> f32 {
-    let base_span = base_max - base_min;
-    if !base_span.is_finite() || base_span <= f64::EPSILON {
-        return elapsed_min as f32;
-    }
-    let t = ((f64::from(value) - base_min) / base_span).clamp(0.0, 1.0);
-    (elapsed_min + (elapsed_max - elapsed_min) * t) as f32
 }
 
 fn scene_solid_quad_index_bytes(
@@ -8416,30 +9150,6 @@ mod tests {
         )
     }
 
-    fn sampled_image_draw_step_vertex_range(
-        layer_index: usize,
-        first_vertex: u32,
-        vertex_count: u32,
-    ) -> NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-        NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-            layer_index,
-            first_vertex,
-            vertex_count,
-            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
-            material: sampled_image_material(
-                SceneBlendMode::Alpha,
-                None,
-                SceneRenderAlphaTextureMode::Multiply,
-                1,
-            ),
-            first_index: 0,
-            index_count: 0,
-            fit: None,
-            texture_region: None,
-            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
-        }
-    }
-
     #[test]
     fn scene_present_id_telemetry_retains_no_frame_ids_by_default() {
         let mut telemetry = ScenePresentIdTelemetry::new();
@@ -8500,118 +9210,6 @@ mod tests {
             std::mem::size_of::<NativeVulkanVulkanaliaSceneSolidQuadVertex>(),
             SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize
         );
-    }
-
-    #[test]
-    fn dynamic_vertex_sparse_copy_touches_only_changed_pages() {
-        let mut dst = vec![1u8; 10];
-        let mut src = dst.clone();
-        let mut hashes = scene_dynamic_vertex_page_hashes(&dst, 4);
-        assert_eq!(
-            copy_changed_hashed_pages(dst.as_mut_ptr(), &src, &mut hashes, 4),
-            0
-        );
-
-        src[5] = 2;
-        src[9] = 3;
-        assert_eq!(
-            copy_changed_hashed_pages(dst.as_mut_ptr(), &src, &mut hashes, 4),
-            6
-        );
-        assert_eq!(dst, src);
-
-        src[0] = 4;
-        assert_eq!(
-            copy_changed_hashed_pages(dst.as_mut_ptr(), &src, &mut hashes, 4),
-            4
-        );
-        assert_eq!(dst, src);
-    }
-
-    #[test]
-    fn dynamic_vertex_sparse_range_copy_touches_only_changed_ranges() {
-        let mut dst = vec![1u8; 20];
-        let mut src = dst.clone();
-        let ranges = vec![0..4, 8..12, 16..20];
-        let mut hashes = scene_dynamic_vertex_range_hashes(&dst, &ranges);
-        assert_eq!(
-            copy_changed_hashed_ranges(dst.as_mut_ptr(), &src, &ranges, &mut hashes),
-            0
-        );
-
-        src[5] = 9;
-        assert_eq!(
-            copy_changed_hashed_ranges(dst.as_mut_ptr(), &src, &ranges, &mut hashes),
-            0
-        );
-        assert_eq!(dst[5], 1);
-
-        src[10] = 2;
-        src[18] = 3;
-        assert_eq!(
-            copy_changed_hashed_ranges(dst.as_mut_ptr(), &src, &ranges, &mut hashes),
-            8
-        );
-        assert_eq!(dst[10], 2);
-        assert_eq!(dst[18], 3);
-        assert_eq!(dst[5], 1);
-    }
-
-    #[test]
-    fn sampled_image_dynamic_vertex_ranges_coalesce_draw_step_ranges() {
-        let stride = SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
-        let ranges = scene_sampled_image_dynamic_vertex_byte_ranges(
-            &[
-                sampled_image_draw_step_vertex_range(0, 2, 4),
-                sampled_image_draw_step_vertex_range(1, 0, 3),
-                sampled_image_draw_step_vertex_range(2, 8, 2),
-            ],
-            10,
-        )
-        .unwrap();
-
-        assert_eq!(ranges, vec![0..6 * stride, 8 * stride..10 * stride]);
-    }
-
-    #[test]
-    fn dynamic_vertex_sparse_dense_threshold_uses_ceiling_percent() {
-        assert_eq!(scene_dynamic_vertex_sparse_copy_dense_threshold(100), 90);
-        assert_eq!(scene_dynamic_vertex_sparse_copy_dense_threshold(101), 91);
-    }
-
-    #[test]
-    fn dynamic_vertex_sparse_copy_disables_after_repeated_dense_writes() {
-        let mut buffer = VulkanaliaSceneUploadedBuffer {
-            buffer: vk::Buffer::null(),
-            memory: vk::DeviceMemory::null(),
-            memory_type: NativeVulkanVulkanaliaMemoryTypeCandidate {
-                index: 0,
-                property_flags_bits: vk::MemoryPropertyFlags::HOST_VISIBLE.bits()
-                    | vk::MemoryPropertyFlags::HOST_COHERENT.bits(),
-            },
-            memory_size: 8,
-            mapped_ptr: None,
-            mapped_size: 8,
-            sparse_page_hashes: vec![1, 2],
-            sparse_range_hashes: Vec::new(),
-            sparse_dense_write_count: 0,
-            sparse_copy_disabled: false,
-            dynamic_upload_stats: NativeVulkanVulkanaliaSceneDynamicVertexUploadSnapshot::empty(),
-        };
-
-        record_scene_dynamic_vertex_upload_sparse(&mut buffer, 100, 90);
-        assert!(!buffer.sparse_copy_disabled);
-        record_scene_dynamic_vertex_upload_sparse(&mut buffer, 100, 95);
-        assert!(buffer.sparse_copy_disabled);
-        assert!(buffer.sparse_page_hashes.is_empty());
-
-        let snapshot = scene_dynamic_vertex_upload_snapshot(&[buffer]);
-        assert_eq!(snapshot.write_count, 2);
-        assert_eq!(snapshot.sparse_write_count, 2);
-        assert_eq!(snapshot.hashed_bytes, 200);
-        assert_eq!(snapshot.copied_bytes, 185);
-        assert_eq!(snapshot.skipped_bytes, 15);
-        assert_eq!(snapshot.sparse_disabled_buffer_count, 1);
     }
 
     #[test]
@@ -8821,6 +9419,8 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
             ],
+            &[],
+            &[],
             1,
             &[0, 0],
         )
@@ -8843,6 +9443,8 @@ mod tests {
                 },
                 render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 draw_instance_index: 0,
+                vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+                vertex_offset: 0,
                 first_index: 0,
                 index_count: 18,
             }]
@@ -8869,6 +9471,8 @@ mod tests {
                 clear: true,
             },
             draw_instance_index: 0,
+            vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            vertex_offset: 0,
             first_index: 0,
             index_count: 6,
         }];
@@ -8895,6 +9499,8 @@ mod tests {
             },
             render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
             draw_instance_index: 0,
+            vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            vertex_offset: 0,
             first_index: 0,
             index_count: 6,
         }];
@@ -9123,6 +9729,8 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
             ],
+            &[],
+            &[],
             2,
             &[0, 8],
         )
@@ -9184,6 +9792,8 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
             ],
+            &[],
+            &[],
             1,
             &[0, 0],
         )
@@ -9366,10 +9976,10 @@ mod tests {
     #[test]
     fn static_transfer_present_only_accepts_plain_static_single_image() {
         assert!(scene_sampled_image_can_use_static_transfer_present(
-            &static_transfer_test_options(Some(FitMode::Cover), None, None)
+            &static_transfer_test_options(Some(FitMode::Cover), None)
         ));
         assert!(!scene_sampled_image_can_use_static_transfer_present(
-            &static_transfer_test_options(Some(FitMode::Tile), None, None)
+            &static_transfer_test_options(Some(FitMode::Tile), None)
         ));
         assert!(!scene_sampled_image_can_use_static_transfer_present(
             &static_transfer_test_options(
@@ -9380,22 +9990,6 @@ mod tests {
                         height: 100,
                     },
                 )),
-                None,
-            )
-        ));
-        assert!(!scene_sampled_image_can_use_static_transfer_present(
-            &static_transfer_test_options(
-                Some(FitMode::Cover),
-                None,
-                Some(Box::new(|_, vertices| {
-                    let input = scene_sampled_image_full_extent_geometry_input(vk::Extent2D {
-                        width: 100,
-                        height: 100,
-                    });
-                    vertices.clear();
-                    vertices.extend(input.vertices);
-                    Ok(())
-                })),
             )
         ));
     }
@@ -9832,7 +10426,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_image_texture_region_advances_with_elapsed_runtime() {
+    fn sampled_image_animated_atlas_uses_draw_instance_constants() {
         let region = SceneTextureRegion {
             u_min: 0.0,
             v_min: 0.0,
@@ -9846,169 +10440,17 @@ mod tests {
             loop_playback: true,
         };
 
-        let sixth = scene_texture_region_at_elapsed(region, 417);
-        assert_eq!(sixth.frame_index, 5);
-        assert_close_f64(sixth.u_min, 2.0 / 3.0);
-        assert_close_f64(sixth.v_min, 0.25);
-        assert_close_f64(sixth.u_max, 1.0);
-        assert_close_f64(sixth.v_max, 0.5);
+        let instance = scene_sampled_image_animated_region_draw_instance(region, 417);
 
-        let looped = scene_texture_region_at_elapsed(region, 1000);
-        assert_eq!(looped.frame_index, 0);
-        assert_close_f64(looped.u_min, 0.0);
-        assert_close_f64(looped.v_min, 0.0);
+        assert_close(instance.frame_constants[0], 0.417);
+        assert_eq!(instance.frame_constants[1], 1.0);
+        assert_eq!(instance.frame_constants[2], 1.0);
+        assert_eq!(instance.effect_uv_x, [0.0, 1.0 / 3.0, 12.0, 12.0]);
+        assert_eq!(instance.effect_uv_y, [0.0, 0.25, 3.0, 0.0]);
     }
 
     #[test]
-    fn sampled_image_atlas_region_applies_to_dynamic_timeline_vertices() {
-        let mut vertices = vec![
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 20.0], [0.0, 0.0], 0.5),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
-                [140.0, 20.0],
-                [1.0 / 3.0, 0.0],
-                0.5,
-            ),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 120.0], [0.0, 0.25], 0.5),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
-                [140.0, 120.0],
-                [1.0 / 3.0, 0.25],
-                0.5,
-            ),
-        ];
-        let indices = vec![0, 1, 2, 2, 1, 3];
-        let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-            layer_index: 7,
-            first_vertex: 0,
-            vertex_count: 4,
-            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
-            material: sampled_image_material(
-                SceneBlendMode::Alpha,
-                None,
-                SceneRenderAlphaTextureMode::Multiply,
-                1,
-            ),
-            first_index: 0,
-            index_count: 6,
-            fit: Some(FitMode::Cover),
-            texture_region: Some(SceneTextureRegion {
-                u_min: 0.0,
-                v_min: 0.0,
-                u_max: 1.0 / 3.0,
-                v_max: 0.25,
-                frame_index: 0,
-                frame_count: 12,
-                columns: 3,
-                rows: 4,
-                fps: Some(12.0),
-                loop_playback: true,
-            }),
-            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
-        }];
-
-        native_vulkan_scene_apply_elapsed_texture_regions(
-            &mut vertices,
-            &indices,
-            &draw_steps,
-            417,
-        )
-        .unwrap();
-
-        assert_eq!(vertices[0].position, [40.0, 20.0]);
-        assert_eq!(vertices[3].position, [140.0, 120.0]);
-        assert_close(vertices[0].uv[0], 2.0 / 3.0);
-        assert_close(vertices[0].uv[1], 0.25);
-        assert_close(vertices[2].uv[0], 2.0 / 3.0);
-        assert_close(vertices[2].uv[1], 0.5);
-        assert_close(vertices[3].uv[0], 1.0);
-        assert_close(vertices[3].uv[1], 0.5);
-        assert_close(vertices[0].opacity, 0.5);
-    }
-
-    #[test]
-    fn animated_atlas_updates_only_uv_bytes_without_retaining_base_vertices() {
-        let vertices = vec![
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 20.0], [0.0, 0.0], 0.5),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
-                [140.0, 20.0],
-                [1.0 / 3.0, 0.0],
-                0.5,
-            ),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new([40.0, 120.0], [0.0, 0.25], 0.5),
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new(
-                [140.0, 120.0],
-                [1.0 / 3.0, 0.25],
-                0.5,
-            ),
-        ];
-        let indices = vec![0, 1, 2, 2, 1, 3];
-        let draw_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
-            layer_index: 7,
-            first_vertex: 0,
-            vertex_count: 4,
-            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
-            material: sampled_image_material(
-                SceneBlendMode::Alpha,
-                None,
-                SceneRenderAlphaTextureMode::Multiply,
-                1,
-            ),
-            first_index: 0,
-            index_count: 6,
-            fit: Some(FitMode::Cover),
-            texture_region: Some(SceneTextureRegion {
-                u_min: 0.0,
-                v_min: 0.0,
-                u_max: 1.0 / 3.0,
-                v_max: 0.25,
-                frame_index: 0,
-                frame_count: 12,
-                columns: 3,
-                rows: 4,
-                fps: Some(12.0),
-                loop_playback: true,
-            }),
-            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
-        }];
-        let animated_steps =
-            scene_sampled_image_animated_uv_steps(&vertices, &indices, &draw_steps).unwrap();
-        let vertex_bytes = scene_sampled_image_vertex_bytes(&vertices).unwrap();
-        let mut bytes = vertex_bytes.to_vec();
-
-        patch_scene_sampled_image_animated_uvs_in_bytes(
-            &mut bytes,
-            vertices.len(),
-            &animated_steps,
-            417,
-        )
-        .unwrap();
-
-        assert_close(read_f32(&bytes, 0), 40.0);
-        assert_close(read_f32(&bytes, 4), 20.0);
-        assert_close(read_f32(&bytes, 8), 2.0 / 3.0);
-        assert_close(read_f32(&bytes, 12), 0.25);
-        assert_close(read_f32(&bytes, 16), 0.0);
-        assert_close(read_f32(&bytes, 20), 0.0);
-        assert_close(read_f32(&bytes, 24), 0.5);
-        assert_close(read_f32(&bytes, 28), 1.0);
-        assert_close(read_f32(&bytes, 32), 1.0);
-        assert_close(read_f32(&bytes, 36), 1.0);
-        assert_close(read_f32(&bytes, 40), 1.0);
-        let fourth = 3 * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize;
-        assert_close(read_f32(&bytes, fourth), 140.0);
-        assert_close(read_f32(&bytes, fourth + 4), 120.0);
-        assert_close(read_f32(&bytes, fourth + 8), 1.0);
-        assert_close(read_f32(&bytes, fourth + 12), 0.5);
-        assert_close(read_f32(&bytes, fourth + 16), 1.0 / 3.0);
-        assert_close(read_f32(&bytes, fourth + 20), 0.25);
-        assert_close(read_f32(&bytes, fourth + 24), 0.5);
-        assert_close(read_f32(&bytes, fourth + 28), 1.0);
-        assert_close(read_f32(&bytes, fourth + 32), 1.0);
-        assert_close(read_f32(&bytes, fourth + 36), 1.0);
-        assert_close(read_f32(&bytes, fourth + 40), 1.0);
-    }
-
-    #[test]
-    fn sampled_image_vertex_buffer_count_uses_frame_slots_only_for_animated_atlas() {
+    fn sampled_image_animated_atlas_uses_draw_instance_not_vertex_upload() {
         let static_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
             layer_index: 0,
             first_vertex: 0,
@@ -10042,40 +10484,185 @@ mod tests {
             ..static_steps[0].clone()
         }];
 
+        let instance_indices =
+            scene_sampled_image_animated_draw_instance_indices(&animated_steps, &[]);
+
         assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&static_steps, 3, false),
-            1
-        );
-        assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&static_steps, 3, true),
+            scene_sampled_image_draw_instance_buffer_count(&animated_steps, 3, false, false),
             3
         );
-        assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&animated_steps, 3, false),
-            3
+        assert_eq!(instance_indices.get(&0), Some(&1));
+    }
+
+    #[test]
+    fn sampled_image_layer_pose_uses_draw_instance_delta_not_vertex_upload() {
+        let step = NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            layer_index: 5,
+            first_vertex: 0,
+            vertex_count: 4,
+            texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+            material: sampled_image_material(
+                SceneBlendMode::Alpha,
+                None,
+                SceneRenderAlphaTextureMode::Multiply,
+                1,
+            ),
+            first_index: 0,
+            index_count: 6,
+            fit: Some(FitMode::Cover),
+            texture_region: None,
+            render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+        };
+        let base_pose = VulkanaliaSceneSampledImageLayerPoseInstance {
+            layer_index: 5,
+            position_transform_x: [1.0, 0.0, 100.0, 0.0],
+            position_transform_y: [0.0, 1.0, 200.0, 0.0],
+            layer_opacity: 1.0,
+        };
+        let current_pose = VulkanaliaSceneSampledImageLayerPoseInstance {
+            layer_index: 5,
+            position_transform_x: [0.0, -1.0, 110.0, 0.0],
+            position_transform_y: [1.0, 0.0, 210.0, 0.0],
+            layer_opacity: 1.0,
+        };
+
+        let commands =
+            scene_sampled_image_draw_commands_for_count(&[step], &[], &[base_pose], 1, &[0])
+                .expect("draw command");
+        let (row_x, row_y) =
+            scene_sampled_image_layer_pose_delta_transform(base_pose, current_pose)
+                .expect("pose delta");
+
+        assert_eq!(commands[0].draw_instance_index, 1);
+        assert_close(
+            120.0_f32.mul_add(row_x[0], 200.0_f32.mul_add(row_x[1], row_x[2])),
+            110.0,
         );
-        assert_eq!(
-            scene_sampled_image_vertex_buffer_count(&animated_steps, 0, false),
-            1
+        assert_close(
+            120.0_f32.mul_add(row_y[0], 200.0_f32.mul_add(row_y[1], row_y[2])),
+            230.0,
         );
+    }
+
+    #[test]
+    fn sampled_image_geometry_strips_puppet_cpu_vertices_when_gpu_payload_matches() {
+        let mut vertices = vec![
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([0.0, 0.0], [0.0, 0.0], 1.0),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([1.0, 0.0], [1.0, 0.0], 1.0),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([0.0, 1.0], [0.0, 1.0], 1.0),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([1.0, 1.0], [1.0, 1.0], 1.0),
+        ];
+        vertices.extend([
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([10.0, 0.0], [0.0, 0.0], 1.0),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([11.0, 0.0], [1.0, 0.0], 1.0),
+            NativeVulkanVulkanaliaSceneSampledImageVertex::new([10.0, 1.0], [0.0, 1.0], 1.0),
+        ]);
+        let material = sampled_image_material(
+            SceneBlendMode::Alpha,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            1,
+        );
+        let input = NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
+            vertices,
+            indices: vec![0, 1, 2, 2, 1, 3, 4, 5, 6],
+            sources: vec![PathBuf::from("/tmp/puppet.gtex")],
+            effect_targets: Vec::new(),
+            we_graph_resources: Vec::new(),
+            puppet_gpu_payloads: vec![NativeVulkanVulkanaliaScenePuppetGpuPayload {
+                layer_index: 7,
+                layer_id: "puppet".to_owned(),
+                geometry_index: 0,
+                puppet_index: 0,
+                vertices: vec![
+                    NativeVulkanVulkanaliaScenePuppetGpuVertexPayload {
+                        position: [10.0, 0.0],
+                        uv: [0.0, 0.0],
+                        opacity: 1.0,
+                        bone_indices: [0, 0, 0, 0],
+                        bone_weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    NativeVulkanVulkanaliaScenePuppetGpuVertexPayload {
+                        position: [11.0, 0.0],
+                        uv: [1.0, 0.0],
+                        opacity: 1.0,
+                        bone_indices: [0, 0, 0, 0],
+                        bone_weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                    NativeVulkanVulkanaliaScenePuppetGpuVertexPayload {
+                        position: [10.0, 1.0],
+                        uv: [0.0, 1.0],
+                        opacity: 1.0,
+                        bone_indices: [0, 0, 0, 0],
+                        bone_weights: [1.0, 0.0, 0.0, 0.0],
+                    },
+                ],
+                indices: vec![0, 1, 2],
+                bone_count: 1,
+            }],
+            puppet_gpu_poses: vec![NativeVulkanVulkanaliaScenePuppetGpuPosePayload {
+                layer_index: 7,
+                layer_id: "puppet".to_owned(),
+                puppet_index: 0,
+                position_transform_x: [1.0, 0.0, 0.0, 0.0],
+                position_transform_y: [0.0, 1.0, 0.0, 0.0],
+                layer_opacity: 1.0,
+                layer_extent: [32.0, 32.0],
+                layer_anchor: [0.0, 0.0],
+                pose_frame_count: 1,
+                pose_frame_rate: 60.0,
+                pose_looping: false,
+                pose_frame_bone_count: 1,
+                skin_matrices: vec![[
+                    1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                ]],
+                bone_opacities: vec![1.0],
+            }],
+            sampled_layer_poses: Vec::new(),
+            sampled_layer_pose_timeline: None,
+            draw_steps: vec![
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 0,
+                    first_vertex: 0,
+                    vertex_count: 4,
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+                    material: material.clone(),
+                    first_index: 0,
+                    index_count: 6,
+                    fit: Some(FitMode::Cover),
+                    texture_region: None,
+                    render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+                },
+                NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    layer_index: 7,
+                    first_vertex: 4,
+                    vertex_count: 3,
+                    texture_slot_bindings: scene_texture_slot_resource_bindings([0]),
+                    material,
+                    first_index: 6,
+                    index_count: 3,
+                    fit: Some(FitMode::Cover),
+                    texture_region: None,
+                    render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
+                },
+            ],
+            source_label: "puppet-compaction-test".to_owned(),
+        };
+
+        let payload = scene_sampled_image_geometry_payload_from_input(input).unwrap();
+
+        assert_eq!(payload.vertex_count, 4);
+        assert_eq!(
+            payload.vertex_bytes.len(),
+            4 * SCENE_FULL_SAMPLED_IMAGE_VERTEX_STRIDE_BYTES as usize
+        );
+        assert_eq!(payload.indices, vec![0, 1, 2, 2, 1, 3, 0, 1, 2]);
+        assert_eq!(payload.draw_steps[1].first_vertex, 0);
+        assert_eq!(payload.draw_steps[1].first_index, 6);
+        assert_eq!(payload.puppet_gpu_payload_vertex_count, 3);
     }
 
     fn assert_close(actual: f32, expected: f32) {
-        assert!(
-            (actual - expected).abs() < 0.001,
-            "expected {actual} to be within 0.001 of {expected}"
-        );
-    }
-
-    fn read_f32(bytes: &[u8], offset: usize) -> f32 {
-        f32::from_ne_bytes(
-            bytes[offset..offset + 4]
-                .try_into()
-                .expect("test f32 byte range"),
-        )
-    }
-
-    fn assert_close_f64(actual: f64, expected: f64) {
         assert!(
             (actual - expected).abs() < 0.001,
             "expected {actual} to be within 0.001 of {expected}"
@@ -10483,7 +11070,9 @@ mod tests {
 
         let err = scene_sampled_image_geometry_payload_from_input(input).unwrap_err();
 
-        assert!(err.contains("scene sampled-image index 3 exceeds max vertex index 2"));
+        assert!(
+            err.contains("scene sampled-image draw step 0 index 3 exceeds sampled vertex count 3")
+        );
     }
 
     #[test]
@@ -10523,7 +11112,6 @@ mod tests {
     fn static_transfer_test_options(
         fit: Option<FitMode>,
         geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
-        dynamic_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry>,
     ) -> NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
         NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
             host: NativeWaylandHostOptions::default(),
@@ -10540,8 +11128,6 @@ mod tests {
             fit,
             solid_geometry: None,
             geometry,
-            dynamic_solid_geometry: None,
-            dynamic_geometry,
             scene_size: None,
             scene_fit: FitMode::Cover,
         }

@@ -1743,13 +1743,11 @@ mod tests {
         assert_eq!(plan.puppet_animation_layer_count, 1);
         assert_eq!(plan.layers.len(), 1);
         let mesh = plan.layers[0].mesh.as_ref().expect("sampled mesh");
-        let skin = mesh.skin.as_ref().expect("sampled mesh skin");
-        assert_eq!(skin.bones.len(), 1);
-        assert_eq!(skin.vertices.len(), 3);
+        assert!(mesh.skin.is_none());
         assert!(mesh.puppet_clips.is_empty());
         assert!((mesh.vertices[0].x - 1.0).abs() < 0.001);
         assert!((mesh.vertices[1].x - 3.0).abs() < 0.001);
-        assert_eq!(mesh.indices, vec![0, 1, 2]);
+        assert!(mesh.indices.is_empty());
     }
 
     #[test]
