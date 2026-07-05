@@ -186,7 +186,20 @@ pub struct NativeWaylandSurfaceSnapshot {
     pub parent_mapping_buffer_attached: bool,
     pub opaque_region_enabled: bool,
     pub input_passthrough_enabled: bool,
+    pub frame_callback: NativeWaylandFrameCallbackSnapshot,
     pub dmabuf: NativeWaylandDmabufSnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeWaylandFrameCallbackSnapshot {
+    pub requested_count: u64,
+    pub completed_count: u64,
+    pub pending: bool,
+    pub last_time_millis: Option<u32>,
+    pub last_interval_millis: Option<u32>,
+    pub min_interval_millis: Option<u32>,
+    pub max_interval_millis: Option<u32>,
+    pub avg_interval_millis: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -387,6 +400,7 @@ impl NativeWaylandHost {
             opaque_region: None,
             input_region: None,
             parent_mapping_buffer: None,
+            frame_callback: NativeWaylandFrameCallbackState::default(),
             dmabuf_runtime: NativeDmabufRuntimeState::default(),
         };
 
@@ -489,6 +503,12 @@ impl NativeWaylandHost {
         }
 
         Ok(())
+    }
+
+    pub fn request_frame_callback(&mut self) -> Result<(), NativeWaylandError> {
+        let qh = self.event_queue.handle();
+        self.state.request_frame_callback(&qh);
+        self.flush_events()
     }
 
     pub fn blocking_dispatch(&mut self) -> Result<(), NativeWaylandError> {
@@ -695,10 +715,22 @@ struct NativeWaylandState {
     opaque_region: Option<Region>,
     input_region: Option<Region>,
     parent_mapping_buffer: Option<NativeWaylandParentMappingBuffer>,
+    frame_callback: NativeWaylandFrameCallbackState,
     dmabuf_runtime: NativeDmabufRuntimeState,
 }
 
 impl NativeWaylandState {
+    fn request_frame_callback(&mut self, qh: &QueueHandle<Self>) {
+        if self.frame_callback.pending {
+            return;
+        }
+        let Some(layer) = self.layer.as_ref() else {
+            return;
+        };
+        layer.wl_surface().frame(qh, layer.wl_surface().clone());
+        self.frame_callback.request();
+    }
+
     fn reconfigure(&mut self) {
         let Some((width, height)) = self.logical_size else {
             return;
@@ -785,6 +817,7 @@ impl NativeWaylandState {
             parent_mapping_buffer_attached: self.parent_mapping_buffer.is_some(),
             opaque_region_enabled: self.opaque_region_enabled,
             input_passthrough_enabled: self.input_passthrough_enabled,
+            frame_callback: self.frame_callback.snapshot(),
             dmabuf: self.dmabuf_runtime.snapshot(&self.dmabuf_state),
         }
     }
@@ -847,6 +880,68 @@ impl NativeWaylandState {
 
         self.dmabuf_runtime.feedback_requested = self.dmabuf_runtime.default_feedback_requested
             || self.dmabuf_runtime.surface_feedback_requested;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct NativeWaylandFrameCallbackState {
+    requested_count: u64,
+    completed_count: u64,
+    pending: bool,
+    last_time_millis: Option<u32>,
+    last_interval_millis: Option<u32>,
+    min_interval_millis: Option<u32>,
+    max_interval_millis: Option<u32>,
+    interval_total_millis: u64,
+    interval_count: u64,
+}
+
+impl NativeWaylandFrameCallbackState {
+    fn request(&mut self) {
+        self.requested_count = self.requested_count.saturating_add(1);
+        self.pending = true;
+    }
+
+    fn complete(&mut self, time_millis: u32) {
+        if let Some(previous_time_millis) = self.last_time_millis {
+            let interval_millis = time_millis.wrapping_sub(previous_time_millis);
+            self.last_interval_millis = Some(interval_millis);
+            self.min_interval_millis = Some(
+                self.min_interval_millis
+                    .map_or(interval_millis, |current| current.min(interval_millis)),
+            );
+            self.max_interval_millis = Some(
+                self.max_interval_millis
+                    .map_or(interval_millis, |current| current.max(interval_millis)),
+            );
+            self.interval_total_millis = self
+                .interval_total_millis
+                .saturating_add(u64::from(interval_millis));
+            self.interval_count = self.interval_count.saturating_add(1);
+        }
+        self.last_time_millis = Some(time_millis);
+        self.completed_count = self.completed_count.saturating_add(1);
+        self.pending = false;
+    }
+
+    fn snapshot(&self) -> NativeWaylandFrameCallbackSnapshot {
+        NativeWaylandFrameCallbackSnapshot {
+            requested_count: self.requested_count,
+            completed_count: self.completed_count,
+            pending: self.pending,
+            last_time_millis: self.last_time_millis,
+            last_interval_millis: self.last_interval_millis,
+            min_interval_millis: self.min_interval_millis,
+            max_interval_millis: self.max_interval_millis,
+            avg_interval_millis: if self.interval_count == 0 {
+                None
+            } else {
+                Some(
+                    (self.interval_total_millis / self.interval_count).min(u64::from(u32::MAX))
+                        as u32,
+                )
+            },
+        }
     }
 }
 
@@ -1020,7 +1115,15 @@ impl CompositorHandler for NativeWaylandState {
     ) {
     }
 
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
+    fn frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        time: u32,
+    ) {
+        self.frame_callback.complete(time);
+    }
 
     fn surface_enter(
         &mut self,

@@ -1656,7 +1656,7 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
         NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
     host.wait_until_configured(options.wait_configure_roundtrips)
         .map_err(|err| err.to_string())?;
-    let surface_snapshot = host.snapshot();
+    request_scene_wayland_frame_callback(&mut host, "scene solid quad initial frame callback")?;
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
     let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
@@ -1665,7 +1665,7 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
         &requested_instance_extensions,
     )?;
     let result =
-        run_vulkanalia_scene_solid_quad_present_inner(&vulkan, handles, surface_snapshot, options);
+        run_vulkanalia_scene_solid_quad_present_inner(&vulkan, handles, &mut host, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -1673,7 +1673,7 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
 fn run_vulkanalia_scene_solid_quad_present_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let instance = &vulkan.instance;
@@ -1683,7 +1683,7 @@ fn run_vulkanalia_scene_solid_quad_present_inner(
         surface,
         handles,
         vulkan,
-        surface_snapshot,
+        wayland_host,
         options,
     );
     unsafe {
@@ -1701,7 +1701,7 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
         NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
     host.wait_until_configured(options.wait_configure_roundtrips)
         .map_err(|err| err.to_string())?;
-    let surface_snapshot = host.snapshot();
+    request_scene_wayland_frame_callback(&mut host, "scene sampled image initial frame callback")?;
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
     let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
@@ -1709,12 +1709,8 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
         &requested_instance_extensions,
     )?;
-    let result = run_vulkanalia_scene_sampled_image_present_inner(
-        &vulkan,
-        handles,
-        surface_snapshot,
-        options,
-    );
+    let result =
+        run_vulkanalia_scene_sampled_image_present_inner(&vulkan, handles, &mut host, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -1722,7 +1718,7 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
 fn run_vulkanalia_scene_sampled_image_present_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
     let instance = &vulkan.instance;
@@ -1732,7 +1728,7 @@ fn run_vulkanalia_scene_sampled_image_present_inner(
         surface,
         handles,
         vulkan,
-        surface_snapshot,
+        wayland_host,
         options,
     );
     unsafe {
@@ -1746,7 +1742,7 @@ fn with_vulkanalia_scene_solid_quad_present(
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
     vulkan: &NativeVulkanVulkanaliaInstance,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     mut options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
@@ -1925,7 +1921,7 @@ fn with_vulkanalia_scene_solid_quad_present(
         &present_device.extension_snapshot,
         &swapchain_plan,
         present_timing,
-        surface_snapshot,
+        wayland_host,
         options,
     );
 
@@ -1946,7 +1942,7 @@ fn with_vulkanalia_scene_sampled_image_present(
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
     vulkan: &NativeVulkanVulkanaliaInstance,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     mut options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|err| {
@@ -2036,7 +2032,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
-            surface_snapshot,
+            wayland_host,
             options,
             present_device
                 .feature_selection
@@ -2656,7 +2652,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
-            surface_snapshot,
+            wayland_host,
             sampled_geometry_uses_scene_viewport,
             options,
         )
@@ -2689,7 +2685,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
-            surface_snapshot,
+            wayland_host,
             sampled_geometry_uses_scene_viewport,
             options,
         )
@@ -3187,6 +3183,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     }
 }
 
+fn request_scene_wayland_frame_callback(
+    wayland_host: &mut NativeWaylandHost,
+    label: &str,
+) -> Result<(), String> {
+    wayland_host
+        .request_frame_callback()
+        .map_err(|err| format!("{label}: {err}"))
+}
+
+fn pump_scene_wayland_events(
+    wayland_host: &mut NativeWaylandHost,
+    label: &str,
+) -> Result<(), String> {
+    wayland_host
+        .pump_events()
+        .map_err(|err| format!("{label}: {err}"))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_scene_solid_quad_present_loop(
     vulkan: &NativeVulkanVulkanaliaInstance,
@@ -3202,7 +3216,7 @@ fn run_scene_solid_quad_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let started_at = Instant::now();
@@ -3220,6 +3234,7 @@ fn run_scene_solid_quad_present_loop(
         &geometry.draw_steps,
         &geometry.solid_layer_pose_draw_instance_slots,
     )?;
+    request_scene_wayland_frame_callback(wayland_host, "scene solid quad frame callback")?;
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -3307,6 +3322,8 @@ fn run_scene_solid_quad_present_loop(
         present_ids.push(present_result.present_id);
         frames_presented += 1;
         last_command = Some(command);
+        pump_scene_wayland_events(wayland_host, "scene solid quad Wayland event pump")?;
+        request_scene_wayland_frame_callback(wayland_host, "scene solid quad frame callback")?;
 
         if let Some(interval) = frame_interval {
             next_frame += interval;
@@ -3319,6 +3336,8 @@ fn run_scene_solid_quad_present_loop(
         }
     }
 
+    pump_scene_wayland_events(wayland_host, "scene solid quad final Wayland event pump")?;
+    let surface_snapshot = wayland_host.snapshot();
     let elapsed = started_at.elapsed();
     let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot {
@@ -3410,7 +3429,7 @@ fn run_scene_sampled_image_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     sampled_geometry_uses_scene_viewport: bool,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
@@ -3511,6 +3530,7 @@ fn run_scene_sampled_image_present_loop(
         .iter()
         .map(|resources| resources.target)
         .collect::<Vec<_>>();
+    request_scene_wayland_frame_callback(wayland_host, "scene sampled image frame callback")?;
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -3688,6 +3708,8 @@ fn run_scene_sampled_image_present_loop(
         present_ids.push(present_result.present_id);
         frames_presented += 1;
         last_command = Some(command);
+        pump_scene_wayland_events(wayland_host, "scene sampled image Wayland event pump")?;
+        request_scene_wayland_frame_callback(wayland_host, "scene sampled image frame callback")?;
 
         if let Some(interval) = frame_interval {
             next_frame += interval;
@@ -3703,6 +3725,8 @@ fn run_scene_sampled_image_present_loop(
         }
     }
 
+    pump_scene_wayland_events(wayland_host, "scene sampled image final Wayland event pump")?;
+    let surface_snapshot = wayland_host.snapshot();
     let elapsed = started_at.elapsed();
     let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
@@ -3854,7 +3878,7 @@ fn run_scene_sampled_image_static_transfer_present(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     texture_compression_bc_enabled: bool,
     descriptor_heap_available: bool,
@@ -3915,7 +3939,7 @@ fn run_scene_sampled_image_static_transfer_present(
         extension_snapshot,
         swapchain_plan,
         present_timing,
-        surface_snapshot,
+        wayland_host,
         options,
         descriptor_heap_available,
         max_resource_heap_size,
@@ -3935,6 +3959,11 @@ fn run_scene_sampled_image_static_transfer_present(
         if deadline > now {
             thread::sleep(deadline - now);
         }
+        pump_scene_wayland_events(
+            wayland_host,
+            "scene static transfer final Wayland event pump",
+        )?;
+        snapshot.wayland_surface = wayland_host.snapshot();
         let elapsed = hold_started_at.elapsed();
         snapshot.runtime_elapsed_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
         snapshot.average_present_fps = if elapsed.is_zero() {
@@ -3962,7 +3991,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     descriptor_heap_available: bool,
     max_resource_heap_size: u64,
@@ -3984,6 +4013,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
     let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
+    request_scene_wayland_frame_callback(wayland_host, "scene static transfer frame callback")?;
 
     let present_result = (|| -> Result<u64, String> {
         let present_frame_slot = 0usize;
@@ -4088,7 +4118,9 @@ fn run_scene_sampled_image_static_transfer_present_loop(
         Ok(1)
     })();
 
+    pump_scene_wayland_events(wayland_host, "scene static transfer Wayland event pump")?;
     let frames_presented = present_result?;
+    let surface_snapshot = wayland_host.snapshot();
     let elapsed = started_at.elapsed();
     let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     let sampled_image_snapshot = transfer_image.snapshot.clone();
@@ -4658,7 +4690,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
-    surface_snapshot: NativeWaylandSurfaceSnapshot,
+    wayland_host: &mut NativeWaylandHost,
     sampled_geometry_uses_scene_viewport: bool,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
@@ -4734,6 +4766,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         .iter()
         .map(|resources| resources.target)
         .collect::<Vec<_>>();
+    request_scene_wayland_frame_callback(
+        wayland_host,
+        "scene sampled image static frame callback",
+    )?;
     let present_result = (|| -> Result<u64, String> {
         let present_frame_slot = 0usize;
         let image_available = frame_resources.image_available[present_frame_slot];
@@ -4884,6 +4920,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         last_command = Some(command);
         Ok(1)
     })();
+    pump_scene_wayland_events(
+        wayland_host,
+        "scene sampled image static Wayland event pump",
+    )?;
 
     let _ = unsafe { device.device_wait_idle() };
     if let Some(descriptor_heap) = descriptor_heap.take() {
@@ -4913,7 +4953,12 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     if deadline > now {
         thread::sleep(deadline - now);
     }
+    pump_scene_wayland_events(
+        wayland_host,
+        "scene sampled image static final Wayland event pump",
+    )?;
 
+    let surface_snapshot = wayland_host.snapshot();
     let elapsed = started_at.elapsed();
     let (present_ids_head, present_ids_tail) = present_ids.into_parts();
     Ok(NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
