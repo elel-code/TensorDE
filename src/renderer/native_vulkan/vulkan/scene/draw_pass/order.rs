@@ -6,6 +6,20 @@ use super::{
     VulkanaliaSceneSampledImageRenderTarget, VulkanaliaSceneSolidQuadDrawCommand,
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct VulkanaliaSceneOrderedDrawTargetStats {
+    pub(super) ordered_draw_step_count: u32,
+    pub(super) ordered_target_run_count: u32,
+    pub(super) ordered_swapchain_target_run_count: u32,
+    pub(super) ordered_effect_target_run_count: u32,
+    pub(super) ordered_max_target_run_draw_count: u32,
+    pub(super) target_switch_swapchain_to_effect_target_count: u32,
+    pub(super) target_switch_effect_target_to_swapchain_count: u32,
+    pub(super) target_switch_effect_target_to_effect_target_count: u32,
+    pub(super) repeated_effect_target_run_count: u32,
+    pub(super) max_effect_target_run_count: u32,
+}
+
 pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
     solid_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
     sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
@@ -112,6 +126,86 @@ pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
     ordered
 }
 
+pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
+    ordered_draws: &[VulkanaliaSceneOrderedDrawStep],
+    sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    effect_target_resource_count: usize,
+) -> VulkanaliaSceneOrderedDrawTargetStats {
+    let mut stats = VulkanaliaSceneOrderedDrawTargetStats {
+        ordered_draw_step_count: saturating_u32(ordered_draws.len()),
+        ..VulkanaliaSceneOrderedDrawTargetStats::default()
+    };
+    let mut previous_target = None;
+    let mut current_run_draw_count = 0usize;
+    let mut effect_target_run_counts = vec![0usize; effect_target_resource_count];
+
+    for draw in ordered_draws {
+        let target = ordered_draw_target(draw, sampled_commands);
+        if previous_target == Some(target) {
+            current_run_draw_count = current_run_draw_count.saturating_add(1);
+            continue;
+        }
+
+        stats.ordered_max_target_run_draw_count = stats
+            .ordered_max_target_run_draw_count
+            .max(saturating_u32(current_run_draw_count));
+        if let Some(previous) = previous_target {
+            match (previous, target) {
+                (OrderedDrawTarget::Swapchain, OrderedDrawTarget::EffectTarget(_)) => {
+                    stats.target_switch_swapchain_to_effect_target_count = stats
+                        .target_switch_swapchain_to_effect_target_count
+                        .saturating_add(1);
+                }
+                (OrderedDrawTarget::EffectTarget(_), OrderedDrawTarget::Swapchain) => {
+                    stats.target_switch_effect_target_to_swapchain_count = stats
+                        .target_switch_effect_target_to_swapchain_count
+                        .saturating_add(1);
+                }
+                (OrderedDrawTarget::EffectTarget(_), OrderedDrawTarget::EffectTarget(_)) => {
+                    stats.target_switch_effect_target_to_effect_target_count = stats
+                        .target_switch_effect_target_to_effect_target_count
+                        .saturating_add(1);
+                }
+                (OrderedDrawTarget::Swapchain, OrderedDrawTarget::Swapchain) => {}
+            }
+        }
+
+        stats.ordered_target_run_count = stats.ordered_target_run_count.saturating_add(1);
+        match target {
+            OrderedDrawTarget::Swapchain => {
+                stats.ordered_swapchain_target_run_count =
+                    stats.ordered_swapchain_target_run_count.saturating_add(1);
+            }
+            OrderedDrawTarget::EffectTarget(target_index) => {
+                stats.ordered_effect_target_run_count =
+                    stats.ordered_effect_target_run_count.saturating_add(1);
+                if let Some(count) = effect_target_run_counts.get_mut(target_index as usize) {
+                    *count = count.saturating_add(1);
+                }
+            }
+        }
+        previous_target = Some(target);
+        current_run_draw_count = 1;
+    }
+    stats.ordered_max_target_run_draw_count = stats
+        .ordered_max_target_run_draw_count
+        .max(saturating_u32(current_run_draw_count));
+    stats.repeated_effect_target_run_count = saturating_u32(
+        effect_target_run_counts
+            .iter()
+            .map(|count| count.saturating_sub(1))
+            .sum::<usize>(),
+    );
+    stats.max_effect_target_run_count = saturating_u32(
+        effect_target_run_counts
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default(),
+    );
+    stats
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneOrderedDrawSceneStep {
     draw: VulkanaliaSceneOrderedDrawStep,
@@ -123,6 +217,29 @@ struct SceneOrderedDrawOffscreenStep {
     draw: VulkanaliaSceneOrderedDrawStep,
     write_target_index: u32,
     earliest_scene_gap: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OrderedDrawTarget {
+    Swapchain,
+    EffectTarget(u32),
+}
+
+fn ordered_draw_target(
+    draw: &VulkanaliaSceneOrderedDrawStep,
+    sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+) -> OrderedDrawTarget {
+    match draw.pipeline {
+        VulkanaliaSceneOrderedDrawPipeline::SolidQuad => OrderedDrawTarget::Swapchain,
+        VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
+            match sampled_commands[draw.command_index].render_target {
+                VulkanaliaSceneSampledImageRenderTarget::Swapchain => OrderedDrawTarget::Swapchain,
+                VulkanaliaSceneSampledImageRenderTarget::EffectTarget { target_index, .. } => {
+                    OrderedDrawTarget::EffectTarget(target_index)
+                }
+            }
+        }
+    }
 }
 
 fn scene_ordered_draw_step_cmp(
@@ -180,4 +297,8 @@ fn scene_sampled_image_draw_command_effect_target_reads(
         }
     }
     reads
+}
+
+fn saturating_u32(value: usize) -> u32 {
+    value.min(u32::MAX as usize) as u32
 }

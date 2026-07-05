@@ -36,7 +36,10 @@ use self::blend::{
     native_vulkan_vulkanalia_scene_sampled_image_pipeline_from_set,
     native_vulkan_vulkanalia_scene_solid_quad_pipeline,
 };
-use self::order::native_vulkan_vulkanalia_scene_ordered_draw_steps;
+use self::order::{
+    native_vulkan_vulkanalia_scene_ordered_draw_steps,
+    native_vulkan_vulkanalia_scene_ordered_draw_target_stats,
+};
 use self::snapshot::copy_scene_framebuffer_to_snapshot;
 use self::sync::{
     SceneColorImageBarrierBatch, native_vulkan_vulkanalia_scene_color_subresource_range,
@@ -458,6 +461,16 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
     pub swapchain_rendering_begin_count: u32,
     pub effect_target_rendering_begin_count: u32,
     pub target_switch_count: u32,
+    pub ordered_draw_step_count: u32,
+    pub ordered_target_run_count: u32,
+    pub ordered_swapchain_target_run_count: u32,
+    pub ordered_effect_target_run_count: u32,
+    pub ordered_max_target_run_draw_count: u32,
+    pub target_switch_swapchain_to_effect_target_count: u32,
+    pub target_switch_effect_target_to_swapchain_count: u32,
+    pub target_switch_effect_target_to_effect_target_count: u32,
+    pub repeated_effect_target_run_count: u32,
+    pub max_effect_target_run_count: u32,
     pub image_barrier_count: u32,
     pub pipeline_barrier_command_count: u32,
     pub effect_target_to_shader_read_barrier_count: u32,
@@ -5656,6 +5669,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         effect_target_resource_base_index,
         effect_target_resources.len(),
     );
+    let ordered_draw_target_stats = native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
+        &ordered_draws,
+        draw_commands,
+        effect_target_resources.len(),
+    );
     let solid_passthroughblend_draw_count = solid_quad_draw.map_or(0usize, |draw| {
         if draw
             .framebuffer_snapshot_descriptor_group_base_index
@@ -6336,6 +6354,22 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         swapchain_rendering_begin_count,
         effect_target_rendering_begin_count,
         target_switch_count,
+        ordered_draw_step_count: ordered_draw_target_stats.ordered_draw_step_count,
+        ordered_target_run_count: ordered_draw_target_stats.ordered_target_run_count,
+        ordered_swapchain_target_run_count: ordered_draw_target_stats
+            .ordered_swapchain_target_run_count,
+        ordered_effect_target_run_count: ordered_draw_target_stats.ordered_effect_target_run_count,
+        ordered_max_target_run_draw_count: ordered_draw_target_stats
+            .ordered_max_target_run_draw_count,
+        target_switch_swapchain_to_effect_target_count: ordered_draw_target_stats
+            .target_switch_swapchain_to_effect_target_count,
+        target_switch_effect_target_to_swapchain_count: ordered_draw_target_stats
+            .target_switch_effect_target_to_swapchain_count,
+        target_switch_effect_target_to_effect_target_count: ordered_draw_target_stats
+            .target_switch_effect_target_to_effect_target_count,
+        repeated_effect_target_run_count: ordered_draw_target_stats
+            .repeated_effect_target_run_count,
+        max_effect_target_run_count: ordered_draw_target_stats.max_effect_target_run_count,
         image_barrier_count,
         pipeline_barrier_command_count,
         effect_target_to_shader_read_barrier_count,
@@ -8753,6 +8787,35 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(order, vec![(0, 0), (0, 1), (1, 2), (1, 3)]);
+    }
+
+    #[test]
+    fn ordered_draw_target_stats_classify_target_runs() {
+        let sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            swapchain_command_reading_effect_target(0, 1, 16, 0),
+            effect_target_command(1, 2, 1, 32),
+            swapchain_command_reading_effect_target(1, 3, 16, 1),
+        ];
+
+        let ordered =
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+        let stats = native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
+            &ordered,
+            &sampled_commands,
+            2,
+        );
+
+        assert_eq!(stats.ordered_draw_step_count, 4);
+        assert_eq!(stats.ordered_target_run_count, 3);
+        assert_eq!(stats.ordered_swapchain_target_run_count, 1);
+        assert_eq!(stats.ordered_effect_target_run_count, 2);
+        assert_eq!(stats.ordered_max_target_run_draw_count, 2);
+        assert_eq!(stats.target_switch_effect_target_to_effect_target_count, 1);
+        assert_eq!(stats.target_switch_effect_target_to_swapchain_count, 1);
+        assert_eq!(stats.target_switch_swapchain_to_effect_target_count, 0);
+        assert_eq!(stats.repeated_effect_target_run_count, 0);
+        assert_eq!(stats.max_effect_target_run_count, 1);
     }
 
     #[test]
