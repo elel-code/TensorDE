@@ -1,6 +1,36 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+pub(super) struct SceneColorImageBarrierBatch {
+    barriers: [vk::ImageMemoryBarrier2; 4],
+    len: usize,
+}
+
+impl SceneColorImageBarrierBatch {
+    pub(super) fn new() -> Self {
+        Self {
+            barriers: [vk::ImageMemoryBarrier2::default(); 4],
+            len: 0,
+        }
+    }
+
+    pub(super) fn push(&mut self, barrier: vk::ImageMemoryBarrier2) {
+        debug_assert!(self.len < self.barriers.len());
+        if self.len < self.barriers.len() {
+            self.barriers[self.len] = barrier;
+            self.len += 1;
+        }
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    pub(super) fn as_slice(&self) -> &[vk::ImageMemoryBarrier2] {
+        &self.barriers[..self.len]
+    }
+}
+
 pub(super) fn scene_color_image_barrier(
     image: vk::Image,
     old_layout: vk::ImageLayout,

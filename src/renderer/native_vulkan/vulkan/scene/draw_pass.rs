@@ -37,7 +37,8 @@ use self::blend::{
 };
 use self::snapshot::copy_scene_framebuffer_to_snapshot;
 use self::sync::{
-    native_vulkan_vulkanalia_scene_color_subresource_range, scene_color_image_transition,
+    SceneColorImageBarrierBatch, native_vulkan_vulkanalia_scene_color_subresource_range,
+    scene_color_image_barrier, scene_color_image_barriers, scene_color_image_transition,
 };
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
@@ -5763,6 +5764,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 if active_target.is_some() {
                     target_switch_count = target_switch_count.saturating_add(1);
                 }
+                let mut target_transition_barriers = SceneColorImageBarrierBatch::new();
                 if let Some(current_target) = active_target.take() {
                     end_scene_color_rendering(device, command_buffer);
                     rendering_end_count = rendering_end_count.saturating_add(1);
@@ -5770,9 +5772,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         current_target
                     {
                         let target = &effect_target_resources[target_index as usize];
-                        scene_color_image_transition(
-                            device,
-                            command_buffer,
+                        target_transition_barriers.push(scene_color_image_barrier(
                             target.image,
                             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                             vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
@@ -5780,16 +5780,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                             vk::PipelineStageFlags2::FRAGMENT_SHADER,
                             vk::AccessFlags2::SHADER_SAMPLED_READ,
-                        );
+                        ));
                         image_barrier_count = image_barrier_count.saturating_add(1);
-                        pipeline_barrier_command_count =
-                            pipeline_barrier_command_count.saturating_add(1);
                         effect_target_to_shader_read_barrier_count =
                             effect_target_to_shader_read_barrier_count.saturating_add(1);
                     } else {
-                        scene_color_image_transition(
-                            device,
-                            command_buffer,
+                        target_transition_barriers.push(scene_color_image_barrier(
                             swapchain_image,
                             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -5798,10 +5794,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                             vk::AccessFlags2::COLOR_ATTACHMENT_READ
                                 | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                        );
+                        ));
                         image_barrier_count = image_barrier_count.saturating_add(1);
-                        pipeline_barrier_command_count =
-                            pipeline_barrier_command_count.saturating_add(1);
                         swapchain_self_dependency_barrier_count =
                             swapchain_self_dependency_barrier_count.saturating_add(1);
                     }
@@ -5814,9 +5808,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         let load_op = if swapchain_started {
                             vk::AttachmentLoadOp::LOAD
                         } else {
-                            scene_color_image_transition(
-                                device,
-                                command_buffer,
+                            target_transition_barriers.push(scene_color_image_barrier(
                                 swapchain_image,
                                 vk::ImageLayout::UNDEFINED,
                                 vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -5824,14 +5816,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 vk::AccessFlags2::empty(),
                                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                            );
+                            ));
                             image_barrier_count = image_barrier_count.saturating_add(1);
-                            pipeline_barrier_command_count =
-                                pipeline_barrier_command_count.saturating_add(1);
                             if let Some(msaa_target) = swapchain_msaa_target {
-                                scene_color_image_transition(
-                                    device,
-                                    command_buffer,
+                                target_transition_barriers.push(scene_color_image_barrier(
                                     msaa_target.image,
                                     vk::ImageLayout::UNDEFINED,
                                     vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -5839,14 +5827,21 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                     vk::AccessFlags2::empty(),
                                     vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                                     vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                                );
+                                ));
                                 image_barrier_count = image_barrier_count.saturating_add(1);
-                                pipeline_barrier_command_count =
-                                    pipeline_barrier_command_count.saturating_add(1);
                             }
                             swapchain_started = true;
                             vk::AttachmentLoadOp::CLEAR
                         };
+                        if !target_transition_barriers.is_empty() {
+                            scene_color_image_barriers(
+                                device,
+                                command_buffer,
+                                target_transition_barriers.as_slice(),
+                            );
+                            pipeline_barrier_command_count =
+                                pipeline_barrier_command_count.saturating_add(1);
+                        }
                         active_extent = extent;
                         begin_scene_color_rendering(
                             device,
@@ -5877,9 +5872,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             width: target.snapshot.extent.0,
                             height: target.snapshot.extent.1,
                         };
-                        scene_color_image_transition(
-                            device,
-                            command_buffer,
+                        target_transition_barriers.push(scene_color_image_barrier(
                             target.image,
                             if clear {
                                 vk::ImageLayout::UNDEFINED
@@ -5899,18 +5892,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             },
                             vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                             vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                        );
+                        ));
                         image_barrier_count = image_barrier_count.saturating_add(1);
-                        pipeline_barrier_command_count =
-                            pipeline_barrier_command_count.saturating_add(1);
                         if !clear {
                             shader_read_to_effect_target_barrier_count =
                                 shader_read_to_effect_target_barrier_count.saturating_add(1);
                         }
                         if let Some(msaa_target) = effect_msaa_target {
-                            scene_color_image_transition(
-                                device,
-                                command_buffer,
+                            target_transition_barriers.push(scene_color_image_barrier(
                                 msaa_target.image,
                                 if clear {
                                     vk::ImageLayout::UNDEFINED
@@ -5930,11 +5919,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 },
                                 vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
                                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                            );
+                            ));
                             image_barrier_count = image_barrier_count.saturating_add(1);
-                            pipeline_barrier_command_count =
-                                pipeline_barrier_command_count.saturating_add(1);
                         }
+                        scene_color_image_barriers(
+                            device,
+                            command_buffer,
+                            target_transition_barriers.as_slice(),
+                        );
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(1);
                         begin_scene_color_rendering(
                             device,
                             command_buffer,
