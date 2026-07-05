@@ -583,6 +583,12 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImag
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneGpuTimestampCapture {
+    pub(in crate::renderer::native_vulkan::vulkan) query_pool: vk::QueryPool,
+    pub(in crate::renderer::native_vulkan::vulkan) first_query: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageVertexProgram {
     Sampled,
     PuppetGpu,
@@ -5599,6 +5605,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     particle_gpu_payload_buffer: Option<vk::Buffer>,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
+    gpu_timestamp_capture: Option<VulkanaliaSceneGpuTimestampCapture>,
     clear_color: [f32; 4],
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot, String> {
     if extent.width == 0 || extent.height == 0 {
@@ -5805,6 +5812,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             .map_err(|err| {
                 format!("vkBeginCommandBuffer(vulkanalia scene sampled image): {err:?}")
             })?;
+        if let Some(capture) = gpu_timestamp_capture {
+            device.cmd_reset_query_pool(command_buffer, capture.query_pool, capture.first_query, 2);
+            device.cmd_write_timestamp2(
+                command_buffer,
+                vk::PipelineStageFlags2::TOP_OF_PIPE,
+                capture.query_pool,
+                capture.first_query,
+            );
+        }
 
         let solid_push_constants = [extent.width as f32, extent.height as f32];
         let solid_push_constant_bytes = std::slice::from_raw_parts(
@@ -6295,6 +6311,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
             vk::AccessFlags2::empty(),
         );
+        if let Some(capture) = gpu_timestamp_capture {
+            device.cmd_write_timestamp2(
+                command_buffer,
+                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                capture.query_pool,
+                capture.first_query + 1,
+            );
+        }
 
         device.end_command_buffer(command_buffer).map_err(|err| {
             format!("vkEndCommandBuffer(vulkanalia scene sampled image): {err:?}")

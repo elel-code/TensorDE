@@ -56,12 +56,12 @@ use super::scene_draw_pass::{
     NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
     SCENE_FULL_SAMPLED_IMAGE_DRAW_INSTANCE_STRIDE_BYTES,
     SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT, VulkanaliaSceneDescriptorHeapDrawResources,
-    VulkanaliaSceneMsaaColorTarget, VulkanaliaSceneSampledImageDescriptorBinding,
-    VulkanaliaSceneSampledImageDrawCommand, VulkanaliaSceneSampledImageDrawInstance,
-    VulkanaliaSceneSampledImagePipelineResources, VulkanaliaSceneSampledImageRenderTarget,
-    VulkanaliaSceneSampledImageVertexProgram, VulkanaliaSceneSampledImageViewportState,
-    VulkanaliaSceneSolidQuadDrawCommand, VulkanaliaSceneSolidQuadDrawResources,
-    VulkanaliaSceneSolidQuadPipelineResources,
+    VulkanaliaSceneGpuTimestampCapture, VulkanaliaSceneMsaaColorTarget,
+    VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
+    VulkanaliaSceneSampledImageDrawInstance, VulkanaliaSceneSampledImagePipelineResources,
+    VulkanaliaSceneSampledImageRenderTarget, VulkanaliaSceneSampledImageVertexProgram,
+    VulkanaliaSceneSampledImageViewportState, VulkanaliaSceneSolidQuadDrawCommand,
+    VulkanaliaSceneSolidQuadDrawResources, VulkanaliaSceneSolidQuadPipelineResources,
     native_vulkan_vulkanalia_create_scene_sampled_image_pipeline_resources,
     native_vulkan_vulkanalia_create_scene_solid_quad_pipeline_resources,
     native_vulkan_vulkanalia_destroy_scene_sampled_image_pipeline_resources,
@@ -1162,6 +1162,21 @@ pub struct NativeVulkanVulkanaliaScenePresentLoopTimingSnapshot {
     pub queue_submit_micros: u64,
     pub queue_present_micros: u64,
     pub fps_sleep_micros: u64,
+    pub gpu_timestamp: NativeVulkanVulkanaliaSceneGpuTimestampSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneGpuTimestampSnapshot {
+    pub enabled: bool,
+    pub source: &'static str,
+    pub disabled_reason: Option<&'static str>,
+    pub timestamp_period_picoseconds: Option<u64>,
+    pub frames_measured: u64,
+    pub pending_frames: u64,
+    pub query_result_failures: u64,
+    pub last_gpu_micros: Option<u64>,
+    pub max_gpu_micros: Option<u64>,
+    pub avg_gpu_micros: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1446,6 +1461,14 @@ struct VulkanaliaSceneSolidQuadFrameResources {
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+    gpu_timestamps: Option<VulkanaliaSceneGpuTimestampResources>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct VulkanaliaSceneGpuTimestampResources {
+    query_pool: vk::QueryPool,
+    timestamp_period_picoseconds: u64,
+    query_count: u32,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1821,9 +1844,9 @@ fn with_vulkanalia_scene_solid_quad_present(
     };
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-    let msaa_sample_count = scene_physical_device_msaa_sample_count(unsafe {
-        instance.get_physical_device_properties(selection.physical_device)
-    });
+    let physical_device_properties =
+        unsafe { instance.get_physical_device_properties(selection.physical_device) };
+    let msaa_sample_count = scene_physical_device_msaa_sample_count(physical_device_properties);
     let sample_shading_enabled = scene_sample_rate_shading_runtime_enabled(
         present_device
             .feature_selection
@@ -1839,6 +1862,7 @@ fn with_vulkanalia_scene_solid_quad_present(
         swapchain_plan.extent,
         msaa_sample_count,
         selection.queue_family_index,
+        None,
     ) {
         Ok(resources) => resources,
         Err(err) => {
@@ -2079,9 +2103,11 @@ fn with_vulkanalia_scene_sampled_image_present(
     }
     let memory_properties =
         unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-    let msaa_sample_count = scene_physical_device_msaa_sample_count(unsafe {
-        instance.get_physical_device_properties(selection.physical_device)
-    });
+    let physical_device_properties =
+        unsafe { instance.get_physical_device_properties(selection.physical_device) };
+    let msaa_sample_count = scene_physical_device_msaa_sample_count(physical_device_properties);
+    let gpu_timestamp_period_picoseconds =
+        scene_gpu_timestamp_period_picoseconds(physical_device_properties);
     let sample_shading_enabled = scene_sample_rate_shading_runtime_enabled(
         present_device
             .feature_selection
@@ -2101,6 +2127,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         swapchain_plan.extent,
         msaa_sample_count,
         selection.queue_family_index,
+        gpu_timestamp_period_picoseconds,
     ) {
         Ok(resources) => resources,
         Err(err) => {
@@ -3201,6 +3228,159 @@ fn pump_scene_wayland_events(
         .map_err(|err| format!("{label}: {err}"))
 }
 
+struct SceneGpuTimestampTelemetry {
+    enabled: bool,
+    disabled_reason: Option<&'static str>,
+    timestamp_period_picoseconds: Option<u64>,
+    pending_queries_by_image_index: Vec<Option<u32>>,
+    frames_measured: u64,
+    query_result_failures: u64,
+    total_gpu_micros: u64,
+    last_gpu_micros: Option<u64>,
+    max_gpu_micros: Option<u64>,
+}
+
+impl SceneGpuTimestampTelemetry {
+    fn new(
+        swapchain_image_count: usize,
+        resources: Option<&VulkanaliaSceneGpuTimestampResources>,
+    ) -> Self {
+        Self {
+            enabled: resources.is_some(),
+            disabled_reason: if resources.is_some() {
+                None
+            } else {
+                Some("physical device does not expose graphics timestamp support")
+            },
+            timestamp_period_picoseconds: resources
+                .map(|resources| resources.timestamp_period_picoseconds),
+            pending_queries_by_image_index: vec![None; swapchain_image_count],
+            frames_measured: 0,
+            query_result_failures: 0,
+            total_gpu_micros: 0,
+            last_gpu_micros: None,
+            max_gpu_micros: None,
+        }
+    }
+
+    fn capture_for_image(
+        &self,
+        resources: Option<&VulkanaliaSceneGpuTimestampResources>,
+        image_index: u32,
+    ) -> Option<VulkanaliaSceneGpuTimestampCapture> {
+        let resources = resources?;
+        let first_query = image_index.checked_mul(2)?;
+        if first_query + 1 >= resources.query_count {
+            return None;
+        }
+        Some(VulkanaliaSceneGpuTimestampCapture {
+            query_pool: resources.query_pool,
+            first_query,
+        })
+    }
+
+    fn mark_submitted(
+        &mut self,
+        image_index: u32,
+        capture: Option<VulkanaliaSceneGpuTimestampCapture>,
+    ) {
+        if let Some(capture) = capture
+            && let Some(slot) = self
+                .pending_queries_by_image_index
+                .get_mut(image_index as usize)
+        {
+            *slot = Some(capture.first_query);
+        }
+    }
+
+    fn collect_completed_image(
+        &mut self,
+        device: &Device,
+        resources: Option<&VulkanaliaSceneGpuTimestampResources>,
+        image_index: u32,
+    ) {
+        let Some(resources) = resources else {
+            return;
+        };
+        let Some(slot) = self
+            .pending_queries_by_image_index
+            .get_mut(image_index as usize)
+        else {
+            return;
+        };
+        let Some(first_query) = slot.take() else {
+            return;
+        };
+        let Some(gpu_micros) = scene_gpu_timestamp_query_micros(device, resources, first_query)
+        else {
+            self.query_result_failures = self.query_result_failures.saturating_add(1);
+            return;
+        };
+        self.frames_measured = self.frames_measured.saturating_add(1);
+        self.total_gpu_micros = self.total_gpu_micros.saturating_add(gpu_micros);
+        self.last_gpu_micros = Some(gpu_micros);
+        self.max_gpu_micros = Some(
+            self.max_gpu_micros
+                .map_or(gpu_micros, |current| current.max(gpu_micros)),
+        );
+    }
+
+    fn snapshot(&self) -> NativeVulkanVulkanaliaSceneGpuTimestampSnapshot {
+        NativeVulkanVulkanaliaSceneGpuTimestampSnapshot {
+            enabled: self.enabled,
+            source: "vkCmdWriteTimestamp2 top-of-pipe/bottom-of-pipe around scene command buffer",
+            disabled_reason: self.disabled_reason,
+            timestamp_period_picoseconds: self.timestamp_period_picoseconds,
+            frames_measured: self.frames_measured,
+            pending_frames: self
+                .pending_queries_by_image_index
+                .iter()
+                .filter(|query| query.is_some())
+                .count()
+                .min(u64::MAX as usize) as u64,
+            query_result_failures: self.query_result_failures,
+            last_gpu_micros: self.last_gpu_micros,
+            max_gpu_micros: self.max_gpu_micros,
+            avg_gpu_micros: if self.frames_measured == 0 {
+                None
+            } else {
+                Some(self.total_gpu_micros / self.frames_measured)
+            },
+        }
+    }
+}
+
+fn scene_gpu_timestamp_query_micros(
+    device: &Device,
+    resources: &VulkanaliaSceneGpuTimestampResources,
+    first_query: u32,
+) -> Option<u64> {
+    let mut timestamps = [0u64; 2];
+    let data = unsafe {
+        std::slice::from_raw_parts_mut(
+            timestamps.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(&timestamps),
+        )
+    };
+    unsafe {
+        device
+            .get_query_pool_results(
+                resources.query_pool,
+                first_query,
+                2,
+                data,
+                std::mem::size_of::<u64>() as u64,
+                vk::QueryResultFlags::_64,
+            )
+            .ok()?;
+    }
+    let delta_ticks = timestamps[1].wrapping_sub(timestamps[0]);
+    Some(
+        ((u128::from(delta_ticks) * u128::from(resources.timestamp_period_picoseconds)) / 1_000_000)
+            .min(u128::from(u64::MAX)) as u64,
+    )
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_scene_solid_quad_present_loop(
     vulkan: &NativeVulkanVulkanaliaInstance,
@@ -3530,6 +3710,10 @@ fn run_scene_sampled_image_present_loop(
         .iter()
         .map(|resources| resources.target)
         .collect::<Vec<_>>();
+    let mut gpu_timestamp_telemetry = SceneGpuTimestampTelemetry::new(
+        swapchain_images.len(),
+        frame_resources.gpu_timestamps.as_ref(),
+    );
     request_scene_wayland_frame_callback(wayland_host, "scene sampled image frame callback")?;
 
     while Instant::now() < deadline {
@@ -3561,6 +3745,13 @@ fn run_scene_sampled_image_present_loop(
         acquire_next_image_micros = acquire_next_image_micros
             .saturating_add(scene_duration_micros(acquire_started_at.elapsed()));
         let image_index_usize = image_index as usize;
+        gpu_timestamp_telemetry.collect_completed_image(
+            device,
+            frame_resources.gpu_timestamps.as_ref(),
+            image_index,
+        );
+        let gpu_timestamp_capture = gpu_timestamp_telemetry
+            .capture_for_image(frame_resources.gpu_timestamps.as_ref(), image_index);
         let command_buffer = frame_resources
             .command_buffers
             .get(image_index_usize)
@@ -3665,6 +3856,7 @@ fn run_scene_sampled_image_present_loop(
                     .map(|buffer| buffer.buffer),
                 draw_instance_buffer,
                 geometry.index_buffer,
+                gpu_timestamp_capture,
                 [
                     options.clear_color.r,
                     options.clear_color.g,
@@ -3704,6 +3896,7 @@ fn run_scene_sampled_image_present_loop(
         queue_present_micros =
             queue_present_micros.saturating_add(present_result.queue_present_micros);
         present_wait_after_present |= present_result.present_wait_after_present;
+        gpu_timestamp_telemetry.mark_submitted(image_index, gpu_timestamp_capture);
 
         present_ids.push(present_result.present_id);
         frames_presented += 1;
@@ -3803,6 +3996,7 @@ fn run_scene_sampled_image_present_loop(
             queue_submit_micros,
             queue_present_micros,
             fps_sleep_micros,
+            gpu_timestamp: gpu_timestamp_telemetry.snapshot(),
         }),
         command_submit_model: scene_present_submit_model(
             solid_quad_draw.is_some(),
@@ -4883,6 +5077,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                 .map(|buffer| buffer.buffer),
             draw_instance_buffer,
             geometry.index_buffer,
+            None,
             [
                 options.clear_color.r,
                 options.clear_color.g,
@@ -5066,21 +5261,26 @@ fn scene_duration_micros(duration: Duration) -> u64 {
 }
 
 fn scene_preferred_msaa_sample_count(
-    framebuffer_color_sample_counts: vk::SampleCountFlags,
+    _framebuffer_color_sample_counts: vk::SampleCountFlags,
 ) -> vk::SampleCountFlags {
-    if framebuffer_color_sample_counts.contains(vk::SampleCountFlags::_4) {
-        vk::SampleCountFlags::_4
-    } else if framebuffer_color_sample_counts.contains(vk::SampleCountFlags::_2) {
-        vk::SampleCountFlags::_2
-    } else {
-        vk::SampleCountFlags::_1
-    }
+    // Godot keeps viewport MSAA disabled by default; Gilder follows that policy
+    // until scene quality settings explicitly request multisampling.
+    vk::SampleCountFlags::_1
 }
 
 fn scene_physical_device_msaa_sample_count(
     properties: vk::PhysicalDeviceProperties,
 ) -> vk::SampleCountFlags {
     scene_preferred_msaa_sample_count(properties.limits.framebuffer_color_sample_counts)
+}
+
+fn scene_gpu_timestamp_period_picoseconds(properties: vk::PhysicalDeviceProperties) -> Option<u64> {
+    if properties.limits.timestamp_compute_and_graphics == 0
+        || properties.limits.timestamp_period <= 0.0
+    {
+        return None;
+    }
+    Some((f64::from(properties.limits.timestamp_period) * 1000.0).round() as u64)
 }
 
 fn scene_sample_rate_shading_runtime_enabled(device_feature_available: bool) -> bool {
@@ -5266,6 +5466,7 @@ fn create_scene_solid_quad_frame_resources(
     extent: vk::Extent2D,
     msaa_sample_count: vk::SampleCountFlags,
     queue_family_index: u32,
+    gpu_timestamp_period_picoseconds: Option<u64>,
 ) -> Result<VulkanaliaSceneSolidQuadFrameResources, String> {
     if swapchain_images.is_empty() {
         return Err("scene present requires at least one swapchain image".to_owned());
@@ -5277,6 +5478,7 @@ fn create_scene_solid_quad_frame_resources(
     let mut image_available = Vec::new();
     let mut render_finished = Vec::new();
     let mut in_flight = Vec::new();
+    let mut gpu_timestamps = None;
 
     let result = (|| -> Result<VulkanaliaSceneSolidQuadFrameResources, String> {
         swapchain_image_views = create_scene_solid_quad_swapchain_image_views(
@@ -5310,6 +5512,11 @@ fn create_scene_solid_quad_frame_resources(
             .map_err(|err| {
                 format!("vkAllocateCommandBuffers(vulkanalia scene present): {err:?}")
             })?;
+        gpu_timestamps = create_scene_gpu_timestamp_resources(
+            device,
+            swapchain_images.len(),
+            gpu_timestamp_period_picoseconds,
+        )?;
 
         let semaphore_info = vk::SemaphoreCreateInfo::builder();
         let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
@@ -5343,6 +5550,7 @@ fn create_scene_solid_quad_frame_resources(
             image_available: std::mem::take(&mut image_available),
             render_finished: std::mem::take(&mut render_finished),
             in_flight: std::mem::take(&mut in_flight),
+            gpu_timestamps: gpu_timestamps.take(),
         })
     })();
 
@@ -5355,10 +5563,35 @@ fn create_scene_solid_quad_frame_resources(
             image_available,
             render_finished,
             in_flight,
+            gpu_timestamps,
         );
     }
 
     result
+}
+
+fn create_scene_gpu_timestamp_resources(
+    device: &Device,
+    swapchain_image_count: usize,
+    timestamp_period_picoseconds: Option<u64>,
+) -> Result<Option<VulkanaliaSceneGpuTimestampResources>, String> {
+    let Some(timestamp_period_picoseconds) = timestamp_period_picoseconds else {
+        return Ok(None);
+    };
+    let query_count = swapchain_image_count
+        .checked_mul(2)
+        .and_then(|count| u32::try_from(count).ok())
+        .ok_or_else(|| "scene GPU timestamp query count exceeds u32".to_owned())?;
+    let create_info = vk::QueryPoolCreateInfo::builder()
+        .query_type(vk::QueryType::TIMESTAMP)
+        .query_count(query_count);
+    let query_pool = unsafe { device.create_query_pool(&create_info, None) }
+        .map_err(|err| format!("vkCreateQueryPool(vulkanalia scene GPU timestamps): {err:?}"))?;
+    Ok(Some(VulkanaliaSceneGpuTimestampResources {
+        query_pool,
+        timestamp_period_picoseconds,
+        query_count,
+    }))
 }
 
 fn create_scene_transfer_frame_resources(
@@ -5479,6 +5712,7 @@ fn destroy_scene_solid_quad_frame_resources(
         resources.image_available,
         resources.render_finished,
         resources.in_flight,
+        resources.gpu_timestamps,
     );
 }
 
@@ -5532,8 +5766,12 @@ fn destroy_partial_scene_solid_quad_frame_resources(
     image_available: Vec<vk::Semaphore>,
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
+    gpu_timestamps: Option<VulkanaliaSceneGpuTimestampResources>,
 ) {
     unsafe {
+        if let Some(gpu_timestamps) = gpu_timestamps {
+            device.destroy_query_pool(gpu_timestamps.query_pool, None);
+        }
         for fence in in_flight {
             if fence != vk::Fence::null() {
                 device.destroy_fence(fence, None);
@@ -9941,21 +10179,45 @@ mod tests {
     }
 
     #[test]
-    fn scene_msaa_selection_prefers_4x_then_2x_then_disabled() {
+    fn scene_msaa_selection_defaults_to_disabled_like_godot_viewport() {
         assert_eq!(
             scene_preferred_msaa_sample_count(
                 vk::SampleCountFlags::_1 | vk::SampleCountFlags::_2 | vk::SampleCountFlags::_4,
             ),
-            vk::SampleCountFlags::_4
+            vk::SampleCountFlags::_1
         );
         assert_eq!(
             scene_preferred_msaa_sample_count(vk::SampleCountFlags::_1 | vk::SampleCountFlags::_2,),
-            vk::SampleCountFlags::_2
+            vk::SampleCountFlags::_1
         );
         assert_eq!(
             scene_preferred_msaa_sample_count(vk::SampleCountFlags::_1),
             vk::SampleCountFlags::_1
         );
+    }
+
+    #[test]
+    fn scene_gpu_timestamp_telemetry_tracks_swapchain_image_queries() {
+        let resources = VulkanaliaSceneGpuTimestampResources {
+            query_pool: vk::QueryPool::null(),
+            timestamp_period_picoseconds: 1000,
+            query_count: 6,
+        };
+        let mut telemetry = SceneGpuTimestampTelemetry::new(3, Some(&resources));
+
+        let capture = telemetry
+            .capture_for_image(Some(&resources), 2)
+            .expect("image 2 should map to the final query pair");
+
+        assert_eq!(capture.first_query, 4);
+        assert!(telemetry.capture_for_image(Some(&resources), 3).is_none());
+
+        telemetry.mark_submitted(2, Some(capture));
+
+        let snapshot = telemetry.snapshot();
+        assert!(snapshot.enabled);
+        assert_eq!(snapshot.pending_frames, 1);
+        assert_eq!(snapshot.timestamp_period_picoseconds, Some(1000));
     }
 
     #[test]
