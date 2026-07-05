@@ -54,6 +54,14 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
         if chain_step_count > 1 {
             plan.multi_step_chain_count = plan.multi_step_chain_count.saturating_add(1);
         }
+        if chain.passes.first().is_some_and(|pass| {
+            pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
+                && pass.input == NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+                && !pass.final_scene_pass
+        }) {
+            plan.source_direct_chain_start_count =
+                plan.source_direct_chain_start_count.saturating_add(1);
+        }
         plan.max_chain_step_count = plan.max_chain_step_count.max(chain_step_count);
         plan.final_scene_step_count += chain
             .passes
@@ -409,6 +417,13 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         };
     let unsupported_reason = (!raw_direct_composite_allowed && !material_graph_supported)
         .then_some("we-effect-graph-material-pass-not-executed");
+    let source_direct_chain_start =
+        native_vulkan_scene_we_image_pass_chain_can_source_direct_chain_start(
+            quad,
+            first_class_target,
+            color_blend_passthrough,
+            material_graph_supported,
+        );
     if native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
         quad,
         first_class_target,
@@ -464,68 +479,73 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         });
     }
     let color_blend_passthrough_pass = color_blend_passthrough && !color_blend_passthrough_folded;
-    let logical_pass_count =
-        1 + quad.effect_passes.len() + usize::from(color_blend_passthrough_pass);
+    let base_pass_required = !source_direct_chain_start;
+    let logical_pass_count = usize::from(base_pass_required)
+        + quad.effect_passes.len()
+        + usize::from(color_blend_passthrough_pass);
     let first_pass_blend_moved_to_final = logical_pass_count > 1;
     let ping_pong_required = logical_pass_count > 2;
     let mut passes = Vec::with_capacity(logical_pass_count);
 
-    let base_target = if first_class_target {
-        NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget
-    } else if first_pass_blend_moved_to_final {
-        NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+    let mut previous_output = if source_direct_chain_start {
+        NativeVulkanSceneWeImagePassEndpoint::SourceTexture
     } else {
-        NativeVulkanSceneWeImagePassEndpoint::Scene
+        let base_target = if first_class_target {
+            NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget
+        } else if first_pass_blend_moved_to_final {
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+        } else {
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        };
+        let base_blend_mode = if first_pass_blend_moved_to_final && quad.mesh.is_some() {
+            // Reverse-engineered WE pass setup forces the first pass that draws
+            // puppet geometry to translucent even after the image blend mode moves
+            // to the final pass.
+            SceneBlendMode::Alpha
+        } else if first_pass_blend_moved_to_final {
+            SceneBlendMode::Normal
+        } else {
+            quad.base_blend_mode
+        };
+        let base_depth_test = NativeVulkanSceneMaterialFlag::Unspecified;
+        let base_depth_write = NativeVulkanSceneMaterialFlag::Unspecified;
+        let base_cull_mode = NativeVulkanSceneCullMode::Unspecified;
+        passes.push(NativeVulkanSceneWeImagePass {
+            pass_index: 0,
+            role: NativeVulkanSceneWeImagePassRole::BaseMaterial,
+            effect_kind: None,
+            effect_file: None,
+            command: None,
+            source: None,
+            target_name: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: None,
+            blending: None,
+            scene_blend_mode: base_blend_mode,
+            render_state: native_vulkan_scene_we_image_pass_render_state(
+                base_blend_mode,
+                base_depth_test,
+                base_depth_write,
+                &base_cull_mode,
+            ),
+            input: NativeVulkanSceneWeImagePassEndpoint::SourceTexture,
+            input_name: None,
+            target: base_target,
+            final_scene_pass: base_target == NativeVulkanSceneWeImagePassEndpoint::Scene,
+            texture_slots: quad.texture_slots.clone(),
+            texture_slot_count: quad.texture_slots.len(),
+            effect_uv_transform: None,
+            parameter_keys: Vec::new(),
+            constant_shader_values: Default::default(),
+            combo_keys: Vec::new(),
+            combo_values: Default::default(),
+            depth_test: base_depth_test,
+            depth_write: base_depth_write,
+            cull_mode: base_cull_mode,
+        });
+        base_target
     };
-    let base_blend_mode = if first_pass_blend_moved_to_final && quad.mesh.is_some() {
-        // Reverse-engineered WE pass setup forces the first pass that draws
-        // puppet geometry to translucent even after the image blend mode moves
-        // to the final pass.
-        SceneBlendMode::Alpha
-    } else if first_pass_blend_moved_to_final {
-        SceneBlendMode::Normal
-    } else {
-        quad.base_blend_mode
-    };
-    let base_depth_test = NativeVulkanSceneMaterialFlag::Unspecified;
-    let base_depth_write = NativeVulkanSceneMaterialFlag::Unspecified;
-    let base_cull_mode = NativeVulkanSceneCullMode::Unspecified;
-    passes.push(NativeVulkanSceneWeImagePass {
-        pass_index: 0,
-        role: NativeVulkanSceneWeImagePassRole::BaseMaterial,
-        effect_kind: None,
-        effect_file: None,
-        command: None,
-        source: None,
-        target_name: None,
-        binds: Default::default(),
-        fbos: Default::default(),
-        shader: None,
-        blending: None,
-        scene_blend_mode: base_blend_mode,
-        render_state: native_vulkan_scene_we_image_pass_render_state(
-            base_blend_mode,
-            base_depth_test,
-            base_depth_write,
-            &base_cull_mode,
-        ),
-        input: NativeVulkanSceneWeImagePassEndpoint::SourceTexture,
-        input_name: None,
-        target: base_target,
-        final_scene_pass: base_target == NativeVulkanSceneWeImagePassEndpoint::Scene,
-        texture_slots: quad.texture_slots.clone(),
-        texture_slot_count: quad.texture_slots.len(),
-        effect_uv_transform: None,
-        parameter_keys: Vec::new(),
-        constant_shader_values: Default::default(),
-        combo_keys: Vec::new(),
-        combo_values: Default::default(),
-        depth_test: base_depth_test,
-        depth_write: base_depth_write,
-        cull_mode: base_cull_mode,
-    });
-
-    let mut previous_output = base_target;
     let mut previous_output_name = None::<String>;
     for (effect_index, effect) in quad.effect_passes.iter().enumerate() {
         let has_following_effect = effect_index + 1 < quad.effect_passes.len();
@@ -769,7 +789,35 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
     {
         return false;
     }
-    let effect = &quad.effect_passes[0];
+    native_vulkan_scene_we_image_pass_can_sample_source_directly(&quad.effect_passes[0])
+}
+
+fn native_vulkan_scene_we_image_pass_chain_can_source_direct_chain_start(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    first_class_target: bool,
+    color_blend_passthrough: bool,
+    material_graph_supported: bool,
+) -> bool {
+    if first_class_target
+        || color_blend_passthrough
+        || !material_graph_supported
+        || quad.texture_region.is_some()
+        || quad.material_pass.alpha_texture_slot.is_some()
+        || quad.effect_passes.len() < 2
+    {
+        return false;
+    }
+    if let Some(mesh) = quad.mesh.as_ref()
+        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
+    {
+        return false;
+    }
+    native_vulkan_scene_we_image_pass_can_sample_source_directly(&quad.effect_passes[0])
+}
+
+fn native_vulkan_scene_we_image_pass_can_sample_source_directly(
+    effect: &NativeVulkanSceneEffectRecord,
+) -> bool {
     if effect.target.is_some()
         || effect.source.is_some()
         || !effect.fbos.is_empty()
@@ -2398,6 +2446,80 @@ mod tests {
         assert_eq!(plan.suppressed_chain_count, 0);
         assert_eq!(plan.effect_kind_counts.get("auto-sway").copied(), Some(1));
         assert_eq!(plan.effect_kind_counts.get("water-waves").copied(), Some(1));
+        assert_eq!(plan.source_direct_chain_start_count, 0);
+    }
+
+    #[test]
+    fn multi_waterwaves_chain_starts_from_source_texture_without_base_copy() {
+        let mut first = iris_effect_record();
+        first.kind = NativeVulkanSceneEffectKind::WaterWaves;
+        first.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        first.effect_file = "effects/waterwaves/effect.json".to_owned();
+        first.runtime = Some("native-effect-motion".to_owned());
+        first.shader = Some("effects/waterwaves".to_owned());
+        first.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 1,
+            source: PathBuf::from("/tmp/waterwaves-mask-a.gtex"),
+            width: Some(512),
+            height: Some(256),
+        }];
+        let mut second = first.clone();
+        second.pass_index = 1;
+        second.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 1,
+            source: PathBuf::from("/tmp/waterwaves-mask-b.gtex"),
+            width: Some(512),
+            height: Some(256),
+        }];
+
+        let mut quad = sampled_image_quad(None);
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![first, second];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("multi waterwaves graph chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+        );
+        assert!(chain.local_target_required);
+        assert!(chain.first_pass_blend_moved_to_final);
+        assert_eq!(chain.passes.len(), 2);
+        assert!(
+            chain
+                .passes
+                .iter()
+                .all(|pass| pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial)
+        );
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert_eq!(
+            chain.passes[0].target,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+        );
+        assert!(!chain.passes[0].final_scene_pass);
+        assert_eq!(
+            chain.passes[1].input,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+        );
+        assert_eq!(
+            chain.passes[1].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert!(chain.passes[1].final_scene_pass);
+        assert_eq!(plan.step_count, 2);
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(plan.base_material_step_count, 0);
+        assert_eq!(plan.effect_material_step_count, 2);
+        assert_eq!(plan.graph_target_step_count, 1);
+        assert_eq!(plan.scene_target_step_count, 1);
+        assert_eq!(plan.source_direct_chain_start_count, 1);
+        assert_eq!(plan.direct_terminal_source_effect_step_count, 0);
     }
 
     #[test]

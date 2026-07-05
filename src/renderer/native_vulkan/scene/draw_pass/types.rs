@@ -463,6 +463,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) graph_target_step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) scene_target_step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) direct_terminal_source_effect_step_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) source_direct_chain_start_count: usize,
     pub(in crate::renderer::native_vulkan::scene) multi_step_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) max_chain_step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) step_count: usize,

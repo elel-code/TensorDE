@@ -122,6 +122,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_graph_target_step_count: usize,
     pub draw_pass_sampled_image_we_graph_scene_target_step_count: usize,
     pub draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_source_direct_chain_start_count: usize,
     pub draw_pass_sampled_image_we_graph_multi_step_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_max_chain_step_count: usize,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
@@ -4195,6 +4196,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_direct_terminal_source_effect_step_count = pass_plan
         .sampled_image_we_graph_plan
         .direct_terminal_source_effect_step_count;
+    let sampled_image_we_graph_source_direct_chain_start_count = pass_plan
+        .sampled_image_we_graph_plan
+        .source_direct_chain_start_count;
     let sampled_image_we_graph_multi_step_chain_count =
         pass_plan.sampled_image_we_graph_plan.multi_step_chain_count;
     let sampled_image_we_graph_max_chain_step_count =
@@ -4375,6 +4379,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_scene_target_step_count,
         draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count:
             sampled_image_we_graph_direct_terminal_source_effect_step_count,
+        draw_pass_sampled_image_we_graph_source_direct_chain_start_count:
+            sampled_image_we_graph_source_direct_chain_start_count,
         draw_pass_sampled_image_we_graph_multi_step_chain_count:
             sampled_image_we_graph_multi_step_chain_count,
         draw_pass_sampled_image_we_graph_max_chain_step_count:
@@ -6845,6 +6851,10 @@ mod tests {
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count,
+            0
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_source_direct_chain_start_count,
             0
         );
         assert!(snapshot.draw_pass_sampled_image_we_graph_targets.is_empty());
