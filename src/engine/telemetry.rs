@@ -6,6 +6,8 @@ pub struct SceneEngineTelemetry {
     pub unsupported_graph_boundaries: u32,
     pub render_graph_resource_uses: u32,
     pub render_graph_derived_barriers: u32,
+    pub render_graph_execution_dependencies: u32,
+    pub render_graph_execution_levels: u32,
     pub render_graph_logical_targets: u32,
     pub render_graph_physical_target_slots: u32,
     pub render_graph_aliased_targets: u32,

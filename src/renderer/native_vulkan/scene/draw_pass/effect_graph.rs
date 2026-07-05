@@ -96,6 +96,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
     plan.target_count = plan.targets.len();
     plan.step_count = plan.steps.len();
     plan.engine_graph = native_vulkan_scene_engine_render_graph_from_we_plan(&plan);
+    plan.engine_execution_plan = plan.engine_graph.execution_plan();
     plan
 }
 

@@ -290,6 +290,9 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
     pub sources: Vec<PathBuf>,
     pub effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
     pub we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
+    pub we_graph_execution_pass_count: u32,
+    pub we_graph_execution_dependency_count: u32,
+    pub we_graph_execution_level_count: u32,
     pub puppet_gpu_payloads: Vec<NativeVulkanVulkanaliaScenePuppetGpuPayload>,
     pub puppet_gpu_poses: Vec<NativeVulkanVulkanaliaScenePuppetGpuPosePayload>,
     pub particle_gpu_payloads: Vec<NativeVulkanVulkanaliaSceneParticleGpuPayload>,
@@ -932,6 +935,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources: Vec::new(),
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -971,6 +977,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -995,6 +1004,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets,
             we_graph_resources: Vec::new(),
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -1020,6 +1032,9 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             sources,
             effect_targets,
             we_graph_resources,
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -1028,6 +1043,18 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             draw_steps,
             source_label: source_label.into(),
         }
+    }
+
+    pub fn with_we_graph_execution_counts(
+        mut self,
+        pass_count: u32,
+        dependency_count: u32,
+        level_count: u32,
+    ) -> Self {
+        self.we_graph_execution_pass_count = pass_count;
+        self.we_graph_execution_dependency_count = dependency_count;
+        self.we_graph_execution_level_count = level_count;
+        self
     }
 }
 
@@ -1225,6 +1252,9 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
     pub we_graph_target_resource_count: u32,
     pub we_graph_allocated_target_resource_count: u32,
     pub we_graph_planned_target_resource_count: u32,
+    pub we_graph_execution_pass_count: u32,
+    pub we_graph_execution_dependency_count: u32,
+    pub we_graph_execution_level_count: u32,
     pub we_graph_resource_model: &'static str,
     pub puppet_gpu_payload_count: u32,
     pub puppet_gpu_payload_vertex_count: u32,
@@ -1649,6 +1679,9 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     we_graph_target_resource_count: u32,
     we_graph_allocated_target_resource_count: u32,
     we_graph_planned_target_resource_count: u32,
+    we_graph_execution_pass_count: u32,
+    we_graph_execution_dependency_count: u32,
+    we_graph_execution_level_count: u32,
     puppet_gpu_payload_count: u32,
     puppet_gpu_payload_vertex_count: u32,
     puppet_gpu_payload_index_count: u32,
@@ -4764,6 +4797,9 @@ fn scene_static_transfer_geometry_snapshot()
         we_graph_target_resource_count: 0,
         we_graph_allocated_target_resource_count: 0,
         we_graph_planned_target_resource_count: 0,
+        we_graph_execution_pass_count: 0,
+        we_graph_execution_dependency_count: 0,
+        we_graph_execution_level_count: 0,
         we_graph_resource_model: "none",
         puppet_gpu_payload_count: 0,
         puppet_gpu_payload_vertex_count: 0,
@@ -6544,6 +6580,9 @@ fn create_scene_sampled_image_geometry_resources(
             we_graph_allocated_target_resource_count: payload
                 .we_graph_allocated_target_resource_count,
             we_graph_planned_target_resource_count: payload.we_graph_planned_target_resource_count,
+            we_graph_execution_pass_count: payload.we_graph_execution_pass_count,
+            we_graph_execution_dependency_count: payload.we_graph_execution_dependency_count,
+            we_graph_execution_level_count: payload.we_graph_execution_level_count,
             we_graph_resource_model: "planned-we-image-graph-resources-for-descriptor-and-target-executor",
             puppet_gpu_payload_count: payload.puppet_gpu_payload_count,
             puppet_gpu_payload_vertex_count: payload.puppet_gpu_payload_vertex_count,
@@ -9035,6 +9074,9 @@ fn scene_sampled_image_geometry_payload_from_input(
         .filter(|resource| resource.allocation == "planned-until-graph-executor")
         .count()
         .min(u32::MAX as usize) as u32;
+    let we_graph_execution_pass_count = input.we_graph_execution_pass_count;
+    let we_graph_execution_dependency_count = input.we_graph_execution_dependency_count;
+    let we_graph_execution_level_count = input.we_graph_execution_level_count;
     for (step_index, step) in input.draw_steps.iter().enumerate() {
         let _ = scene_sampled_image_draw_step_primary_resource_index(step, step_index)?;
         if step.index_count == 0 {
@@ -9182,6 +9224,9 @@ fn scene_sampled_image_geometry_payload_from_input(
         we_graph_target_resource_count,
         we_graph_allocated_target_resource_count,
         we_graph_planned_target_resource_count,
+        we_graph_execution_pass_count,
+        we_graph_execution_dependency_count,
+        we_graph_execution_level_count,
         puppet_gpu_payload_count,
         puppet_gpu_payload_vertex_count,
         puppet_gpu_payload_index_count,
@@ -11485,7 +11530,8 @@ mod tests {
                     },
                 ],
                 "we-graph-resource-executor-input",
-            );
+            )
+            .with_we_graph_execution_counts(2, 1, 2);
 
         let payload = scene_sampled_image_geometry_payload_from_input(input).unwrap();
 
@@ -11494,6 +11540,9 @@ mod tests {
         assert_eq!(payload.we_graph_target_resource_count, 2);
         assert_eq!(payload.we_graph_allocated_target_resource_count, 1);
         assert_eq!(payload.we_graph_planned_target_resource_count, 1);
+        assert_eq!(payload.we_graph_execution_pass_count, 2);
+        assert_eq!(payload.we_graph_execution_dependency_count, 1);
+        assert_eq!(payload.we_graph_execution_level_count, 2);
     }
 
     #[test]
@@ -11714,6 +11763,9 @@ mod tests {
             sources: vec![PathBuf::from("/tmp/puppet.gtex")],
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: vec![NativeVulkanVulkanaliaScenePuppetGpuPayload {
                 layer_index: 7,
                 layer_id: "puppet".to_owned(),
@@ -11861,6 +11913,9 @@ mod tests {
             sources: vec![PathBuf::from("/tmp/particle.gtex")],
             effect_targets: Vec::new(),
             we_graph_resources: Vec::new(),
+            we_graph_execution_pass_count: 0,
+            we_graph_execution_dependency_count: 0,
+            we_graph_execution_level_count: 0,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: vec![NativeVulkanVulkanaliaSceneParticleGpuPayload {

@@ -117,6 +117,9 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_target_count: usize,
     pub draw_pass_sampled_image_we_graph_final_scene_step_count: usize,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_execution_pass_count: u32,
+    pub draw_pass_sampled_image_we_graph_execution_dependency_count: u32,
+    pub draw_pass_sampled_image_we_graph_execution_level_count: u32,
     pub draw_pass_sampled_image_we_graph_resource_count: usize,
     pub draw_pass_sampled_image_we_graph_texture_resource_count: usize,
     pub draw_pass_sampled_image_we_graph_target_resource_count: usize,
@@ -376,6 +379,9 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_sampled_image_we_graph_resources = Vec::new();
         self.draw_pass_sampled_image_we_graph_targets = Vec::new();
         self.draw_pass_sampled_image_we_graph_steps = Vec::new();
+        self.draw_pass_sampled_image_we_graph_execution_pass_count = 0;
+        self.draw_pass_sampled_image_we_graph_execution_dependency_count = 0;
+        self.draw_pass_sampled_image_we_graph_execution_level_count = 0;
         self.draw_pass_sampled_image_sources = Vec::new();
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
@@ -497,6 +503,11 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 we_graph_resources,
                 draw_steps,
                 "scene-runtime-sampled-image-draw-plan",
+            )
+            .with_we_graph_execution_counts(
+                self.draw_pass_sampled_image_we_graph_execution_pass_count,
+                self.draw_pass_sampled_image_we_graph_execution_dependency_count,
+                self.draw_pass_sampled_image_we_graph_execution_level_count,
             ),
         ))
     }
@@ -4145,6 +4156,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_chain_count = pass_plan.sampled_image_we_graph_plan.chain_count;
     let sampled_image_we_graph_step_count = pass_plan.sampled_image_we_graph_plan.step_count;
     let engine_render_graph = &pass_plan.sampled_image_we_graph_plan.engine_graph;
+    let engine_render_graph_execution =
+        &pass_plan.sampled_image_we_graph_plan.engine_execution_plan;
     let engine_render_graph_resource_uses = engine_render_graph.resource_uses();
     let engine_render_graph_derived_barriers = engine_render_graph.derived_barriers();
     let engine_render_graph_target_allocation = engine_render_graph.target_allocation_plan();
@@ -4199,6 +4212,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         render_graph_derived_barriers: engine_render_graph_derived_barriers
             .len()
             .min(u32::MAX as usize) as u32,
+        render_graph_execution_dependencies: engine_render_graph_execution.dependency_count,
+        render_graph_execution_levels: engine_render_graph_execution.level_count,
         render_graph_logical_targets: engine_render_graph_target_allocation.logical_target_count,
         render_graph_physical_target_slots: engine_render_graph_target_allocation
             .physical_target_count,
@@ -4338,6 +4353,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_final_scene_step_count,
         draw_pass_sampled_image_we_graph_effect_kind_counts:
             sampled_image_we_graph_effect_kind_counts,
+        draw_pass_sampled_image_we_graph_execution_pass_count: engine_render_graph_execution
+            .pass_count,
+        draw_pass_sampled_image_we_graph_execution_dependency_count: engine_render_graph_execution
+            .dependency_count,
+        draw_pass_sampled_image_we_graph_execution_level_count: engine_render_graph_execution
+            .level_count,
         draw_pass_sampled_image_we_graph_resource_count: sampled_image_we_graph_resources.len(),
         draw_pass_sampled_image_we_graph_texture_resource_count:
             sampled_image_we_graph_texture_resources.len(),
@@ -6732,6 +6753,22 @@ mod tests {
                 > snapshot.engine_telemetry.render_graph_passes
         );
         assert!(snapshot.engine_telemetry.render_graph_derived_barriers > 0);
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_execution_pass_count,
+            snapshot.engine_telemetry.render_graph_passes
+        );
+        assert!(snapshot.draw_pass_sampled_image_we_graph_execution_dependency_count > 0);
+        assert!(snapshot.draw_pass_sampled_image_we_graph_execution_level_count > 0);
+        assert_eq!(
+            snapshot
+                .engine_telemetry
+                .render_graph_execution_dependencies,
+            snapshot.draw_pass_sampled_image_we_graph_execution_dependency_count
+        );
+        assert_eq!(
+            snapshot.engine_telemetry.render_graph_execution_levels,
+            snapshot.draw_pass_sampled_image_we_graph_execution_level_count
+        );
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 2);
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_texture_resource_count,

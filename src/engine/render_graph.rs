@@ -6,6 +6,7 @@
 
 pub mod allocation;
 pub mod binding;
+pub mod execution;
 pub mod graph;
 pub mod pass;
 pub mod resource;
@@ -15,6 +16,9 @@ pub mod we_image;
 
 pub use allocation::{RenderGraphTargetAllocation, RenderGraphTargetAllocationPlan};
 pub use binding::TextureBindingRole;
+pub use execution::{
+    RenderGraphExecutionLevel, RenderGraphExecutionPass, RenderGraphExecutionPlan,
+};
 pub use graph::{RenderGraph, UnsupportedGraphBoundary};
 pub use pass::{RenderPassNode, RenderPassRole};
 pub use resource::{
