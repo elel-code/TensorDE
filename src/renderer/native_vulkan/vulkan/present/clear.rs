@@ -363,6 +363,7 @@ fn with_vulkanalia_clear_present(
             color_space: format!("{:?}", swapchain_plan.format.color_space),
             present_mode: present_mode_label(swapchain_plan.present_mode),
             extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
+            extent_selection: swapchain_plan.extent_selection,
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),

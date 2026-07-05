@@ -54,6 +54,7 @@ pub struct NativeWaylandHostOptions {
     pub opaque_region: bool,
     pub input_passthrough: bool,
     pub attach_parent_mapping_buffer: bool,
+    pub fractional_scale_rounding: NativeWaylandFractionalScaleRounding,
 }
 
 impl Default for NativeWaylandHostOptions {
@@ -65,6 +66,7 @@ impl Default for NativeWaylandHostOptions {
             opaque_region: true,
             input_passthrough: true,
             attach_parent_mapping_buffer: true,
+            fractional_scale_rounding: NativeWaylandFractionalScaleRounding::Ceil,
         }
     }
 }
@@ -115,6 +117,29 @@ impl From<NativeWaylandLayer> for Layer {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum NativeWaylandFractionalScaleRounding {
+    Ceil,
+    Nearest,
+    Floor,
+}
+
+impl std::str::FromStr for NativeWaylandFractionalScaleRounding {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ceil" => Ok(Self::Ceil),
+            "nearest" | "round" => Ok(Self::Nearest),
+            "floor" => Ok(Self::Floor),
+            other => Err(format!(
+                "unsupported native Wayland fractional scale rounding: {other}"
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeWaylandCapabilities {
     pub built: bool,
     pub experimental: bool,
@@ -151,6 +176,7 @@ pub struct NativeWaylandSurfaceSnapshot {
     pub buffer_size: Option<(u32, u32)>,
     pub scale_num: u32,
     pub scale_den: u32,
+    pub fractional_scale_rounding: NativeWaylandFractionalScaleRounding,
     pub configured: bool,
     pub surface_protocol_id: u32,
     pub layer: NativeWaylandLayer,
@@ -350,6 +376,7 @@ impl NativeWaylandHost {
                 fractional_scale,
                 viewporter,
                 viewport,
+                options.fractional_scale_rounding,
             ),
             logical_size: None,
             configured: false,
@@ -744,6 +771,7 @@ impl NativeWaylandState {
                 .map(|logical_size| self.scale.buffer_size(logical_size)),
             scale_num: self.scale.num,
             scale_den: NativeScaleState::DENOMINATOR,
+            fractional_scale_rounding: self.scale.rounding,
             configured: self.configured,
             surface_protocol_id: self
                 .layer
@@ -1209,6 +1237,7 @@ struct NativeScaleState {
     viewporter: Option<WpViewporter>,
     viewport: Option<WpViewport>,
     num: u32,
+    rounding: NativeWaylandFractionalScaleRounding,
     received: bool,
 }
 
@@ -1220,6 +1249,7 @@ impl NativeScaleState {
         fractional_scale: Option<WpFractionalScaleV1>,
         viewporter: Option<WpViewporter>,
         viewport: Option<WpViewport>,
+        rounding: NativeWaylandFractionalScaleRounding,
     ) -> Self {
         Self {
             fractional_manager,
@@ -1227,6 +1257,7 @@ impl NativeScaleState {
             viewporter,
             viewport,
             num: Self::DENOMINATOR,
+            rounding,
             received: false,
         }
     }
@@ -1273,19 +1304,40 @@ impl NativeScaleState {
 
     fn buffer_size(&self, logical_size: (u32, u32)) -> (u32, u32) {
         (
-            native_scaled_buffer_dimension(logical_size.0, self.num, Self::DENOMINATOR),
-            native_scaled_buffer_dimension(logical_size.1, self.num, Self::DENOMINATOR),
+            native_scaled_buffer_dimension(
+                logical_size.0,
+                self.num,
+                Self::DENOMINATOR,
+                self.rounding,
+            ),
+            native_scaled_buffer_dimension(
+                logical_size.1,
+                self.num,
+                Self::DENOMINATOR,
+                self.rounding,
+            ),
         )
     }
 }
 
-fn native_scaled_buffer_dimension(value: u32, scale_num: u32, scale_den: u32) -> u32 {
+fn native_scaled_buffer_dimension(
+    value: u32,
+    scale_num: u32,
+    scale_den: u32,
+    rounding: NativeWaylandFractionalScaleRounding,
+) -> u32 {
     if value == 0 || scale_num == 0 || scale_den == 0 {
         return value.max(1);
     }
-    let scaled = u64::from(value)
-        .saturating_mul(u64::from(scale_num))
-        .div_ceil(u64::from(scale_den));
+    let scaled_num = u64::from(value).saturating_mul(u64::from(scale_num));
+    let scale_den = u64::from(scale_den);
+    let scaled = match rounding {
+        NativeWaylandFractionalScaleRounding::Ceil => scaled_num.div_ceil(scale_den),
+        NativeWaylandFractionalScaleRounding::Nearest => {
+            scaled_num.saturating_add(scale_den / 2) / scale_den
+        }
+        NativeWaylandFractionalScaleRounding::Floor => scaled_num / scale_den,
+    };
     scaled.min(u64::from(u32::MAX)).max(1) as u32
 }
 
@@ -1304,5 +1356,45 @@ mod tests {
         assert!(capabilities.probes_linux_dmabuf_protocol);
         assert!(!capabilities.native_dmabuf_buffer_attach);
         assert!(!capabilities.consumes_render_sync);
+    }
+
+    #[test]
+    fn fractional_scale_rounding_can_match_physical_mode_for_floor_policy() {
+        assert_eq!(
+            native_scaled_buffer_dimension(
+                1707,
+                180,
+                120,
+                NativeWaylandFractionalScaleRounding::Ceil
+            ),
+            2561
+        );
+        assert_eq!(
+            native_scaled_buffer_dimension(
+                1707,
+                180,
+                120,
+                NativeWaylandFractionalScaleRounding::Nearest
+            ),
+            2561
+        );
+        assert_eq!(
+            native_scaled_buffer_dimension(
+                1707,
+                180,
+                120,
+                NativeWaylandFractionalScaleRounding::Floor
+            ),
+            2560
+        );
+        assert_eq!(
+            native_scaled_buffer_dimension(
+                1067,
+                180,
+                120,
+                NativeWaylandFractionalScaleRounding::Floor
+            ),
+            1600
+        );
     }
 }

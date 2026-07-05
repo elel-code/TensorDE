@@ -170,6 +170,7 @@ pub struct NativeVulkanVulkanaliaSwapchainSnapshot {
     pub color_space: String,
     pub present_mode: &'static str,
     pub extent: (u32, u32),
+    pub extent_selection: NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot,
     pub image_count: usize,
     pub min_image_count: u32,
     pub composite_alpha: &'static str,
@@ -177,6 +178,15 @@ pub struct NativeVulkanVulkanaliaSwapchainSnapshot {
     pub create_flags: Vec<&'static str>,
     pub present_id2_enabled: bool,
     pub present_wait2_enabled: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot {
+    pub source: &'static str,
+    pub requested_wayland_buffer_size: (u32, u32),
+    pub surface_current_extent: Option<(u32, u32)>,
+    pub surface_min_image_extent: (u32, u32),
+    pub surface_max_image_extent: (u32, u32),
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaPresentQueueSelection {
@@ -196,6 +206,8 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaSwap
     pub(in crate::renderer::native_vulkan::vulkan) format: vk::SurfaceFormatKHR,
     pub(in crate::renderer::native_vulkan::vulkan) present_mode: vk::PresentModeKHR,
     pub(in crate::renderer::native_vulkan::vulkan) extent: vk::Extent2D,
+    pub(in crate::renderer::native_vulkan::vulkan) extent_selection:
+        NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot,
     pub(in crate::renderer::native_vulkan::vulkan) image_count: u32,
     pub(in crate::renderer::native_vulkan::vulkan) composite_alpha: vk::CompositeAlphaFlagsKHR,
     pub(in crate::renderer::native_vulkan::vulkan) create_flags: vk::SwapchainCreateFlagsKHR,
@@ -396,6 +408,7 @@ fn with_vulkanalia_surface_swapchain(
             color_space: format!("{:?}", swapchain_plan.format.color_space),
             present_mode: present_mode_label(swapchain_plan.present_mode),
             extent: (swapchain_plan.extent.width, swapchain_plan.extent.height),
+            extent_selection: swapchain_plan.extent_selection,
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
@@ -898,7 +911,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
         feature_selection.present_mode_fifo_latest_ready_enabled,
         uncapped_present,
     );
-    let extent = choose_swapchain_extent(&capabilities, buffer_size)?;
+    let (extent, extent_selection) = choose_swapchain_extent(&capabilities, buffer_size)?;
     let image_count = swapchain_image_count(&capabilities);
     let composite_alpha = choose_composite_alpha(capabilities.supported_composite_alpha);
     let present_id2_enabled =
@@ -944,6 +957,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
         format,
         present_mode,
         extent,
+        extent_selection,
         image_count,
         composite_alpha,
         create_flags,
@@ -1164,9 +1178,33 @@ fn swapchain_create_flags(
 fn choose_swapchain_extent(
     capabilities: &vk::SurfaceCapabilitiesKHR,
     buffer_size: (u32, u32),
-) -> Result<vk::Extent2D, String> {
-    if let Some((width, height)) = extent_tuple(capabilities.current_extent) {
-        return Ok(vk::Extent2D { width, height });
+) -> Result<
+    (
+        vk::Extent2D,
+        NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot,
+    ),
+    String,
+> {
+    let surface_current_extent = extent_tuple(capabilities.current_extent);
+    let surface_min_image_extent = (
+        capabilities.min_image_extent.width,
+        capabilities.min_image_extent.height,
+    );
+    let surface_max_image_extent = (
+        capabilities.max_image_extent.width,
+        capabilities.max_image_extent.height,
+    );
+    if let Some((width, height)) = surface_current_extent {
+        return Ok((
+            vk::Extent2D { width, height },
+            NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot {
+                source: "surface-current-extent",
+                requested_wayland_buffer_size: buffer_size,
+                surface_current_extent,
+                surface_min_image_extent,
+                surface_max_image_extent,
+            },
+        ));
     }
     let width = buffer_size.0.clamp(
         capabilities.min_image_extent.width,
@@ -1179,7 +1217,16 @@ fn choose_swapchain_extent(
     if width == 0 || height == 0 {
         return Err("Vulkanalia swapchain extent resolved to zero".to_owned());
     }
-    Ok(vk::Extent2D { width, height })
+    Ok((
+        vk::Extent2D { width, height },
+        NativeVulkanVulkanaliaSwapchainExtentSelectionSnapshot {
+            source: "wayland-buffer-size-clamped-to-surface-capabilities",
+            requested_wayland_buffer_size: buffer_size,
+            surface_current_extent,
+            surface_min_image_extent,
+            surface_max_image_extent,
+        },
+    ))
 }
 
 fn swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
@@ -1645,6 +1692,59 @@ mod tests {
         capabilities.min_image_count = 3;
         capabilities.max_image_count = 2;
         assert_eq!(swapchain_image_count(&capabilities), 2);
+    }
+
+    #[test]
+    fn swapchain_extent_selection_prefers_surface_current_extent_like_godot() {
+        let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
+        capabilities.current_extent = vk::Extent2D {
+            width: 2561,
+            height: 1601,
+        };
+        capabilities.min_image_extent = vk::Extent2D {
+            width: 64,
+            height: 64,
+        };
+        capabilities.max_image_extent = vk::Extent2D {
+            width: 8192,
+            height: 8192,
+        };
+
+        let (extent, selection) = choose_swapchain_extent(&capabilities, (2560, 1600)).unwrap();
+
+        assert_eq!(extent.width, 2561);
+        assert_eq!(extent.height, 1601);
+        assert_eq!(selection.source, "surface-current-extent");
+        assert_eq!(selection.requested_wayland_buffer_size, (2560, 1600));
+        assert_eq!(selection.surface_current_extent, Some((2561, 1601)));
+    }
+
+    #[test]
+    fn swapchain_extent_selection_clamps_wayland_buffer_when_surface_extent_is_unknown() {
+        let mut capabilities = vk::SurfaceCapabilitiesKHR::default();
+        capabilities.current_extent = vk::Extent2D {
+            width: u32::MAX,
+            height: u32::MAX,
+        };
+        capabilities.min_image_extent = vk::Extent2D {
+            width: 100,
+            height: 100,
+        };
+        capabilities.max_image_extent = vk::Extent2D {
+            width: 2000,
+            height: 1200,
+        };
+
+        let (extent, selection) = choose_swapchain_extent(&capabilities, (2560, 900)).unwrap();
+
+        assert_eq!(extent.width, 2000);
+        assert_eq!(extent.height, 900);
+        assert_eq!(
+            selection.source,
+            "wayland-buffer-size-clamped-to-surface-capabilities"
+        );
+        assert_eq!(selection.requested_wayland_buffer_size, (2560, 900));
+        assert_eq!(selection.surface_current_extent, None);
     }
 
     #[test]

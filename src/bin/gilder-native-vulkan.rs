@@ -235,7 +235,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         probe_native_vulkan_vulkanalia_video_present_session,
         probe_native_vulkan_vulkanalia_video_session_bind,
     };
-    use gilder::renderer::native_wayland::NativeWaylandLayer;
+    use gilder::renderer::native_wayland::{
+        NativeWaylandFractionalScaleRounding, NativeWaylandLayer,
+    };
     use serde_json::json;
     use std::time::Duration;
 
@@ -351,6 +353,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--parent-mapping-buffer" => options.host.attach_parent_mapping_buffer = true,
             "--no-parent-mapping-buffer" => options.host.attach_parent_mapping_buffer = false,
+            "--fractional-scale-rounding" => {
+                let value = args
+                    .next()
+                    .ok_or("--fractional-scale-rounding requires ceil, nearest, or floor")?;
+                options.host.fractional_scale_rounding =
+                    value.parse::<NativeWaylandFractionalScaleRounding>()?;
+            }
             "--allow-foreground-layer" => allow_foreground_layer = true,
             "--wait-roundtrips" => {
                 options.wait_configure_roundtrips = args
@@ -1959,7 +1968,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
-Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--wait-roundtrips N]\n\
+Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
