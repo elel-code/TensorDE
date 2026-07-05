@@ -1,6 +1,5 @@
 use serde::Serialize;
 use serde_json::Value;
-use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -29,8 +28,7 @@ use crate::renderer::{SceneRenderAlphaTextureMode, SceneRenderImageEffectPass, S
 use super::super::present::render_item::NativeVulkanRenderItem;
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawPlan, NativeVulkanSceneEffectUvMapping, NativeVulkanSceneEffectUvSpace,
-    native_vulkan_scene_draw_plan, native_vulkan_scene_draw_plan_from_layers,
-    native_vulkan_scene_effect_uv_space_from_transform,
+    native_vulkan_scene_draw_plan, native_vulkan_scene_effect_uv_space_from_transform,
     native_vulkan_scene_effect_uv_transform_for_scene_passes,
 };
 use super::super::vulkan::{
@@ -54,7 +52,6 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneWeImageGraphResource,
     native_vulkan_vulkanalia_scene_draw_pass_snapshot,
     native_vulkan_vulkanalia_scene_sampled_image_plan,
-    native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec,
 };
 use super::binary_ingest::{
     NativeVulkanSceneBinaryIngestSummary, native_vulkan_scene_binary_ingest_from_reader,
@@ -67,6 +64,7 @@ use super::draw_pass::{
     NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneWeImageGraphPlan,
     NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
     NativeVulkanSceneWeImagePassChain,
+    native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_render_layer,
@@ -79,47 +77,10 @@ use super::draw_pass::{
     native_vulkan_scene_we_image_pass_chain,
 };
 
-const SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_RETAINED: usize = 3;
-const SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_CAPACITY: usize = 128 * 1024;
 const SCENE_RUNTIME_EYE_DARK_LUMA_THRESHOLD: f64 = 48.0;
 const SCENE_RUNTIME_EYE_VISIBLE_ALPHA_THRESHOLD: f64 = 16.0;
 const SCENE_RUNTIME_EYE_ALIGNMENT_EPSILON_PX: f64 = 1.0;
 static SCENE_RUNTIME_EFFECT_DEBUG_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
-
-thread_local! {
-    static SCENE_RUNTIME_SAMPLED_VERTEX_POOL:
-        RefCell<Vec<Vec<NativeVulkanSceneSampledImageVertex>>> = RefCell::new(Vec::new());
-}
-
-fn native_vulkan_scene_take_sampled_vertex_vec(
-    capacity: usize,
-) -> Vec<NativeVulkanSceneSampledImageVertex> {
-    SCENE_RUNTIME_SAMPLED_VERTEX_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        let mut vertices = pool
-            .iter()
-            .position(|vertices| vertices.capacity() >= capacity)
-            .map(|index| pool.swap_remove(index))
-            .unwrap_or_else(|| Vec::with_capacity(capacity));
-        vertices.clear();
-        vertices
-    })
-}
-
-fn native_vulkan_scene_recycle_sampled_vertex_vec(
-    mut vertices: Vec<NativeVulkanSceneSampledImageVertex>,
-) {
-    if vertices.capacity() > SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_CAPACITY {
-        return;
-    }
-    vertices.clear();
-    SCENE_RUNTIME_SAMPLED_VERTEX_POOL.with(|pool| {
-        let mut pool = pool.borrow_mut();
-        if pool.len() < SCENE_RUNTIME_SAMPLED_VERTEX_POOL_MAX_RETAINED {
-            pool.push(vertices);
-        }
-    });
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneRuntimeSnapshot {
@@ -169,7 +130,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_recording_step_count: usize,
     pub draw_pass_sampled_image_recording_steps:
         Vec<NativeVulkanSceneSampledImageRecordingStepSnapshot>,
-    pub draw_pass_sampled_image_vertices: Vec<NativeVulkanSceneSampledImageVertexSnapshot>,
+    pub draw_pass_sampled_image_vertices: Vec<NativeVulkanSceneSampledImageVertex>,
     pub draw_pass_sampled_image_indices: Vec<u32>,
     pub draw_pass_sampled_image_vertex_buffer_bytes: u64,
     pub draw_pass_sampled_image_index_buffer_bytes: u64,
@@ -484,6 +445,8 @@ impl NativeVulkanSceneRuntimeSnapshot {
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index: step.layer_index,
+                first_vertex: step.first_vertex,
+                vertex_count: step.vertex_count,
                 texture_slot_bindings: step
                     .texture_slot_bindings
                     .into_iter()
@@ -522,18 +485,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         Some((
             source,
             NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched_with_effect_targets_and_we_graph_resources(
-                std::mem::take(&mut self.draw_pass_sampled_image_vertices)
-                    .into_iter()
-                    .map(|vertex| {
-                        NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
-                            vertex.position,
-                            vertex.uv,
-                            vertex.effect_uv,
-                            vertex.opacity,
-                            vertex.tint,
-                        )
-                    })
-                    .collect(),
+                std::mem::take(&mut self.draw_pass_sampled_image_vertices),
                 std::mem::take(&mut self.draw_pass_sampled_image_indices),
                 sources,
                 effect_targets,
@@ -872,6 +824,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
+                first_vertex: range.first_vertex,
+                vertex_count: range.vertex_count,
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     layer.blend_mode,
                     layer.alpha_texture_slot,
@@ -925,20 +879,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
     {
         return Err("dynamic sampled-image scene produced no sampled geometry".to_owned());
     }
-    let sampled_vertices = sampled_scene_vertices
-        .into_iter()
-        .map(|vertex: NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
-                vertex.position,
-                vertex.uv,
-                vertex.effect_uv,
-                vertex.opacity,
-                vertex.tint,
-            )
-        })
-        .collect();
     let sampled_geometry = NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-        sampled_vertices,
+        sampled_scene_vertices,
         sampled_indices,
         sampled_sources,
         sampled_draw_steps,
@@ -1030,6 +972,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
                 layer_index,
+                first_vertex: range.first_vertex,
+                vertex_count: range.vertex_count,
                 material: NativeVulkanVulkanaliaSceneSampledImageMaterial::sampled_image(
                     layer.blend_mode,
                     layer.alpha_texture_slot,
@@ -1227,8 +1171,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     layers: &[SceneRenderLayer],
     package_root: Option<&Path>,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    let mut sampled_scene_vertices =
-        native_vulkan_scene_take_sampled_vertex_vec(layers.len().saturating_mul(4));
+    let mut sampled_scene_vertices = Vec::with_capacity(layers.len().saturating_mul(4));
     for (layer_index, layer) in layers.iter().enumerate() {
         if layer.kind != SceneNodeKind::Image {
             continue;
@@ -1300,26 +1243,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         }
     }
     if sampled_scene_vertices.is_empty() {
-        native_vulkan_scene_recycle_sampled_vertex_vec(sampled_scene_vertices);
         return Err("dynamic sampled-image scene produced no sampled vertices".to_owned());
     }
-    let mut sampled_vertices =
-        native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(sampled_scene_vertices.len());
-    sampled_vertices.extend(sampled_scene_vertices.iter().map(
-        |vertex: &NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
-                vertex.position,
-                vertex.uv,
-                vertex.effect_uv,
-                vertex.opacity,
-                vertex.tint,
-            )
-        },
-    ));
-    native_vulkan_scene_recycle_sampled_vertex_vec(sampled_scene_vertices);
     Ok(
         NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-            sampled_vertices,
+            sampled_scene_vertices,
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -1328,51 +1256,24 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     )
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
-    snapshot_time_ms: u64,
-    scene_size: Option<SceneSize>,
-    scene_fit: FitMode,
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers(
     layers: &[SceneRenderLayer],
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    let draw_plan = native_vulkan_scene_draw_plan_from_layers(
-        snapshot_time_ms,
-        scene_size,
-        scene_fit,
-        true,
-        false,
+    let mut sampled_scene_vertices = Vec::with_capacity(layers.len().saturating_mul(4));
+    if let Err(err) = native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers(
         layers,
-    );
-    let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
-    if !pass_plan.sampled_image_recording_ready
-        || pass_plan.sampled_image_vertices.is_empty()
-        || pass_plan.sampled_image_indices.is_empty()
-    {
-        return Err(
-            "dynamic sampled-image scene produced no sampled draw-pass geometry".to_owned(),
-        );
+        &mut sampled_scene_vertices,
+    ) {
+        return Err(err);
     }
 
-    let mut sampled_vertices = native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(
-        pass_plan.sampled_image_vertices.len(),
-    );
-    sampled_vertices.extend(pass_plan.sampled_image_vertices.iter().map(
-        |vertex: &NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
-                vertex.position,
-                vertex.uv,
-                vertex.effect_uv,
-                vertex.opacity,
-                vertex.tint,
-            )
-        },
-    ));
     Ok(
         NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-            sampled_vertices,
+            sampled_scene_vertices,
             Vec::new(),
             Vec::new(),
             Vec::new(),
-            "scene-runtime-draw-pass-sampled-image-retained-topology-vertices",
+            "scene-runtime-render-layer-sampled-image-retained-topology-vertices",
         ),
     )
 }
@@ -1528,8 +1429,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
         .iter()
         .filter(|folded| folded.effect_uv_space.is_some())
         .count();
-    let mut sampled_scene_vertices =
-        native_vulkan_scene_take_sampled_vertex_vec(folded_layers.len().saturating_mul(4));
+    let mut sampled_scene_vertices = Vec::with_capacity(folded_layers.len().saturating_mul(4));
     let mut eye_debug_layers = Vec::new();
 
     for folded_index in 0..folded_layers.len() {
@@ -1611,7 +1511,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
     }
 
     if sampled_scene_vertices.is_empty() {
-        native_vulkan_scene_recycle_sampled_vertex_vec(sampled_scene_vertices);
         return Err("dynamic sampled-image scene produced no sampled vertices".to_owned());
     }
     if native_vulkan_effect_debug_enabled() {
@@ -1627,23 +1526,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             native_vulkan_scene_sampled_vertices_effect_uv_range_label(&sampled_scene_vertices)
         ));
     }
-    let mut sampled_vertices =
-        native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec(sampled_scene_vertices.len());
-    sampled_vertices.extend(sampled_scene_vertices.iter().map(
-        |vertex: &NativeVulkanSceneSampledImageVertex| {
-            NativeVulkanVulkanaliaSceneSampledImageVertex::new_with_effect_uv(
-                vertex.position,
-                vertex.uv,
-                vertex.effect_uv,
-                vertex.opacity,
-                vertex.tint,
-            )
-        },
-    ));
-    native_vulkan_scene_recycle_sampled_vertex_vec(sampled_scene_vertices);
     Ok(
         NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched(
-            sampled_vertices,
+            sampled_scene_vertices,
             Vec::new(),
             Vec::new(),
             Vec::new(),
@@ -4161,9 +4046,9 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         .into_iter()
         .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
         .collect();
-    let uses_elapsed_push_constants = effect_kinds
+    let uses_elapsed_frame_constants = effect_kinds
         .iter()
-        .any(|kind| kind.uses_elapsed_push_constants());
+        .any(|kind| kind.uses_elapsed_frame_constants());
     let constant_shader_uniforms = material
         .constant_shader_values
         .iter()
@@ -4194,7 +4079,7 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         alpha_texture_slot: material.alpha_texture_slot,
         alpha_texture_mode: material.alpha_texture_mode,
         texture_slot_count: material.texture_slot_count,
-        uses_elapsed_push_constants,
+        uses_elapsed_frame_constants,
         effect_kinds,
         constant_shader_values: material.constant_shader_values,
         constant_shader_uniforms,
@@ -4548,17 +4433,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
                 index_buffer_size_bytes: step.index_buffer_size_bytes,
             })
             .collect(),
-        draw_pass_sampled_image_vertices: pass_plan
-            .sampled_image_vertices
-            .into_iter()
-            .map(|vertex| NativeVulkanSceneSampledImageVertexSnapshot {
-                position: vertex.position,
-                uv: vertex.uv,
-                effect_uv: vertex.effect_uv,
-                opacity: vertex.opacity,
-                tint: vertex.tint,
-            })
-            .collect(),
+        draw_pass_sampled_image_vertices: pass_plan.sampled_image_vertices,
         draw_pass_sampled_image_indices: pass_plan.sampled_image_indices,
         draw_pass_sampled_image_vertex_buffer_bytes: pass_plan.sampled_image_vertex_buffer_bytes,
         draw_pass_sampled_image_index_buffer_bytes: pass_plan.sampled_image_index_buffer_bytes,
@@ -5512,7 +5387,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneEffectKind::ColorKey,
             ]
         );
-        assert!(!static_material.uses_elapsed_push_constants);
+        assert!(!static_material.uses_elapsed_frame_constants);
 
         let animated_material = native_vulkan_scene_vulkanalia_sampled_image_material(
             NativeVulkanSceneMaterialPassSnapshot {
@@ -5538,7 +5413,7 @@ mod tests {
                 NativeVulkanVulkanaliaSceneEffectKind::AudioBars,
             ]
         );
-        assert!(animated_material.uses_elapsed_push_constants);
+        assert!(animated_material.uses_elapsed_frame_constants);
         assert_eq!(
             animated_material.constant_shader_values.get("strength"),
             Some(&serde_json::json!(0.1))
@@ -8205,18 +8080,13 @@ mod tests {
             .take_vulkanalia_sampled_image_geometry_input()
             .expect("retained sampled geometry");
         let dynamic_vertices =
-            native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
-                1234,
-                None,
-                FitMode::Cover,
-                &[image],
-            )
-            .expect("dynamic sampled vertices");
+            native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers(&[image])
+                .expect("dynamic sampled vertices");
 
         assert_eq!(retained_geometry.draw_steps.len(), 2);
         assert_eq!(
             dynamic_vertices.source_label,
-            "scene-runtime-draw-pass-sampled-image-retained-topology-vertices"
+            "scene-runtime-render-layer-sampled-image-retained-topology-vertices"
         );
         assert!(dynamic_vertices.indices.is_empty());
         assert!(dynamic_vertices.draw_steps.is_empty());

@@ -12,6 +12,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -23,7 +24,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -141,7 +141,7 @@ void main() {
     }
 
     vec2 direction = rotate_up(pc.waterwaves_direction);
-    float distance = pc.time_seconds * pc.waterwaves_speed
+    float distance = v_time_seconds * pc.waterwaves_speed
         + dot(tex_coord_motion, direction) * pc.waterwaves_scale
         + time_offset;
     float strength = pc.waterwaves_strength * pc.waterwaves_strength;
@@ -150,7 +150,7 @@ void main() {
 
     if ((pc.waterwaves_flags & WATERWAVES_FLAG_DUAL) != 0u) {
         vec2 direction2 = rotate_up(pc.waterwaves_direction2);
-        float distance2 = (pc.time_seconds + pc.waterwaves_offset2)
+        float distance2 = (v_time_seconds + pc.waterwaves_offset2)
             * pc.waterwaves_speed2
             + dot(tex_coord_motion, direction2) * pc.waterwaves_scale2
             + time_offset;

@@ -97,7 +97,6 @@ pub use scene_draw_pass::{
 };
 #[cfg(feature = "native-vulkan-video")]
 pub(in crate::renderer::native_vulkan) use scene_present::NativeVulkanVulkanaliaSceneVideoOverlayInput;
-pub(in crate::renderer::native_vulkan) use scene_present::native_vulkan_vulkanalia_take_scene_sampled_image_vertex_vec;
 pub use scene_present::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneEffectKind,

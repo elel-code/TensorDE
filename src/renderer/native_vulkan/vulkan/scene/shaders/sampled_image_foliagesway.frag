@@ -10,6 +10,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -21,7 +22,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -90,9 +90,9 @@ void main() {
 
     vec2 params = rotate_vec2(v_uv, pc.foliage_direction);
     float phase = (noise.g * PI * 2.0 + params.x * 10.0 + params.y * 5.0) * pc.foliage_phase;
-    vec4 sines = sin(phase + pc.foliage_speed * pc.time_seconds
+    vec4 sines = sin(phase + pc.foliage_speed * v_time_seconds
         * vec4(1.0, -0.16161616, 0.0083333, -0.00019841));
-    vec4 csines = sin(0.4 + phase + pc.foliage_speed * pc.time_seconds
+    vec4 csines = sin(0.4 + phase + pc.foliage_speed * v_time_seconds
         * vec4(-0.5, 0.041666666, -0.0013888889, 0.000024801587));
 
     sines = pow(abs(sines), vec4(pc.foliage_power)) * sign(sines);

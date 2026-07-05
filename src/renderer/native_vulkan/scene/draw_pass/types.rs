@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use serde::Serialize;
 use serde_json::Value;
 
 use crate::core::scene::{
@@ -699,13 +700,40 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneQuadVertex
     pub(in crate::renderer::native_vulkan::scene) rgba: [f32; 4],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageVertex {
-    pub(in crate::renderer::native_vulkan::scene) position: [f32; 2],
-    pub(in crate::renderer::native_vulkan::scene) uv: [f32; 2],
-    pub(in crate::renderer::native_vulkan::scene) effect_uv: [f32; 2],
-    pub(in crate::renderer::native_vulkan::scene) opacity: f32,
-    pub(in crate::renderer::native_vulkan::scene) tint: [f32; 4],
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct NativeVulkanSceneSampledImageVertex {
+    pub position: [f32; 2],
+    pub uv: [f32; 2],
+    pub effect_uv: [f32; 2],
+    pub opacity: f32,
+    pub tint: [f32; 4],
+}
+
+impl NativeVulkanSceneSampledImageVertex {
+    pub fn new(position: [f32; 2], uv: [f32; 2], opacity: f32) -> Self {
+        Self::new_tinted(position, uv, opacity, [1.0, 1.0, 1.0, 1.0])
+    }
+
+    pub fn new_tinted(position: [f32; 2], uv: [f32; 2], opacity: f32, tint: [f32; 4]) -> Self {
+        Self::new_with_effect_uv(position, uv, uv, opacity, tint)
+    }
+
+    pub fn new_with_effect_uv(
+        position: [f32; 2],
+        uv: [f32; 2],
+        effect_uv: [f32; 2],
+        opacity: f32,
+        tint: [f32; 4],
+    ) -> Self {
+        Self {
+            position,
+            uv,
+            effect_uv,
+            opacity,
+            tint,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

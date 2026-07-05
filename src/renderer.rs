@@ -8,7 +8,7 @@ pub mod native_wayland;
 mod scene_binary;
 
 #[cfg(feature = "native-vulkan-renderer")]
-pub(crate) use self::scene_binary::SceneBinaryRuntimeSampler;
+pub(crate) use self::scene_binary::{SceneBinaryRuntimeFrame, SceneBinaryRuntimeSampler};
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{

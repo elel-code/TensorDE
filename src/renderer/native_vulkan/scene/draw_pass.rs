@@ -62,6 +62,7 @@ use self::texture_slots::{
     native_vulkan_scene_texture_slots_from_render_slots,
     native_vulkan_scene_texture_slots_from_scene_slots,
 };
+pub use self::types::NativeVulkanSceneSampledImageVertex;
 pub(super) use self::types::{
     NativeVulkanSceneBlendEquation, NativeVulkanSceneBlendFactor, NativeVulkanSceneBlendOp,
     NativeVulkanSceneBlendState, NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan,
@@ -72,15 +73,14 @@ pub(super) use self::types::{
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageGeometryRange, NativeVulkanSceneSampledImageQuad,
     NativeVulkanSceneSampledImageRecordingStep, NativeVulkanSceneSampledImageRenderTarget,
-    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneShaderUniform,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
-    NativeVulkanSceneVideoQuad, NativeVulkanSceneVideoRecordingStep,
-    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphStep,
-    NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTargetBounds,
-    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImageGraphTextureBindingSource,
-    NativeVulkanSceneWeImagePass, NativeVulkanSceneWeImagePassChain,
-    NativeVulkanSceneWeImagePassEndpoint, NativeVulkanSceneWeImagePassExecution,
-    NativeVulkanSceneWeImagePassRole,
+    NativeVulkanSceneShaderUniform, NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneVideoQuad,
+    NativeVulkanSceneVideoRecordingStep, NativeVulkanSceneWeImageGraphPlan,
+    NativeVulkanSceneWeImageGraphStep, NativeVulkanSceneWeImageGraphTarget,
+    NativeVulkanSceneWeImageGraphTargetBounds, NativeVulkanSceneWeImageGraphTextureBinding,
+    NativeVulkanSceneWeImageGraphTextureBindingSource, NativeVulkanSceneWeImagePass,
+    NativeVulkanSceneWeImagePassChain, NativeVulkanSceneWeImagePassEndpoint,
+    NativeVulkanSceneWeImagePassExecution, NativeVulkanSceneWeImagePassRole,
 };
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,
@@ -1012,6 +1012,200 @@ fn native_vulkan_scene_sampled_image_recording_payload(
     }
 }
 
+enum NativeVulkanSceneDynamicSampledImageVertexSource<'a> {
+    DirectRenderLayer {
+        layer_index: usize,
+        layer: &'a SceneRenderLayer,
+    },
+    WeGraphQuad {
+        quad_index: usize,
+    },
+}
+
+pub(super) fn native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers(
+    layers: &[SceneRenderLayer],
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Result<(), String> {
+    vertices.clear();
+    let mut sources = Vec::with_capacity(layers.len());
+    let mut we_graph_quads = Vec::new();
+    for (layer_index, layer) in layers.iter().enumerate() {
+        if !native_vulkan_scene_render_layer_is_sampled_image_draw_op(layer)
+            || native_vulkan_scene_full_extent_sampled_image_layer_ready(layer)
+        {
+            continue;
+        }
+        if native_vulkan_scene_render_layer_uses_direct_retained_sampled_vertices(layer) {
+            sources.push(
+                NativeVulkanSceneDynamicSampledImageVertexSource::DirectRenderLayer {
+                    layer_index,
+                    layer,
+                },
+            );
+            continue;
+        }
+        if let Some(quad) =
+            native_vulkan_scene_sampled_image_quad_from_render_layer(layer_index, layer)
+        {
+            let quad_index = we_graph_quads.len();
+            we_graph_quads.push(quad);
+            sources
+                .push(NativeVulkanSceneDynamicSampledImageVertexSource::WeGraphQuad { quad_index });
+        }
+    }
+    let we_graph_plan = native_vulkan_scene_we_image_graph_plan(&we_graph_quads);
+    for source in sources {
+        match source {
+            NativeVulkanSceneDynamicSampledImageVertexSource::DirectRenderLayer {
+                layer_index,
+                layer,
+            } => {
+                let _ = native_vulkan_scene_append_direct_render_layer_sampled_image_vertices(
+                    layer_index,
+                    layer,
+                    vertices,
+                );
+            }
+            NativeVulkanSceneDynamicSampledImageVertexSource::WeGraphQuad { quad_index } => {
+                let Some(quad) = we_graph_quads.get(quad_index).filter(|quad| {
+                    native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad)
+                        && !native_vulkan_scene_sampled_image_suppresses_unimplemented_we_effect_chain(quad)
+                }) else {
+                    continue;
+                };
+                if native_vulkan_scene_sampled_image_needs_we_effect_chain(quad) {
+                    for we_graph_step in native_vulkan_scene_we_image_graph_steps_for_layer(
+                        &we_graph_plan,
+                        quad.layer_index,
+                    ) {
+                        let _ = native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
+                            quad,
+                            we_graph_step,
+                            &we_graph_plan,
+                            None,
+                            vertices,
+                        );
+                    }
+                } else {
+                    let _ = native_vulkan_scene_append_sampled_image_vertices_in_scene(
+                        quad, None, vertices,
+                    );
+                }
+            }
+        }
+    }
+
+    if vertices.is_empty() {
+        return Err(
+            "dynamic sampled-image scene produced no sampled draw-pass geometry".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn native_vulkan_scene_render_layer_is_sampled_image_draw_op(layer: &SceneRenderLayer) -> bool {
+    layer.opacity > 0.0 && layer.kind == SceneNodeKind::Image && layer.source.is_some()
+}
+
+fn native_vulkan_scene_full_extent_sampled_image_layer_ready(layer: &SceneRenderLayer) -> bool {
+    layer.kind == SceneNodeKind::Image
+        && layer.source.is_some()
+        && layer.mesh.is_none()
+        && layer.opacity >= 1.0
+        && layer.width.is_none()
+        && layer.height.is_none()
+        && layer.transform == SceneTransform::default()
+}
+
+fn native_vulkan_scene_render_layer_uses_direct_retained_sampled_vertices(
+    layer: &SceneRenderLayer,
+) -> bool {
+    layer.image_effect_passes.is_empty() && layer.blend_mode != SceneBlendMode::HslColor
+}
+
+fn native_vulkan_scene_sampled_image_quad_from_render_layer(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+) -> Option<NativeVulkanSceneSampledImageQuad> {
+    let texture_slots = native_vulkan_scene_texture_slots_from_render_slots(&layer.texture_slots);
+    let effect_passes =
+        native_vulkan_scene_effect_passes_from_render_passes(&layer.image_effect_passes);
+    let material_pass = native_vulkan_scene_sampled_image_material_pass(
+        NativeVulkanSceneMaterialKind::SampledImage,
+        layer.blend_mode,
+        layer.alpha_texture_slot,
+        layer.alpha_texture_mode,
+        texture_slots.len(),
+        &effect_passes,
+    );
+    Some(NativeVulkanSceneSampledImageQuad {
+        layer_index,
+        layer_id: layer.id.clone(),
+        source: layer.source.clone()?,
+        texture_slots,
+        image_effect_pass_count: effect_passes.len(),
+        effect_target_pass: native_vulkan_scene_render_first_class_effect_target_pass(
+            &layer.image_effect_passes,
+        ),
+        material_pass,
+        base_blend_mode: layer.blend_mode,
+        effect_passes,
+        composite_key: layer.composite_key.clone(),
+        fit: layer.fit,
+        opacity: layer.opacity.clamp(0.0, 1.0),
+        tint: native_vulkan_scene_tint_from_color(layer.color.as_deref()),
+        width: layer.width.unwrap_or(0.0),
+        height: layer.height.unwrap_or(0.0),
+        mesh: layer.mesh.clone(),
+        effect_uv_space: native_vulkan_scene_opacity_effect_uv_space_from_render_layer(layer),
+        effect_motion: layer.effect_motion,
+        texture_region: layer.texture_region,
+        transform: layer.transform,
+    })
+}
+
+fn native_vulkan_scene_append_direct_render_layer_sampled_image_vertices(
+    layer_index: usize,
+    layer: &SceneRenderLayer,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let effect_passes = Vec::new();
+    let material_pass = native_vulkan_scene_sampled_image_material_pass(
+        NativeVulkanSceneMaterialKind::SampledImage,
+        layer.blend_mode,
+        layer.alpha_texture_slot,
+        layer.alpha_texture_mode,
+        0,
+        &effect_passes,
+    );
+    let quad = NativeVulkanSceneSampledImageQuad {
+        layer_index,
+        layer_id: String::new(),
+        source: PathBuf::new(),
+        texture_slots: Vec::new(),
+        image_effect_pass_count: 0,
+        effect_target_pass: None,
+        material_pass,
+        base_blend_mode: layer.blend_mode,
+        effect_passes,
+        composite_key: None,
+        fit: layer.fit,
+        opacity: layer.opacity.clamp(0.0, 1.0),
+        tint: native_vulkan_scene_tint_from_color(layer.color.as_deref()),
+        width: layer.width.unwrap_or(0.0),
+        height: layer.height.unwrap_or(0.0),
+        mesh: layer.mesh.clone(),
+        effect_uv_space: native_vulkan_scene_opacity_effect_uv_space_from_render_layer(layer),
+        effect_motion: layer.effect_motion,
+        texture_region: layer.texture_region,
+        transform: layer.transform,
+    };
+    if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(&quad) {
+        return None;
+    }
+    native_vulkan_scene_append_sampled_image_vertices_in_scene(&quad, None, vertices)
+}
+
 fn native_vulkan_scene_sampled_image_needs_we_effect_chain(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> bool {
@@ -1125,20 +1319,17 @@ fn native_vulkan_scene_record_we_graph_sampled_image_steps(
     }
 }
 
-fn native_vulkan_scene_we_image_graph_steps_for_layer(
-    plan: &NativeVulkanSceneWeImageGraphPlan,
+fn native_vulkan_scene_we_image_graph_steps_for_layer<'a>(
+    plan: &'a NativeVulkanSceneWeImageGraphPlan,
     layer_index: usize,
-) -> Vec<&NativeVulkanSceneWeImageGraphStep> {
-    plan.steps
-        .iter()
-        .filter(|step| {
-            step.layer_index == layer_index
-                && matches!(
-                    step.execution,
-                    NativeVulkanSceneWeImagePassExecution::FirstClassTarget
-                )
-        })
-        .collect()
+) -> impl Iterator<Item = &'a NativeVulkanSceneWeImageGraphStep> {
+    plan.steps.iter().filter(move |step| {
+        step.layer_index == layer_index
+            && matches!(
+                step.execution,
+                NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+            )
+    })
 }
 
 fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
@@ -1273,6 +1464,114 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
                 vertices,
                 indices,
             )
+        }
+    }
+}
+
+fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if native_vulkan_scene_we_graph_step_is_direct_terminal_source_effect(step) {
+        return native_vulkan_scene_append_sampled_image_vertices_in_scene(
+            quad, scene_size, vertices,
+        );
+    }
+    if step.pass.final_scene_pass {
+        let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+        if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
+            quad, step, plan,
+        ) {
+            if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan)
+            {
+                return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_vertices(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    scene_size,
+                    vertices,
+                );
+            }
+        }
+        if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan) {
+            if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
+                &final_quad,
+                step,
+                scene_size,
+            ) {
+                return native_vulkan_scene_append_sampled_image_effect_pass_vertices_with_target_bounds(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    vertices,
+                );
+            }
+            return native_vulkan_scene_append_sampled_image_effect_final_vertices_with_target_bounds(
+                &final_quad,
+                bounds,
+                step.pass.effect_uv_transform,
+                native_vulkan_scene_we_graph_step_final_mask_uv_uses_target_uv(step),
+                scene_size,
+                vertices,
+            );
+        }
+        return native_vulkan_scene_append_sampled_image_effect_final_vertices(
+            &final_quad,
+            scene_size,
+            vertices,
+        );
+    }
+    match step.pass.role {
+        NativeVulkanSceneWeImagePassRole::BaseMaterial => {
+            native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
+                .and_then(|bounds| {
+                    if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
+                        quad, step, plan,
+                    ) {
+                        return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_vertices_with_target_bounds(
+                            quad,
+                            bounds,
+                            vertices,
+                        );
+                    }
+                    native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
+                        quad, bounds, vertices,
+                    )
+                })
+                .or_else(|| native_vulkan_scene_append_sampled_image_effect_base_vertices(quad, vertices))
+        }
+        NativeVulkanSceneWeImagePassRole::EffectMaterial
+        | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+            let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if let Some(bounds) = native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
+            {
+                local_quad.mesh = None;
+                local_quad.effect_motion = SceneNativeEffectMotion::default();
+                local_quad.texture_region = None;
+                if native_vulkan_scene_we_graph_step_is_vertex_skew(step) {
+                    return native_vulkan_scene_append_sampled_image_vertex_skew_effect_pass_vertices_with_target_bounds(
+                        &local_quad,
+                        bounds,
+                        &step.pass,
+                        vertices,
+                    );
+                }
+                return native_vulkan_scene_append_sampled_image_effect_pass_vertices_with_target_bounds(
+                    &local_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    vertices,
+                );
+            }
+            local_quad.mesh = None;
+            local_quad.effect_motion = SceneNativeEffectMotion::default();
+            local_quad.texture_region = None;
+            local_quad.effect_uv_space =
+                native_vulkan_scene_we_graph_step_effect_uv_space(quad, step);
+            native_vulkan_scene_append_sampled_image_effect_base_vertices(&local_quad, vertices)
         }
     }
 }
@@ -2606,8 +2905,6 @@ fn native_vulkan_scene_sampled_image_quad_has_recordable_geometry(
                 && quad.height.is_finite()
                 && quad.height > 0.0
                 && mesh.vertices.len() >= 3
-                && mesh.indices.len() >= 3
-                && mesh.indices.len() % 3 == 0
         } else {
             quad.width.is_finite()
                 && quad.width > 0.0
@@ -4183,6 +4480,29 @@ fn native_vulkan_scene_append_sampled_image_vertices(
     Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
 }
 
+fn native_vulkan_scene_append_sampled_image_vertices_in_scene(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let before_vertices = vertices.len();
+    let vertex_count = match native_vulkan_scene_append_sampled_image_vertices(quad, vertices) {
+        Some(vertex_count) => vertex_count,
+        None => {
+            vertices.truncate(before_vertices);
+            return None;
+        }
+    };
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
+        &vertices[before_vertices..],
+        scene_size,
+    ) {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(vertex_count)
+}
+
 fn native_vulkan_scene_sampled_image_cpu_effect_motion(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> SceneNativeEffectMotion {
@@ -4525,6 +4845,108 @@ fn native_vulkan_scene_append_sampled_image_effect_base_geometry(
     })
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_base_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let before_vertices = vertices.len();
+    let result = if let Some(mesh) = &quad.mesh {
+        native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices(quad, mesh, vertices)
+    } else {
+        native_vulkan_scene_append_sampled_image_effect_base_quad_vertices(quad, vertices)
+    };
+    if result.is_none() {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(
+        vertices
+            .len()
+            .saturating_sub(before_vertices)
+            .min(u32::MAX as usize) as u32,
+    )
+}
+
+fn native_vulkan_scene_append_sampled_image_effect_final_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let mut final_quad = quad.clone();
+    final_quad.mesh = None;
+    final_quad.effect_motion = SceneNativeEffectMotion::default();
+    final_quad.texture_region = None;
+    final_quad.effect_uv_space = native_vulkan_scene_sampled_image_effect_final_uv_space(quad);
+    native_vulkan_scene_append_sampled_image_vertices_in_scene(&final_quad, scene_size, vertices)
+}
+
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let mesh = quad.mesh.as_deref()?;
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= f64::EPSILON
+        || quad.height <= f64::EPSILON
+    {
+        return None;
+    }
+    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let before_vertices = vertices.len();
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
+    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
+    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
+    let rotation = quad.transform.rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    let (min_u, min_v, domain_u, domain_v) =
+        native_vulkan_scene_waterwaves_uv_domain_from_bounds(quad, bounds)?;
+    vertices.reserve(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            vertices.truncate(before_vertices);
+            return None;
+        }
+        let x = vertex.x + local_offset_x;
+        let y = vertex.y + local_offset_y;
+        let position =
+            native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
+        let layer_uv = [vertex.u as f32, vertex.v as f32];
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv: [
+                ((vertex.u - min_u) / domain_u) as f32,
+                ((vertex.v - min_v) / domain_v) as f32,
+            ],
+            effect_uv: native_vulkan_scene_apply_effect_uv_transform(layer_uv, effect_uv_transform),
+            opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
+            tint,
+        });
+    }
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
+        &vertices[before_vertices..],
+        scene_size,
+    ) {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(
+        vertices
+            .len()
+            .saturating_sub(before_vertices)
+            .min(u32::MAX as usize) as u32,
+    )
+}
+
 fn native_vulkan_scene_append_sampled_image_effect_final_geometry(
     quad: &NativeVulkanSceneSampledImageQuad,
     scene_size: Option<SceneSize>,
@@ -4706,6 +5128,86 @@ fn native_vulkan_scene_append_sampled_image_effect_final_geometry_with_target_bo
     })
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_final_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    mask_uv_uses_target_uv: bool,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= 0.0
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let before_vertices = vertices.len();
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let rotation = quad.transform.rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    let target_vertices = [
+        (
+            [bounds.left, bounds.top],
+            [0.0, 1.0],
+            [bounds.left, bounds.top],
+        ),
+        (
+            [bounds.left + bounds.width, bounds.top],
+            [1.0, 1.0],
+            [bounds.left + bounds.width, bounds.top],
+        ),
+        (
+            [bounds.left, bounds.top + bounds.height],
+            [0.0, 0.0],
+            [bounds.left, bounds.top + bounds.height],
+        ),
+        (
+            [bounds.left + bounds.width, bounds.top + bounds.height],
+            [1.0, 0.0],
+            [bounds.left + bounds.width, bounds.top + bounds.height],
+        ),
+    ];
+    for (layer_position, uv, effect_position) in target_vertices {
+        let local_x = layer_position[0] - quad.transform.anchor_x * quad.width;
+        let local_y = layer_position[1] - quad.transform.anchor_y * quad.height;
+        let position = native_vulkan_scene_transform_point_with_rotation(
+            local_x,
+            local_y,
+            quad.transform,
+            cos,
+            sin,
+        )?;
+        let effect_uv = if mask_uv_uses_target_uv {
+            native_vulkan_scene_apply_effect_uv_transform(uv, effect_uv_transform)
+        } else {
+            native_vulkan_scene_graph_target_effect_uv(
+                effect_position[0],
+                effect_position[1],
+                quad,
+                effect_uv_transform,
+            )
+        };
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv,
+            effect_uv,
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
+        &vertices[before_vertices..],
+        scene_size,
+    ) {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
+}
+
 fn native_vulkan_scene_sampled_image_effect_final_uv_space(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<NativeVulkanSceneEffectUvSpace> {
@@ -4855,6 +5357,36 @@ fn native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bou
     })
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds) {
+        return None;
+    }
+    let before_vertices = vertices.len();
+    let result = if let Some(mesh) = &quad.mesh {
+        native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices_with_target_bounds(
+            quad, mesh, bounds, vertices,
+        )
+    } else {
+        native_vulkan_scene_append_sampled_image_effect_base_quad_vertices_with_target_bounds(
+            quad, bounds, vertices,
+        )
+    };
+    if result.is_none() {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(
+        vertices
+            .len()
+            .saturating_sub(before_vertices)
+            .min(u32::MAX as usize) as u32,
+    )
+}
+
 fn native_vulkan_scene_we_graph_step_is_vertex_skew(
     step: &NativeVulkanSceneWeImageGraphStep,
 ) -> bool {
@@ -4928,6 +5460,48 @@ fn native_vulkan_scene_append_sampled_image_vertex_skew_effect_pass_geometry_wit
     })
 }
 
+fn native_vulkan_scene_append_sampled_image_vertex_skew_effect_pass_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    pass: &NativeVulkanSceneWeImagePass,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let top = native_vulkan_scene_we_image_pass_constant_f64(pass, &["top", "g_Top"], 0.0);
+    let bottom = native_vulkan_scene_we_image_pass_constant_f64(pass, &["bottom", "g_Bottom"], 0.0);
+    let left = native_vulkan_scene_we_image_pass_constant_f64(pass, &["left", "g_Left"], 0.0);
+    let right = native_vulkan_scene_we_image_pass_constant_f64(pass, &["right", "g_Right"], 0.0);
+    let source_vertices = [
+        ([0.0, 0.0], [0.0, 1.0], bottom, left),
+        ([quad.width, 0.0], [1.0, 1.0], bottom, right),
+        ([0.0, quad.height], [0.0, 0.0], top, left),
+        ([quad.width, quad.height], [1.0, 0.0], top, right),
+    ];
+    for (source_position, uv, x_skew, y_skew) in source_vertices {
+        let layer_x = source_position[0] + x_skew * quad.width;
+        let layer_y = source_position[1] + y_skew * quad.height;
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [
+                (layer_x - bounds.left) as f32,
+                (layer_y - bounds.top) as f32,
+            ],
+            uv,
+            effect_uv: native_vulkan_scene_graph_target_effect_uv(layer_x, layer_y, quad, None),
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
+}
+
 fn native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
     bounds: NativeVulkanSceneWeImageGraphTargetBounds,
@@ -4985,6 +5559,51 @@ fn native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bou
         first_index,
         index_count: SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT,
     })
+}
+
+fn native_vulkan_scene_append_sampled_image_effect_pass_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds) {
+        return None;
+    }
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let target_vertices = [
+        ([0.0, 0.0], [0.0, 1.0], [bounds.left, bounds.top]),
+        (
+            [bounds.width, 0.0],
+            [1.0, 1.0],
+            [bounds.left + bounds.width, bounds.top],
+        ),
+        (
+            [0.0, bounds.height],
+            [0.0, 0.0],
+            [bounds.left, bounds.top + bounds.height],
+        ),
+        (
+            [bounds.width, bounds.height],
+            [1.0, 0.0],
+            [bounds.left + bounds.width, bounds.top + bounds.height],
+        ),
+    ];
+    for (position, uv, effect_position) in target_vertices {
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [position[0] as f32, position[1] as f32],
+            uv,
+            effect_uv: native_vulkan_scene_graph_target_effect_uv(
+                effect_position[0],
+                effect_position[1],
+                quad,
+                effect_uv_transform,
+            ),
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
 }
 
 fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry(
@@ -5066,6 +5685,75 @@ fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry(
     Some(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_base_quad_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    if !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let target_vertices = [
+        (
+            [0.0, 0.0],
+            [region.u_min as f32, region.v_max as f32],
+            [0.0, 1.0],
+        ),
+        (
+            [quad.width as f32, 0.0],
+            [region.u_max as f32, region.v_max as f32],
+            [1.0, 1.0],
+        ),
+        (
+            [0.0, quad.height as f32],
+            [region.u_min as f32, region.v_min as f32],
+            [0.0, 0.0],
+        ),
+        (
+            [quad.width as f32, quad.height as f32],
+            [region.u_max as f32, region.v_min as f32],
+            [1.0, 0.0],
+        ),
+    ];
+    for (position, uv, default_effect_uv) in target_vertices {
+        let effect_uv = if quad.effect_uv_space.is_some() {
+            native_vulkan_scene_sampled_image_vertex_effect_uv(
+                position,
+                f64::from(position[0]),
+                f64::from(position[1]),
+                uv,
+                quad,
+            )
+        } else {
+            default_effect_uv
+        };
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv,
+            effect_uv,
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    Some(())
+}
+
 fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry_with_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
     bounds: NativeVulkanSceneWeImageGraphTargetBounds,
@@ -5133,6 +5821,70 @@ fn native_vulkan_scene_append_sampled_image_effect_base_quad_geometry_with_targe
     Some(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_base_quad_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    if !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let target_vertices = [
+        (
+            [0.0 - bounds.left, 0.0 - bounds.top],
+            [region.u_min as f32, region.v_max as f32],
+            [0.0, 0.0],
+        ),
+        (
+            [quad.width - bounds.left, 0.0 - bounds.top],
+            [region.u_max as f32, region.v_max as f32],
+            [quad.width, 0.0],
+        ),
+        (
+            [0.0 - bounds.left, quad.height - bounds.top],
+            [region.u_min as f32, region.v_min as f32],
+            [0.0, quad.height],
+        ),
+        (
+            [quad.width - bounds.left, quad.height - bounds.top],
+            [region.u_max as f32, region.v_min as f32],
+            [quad.width, quad.height],
+        ),
+    ];
+    for (position, uv, effect_position) in target_vertices {
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [position[0] as f32, position[1] as f32],
+            uv,
+            effect_uv: native_vulkan_scene_graph_target_effect_uv(
+                effect_position[0],
+                effect_position[1],
+                quad,
+                None,
+            ),
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    Some(())
+}
+
 fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
     bounds: NativeVulkanSceneWeImageGraphTargetBounds,
@@ -5181,6 +5933,53 @@ fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_w
     }
     native_vulkan_scene_append_full_sampled_image_quad_indices(first_vertex, indices);
     Some(SCENE_FULL_SAMPLED_IMAGE_INDEX_COUNT)
+}
+
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    if !native_vulkan_scene_target_bounds_valid(bounds)
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let target_vertices = [
+        ([0.0, 0.0], [bounds.left, bounds.top]),
+        (
+            [bounds.width, 0.0],
+            [bounds.left + bounds.width, bounds.top],
+        ),
+        (
+            [0.0, bounds.height],
+            [bounds.left, bounds.top + bounds.height],
+        ),
+        (
+            [bounds.width, bounds.height],
+            [bounds.left + bounds.width, bounds.top + bounds.height],
+        ),
+    ];
+    for (position, effect_position) in target_vertices {
+        let layer_uv = native_vulkan_scene_graph_target_effect_uv(
+            effect_position[0],
+            effect_position[1],
+            quad,
+            None,
+        );
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [position[0] as f32, position[1] as f32],
+            uv: native_vulkan_scene_apply_texture_region_to_uv(layer_uv, quad.texture_region),
+            effect_uv: layer_uv,
+            opacity,
+            tint: quad.tint,
+        });
+    }
+    Some(SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT)
 }
 
 fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry(
@@ -5261,6 +6060,78 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry(
     Some(index_count)
 }
 
+fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    if mesh.vertices.len() < 3
+        || mesh.indices.len() < 3
+        || mesh.indices.len() % 3 != 0
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let before_vertices = vertices.len();
+    vertices.reserve(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            vertices.truncate(before_vertices);
+            return None;
+        }
+        let x = vertex.x + quad.width * 0.5;
+        let y = vertex.y + quad.height * 0.5;
+        let uv = native_vulkan_scene_sampled_image_effect_base_mesh_uv(vertex, region);
+        let position = [x as f32, y as f32];
+        let effect_uv = if quad.effect_uv_space.is_some() {
+            native_vulkan_scene_sampled_image_vertex_effect_uv(
+                position, vertex.x, vertex.y, uv, quad,
+            )
+        } else {
+            native_vulkan_scene_sampled_image_effect_uv(
+                vertex.x,
+                vertex.y,
+                quad.width,
+                quad.height,
+                SceneTransform {
+                    anchor_x: 0.5,
+                    anchor_y: 0.5,
+                    ..SceneTransform::default()
+                },
+            )
+        };
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv,
+            effect_uv,
+            opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
+            tint: quad.tint,
+        });
+    }
+    Some(())
+}
+
 fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry_with_target_bounds(
     quad: &NativeVulkanSceneSampledImageQuad,
     mesh: &SceneMesh,
@@ -5333,6 +6204,74 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_geometry_with_targe
             .map(|index| first_vertex.saturating_add(*index)),
     );
     Some(index_count)
+}
+
+fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices_with_target_bounds(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    mesh: &SceneMesh,
+    bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<()> {
+    if mesh.vertices.len() < 3
+        || mesh.indices.len() < 3
+        || mesh.indices.len() % 3 != 0
+        || !quad.width.is_finite()
+        || quad.width <= 0.0
+        || !quad.height.is_finite()
+        || quad.height <= 0.0
+    {
+        return None;
+    }
+    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
+        u_min: 0.0,
+        v_min: 0.0,
+        u_max: 1.0,
+        v_max: 1.0,
+        frame_index: 0,
+        frame_count: 1,
+        columns: 1,
+        rows: 1,
+        fps: None,
+        loop_playback: true,
+    });
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let before_vertices = vertices.len();
+    vertices.reserve(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            vertices.truncate(before_vertices);
+            return None;
+        }
+        let layer_x = vertex.x + quad.width * 0.5;
+        let layer_y = vertex.y + quad.height * 0.5;
+        let uv = native_vulkan_scene_sampled_image_effect_base_mesh_uv(vertex, region);
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position: [
+                (layer_x - bounds.left) as f32,
+                (layer_y - bounds.top) as f32,
+            ],
+            uv,
+            effect_uv: native_vulkan_scene_sampled_image_effect_uv(
+                vertex.x,
+                vertex.y,
+                quad.width,
+                quad.height,
+                SceneTransform {
+                    anchor_x: 0.5,
+                    anchor_y: 0.5,
+                    ..SceneTransform::default()
+                },
+            ),
+            opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
+            tint: quad.tint,
+        });
+    }
+    Some(())
 }
 
 fn native_vulkan_scene_sampled_image_effect_base_mesh_uv(
@@ -5703,8 +6642,6 @@ fn native_vulkan_scene_append_sampled_image_mesh_vertices(
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<()> {
     if mesh.vertices.len() < 3
-        || mesh.indices.len() < 3
-        || mesh.indices.len() % 3 != 0
         || !quad.width.is_finite()
         || quad.width <= 0.0
         || !quad.height.is_finite()

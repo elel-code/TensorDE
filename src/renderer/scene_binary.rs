@@ -52,7 +52,7 @@ use crate::core::scene::{
     SceneEffectFbo, SceneEffectUvExtent, SceneEffectUvMapping, SceneEffectUvTransform, SceneMesh,
     SceneMeshPuppetClippingRecord, SceneMeshSkin, SceneMeshSkinAttachment, SceneMeshSkinBone,
     SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetAnimationBone, ScenePuppetAnimationClip,
-    ScenePuppetAnimationLayer, ScenePuppetAttachmentDelta,
+    ScenePuppetAnimationLayer, ScenePuppetAttachmentDelta, ScenePuppetSkinningMatrices,
 };
 use crate::core::{
     FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSize, SceneSystems,
@@ -83,6 +83,7 @@ const BINARY_EFFECT_UV_HAS_INPUT_EXTENT: u16 = 1;
 const BINARY_EFFECT_UV_HAS_MASK_EXTENT: u16 = 1 << 1;
 const BINARY_EFFECT_UV_HAS_MASK_BACKING_EXTENT: u16 = 1 << 2;
 const BINARY_TEXTURE_ROLE_BASE_COLOR: u16 = 1;
+const BINARY_SCENE_RECORD_STREAM_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone)]
 struct BinarySceneResource {
@@ -97,7 +98,6 @@ struct BinarySceneReader {
     file_len: usize,
     package_root: PathBuf,
     layout: SceneBinaryLayoutPlan,
-    chunk_payload_cache: BTreeMap<SceneBinaryChunkKind, Arc<Vec<u8>>>,
     node_records_cache: Option<Arc<Vec<SceneBinaryNodeRecord>>>,
     geometry_records_cache: Option<Arc<Vec<SceneBinaryGeometryRecord>>>,
     material_records_cache: Option<Arc<Vec<SceneBinaryMaterialPassRecord>>>,
@@ -106,14 +106,20 @@ struct BinarySceneReader {
     transform_timeline_records_cache: Option<Arc<Vec<SceneBinaryTransformTimelineRecord>>>,
     transform_keyframe_records_cache: Option<Arc<Vec<SceneBinaryTransformKeyframeRecord>>>,
     geometry_mesh_cache: BTreeMap<(u32, u32), Arc<SceneMesh>>,
-    sampled_puppet_mesh_cache: BTreeMap<(u32, u32, u64), Arc<SceneMesh>>,
+    puppet_skinning_cache: BTreeMap<u32, BinaryScenePuppetSkinningCacheEntry>,
+    puppet_frame_skinning_cache: BTreeMap<u32, Arc<ScenePuppetSkinningMatrices>>,
     material_texture_slots_cache: BTreeMap<u32, Arc<Vec<SceneRenderTextureSlot>>>,
     material_effect_passes_cache: BTreeMap<u32, Arc<Vec<SceneRenderImageEffectPass>>>,
     particle_templates_cache: BTreeMap<u32, Arc<Vec<BinarySceneParticleTemplate>>>,
     puppet_attachment_mesh_cache: BTreeMap<u32, Arc<SceneMesh>>,
     puppet_attachment_delta_cache:
         BTreeMap<(u32, u64), Option<Arc<BTreeMap<String, ScenePuppetAttachmentDelta>>>>,
+    puppet_clips_cache: BTreeMap<u32, Arc<Vec<ScenePuppetAnimationClip>>>,
     puppet_layers_cache: BTreeMap<u32, Arc<Vec<ScenePuppetAnimationLayer>>>,
+}
+
+struct BinaryScenePuppetSkinningCacheEntry {
+    inverse_bind_world: Vec<[f64; 16]>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -190,7 +196,6 @@ impl BinarySceneReader {
             file_len,
             package_root: binary_scene_package_root(path),
             layout,
-            chunk_payload_cache: BTreeMap::new(),
             node_records_cache: None,
             geometry_records_cache: None,
             material_records_cache: None,
@@ -199,12 +204,14 @@ impl BinarySceneReader {
             transform_timeline_records_cache: None,
             transform_keyframe_records_cache: None,
             geometry_mesh_cache: BTreeMap::new(),
-            sampled_puppet_mesh_cache: BTreeMap::new(),
+            puppet_skinning_cache: BTreeMap::new(),
+            puppet_frame_skinning_cache: BTreeMap::new(),
             material_texture_slots_cache: BTreeMap::new(),
             material_effect_passes_cache: BTreeMap::new(),
             particle_templates_cache: BTreeMap::new(),
             puppet_attachment_mesh_cache: BTreeMap::new(),
             puppet_attachment_delta_cache: BTreeMap::new(),
+            puppet_clips_cache: BTreeMap::new(),
             puppet_layers_cache: BTreeMap::new(),
         })
     }
@@ -215,13 +222,7 @@ impl BinarySceneReader {
             .map_or(0, |chunk| chunk.record_count as usize)
     }
 
-    fn chunk_payload(
-        &mut self,
-        kind: SceneBinaryChunkKind,
-    ) -> Result<Arc<Vec<u8>>, RendererPlanError> {
-        if let Some(payload) = self.chunk_payload_cache.get(&kind) {
-            return Ok(Arc::clone(payload));
-        }
+    fn chunk_payload(&mut self, kind: SceneBinaryChunkKind) -> Result<Vec<u8>, RendererPlanError> {
         let descriptor = self
             .layout
             .chunk(kind)
@@ -234,13 +235,7 @@ impl BinarySceneReader {
                 container_len: self.file_len,
             })
         })?;
-        let payload = Arc::new(binary_scene_read_exact_at(
-            &mut self.file,
-            descriptor.offset,
-            length,
-        )?);
-        self.chunk_payload_cache.insert(kind, Arc::clone(&payload));
-        Ok(payload)
+        binary_scene_read_exact_at(&mut self.file, descriptor.offset, length)
     }
 
     fn records<T>(
@@ -269,6 +264,14 @@ impl BinarySceneReader {
             .chunk(kind)
             .cloned()
             .ok_or_else(|| binary_plan_error(SceneBinaryError::MissingChunk { kind }))?;
+        if record_size == 0 {
+            return Err(binary_plan_error(SceneBinaryError::InvalidRecordPayload {
+                kind,
+                record_size,
+                record_count,
+                length: usize::try_from(descriptor.length).unwrap_or(usize::MAX),
+            }));
+        }
         if record_count == 0 {
             return Ok(Vec::new());
         }
@@ -322,26 +325,79 @@ impl BinarySceneReader {
                 chunk_record_count: descriptor.record_count,
             })
         })?;
-        let payload = self.chunk_payload(kind)?;
         let end_offset = byte_offset.checked_add(byte_len).ok_or_else(|| {
             binary_plan_error(SceneBinaryError::InvalidRecordPayload {
                 kind,
                 record_size,
                 record_count,
-                length: payload.len(),
+                length: usize::try_from(descriptor.length).unwrap_or(usize::MAX),
             })
         })?;
-        let bytes = payload.get(byte_offset..end_offset).ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::InvalidRecordPayload {
+        let descriptor_len = usize::try_from(descriptor.length).map_err(|_| {
+            binary_plan_error(SceneBinaryError::ChunkOutOfBounds {
+                kind,
+                offset: descriptor.offset,
+                length: descriptor.length,
+                container_len: self.file_len,
+            })
+        })?;
+        if end_offset > descriptor_len {
+            return Err(binary_plan_error(SceneBinaryError::InvalidRecordPayload {
                 kind,
                 record_size,
                 record_count,
-                length: payload.len(),
-            })
-        })?;
+                length: descriptor_len,
+            }));
+        }
+        let absolute_offset = descriptor
+            .offset
+            .checked_add(byte_offset as u64)
+            .ok_or_else(|| {
+                binary_plan_error(SceneBinaryError::ChunkOutOfBounds {
+                    kind,
+                    offset: descriptor.offset,
+                    length: descriptor.length,
+                    container_len: self.file_len,
+                })
+            })?;
         let mut records = Vec::with_capacity(count);
-        for chunk in bytes.chunks_exact(record_size) {
-            records.push(decode(chunk).map_err(binary_plan_error)?);
+        if byte_len == 0 {
+            return Ok(records);
+        }
+        self.file
+            .seek(SeekFrom::Start(absolute_offset))
+            .map_err(|err| {
+                binary_plan_error(SceneBinaryError::StreamIo {
+                    operation: "seek",
+                    message: err.to_string(),
+                })
+            })?;
+        let stream_bytes = byte_len.min(BINARY_SCENE_RECORD_STREAM_BYTES);
+        let records_per_read = (stream_bytes / record_size).max(1);
+        let mut buffer = vec![0; records_per_read.saturating_mul(record_size)];
+        let mut remaining_records = count;
+        while remaining_records > 0 {
+            let read_records = remaining_records.min(records_per_read);
+            let read_len = read_records.checked_mul(record_size).ok_or_else(|| {
+                binary_plan_error(SceneBinaryError::InvalidRecordPayload {
+                    kind,
+                    record_size,
+                    record_count,
+                    length: descriptor_len,
+                })
+            })?;
+            self.file
+                .read_exact(&mut buffer[..read_len])
+                .map_err(|err| {
+                    binary_plan_error(SceneBinaryError::StreamIo {
+                        operation: "read",
+                        message: err.to_string(),
+                    })
+                })?;
+            for chunk in buffer[..read_len].chunks_exact(record_size) {
+                records.push(decode(chunk).map_err(binary_plan_error)?);
+            }
+            remaining_records -= read_records;
         }
         Ok(records)
     }
@@ -1328,7 +1384,7 @@ fn binary_scene_render_layers_into(
 ) -> Result<(), RendererPlanError> {
     layers.clear();
     reader.puppet_attachment_delta_cache.clear();
-    reader.sampled_puppet_mesh_cache.clear();
+    reader.puppet_frame_skinning_cache.clear();
     let node_records = reader.node_records_cached()?;
     let mut node_geometries = Vec::with_capacity(node_records.len());
     let mut node_states = Vec::with_capacity(node_records.len());
@@ -1786,6 +1842,11 @@ fn binary_scene_render_layer(
                 .find(|slot| slot.slot == 0)
                 .map(|slot| slot.source.clone())
         });
+    let blend_mode = material
+        .map(|material| binary_scene_blend_mode(material.blend_mode))
+        .unwrap_or_default();
+    let sampled_mesh_needs_indices = kind == SceneNodeKind::Image
+        && (!image_effect_passes.is_empty() || blend_mode == SceneBlendMode::HslColor);
     Ok(SceneRenderLayer {
         id: binary_name(names, node.id_name)
             .unwrap_or("binary-node")
@@ -1801,9 +1862,7 @@ fn binary_scene_render_layer(
         composite_key: None,
         texture_region: None::<SceneTextureRegion>,
         effect_motion: Default::default(),
-        blend_mode: material
-            .map(|material| binary_scene_blend_mode(material.blend_mode))
-            .unwrap_or_default(),
+        blend_mode,
         audio: Vec::new(),
         color: binary_scene_flagged_color(node.flags, BINARY_NODE_FLAG_COLOR, node.color_rgba),
         stroke_color: binary_scene_flagged_color(
@@ -1823,6 +1882,7 @@ fn binary_scene_render_layer(
             geometry,
             node.puppet_index,
             snapshot_time_ms,
+            sampled_mesh_needs_indices,
         )?,
         text: binary_name(names, node.text_name).map(str::to_owned),
         font_size: (node.font_size > 0.0).then_some(f64::from(node.font_size)),
@@ -2100,6 +2160,7 @@ fn binary_scene_mesh(
     geometry: SceneBinaryGeometryRecord,
     puppet_index: u32,
     snapshot_time_ms: u64,
+    retain_sampled_indices: bool,
 ) -> Result<Option<Arc<SceneMesh>>, RendererPlanError> {
     if geometry.primitive_kind != SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH
         || geometry.vertex_layout != SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY
@@ -2115,19 +2176,59 @@ fn binary_scene_mesh(
     if puppet.animation_layer_count == 0 || puppet.bone_count == 0 || puppet.clip_count == 0 {
         return Ok(Some(mesh));
     }
-    let cache_key = (geometry_index, puppet_index, snapshot_time_ms);
-    if let Some(sampled) = reader.sampled_puppet_mesh_cache.get(&cache_key) {
-        return Ok(Some(Arc::clone(sampled)));
-    }
     let layers = binary_scene_puppet_layers_cached(reader, puppet_index, puppet)?;
-    let sampled = mesh
-        .sample_puppet_animation(layers.as_slice(), snapshot_time_ms)
-        .map(Arc::new)
-        .unwrap_or(mesh);
-    reader
-        .sampled_puppet_mesh_cache
-        .insert(cache_key, Arc::clone(&sampled));
-    Ok(Some(sampled))
+    let clips = binary_scene_puppet_clips_cached(reader, puppet_index, puppet)?;
+    if !reader.puppet_skinning_cache.contains_key(&puppet_index) {
+        let Some(inverse_bind_world) = mesh.puppet_inverse_bind_world() else {
+            return Ok(Some(mesh));
+        };
+        reader.puppet_skinning_cache.insert(
+            puppet_index,
+            BinaryScenePuppetSkinningCacheEntry { inverse_bind_world },
+        );
+    }
+    let skinning = reader
+        .puppet_skinning_cache
+        .get(&puppet_index)
+        .expect("puppet skinning cache entry was inserted");
+    if !reader
+        .puppet_frame_skinning_cache
+        .contains_key(&puppet_index)
+    {
+        let Some(matrices) = mesh.sample_puppet_skin_matrices_with_clips_and_inverse_bind(
+            clips.as_slice(),
+            layers.as_slice(),
+            snapshot_time_ms,
+            &skinning.inverse_bind_world,
+        ) else {
+            return Ok(Some(mesh));
+        };
+        reader
+            .puppet_frame_skinning_cache
+            .insert(puppet_index, Arc::new(matrices));
+    }
+    let matrices = reader
+        .puppet_frame_skinning_cache
+        .get(&puppet_index)
+        .expect("puppet frame skinning cache entry was inserted");
+    let mut sampled_vertices = Vec::with_capacity(mesh.vertices.len());
+    if mesh
+        .sample_puppet_animation_vertices_with_skin_matrices_into(matrices, &mut sampled_vertices)
+        .is_none()
+    {
+        return Ok(Some(mesh));
+    }
+    Ok(Some(Arc::new(SceneMesh {
+        vertices: sampled_vertices,
+        indices: if retain_sampled_indices {
+            mesh.indices.clone()
+        } else {
+            Vec::new()
+        },
+        skin: None,
+        puppet_clips: Vec::new(),
+        puppet_clipping_records: Vec::new(),
+    })))
 }
 
 fn binary_scene_base_mesh_cached(
@@ -2181,9 +2282,6 @@ fn binary_scene_base_mesh_cached(
         if puppet.bone_count > 0 {
             mesh.skin = Some(binary_scene_puppet_skin(reader, names, puppet, true)?);
         }
-        if puppet.animation_layer_count > 0 && puppet.bone_count > 0 && puppet.clip_count > 0 {
-            mesh.puppet_clips = binary_scene_puppet_clips(reader, puppet)?;
-        }
         if puppet.clipping_record_count > 0 && mesh.skin.is_some() {
             mesh.puppet_clipping_records =
                 binary_scene_puppet_clipping_records(reader, names, puppet)?;
@@ -2228,7 +2326,12 @@ fn binary_scene_puppet_attachment_deltas(
         return Ok(None);
     }
     let layers = binary_scene_puppet_layers_cached(reader, puppet_index, puppet)?;
-    let deltas = mesh.sample_puppet_attachment_deltas(layers.as_slice(), snapshot_time_ms);
+    let clips = binary_scene_puppet_clips_cached(reader, puppet_index, puppet)?;
+    let deltas = mesh.sample_puppet_attachment_deltas_with_clips(
+        clips.as_slice(),
+        layers.as_slice(),
+        snapshot_time_ms,
+    );
     reader.puppet_attachment_delta_cache.insert(
         cache_key,
         deltas.as_ref().map(|deltas| Arc::new(deltas.clone())),
@@ -2249,8 +2352,8 @@ fn binary_scene_puppet_attachment_mesh_cached(
         vertices: Vec::new(),
         indices: Vec::new(),
         skin: Some(binary_scene_puppet_skin(reader, names, puppet, false)?),
-        puppet_clips: binary_scene_puppet_clips(reader, puppet)?,
-        puppet_clipping_records: binary_scene_puppet_clipping_records(reader, names, puppet)?,
+        puppet_clips: Vec::new(),
+        puppet_clipping_records: Vec::new(),
     });
     reader
         .puppet_attachment_mesh_cache
@@ -2271,6 +2374,21 @@ fn binary_scene_puppet_layers_cached(
         .puppet_layers_cache
         .insert(puppet_index, Arc::clone(&layers));
     Ok(layers)
+}
+
+fn binary_scene_puppet_clips_cached(
+    reader: &mut BinarySceneReader,
+    puppet_index: u32,
+    puppet: crate::core::scene::binary::SceneBinaryPuppetRecord,
+) -> Result<Arc<Vec<ScenePuppetAnimationClip>>, RendererPlanError> {
+    if let Some(clips) = reader.puppet_clips_cache.get(&puppet_index) {
+        return Ok(Arc::clone(clips));
+    }
+    let clips = Arc::new(binary_scene_puppet_clips(reader, puppet)?);
+    reader
+        .puppet_clips_cache
+        .insert(puppet_index, Arc::clone(&clips));
+    Ok(clips)
 }
 
 fn binary_scene_puppet_skin(

@@ -3604,18 +3604,124 @@ impl SceneMesh {
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<SceneMesh> {
+        let mut vertices = Vec::with_capacity(self.vertices.len());
+        self.sample_puppet_animation_vertices_into(layers, time_ms, &mut vertices)?;
+        Some(SceneMesh {
+            vertices,
+            indices: self.indices.clone(),
+            skin: self.skin.clone(),
+            puppet_clips: Vec::new(),
+            puppet_clipping_records: self.puppet_clipping_records.clone(),
+        })
+    }
+
+    pub(crate) fn sample_puppet_animation_vertices_into(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+        vertices: &mut Vec<SceneMeshVertex>,
+    ) -> Option<()> {
+        let inverse_bind_world = self.puppet_inverse_bind_world()?;
+        self.sample_puppet_animation_vertices_with_inverse_bind_into(
+            layers,
+            time_ms,
+            &inverse_bind_world,
+            vertices,
+        )
+    }
+
+    pub(crate) fn puppet_inverse_bind_world(&self) -> Option<Vec<[f64; 16]>> {
         let skin = self.skin.as_ref()?;
-        if skin.vertices.len() != self.vertices.len() {
-            return None;
-        }
-        let (skin, local_pose, bind_world, pose_world) =
-            self.sample_puppet_pose_world(layers, time_ms)?;
-        let inverse_bind_world = bind_world
+        let bind_world = scene_puppet_world_matrices(
+            skin.bones.iter().map(|bone| bone.parent),
+            skin.bones.iter().map(|bone| bone.bind.matrix()),
+        )?;
+        bind_world
             .iter()
             .map(|matrix| scene_puppet_inverse_affine_matrix(*matrix))
-            .collect::<Option<Vec<_>>>()?;
+            .collect::<Option<Vec<_>>>()
+    }
 
-        let mut vertices = Vec::with_capacity(self.vertices.len());
+    pub(crate) fn sample_puppet_animation_vertices_with_inverse_bind_into(
+        &self,
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+        inverse_bind_world: &[[f64; 16]],
+        vertices: &mut Vec<SceneMeshVertex>,
+    ) -> Option<()> {
+        self.sample_puppet_animation_vertices_with_clips_and_inverse_bind_into(
+            &self.puppet_clips,
+            layers,
+            time_ms,
+            inverse_bind_world,
+            vertices,
+        )
+    }
+
+    pub(crate) fn sample_puppet_animation_vertices_with_clips_and_inverse_bind_into(
+        &self,
+        clips: &[ScenePuppetAnimationClip],
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+        inverse_bind_world: &[[f64; 16]],
+        vertices: &mut Vec<SceneMeshVertex>,
+    ) -> Option<()> {
+        let matrices = self.sample_puppet_skin_matrices_with_clips_and_inverse_bind(
+            clips,
+            layers,
+            time_ms,
+            inverse_bind_world,
+        )?;
+        self.sample_puppet_animation_vertices_with_skin_matrices_into(&matrices, vertices)
+    }
+
+    pub(crate) fn sample_puppet_skin_matrices_with_clips_and_inverse_bind(
+        &self,
+        clips: &[ScenePuppetAnimationClip],
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+        inverse_bind_world: &[[f64; 16]],
+    ) -> Option<ScenePuppetSkinningMatrices> {
+        let skin = self.skin.as_ref()?;
+        if inverse_bind_world.len() != skin.bones.len() {
+            return None;
+        }
+        let (skin, local_pose) =
+            self.sample_puppet_local_pose_with_clips(clips, layers, time_ms)?;
+        let pose_world = scene_puppet_world_matrices(
+            skin.bones.iter().map(|bone| bone.parent),
+            local_pose.iter().map(|transform| transform.matrix()),
+        )?;
+        let skin_matrices = pose_world
+            .iter()
+            .zip(inverse_bind_world)
+            .map(|(pose, inverse_bind)| scene_puppet_matrix_mul(*pose, *inverse_bind))
+            .collect::<Vec<_>>();
+        let bone_opacities = local_pose
+            .iter()
+            .map(|pose| pose.opacity.clamp(0.0, 1.0))
+            .collect::<Vec<_>>();
+        Some(ScenePuppetSkinningMatrices {
+            skin_matrices,
+            bone_opacities,
+        })
+    }
+
+    pub(crate) fn sample_puppet_animation_vertices_with_skin_matrices_into(
+        &self,
+        matrices: &ScenePuppetSkinningMatrices,
+        vertices: &mut Vec<SceneMeshVertex>,
+    ) -> Option<()> {
+        let skin = self.skin.as_ref()?;
+        if skin.vertices.len() != self.vertices.len()
+            || matrices.skin_matrices.len() != skin.bones.len()
+            || matrices.bone_opacities.len() != skin.bones.len()
+        {
+            return None;
+        }
+
+        vertices.clear();
+        vertices.reserve(self.vertices.len().saturating_sub(vertices.capacity()));
         for (vertex, skin_vertex) in self.vertices.iter().zip(&skin.vertices) {
             let mut x = 0.0;
             let mut y = 0.0;
@@ -3627,9 +3733,12 @@ impl SceneMesh {
                     continue;
                 }
                 let bone_index = skin_vertex.bone_indices[slot];
-                let skin_matrix =
-                    scene_puppet_matrix_mul(pose_world[bone_index], inverse_bind_world[bone_index]);
-                let point = scene_puppet_transform_point_3d(skin_matrix, vertex.x, vertex.y, 0.0);
+                let point = scene_puppet_transform_point_3d(
+                    matrices.skin_matrices[bone_index],
+                    vertex.x,
+                    vertex.y,
+                    0.0,
+                );
                 x += point[0] * weight;
                 y += point[1] * weight;
                 z += point[2] * weight;
@@ -3652,9 +3761,10 @@ impl SceneMesh {
                             let weight = skin_vertex.weights[slot];
                             (weight.is_finite() && weight > f64::EPSILON).then(|| {
                                 let bone_index = skin_vertex.bone_indices[slot];
-                                local_pose
+                                matrices
+                                    .bone_opacities
                                     .get(bone_index)
-                                    .map(|pose| pose.opacity.clamp(0.0, 1.0) * weight)
+                                    .map(|opacity| opacity * weight)
                             })?
                         })
                         .sum::<f64>()
@@ -3665,13 +3775,7 @@ impl SceneMesh {
             });
         }
 
-        Some(SceneMesh {
-            vertices,
-            indices: self.indices.clone(),
-            skin: self.skin.clone(),
-            puppet_clips: Vec::new(),
-            puppet_clipping_records: self.puppet_clipping_records.clone(),
-        })
+        Some(())
     }
 
     fn puppet_animation_frame_debug(
@@ -3726,8 +3830,17 @@ impl SceneMesh {
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
+        self.sample_puppet_attachment_deltas_with_clips(&self.puppet_clips, layers, time_ms)
+    }
+
+    pub(crate) fn sample_puppet_attachment_deltas_with_clips(
+        &self,
+        clips: &[ScenePuppetAnimationClip],
+        layers: &[ScenePuppetAnimationLayer],
+        time_ms: u64,
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
         let (skin, _local_pose, bind_world, pose_world) =
-            self.sample_puppet_pose_world(layers, time_ms)?;
+            self.sample_puppet_pose_world_with_clips(clips, layers, time_ms)?;
         if skin.attachments.is_empty() {
             return None;
         }
@@ -3754,8 +3867,9 @@ impl SceneMesh {
         (!deltas.is_empty()).then_some(deltas)
     }
 
-    fn sample_puppet_pose_world(
+    fn sample_puppet_pose_world_with_clips(
         &self,
+        clips: &[ScenePuppetAnimationClip],
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<(
@@ -3764,7 +3878,8 @@ impl SceneMesh {
         Vec<[f64; 16]>,
         Vec<[f64; 16]>,
     )> {
-        let (skin, local_pose) = self.sample_puppet_local_pose(layers, time_ms)?;
+        let (skin, local_pose) =
+            self.sample_puppet_local_pose_with_clips(clips, layers, time_ms)?;
         let bind_world = scene_puppet_world_matrices(
             skin.bones.iter().map(|bone| bone.parent),
             skin.bones.iter().map(|bone| bone.bind.matrix()),
@@ -3776,8 +3891,9 @@ impl SceneMesh {
         Some((skin, local_pose, bind_world, pose_world))
     }
 
-    fn sample_puppet_local_pose(
+    fn sample_puppet_local_pose_with_clips(
         &self,
+        clips: &[ScenePuppetAnimationClip],
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
     ) -> Option<(&SceneMeshSkin, Vec<ScenePuppetTransform>)> {
@@ -3791,10 +3907,7 @@ impl SceneMesh {
             if !layer.visible || layer.blend <= 0.0 {
                 continue;
             }
-            let clip = self
-                .puppet_clips
-                .iter()
-                .find(|clip| clip.id == layer.clip_id)?;
+            let clip = clips.iter().find(|clip| clip.id == layer.clip_id)?;
             let sampled = clip.sample(layer, time_ms, skin.bones.len())?;
             let blend = layer.blend.clamp(0.0, 1.0);
             for (bone_index, transform) in sampled.iter().enumerate() {
@@ -3975,6 +4088,12 @@ pub(crate) struct ScenePuppetAttachmentDelta {
     pub(crate) x: f64,
     pub(crate) y: f64,
     pub(crate) rotation_deg: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ScenePuppetSkinningMatrices {
+    pub(crate) skin_matrices: Vec<[f64; 16]>,
+    pub(crate) bone_opacities: Vec<f64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

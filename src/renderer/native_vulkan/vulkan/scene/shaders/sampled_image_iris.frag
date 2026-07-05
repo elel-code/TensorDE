@@ -9,6 +9,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -19,7 +20,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -37,7 +37,7 @@ const float M_PI = 3.14159265359;
 const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 
 vec2 iris_motion() {
-    float time = pc.time_seconds * pc.iris_speed + pc.iris_phase_offset;
+    float time = v_time_seconds * pc.iris_speed + pc.iris_phase_offset;
     float low_dt = floor(time);
     vec2 motion2 = sin(1.9 * (low_dt + vec2(0.0, 1.0)));
     vec4 motion4 = sin(2.5 * (low_dt + vec4(0.0, 0.0, 1.0, 1.0))

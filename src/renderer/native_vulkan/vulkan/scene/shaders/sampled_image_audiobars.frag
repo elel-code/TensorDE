@@ -12,6 +12,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -21,7 +22,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -65,9 +65,9 @@ float hash01(float value) {
 }
 
 float pseudo_audio(float index) {
-    float slow = sin(pc.time_seconds * 2.2 + index * 0.73) * 0.5 + 0.5;
-    float fast = sin(pc.time_seconds * 5.1 + index * 1.91) * 0.5 + 0.5;
-    float noise = hash01(index + floor(pc.time_seconds * 8.0) * 0.13);
+    float slow = sin(v_time_seconds * 2.2 + index * 0.73) * 0.5 + 0.5;
+    float fast = sin(v_time_seconds * 5.1 + index * 1.91) * 0.5 + 0.5;
+    float noise = hash01(index + floor(v_time_seconds * 8.0) * 0.13);
     return saturate(slow * 0.50 + fast * 0.30 + noise * 0.20);
 }
 

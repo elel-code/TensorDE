@@ -7,6 +7,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -21,7 +22,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -170,7 +170,7 @@ void main() {
     vec2 blend_coords = caustics_coords * 0.01333;
     vec2 shift_coords = caustics_coords * 0.05;
 
-    float time = pc.time_seconds * pc.caustics_speed + pc.caustics_time_offset;
+    float time = v_time_seconds * pc.caustics_speed + pc.caustics_time_offset;
     noise_coords.x += time * 0.005;
     noise_coords2.y += time * 0.004111;
     blend_coords += time * 0.003777;

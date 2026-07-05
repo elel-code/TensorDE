@@ -11,6 +11,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -21,7 +22,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -130,7 +130,7 @@ Node pre_calc_node(
         - pc.auto_weight_center_offset * len;
     float pos_x = dot(relative_tex_coord, endpoint_direction);
 
-    float this_motion_time = pc.auto_global_time_offset + pc.time_seconds * pc.auto_speed;
+    float this_motion_time = pc.auto_global_time_offset + v_time_seconds * pc.auto_speed;
     float prev_motion_time = this_motion_time;
     this_motion_time += motion_offset * auto_time_offset(node_num);
     prev_motion_time += motion_offset * auto_time_offset(node_num + 1.0);

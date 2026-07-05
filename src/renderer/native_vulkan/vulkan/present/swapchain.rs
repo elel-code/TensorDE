@@ -103,7 +103,7 @@ pub struct NativeVulkanVulkanaliaPresentQueueSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
-    pub available_device_extensions: Vec<String>,
+    pub available_device_extension_count: usize,
     pub enabled_device_extensions: Vec<&'static str>,
     pub required_swapchain: bool,
     pub core_features: NativeVulkanVulkanaliaCoreFeatureSnapshot,
@@ -508,21 +508,20 @@ fn present_device_extension_snapshot(
     selection: &NativeVulkanVulkanaliaPresentQueueSelection,
     surface_maintenance1_enabled: bool,
 ) -> Result<NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot, String> {
-    let mut available_device_extensions = selection.device_extensions.clone();
-    available_device_extensions.sort();
-    let required_swapchain = extension_available(&available_device_extensions, "VK_KHR_swapchain");
+    let available_device_extensions = selection.device_extensions.as_slice();
+    let required_swapchain = extension_available(available_device_extensions, "VK_KHR_swapchain");
     if !required_swapchain {
         return Err("selected Vulkanalia present device missing VK_KHR_swapchain".to_owned());
     }
     let feature_selection = query_vulkanalia_present_feature_selection(
         instance,
         selection.physical_device,
-        &available_device_extensions,
+        available_device_extensions,
         surface_maintenance1_enabled,
     );
 
     Ok(NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
-        available_device_extensions,
+        available_device_extension_count: available_device_extensions.len(),
         enabled_device_extensions: enabled_present_device_extensions(&feature_selection),
         required_swapchain,
         core_features: feature_selection.core_features,
@@ -531,55 +530,55 @@ fn present_device_extension_snapshot(
         synchronization2_enabled: feature_selection.synchronization2_enabled,
         dynamic_rendering_enabled: feature_selection.dynamic_rendering_enabled,
         descriptor_heap_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             DESCRIPTOR_HEAP_EXTENSION_NAME,
         ),
         descriptor_heap_enabled: feature_selection.core_features.descriptor_heap,
         blend_operation_advanced_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             BLEND_OPERATION_ADVANCED_EXTENSION_NAME,
         ),
         blend_operation_advanced_enabled: feature_selection.blend_operation_advanced_enabled,
         blend_operation_advanced_coherent_operations: feature_selection
             .blend_operation_advanced_coherent_operations,
         present_id2_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             PRESENT_ID2_EXTENSION_NAME,
         ),
         present_id2_enabled: feature_selection.present_id2_enabled,
         present_wait2_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             PRESENT_WAIT2_EXTENSION_NAME,
         ),
         present_wait2_enabled: feature_selection.present_wait2_enabled,
         swapchain_maintenance1_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME,
         ),
         swapchain_maintenance1_enabled: feature_selection.swapchain_maintenance1_enabled,
         present_mode_fifo_latest_ready_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME,
         ),
         present_mode_fifo_latest_ready_enabled: feature_selection
             .present_mode_fifo_latest_ready_enabled,
         maintenance7_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             MAINTENANCE7_EXTENSION_NAME,
         ),
         maintenance7_enabled: feature_selection.maintenance7_enabled,
         maintenance8_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             MAINTENANCE8_EXTENSION_NAME,
         ),
         maintenance8_enabled: feature_selection.maintenance8_enabled,
         maintenance9_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             MAINTENANCE9_EXTENSION_NAME,
         ),
         maintenance9_enabled: feature_selection.maintenance9_enabled,
         maintenance10_available: extension_available(
-            &selection.device_extensions,
+            available_device_extensions,
             MAINTENANCE10_EXTENSION_NAME,
         ),
         maintenance10_enabled: feature_selection.maintenance10_enabled,

@@ -7,7 +7,8 @@ use serde::Serialize;
 
 use crate::core::{SceneSystemStatus, SceneTextureRegion};
 use crate::renderer::{
-    SceneBinaryRuntimeSampler, SceneRenderAudioCue, SceneRenderLayer, SceneWallpaperPlan,
+    SceneBinaryRuntimeFrame, SceneBinaryRuntimeSampler, SceneRenderAudioCue, SceneRenderLayer,
+    SceneWallpaperPlan,
 };
 
 #[cfg(feature = "native-vulkan-video")]
@@ -30,9 +31,9 @@ use super::super::{
     NativeVulkanVideoSessionCodec, NativeVulkanVulkanaliaClearPresentSnapshot,
     NativeVulkanVulkanaliaSceneMixedSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry,
-    NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
+    NativeVulkanVulkanaliaSceneSampledImageVertex,
     NativeVulkanVulkanaliaSceneSolidQuadDynamicGeometry,
     NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
     NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
@@ -49,11 +50,11 @@ use super::super::{
     NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions,
     run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present,
 };
+use super::draw_pass::native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers;
 use super::runtime::{
     NativeVulkanSceneRuntimeSnapshot,
     native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers,
     native_vulkan_scene_runtime_snapshot,
-    native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at,
     native_vulkan_scene_solid_quad_geometry_input_from_layers,
 };
 
@@ -128,8 +129,9 @@ enum NativeVulkanScenePresentRouteKind {
 
 struct NativeVulkanSceneDynamicGeometryFrame {
     elapsed_ms: u64,
+    frame: Option<SceneBinaryRuntimeFrame>,
     solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
-    sampled_geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
+    sampled_geometry_pending: bool,
 }
 
 struct NativeVulkanSceneDynamicGeometryCache {
@@ -158,24 +160,27 @@ impl NativeVulkanSceneDynamicGeometryCache {
     fn sampled_geometry(
         &mut self,
         elapsed_ms: u64,
-    ) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
+        vertices: &mut Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+    ) -> Result<(), String> {
         self.ensure_frame(elapsed_ms)?;
         if self
             .cached
             .as_ref()
-            .is_none_or(|frame| frame.sampled_geometry.is_none())
+            .is_none_or(|frame| !frame.sampled_geometry_pending)
         {
             self.refresh_frame(elapsed_ms)?;
         }
-        let geometry = self
-            .cached
-            .as_mut()
-            .and_then(|frame| frame.sampled_geometry.take())
-            .ok_or_else(|| {
-                "dynamic scene geometry cache did not retain sampled geometry".to_owned()
-            })?;
+        let cached = self.cached.as_mut().ok_or_else(|| {
+            "dynamic scene geometry cache did not retain sampled frame".to_owned()
+        })?;
+        let frame = cached.frame.as_ref().ok_or_else(|| {
+            "dynamic scene geometry cache recycled sampled frame before write".to_owned()
+        })?;
+        native_vulkan_scene_append_binary_sampled_vertices_from_layers(&frame.layers, vertices)?;
+        cached.sampled_geometry_pending = false;
+        self.recycle_cached_frame_if_sampled_done();
         self.drop_consumed_frame();
-        Ok(geometry)
+        Ok(())
     }
 
     fn solid_geometry(
@@ -187,6 +192,7 @@ impl NativeVulkanSceneDynamicGeometryCache {
             .cached
             .as_mut()
             .and_then(|frame| frame.solid_geometry.take());
+        self.recycle_cached_frame_if_sampled_done();
         self.drop_consumed_frame();
         Ok(geometry)
     }
@@ -203,17 +209,12 @@ impl NativeVulkanSceneDynamicGeometryCache {
     }
 
     fn refresh_frame(&mut self, elapsed_ms: u64) -> Result<(), String> {
+        self.discard_cached_frame();
         let sample_time_ms = self.base_time_ms.saturating_add(elapsed_ms);
         let frame = self
             .sampler
             .sample_frame_reusing(sample_time_ms)
             .map_err(|err| format!("sample dynamic binary scene frame: {err}"))?;
-        let sampled_geometry = native_vulkan_scene_binary_sampled_geometry_from_layers(
-            frame.snapshot_time_ms,
-            frame.scene_size,
-            frame.scene_fit,
-            &frame.layers,
-        );
         let solid_geometry = if self.include_solid_geometry {
             native_vulkan_scene_mixed_solid_quad_geometry_input_from_layers(
                 frame.snapshot_time_ms,
@@ -224,26 +225,44 @@ impl NativeVulkanSceneDynamicGeometryCache {
         } else {
             Ok(None)
         };
-        self.sampler.recycle_frame(frame);
-        let sampled_geometry = sampled_geometry?;
         let mut solid_geometry = solid_geometry?;
         if let Some(solid_geometry) = solid_geometry.as_mut() {
             native_vulkan_scene_keep_binary_dynamic_solid_vertices_only(solid_geometry);
         }
         self.cached = Some(NativeVulkanSceneDynamicGeometryFrame {
             elapsed_ms,
+            frame: Some(frame),
             solid_geometry,
-            sampled_geometry: Some(sampled_geometry),
+            sampled_geometry_pending: true,
         });
         self.trim_heap_if_due(elapsed_ms);
         Ok(())
+    }
+
+    fn recycle_cached_frame_if_sampled_done(&mut self) {
+        let frame = self
+            .cached
+            .as_mut()
+            .filter(|frame| !frame.sampled_geometry_pending)
+            .and_then(|frame| frame.frame.take());
+        if let Some(frame) = frame {
+            self.sampler.recycle_frame(frame);
+        }
+    }
+
+    fn discard_cached_frame(&mut self) {
+        let frame = self.cached.as_mut().and_then(|frame| frame.frame.take());
+        if let Some(frame) = frame {
+            self.sampler.recycle_frame(frame);
+        }
+        self.cached = None;
     }
 
     fn drop_consumed_frame(&mut self) {
         let consumed_elapsed_ms = self
             .cached
             .as_ref()
-            .filter(|frame| frame.sampled_geometry.is_none() && frame.solid_geometry.is_none())
+            .filter(|frame| !frame.sampled_geometry_pending && frame.solid_geometry.is_none())
             .map(|frame| frame.elapsed_ms);
         if consumed_elapsed_ms.is_some() {
             self.cached = None;
@@ -271,18 +290,14 @@ fn native_vulkan_scene_keep_binary_dynamic_solid_vertices_only(
     geometry.source_label = "scene-binary-runtime-direct-solid-vertex-update".to_owned();
 }
 
-fn native_vulkan_scene_binary_sampled_geometry_from_layers(
-    snapshot_time_ms: u64,
-    scene_size: Option<crate::core::SceneSize>,
-    scene_fit: crate::core::FitMode,
+fn native_vulkan_scene_append_binary_sampled_vertices_from_layers(
     layers: &[SceneRenderLayer],
-) -> Result<NativeVulkanVulkanaliaSceneSampledImageGeometryInput, String> {
-    native_vulkan_scene_sampled_draw_pass_vertex_input_from_render_layers_at(
-        snapshot_time_ms,
-        scene_size,
-        scene_fit,
-        layers,
-    )
+    vertices: &mut Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
+) -> Result<(), String> {
+    if vertices.capacity() < layers.len().saturating_mul(4) {
+        vertices.reserve(layers.len().saturating_mul(4) - vertices.capacity());
+    }
+    native_vulkan_scene_append_draw_pass_sampled_image_vertices_from_render_layers(layers, vertices)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,11 +409,11 @@ fn native_vulkan_scene_dynamic_mixed_solid_geometry_from_sampler(
 fn native_vulkan_scene_dynamic_sampled_geometry_from_cache(
     cache: Arc<Mutex<NativeVulkanSceneDynamicGeometryCache>>,
 ) -> NativeVulkanVulkanaliaSceneSampledImageDynamicGeometry {
-    Box::new(move |elapsed_ms| {
+    Box::new(move |elapsed_ms, vertices| {
         cache
             .lock()
             .map_err(|_| "dynamic sampled scene geometry cache is poisoned".to_owned())?
-            .sampled_geometry(elapsed_ms)
+            .sampled_geometry(elapsed_ms, vertices)
     })
 }
 
@@ -436,7 +451,7 @@ fn native_vulkan_scene_dynamic_sampled_geometry_pair(
 pub fn run_scene(
     mut options: NativeVulkanOptions,
     duration: Duration,
-    plan: SceneWallpaperPlan,
+    mut plan: SceneWallpaperPlan,
     scene_audio_output_mode: NativeVulkanAudioOutputMode,
     scene_video: Option<NativeVulkanSceneVideoPresentOptions>,
 ) -> Result<NativeVulkanScenePresentSnapshot, NativeVulkanError> {
@@ -476,6 +491,7 @@ pub fn run_scene(
                 })?;
             options.clear_color = color;
             runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_scene_release_plan_cpu_meshes_for_present(&mut plan);
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
                 &plan,
@@ -502,6 +518,7 @@ pub fn run_scene(
             let scene_size = runtime.scene_size;
             let scene_fit = runtime.scene_fit;
             runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_scene_release_plan_cpu_meshes_for_present(&mut plan);
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
@@ -552,6 +569,7 @@ pub fn run_scene(
             let scene_size = runtime.scene_size;
             let scene_fit = runtime.scene_fit;
             runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_scene_release_plan_cpu_meshes_for_present(&mut plan);
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
@@ -644,6 +662,7 @@ pub fn run_scene(
                 scene_fit: runtime.scene_fit,
             });
             runtime.release_cpu_draw_payloads_for_present();
+            native_vulkan_scene_release_plan_cpu_meshes_for_present(&mut plan);
             native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap();
 
             let (present, scene_audio) = native_vulkan_scene_present_with_audio(
@@ -682,6 +701,12 @@ pub fn run_scene(
                 present,
             })
         }
+    }
+}
+
+fn native_vulkan_scene_release_plan_cpu_meshes_for_present(plan: &mut SceneWallpaperPlan) {
+    for layer in &mut plan.layers {
+        layer.mesh = None;
     }
 }
 

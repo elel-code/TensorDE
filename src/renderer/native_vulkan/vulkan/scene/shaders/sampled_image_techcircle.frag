@@ -10,6 +10,7 @@ layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
 layout(location = 2) in float v_opacity;
 layout(location = 3) in vec4 v_tint;
+layout(location = 4) flat in float v_time_seconds;
 
 layout(location = 0) out vec4 out_color;
 
@@ -19,7 +20,6 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
     layout(offset = 8) uint alpha_texture_slot;
     layout(offset = 12) uint alpha_texture_mode;
-    layout(offset = 16) float time_seconds;
     layout(offset = 20) uint texture_resolution_mask;
     layout(offset = 24) uint system_uniform_count;
     layout(offset = 28) uint constant_uniform_count;
@@ -105,7 +105,7 @@ void main() {
     float ring_coverage = ((pc.tech_flags & TECH_RING_SEGMENTS) != 0u)
         ? ring(pc.ring_radius, pc.ring_width, pc.ring_segment_count, pc.ring_segment_width, uv)
         : ring(pc.ring_radius, pc.ring_width, 1.0, 1.0, uv);
-    float sector_pos = pc.sector_offset + pc.time_seconds * pc.speed;
+    float sector_pos = pc.sector_offset + v_time_seconds * pc.speed;
     float sector_coverage = sector(sector_pos, pc.sector_width, 1.0, 1.0, uv);
     if (sector_segments == 1u) {
         sector_coverage = sector(
