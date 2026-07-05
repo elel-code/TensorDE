@@ -149,6 +149,10 @@ fn native_vulkan_scene_engine_render_pass_node(
                 })
             })
     });
+    let target_extent = step.output_target_index.and_then(|target_index| {
+        native_vulkan_scene_engine_graph_target(plan, step.chain_index, target_index)
+            .map(|target| [target.width, target.height])
+    });
     RenderPassNode {
         id: step.step_index.min(u32::MAX as usize) as u32,
         role: native_vulkan_scene_engine_render_pass_role(step.pass.role),
@@ -157,6 +161,7 @@ fn native_vulkan_scene_engine_render_pass_node(
         shader: step.pass.shader.clone(),
         target,
         target_name,
+        target_extent,
         bindings: step
             .texture_bindings
             .iter()

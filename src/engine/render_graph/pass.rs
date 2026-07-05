@@ -28,6 +28,7 @@ pub struct RenderPassNode {
     pub shader: Option<String>,
     pub target: RenderTargetRole,
     pub target_name: Option<String>,
+    pub target_extent: Option<[u32; 2]>,
     pub bindings: Vec<TextureBindingRole>,
     pub state: PassState,
 }
