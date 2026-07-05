@@ -4896,7 +4896,6 @@ fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_ve
     {
         return None;
     }
-    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
     let before_vertices = vertices.len();
     let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
     let tint = quad.tint;
@@ -6066,8 +6065,6 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices(
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<()> {
     if mesh.vertices.len() < 3
-        || mesh.indices.len() < 3
-        || mesh.indices.len() % 3 != 0
         || !quad.width.is_finite()
         || quad.width <= 0.0
         || !quad.height.is_finite()
@@ -6075,7 +6072,6 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices(
     {
         return None;
     }
-    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
     let region = quad.texture_region.unwrap_or(SceneTextureRegion {
         u_min: 0.0,
         v_min: 0.0,
@@ -6213,8 +6209,6 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices_with_targe
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<()> {
     if mesh.vertices.len() < 3
-        || mesh.indices.len() < 3
-        || mesh.indices.len() % 3 != 0
         || !quad.width.is_finite()
         || quad.width <= 0.0
         || !quad.height.is_finite()
@@ -6222,7 +6216,6 @@ fn native_vulkan_scene_append_sampled_image_effect_base_mesh_vertices_with_targe
     {
         return None;
     }
-    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
     let region = quad.texture_region.unwrap_or(SceneTextureRegion {
         u_min: 0.0,
         v_min: 0.0,

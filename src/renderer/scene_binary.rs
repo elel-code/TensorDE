@@ -672,6 +672,7 @@ impl SceneBinaryRuntimeSampler {
             &self.resources,
             time_ms,
             self.dynamic_state.as_ref(),
+            false,
             &mut self.layers_scratch,
         )?;
         Ok(SceneBinaryRuntimeFrame {
@@ -1369,6 +1370,7 @@ fn binary_scene_render_layers(
         resources,
         snapshot_time_ms,
         dynamic_state,
+        true,
         &mut layers,
     )?;
     Ok(layers)
@@ -1380,6 +1382,7 @@ fn binary_scene_render_layers_into(
     resources: &[BinarySceneResource],
     snapshot_time_ms: u64,
     dynamic_state: Option<&BinarySceneDynamicState>,
+    retain_sampled_indices: bool,
     layers: &mut Vec<SceneRenderLayer>,
 ) -> Result<(), RendererPlanError> {
     layers.clear();
@@ -1463,6 +1466,7 @@ fn binary_scene_render_layers_into(
                     material,
                     node_state.state,
                     snapshot_time_ms,
+                    retain_sampled_indices,
                     layers,
                 )?;
             }
@@ -1479,6 +1483,7 @@ fn binary_scene_render_layers_into(
             kind,
             node_state.state,
             snapshot_time_ms,
+            retain_sampled_indices,
         )?;
         layers.push(layer);
     }
@@ -1497,6 +1502,7 @@ fn binary_scene_particle_render_layers(
     material: Option<SceneBinaryMaterialPassRecord>,
     node_state: BinarySceneNodeState,
     snapshot_time_ms: u64,
+    retain_sampled_indices: bool,
     layers: &mut Vec<SceneRenderLayer>,
 ) -> Result<(), RendererPlanError> {
     let particle_count = particle.particle_count();
@@ -1551,8 +1557,12 @@ fn binary_scene_particle_render_layers(
     let (parent_sin, parent_cos) = node_state.transform.rotation_deg.to_radians().sin_cos();
     let templates = binary_scene_particle_templates_cached(reader, particle_index, particle);
     if let Some(source) = source {
-        if let Some(mesh) = binary_scene_particle_batch_mesh(particle, &templates, snapshot_time_ms)
-        {
+        if let Some(mesh) = binary_scene_particle_batch_mesh(
+            particle,
+            &templates,
+            snapshot_time_ms,
+            retain_sampled_indices,
+        ) {
             let mut transform = node_state.transform;
             transform.anchor_x = 0.5;
             transform.anchor_y = 0.5;
@@ -1651,6 +1661,7 @@ fn binary_scene_particle_batch_mesh(
     particle: SceneBinaryParticleEmitterRecord,
     templates: &[BinarySceneParticleTemplate],
     snapshot_time_ms: u64,
+    retain_indices: bool,
 ) -> Option<SceneMesh> {
     let particle_width = f64::from(particle.particle_width);
     let particle_height = f64::from(particle.particle_height);
@@ -1663,7 +1674,11 @@ fn binary_scene_particle_batch_mesh(
     }
 
     let mut vertices = Vec::with_capacity(templates.len().saturating_mul(4));
-    let mut indices = Vec::with_capacity(templates.len().saturating_mul(6));
+    let mut indices = if retain_indices {
+        Vec::with_capacity(templates.len().saturating_mul(6))
+    } else {
+        Vec::new()
+    };
     let half_width = particle_width * 0.5;
     let half_height = particle_height * 0.5;
     for template in templates {
@@ -1692,10 +1707,12 @@ fn binary_scene_particle_batch_mesh(
                 opacity,
             });
         }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+        if retain_indices {
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 1, base + 3]);
+        }
     }
 
-    if vertices.len() < 3 || indices.len() < 3 {
+    if vertices.len() < 3 || (retain_indices && indices.len() < 3) {
         return None;
     }
     Some(SceneMesh {
@@ -1822,6 +1839,7 @@ fn binary_scene_render_layer(
     kind: SceneNodeKind,
     node_state: BinarySceneNodeState,
     snapshot_time_ms: u64,
+    retain_sampled_indices: bool,
 ) -> Result<SceneRenderLayer, RendererPlanError> {
     let material_texture_slots = if let Some(material) = material {
         binary_scene_material_texture_slots_cached(reader, material_index, material, resources)?
@@ -1845,7 +1863,8 @@ fn binary_scene_render_layer(
     let blend_mode = material
         .map(|material| binary_scene_blend_mode(material.blend_mode))
         .unwrap_or_default();
-    let sampled_mesh_needs_indices = kind == SceneNodeKind::Image
+    let sampled_mesh_needs_indices = retain_sampled_indices
+        && kind == SceneNodeKind::Image
         && (!image_effect_passes.is_empty() || blend_mode == SceneBlendMode::HslColor);
     Ok(SceneRenderLayer {
         id: binary_name(names, node.id_name)
