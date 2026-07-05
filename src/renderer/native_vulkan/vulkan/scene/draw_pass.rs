@@ -6644,6 +6644,36 @@ mod tests {
         }
     }
 
+    fn effect_target_command_reading_effect_target(
+        layer_index: usize,
+        first_index: u32,
+        target_index: u32,
+        effect_target_resource_base_index: u32,
+        input_target_index: u32,
+    ) -> VulkanaliaSceneSampledImageDrawCommand {
+        VulkanaliaSceneSampledImageDrawCommand {
+            layer_index,
+            last_layer_index: layer_index,
+            material: sampled_image_material(SceneBlendMode::Alpha),
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: first_index
+                    .saturating_mul(SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT as u32),
+                texture_slot_bindings: texture_slot_bindings(&[
+                    effect_target_resource_base_index.saturating_add(input_target_index)
+                ]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::EffectTarget {
+                target_index,
+                clear: true,
+            },
+            draw_instance_index: 0,
+            vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            vertex_offset: 0,
+            first_index,
+            index_count: 6,
+        }
+    }
+
     fn swapchain_command_reading_effect_target(
         layer_index: usize,
         first_index: u32,
@@ -8787,6 +8817,43 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(order, vec![(0, 0), (0, 1), (1, 2), (1, 3)]);
+    }
+
+    #[test]
+    fn ordered_draw_steps_group_independent_offscreen_targets_within_scene_gap() {
+        let sampled_commands = [
+            effect_target_command(0, 0, 1, 0),
+            effect_target_command(1, 1, 0, 16),
+            effect_target_command(2, 2, 1, 32),
+            effect_target_command(3, 3, 0, 48),
+        ];
+
+        let ordered =
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+        let order = ordered
+            .iter()
+            .map(|step| (step.layer_index, step.command_index))
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec![(1, 1), (3, 3), (0, 0), (2, 2)]);
+    }
+
+    #[test]
+    fn ordered_draw_steps_preserve_offscreen_effect_target_dependencies() {
+        let sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            effect_target_command_reading_effect_target(1, 1, 1, 16, 0),
+            effect_target_command(2, 2, 0, 32),
+        ];
+
+        let ordered =
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+        let order = ordered
+            .iter()
+            .map(|step| (step.layer_index, step.command_index))
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec![(0, 0), (1, 1), (2, 2)]);
     }
 
     #[test]

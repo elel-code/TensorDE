@@ -57,9 +57,15 @@ pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
                 });
             }
             VulkanaliaSceneSampledImageRenderTarget::EffectTarget { target_index, .. } => {
+                let effect_target_reads = scene_sampled_image_draw_command_effect_target_reads(
+                    command,
+                    effect_target_resource_base_index,
+                    effect_target_resource_count,
+                );
                 offscreen_steps.push(SceneOrderedDrawOffscreenStep {
                     draw,
                     write_target_index: target_index,
+                    effect_target_reads,
                     earliest_scene_gap: 0,
                 });
             }
@@ -108,6 +114,7 @@ pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
             .cmp(&right.earliest_scene_gap)
             .then(left.draw.command_index.cmp(&right.draw.command_index))
     });
+    let offscreen_steps = scene_ordered_draw_schedule_offscreen_steps(&offscreen_steps);
 
     let mut ordered =
         Vec::with_capacity(solid_commands.len().saturating_add(sampled_commands.len()));
@@ -212,10 +219,11 @@ struct SceneOrderedDrawSceneStep {
     effect_target_reads: Vec<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SceneOrderedDrawOffscreenStep {
     draw: VulkanaliaSceneOrderedDrawStep,
     write_target_index: u32,
+    effect_target_reads: Vec<u32>,
     earliest_scene_gap: usize,
 }
 
@@ -240,6 +248,114 @@ fn ordered_draw_target(
             }
         }
     }
+}
+
+fn scene_ordered_draw_schedule_offscreen_steps(
+    offscreen_steps: &[SceneOrderedDrawOffscreenStep],
+) -> Vec<SceneOrderedDrawOffscreenStep> {
+    let mut scheduled = Vec::with_capacity(offscreen_steps.len());
+    let mut group_start = 0usize;
+    while group_start < offscreen_steps.len() {
+        let scene_gap = offscreen_steps[group_start].earliest_scene_gap;
+        let group_end = offscreen_steps[group_start..]
+            .iter()
+            .position(|step| step.earliest_scene_gap != scene_gap)
+            .map(|offset| group_start.saturating_add(offset))
+            .unwrap_or(offscreen_steps.len());
+        scheduled.extend(scene_ordered_draw_schedule_offscreen_group(
+            &offscreen_steps[group_start..group_end],
+        ));
+        group_start = group_end;
+    }
+    scheduled
+}
+
+fn scene_ordered_draw_schedule_offscreen_group(
+    group: &[SceneOrderedDrawOffscreenStep],
+) -> Vec<SceneOrderedDrawOffscreenStep> {
+    if group.len() < 2 {
+        return group.to_vec();
+    }
+
+    let mut successors = vec![Vec::<usize>::new(); group.len()];
+    let mut indegrees = vec![0usize; group.len()];
+    for before_index in 0..group.len() {
+        for after_index in before_index.saturating_add(1)..group.len() {
+            if !scene_ordered_draw_offscreen_dependency(&group[before_index], &group[after_index]) {
+                continue;
+            }
+            successors[before_index].push(after_index);
+            indegrees[after_index] = indegrees[after_index].saturating_add(1);
+        }
+    }
+
+    let mut emitted = vec![false; group.len()];
+    let mut ordered_indices = Vec::with_capacity(group.len());
+    let mut last_target = None;
+    while ordered_indices.len() < group.len() {
+        let Some(index) =
+            scene_ordered_draw_next_ready_offscreen_step(group, &indegrees, &emitted, last_target)
+        else {
+            return group.to_vec();
+        };
+        emitted[index] = true;
+        ordered_indices.push(index);
+        last_target = Some(group[index].write_target_index);
+        for successor in &successors[index] {
+            indegrees[*successor] = indegrees[*successor].saturating_sub(1);
+        }
+    }
+
+    ordered_indices
+        .into_iter()
+        .map(|index| group[index].clone())
+        .collect()
+}
+
+fn scene_ordered_draw_offscreen_dependency(
+    before: &SceneOrderedDrawOffscreenStep,
+    after: &SceneOrderedDrawOffscreenStep,
+) -> bool {
+    before.draw.layer_index == after.draw.layer_index
+        || before.write_target_index == after.write_target_index
+        || after
+            .effect_target_reads
+            .contains(&before.write_target_index)
+        || before
+            .effect_target_reads
+            .contains(&after.write_target_index)
+}
+
+fn scene_ordered_draw_next_ready_offscreen_step(
+    group: &[SceneOrderedDrawOffscreenStep],
+    indegrees: &[usize],
+    emitted: &[bool],
+    last_target: Option<u32>,
+) -> Option<usize> {
+    let ready = group
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| !emitted[*index] && indegrees[*index] == 0);
+    if let Some(last_target) = last_target
+        && let Some((index, _)) = ready
+            .clone()
+            .filter(|(_, step)| step.write_target_index == last_target)
+            .min_by(|(_, left), (_, right)| {
+                left.draw
+                    .command_index
+                    .cmp(&right.draw.command_index)
+                    .then(left.write_target_index.cmp(&right.write_target_index))
+            })
+    {
+        return Some(index);
+    }
+    ready
+        .min_by(|(_, left), (_, right)| {
+            left.write_target_index
+                .cmp(&right.write_target_index)
+                .then(left.draw.command_index.cmp(&right.draw.command_index))
+        })
+        .map(|(index, _)| index)
 }
 
 fn scene_ordered_draw_step_cmp(
