@@ -450,10 +450,12 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
     pub effect_target_rendering_begin_count: u32,
     pub target_switch_count: u32,
     pub image_barrier_count: u32,
+    pub pipeline_barrier_command_count: u32,
     pub effect_target_to_shader_read_barrier_count: u32,
     pub shader_read_to_effect_target_barrier_count: u32,
     pub swapchain_self_dependency_barrier_count: u32,
     pub framebuffer_snapshot_transfer_barrier_count: u32,
+    pub framebuffer_snapshot_transfer_barrier_command_count: u32,
     pub swapchain_to_present_barrier_count: u32,
     pub descriptor_set_bound: bool,
     pub push_descriptor_set_recorded: bool,
@@ -5417,6 +5419,42 @@ fn validate_scene_msaa_color_target(
     Ok(())
 }
 
+fn scene_color_image_barrier(
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_stage_mask: vk::PipelineStageFlags2,
+    src_access_mask: vk::AccessFlags2,
+    dst_stage_mask: vk::PipelineStageFlags2,
+    dst_access_mask: vk::AccessFlags2,
+) -> vk::ImageMemoryBarrier2 {
+    vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(src_stage_mask)
+        .src_access_mask(src_access_mask)
+        .dst_stage_mask(dst_stage_mask)
+        .dst_access_mask(dst_access_mask)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(native_vulkan_vulkanalia_scene_color_subresource_range())
+        .build()
+}
+
+fn scene_color_image_barriers(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    barriers: &[vk::ImageMemoryBarrier2],
+) {
+    let dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(barriers)
+        .build();
+    unsafe {
+        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+    }
+}
+
 fn scene_color_image_transition(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -5428,25 +5466,16 @@ fn scene_color_image_transition(
     dst_stage_mask: vk::PipelineStageFlags2,
     dst_access_mask: vk::AccessFlags2,
 ) {
-    let barrier = vk::ImageMemoryBarrier2::builder()
-        .src_stage_mask(src_stage_mask)
-        .src_access_mask(src_access_mask)
-        .dst_stage_mask(dst_stage_mask)
-        .dst_access_mask(dst_access_mask)
-        .old_layout(old_layout)
-        .new_layout(new_layout)
-        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-        .image(image)
-        .subresource_range(native_vulkan_vulkanalia_scene_color_subresource_range())
-        .build();
-    let barriers = [barrier];
-    let dependency = vk::DependencyInfo::builder()
-        .image_memory_barriers(&barriers)
-        .build();
-    unsafe {
-        device.cmd_pipeline_barrier2(command_buffer, &dependency);
-    }
+    let barriers = [scene_color_image_barrier(
+        image,
+        old_layout,
+        new_layout,
+        src_stage_mask,
+        src_access_mask,
+        dst_stage_mask,
+        dst_access_mask,
+    )];
+    scene_color_image_barriers(device, command_buffer, &barriers);
 }
 
 fn begin_scene_color_rendering(
@@ -5510,36 +5539,35 @@ fn copy_scene_framebuffer_to_snapshot(
     extent: vk::Extent2D,
     snapshot_old_layout: vk::ImageLayout,
 ) {
-    scene_color_image_transition(
-        device,
-        command_buffer,
-        swapchain_image,
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-        vk::PipelineStageFlags2::ALL_TRANSFER,
-        vk::AccessFlags2::TRANSFER_READ,
-    );
-    scene_color_image_transition(
-        device,
-        command_buffer,
-        snapshot.image,
-        snapshot_old_layout,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
-            vk::PipelineStageFlags2::TOP_OF_PIPE
-        } else {
-            vk::PipelineStageFlags2::FRAGMENT_SHADER
-        },
-        if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
-            vk::AccessFlags2::empty()
-        } else {
-            vk::AccessFlags2::SHADER_SAMPLED_READ
-        },
-        vk::PipelineStageFlags2::ALL_TRANSFER,
-        vk::AccessFlags2::TRANSFER_WRITE,
-    );
+    let copy_src_dst_barriers = [
+        scene_color_image_barrier(
+            swapchain_image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::TRANSFER_READ,
+        ),
+        scene_color_image_barrier(
+            snapshot.image,
+            snapshot_old_layout,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
+                vk::PipelineStageFlags2::TOP_OF_PIPE
+            } else {
+                vk::PipelineStageFlags2::FRAGMENT_SHADER
+            },
+            if snapshot_old_layout == vk::ImageLayout::UNDEFINED {
+                vk::AccessFlags2::empty()
+            } else {
+                vk::AccessFlags2::SHADER_SAMPLED_READ
+            },
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::TRANSFER_WRITE,
+        ),
+    ];
+    scene_color_image_barriers(device, command_buffer, &copy_src_dst_barriers);
 
     let subresource = vk::ImageSubresourceLayers::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -5570,28 +5598,27 @@ fn copy_scene_framebuffer_to_snapshot(
         device.cmd_copy_image2(command_buffer, &copy_info);
     }
 
-    scene_color_image_transition(
-        device,
-        command_buffer,
-        snapshot.image,
-        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-        vk::PipelineStageFlags2::ALL_TRANSFER,
-        vk::AccessFlags2::TRANSFER_WRITE,
-        vk::PipelineStageFlags2::FRAGMENT_SHADER,
-        vk::AccessFlags2::SHADER_SAMPLED_READ,
-    );
-    scene_color_image_transition(
-        device,
-        command_buffer,
-        swapchain_image,
-        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        vk::PipelineStageFlags2::ALL_TRANSFER,
-        vk::AccessFlags2::TRANSFER_READ,
-        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-    );
+    let shader_read_resume_barriers = [
+        scene_color_image_barrier(
+            snapshot.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::TRANSFER_WRITE,
+            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            vk::AccessFlags2::SHADER_SAMPLED_READ,
+        ),
+        scene_color_image_barrier(
+            swapchain_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::TRANSFER_READ,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+    ];
+    scene_color_image_barriers(device, command_buffer, &shader_read_resume_barriers);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -5814,10 +5841,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let mut effect_target_rendering_begin_count = 0u32;
     let mut target_switch_count = 0u32;
     let mut image_barrier_count = 0u32;
+    let mut pipeline_barrier_command_count = 0u32;
     let mut effect_target_to_shader_read_barrier_count = 0u32;
     let mut shader_read_to_effect_target_barrier_count = 0u32;
     let mut swapchain_self_dependency_barrier_count = 0u32;
     let mut framebuffer_snapshot_transfer_barrier_count = 0u32;
+    let mut framebuffer_snapshot_transfer_barrier_command_count = 0u32;
     let mut swapchain_to_present_barrier_count = 0u32;
 
     unsafe {
@@ -5896,6 +5925,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::AccessFlags2::SHADER_SAMPLED_READ,
                         );
                         image_barrier_count = image_barrier_count.saturating_add(1);
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(1);
                         effect_target_to_shader_read_barrier_count =
                             effect_target_to_shader_read_barrier_count.saturating_add(1);
                     } else {
@@ -5912,6 +5943,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                         );
                         image_barrier_count = image_barrier_count.saturating_add(1);
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(1);
                         swapchain_self_dependency_barrier_count =
                             swapchain_self_dependency_barrier_count.saturating_add(1);
                     }
@@ -5936,6 +5969,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                             );
                             image_barrier_count = image_barrier_count.saturating_add(1);
+                            pipeline_barrier_command_count =
+                                pipeline_barrier_command_count.saturating_add(1);
                             if let Some(msaa_target) = swapchain_msaa_target {
                                 scene_color_image_transition(
                                     device,
@@ -5949,6 +5984,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                     vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                                 );
                                 image_barrier_count = image_barrier_count.saturating_add(1);
+                                pipeline_barrier_command_count =
+                                    pipeline_barrier_command_count.saturating_add(1);
                             }
                             swapchain_started = true;
                             vk::AttachmentLoadOp::CLEAR
@@ -6007,6 +6044,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                         );
                         image_barrier_count = image_barrier_count.saturating_add(1);
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(1);
                         if !clear {
                             shader_read_to_effect_target_barrier_count =
                                 shader_read_to_effect_target_barrier_count.saturating_add(1);
@@ -6036,6 +6075,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                                 vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
                             );
                             image_barrier_count = image_barrier_count.saturating_add(1);
+                            pipeline_barrier_command_count =
+                                pipeline_barrier_command_count.saturating_add(1);
                         }
                         begin_scene_color_rendering(
                             device,
@@ -6092,8 +6133,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             framebuffer_snapshot_layout,
                         );
                         image_barrier_count = image_barrier_count.saturating_add(4);
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(2);
                         framebuffer_snapshot_transfer_barrier_count =
                             framebuffer_snapshot_transfer_barrier_count.saturating_add(4);
+                        framebuffer_snapshot_transfer_barrier_command_count =
+                            framebuffer_snapshot_transfer_barrier_command_count.saturating_add(2);
                         framebuffer_snapshot_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                         begin_scene_color_rendering(
                             device,
@@ -6220,8 +6265,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             framebuffer_snapshot_layout,
                         );
                         image_barrier_count = image_barrier_count.saturating_add(4);
+                        pipeline_barrier_command_count =
+                            pipeline_barrier_command_count.saturating_add(2);
                         framebuffer_snapshot_transfer_barrier_count =
                             framebuffer_snapshot_transfer_barrier_count.saturating_add(4);
+                        framebuffer_snapshot_transfer_barrier_command_count =
+                            framebuffer_snapshot_transfer_barrier_command_count.saturating_add(2);
                         framebuffer_snapshot_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
                         begin_scene_color_rendering(
                             device,
@@ -6359,6 +6408,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     vk::AccessFlags2::SHADER_SAMPLED_READ,
                 );
                 image_barrier_count = image_barrier_count.saturating_add(1);
+                pipeline_barrier_command_count = pipeline_barrier_command_count.saturating_add(1);
                 effect_target_to_shader_read_barrier_count =
                     effect_target_to_shader_read_barrier_count.saturating_add(1);
             }
@@ -6376,6 +6426,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             vk::AccessFlags2::empty(),
         );
         image_barrier_count = image_barrier_count.saturating_add(1);
+        pipeline_barrier_command_count = pipeline_barrier_command_count.saturating_add(1);
         swapchain_to_present_barrier_count = swapchain_to_present_barrier_count.saturating_add(1);
         if let Some(capture) = gpu_timestamp_capture {
             device.cmd_write_timestamp2(
@@ -6464,10 +6515,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         effect_target_rendering_begin_count,
         target_switch_count,
         image_barrier_count,
+        pipeline_barrier_command_count,
         effect_target_to_shader_read_barrier_count,
         shader_read_to_effect_target_barrier_count,
         swapchain_self_dependency_barrier_count,
         framebuffer_snapshot_transfer_barrier_count,
+        framebuffer_snapshot_transfer_barrier_command_count,
         swapchain_to_present_barrier_count,
         descriptor_set_bound: descriptor_set_bind_count > 0,
         push_descriptor_set_recorded: push_descriptor_set_recorded_count > 0,
