@@ -384,7 +384,7 @@ fn scene_sampled_image_scene_positions_by_layer(
     positions
 }
 
-fn scene_sampled_image_draw_command_effect_target_reads(
+pub(super) fn scene_sampled_image_draw_command_effect_target_reads(
     command: &VulkanaliaSceneSampledImageDrawCommand,
     effect_target_resource_base_index: usize,
     effect_target_resource_count: usize,

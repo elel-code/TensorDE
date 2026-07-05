@@ -26,6 +26,7 @@ use super::scene_sampled_image::VulkanaliaSceneSampledImageResources;
 mod blend;
 mod order;
 mod pipeline_plan;
+mod resource_state;
 mod snapshot;
 mod sync;
 
@@ -42,10 +43,14 @@ use self::order::{
     native_vulkan_vulkanalia_scene_ordered_draw_target_stats,
 };
 pub(in crate::renderer::native_vulkan::vulkan) use self::pipeline_plan::VulkanaliaScenePipelineBlendUsage;
+use self::resource_state::{
+    SceneEffectTargetResourceStates, SceneEffectTargetWriteTransition,
+    scene_ordered_draw_effect_target_reads_for_target_run,
+};
 use self::snapshot::copy_scene_framebuffer_to_snapshot;
 use self::sync::{
-    SceneColorImageBarrierBatch, native_vulkan_vulkanalia_scene_color_subresource_range,
-    scene_color_image_barrier, scene_color_image_barriers, scene_color_image_transition,
+    native_vulkan_vulkanalia_scene_color_subresource_range, scene_color_image_barrier,
+    scene_color_image_barriers, scene_color_image_transition,
 };
 
 const SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES: u32 = 24;
@@ -5509,6 +5514,53 @@ fn end_scene_color_rendering(device: &Device, command_buffer: vk::CommandBuffer)
     }
 }
 
+fn scene_effect_target_shader_read_barrier(image: vk::Image) -> vk::ImageMemoryBarrier2 {
+    scene_color_image_barrier(
+        image,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+    )
+}
+
+fn scene_effect_target_write_barrier(
+    image: vk::Image,
+    transition: SceneEffectTargetWriteTransition,
+) -> vk::ImageMemoryBarrier2 {
+    match transition {
+        SceneEffectTargetWriteTransition::Discard => scene_color_image_barrier(
+            image,
+            vk::ImageLayout::UNDEFINED,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::TOP_OF_PIPE,
+            vk::AccessFlags2::empty(),
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+        SceneEffectTargetWriteTransition::ShaderReadToColorAttachment => scene_color_image_barrier(
+            image,
+            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::FRAGMENT_SHADER,
+            vk::AccessFlags2::SHADER_SAMPLED_READ,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+        SceneEffectTargetWriteTransition::ColorAttachmentDependency => scene_color_image_barrier(
+            image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_record_scene_sampled_image_command_buffer(
     device: &Device,
@@ -5784,7 +5836,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         let mut bound_pipeline: Option<VulkanaliaSceneBoundDrawPipeline> = None;
         let mut bound_descriptor_heap_group: Option<u32> = None;
         let mut active_viewport: Option<SceneDynamicViewport> = None;
-        for draw in &ordered_draws {
+        let mut effect_target_states =
+            SceneEffectTargetResourceStates::new(effect_target_resources.len());
+        for (ordered_draw_index, draw) in ordered_draws.iter().enumerate() {
             let desired_target = match draw.pipeline {
                 VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
                     SceneSampledImageActiveRenderingTarget::Swapchain
@@ -5805,27 +5859,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 if active_target.is_some() {
                     target_switch_count = target_switch_count.saturating_add(1);
                 }
-                let mut target_transition_barriers = SceneColorImageBarrierBatch::new();
+                let mut target_transition_barriers = Vec::new();
                 if let Some(current_target) = active_target.take() {
                     end_scene_color_rendering(device, command_buffer);
                     rendering_end_count = rendering_end_count.saturating_add(1);
-                    if let SceneSampledImageActiveRenderingTarget::EffectTarget(target_index) =
-                        current_target
-                    {
-                        let target = &effect_target_resources[target_index as usize];
-                        target_transition_barriers.push(scene_color_image_barrier(
-                            target.image,
-                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                            vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                            vk::AccessFlags2::SHADER_SAMPLED_READ,
-                        ));
-                        image_barrier_count = image_barrier_count.saturating_add(1);
-                        effect_target_to_shader_read_barrier_count =
-                            effect_target_to_shader_read_barrier_count.saturating_add(1);
-                    } else {
+                    if current_target == SceneSampledImageActiveRenderingTarget::Swapchain {
                         target_transition_barriers.push(scene_color_image_barrier(
                             swapchain_image,
                             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -5840,6 +5878,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         swapchain_self_dependency_barrier_count =
                             swapchain_self_dependency_barrier_count.saturating_add(1);
                     }
+                }
+
+                for target_index in scene_ordered_draw_effect_target_reads_for_target_run(
+                    &ordered_draws,
+                    ordered_draw_index,
+                    draw_commands,
+                    effect_target_resource_base_index,
+                    effect_target_resources.len(),
+                ) {
+                    if !effect_target_states.prepare_shader_read(target_index) {
+                        continue;
+                    }
+                    let target = &effect_target_resources[target_index as usize];
+                    target_transition_barriers
+                        .push(scene_effect_target_shader_read_barrier(target.image));
+                    image_barrier_count = image_barrier_count.saturating_add(1);
+                    effect_target_to_shader_read_barrier_count =
+                        effect_target_to_shader_read_barrier_count.saturating_add(1);
                 }
 
                 match desired_target {
@@ -5876,7 +5932,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             scene_color_image_barriers(
                                 device,
                                 command_buffer,
-                                target_transition_barriers.as_slice(),
+                                &target_transition_barriers,
                             );
                             pipeline_barrier_command_count =
                                 pipeline_barrier_command_count.saturating_add(1);
@@ -5911,29 +5967,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             width: target.snapshot.extent.0,
                             height: target.snapshot.extent.1,
                         };
-                        target_transition_barriers.push(scene_color_image_barrier(
+                        let write_transition =
+                            effect_target_states.begin_write(target_index, clear);
+                        target_transition_barriers.push(scene_effect_target_write_barrier(
                             target.image,
-                            if clear {
-                                vk::ImageLayout::UNDEFINED
-                            } else {
-                                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL
-                            },
-                            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                            if clear {
-                                vk::PipelineStageFlags2::TOP_OF_PIPE
-                            } else {
-                                vk::PipelineStageFlags2::FRAGMENT_SHADER
-                            },
-                            if clear {
-                                vk::AccessFlags2::empty()
-                            } else {
-                                vk::AccessFlags2::SHADER_SAMPLED_READ
-                            },
-                            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+                            write_transition,
                         ));
                         image_barrier_count = image_barrier_count.saturating_add(1);
-                        if !clear {
+                        if write_transition
+                            == SceneEffectTargetWriteTransition::ShaderReadToColorAttachment
+                        {
                             shader_read_to_effect_target_barrier_count =
                                 shader_read_to_effect_target_barrier_count.saturating_add(1);
                         }
@@ -5964,7 +6007,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         scene_color_image_barriers(
                             device,
                             command_buffer,
-                            target_transition_barriers.as_slice(),
+                            &target_transition_barriers,
                         );
                         pipeline_barrier_command_count =
                             pipeline_barrier_command_count.saturating_add(1);
@@ -6279,29 +6322,30 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 }
             }
         }
-        if let Some(current_target) = active_target.take() {
+        if active_target.take().is_some() {
             end_scene_color_rendering(device, command_buffer);
             rendering_end_count = rendering_end_count.saturating_add(1);
-            if let SceneSampledImageActiveRenderingTarget::EffectTarget(target_index) =
-                current_target
-            {
-                let target = &effect_target_resources[target_index as usize];
-                scene_color_image_transition(
-                    device,
-                    command_buffer,
-                    target.image,
-                    vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-                    vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
-                    vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
-                    vk::PipelineStageFlags2::FRAGMENT_SHADER,
-                    vk::AccessFlags2::SHADER_SAMPLED_READ,
-                );
-                image_barrier_count = image_barrier_count.saturating_add(1);
-                pipeline_barrier_command_count = pipeline_barrier_command_count.saturating_add(1);
-                effect_target_to_shader_read_barrier_count =
-                    effect_target_to_shader_read_barrier_count.saturating_add(1);
-            }
+        }
+        let final_effect_target_shader_read_barriers = effect_target_states
+            .finish_shader_read_targets()
+            .into_iter()
+            .map(|target_index| {
+                scene_effect_target_shader_read_barrier(
+                    effect_target_resources[target_index as usize].image,
+                )
+            })
+            .collect::<Vec<_>>();
+        if !final_effect_target_shader_read_barriers.is_empty() {
+            let barrier_count = saturating_u32(final_effect_target_shader_read_barriers.len());
+            scene_color_image_barriers(
+                device,
+                command_buffer,
+                &final_effect_target_shader_read_barriers,
+            );
+            image_barrier_count = image_barrier_count.saturating_add(barrier_count);
+            pipeline_barrier_command_count = pipeline_barrier_command_count.saturating_add(1);
+            effect_target_to_shader_read_barrier_count =
+                effect_target_to_shader_read_barrier_count.saturating_add(barrier_count);
         }
 
         scene_color_image_transition(
