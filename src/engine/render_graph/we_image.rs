@@ -49,6 +49,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         },
         target_name: None,
         target_extent: None,
+        target_format: None,
         bindings: std::iter::once(TextureBindingRole::SourceTexture)
             .chain(
                 contract
@@ -130,6 +131,7 @@ pub fn we_effect_pass_node(
             .unwrap_or(RenderTargetRole::ImageLocalMain),
         target_name,
         target_extent: None,
+        target_format: None,
         bindings: contract
             .binds
             .iter()

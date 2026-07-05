@@ -246,6 +246,9 @@ impl NativeVulkanSceneDrawPassBuild {
             sampled_image_quads: self.sampled_image_quads,
             sampled_image_we_graph_plan: self.sampled_image_we_graph_plan,
             sampled_image_effect_targets: self.sampled_image_recording_payload.effect_targets,
+            sampled_image_effect_target_aliases: self
+                .sampled_image_recording_payload
+                .effect_target_aliases,
             sampled_image_sources: self.sampled_image_recording_payload.sources,
             sampled_image_recording_ready: self.sampled_image_recording_ready,
             sampled_image_implicit_full_extent_ready: self.sampled_image_implicit_full_extent_ready,

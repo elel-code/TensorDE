@@ -153,6 +153,10 @@ fn native_vulkan_scene_engine_render_pass_node(
         native_vulkan_scene_engine_graph_target(plan, step.chain_index, target_index)
             .map(|target| [target.width, target.height])
     });
+    let target_format = step.output_target_index.and_then(|target_index| {
+        native_vulkan_scene_engine_graph_target(plan, step.chain_index, target_index)
+            .and_then(|target| target.format.clone())
+    });
     RenderPassNode {
         id: step.step_index.min(u32::MAX as usize) as u32,
         role: native_vulkan_scene_engine_render_pass_role(step.pass.role),
@@ -162,6 +166,7 @@ fn native_vulkan_scene_engine_render_pass_node(
         target,
         target_name,
         target_extent,
+        target_format,
         bindings: step
             .texture_bindings
             .iter()
@@ -219,7 +224,7 @@ fn native_vulkan_scene_engine_render_pass_role(
     }
 }
 
-fn native_vulkan_scene_engine_render_target_role(
+pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_engine_render_target_role(
     target: NativeVulkanSceneWeImagePassEndpoint,
 ) -> RenderTargetRole {
     match target {
@@ -290,7 +295,7 @@ fn native_vulkan_scene_engine_graph_target_binding(
     })
 }
 
-fn native_vulkan_scene_engine_graph_target_name(
+pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_engine_graph_target_name(
     plan: &NativeVulkanSceneWeImageGraphPlan,
     chain_index: usize,
     target_index: u32,

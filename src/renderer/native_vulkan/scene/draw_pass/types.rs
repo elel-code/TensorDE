@@ -661,6 +661,15 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageEffectTargetAlias
+{
+    pub(in crate::renderer::native_vulkan::scene) chain_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) target_index: u32,
+    pub(in crate::renderer::native_vulkan::scene) endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    pub(in crate::renderer::native_vulkan::scene) effect_target_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneSampledImageRenderTarget {
     Swapchain,
     EffectTarget { target_index: u32, clear: bool },
@@ -768,6 +777,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneDrawPassPl
         NativeVulkanSceneWeImageGraphPlan,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_effect_targets:
         Vec<NativeVulkanSceneSampledImageEffectTarget>,
+    pub(in crate::renderer::native_vulkan::scene) sampled_image_effect_target_aliases:
+        Vec<NativeVulkanSceneSampledImageEffectTargetAlias>,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_sources: Vec<PathBuf>,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_recording_ready: bool,
     pub(in crate::renderer::native_vulkan::scene) sampled_image_implicit_full_extent_ready: bool,

@@ -60,11 +60,12 @@ use super::binary_ingest::{
 use super::draw_pass::{
     NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneRenderState, NativeVulkanSceneSampledImageEffectTarget,
-    NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
-    NativeVulkanSceneShaderUniform, NativeVulkanSceneTextureSlot,
-    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneWeImageGraphPlan,
-    NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
-    NativeVulkanSceneWeImagePassChain,
+    NativeVulkanSceneSampledImageEffectTargetAlias, NativeVulkanSceneSampledImageRenderTarget,
+    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneShaderUniform,
+    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
+    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphTarget,
+    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImagePassChain,
+    NativeVulkanSceneWeImagePassEndpoint,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_render_layer,
@@ -3460,7 +3461,7 @@ fn native_vulkan_scene_we_image_graph_texture_resource_paths(
 
 fn native_vulkan_scene_we_image_graph_resources_snapshot(
     graph_plan: &NativeVulkanSceneWeImageGraphPlan,
-    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    effect_target_aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
     texture_resources: &[PathBuf],
 ) -> Vec<NativeVulkanSceneWeImageGraphResourceSnapshot> {
     let mut resources = texture_resources
@@ -3491,14 +3492,13 @@ fn native_vulkan_scene_we_image_graph_resources_snapshot(
         .collect::<Vec<_>>();
     let target_resource_base = texture_resources.len().min(u32::MAX as usize) as u32;
     resources.extend(graph_plan.targets.iter().map(|target| {
-        let vulkan_effect_target_index = effect_targets
-            .iter()
-            .find(|effect_target| {
-                effect_target.we_graph_chain_index == Some(target.chain_index)
-                    && effect_target.we_graph_target_index == Some(target.target_index)
-                    && effect_target.we_graph_endpoint == Some(target.endpoint)
-            })
-            .map(|effect_target| effect_target.effect_target_index);
+        let vulkan_effect_target_index =
+            native_vulkan_scene_we_image_graph_alias_effect_target_index(
+                effect_target_aliases,
+                target.chain_index,
+                target.target_index,
+                target.endpoint,
+            );
         NativeVulkanSceneWeImageGraphResourceSnapshot {
             resource_index: target_resource_base.saturating_add(target.target_index),
             resource_kind: "graph-target",
@@ -3538,7 +3538,7 @@ fn native_vulkan_scene_we_image_graph_texture_resource_dimensions(
 
 fn native_vulkan_scene_we_image_graph_targets_snapshot(
     graph_plan: &NativeVulkanSceneWeImageGraphPlan,
-    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    effect_target_aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
     graph_resource_target_base: u32,
 ) -> Vec<NativeVulkanSceneWeImageGraphTargetSnapshot> {
     graph_plan
@@ -3547,7 +3547,7 @@ fn native_vulkan_scene_we_image_graph_targets_snapshot(
         .map(|target| {
             native_vulkan_scene_we_image_graph_target_snapshot(
                 target,
-                effect_targets,
+                effect_target_aliases,
                 graph_resource_target_base,
             )
         })
@@ -3556,17 +3556,15 @@ fn native_vulkan_scene_we_image_graph_targets_snapshot(
 
 fn native_vulkan_scene_we_image_graph_target_snapshot(
     target: &NativeVulkanSceneWeImageGraphTarget,
-    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    effect_target_aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
     graph_resource_target_base: u32,
 ) -> NativeVulkanSceneWeImageGraphTargetSnapshot {
-    let vulkan_effect_target_index = effect_targets
-        .iter()
-        .find(|effect_target| {
-            effect_target.we_graph_chain_index == Some(target.chain_index)
-                && effect_target.we_graph_target_index == Some(target.target_index)
-                && effect_target.we_graph_endpoint == Some(target.endpoint)
-        })
-        .map(|effect_target| effect_target.effect_target_index);
+    let vulkan_effect_target_index = native_vulkan_scene_we_image_graph_alias_effect_target_index(
+        effect_target_aliases,
+        target.chain_index,
+        target.target_index,
+        target.endpoint,
+    );
     NativeVulkanSceneWeImageGraphTargetSnapshot {
         layer_index: target.layer_index,
         layer_id: target.layer_id.clone(),
@@ -3598,9 +3596,25 @@ fn native_vulkan_scene_we_image_graph_target_snapshot(
     }
 }
 
+fn native_vulkan_scene_we_image_graph_alias_effect_target_index(
+    aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
+    chain_index: usize,
+    target_index: u32,
+    endpoint: NativeVulkanSceneWeImagePassEndpoint,
+) -> Option<u32> {
+    aliases
+        .iter()
+        .find(|alias| {
+            alias.chain_index == chain_index
+                && alias.target_index == target_index
+                && alias.endpoint == endpoint
+        })
+        .map(|alias| alias.effect_target_index)
+}
+
 fn native_vulkan_scene_we_image_graph_steps_snapshot(
     graph_plan: NativeVulkanSceneWeImageGraphPlan,
-    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    effect_target_aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
     sampled_image_sources: &[PathBuf],
     graph_texture_resources: &[PathBuf],
     graph_resource_target_base: u32,
@@ -3625,7 +3639,7 @@ fn native_vulkan_scene_we_image_graph_steps_snapshot(
                     native_vulkan_scene_we_image_graph_texture_binding_snapshot(
                         binding,
                         step.chain_index,
-                        effect_targets,
+                        effect_target_aliases,
                         sampled_image_sources,
                         graph_texture_resources,
                         graph_resource_target_base,
@@ -3640,20 +3654,20 @@ fn native_vulkan_scene_we_image_graph_steps_snapshot(
 fn native_vulkan_scene_we_image_graph_texture_binding_snapshot(
     binding: NativeVulkanSceneWeImageGraphTextureBinding,
     chain_index: usize,
-    effect_targets: &[NativeVulkanSceneSampledImageEffectTarget],
+    effect_target_aliases: &[NativeVulkanSceneSampledImageEffectTargetAlias],
     sampled_image_sources: &[PathBuf],
     graph_texture_resources: &[PathBuf],
     graph_resource_target_base: u32,
 ) -> NativeVulkanSceneWeImageGraphTextureBindingSnapshot {
     let vulkan_effect_target_index = binding.target_index.and_then(|target_index| {
-        effect_targets
-            .iter()
-            .find(|effect_target| {
-                effect_target.we_graph_chain_index == Some(chain_index)
-                    && effect_target.we_graph_target_index == Some(target_index)
-                    && effect_target.we_graph_endpoint == binding.endpoint
-            })
-            .map(|effect_target| effect_target.effect_target_index)
+        binding.endpoint.and_then(|endpoint| {
+            native_vulkan_scene_we_image_graph_alias_effect_target_index(
+                effect_target_aliases,
+                chain_index,
+                target_index,
+                endpoint,
+            )
+        })
     });
     let planned_graph_resource_index = binding
         .target_index
@@ -4160,17 +4174,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         .min(u32::MAX as usize) as u32;
     let sampled_image_we_graph_resources = native_vulkan_scene_we_image_graph_resources_snapshot(
         &pass_plan.sampled_image_we_graph_plan,
-        &pass_plan.sampled_image_effect_targets,
+        &pass_plan.sampled_image_effect_target_aliases,
         &sampled_image_we_graph_texture_resources,
     );
     let sampled_image_we_graph_targets = native_vulkan_scene_we_image_graph_targets_snapshot(
         &pass_plan.sampled_image_we_graph_plan,
-        &pass_plan.sampled_image_effect_targets,
+        &pass_plan.sampled_image_effect_target_aliases,
         sampled_image_we_graph_target_resource_base,
     );
     let sampled_image_we_graph_steps = native_vulkan_scene_we_image_graph_steps_snapshot(
         pass_plan.sampled_image_we_graph_plan.clone(),
-        &pass_plan.sampled_image_effect_targets,
+        &pass_plan.sampled_image_effect_target_aliases,
         &pass_plan.sampled_image_sources,
         &sampled_image_we_graph_texture_resources,
         sampled_image_we_graph_target_resource_base,
