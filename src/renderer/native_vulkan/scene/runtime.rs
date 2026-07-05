@@ -116,6 +116,14 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_suppressed_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_target_count: usize,
     pub draw_pass_sampled_image_we_graph_final_scene_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_base_material_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_effect_material_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_color_blend_passthrough_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_graph_target_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_scene_target_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_multi_step_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_max_chain_step_count: usize,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_execution_pass_count: u32,
     pub draw_pass_sampled_image_we_graph_execution_dependency_count: u32,
@@ -379,9 +387,6 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_sampled_image_we_graph_resources = Vec::new();
         self.draw_pass_sampled_image_we_graph_targets = Vec::new();
         self.draw_pass_sampled_image_we_graph_steps = Vec::new();
-        self.draw_pass_sampled_image_we_graph_execution_pass_count = 0;
-        self.draw_pass_sampled_image_we_graph_execution_dependency_count = 0;
-        self.draw_pass_sampled_image_we_graph_execution_level_count = 0;
         self.draw_pass_sampled_image_sources = Vec::new();
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
@@ -4172,6 +4177,28 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_target_count = pass_plan.sampled_image_we_graph_plan.target_count;
     let sampled_image_we_graph_final_scene_step_count =
         pass_plan.sampled_image_we_graph_plan.final_scene_step_count;
+    let sampled_image_we_graph_base_material_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .base_material_step_count;
+    let sampled_image_we_graph_effect_material_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .effect_material_step_count;
+    let sampled_image_we_graph_color_blend_passthrough_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .color_blend_passthrough_step_count;
+    let sampled_image_we_graph_graph_target_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .graph_target_step_count;
+    let sampled_image_we_graph_scene_target_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .scene_target_step_count;
+    let sampled_image_we_graph_direct_terminal_source_effect_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .direct_terminal_source_effect_step_count;
+    let sampled_image_we_graph_multi_step_chain_count =
+        pass_plan.sampled_image_we_graph_plan.multi_step_chain_count;
+    let sampled_image_we_graph_max_chain_step_count =
+        pass_plan.sampled_image_we_graph_plan.max_chain_step_count;
     let sampled_image_we_graph_effect_kind_counts = pass_plan
         .sampled_image_we_graph_plan
         .effect_kind_counts
@@ -4182,25 +4209,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         native_vulkan_scene_we_image_graph_texture_resource_paths(
             &pass_plan.sampled_image_we_graph_plan,
         );
-    let sampled_image_we_graph_target_resource_base = sampled_image_we_graph_texture_resources
-        .len()
-        .min(u32::MAX as usize) as u32;
     let sampled_image_we_graph_resources = native_vulkan_scene_we_image_graph_resources_snapshot(
         &pass_plan.sampled_image_we_graph_plan,
         &pass_plan.sampled_image_effect_target_aliases,
         &sampled_image_we_graph_texture_resources,
-    );
-    let sampled_image_we_graph_targets = native_vulkan_scene_we_image_graph_targets_snapshot(
-        &pass_plan.sampled_image_we_graph_plan,
-        &pass_plan.sampled_image_effect_target_aliases,
-        sampled_image_we_graph_target_resource_base,
-    );
-    let sampled_image_we_graph_steps = native_vulkan_scene_we_image_graph_steps_snapshot(
-        pass_plan.sampled_image_we_graph_plan.clone(),
-        &pass_plan.sampled_image_effect_target_aliases,
-        &pass_plan.sampled_image_sources,
-        &sampled_image_we_graph_texture_resources,
-        sampled_image_we_graph_target_resource_base,
     );
     let engine_telemetry = SceneEngineTelemetry {
         render_graph_passes: engine_render_graph.passes.len().min(u32::MAX as usize) as u32,
@@ -4351,6 +4363,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_pass_sampled_image_we_graph_target_count: sampled_image_we_graph_target_count,
         draw_pass_sampled_image_we_graph_final_scene_step_count:
             sampled_image_we_graph_final_scene_step_count,
+        draw_pass_sampled_image_we_graph_base_material_step_count:
+            sampled_image_we_graph_base_material_step_count,
+        draw_pass_sampled_image_we_graph_effect_material_step_count:
+            sampled_image_we_graph_effect_material_step_count,
+        draw_pass_sampled_image_we_graph_color_blend_passthrough_step_count:
+            sampled_image_we_graph_color_blend_passthrough_step_count,
+        draw_pass_sampled_image_we_graph_graph_target_step_count:
+            sampled_image_we_graph_graph_target_step_count,
+        draw_pass_sampled_image_we_graph_scene_target_step_count:
+            sampled_image_we_graph_scene_target_step_count,
+        draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count:
+            sampled_image_we_graph_direct_terminal_source_effect_step_count,
+        draw_pass_sampled_image_we_graph_multi_step_chain_count:
+            sampled_image_we_graph_multi_step_chain_count,
+        draw_pass_sampled_image_we_graph_max_chain_step_count:
+            sampled_image_we_graph_max_chain_step_count,
         draw_pass_sampled_image_we_graph_effect_kind_counts:
             sampled_image_we_graph_effect_kind_counts,
         draw_pass_sampled_image_we_graph_execution_pass_count: engine_render_graph_execution
@@ -4364,8 +4392,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_texture_resources.len(),
         draw_pass_sampled_image_we_graph_target_resource_count: sampled_image_we_graph_target_count,
         draw_pass_sampled_image_we_graph_resources: sampled_image_we_graph_resources,
-        draw_pass_sampled_image_we_graph_targets: sampled_image_we_graph_targets,
-        draw_pass_sampled_image_we_graph_steps: sampled_image_we_graph_steps,
+        draw_pass_sampled_image_we_graph_targets: Vec::new(),
+        draw_pass_sampled_image_we_graph_steps: Vec::new(),
         draw_pass_sampled_image_effect_targets: pass_plan
             .sampled_image_effect_targets
             .into_iter()
@@ -6787,22 +6815,47 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![0, 1, 2, 3, 4, 5]
         );
-
-        let opacity_target = snapshot
-            .draw_pass_sampled_image_we_graph_targets
-            .iter()
-            .find(|target| target.layer_id == "eye")
-            .expect("opacity graph target");
-        assert_eq!(opacity_target.endpoint, "first-class-effect-target");
-        assert_eq!(opacity_target.planned_graph_resource_index, 4);
-        assert_eq!(opacity_target.vulkan_effect_target_index, Some(0));
-        assert_eq!(opacity_target.allocation, "allocated-vulkan-effect-target");
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_base_material_step_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_effect_material_step_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_color_blend_passthrough_step_count,
+            0
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_graph_target_step_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_scene_target_step_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_multi_step_chain_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_max_chain_step_count,
+            2
+        );
+        assert_eq!(
+            snapshot.draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count,
+            0
+        );
+        assert!(snapshot.draw_pass_sampled_image_we_graph_targets.is_empty());
+        assert!(snapshot.draw_pass_sampled_image_we_graph_steps.is_empty());
 
         let opacity_target_resource = snapshot
             .draw_pass_sampled_image_we_graph_resources
             .iter()
-            .find(|resource| resource.resource_index == opacity_target.planned_graph_resource_index)
+            .find(|resource| resource.layer_id.as_deref() == Some("eye"))
             .expect("opacity target resource");
+        assert_eq!(opacity_target_resource.resource_index, 4);
         assert_eq!(opacity_target_resource.resource_kind, "graph-target");
         assert_eq!(opacity_target_resource.layer_id.as_deref(), Some("eye"));
         assert_eq!(opacity_target_resource.chain_index, Some(0));
@@ -6817,32 +6870,16 @@ mod tests {
         );
         assert_eq!(opacity_target_resource.vulkan_effect_target_index, Some(0));
 
-        let opacity_final_input = snapshot
-            .draw_pass_sampled_image_we_graph_steps
+        let opacity_final_step = snapshot
+            .draw_pass_sampled_image_recording_steps
             .iter()
-            .find(|step| step.layer_id == "eye" && step.step_index == 1)
-            .and_then(|step| {
-                step.texture_bindings
-                    .iter()
-                    .find(|binding| binding.slot == 0)
-            })
-            .expect("opacity final input binding");
-        assert_eq!(opacity_final_input.source, "previous-graph-target");
-        assert_eq!(opacity_final_input.planned_graph_resource_index, Some(4));
-        assert_eq!(opacity_final_input.vulkan_effect_target_index, Some(0));
-
-        let water_targets = snapshot
-            .draw_pass_sampled_image_we_graph_targets
-            .iter()
-            .filter(|target| target.layer_id == "water-carrier")
-            .collect::<Vec<_>>();
-        assert_eq!(water_targets.len(), 1);
-        assert_eq!(water_targets[0].endpoint, "image-local-main");
-        assert_eq!(water_targets[0].planned_graph_resource_index, 5);
-        assert_eq!(water_targets[0].vulkan_effect_target_index, Some(1));
+            .find(|step| step.layer_id == "eye" && step.we_graph_step_index == Some(1))
+            .expect("opacity final recording step");
+        assert_eq!(opacity_final_step.we_graph_input_target_index, Some(0));
+        assert_eq!(opacity_final_step.we_graph_output_target_index, None);
         assert_eq!(
-            water_targets[0].allocation,
-            "allocated-vulkan-effect-target"
+            opacity_final_step.render_target,
+            NativeVulkanSceneSampledImageRenderTargetSnapshot::Swapchain
         );
 
         let water_target_resources = snapshot
@@ -6865,56 +6902,32 @@ mod tests {
             Some(1)
         );
 
-        let water_ripple_input = snapshot
-            .draw_pass_sampled_image_we_graph_steps
-            .iter()
-            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
-            .and_then(|step| {
-                step.texture_bindings
-                    .iter()
-                    .find(|binding| binding.slot == 0)
-            })
-            .expect("water ripple input binding");
-        assert_eq!(water_ripple_input.source, "previous-graph-target");
-        assert_eq!(water_ripple_input.planned_graph_resource_index, Some(5));
-        assert_eq!(water_ripple_input.vulkan_effect_target_index, Some(1));
-
         let water_ripple_step = snapshot
-            .draw_pass_sampled_image_we_graph_steps
+            .draw_pass_sampled_image_recording_steps
             .iter()
-            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
-            .expect("water ripple graph step");
+            .find(|step| step.layer_id == "water-carrier" && step.we_graph_step_index == Some(1))
+            .expect("water ripple recording step");
+        assert_eq!(water_ripple_step.we_graph_input_target_index, Some(1));
+        assert_eq!(water_ripple_step.we_graph_output_target_index, None);
+        assert_eq!(
+            water_ripple_step.render_target,
+            NativeVulkanSceneSampledImageRenderTargetSnapshot::Swapchain
+        );
         assert_eq!(
             water_ripple_step
-                .pass
+                .material_pass
                 .constant_shader_values
                 .get("strength"),
             Some(&serde_json::json!(0.1))
         );
         assert_eq!(
             water_ripple_step
-                .pass
+                .material_pass
                 .constant_shader_values
                 .get("ripplestrength"),
             Some(&serde_json::json!(1.0))
         );
 
-        let water_normal = snapshot
-            .draw_pass_sampled_image_we_graph_steps
-            .iter()
-            .find(|step| step.layer_id == "water-carrier" && step.step_index == 1)
-            .and_then(|step| {
-                step.texture_bindings
-                    .iter()
-                    .find(|binding| binding.slot == 2)
-            })
-            .expect("water normal-map binding");
-        assert_eq!(water_normal.source, "pass-texture-slot");
-        assert_eq!(
-            water_normal.source_path.as_deref(),
-            Some(Path::new("/tmp/waterripplenormal.gtex"))
-        );
-        assert_eq!(water_normal.planned_graph_resource_index, Some(3));
         let water_normal_resource = snapshot
             .draw_pass_sampled_image_we_graph_resources
             .iter()
@@ -6972,6 +6985,22 @@ mod tests {
             vulkan_snapshot
                 .draw_pass_sampled_image_we_graph_steps
                 .is_empty()
+        );
+        assert_eq!(
+            vulkan_snapshot.draw_pass_sampled_image_we_graph_execution_pass_count,
+            4
+        );
+        assert_eq!(
+            vulkan_snapshot.draw_pass_sampled_image_we_graph_execution_dependency_count,
+            snapshot.draw_pass_sampled_image_we_graph_execution_dependency_count
+        );
+        assert_eq!(
+            vulkan_snapshot.draw_pass_sampled_image_we_graph_execution_level_count,
+            snapshot.draw_pass_sampled_image_we_graph_execution_level_count
+        );
+        assert_eq!(
+            vulkan_snapshot.draw_pass_sampled_image_we_graph_multi_step_chain_count,
+            2
         );
     }
 

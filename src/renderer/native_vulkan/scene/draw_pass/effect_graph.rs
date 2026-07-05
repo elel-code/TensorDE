@@ -50,6 +50,11 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
             plan.targets.len(),
         );
         plan.targets.extend(chain_targets.iter().cloned());
+        let chain_step_count = chain.passes.len();
+        if chain_step_count > 1 {
+            plan.multi_step_chain_count = plan.multi_step_chain_count.saturating_add(1);
+        }
+        plan.max_chain_step_count = plan.max_chain_step_count.max(chain_step_count);
         plan.final_scene_step_count += chain
             .passes
             .iter()
@@ -61,6 +66,32 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
                     .effect_kind_counts
                     .entry(effect_kind.as_str())
                     .or_default() += 1;
+            }
+            match pass.role {
+                NativeVulkanSceneWeImagePassRole::BaseMaterial => {
+                    plan.base_material_step_count = plan.base_material_step_count.saturating_add(1);
+                }
+                NativeVulkanSceneWeImagePassRole::EffectMaterial => {
+                    plan.effect_material_step_count =
+                        plan.effect_material_step_count.saturating_add(1);
+                }
+                NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+                    plan.color_blend_passthrough_step_count =
+                        plan.color_blend_passthrough_step_count.saturating_add(1);
+                }
+            }
+            if pass.target == NativeVulkanSceneWeImagePassEndpoint::Scene {
+                plan.scene_target_step_count = plan.scene_target_step_count.saturating_add(1);
+            } else if pass.target.is_graph_target() {
+                plan.graph_target_step_count = plan.graph_target_step_count.saturating_add(1);
+            }
+            if pass.final_scene_pass
+                && pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
+                && pass.input == NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+            {
+                plan.direct_terminal_source_effect_step_count = plan
+                    .direct_terminal_source_effect_step_count
+                    .saturating_add(1);
             }
             let input_target_index = native_vulkan_scene_we_image_graph_target_index(
                 &chain_targets,
