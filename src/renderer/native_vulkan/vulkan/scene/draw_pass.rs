@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::collections::BTreeMap;
 use std::sync::atomic::AtomicUsize;
 
 use serde::Serialize;
@@ -737,30 +738,177 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneDescriptorH
 fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
     solid_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
     sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    effect_target_resource_base_index: usize,
+    effect_target_resource_count: usize,
 ) -> Vec<VulkanaliaSceneOrderedDrawStep> {
-    let mut ordered =
+    let mut scene_steps =
         Vec::with_capacity(solid_commands.len().saturating_add(sampled_commands.len()));
     for (command_index, command) in solid_commands.iter().enumerate() {
-        ordered.push(VulkanaliaSceneOrderedDrawStep {
-            layer_index: command.layer_index,
-            pipeline: VulkanaliaSceneOrderedDrawPipeline::SolidQuad,
-            command_index,
+        scene_steps.push(SceneOrderedDrawSceneStep {
+            draw: VulkanaliaSceneOrderedDrawStep {
+                layer_index: command.layer_index,
+                pipeline: VulkanaliaSceneOrderedDrawPipeline::SolidQuad,
+                command_index,
+            },
+            effect_target_reads: Vec::new(),
         });
     }
+    let mut offscreen_steps = Vec::new();
     for (command_index, command) in sampled_commands.iter().enumerate() {
-        ordered.push(VulkanaliaSceneOrderedDrawStep {
+        let draw = VulkanaliaSceneOrderedDrawStep {
             layer_index: command.layer_index,
             pipeline: VulkanaliaSceneOrderedDrawPipeline::SampledImage,
             command_index,
-        });
+        };
+        match command.render_target {
+            VulkanaliaSceneSampledImageRenderTarget::Swapchain => {
+                scene_steps.push(SceneOrderedDrawSceneStep {
+                    draw,
+                    effect_target_reads: scene_sampled_image_draw_command_effect_target_reads(
+                        command,
+                        effect_target_resource_base_index,
+                        effect_target_resource_count,
+                    ),
+                });
+            }
+            VulkanaliaSceneSampledImageRenderTarget::EffectTarget { target_index, .. } => {
+                offscreen_steps.push(SceneOrderedDrawOffscreenStep {
+                    draw,
+                    write_target_index: target_index,
+                    earliest_scene_gap: 0,
+                });
+            }
+        }
     }
-    ordered.sort_by(|left, right| {
-        left.layer_index
-            .cmp(&right.layer_index)
-            .then(left.pipeline.sort_rank().cmp(&right.pipeline.sort_rank()))
-            .then(left.command_index.cmp(&right.command_index))
+    scene_steps.sort_by(|left, right| scene_ordered_draw_step_cmp(&left.draw, &right.draw));
+    offscreen_steps.sort_by(|left, right| left.draw.command_index.cmp(&right.draw.command_index));
+
+    if offscreen_steps.is_empty() {
+        return scene_steps.into_iter().map(|step| step.draw).collect();
+    }
+
+    let sampled_scene_positions_by_layer =
+        scene_sampled_image_scene_positions_by_layer(&scene_steps);
+    let mut last_gap_by_layer = BTreeMap::<usize, usize>::new();
+    for offscreen_step in &mut offscreen_steps {
+        let final_scene_position = sampled_scene_positions_by_layer
+            .get(&offscreen_step.draw.layer_index)
+            .and_then(|positions| {
+                positions
+                    .iter()
+                    .find(|(command_index, _)| *command_index > offscreen_step.draw.command_index)
+            })
+            .map(|(_, position)| *position)
+            .unwrap_or(scene_steps.len());
+        let mut earliest_gap = 0usize;
+        for (scene_position, scene_step) in
+            scene_steps.iter().enumerate().take(final_scene_position)
+        {
+            if scene_step
+                .effect_target_reads
+                .iter()
+                .any(|target_index| *target_index == offscreen_step.write_target_index)
+            {
+                earliest_gap = earliest_gap.max(scene_position.saturating_add(1));
+            }
+        }
+        if let Some(last_gap) = last_gap_by_layer.get(&offscreen_step.draw.layer_index) {
+            earliest_gap = earliest_gap.max(*last_gap);
+        }
+        offscreen_step.earliest_scene_gap = earliest_gap;
+        last_gap_by_layer.insert(offscreen_step.draw.layer_index, earliest_gap);
+    }
+    offscreen_steps.sort_by(|left, right| {
+        left.earliest_scene_gap
+            .cmp(&right.earliest_scene_gap)
+            .then(left.draw.command_index.cmp(&right.draw.command_index))
     });
+
+    let mut ordered =
+        Vec::with_capacity(solid_commands.len().saturating_add(sampled_commands.len()));
+    let mut offscreen_index = 0usize;
+    for scene_gap in 0..=scene_steps.len() {
+        while offscreen_index < offscreen_steps.len()
+            && offscreen_steps[offscreen_index].earliest_scene_gap == scene_gap
+        {
+            ordered.push(offscreen_steps[offscreen_index].draw);
+            offscreen_index += 1;
+        }
+        if let Some(scene_step) = scene_steps.get(scene_gap) {
+            ordered.push(scene_step.draw);
+        }
+    }
     ordered
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SceneOrderedDrawSceneStep {
+    draw: VulkanaliaSceneOrderedDrawStep,
+    effect_target_reads: Vec<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SceneOrderedDrawOffscreenStep {
+    draw: VulkanaliaSceneOrderedDrawStep,
+    write_target_index: u32,
+    earliest_scene_gap: usize,
+}
+
+fn scene_ordered_draw_step_cmp(
+    left: &VulkanaliaSceneOrderedDrawStep,
+    right: &VulkanaliaSceneOrderedDrawStep,
+) -> std::cmp::Ordering {
+    left.layer_index
+        .cmp(&right.layer_index)
+        .then(left.pipeline.sort_rank().cmp(&right.pipeline.sort_rank()))
+        .then(left.command_index.cmp(&right.command_index))
+}
+
+fn scene_sampled_image_scene_positions_by_layer(
+    scene_steps: &[SceneOrderedDrawSceneStep],
+) -> BTreeMap<usize, Vec<(usize, usize)>> {
+    let mut positions = BTreeMap::<usize, Vec<(usize, usize)>>::new();
+    for (position, scene_step) in scene_steps.iter().enumerate() {
+        if scene_step.draw.pipeline != VulkanaliaSceneOrderedDrawPipeline::SampledImage {
+            continue;
+        }
+        positions
+            .entry(scene_step.draw.layer_index)
+            .or_default()
+            .push((scene_step.draw.command_index, position));
+    }
+    positions
+}
+
+fn scene_sampled_image_draw_command_effect_target_reads(
+    command: &VulkanaliaSceneSampledImageDrawCommand,
+    effect_target_resource_base_index: usize,
+    effect_target_resource_count: usize,
+) -> Vec<u32> {
+    if effect_target_resource_count == 0 {
+        return Vec::new();
+    }
+    let effect_target_resource_end =
+        effect_target_resource_base_index.saturating_add(effect_target_resource_count);
+    let VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+        texture_slot_bindings,
+        ..
+    } = &command.descriptor_binding;
+    let mut reads = Vec::new();
+    for binding in texture_slot_bindings {
+        let resource_index = binding.resource_index as usize;
+        if resource_index < effect_target_resource_base_index
+            || resource_index >= effect_target_resource_end
+        {
+            continue;
+        }
+        let target_index =
+            (resource_index - effect_target_resource_base_index).min(u32::MAX as usize) as u32;
+        if !reads.contains(&target_index) {
+            reads.push(target_index);
+        }
+    }
+    reads
 }
 
 fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
@@ -3694,7 +3842,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let solid_draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand] =
         solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
     let ordered_draws =
-        native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands);
+        native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands, 0, 0);
 
     unsafe {
         let full_viewport = SceneDynamicViewport::full_extent(extent);
@@ -5492,6 +5640,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     descriptor_heap_draw: Option<VulkanaliaSceneDescriptorHeapDrawResources<'_>>,
     pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    effect_target_resource_base_index: usize,
     effect_target_resources: &[VulkanaliaSceneSampledImageResources],
     effect_msaa_targets: &[VulkanaliaSceneMsaaColorTarget],
     framebuffer_snapshot_resource: Option<&VulkanaliaSceneSampledImageResources>,
@@ -5668,8 +5817,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
     let solid_draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand] =
         solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
-    let ordered_draws =
-        native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands);
+    let ordered_draws = native_vulkan_vulkanalia_scene_ordered_draw_steps(
+        solid_draw_commands,
+        draw_commands,
+        effect_target_resource_base_index,
+        effect_target_resources.len(),
+    );
     let solid_passthroughblend_draw_count = solid_quad_draw.map_or(0usize, |draw| {
         if draw
             .framebuffer_snapshot_descriptor_group_base_index
@@ -6611,6 +6764,58 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    fn effect_target_command(
+        layer_index: usize,
+        first_index: u32,
+        target_index: u32,
+        descriptor_group_base_index: u32,
+    ) -> VulkanaliaSceneSampledImageDrawCommand {
+        VulkanaliaSceneSampledImageDrawCommand {
+            layer_index,
+            last_layer_index: layer_index,
+            material: sampled_image_material(SceneBlendMode::Alpha),
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index,
+                texture_slot_bindings: texture_slot_bindings(&[0]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::EffectTarget {
+                target_index,
+                clear: true,
+            },
+            draw_instance_index: 0,
+            vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            vertex_offset: 0,
+            first_index,
+            index_count: 6,
+        }
+    }
+
+    fn swapchain_command_reading_effect_target(
+        layer_index: usize,
+        first_index: u32,
+        effect_target_resource_base_index: u32,
+        target_index: u32,
+    ) -> VulkanaliaSceneSampledImageDrawCommand {
+        VulkanaliaSceneSampledImageDrawCommand {
+            layer_index,
+            last_layer_index: layer_index,
+            material: sampled_image_material(SceneBlendMode::Alpha),
+            descriptor_binding: VulkanaliaSceneSampledImageDescriptorBinding::DescriptorHeap {
+                descriptor_group_base_index: first_index
+                    .saturating_mul(SCENE_SAMPLED_IMAGE_TEXTURE_SLOT_BINDING_COUNT as u32),
+                texture_slot_bindings: texture_slot_bindings(&[
+                    effect_target_resource_base_index.saturating_add(target_index)
+                ]),
+            },
+            render_target: VulkanaliaSceneSampledImageRenderTarget::Swapchain,
+            draw_instance_index: 0,
+            vertex_program: VulkanaliaSceneSampledImageVertexProgram::Sampled,
+            vertex_offset: 0,
+            first_index,
+            index_count: 6,
+        }
     }
 
     fn input() -> NativeVulkanVulkanaliaSceneDrawPassInput {
@@ -8673,8 +8878,12 @@ mod tests {
             },
         ];
 
-        let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&solid_commands, &sampled_commands);
+        let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(
+            &solid_commands,
+            &sampled_commands,
+            0,
+            0,
+        );
         let order = ordered
             .iter()
             .map(|step| (step.layer_index, step.pipeline.label(), step.command_index))
@@ -8688,6 +8897,44 @@ mod tests {
                 (3, "sampled-image", 1)
             ]
         );
+    }
+
+    #[test]
+    fn ordered_draw_steps_prepass_unique_effect_targets_before_scene() {
+        let sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            swapchain_command_reading_effect_target(0, 1, 16, 0),
+            effect_target_command(1, 2, 1, 32),
+            swapchain_command_reading_effect_target(1, 3, 16, 1),
+        ];
+
+        let ordered =
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+        let order = ordered
+            .iter()
+            .map(|step| (step.layer_index, step.command_index))
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec![(0, 0), (1, 2), (0, 1), (1, 3)]);
+    }
+
+    #[test]
+    fn ordered_draw_steps_do_not_prepass_across_aliased_effect_target_read() {
+        let sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            swapchain_command_reading_effect_target(0, 1, 16, 0),
+            effect_target_command(1, 2, 0, 32),
+            swapchain_command_reading_effect_target(1, 3, 16, 0),
+        ];
+
+        let ordered =
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 1);
+        let order = ordered
+            .iter()
+            .map(|step| (step.layer_index, step.command_index))
+            .collect::<Vec<_>>();
+
+        assert_eq!(order, vec![(0, 0), (0, 1), (1, 2), (1, 3)]);
     }
 
     #[test]
