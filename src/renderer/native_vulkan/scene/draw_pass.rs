@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::core::scene::{
     SceneEffectUvTransform, SceneMesh, SceneMeshVertex, SceneNativeEffectMotion,
@@ -4413,29 +4413,9 @@ fn native_vulkan_scene_append_sampled_image_vertices_in_scene(
 }
 
 fn native_vulkan_scene_sampled_image_cpu_effect_motion(
-    quad: &NativeVulkanSceneSampledImageQuad,
+    _quad: &NativeVulkanSceneSampledImageQuad,
 ) -> SceneNativeEffectMotion {
-    // Reverse-engineered WE image effects execute as material/pass shaders in
-    // pass space. The old CPU mesh-deformation approximation is opt-in only
-    // because it moves the entire layer mesh and can leak local effects to body
-    // parts.
-    if native_vulkan_scene_legacy_cpu_effect_motion_enabled() {
-        quad.effect_motion
-    } else {
-        SceneNativeEffectMotion::default()
-    }
-}
-
-fn native_vulkan_scene_legacy_cpu_effect_motion_enabled() -> bool {
-    static ENABLED: OnceLock<bool> = OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("GILDER_ENABLE_LEGACY_CPU_EFFECT_MOTION").is_ok_and(|value| {
-            matches!(
-                value.to_ascii_lowercase().as_str(),
-                "1" | "true" | "yes" | "on"
-            )
-        })
-    })
+    SceneNativeEffectMotion::default()
 }
 
 fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(

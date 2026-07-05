@@ -71,9 +71,14 @@ LayerPose layer_pose_at_time(float time_seconds) {
     LayerPoseBuffer timeline = layer_pose_buffer_from_ref(in_layer_pose_ref);
     uint frame_count = max(in_layer_pose_ref.z, 1u);
     float frame_rate = max(float(in_layer_pose_ref.w), 1.0);
-    float frame = min(max(time_seconds * frame_rate, 0.0), float(frame_count - 1u));
+    float frame = max(time_seconds * frame_rate, 0.0);
+    if (frame_count > 1u) {
+        frame = mod(frame, float(frame_count));
+    } else {
+        frame = 0.0;
+    }
     uint frame0 = min(uint(floor(frame)), frame_count - 1u);
-    uint frame1 = min(frame0 + 1u, frame_count - 1u);
+    uint frame1 = frame_count > 1u ? (frame0 + 1u) % frame_count : frame0;
     float frame_mix = fract(frame);
     LayerPose a = timeline.poses[frame0];
     LayerPose b = timeline.poses[frame1];

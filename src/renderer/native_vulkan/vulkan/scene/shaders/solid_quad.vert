@@ -60,9 +60,14 @@ SolidVertex solid_vertex_at_time() {
     float frame_rate = max(float(in_vertex_timeline_ref.w), 1.0);
     uint frame_vertex_count = max(in_frame_time_ref.z, 1u);
     uint vertex_index = min(uint(gl_VertexIndex), frame_vertex_count - 1u);
-    float frame = min(max(frame_time_seconds() * frame_rate, 0.0), float(frame_count - 1u));
+    float frame = max(frame_time_seconds() * frame_rate, 0.0);
+    if (frame_count > 1u) {
+        frame = mod(frame, float(frame_count));
+    } else {
+        frame = 0.0;
+    }
     uint frame0 = min(uint(floor(frame)), frame_count - 1u);
-    uint frame1 = min(frame0 + 1u, frame_count - 1u);
+    uint frame1 = frame_count > 1u ? (frame0 + 1u) % frame_count : frame0;
     float frame_mix = fract(frame);
     SolidVertex a = load_solid_vertex(timeline, frame0 * frame_vertex_count + vertex_index);
     SolidVertex b = load_solid_vertex(timeline, frame1 * frame_vertex_count + vertex_index);
