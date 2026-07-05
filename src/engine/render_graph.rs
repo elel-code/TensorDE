@@ -4,6 +4,7 @@
 //! grow toward a Godot-style RenderingDeviceGraph boundary without continuing
 //! to concentrate WE semantics inside the Vulkan draw-pass code.
 
+pub mod allocation;
 pub mod binding;
 pub mod graph;
 pub mod pass;
@@ -12,6 +13,7 @@ pub mod state;
 pub mod target;
 pub mod we_image;
 
+pub use allocation::{RenderGraphTargetAllocation, RenderGraphTargetAllocationPlan};
 pub use binding::TextureBindingRole;
 pub use graph::{RenderGraph, UnsupportedGraphBoundary};
 pub use pass::{RenderPassNode, RenderPassRole};

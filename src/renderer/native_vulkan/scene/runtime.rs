@@ -4133,6 +4133,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let engine_render_graph = &pass_plan.sampled_image_we_graph_plan.engine_graph;
     let engine_render_graph_resource_uses = engine_render_graph.resource_uses();
     let engine_render_graph_derived_barriers = engine_render_graph.derived_barriers();
+    let engine_render_graph_target_allocation = engine_render_graph.target_allocation_plan();
     let sampled_image_we_graph_first_class_target_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .first_class_target_chain_count;
@@ -4184,6 +4185,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         render_graph_derived_barriers: engine_render_graph_derived_barriers
             .len()
             .min(u32::MAX as usize) as u32,
+        render_graph_logical_targets: engine_render_graph_target_allocation.logical_target_count,
+        render_graph_physical_target_slots: engine_render_graph_target_allocation
+            .physical_target_count,
+        render_graph_aliased_targets: engine_render_graph_target_allocation.aliased_target_count,
         retained_layer_pose_timeline_bytes: 0,
         retained_layer_pose_timeline_layers: 0,
         retained_layer_pose_timeline_frames: 0,
