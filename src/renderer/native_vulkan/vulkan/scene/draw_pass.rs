@@ -625,6 +625,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDr
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) blend:
         super::present::NativeVulkanVulkanaliaSceneBlendState,
+    pub(in crate::renderer::native_vulkan::vulkan) draw_instance_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
     pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
 }
@@ -1786,7 +1787,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_scene
         vertex_position_format: "R32G32_SFLOAT",
         vertex_color_format: "R32G32B32A32_SFLOAT",
         push_constant_bytes: SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES,
-        push_constant_model: "scene-space pixel extent -> NDC conversion; retained vertex timelines read frame time and vertex payloads on GPU",
+        push_constant_model: "scene-space pixel extent -> NDC conversion; retained layer pose timelines read frame time and transform/state payloads on GPU",
         blend_model: "solid rgba with opacity; alpha/normal/additive/multiply/screen/max/modulate/hsl-color blend pipeline selected per draw command",
         uses_pipeline_rendering_create_info: true,
         uses_dynamic_rendering: true,
@@ -3317,15 +3318,23 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     vertex_offset_bytes: u64,
     draw_instance_buffer: vk::Buffer,
     index_buffer: vk::Buffer,
-    index_count: u32,
+    draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
     clear_color: [f32; 4],
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene solid quad command requires non-zero extent".to_owned());
     }
-    if index_count == 0 {
-        return Err("scene solid quad command requires at least one index".to_owned());
+    if draw_commands.is_empty() {
+        return Err("scene solid quad command requires at least one draw".to_owned());
     }
+    for draw in draw_commands {
+        if draw.index_count == 0 {
+            return Err("scene solid quad command requires at least one index".to_owned());
+        }
+    }
+    let index_count = draw_commands
+        .iter()
+        .fold(0u32, |sum, draw| sum.saturating_add(draw.index_count));
     validate_scene_msaa_color_target(
         "solid quad swapchain",
         swapchain_msaa_target,
@@ -3384,28 +3393,49 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             vk::AttachmentLoadOp::CLEAR,
             clear_color,
         );
-        device.cmd_bind_pipeline(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            pipeline_resources.alpha_pipeline,
-        );
         let vertex_buffers = [vertex_buffer, draw_instance_buffer];
         let vertex_offsets = [vertex_offset_bytes, 0];
-        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
-        device.cmd_bind_index_buffer(command_buffer, index_buffer, 0, vk::IndexType::UINT32);
         let push_constants = [extent.width as f32, extent.height as f32];
         let push_constant_bytes = std::slice::from_raw_parts(
             push_constants.as_ptr().cast::<u8>(),
             SCENE_FULL_SOLID_QUAD_PUSH_CONSTANT_BYTES as usize,
         );
-        device.cmd_push_constants(
-            command_buffer,
-            pipeline_resources.pipeline_layout,
-            vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
-            0,
-            push_constant_bytes,
-        );
-        device.cmd_draw_indexed(command_buffer, index_count, 1, 0, 0, 0);
+        let mut bound_pipeline = None;
+        for draw in draw_commands {
+            if bound_pipeline != Some(draw.blend) {
+                device.cmd_bind_pipeline(
+                    command_buffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+                        pipeline_resources,
+                        draw.blend.mode,
+                    ),
+                );
+                device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+                device.cmd_bind_index_buffer(
+                    command_buffer,
+                    index_buffer,
+                    0,
+                    vk::IndexType::UINT32,
+                );
+                device.cmd_push_constants(
+                    command_buffer,
+                    pipeline_resources.pipeline_layout,
+                    vk::ShaderStageFlags::VERTEX | vk::ShaderStageFlags::FRAGMENT,
+                    0,
+                    push_constant_bytes,
+                );
+                bound_pipeline = Some(draw.blend);
+            }
+            device.cmd_draw_indexed(
+                command_buffer,
+                draw.index_count,
+                1,
+                draw.first_index,
+                0,
+                draw.draw_instance_index,
+            );
+        }
         device.cmd_end_rendering(command_buffer);
 
         let swapchain_to_present = vk::ImageMemoryBarrier2::builder()
@@ -3521,7 +3551,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 1,
                 solid_draw.first_index,
                 0,
-                0,
+                solid_draw.draw_instance_index,
             );
         }
     }
@@ -3710,7 +3740,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                         1,
                         solid_draw.first_index,
                         0,
-                        0,
+                        solid_draw.draw_instance_index,
                     );
                 }
                 VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
@@ -6458,7 +6488,7 @@ fn native_vulkan_vulkanalia_scene_color_subresource_range() -> vk::ImageSubresou
         .build()
 }
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV: [u32; 1981] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV: [u32; 3227] =
     include!("shaders/solid_quad.vert.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_FRAGMENT_SPIRV: [u32; 94] = [
@@ -6879,7 +6909,7 @@ mod tests {
         assert_eq!(snapshot.push_constant_bytes, 8);
         assert_eq!(
             snapshot.push_constant_model,
-            "scene-space pixel extent -> NDC conversion; retained vertex timelines read frame time and vertex payloads on GPU"
+            "scene-space pixel extent -> NDC conversion; retained layer pose timelines read frame time and transform/state payloads on GPU"
         );
         assert!(snapshot.uses_pipeline_rendering_create_info);
         assert!(snapshot.uses_dynamic_rendering);
@@ -8610,6 +8640,7 @@ mod tests {
             layer_index: 2,
             last_layer_index: 2,
             blend: blend_state(SceneBlendMode::Alpha),
+            draw_instance_index: 0,
             first_index: 0,
             index_count: 6,
         }];
@@ -8722,7 +8753,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_VERTEX_SPIRV
             ),
-            4276
+            12908
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -8740,7 +8771,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV
             ),
-            14400
+            35464
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(

@@ -15,6 +15,7 @@ use crate::core::{
     FitMode, PackagePath, SceneAlphaTextureMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule,
     SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
+use crate::engine::telemetry::SceneEngineTelemetry;
 use crate::renderer::native_vulkan::effect_debug::{
     NativeVulkanEffectDebugR8UvGroup, NativeVulkanEffectDebugRgbaUvGroup,
     native_vulkan_effect_debug_bc7_mode6_gtex_group_report, native_vulkan_effect_debug_enabled,
@@ -87,6 +88,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub scene_size: Option<SceneSize>,
     pub scene_fit: FitMode,
     pub full_scene: NativeVulkanFullSceneRuntimeSnapshot,
+    pub engine_telemetry: SceneEngineTelemetry,
     pub scene_input_model: &'static str,
     pub scene_resource_model: &'static str,
     pub scene_binary_ingest: Option<NativeVulkanSceneBinaryIngestRuntimeSnapshot>,
@@ -370,6 +372,9 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_quad_indices = Vec::new();
         self.draw_pass_sampled_image_quads = Vec::new();
         self.draw_pass_sampled_image_effect_targets = Vec::new();
+        self.draw_pass_sampled_image_we_graph_resources = Vec::new();
+        self.draw_pass_sampled_image_we_graph_targets = Vec::new();
+        self.draw_pass_sampled_image_we_graph_steps = Vec::new();
         self.draw_pass_sampled_image_sources = Vec::new();
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
@@ -2960,7 +2965,12 @@ fn native_vulkan_scene_vulkanalia_texture_slot_bindings_from_resources(
 }
 
 fn native_vulkan_scene_render_layer_has_no_visual_geometry(layer: &SceneRenderLayer) -> bool {
-    if layer.opacity <= 0.0 || native_vulkan_scene_render_layer_is_clear(layer) {
+    if native_vulkan_scene_render_layer_is_clear(layer) {
+        return true;
+    }
+    if layer.opacity <= 0.0
+        && !native_vulkan_scene_layer_keeps_solid_topology_when_hidden(layer.kind)
+    {
         return true;
     }
     match layer.kind {
@@ -2979,7 +2989,12 @@ fn native_vulkan_scene_render_layer_has_no_visual_geometry(layer: &SceneRenderLa
 }
 
 fn native_vulkan_scene_snapshot_layer_has_no_visual_geometry(layer: &SceneSnapshotLayer) -> bool {
-    if layer.opacity <= 0.0 || native_vulkan_scene_snapshot_layer_is_clear(layer) {
+    if native_vulkan_scene_snapshot_layer_is_clear(layer) {
+        return true;
+    }
+    if layer.opacity <= 0.0
+        && !native_vulkan_scene_layer_keeps_solid_topology_when_hidden(layer.kind)
+    {
         return true;
     }
     match layer.kind {
@@ -2995,6 +3010,17 @@ fn native_vulkan_scene_snapshot_layer_has_no_visual_geometry(layer: &SceneSnapsh
         }
         _ => false,
     }
+}
+
+fn native_vulkan_scene_layer_keeps_solid_topology_when_hidden(kind: SceneNodeKind) -> bool {
+    matches!(
+        kind,
+        SceneNodeKind::Rectangle
+            | SceneNodeKind::Ellipse
+            | SceneNodeKind::Text
+            | SceneNodeKind::Path
+            | SceneNodeKind::AudioResponse
+    )
 }
 
 fn native_vulkan_scene_snapshot_layer_is_clear(layer: &SceneSnapshotLayer) -> bool {
@@ -4104,6 +4130,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let scene_video_native_layer_count = full_scene.video_native_layer_count;
     let sampled_image_we_graph_chain_count = pass_plan.sampled_image_we_graph_plan.chain_count;
     let sampled_image_we_graph_step_count = pass_plan.sampled_image_we_graph_plan.step_count;
+    let engine_render_graph = &pass_plan.sampled_image_we_graph_plan.engine_graph;
+    let engine_render_graph_resource_uses = engine_render_graph.resource_uses();
+    let engine_render_graph_derived_barriers = engine_render_graph.derived_barriers();
     let sampled_image_we_graph_first_class_target_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .first_class_target_chain_count;
@@ -4145,11 +4174,27 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         &sampled_image_we_graph_texture_resources,
         sampled_image_we_graph_target_resource_base,
     );
+    let engine_telemetry = SceneEngineTelemetry {
+        render_graph_passes: engine_render_graph.passes.len().min(u32::MAX as usize) as u32,
+        unsupported_graph_boundaries: engine_render_graph.unsupported.len().min(u32::MAX as usize)
+            as u32,
+        render_graph_resource_uses: engine_render_graph_resource_uses
+            .len()
+            .min(u32::MAX as usize) as u32,
+        render_graph_derived_barriers: engine_render_graph_derived_barriers
+            .len()
+            .min(u32::MAX as usize) as u32,
+        retained_layer_pose_timeline_bytes: 0,
+        retained_layer_pose_timeline_layers: 0,
+        retained_layer_pose_timeline_frames: 0,
+        retained_layer_pose_timeline_model: "native-vulkan-runtime-plan",
+    };
     Some(NativeVulkanSceneRuntimeSnapshot {
         snapshot_time_ms: plan.snapshot_time_ms,
         scene_size: plan.scene_size,
         scene_fit: plan.scene_fit,
         full_scene,
+        engine_telemetry,
         scene_input_model: "core scene snapshot layers; groups must be flattened before native Vulkan planning",
         scene_resource_model,
         scene_binary_ingest,
@@ -6661,6 +6706,13 @@ mod tests {
 
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_chain_count, 2);
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_step_count, 4);
+        assert_eq!(snapshot.engine_telemetry.render_graph_passes, 4);
+        assert_eq!(snapshot.engine_telemetry.unsupported_graph_boundaries, 0);
+        assert!(
+            snapshot.engine_telemetry.render_graph_resource_uses
+                > snapshot.engine_telemetry.render_graph_passes
+        );
+        assert!(snapshot.engine_telemetry.render_graph_derived_barriers > 0);
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 2);
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_texture_resource_count,
@@ -6848,6 +6900,22 @@ mod tests {
         assert_eq!(
             vulkan_geometry.we_graph_resources[5].allocation,
             "allocated-vulkan-effect-target"
+        );
+        vulkan_snapshot.release_cpu_draw_payloads_for_present();
+        assert!(
+            vulkan_snapshot
+                .draw_pass_sampled_image_we_graph_resources
+                .is_empty()
+        );
+        assert!(
+            vulkan_snapshot
+                .draw_pass_sampled_image_we_graph_targets
+                .is_empty()
+        );
+        assert!(
+            vulkan_snapshot
+                .draw_pass_sampled_image_we_graph_steps
+                .is_empty()
         );
     }
 

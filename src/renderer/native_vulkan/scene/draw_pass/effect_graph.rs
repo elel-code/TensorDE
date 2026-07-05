@@ -2,6 +2,11 @@ use std::collections::BTreeMap;
 
 use crate::core::SceneBlendMode;
 use crate::core::scene::{SceneMesh, scene_blend_mode_from_material_blending};
+use crate::engine::render_graph::{
+    CullMode, DepthTestMode, PassState, PipelineBlendMode, RenderGraph, RenderPassNode,
+    RenderPassRole, RenderTargetRole, ShaderBlendMode, TextureBindingRole,
+    UnsupportedGraphBoundary,
+};
 use serde_json::Value;
 
 use super::blend::native_vulkan_scene_render_state;
@@ -90,7 +95,239 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
     }
     plan.target_count = plan.targets.len();
     plan.step_count = plan.steps.len();
+    plan.engine_graph = native_vulkan_scene_engine_render_graph_from_we_plan(&plan);
     plan
+}
+
+fn native_vulkan_scene_engine_render_graph_from_we_plan(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+) -> RenderGraph {
+    let mut graph = RenderGraph::default();
+    for step in &plan.steps {
+        let mut node = native_vulkan_scene_engine_render_pass_node(plan, step);
+        node.id = graph.passes.len().min(u32::MAX as usize) as u32;
+        graph.passes.push(node);
+        if matches!(
+            step.execution,
+            NativeVulkanSceneWeImagePassExecution::TemporaryRawFallback
+                | NativeVulkanSceneWeImagePassExecution::SuppressedUntilGraphExecutor
+        ) {
+            graph.unsupported.push(UnsupportedGraphBoundary {
+                object_index: Some(step.layer_index),
+                pass_index: Some(step.pass.pass_index.min(u32::MAX as usize) as u32),
+                feature: step
+                    .unsupported_reason
+                    .unwrap_or("we-effect-graph-not-first-class")
+                    .to_owned(),
+                expected_subsystem: "engine::render_graph first-class WE image graph executor"
+                    .to_owned(),
+                containment: step.execution.as_str().to_owned(),
+            });
+        }
+    }
+    graph
+}
+
+fn native_vulkan_scene_engine_render_pass_node(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> RenderPassNode {
+    let target = native_vulkan_scene_engine_render_target_role(step.pass.target);
+    let target_name = step.pass.target_name.clone().or_else(|| {
+        step.output_target_index
+            .and_then(|target_index| {
+                native_vulkan_scene_engine_graph_target_name(plan, step.chain_index, target_index)
+            })
+            .or_else(|| {
+                target.is_graph_target_like().then(|| {
+                    format!(
+                        "chain{}-{}-step{}",
+                        step.chain_index,
+                        step.pass.target.as_str(),
+                        step.step_index
+                    )
+                })
+            })
+    });
+    RenderPassNode {
+        id: step.step_index.min(u32::MAX as usize) as u32,
+        role: native_vulkan_scene_engine_render_pass_role(step.pass.role),
+        object_index: Some(step.layer_index),
+        pass_index: step.pass.pass_index.min(u32::MAX as usize) as u32,
+        shader: step.pass.shader.clone(),
+        target,
+        target_name,
+        bindings: step
+            .texture_bindings
+            .iter()
+            .map(|binding| {
+                native_vulkan_scene_engine_texture_binding_role(plan, step.chain_index, binding)
+            })
+            .collect(),
+        state: PassState {
+            pipeline_blend: step
+                .pass
+                .blending
+                .as_deref()
+                .map(PipelineBlendMode::from_we_material_blending)
+                .unwrap_or(PipelineBlendMode::Normal),
+            scene_blend: step.pass.scene_blend_mode,
+            shader_blend: step
+                .pass
+                .combo_values
+                .get("BLENDMODE")
+                .copied()
+                .map(ShaderBlendMode::from_we_blendmode),
+            depth_test: native_vulkan_scene_engine_depth_test(step.pass.depth_test),
+            depth_write: step.pass.depth_write == NativeVulkanSceneMaterialFlag::Enabled,
+            cull_mode: native_vulkan_scene_engine_cull_mode(&step.pass.cull_mode),
+        },
+    }
+}
+
+trait NativeVulkanSceneEngineRenderTargetRoleExt {
+    fn is_graph_target_like(self) -> bool;
+}
+
+impl NativeVulkanSceneEngineRenderTargetRoleExt for RenderTargetRole {
+    fn is_graph_target_like(self) -> bool {
+        matches!(
+            self,
+            RenderTargetRole::ImageLocalMain
+                | RenderTargetRole::ImageLocalSub
+                | RenderTargetRole::NamedFbo
+                | RenderTargetRole::FirstClassEffectTarget
+                | RenderTargetRole::Temporary
+        )
+    }
+}
+
+fn native_vulkan_scene_engine_render_pass_role(
+    role: NativeVulkanSceneWeImagePassRole,
+) -> RenderPassRole {
+    match role {
+        NativeVulkanSceneWeImagePassRole::BaseMaterial => RenderPassRole::BaseMaterial,
+        NativeVulkanSceneWeImagePassRole::EffectMaterial => RenderPassRole::EffectMaterial,
+        NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
+            RenderPassRole::ColorBlendPassthrough
+        }
+    }
+}
+
+fn native_vulkan_scene_engine_render_target_role(
+    target: NativeVulkanSceneWeImagePassEndpoint,
+) -> RenderTargetRole {
+    match target {
+        NativeVulkanSceneWeImagePassEndpoint::SourceTexture => RenderTargetRole::Temporary,
+        NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain => RenderTargetRole::ImageLocalMain,
+        NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub => RenderTargetRole::ImageLocalSub,
+        NativeVulkanSceneWeImagePassEndpoint::NamedFbo => RenderTargetRole::NamedFbo,
+        NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget => {
+            RenderTargetRole::FirstClassEffectTarget
+        }
+        NativeVulkanSceneWeImagePassEndpoint::Scene => RenderTargetRole::SceneColor,
+    }
+}
+
+fn native_vulkan_scene_engine_texture_binding_role(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    chain_index: usize,
+    binding: &NativeVulkanSceneWeImageGraphTextureBinding,
+) -> TextureBindingRole {
+    match binding.source {
+        NativeVulkanSceneWeImageGraphTextureBindingSource::SourceTexture => {
+            TextureBindingRole::SourceTexture
+        }
+        NativeVulkanSceneWeImageGraphTextureBindingSource::PreviousGraphTarget
+        | NativeVulkanSceneWeImageGraphTextureBindingSource::FramebufferSnapshot => binding
+            .target_index
+            .and_then(|target_index| {
+                native_vulkan_scene_engine_graph_target_binding(plan, chain_index, target_index)
+            })
+            .unwrap_or(TextureBindingRole::PreviousGraphTarget),
+        NativeVulkanSceneWeImageGraphTextureBindingSource::PassTextureSlot => {
+            TextureBindingRole::TextureSlot { slot: binding.slot }
+        }
+        NativeVulkanSceneWeImageGraphTextureBindingSource::NamedFboBind => {
+            let name = binding
+                .bind_name
+                .clone()
+                .or_else(|| {
+                    binding.target_index.and_then(|target_index| {
+                        native_vulkan_scene_engine_graph_target_name(
+                            plan,
+                            chain_index,
+                            target_index,
+                        )
+                    })
+                })
+                .unwrap_or_else(|| binding.uniform.clone());
+            if binding.endpoint
+                == Some(NativeVulkanSceneWeImagePassEndpoint::FirstClassEffectTarget)
+            {
+                TextureBindingRole::EffectTarget { name }
+            } else {
+                TextureBindingRole::NamedFboBind { name }
+            }
+        }
+    }
+}
+
+fn native_vulkan_scene_engine_graph_target_binding(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    chain_index: usize,
+    target_index: u32,
+) -> Option<TextureBindingRole> {
+    let target = native_vulkan_scene_engine_graph_target(plan, chain_index, target_index)?;
+    Some(TextureBindingRole::GraphTarget {
+        role: native_vulkan_scene_engine_render_target_role(target.endpoint),
+        name: native_vulkan_scene_engine_graph_target_name(plan, chain_index, target_index),
+    })
+}
+
+fn native_vulkan_scene_engine_graph_target_name(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    chain_index: usize,
+    target_index: u32,
+) -> Option<String> {
+    let target = native_vulkan_scene_engine_graph_target(plan, chain_index, target_index)?;
+    Some(target.name.clone().unwrap_or_else(|| {
+        format!(
+            "chain{}-{}-{}",
+            chain_index,
+            target.endpoint.as_str(),
+            target_index
+        )
+    }))
+}
+
+fn native_vulkan_scene_engine_graph_target(
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    chain_index: usize,
+    target_index: u32,
+) -> Option<&NativeVulkanSceneWeImageGraphTarget> {
+    plan.targets
+        .iter()
+        .find(|target| target.chain_index == chain_index && target.target_index == target_index)
+}
+
+fn native_vulkan_scene_engine_depth_test(
+    depth_test: NativeVulkanSceneMaterialFlag,
+) -> DepthTestMode {
+    match depth_test {
+        NativeVulkanSceneMaterialFlag::Enabled => DepthTestMode::LessEqual,
+        NativeVulkanSceneMaterialFlag::Disabled | NativeVulkanSceneMaterialFlag::Unspecified => {
+            DepthTestMode::Disabled
+        }
+    }
+}
+
+fn native_vulkan_scene_engine_cull_mode(cull_mode: &NativeVulkanSceneCullMode) -> CullMode {
+    match cull_mode {
+        NativeVulkanSceneCullMode::Back => CullMode::Back,
+        NativeVulkanSceneCullMode::Front => CullMode::Front,
+        _ => CullMode::None,
+    }
 }
 
 pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pass_chain(

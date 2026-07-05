@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+mod queue;
+
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -24,8 +26,10 @@ use crate::renderer::native_vulkan::effect_debug::{
 };
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
+    NativeWaylandSurfaceSnapshot,
 };
 
+use self::queue::{VulkanaliaSceneQueuePresentFrame, execute_scene_queue_submit_and_present};
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot,
@@ -165,13 +169,6 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub rgba: [f32; 4],
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload {
-    pub frame_rate: u32,
-    pub frame_count: u32,
-    pub vertices: Vec<NativeVulkanVulkanaliaSceneSolidQuadVertex>,
-}
-
 pub type NativeVulkanVulkanaliaSceneSampledImageVertex =
     crate::renderer::native_vulkan::scene::draw_pass::NativeVulkanSceneSampledImageVertex;
 
@@ -240,7 +237,6 @@ pub struct NativeVulkanVulkanaliaScenePuppetGpuPosePayload {
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload {
     pub layer_index: usize,
-    pub layer_id: String,
     pub position_transform_x: [f32; 4],
     pub position_transform_y: [f32; 4],
     pub layer_opacity: f32,
@@ -254,6 +250,22 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload {
     pub poses: Vec<NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload {
+    pub layer_index: usize,
+    pub position_transform_x: [f32; 4],
+    pub position_transform_y: [f32; 4],
+    pub layer_opacity: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload {
+    pub frame_rate: u32,
+    pub frame_count: u32,
+    pub layer_indices: Vec<usize>,
+    pub poses: Vec<NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload>,
+}
+
 impl NativeVulkanVulkanaliaSceneSolidQuadVertex {
     pub fn new(position: [f32; 2], rgba: [f32; 4]) -> Self {
         Self { position, rgba }
@@ -265,7 +277,9 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
     pub vertices: Vec<NativeVulkanVulkanaliaSceneSolidQuadVertex>,
     pub indices: Vec<u32>,
     pub draw_steps: Vec<NativeVulkanVulkanaliaSceneSolidQuadDrawStep>,
-    pub vertex_timeline: Option<NativeVulkanVulkanaliaSceneSolidQuadVertexTimelinePayload>,
+    pub solid_layer_poses: Vec<NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload>,
+    pub solid_layer_pose_timeline:
+        Option<NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload>,
     pub source_label: String,
 }
 
@@ -1047,7 +1061,8 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
             vertices,
             indices,
             draw_steps,
-            vertex_timeline: None,
+            solid_layer_poses: Vec::new(),
+            solid_layer_pose_timeline: None,
             source_label: source_label.into(),
         }
     }
@@ -1064,6 +1079,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot {
     pub average_present_fps: f64,
     pub quad_color: NativeVulkanClearColor,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
+    pub wayland_surface: NativeWaylandSurfaceSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
     pub geometry: NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot,
@@ -1105,6 +1121,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot {
     pub fit: Option<FitMode>,
     pub mixed_scene_draw_enabled: bool,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
+    pub wayland_surface: NativeWaylandSurfaceSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     pub swapchain: NativeVulkanVulkanaliaSwapchainSnapshot,
     pub solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot>,
@@ -1153,10 +1170,13 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot {
     pub vertex_count: u32,
     pub vertex_buffer_bytes: u64,
     pub vertex_buffer_count: u32,
-    pub vertex_timeline_frame_count: u32,
-    pub vertex_timeline_frame_rate: u32,
-    pub vertex_timeline_buffer_bytes: u64,
-    pub vertex_timeline_buffer_count: u32,
+    pub solid_layer_pose_count: u32,
+    pub solid_layer_pose_timeline_layer_count: u32,
+    pub solid_layer_pose_timeline_frame_count: u32,
+    pub solid_layer_pose_timeline_frame_rate: u32,
+    pub solid_layer_pose_timeline_buffer_bytes: u64,
+    pub solid_layer_pose_timeline_buffer_count: u32,
+    pub solid_layer_pose_stride_bytes: u32,
     pub draw_instance_buffer_count: u32,
     pub draw_instance_stride_bytes: u32,
     pub frame_time_buffer_count: u32,
@@ -1237,11 +1257,13 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
 
 struct VulkanaliaSceneSolidQuadGeometryResources {
     vertex_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
-    vertex_timeline_buffer: Option<VulkanaliaSceneUploadedBuffer>,
+    solid_layer_pose_timeline_buffer: Option<VulkanaliaSceneUploadedBuffer>,
     draw_instance_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
     frame_time_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
-    vertex_timeline_frame_count: u32,
-    vertex_timeline_frame_rate: u32,
+    solid_layer_pose_timeline_layer_indices: Vec<usize>,
+    solid_layer_pose_timeline_frame_count: u32,
+    solid_layer_pose_timeline_frame_rate: u32,
+    solid_layer_pose_draw_instance_slots: Vec<VulkanaliaSceneSolidLayerPoseDrawInstanceSlot>,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSolidQuadDrawStep>,
@@ -1252,11 +1274,7 @@ struct VulkanaliaSceneSampledImageGeometryResources {
     vertex_buffer: VulkanaliaSceneUploadedBuffer,
     draw_instance_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
     frame_time_buffers: Vec<VulkanaliaSceneUploadedBuffer>,
-    draw_instances: Vec<VulkanaliaSceneSampledImageDrawInstance>,
-    sampled_layer_pose_draw_instance_slots: Vec<VulkanaliaSceneSampledLayerPoseDrawInstanceSlot>,
-    puppet_layer_pose_draw_instance_slots: Vec<VulkanaliaScenePuppetLayerPoseDrawInstanceSlot>,
     sampled_layer_pose_timeline_buffer: Option<VulkanaliaSceneUploadedBuffer>,
-    sampled_layer_pose_timeline_layer_indices: Vec<usize>,
     sampled_layer_pose_timeline_frame_count: u32,
     sampled_layer_pose_timeline_frame_rate: u32,
     puppet_gpu_payload_buffer: Option<VulkanaliaSceneUploadedBuffer>,
@@ -1264,14 +1282,29 @@ struct VulkanaliaSceneSampledImageGeometryResources {
     particle_gpu_payload_buffer: Option<VulkanaliaSceneUploadedBuffer>,
     puppet_gpu_draw_bindings: Vec<VulkanaliaScenePuppetGpuDrawBinding>,
     particle_gpu_draw_bindings: Vec<VulkanaliaSceneParticleGpuDrawBinding>,
-    puppet_gpu_pose_instances: Vec<VulkanaliaScenePuppetGpuPoseInstance>,
     sampled_layer_pose_instances: Vec<VulkanaliaSceneSampledImageLayerPoseInstance>,
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
-    we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
+    effect_target_resource_base: usize,
+    effect_target_count: usize,
+    framebuffer_snapshot_resource_index: usize,
+    sampled_framebuffer_snapshot_required: bool,
+    static_sources_releasable: bool,
     snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
+}
+
+impl VulkanaliaSceneSampledImageGeometryResources {
+    fn release_cpu_planning_payloads_for_present(&mut self) {
+        // Godot RenderingDeviceGraph clears recorded graph containers after lowering
+        // to command buffers; present resources keep executor metadata and GPU handles.
+        self.draw_steps = Vec::new();
+        self.effect_targets = Vec::new();
+        self.puppet_gpu_draw_bindings = Vec::new();
+        self.particle_gpu_draw_bindings = Vec::new();
+        self.sampled_layer_pose_instances = Vec::new();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1318,6 +1351,18 @@ struct VulkanaliaSceneSampledImageLayerPoseInstance {
     position_transform_x: [f32; 4],
     position_transform_y: [f32; 4],
     layer_opacity: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VulkanaliaSceneSolidLayerPoseDrawInstanceSlot {
+    layer_index: usize,
+    instance_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VulkanaliaSceneSolidQuadDrawInstance {
+    layer_pose_ref: [u32; 4],
+    frame_time_ref: [u32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1542,9 +1587,10 @@ fn recycle_scene_geometry_byte_buffer(mut bytes: Vec<u8>) {
 struct VulkanaliaSceneSolidQuadGeometryPayload {
     indices: Vec<u32>,
     vertex_bytes: SceneGeometryByteBuffer,
-    vertex_timeline_bytes: SceneGeometryByteBuffer,
-    vertex_timeline_frame_count: u32,
-    vertex_timeline_frame_rate: u32,
+    solid_layer_poses: Vec<NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload>,
+    solid_layer_pose_timeline: Option<NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload>,
+    solid_layer_pose_timeline_bytes: SceneGeometryByteBuffer,
+    solid_layer_pose_count: u32,
     index_bytes: SceneGeometryByteBuffer,
     vertex_count: u32,
     index_count: u32,
@@ -1557,7 +1603,6 @@ struct VulkanaliaSceneSolidQuadGeometryPayload {
 struct VulkanaliaSceneSampledImageGeometryPayload {
     vertices: Vec<NativeVulkanVulkanaliaSceneSampledImageVertex>,
     indices: Vec<u32>,
-    sources: Vec<PathBuf>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
     puppet_gpu_payloads: Vec<NativeVulkanVulkanaliaScenePuppetGpuPayload>,
     puppet_gpu_poses: Vec<NativeVulkanVulkanaliaScenePuppetGpuPosePayload>,
@@ -1576,7 +1621,6 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     quad_count: u32,
     source_count: u32,
     effect_target_count: u32,
-    we_graph_resources: Vec<NativeVulkanVulkanaliaSceneWeImageGraphResource>,
     we_graph_resource_count: u32,
     we_graph_texture_resource_count: u32,
     we_graph_target_resource_count: u32,
@@ -1612,6 +1656,7 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
         NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
     host.wait_until_configured(options.wait_configure_roundtrips)
         .map_err(|err| err.to_string())?;
+    let surface_snapshot = host.snapshot();
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
     let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
@@ -1619,7 +1664,8 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
         &requested_instance_extensions,
     )?;
-    let result = run_vulkanalia_scene_solid_quad_present_inner(&vulkan, handles, options);
+    let result =
+        run_vulkanalia_scene_solid_quad_present_inner(&vulkan, handles, surface_snapshot, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -1627,12 +1673,19 @@ pub fn run_native_vulkan_vulkanalia_scene_solid_quad_present(
 fn run_vulkanalia_scene_solid_quad_present_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let instance = &vulkan.instance;
     let surface = create_vulkanalia_wayland_surface(instance, handles)?;
-    let result =
-        with_vulkanalia_scene_solid_quad_present(instance, surface, handles, vulkan, options);
+    let result = with_vulkanalia_scene_solid_quad_present(
+        instance,
+        surface,
+        handles,
+        vulkan,
+        surface_snapshot,
+        options,
+    );
     unsafe {
         instance.destroy_surface_khr(surface, None);
     }
@@ -1648,6 +1701,7 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
         NativeWaylandHost::connect(options.host.clone()).map_err(|err| err.to_string())?;
     host.wait_until_configured(options.wait_configure_roundtrips)
         .map_err(|err| err.to_string())?;
+    let surface_snapshot = host.snapshot();
     let handles = host.surface_handles().map_err(|err| err.to_string())?;
 
     let mut requested_instance_extensions = REQUIRED_INSTANCE_EXTENSIONS.to_vec();
@@ -1655,7 +1709,12 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
         &requested_instance_extensions,
     )?;
-    let result = run_vulkanalia_scene_sampled_image_present_inner(&vulkan, handles, options);
+    let result = run_vulkanalia_scene_sampled_image_present_inner(
+        &vulkan,
+        handles,
+        surface_snapshot,
+        options,
+    );
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -1663,12 +1722,19 @@ pub fn run_native_vulkan_vulkanalia_scene_sampled_image_present(
 fn run_vulkanalia_scene_sampled_image_present_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
     let instance = &vulkan.instance;
     let surface = create_vulkanalia_wayland_surface(instance, handles)?;
-    let result =
-        with_vulkanalia_scene_sampled_image_present(instance, surface, handles, vulkan, options);
+    let result = with_vulkanalia_scene_sampled_image_present(
+        instance,
+        surface,
+        handles,
+        vulkan,
+        surface_snapshot,
+        options,
+    );
     unsafe {
         instance.destroy_surface_khr(surface, None);
     }
@@ -1680,6 +1746,7 @@ fn with_vulkanalia_scene_solid_quad_present(
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
     vulkan: &NativeVulkanVulkanaliaInstance,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     mut options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
@@ -1858,6 +1925,7 @@ fn with_vulkanalia_scene_solid_quad_present(
         &present_device.extension_snapshot,
         &swapchain_plan,
         present_timing,
+        surface_snapshot,
         options,
     );
 
@@ -1878,6 +1946,7 @@ fn with_vulkanalia_scene_sampled_image_present(
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
     vulkan: &NativeVulkanVulkanaliaInstance,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     mut options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
     let physical_devices = unsafe { instance.enumerate_physical_devices() }.map_err(|err| {
@@ -1967,6 +2036,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
+            surface_snapshot,
             options,
             present_device
                 .feature_selection
@@ -2189,7 +2259,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let geometry = match create_scene_sampled_image_geometry_resources(
+    let mut geometry = match create_scene_sampled_image_geometry_resources(
         device,
         &memory_properties,
         geometry_payload,
@@ -2543,13 +2613,14 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
+    let release_static_sources_after_first_present =
+        !framebuffer_snapshot_required && geometry.static_sources_releasable;
+    geometry.release_cpu_planning_payloads_for_present();
     let present_timing = VulkanaliaPresentTimingConfig::new(
         swapchain_plan.present_id2_enabled,
         swapchain_plan.present_wait2_enabled,
     );
 
-    let release_static_sources_after_first_present = !framebuffer_snapshot_required
-        && scene_sampled_image_can_release_sources_after_first_present(&geometry);
     let mut pipeline = Some(pipeline);
     let mut geometry = Some(geometry);
     let mut solid_pipeline = solid_pipeline;
@@ -2585,6 +2656,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
+            surface_snapshot,
             sampled_geometry_uses_scene_viewport,
             options,
         )
@@ -2617,6 +2689,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             &present_device.extension_snapshot,
             &swapchain_plan,
             present_timing,
+            surface_snapshot,
             sampled_geometry_uses_scene_viewport,
             options,
         )
@@ -2723,6 +2796,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     .expect("scene video layer geometry is live")
                     .draw_steps,
             )?;
+            video_geometry
+                .as_mut()
+                .expect("scene video layer geometry is live")
+                .release_cpu_planning_payloads_for_present();
         }
 
         if sampled_overlay_requested {
@@ -2820,6 +2897,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 &sampled_images,
                 &descriptor_slot_plan.step_group_base_indices,
             )?;
+            sampled_geometry
+                .as_mut()
+                .expect("scene video overlay sampled geometry is live")
+                .release_cpu_planning_payloads_for_present();
         }
 
         if solid_overlay_requested {
@@ -2851,6 +2932,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     .as_ref()
                     .expect("scene video overlay solid geometry is live")
                     .draw_steps,
+                &solid_geometry
+                    .as_ref()
+                    .expect("scene video overlay solid geometry is live")
+                    .solid_layer_pose_draw_instance_slots,
             )?;
         }
 
@@ -3117,6 +3202,7 @@ fn run_scene_solid_quad_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     options: NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot, String> {
     let started_at = Instant::now();
@@ -3130,6 +3216,10 @@ fn run_scene_solid_quad_present_loop(
     let mut present_ids = ScenePresentIdTelemetry::new();
     let mut present_wait_after_present = false;
     let mut last_command = None;
+    let draw_commands = scene_solid_quad_draw_commands(
+        &geometry.draw_steps,
+        &geometry.solid_layer_pose_draw_instance_slots,
+    )?;
 
     while Instant::now() < deadline {
         let present_frame_slot = frames_presented as usize % frame_resources.in_flight.len();
@@ -3189,7 +3279,7 @@ fn run_scene_solid_quad_present_loop(
             frame_geometry.vertex_offset_bytes,
             frame_geometry.draw_instance_buffer,
             geometry.index_buffer,
-            geometry.snapshot.index_count,
+            &draw_commands,
             [
                 options.quad_color.r,
                 options.quad_color.g,
@@ -3197,47 +3287,24 @@ fn run_scene_solid_quad_present_loop(
                 options.quad_color.a,
             ],
         )?;
-        submit_scene_solid_quad_command_buffer2(
+        let present_result = execute_scene_queue_submit_and_present(
             device,
             queue,
-            command_buffer,
-            image_available,
-            render_finished,
-            in_flight,
-        )?;
-
-        let swapchains = [swapchain];
-        let image_indices = [image_index];
-        let wait_semaphores = [render_finished];
-        let present_id = present_timing.present_id(frames_presented as u32);
-        let present_id_values = [present_id.unwrap_or(0)];
-        let mut present_id2_info = present_id.map(|_| {
-            vk::PresentId2KHR::builder()
-                .present_ids(&present_id_values)
-                .build()
-        });
-        let mut present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(&wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-        if present_timing.present_id2_enabled {
-            if let Some(present_id2_info) = present_id2_info.as_mut() {
-                present_info = present_info.push_next(present_id2_info);
-            }
-        }
-        unsafe {
-            device
-                .queue_present_khr(queue, &present_info)
-                .map_err(|err| format!("vkQueuePresentKHR(vulkanalia scene present): {err:?}"))?;
-        }
-        present_wait_after_present |= present_timing.wait_after_queue_present(
-            device,
             swapchain,
-            present_id,
-            "scene solid quad present",
+            present_timing,
+            VulkanaliaSceneQueuePresentFrame {
+                command_buffer,
+                image_available,
+                render_finished,
+                fence: in_flight,
+                image_index,
+                present_frame_index: frames_presented as u32,
+                label: "scene solid quad present",
+            },
         )?;
+        present_wait_after_present |= present_result.present_wait_after_present;
 
-        present_ids.push(present_id);
+        present_ids.push(present_result.present_id);
         frames_presented += 1;
         last_command = Some(command);
 
@@ -3278,6 +3345,7 @@ fn run_scene_solid_quad_present_loop(
             supports_present: true,
             supports_wayland_presentation: selection.supports_wayland_presentation,
         },
+        wayland_surface: surface_snapshot,
         device_extensions: extension_snapshot.clone(),
         swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
             created: true,
@@ -3341,6 +3409,7 @@ fn run_scene_sampled_image_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     sampled_geometry_uses_scene_viewport: bool,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
@@ -3359,7 +3428,10 @@ fn run_scene_sampled_image_present_loop(
         "scene sampled image present requires at least one sampled image".to_owned()
     })?;
     let solid_draw_commands = match solid_geometry {
-        Some(geometry) => Some(scene_solid_quad_draw_commands(&geometry.draw_steps)?),
+        Some(geometry) => Some(scene_solid_quad_draw_commands(
+            &geometry.draw_steps,
+            &geometry.solid_layer_pose_draw_instance_slots,
+        )?),
         None => None,
     };
     let solid_quad_draw = match (
@@ -3400,21 +3472,16 @@ fn run_scene_sampled_image_present_loop(
     };
     let descriptor_heap_draw =
         descriptor_heap.map(|resources| VulkanaliaSceneDescriptorHeapDrawResources { resources });
-    let effect_target_resource_base = geometry.snapshot.source_count.max(1) as usize;
+    let effect_target_resource_base = geometry.effect_target_resource_base;
     let effect_target_resource_range = scene_sampled_image_effect_target_resource_range(
         effect_target_resource_base,
-        geometry.effect_targets.len(),
+        geometry.effect_target_count,
         sampled_images.len(),
     )?;
     let effect_target_resources = &sampled_images[effect_target_resource_range];
-    let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
-        &geometry.draw_steps,
-        effect_target_resource_base,
-        geometry.effect_targets.len(),
-    ) || solid_framebuffer_snapshot_descriptor_group_base_index
-        .is_some();
-    let framebuffer_snapshot_resource_index =
-        effect_target_resource_base.saturating_add(geometry.effect_targets.len());
+    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required
+        || solid_framebuffer_snapshot_descriptor_group_base_index.is_some();
+    let framebuffer_snapshot_resource_index = geometry.framebuffer_snapshot_resource_index;
     let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
         Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
             format!(
@@ -3596,55 +3663,28 @@ fn run_scene_sampled_image_present_loop(
             }
             command
         };
-        let submit_started_at = Instant::now();
-        submit_scene_solid_quad_command_buffer2(
+        let present_result = execute_scene_queue_submit_and_present(
             device,
             queue,
-            command_buffer,
-            image_available,
-            render_finished,
-            in_flight,
+            swapchain,
+            present_timing,
+            VulkanaliaSceneQueuePresentFrame {
+                command_buffer,
+                image_available,
+                render_finished,
+                fence: in_flight,
+                image_index,
+                present_frame_index: frames_presented as u32,
+                label: "scene sampled image present",
+            },
         )?;
         queue_submit_micros =
-            queue_submit_micros.saturating_add(scene_duration_micros(submit_started_at.elapsed()));
+            queue_submit_micros.saturating_add(present_result.queue_submit_micros);
+        queue_present_micros =
+            queue_present_micros.saturating_add(present_result.queue_present_micros);
+        present_wait_after_present |= present_result.present_wait_after_present;
 
-        let swapchains = [swapchain];
-        let image_indices = [image_index];
-        let wait_semaphores = [render_finished];
-        let present_id = present_timing.present_id(frames_presented as u32);
-        let present_id_values = [present_id.unwrap_or(0)];
-        let mut present_id2_info = present_id.map(|_| {
-            vk::PresentId2KHR::builder()
-                .present_ids(&present_id_values)
-                .build()
-        });
-        let mut present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(&wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-        if present_timing.present_id2_enabled {
-            if let Some(present_id2_info) = present_id2_info.as_mut() {
-                present_info = present_info.push_next(present_id2_info);
-            }
-        }
-        let present_started_at = Instant::now();
-        unsafe {
-            device
-                .queue_present_khr(queue, &present_info)
-                .map_err(|err| {
-                    format!("vkQueuePresentKHR(vulkanalia scene sampled image present): {err:?}")
-                })?;
-        }
-        queue_present_micros = queue_present_micros
-            .saturating_add(scene_duration_micros(present_started_at.elapsed()));
-        present_wait_after_present |= present_timing.wait_after_queue_present(
-            device,
-            swapchain,
-            present_id,
-            "scene sampled image present",
-        )?;
-
-        present_ids.push(present_id);
+        present_ids.push(present_result.present_id);
         frames_presented += 1;
         last_command = Some(command);
 
@@ -3702,6 +3742,7 @@ fn run_scene_sampled_image_present_loop(
             supports_present: true,
             supports_wayland_presentation: selection.supports_wayland_presentation,
         },
+        wayland_surface: surface_snapshot,
         device_extensions: extension_snapshot.clone(),
         swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
             created: true,
@@ -3758,7 +3799,7 @@ fn run_scene_sampled_image_present_loop(
         } else {
             "source image is uploaded once into a retained Vulkan sampled image and rendered directly to the swapchain"
         },
-        primary_reference: "Vulkan dynamic rendering and sync2; FFmpeg frame lifetime discipline for retained resources",
+        primary_reference: "Godot RenderingDeviceGraph/RenderingDeviceDriverVulkan resource lifetime; Vulkan dynamic rendering and sync2; FFmpeg frame lifetime discipline for retained resources",
     })
 }
 
@@ -3786,13 +3827,6 @@ fn native_vulkan_vulkanalia_scene_effect_target_source_label(
     }
 }
 
-fn scene_sampled_image_can_release_sources_after_first_present(
-    geometry: &VulkanaliaSceneSampledImageGeometryResources,
-) -> bool {
-    !scene_sampled_image_draw_steps_are_animated(&geometry.draw_steps)
-        && !scene_sampled_image_draw_steps_use_elapsed_time(&geometry.draw_steps)
-}
-
 fn scene_sampled_image_can_use_static_transfer_present(
     options: &NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> bool {
@@ -3818,6 +3852,7 @@ fn run_scene_sampled_image_static_transfer_present(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     texture_compression_bc_enabled: bool,
     descriptor_heap_available: bool,
@@ -3878,6 +3913,7 @@ fn run_scene_sampled_image_static_transfer_present(
         extension_snapshot,
         swapchain_plan,
         present_timing,
+        surface_snapshot,
         options,
         descriptor_heap_available,
         max_resource_heap_size,
@@ -3924,6 +3960,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
     descriptor_heap_available: bool,
     max_resource_heap_size: u64,
@@ -4085,6 +4122,7 @@ fn run_scene_sampled_image_static_transfer_present_loop(
             supports_present: true,
             supports_wayland_presentation: selection.supports_wayland_presentation,
         },
+        wayland_surface: surface_snapshot,
         device_extensions: extension_snapshot.clone(),
         swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
             created: true,
@@ -4617,6 +4655,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     extension_snapshot: &NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     swapchain_plan: &super::swapchain::NativeVulkanVulkanaliaSwapchainPlan,
     present_timing: VulkanaliaPresentTimingConfig,
+    surface_snapshot: NativeWaylandSurfaceSnapshot,
     sampled_geometry_uses_scene_viewport: bool,
     options: NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, String> {
@@ -4634,21 +4673,16 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             "scene static sampled-image descriptors are consumed by the first present and destroyed after the render fence";
         snapshot
     });
-    let effect_target_resource_base = geometry.snapshot.source_count.max(1) as usize;
+    let effect_target_resource_base = geometry.effect_target_resource_base;
     let effect_target_resource_range = scene_sampled_image_effect_target_resource_range(
         effect_target_resource_base,
-        geometry.effect_targets.len(),
+        geometry.effect_target_count,
         sampled_images.len(),
     )?;
     let effect_target_resources = &sampled_images[effect_target_resource_range];
-    let framebuffer_snapshot_required = scene_sampled_image_draw_steps_need_framebuffer_snapshot(
-        &geometry.draw_steps,
-        effect_target_resource_base,
-        geometry.effect_targets.len(),
-    ) || solid_framebuffer_snapshot_descriptor_group_base_index
-        .is_some();
-    let framebuffer_snapshot_resource_index =
-        effect_target_resource_base.saturating_add(geometry.effect_targets.len());
+    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required
+        || solid_framebuffer_snapshot_descriptor_group_base_index.is_some();
+    let framebuffer_snapshot_resource_index = geometry.framebuffer_snapshot_resource_index;
     let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
         Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
             format!(
@@ -4683,7 +4717,10 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         .unwrap_or(0);
 
     let solid_draw_commands = match solid_geometry.as_ref() {
-        Some(geometry) => Some(scene_solid_quad_draw_commands(&geometry.draw_steps)?),
+        Some(geometry) => Some(scene_solid_quad_draw_commands(
+            &geometry.draw_steps,
+            &geometry.solid_layer_pose_draw_instance_slots,
+        )?),
         None => None,
     };
 
@@ -4814,42 +4851,22 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                 options.clear_color.a,
             ],
         )?;
-        submit_scene_solid_quad_command_buffer2(
+        let present_result = execute_scene_queue_submit_and_present(
             device,
             queue,
-            command_buffer,
-            image_available,
-            render_finished,
-            in_flight,
+            swapchain,
+            present_timing,
+            VulkanaliaSceneQueuePresentFrame {
+                command_buffer,
+                image_available,
+                render_finished,
+                fence: in_flight,
+                image_index,
+                present_frame_index: 0,
+                label: "scene sampled image static present",
+            },
         )?;
-
-        let swapchains = [swapchain];
-        let image_indices = [image_index];
-        let wait_semaphores = [render_finished];
-        let present_id = present_timing.present_id(0);
-        let present_id_values = [present_id.unwrap_or(0)];
-        let mut present_id2_info = present_id.map(|_| {
-            vk::PresentId2KHR::builder()
-                .present_ids(&present_id_values)
-                .build()
-        });
-        let mut present_info = vk::PresentInfoKHR::builder()
-            .wait_semaphores(&wait_semaphores)
-            .swapchains(&swapchains)
-            .image_indices(&image_indices);
-        if present_timing.present_id2_enabled {
-            if let Some(present_id2_info) = present_id2_info.as_mut() {
-                present_info = present_info.push_next(present_id2_info);
-            }
-        }
         unsafe {
-            device
-                .queue_present_khr(queue, &present_info)
-                .map_err(|err| {
-                    format!(
-                        "vkQueuePresentKHR(vulkanalia scene sampled image static present): {err:?}"
-                    )
-                })?;
             device
                 .wait_for_fences(&[in_flight], true, u64::MAX)
                 .map_err(|err| {
@@ -4858,14 +4875,9 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                     )
                 })?;
         }
-        present_wait_after_present |= present_timing.wait_after_queue_present(
-            device,
-            swapchain,
-            present_id,
-            "scene sampled image static present",
-        )?;
+        present_wait_after_present |= present_result.present_wait_after_present;
 
-        present_ids.push(present_id);
+        present_ids.push(present_result.present_id);
         last_command = Some(command);
         Ok(1)
     })();
@@ -4937,6 +4949,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             supports_present: true,
             supports_wayland_presentation: selection.supports_wayland_presentation,
         },
+        wayland_surface: surface_snapshot,
         device_extensions: extension_snapshot.clone(),
         swapchain: NativeVulkanVulkanaliaSwapchainSnapshot {
             created: true,
@@ -5543,14 +5556,31 @@ fn create_scene_solid_quad_geometry_resources(
             return Err(err);
         }
     };
-    let vertex_timeline_buffer = if payload.vertex_timeline_bytes.len() > 0 {
+    let solid_layer_pose_timeline_layer_indices = payload
+        .solid_layer_pose_timeline
+        .as_ref()
+        .map(|timeline| timeline.layer_indices.clone())
+        .unwrap_or_default();
+    let solid_layer_pose_timeline_frame_count = payload
+        .solid_layer_pose_timeline
+        .as_ref()
+        .map_or(0, |timeline| timeline.frame_count);
+    let solid_layer_pose_timeline_frame_rate = payload
+        .solid_layer_pose_timeline
+        .as_ref()
+        .map_or(0, |timeline| timeline.frame_rate);
+    let solid_layer_pose_draw_instance_slots = scene_solid_quad_layer_pose_draw_instance_slots(
+        &payload.draw_steps,
+        &solid_layer_pose_timeline_layer_indices,
+    );
+    let solid_layer_pose_timeline_buffer = if payload.solid_layer_pose_timeline_bytes.len() > 0 {
         match create_scene_uploaded_buffer(
             device,
             memory_properties,
-            &payload.vertex_timeline_bytes,
+            &payload.solid_layer_pose_timeline_bytes,
             vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             false,
-            "solid-quad retained vertex timeline",
+            "solid-quad retained layer pose timeline",
         ) {
             Ok(buffer) => Some(buffer),
             Err(err) => {
@@ -5561,19 +5591,21 @@ fn create_scene_solid_quad_geometry_resources(
                 for vertex in vertex_buffers {
                     destroy_scene_uploaded_buffer(device, vertex);
                 }
-                return Err(format!("create solid-quad retained vertex timeline: {err}"));
+                return Err(format!(
+                    "create solid-quad retained layer pose timeline: {err}"
+                ));
             }
         }
     } else {
         None
     };
-    let solid_draw_instance_buffer_count = if vertex_timeline_buffer.is_some() {
+    let solid_draw_instance_buffer_count = if solid_layer_pose_timeline_buffer.is_some() {
         frame_resource_count.max(1)
     } else {
         1
     };
     let mut frame_time_buffers = Vec::with_capacity(solid_draw_instance_buffer_count);
-    if vertex_timeline_buffer.is_some() {
+    if solid_layer_pose_timeline_buffer.is_some() {
         let frame_time_bytes = scene_sampled_image_frame_time_bytes(0);
         for frame_time_buffer_index in 0..solid_draw_instance_buffer_count {
             match create_scene_uploaded_buffer(
@@ -5589,7 +5621,7 @@ fn create_scene_solid_quad_geometry_resources(
                     for frame_time in frame_time_buffers {
                         destroy_scene_uploaded_buffer(device, frame_time);
                     }
-                    if let Some(buffer) = vertex_timeline_buffer {
+                    if let Some(buffer) = solid_layer_pose_timeline_buffer {
                         destroy_scene_uploaded_buffer(device, buffer);
                     }
                     unsafe {
@@ -5607,7 +5639,7 @@ fn create_scene_solid_quad_geometry_resources(
         }
     }
     let mut draw_instance_buffers = Vec::with_capacity(solid_draw_instance_buffer_count);
-    let timeline_address = vertex_timeline_buffer
+    let timeline_address = solid_layer_pose_timeline_buffer
         .as_ref()
         .map(|buffer| buffer.device_address)
         .unwrap_or(0);
@@ -5616,13 +5648,15 @@ fn create_scene_solid_quad_geometry_resources(
             .get(draw_instance_buffer_index)
             .map(|buffer| buffer.device_address)
             .unwrap_or(0);
-        let draw_instance_bytes = scene_solid_quad_draw_instance_bytes(
+        let draw_instances = scene_solid_quad_draw_instances(
+            &solid_layer_pose_draw_instance_slots,
+            &solid_layer_pose_timeline_layer_indices,
             timeline_address,
             frame_time_address,
-            payload.vertex_timeline_frame_count,
-            payload.vertex_timeline_frame_rate,
-            payload.vertex_count,
-        );
+            solid_layer_pose_timeline_frame_count,
+            solid_layer_pose_timeline_frame_rate,
+        )?;
+        let draw_instance_bytes = scene_solid_quad_draw_instance_bytes(&draw_instances)?;
         match create_scene_uploaded_buffer(
             device,
             memory_properties,
@@ -5639,7 +5673,7 @@ fn create_scene_solid_quad_geometry_resources(
                 for frame_time in frame_time_buffers {
                     destroy_scene_uploaded_buffer(device, frame_time);
                 }
-                if let Some(buffer) = vertex_timeline_buffer {
+                if let Some(buffer) = solid_layer_pose_timeline_buffer {
                     destroy_scene_uploaded_buffer(device, buffer);
                 }
                 unsafe {
@@ -5663,7 +5697,11 @@ fn create_scene_solid_quad_geometry_resources(
         memory_property_flag_labels(first_vertex.memory_type.property_flags_bits);
 
     let vertex_buffer_bytes = payload.vertex_bytes.len() as u64;
-    let vertex_timeline_buffer_bytes = payload.vertex_timeline_bytes.len() as u64;
+    let solid_layer_pose_timeline_buffer_bytes =
+        payload.solid_layer_pose_timeline_bytes.len() as u64;
+    let solid_layer_pose_timeline_layer_count = solid_layer_pose_timeline_layer_indices
+        .len()
+        .min(u32::MAX as usize) as u32;
     let index_buffer_bytes = payload.index_bytes.len() as u64;
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
     let draw_instance_buffer_count = draw_instance_buffers.len().min(u32::MAX as usize) as u32;
@@ -5675,11 +5713,13 @@ fn create_scene_solid_quad_geometry_resources(
     let draw_steps = payload.draw_steps;
     Ok(VulkanaliaSceneSolidQuadGeometryResources {
         vertex_buffers,
-        vertex_timeline_buffer,
+        solid_layer_pose_timeline_buffer,
         draw_instance_buffers,
         frame_time_buffers,
-        vertex_timeline_frame_count: payload.vertex_timeline_frame_count,
-        vertex_timeline_frame_rate: payload.vertex_timeline_frame_rate,
+        solid_layer_pose_timeline_layer_indices,
+        solid_layer_pose_timeline_frame_count,
+        solid_layer_pose_timeline_frame_rate,
+        solid_layer_pose_draw_instance_slots,
         index_buffer: index.buffer,
         index_memory: index.memory,
         draw_steps,
@@ -5688,10 +5728,15 @@ fn create_scene_solid_quad_geometry_resources(
             vertex_count: payload.vertex_count,
             vertex_buffer_bytes,
             vertex_buffer_count: vertex_buffer_count.min(u32::MAX as usize) as u32,
-            vertex_timeline_frame_count: payload.vertex_timeline_frame_count,
-            vertex_timeline_frame_rate: payload.vertex_timeline_frame_rate,
-            vertex_timeline_buffer_bytes,
-            vertex_timeline_buffer_count: u32::from(vertex_timeline_buffer_bytes > 0),
+            solid_layer_pose_count: payload.solid_layer_pose_count,
+            solid_layer_pose_timeline_layer_count,
+            solid_layer_pose_timeline_frame_count,
+            solid_layer_pose_timeline_frame_rate,
+            solid_layer_pose_timeline_buffer_bytes,
+            solid_layer_pose_timeline_buffer_count: u32::from(
+                solid_layer_pose_timeline_buffer_bytes > 0,
+            ),
+            solid_layer_pose_stride_bytes: SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES,
             draw_instance_buffer_count,
             draw_instance_stride_bytes: SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES,
             frame_time_buffer_count,
@@ -5707,8 +5752,8 @@ fn create_scene_solid_quad_geometry_resources(
             index_memory_property_flags: memory_property_flag_labels(
                 index.memory_type.property_flags_bits,
             ),
-            upload_model: if vertex_timeline_buffer_bytes > 0 {
-                "one-time retained solid-quad vertex timeline; shader selects timeline frame from GPU frame-time payload"
+            upload_model: if solid_layer_pose_timeline_buffer_bytes > 0 {
+                "one-time retained solid-quad geometry plus retained layer pose/state timeline; shader applies per-layer GPU transforms"
             } else {
                 "one-time host-visible geometry upload retained across present frames"
             },
@@ -5734,7 +5779,7 @@ fn destroy_scene_solid_quad_geometry_resources(
     for frame_time in resources.frame_time_buffers {
         destroy_scene_uploaded_buffer(device, frame_time);
     }
-    if let Some(buffer) = resources.vertex_timeline_buffer {
+    if let Some(buffer) = resources.solid_layer_pose_timeline_buffer {
         destroy_scene_uploaded_buffer(device, buffer);
     }
 }
@@ -5749,7 +5794,7 @@ fn update_scene_solid_quad_frame_geometry_for_time(
         .draw_instance_buffers
         .get(frame_slot % geometry.draw_instance_buffers.len().max(1))
         .ok_or_else(|| "scene solid-quad geometry has no draw-instance buffers".to_owned())?;
-    if geometry.vertex_timeline_buffer.is_some() {
+    if geometry.solid_layer_pose_timeline_buffer.is_some() {
         let frame_time = geometry
             .frame_time_buffers
             .get(frame_slot % geometry.frame_time_buffers.len().max(1))
@@ -6132,20 +6177,28 @@ fn create_scene_sampled_image_geometry_resources(
         .min(u32::MAX as usize) as u32;
     let draw_instance_buffer_count = draw_instance_buffers.len().min(u32::MAX as usize) as u32;
     let frame_time_buffer_count = frame_time_buffers.len().min(u32::MAX as usize) as u32;
+    let effect_target_resource_base = payload.source_count.max(1) as usize;
+    let effect_target_count_usize = payload.effect_targets.len();
+    let sampled_framebuffer_snapshot_required =
+        scene_sampled_image_draw_steps_need_framebuffer_snapshot(
+            &payload.draw_steps,
+            effect_target_resource_base,
+            effect_target_count_usize,
+        );
+    let framebuffer_snapshot_resource_index =
+        effect_target_resource_base.saturating_add(effect_target_count_usize);
+    let static_sources_releasable =
+        !scene_sampled_image_draw_steps_are_animated(&payload.draw_steps)
+            && !scene_sampled_image_draw_steps_use_elapsed_time(&payload.draw_steps);
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
     let draw_steps = payload.draw_steps;
     let effect_target_count = payload.effect_target_count;
     let effect_targets = payload.effect_targets;
-    let we_graph_resources = payload.we_graph_resources;
     Ok(VulkanaliaSceneSampledImageGeometryResources {
         vertex_buffer,
         draw_instance_buffers,
         frame_time_buffers,
-        draw_instances: initial_draw_instances,
-        sampled_layer_pose_draw_instance_slots,
-        puppet_layer_pose_draw_instance_slots,
         sampled_layer_pose_timeline_buffer,
-        sampled_layer_pose_timeline_layer_indices,
         sampled_layer_pose_timeline_frame_count,
         sampled_layer_pose_timeline_frame_rate,
         puppet_gpu_payload_buffer,
@@ -6153,13 +6206,16 @@ fn create_scene_sampled_image_geometry_resources(
         particle_gpu_payload_buffer,
         puppet_gpu_draw_bindings,
         particle_gpu_draw_bindings,
-        puppet_gpu_pose_instances,
         sampled_layer_pose_instances,
         index_buffer: index.buffer,
         index_memory: index.memory,
         draw_steps,
         effect_targets,
-        we_graph_resources,
+        effect_target_resource_base,
+        effect_target_count: effect_target_count_usize,
+        framebuffer_snapshot_resource_index,
+        sampled_framebuffer_snapshot_required,
+        static_sources_releasable,
         snapshot: NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot {
             source_label: payload.source_label,
             vertex_count: payload.vertex_count,
@@ -6397,29 +6453,116 @@ fn scene_sampled_image_frame_time_bytes(elapsed_ms: u64) -> SceneGeometryByteBuf
     bytes
 }
 
-fn scene_solid_quad_draw_instance_bytes(
-    vertex_timeline_address: vk::DeviceAddress,
+fn scene_solid_quad_draw_instances(
+    layer_slots: &[VulkanaliaSceneSolidLayerPoseDrawInstanceSlot],
+    timeline_layer_indices: &[usize],
+    timeline_address: vk::DeviceAddress,
     frame_time_address: vk::DeviceAddress,
-    vertex_timeline_frame_count: u32,
-    vertex_timeline_frame_rate: u32,
-    frame_vertex_count: u32,
-) -> SceneGeometryByteBuffer {
-    let mut bytes = SceneGeometryByteBuffer::with_capacity(
-        SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES as usize,
-    );
-    for value in [
-        vertex_timeline_address as u32,
-        (vertex_timeline_address >> 32) as u32,
-        vertex_timeline_frame_count,
-        vertex_timeline_frame_rate,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Result<Vec<VulkanaliaSceneSolidQuadDrawInstance>, String> {
+    let frame_time_ref = [
         frame_time_address as u32,
         (frame_time_address >> 32) as u32,
-        frame_vertex_count,
         0,
-    ] {
-        bytes.extend_from_slice(&value.to_ne_bytes());
+        0,
+    ];
+    let mut instances = vec![VulkanaliaSceneSolidQuadDrawInstance {
+        layer_pose_ref: [0, 0, 0, 0],
+        frame_time_ref,
+    }];
+    if layer_slots.is_empty() {
+        return Ok(instances);
     }
-    bytes
+    if timeline_address == 0 || frame_count == 0 || frame_rate == 0 {
+        return Err(
+            "scene solid-quad layer pose draw instances require a retained timeline".to_owned(),
+        );
+    }
+    let timeline_slots = timeline_layer_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(slot, layer_index)| (layer_index, slot))
+        .collect::<BTreeMap<_, _>>();
+    let instance_count = layer_slots
+        .iter()
+        .map(|slot| slot.instance_index)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    instances.resize(
+        instance_count,
+        VulkanaliaSceneSolidQuadDrawInstance {
+            layer_pose_ref: [0, 0, 0, 0],
+            frame_time_ref,
+        },
+    );
+    for slot in layer_slots {
+        let Some(timeline_slot) = timeline_slots.get(&slot.layer_index).copied() else {
+            return Err(format!(
+                "scene solid-quad layer {} has no retained GPU pose timeline slot",
+                slot.layer_index
+            ));
+        };
+        let pose_ref = scene_solid_quad_layer_pose_ref_for_slot(
+            timeline_slot,
+            slot.layer_index,
+            timeline_address,
+            frame_count,
+            frame_rate,
+        )?;
+        let Some(instance) = instances.get_mut(slot.instance_index) else {
+            return Err(format!(
+                "scene solid-quad retained layer pose draw instance {} is out of range",
+                slot.instance_index
+            ));
+        };
+        instance.layer_pose_ref = pose_ref;
+    }
+    Ok(instances)
+}
+
+fn scene_solid_quad_layer_pose_ref_for_slot(
+    layer_slot: usize,
+    layer_index: usize,
+    timeline_address: vk::DeviceAddress,
+    frame_count: u32,
+    frame_rate: u32,
+) -> Result<[u32; 4], String> {
+    let layer_byte_offset = (layer_slot as u64)
+        .checked_mul(u64::from(frame_count))
+        .and_then(|value| value.checked_mul(u64::from(SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES)))
+        .ok_or_else(|| {
+            format!("scene solid-quad layer {layer_index} pose timeline offset overflows")
+        })?;
+    let pose_address = timeline_address.saturating_add(layer_byte_offset);
+    Ok([
+        pose_address as u32,
+        (pose_address >> 32) as u32,
+        frame_count,
+        frame_rate,
+    ])
+}
+
+fn scene_solid_quad_draw_instance_bytes(
+    instances: &[VulkanaliaSceneSolidQuadDrawInstance],
+) -> Result<SceneGeometryByteBuffer, String> {
+    if instances.is_empty() {
+        return Err("scene solid-quad draw instance buffer requires at least one row".to_owned());
+    }
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        instances.len() * SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES as usize,
+    );
+    for instance in instances {
+        for value in instance.layer_pose_ref {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        for value in instance.frame_time_ref {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+    }
+    Ok(bytes)
 }
 
 fn write_scene_sampled_image_frame_time_to_uploaded_buffer(
@@ -6921,6 +7064,80 @@ fn scene_sampled_image_layer_pose_map(
         .copied()
         .map(|pose| (pose.layer_index, pose))
         .collect()
+}
+
+fn scene_solid_quad_validate_layer_poses(
+    poses: &[NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload],
+) -> Result<(), String> {
+    for (pose_index, pose) in poses.iter().enumerate() {
+        if !pose
+            .position_transform_x
+            .into_iter()
+            .chain(pose.position_transform_y)
+            .chain([pose.layer_opacity])
+            .all(f32::is_finite)
+        {
+            return Err(format!(
+                "scene solid-quad layer pose {pose_index} contains a non-finite value"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn scene_solid_quad_validate_layer_pose_timeline(
+    timeline: &NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload,
+) -> Result<(), String> {
+    if timeline.frame_rate == 0 {
+        return Err("scene solid-quad layer pose timeline frame rate must be non-zero".to_owned());
+    }
+    if timeline.frame_count == 0 {
+        return Err("scene solid-quad layer pose timeline frame count must be non-zero".to_owned());
+    }
+    let expected_pose_count = timeline
+        .layer_indices
+        .len()
+        .checked_mul(timeline.frame_count as usize)
+        .ok_or_else(|| "scene solid-quad layer pose timeline pose count overflows".to_owned())?;
+    if timeline.poses.len() != expected_pose_count {
+        return Err(format!(
+            "scene solid-quad layer pose timeline has {} poses for {} layers and {} frames",
+            timeline.poses.len(),
+            timeline.layer_indices.len(),
+            timeline.frame_count
+        ));
+    }
+    scene_solid_quad_validate_layer_poses(&timeline.poses)
+}
+
+fn scene_solid_quad_layer_pose_timeline_bytes(
+    timeline: Option<&NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload>,
+) -> Result<SceneGeometryByteBuffer, String> {
+    let Some(timeline) = timeline else {
+        return Ok(SceneGeometryByteBuffer::with_capacity(0));
+    };
+    scene_solid_quad_validate_layer_pose_timeline(timeline)?;
+    let mut bytes = SceneGeometryByteBuffer::with_capacity(
+        timeline
+            .poses
+            .len()
+            .checked_mul(SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES as usize)
+            .ok_or_else(|| "scene solid-quad layer pose timeline bytes overflow".to_owned())?,
+    );
+    for pose in &timeline.poses {
+        for value in pose
+            .position_transform_x
+            .into_iter()
+            .chain(pose.position_transform_y)
+        {
+            bytes.extend_from_slice(&value.to_ne_bytes());
+        }
+        bytes.extend_from_slice(&pose.layer_opacity.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+        bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    }
+    Ok(bytes)
 }
 
 fn scene_sampled_image_validate_layer_poses(
@@ -7457,39 +7674,13 @@ fn scene_solid_quad_geometry_payload_from_input(
     }
 
     let vertex_bytes = scene_solid_quad_vertex_bytes(&input.vertices)?;
-    let (vertex_timeline_bytes, vertex_timeline_frame_count, vertex_timeline_frame_rate) =
-        if let Some(timeline) = input.vertex_timeline.as_ref() {
-            if timeline.frame_rate == 0 {
-                return Err(
-                    "scene solid quad vertex timeline frame rate must be non-zero".to_owned(),
-                );
-            }
-            if timeline.frame_count == 0 {
-                return Err(
-                    "scene solid quad vertex timeline frame count must be non-zero".to_owned(),
-                );
-            }
-            let expected_vertex_count = input
-                .vertices
-                .len()
-                .checked_mul(timeline.frame_count as usize)
-                .ok_or_else(|| "scene solid quad vertex timeline count overflows".to_owned())?;
-            if timeline.vertices.len() != expected_vertex_count {
-                return Err(format!(
-                    "scene solid quad vertex timeline has {} vertices for {} base vertices and {} frames",
-                    timeline.vertices.len(),
-                    input.vertices.len(),
-                    timeline.frame_count
-                ));
-            }
-            (
-                scene_solid_quad_vertex_bytes(&timeline.vertices)?,
-                timeline.frame_count,
-                timeline.frame_rate,
-            )
-        } else {
-            (SceneGeometryByteBuffer::with_capacity(0), 0, 0)
-        };
+    scene_solid_quad_validate_layer_poses(&input.solid_layer_poses)?;
+    if let Some(timeline) = input.solid_layer_pose_timeline.as_ref() {
+        scene_solid_quad_validate_layer_pose_timeline(timeline)?;
+    }
+    let solid_layer_pose_timeline_bytes =
+        scene_solid_quad_layer_pose_timeline_bytes(input.solid_layer_pose_timeline.as_ref())?;
+    let solid_layer_pose_count = input.solid_layer_poses.len().min(u32::MAX as usize) as u32;
     let index_bytes = scene_solid_quad_index_bytes(&input.indices, input.vertices.len())?;
     let vertex_count = input.vertices.len() as u32;
     let index_count = input.indices.len() as u32;
@@ -7497,9 +7688,10 @@ fn scene_solid_quad_geometry_payload_from_input(
     Ok(VulkanaliaSceneSolidQuadGeometryPayload {
         indices: input.indices,
         vertex_bytes,
-        vertex_timeline_bytes,
-        vertex_timeline_frame_count,
-        vertex_timeline_frame_rate,
+        solid_layer_poses: input.solid_layer_poses,
+        solid_layer_pose_timeline: input.solid_layer_pose_timeline,
+        solid_layer_pose_timeline_bytes,
+        solid_layer_pose_count,
         index_bytes,
         vertex_count,
         index_count,
@@ -7639,9 +7831,30 @@ fn scene_solid_quad_apply_viewport(
     for vertex in &mut geometry.vertices {
         vertex.position = scene_viewport_transform_position(vertex.position, transform);
     }
-    if let Some(timeline) = geometry.vertex_timeline.as_mut() {
-        for vertex in &mut timeline.vertices {
-            vertex.position = scene_viewport_transform_position(vertex.position, transform);
+    for pose in &mut geometry.solid_layer_poses {
+        pose.position_transform_x = scene_viewport_transform_pose_row(
+            pose.position_transform_x,
+            transform.scale_x,
+            transform.offset_x,
+        );
+        pose.position_transform_y = scene_viewport_transform_pose_row(
+            pose.position_transform_y,
+            transform.scale_y,
+            transform.offset_y,
+        );
+    }
+    if let Some(timeline) = geometry.solid_layer_pose_timeline.as_mut() {
+        for pose in &mut timeline.poses {
+            pose.position_transform_x = scene_viewport_transform_pose_row(
+                pose.position_transform_x,
+                transform.scale_x,
+                transform.offset_x,
+            );
+            pose.position_transform_y = scene_viewport_transform_pose_row(
+                pose.position_transform_y,
+                transform.scale_y,
+                transform.offset_y,
+            );
         }
     }
 }
@@ -8235,12 +8448,49 @@ fn scene_video_layer_draw_commands(
     Ok(draw_commands)
 }
 
+fn scene_solid_quad_layer_pose_draw_instance_slots(
+    draw_steps: &[NativeVulkanVulkanaliaSceneSolidQuadDrawStep],
+    timeline_layer_indices: &[usize],
+) -> Vec<VulkanaliaSceneSolidLayerPoseDrawInstanceSlot> {
+    let timeline_layers = timeline_layer_indices
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(slot, layer_index)| (layer_index, 1usize.saturating_add(slot)))
+        .collect::<BTreeMap<_, _>>();
+    let mut slots = Vec::with_capacity(timeline_layers.len());
+    let mut seen_layers = BTreeSet::new();
+    for step in draw_steps {
+        let Some(instance_index) = timeline_layers.get(&step.layer_index).copied() else {
+            continue;
+        };
+        if !seen_layers.insert(step.layer_index) {
+            continue;
+        }
+        slots.push(VulkanaliaSceneSolidLayerPoseDrawInstanceSlot {
+            layer_index: step.layer_index,
+            instance_index,
+        });
+    }
+    slots
+}
+
 fn scene_solid_quad_draw_commands(
     draw_steps: &[NativeVulkanVulkanaliaSceneSolidQuadDrawStep],
+    layer_pose_slots: &[VulkanaliaSceneSolidLayerPoseDrawInstanceSlot],
 ) -> Result<Vec<VulkanaliaSceneSolidQuadDrawCommand>, String> {
     if draw_steps.is_empty() {
         return Err("scene solid draw command list requires at least one step".to_owned());
     }
+    let layer_pose_indices = layer_pose_slots
+        .iter()
+        .map(|slot| {
+            (
+                slot.layer_index,
+                slot.instance_index.min(u32::MAX as usize) as u32,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut draw_commands = Vec::with_capacity(draw_steps.len());
     for (step_index, step) in draw_steps.iter().enumerate() {
         if step.index_count == 0 {
@@ -8252,6 +8502,10 @@ fn scene_solid_quad_draw_commands(
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
             blend: step.blend,
+            draw_instance_index: layer_pose_indices
+                .get(&step.layer_index)
+                .copied()
+                .unwrap_or(0),
             first_index: step.first_index,
             index_count: step.index_count,
         };
@@ -8273,6 +8527,7 @@ fn scene_solid_quad_draw_commands_can_merge(
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
         && previous.blend == next.blend
+        && previous.draw_instance_index == next.draw_instance_index
         && previous
             .first_index
             .checked_add(previous.index_count)
@@ -8595,7 +8850,6 @@ fn scene_sampled_image_geometry_payload_from_input(
     Ok(VulkanaliaSceneSampledImageGeometryPayload {
         vertices: input.vertices,
         indices: input.indices,
-        sources: input.sources,
         effect_targets: input.effect_targets,
         puppet_gpu_payloads: input.puppet_gpu_payloads,
         puppet_gpu_poses: input.puppet_gpu_poses,
@@ -8611,7 +8865,6 @@ fn scene_sampled_image_geometry_payload_from_input(
         quad_count,
         source_count: source_count.min(u32::MAX as usize) as u32,
         effect_target_count,
-        we_graph_resources: input.we_graph_resources,
         we_graph_resource_count,
         we_graph_texture_resource_count,
         we_graph_target_resource_count,
@@ -9571,43 +9824,6 @@ fn submit_scene_transfer_command_buffer2(
     Ok(())
 }
 
-fn submit_scene_solid_quad_command_buffer2(
-    device: &Device,
-    queue: vk::Queue,
-    command_buffer: vk::CommandBuffer,
-    image_available: vk::Semaphore,
-    render_finished: vk::Semaphore,
-    fence: vk::Fence,
-) -> Result<(), String> {
-    let wait = vk::SemaphoreSubmitInfo::builder()
-        .semaphore(image_available)
-        .stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-        .build();
-    let waits = [wait];
-    let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
-        .command_buffer(command_buffer)
-        .build();
-    let command_buffer_infos = [command_buffer_info];
-    let signal = vk::SemaphoreSubmitInfo::builder()
-        .semaphore(render_finished)
-        .stage_mask(vk::PipelineStageFlags2::ALL_COMMANDS)
-        .build();
-    let signals = [signal];
-    let submit_info = vk::SubmitInfo2::builder()
-        .wait_semaphore_infos(&waits)
-        .command_buffer_infos(&command_buffer_infos)
-        .signal_semaphore_infos(&signals)
-        .build();
-
-    unsafe {
-        device
-            .queue_submit2(queue, &[submit_info], fence)
-            .map_err(|err| format!("vkQueueSubmit2(vulkanalia scene present): {err:?}"))?;
-    }
-
-    Ok(())
-}
-
 fn scene_color_subresource_range() -> vk::ImageSubresourceRange {
     vk::ImageSubresourceRange::builder()
         .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -9782,26 +9998,29 @@ mod tests {
 
     #[test]
     fn solid_quad_draw_commands_merge_contiguous_layer_ranges() {
-        let commands = scene_solid_quad_draw_commands(&[
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 4,
-                first_index: 0,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 5,
-                first_index: 6,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 6,
-                first_index: 12,
-                index_count: 12,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-        ])
+        let commands = scene_solid_quad_draw_commands(
+            &[
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 4,
+                    first_index: 0,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 5,
+                    first_index: 6,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 6,
+                    first_index: 12,
+                    index_count: 12,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+            ],
+            &[],
+        )
         .unwrap();
 
         assert_eq!(
@@ -9810,6 +10029,7 @@ mod tests {
                 layer_index: 4,
                 last_layer_index: 6,
                 blend: blend_state(SceneBlendMode::Alpha),
+                draw_instance_index: 0,
                 first_index: 0,
                 index_count: 24,
             }]
@@ -9818,26 +10038,29 @@ mod tests {
 
     #[test]
     fn solid_quad_draw_commands_keep_non_contiguous_layer_ranges_separate() {
-        let commands = scene_solid_quad_draw_commands(&[
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 4,
-                first_index: 0,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 6,
-                first_index: 6,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 7,
-                first_index: 24,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-        ])
+        let commands = scene_solid_quad_draw_commands(
+            &[
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 4,
+                    first_index: 0,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 6,
+                    first_index: 6,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 7,
+                    first_index: 24,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+            ],
+            &[],
+        )
         .unwrap();
 
         assert_eq!(
@@ -9847,6 +10070,7 @@ mod tests {
                     layer_index: 4,
                     last_layer_index: 4,
                     blend: blend_state(SceneBlendMode::Alpha),
+                    draw_instance_index: 0,
                     first_index: 0,
                     index_count: 6,
                 },
@@ -9854,6 +10078,7 @@ mod tests {
                     layer_index: 6,
                     last_layer_index: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
+                    draw_instance_index: 0,
                     first_index: 6,
                     index_count: 6,
                 },
@@ -9861,6 +10086,7 @@ mod tests {
                     layer_index: 7,
                     last_layer_index: 7,
                     blend: blend_state(SceneBlendMode::Alpha),
+                    draw_instance_index: 0,
                     first_index: 24,
                     index_count: 6,
                 }
@@ -9870,20 +10096,23 @@ mod tests {
 
     #[test]
     fn solid_quad_draw_commands_keep_different_blend_modes_separate() {
-        let commands = scene_solid_quad_draw_commands(&[
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 4,
-                first_index: 0,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Alpha),
-            },
-            NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
-                layer_index: 5,
-                first_index: 6,
-                index_count: 6,
-                blend: blend_state(SceneBlendMode::Screen),
-            },
-        ])
+        let commands = scene_solid_quad_draw_commands(
+            &[
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 4,
+                    first_index: 0,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    layer_index: 5,
+                    first_index: 6,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Screen),
+                },
+            ],
+            &[],
+        )
         .unwrap();
 
         assert_eq!(commands.len(), 2);
@@ -10766,7 +10995,7 @@ mod tests {
     }
 
     #[test]
-    fn sampled_image_geometry_preserves_we_graph_resources_for_executor() {
+    fn sampled_image_geometry_validates_and_summarizes_we_graph_resources_for_executor() {
         let input =
             NativeVulkanVulkanaliaSceneSampledImageGeometryInput::new_batched_with_effect_targets_and_we_graph_resources(
                 vec![
@@ -10929,14 +11158,6 @@ mod tests {
         assert_eq!(payload.we_graph_target_resource_count, 2);
         assert_eq!(payload.we_graph_allocated_target_resource_count, 1);
         assert_eq!(payload.we_graph_planned_target_resource_count, 1);
-        assert_eq!(
-            payload.we_graph_resources[2].vulkan_effect_target_index,
-            Some(0)
-        );
-        assert_eq!(
-            payload.we_graph_resources[3].allocation,
-            "planned-until-graph-executor"
-        );
     }
 
     #[test]
@@ -11056,6 +11277,80 @@ mod tests {
             120.0_f32.mul_add(row_y[0], 200.0_f32.mul_add(row_y[1], row_y[2])),
             230.0,
         );
+    }
+
+    #[test]
+    fn solid_quad_layer_pose_uses_draw_instance_timeline_not_vertex_upload() {
+        let mut geometry = NativeVulkanVulkanaliaSceneSolidQuadGeometryInput::new_batched(
+            vec![
+                NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
+                    [100.0, 200.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                ),
+                NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
+                    [140.0, 200.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                ),
+                NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
+                    [140.0, 240.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                ),
+                NativeVulkanVulkanaliaSceneSolidQuadVertex::new(
+                    [100.0, 240.0],
+                    [1.0, 0.0, 0.0, 0.0],
+                ),
+            ],
+            vec![0, 1, 2, 2, 3, 0],
+            vec![NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                layer_index: 5,
+                first_index: 0,
+                index_count: 6,
+                blend: blend_state(SceneBlendMode::Alpha),
+            }],
+            "solid-layer-pose-test",
+        );
+        let base_pose = NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload {
+            layer_index: 5,
+            position_transform_x: [1.0, 0.0, 100.0, 0.0],
+            position_transform_y: [0.0, 1.0, 200.0, 0.0],
+            layer_opacity: 0.0,
+        };
+        let moved_pose = NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload {
+            layer_index: 5,
+            position_transform_x: [1.0, 0.0, 140.0, 0.0],
+            position_transform_y: [0.0, 1.0, 230.0, 0.0],
+            layer_opacity: 1.0,
+        };
+        geometry.solid_layer_poses = vec![base_pose.clone()];
+        geometry.solid_layer_pose_timeline = Some(
+            NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload {
+                frame_rate: 60,
+                frame_count: 2,
+                layer_indices: vec![5],
+                poses: vec![base_pose, moved_pose],
+            },
+        );
+
+        let payload = scene_solid_quad_geometry_payload_from_input(geometry).expect("payload");
+        let slots = scene_solid_quad_layer_pose_draw_instance_slots(&payload.draw_steps, &[5]);
+        let commands =
+            scene_solid_quad_draw_commands(&payload.draw_steps, &slots).expect("draw commands");
+        let instances =
+            scene_solid_quad_draw_instances(&slots, &[5], 0x1000_0000, 0x2000_0000, 2, 60)
+                .expect("draw instances");
+
+        assert_eq!(
+            payload.vertex_bytes.len(),
+            4 * SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES as usize
+        );
+        assert_eq!(
+            payload.solid_layer_pose_timeline_bytes.len(),
+            2 * SCENE_SAMPLED_IMAGE_LAYER_POSE_STRIDE_BYTES as usize
+        );
+        assert_eq!(commands[0].draw_instance_index, 1);
+        assert_eq!(instances.len(), 2);
+        assert_eq!(instances[1].layer_pose_ref, [0x1000_0000, 0, 2, 60]);
+        assert_eq!(instances[1].frame_time_ref, [0x2000_0000, 0, 0, 0]);
     }
 
     #[test]

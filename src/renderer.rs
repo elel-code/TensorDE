@@ -9,9 +9,10 @@ mod scene_binary;
 
 #[cfg(feature = "native-vulkan-renderer")]
 pub(crate) use self::scene_binary::{
-    SceneBinaryParticleGpuPayload, SceneBinaryParticleGpuVertexPayload,
-    SceneBinaryPuppetGpuPayload, SceneBinaryPuppetGpuPosePayload,
-    SceneBinaryPuppetGpuVertexPayload, SceneBinaryRetainedGpuPayloads, SceneBinaryRuntimeSampler,
+    SceneBinaryLayerGpuPosePayloads, SceneBinaryParticleGpuPayload,
+    SceneBinaryParticleGpuVertexPayload, SceneBinaryPuppetGpuPayload,
+    SceneBinaryPuppetGpuPosePayload, SceneBinaryPuppetGpuVertexPayload,
+    SceneBinaryRetainedGpuPayloads, SceneBinaryRuntimeSampler,
     SceneBinarySampledLayerGpuPosePayload,
 };
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};

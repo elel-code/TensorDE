@@ -447,6 +447,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphPlan {
+    pub(in crate::renderer::native_vulkan::scene) engine_graph:
+        crate::engine::render_graph::RenderGraph,
     pub(in crate::renderer::native_vulkan::scene) chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) first_class_target_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) temporary_raw_fallback_chain_count: usize,

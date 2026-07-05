@@ -620,17 +620,14 @@ pub(crate) struct SceneBinaryRuntimeSampler {
     names: BinarySceneNames,
     resources: Vec<BinarySceneResource>,
     topology: BinarySceneRetainedTopology,
-    scene_size: Option<SceneSize>,
-    scene_fit: FitMode,
     dynamic_state: Option<BinarySceneDynamicState>,
-    gpu_only_puppet_layers: BTreeSet<usize>,
+    #[cfg(test)]
     layers_scratch: Vec<SceneRenderLayer>,
 }
 
+#[cfg(test)]
 pub(crate) struct SceneBinaryRuntimeFrame {
     pub(crate) snapshot_time_ms: u64,
-    pub(crate) scene_size: Option<SceneSize>,
-    pub(crate) scene_fit: FitMode,
     pub(crate) layers: Vec<SceneRenderLayer>,
 }
 
@@ -638,6 +635,11 @@ pub(crate) struct SceneBinaryRetainedGpuPayloads {
     pub(crate) puppet_payloads: Vec<SceneBinaryPuppetGpuPayload>,
     pub(crate) puppet_poses: Vec<SceneBinaryPuppetGpuPosePayload>,
     pub(crate) particle_payloads: Vec<SceneBinaryParticleGpuPayload>,
+}
+
+pub(crate) struct SceneBinaryLayerGpuPosePayloads {
+    pub(crate) sampled_layer_poses: Vec<SceneBinarySampledLayerGpuPosePayload>,
+    pub(crate) solid_layer_poses: Vec<SceneBinarySolidLayerGpuPosePayload>,
 }
 
 #[derive(Debug, Clone)]
@@ -713,11 +715,12 @@ pub(crate) struct SceneBinaryPuppetGpuPosePayload {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SceneBinarySampledLayerGpuPosePayload {
     pub(crate) layer_index: usize,
-    pub(crate) layer_id: String,
     pub(crate) position_transform_x: [f32; 4],
     pub(crate) position_transform_y: [f32; 4],
     pub(crate) layer_opacity: f32,
 }
+
+pub(crate) type SceneBinarySolidLayerGpuPosePayload = SceneBinarySampledLayerGpuPosePayload;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct SceneBinaryParticleGpuVertexPayload {
@@ -756,22 +759,12 @@ struct SceneBinaryPuppetGpuPoseTimeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BinarySceneRenderLayerFilter {
     All,
-    SolidOnly,
 }
 
 impl BinarySceneRenderLayerFilter {
-    fn allows_kind(self, kind: SceneNodeKind) -> bool {
+    fn allows_kind(self, _kind: SceneNodeKind) -> bool {
         match self {
             Self::All => true,
-            Self::SolidOnly => matches!(
-                kind,
-                SceneNodeKind::Color
-                    | SceneNodeKind::Rectangle
-                    | SceneNodeKind::Ellipse
-                    | SceneNodeKind::Text
-                    | SceneNodeKind::Path
-                    | SceneNodeKind::ParticleEmitter
-            ),
         }
     }
 }
@@ -792,7 +785,6 @@ impl SceneBinaryRuntimeSampler {
         let package_root = binary_scene_package_root(source_path);
         let resources = binary_scene_resources(&mut reader, &names, &package_root)?;
         let topology = binary_scene_retained_topology(&mut reader, &resources)?;
-        let scene_size = binary_scene_size(&mut reader)?;
         let dynamic_state = binary_scene_dynamic_state_from_source_path(
             source_path,
             Some(&plan.scene_input_properties),
@@ -802,16 +794,10 @@ impl SceneBinaryRuntimeSampler {
             names,
             resources,
             topology,
-            scene_size,
-            scene_fit: plan.scene_fit,
             dynamic_state,
-            gpu_only_puppet_layers: BTreeSet::new(),
+            #[cfg(test)]
             layers_scratch: Vec::new(),
         }))
-    }
-
-    pub(crate) fn set_gpu_only_puppet_layers(&mut self, layer_indices: BTreeSet<usize>) {
-        self.gpu_only_puppet_layers = layer_indices;
     }
 
     pub(crate) fn retained_gpu_payloads(
@@ -828,11 +814,11 @@ impl SceneBinaryRuntimeSampler {
         )
     }
 
-    pub(crate) fn sampled_layer_gpu_pose_payloads(
+    pub(crate) fn layer_gpu_pose_payloads(
         &mut self,
         time_ms: u64,
-    ) -> Result<Vec<SceneBinarySampledLayerGpuPosePayload>, RendererPlanError> {
-        binary_scene_sampled_layer_gpu_pose_payloads(
+    ) -> Result<SceneBinaryLayerGpuPosePayloads, RendererPlanError> {
+        binary_scene_layer_gpu_pose_payloads(
             &mut self.reader,
             &self.names,
             &self.topology,
@@ -855,45 +841,18 @@ impl SceneBinaryRuntimeSampler {
             self.dynamic_state.as_ref(),
             BinarySceneRenderLayerFilter::All,
             false,
-            &self.gpu_only_puppet_layers,
+            &BTreeSet::new(),
             None,
             None,
             &mut self.layers_scratch,
         )?;
         Ok(SceneBinaryRuntimeFrame {
             snapshot_time_ms: time_ms,
-            scene_size: self.scene_size,
-            scene_fit: self.scene_fit,
             layers: std::mem::take(&mut self.layers_scratch),
         })
     }
 
-    pub(crate) fn sample_solid_frame_reusing(
-        &mut self,
-        time_ms: u64,
-    ) -> Result<SceneBinaryRuntimeFrame, RendererPlanError> {
-        binary_scene_render_layers_into(
-            &mut self.reader,
-            &self.names,
-            &self.resources,
-            &self.topology,
-            time_ms,
-            self.dynamic_state.as_ref(),
-            BinarySceneRenderLayerFilter::SolidOnly,
-            false,
-            &self.gpu_only_puppet_layers,
-            None,
-            None,
-            &mut self.layers_scratch,
-        )?;
-        Ok(SceneBinaryRuntimeFrame {
-            snapshot_time_ms: time_ms,
-            scene_size: self.scene_size,
-            scene_fit: self.scene_fit,
-            layers: std::mem::take(&mut self.layers_scratch),
-        })
-    }
-
+    #[cfg(test)]
     pub(crate) fn recycle_frame(&mut self, mut frame: SceneBinaryRuntimeFrame) {
         frame.layers.clear();
         self.layers_scratch = frame.layers;
@@ -2247,20 +2206,25 @@ fn binary_scene_retained_gpu_payloads(
     })
 }
 
-fn binary_scene_sampled_layer_gpu_pose_payloads(
+fn binary_scene_layer_gpu_pose_payloads(
     reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
     topology: &BinarySceneRetainedTopology,
     snapshot_time_ms: u64,
     dynamic_state: Option<&BinarySceneDynamicState>,
-) -> Result<Vec<SceneBinarySampledLayerGpuPosePayload>, RendererPlanError> {
+) -> Result<SceneBinaryLayerGpuPosePayloads, RendererPlanError> {
     reader.puppet_attachment_delta_cache.clear();
     reader.puppet_frame_skinning_cache.clear();
     let node_states =
         binary_scene_effective_node_states(reader, names, snapshot_time_ms, dynamic_state, true)?;
-    let mut payloads = Vec::new();
+    let mut sampled_layer_poses = Vec::new();
+    let mut solid_layer_poses = Vec::new();
     for renderable in &topology.renderables {
-        if renderable.render_layer_kind() != SceneNodeKind::Image {
+        let render_layer_kind = renderable.render_layer_kind();
+        let sampled_pose_candidate = render_layer_kind == SceneNodeKind::Image;
+        let solid_pose_candidate =
+            binary_scene_renderable_is_solid_layer_pose_candidate(render_layer_kind);
+        if !sampled_pose_candidate && !solid_pose_candidate {
             continue;
         }
         let Some(effective_state) = node_states.get(renderable.node_index) else {
@@ -2276,9 +2240,6 @@ fn binary_scene_sampled_layer_gpu_pose_payloads(
         if !effective_state.visible {
             node_state.opacity = 0.0;
         }
-        let layer_id = binary_name(names, renderable.node.id_name)
-            .unwrap_or("binary-node")
-            .to_owned();
         let (width, height, transform) = if let Some(particle) = renderable.particle {
             let mut transform = node_state.transform;
             transform.anchor_x = 0.5;
@@ -2293,15 +2254,34 @@ fn binary_scene_sampled_layer_gpu_pose_payloads(
         };
         let (position_transform_x, position_transform_y) =
             binary_scene_puppet_gpu_position_transform(width, height, transform)?;
-        payloads.push(SceneBinarySampledLayerGpuPosePayload {
+        let pose = SceneBinarySampledLayerGpuPosePayload {
             layer_index: renderable.layer_index,
-            layer_id,
             position_transform_x,
             position_transform_y,
             layer_opacity: node_state.opacity.clamp(0.0, 1.0) as f32,
-        });
+        };
+        if sampled_pose_candidate {
+            sampled_layer_poses.push(pose.clone());
+        }
+        if solid_pose_candidate {
+            solid_layer_poses.push(pose);
+        }
     }
-    Ok(payloads)
+    Ok(SceneBinaryLayerGpuPosePayloads {
+        sampled_layer_poses,
+        solid_layer_poses,
+    })
+}
+
+fn binary_scene_renderable_is_solid_layer_pose_candidate(kind: SceneNodeKind) -> bool {
+    matches!(
+        kind,
+        SceneNodeKind::Rectangle
+            | SceneNodeKind::Ellipse
+            | SceneNodeKind::Text
+            | SceneNodeKind::Path
+            | SceneNodeKind::AudioResponse
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -4332,26 +4312,113 @@ mod tests {
         assert_eq!(particle_payloads[0].vertices.len(), 12);
 
         let first_pose_payloads = sampler
-            .sampled_layer_gpu_pose_payloads(0)
-            .expect("first sampled-layer GPU poses");
+            .layer_gpu_pose_payloads(0)
+            .expect("first layer GPU poses")
+            .sampled_layer_poses;
         let first_pose = first_pose_payloads
             .iter()
-            .find(|pose| pose.layer_id == "spark-emitter")
+            .find(|pose| pose.layer_index == 0)
             .expect("first particle pose");
         assert_eq!(first_pose.layer_index, 0);
         assert!((first_pose.position_transform_x[2] - 0.0).abs() < 0.0001);
         assert!((first_pose.position_transform_y[2] - 5.0).abs() < 0.0001);
 
         let later_pose_payloads = sampler
-            .sampled_layer_gpu_pose_payloads(1000)
-            .expect("later sampled-layer GPU poses");
+            .layer_gpu_pose_payloads(1000)
+            .expect("later layer GPU poses")
+            .sampled_layer_poses;
         let later_pose = later_pose_payloads
             .iter()
-            .find(|pose| pose.layer_id == "spark-emitter")
+            .find(|pose| pose.layer_index == 0)
             .expect("later particle pose");
         assert_eq!(later_pose.layer_index, 0);
         assert!((later_pose.position_transform_x[2] - 100.0).abs() < 0.0001);
         assert!((later_pose.position_transform_y[2] - 5.0).abs() < 0.0001);
+
+        fs::remove_dir_all(root).expect("remove test dir");
+    }
+
+    #[test]
+    fn gscn_binary_runtime_sampler_reads_sampled_and_solid_layer_poses_together() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "photo", "type": "image", "source": "assets/photo.gtex", "width": 64, "height": 32 }
+            ],
+            "nodes": [
+                {
+                    "id": "solid-box",
+                    "type": "rectangle",
+                    "width": 20.0,
+                    "height": 10.0,
+                    "color": "#ffffff"
+                },
+                {
+                    "id": "photo-layer",
+                    "type": "image",
+                    "resource": "photo",
+                    "width": 64.0,
+                    "height": 32.0
+                }
+            ],
+            "timelines": [
+                {
+                    "id": "move-solid",
+                    "target_node": "solid-box",
+                    "channels": [
+                        {
+                            "property": "x",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 1000, "value": 32.0 }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "id": "move-photo",
+                    "target_node": "photo-layer",
+                    "channels": [
+                        {
+                            "property": "y",
+                            "keyframes": [
+                                { "time_ms": 0, "value": 0.0 },
+                                { "time_ms": 1000, "value": 48.0 }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-layer-pose-streams");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan =
+            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
+                .expect("binary scene plan");
+        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
+            .expect("binary sampler open")
+            .expect("binary sampler");
+
+        let layer_poses = sampler
+            .layer_gpu_pose_payloads(1000)
+            .expect("combined layer GPU poses");
+        let solid_pose = layer_poses
+            .solid_layer_poses
+            .iter()
+            .find(|pose| pose.layer_index == 0)
+            .expect("solid layer pose");
+        let sampled_pose = layer_poses
+            .sampled_layer_poses
+            .iter()
+            .find(|pose| pose.layer_index == 1)
+            .expect("sampled layer pose");
+        assert!((solid_pose.position_transform_x[2] - 32.0).abs() < 0.0001);
+        assert!((sampled_pose.position_transform_y[2] - 48.0).abs() < 0.0001);
 
         fs::remove_dir_all(root).expect("remove test dir");
     }
@@ -4856,11 +4923,12 @@ mod tests {
         );
 
         let first_pose_payloads = sampler
-            .sampled_layer_gpu_pose_payloads(0)
-            .expect("first sampled-layer GPU poses");
+            .layer_gpu_pose_payloads(0)
+            .expect("first layer GPU poses")
+            .sampled_layer_poses;
         let first_hair_pose = first_pose_payloads
             .iter()
-            .find(|pose| pose.layer_id == "hair-image")
+            .find(|pose| pose.layer_index == 1)
             .expect("first hair pose");
         assert_eq!(first_hair_pose.layer_index, 1);
         assert!((first_hair_pose.position_transform_x[2] - 120.0).abs() < 0.0001);
@@ -4899,11 +4967,12 @@ mod tests {
         );
 
         let later_pose_payloads = sampler
-            .sampled_layer_gpu_pose_payloads(1000)
-            .expect("later sampled-layer GPU poses");
+            .layer_gpu_pose_payloads(1000)
+            .expect("later layer GPU poses")
+            .sampled_layer_poses;
         let later_hair_pose = later_pose_payloads
             .iter()
-            .find(|pose| pose.layer_id == "hair-image")
+            .find(|pose| pose.layer_index == 1)
             .expect("later hair pose");
         assert!((later_hair_pose.position_transform_x[2] - 110.0).abs() < 0.0001);
         assert!((later_hair_pose.position_transform_y[2] - 210.0).abs() < 0.0001);

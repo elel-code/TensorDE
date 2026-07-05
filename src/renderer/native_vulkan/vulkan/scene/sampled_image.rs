@@ -4,7 +4,7 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::slice;
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 use std::sync::Once;
 
 use serde::Serialize;
@@ -1388,26 +1388,38 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
     }
 }
 
-#[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
 unsafe extern "C" {
-    fn gilder_configure_process_allocator_for_streaming_video();
-    fn gilder_trim_process_heap();
+    fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    fn malloc_trim(pad: usize) -> std::ffi::c_int;
 }
 
 pub(crate) fn native_vulkan_vulkanalia_configure_scene_sampled_image_allocator() {
-    #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {
+        const M_TRIM_THRESHOLD: std::ffi::c_int = -1;
+        const M_TOP_PAD: std::ffi::c_int = -2;
+        const M_MMAP_THRESHOLD: std::ffi::c_int = -3;
+        const M_ARENA_MAX: std::ffi::c_int = -8;
+
         static CONFIGURE_ALLOCATOR: Once = Once::new();
         CONFIGURE_ALLOCATOR.call_once(|| unsafe {
-            gilder_configure_process_allocator_for_streaming_video();
+            // Keep scene transient upload/build buffers out of long-lived heap
+            // arenas. Godot's rendering device ownership model frees temporary
+            // graph data after command/resource lowering; the allocator must
+            // let those pages return before the present loop.
+            let _ = mallopt(M_ARENA_MAX, 1);
+            let _ = mallopt(M_TRIM_THRESHOLD, 0);
+            let _ = mallopt(M_TOP_PAD, 0);
+            let _ = mallopt(M_MMAP_THRESHOLD, 128 * 1024);
         });
     }
 }
 
 pub(crate) fn native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap() {
-    #[cfg(all(feature = "native-vulkan-video", target_os = "linux"))]
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
     unsafe {
-        gilder_trim_process_heap();
+        let _ = malloc_trim(0);
     }
 }
 

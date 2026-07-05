@@ -36,7 +36,6 @@ pub(super) use self::color::native_vulkan_scene_tint_from_color;
 use self::color::{
     native_vulkan_scene_rectangle_recordable_kind, native_vulkan_scene_rgba_from_hex,
 };
-use self::effect::motion as sampled_image_motion;
 pub(super) use self::effect::native_vulkan_scene_effect_passes_from_render_passes;
 use self::effect::{
     native_vulkan_scene_effect_passes_from_scene_passes, native_vulkan_scene_effect_records_label,
@@ -108,30 +107,10 @@ const SCENE_FULL_SAMPLED_IMAGE_VERTEX_BYTES: u64 = 44;
 const SCENE_FULL_SAMPLED_IMAGE_INDEX_BYTES: u64 = 4;
 const SCENE_SAMPLED_IMAGE_DEFAULT_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
-#[derive(Debug, Clone, Copy)]
-struct NativeVulkanSceneSampledImageGridCorner {
-    x: f64,
-    y: f64,
-    u: f64,
-    v: f64,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct NativeVulkanSceneSampledImageMeshPoint {
-    x: f64,
-    y: f64,
-    u: f64,
-    v: f64,
-    opacity: f64,
-}
-
 pub(super) fn native_vulkan_scene_solid_geometry_from_render_layer(
     layer_index: usize,
     layer: &SceneRenderLayer,
 ) -> Result<Option<(Vec<NativeVulkanSceneQuadVertex>, Vec<u32>)>, &'static str> {
-    if layer.opacity <= 0.0 {
-        return Ok(None);
-    }
     if native_vulkan_scene_render_layer_is_clear(layer) {
         return Ok(None);
     }
@@ -4147,47 +4126,12 @@ fn native_vulkan_scene_text_glyph_pattern(ch: char) -> [u8; SCENE_FULL_TEXT_GLYP
 fn native_vulkan_scene_sampled_image_geometry(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
     if native_vulkan_scene_sampled_image_uses_we_effect_final_quad(quad) {
         let vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
         return Some((vertices.to_vec(), vec![0, 1, 2, 2, 1, 3]));
     }
     if let Some(mesh) = &quad.mesh {
-        if motion.is_active() {
-            if let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh) {
-                let mut vertices = Vec::new();
-                let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-                native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-                    quad,
-                    corners,
-                    segments,
-                    &mut vertices,
-                )?;
-                let mut indices = Vec::new();
-                native_vulkan_scene_append_sampled_image_effect_grid_indices(
-                    0,
-                    segments,
-                    &mut indices,
-                )?;
-                return Some((vertices, indices));
-            }
-            return native_vulkan_scene_sampled_image_subdivided_mesh_geometry(quad, mesh);
-        }
         return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
-    }
-    if motion.is_active() {
-        let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
-        let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-        let mut vertices = Vec::new();
-        native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-            quad,
-            corners,
-            segments,
-            &mut vertices,
-        )?;
-        let mut indices = Vec::new();
-        native_vulkan_scene_append_sampled_image_effect_grid_indices(0, segments, &mut indices)?;
-        return Some((vertices, indices));
     }
     let vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
     Some((vertices.to_vec(), vec![0, 1, 2, 2, 1, 3]))
@@ -4199,7 +4143,6 @@ fn native_vulkan_scene_append_sampled_image_geometry(
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
     indices: &mut Vec<u32>,
 ) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
     if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad) {
         return None;
     }
@@ -4228,49 +4171,10 @@ fn native_vulkan_scene_append_sampled_image_geometry(
         });
     }
     if let Some(mesh) = &quad.mesh {
-        if motion.is_active()
-            && let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh)
-        {
-            let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-            let before_vertices = vertices.len();
-            let vertex_count = native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-                quad, corners, segments, vertices,
-            )?;
-            let grid_vertices = &vertices[before_vertices..];
-            if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
-                grid_vertices,
-                scene_size,
-            ) {
-                vertices.truncate(before_vertices);
-                return None;
-            }
-            let index_count = native_vulkan_scene_append_sampled_image_effect_grid_indices(
-                first_vertex,
-                segments,
-                indices,
-            )?;
-            return Some(NativeVulkanSceneSampledImageGeometryRange {
-                first_vertex,
-                vertex_count,
-                first_index,
-                index_count,
-            });
-        }
         let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
         let before_vertices = vertices.len();
         let before_indices = indices.len();
-        let subdivided_index_count = if motion.is_active() {
-            native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
-                quad,
-                mesh,
-                first_vertex,
-                vertices,
-                indices,
-            )?
-        } else {
-            native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
-            0
-        };
+        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
         let mesh_vertices = &vertices[before_vertices..];
         if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(&mesh_vertices, scene_size)
         {
@@ -4279,41 +4183,12 @@ fn native_vulkan_scene_append_sampled_image_geometry(
             return None;
         }
         let vertex_count = mesh_vertices.len().min(u32::MAX as usize) as u32;
-        let index_count = if subdivided_index_count > 0 {
-            subdivided_index_count
-        } else {
-            let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
-            indices.extend(
-                mesh_indices
-                    .iter()
-                    .map(|index| first_vertex.saturating_add(*index)),
-            );
-            index_count
-        };
-        return Some(NativeVulkanSceneSampledImageGeometryRange {
-            first_vertex,
-            vertex_count,
-            first_index,
-            index_count,
-        });
-    }
-    if motion.is_active() {
-        let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
-        let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-        let before_vertices = vertices.len();
-        let vertex_count = native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-            quad, corners, segments, vertices,
-        )?;
-        let grid_vertices = &vertices[before_vertices..];
-        if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(grid_vertices, scene_size) {
-            vertices.truncate(before_vertices);
-            return None;
-        }
-        let index_count = native_vulkan_scene_append_sampled_image_effect_grid_indices(
-            first_vertex,
-            segments,
-            indices,
-        )?;
+        let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+        indices.extend(
+            mesh_indices
+                .iter()
+                .map(|index| first_vertex.saturating_add(*index)),
+        );
         return Some(NativeVulkanSceneSampledImageGeometryRange {
             first_vertex,
             vertex_count,
@@ -4346,7 +4221,6 @@ fn native_vulkan_scene_append_sampled_image_vertices(
     quad: &NativeVulkanSceneSampledImageQuad,
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<u32> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
     if !native_vulkan_scene_sampled_image_quad_has_recordable_geometry(quad) {
         return None;
     }
@@ -4357,32 +4231,12 @@ fn native_vulkan_scene_append_sampled_image_vertices(
     }
     if let Some(mesh) = &quad.mesh {
         let first_vertex = vertices.len();
-        if motion.is_active()
-            && let Some(corners) = native_vulkan_scene_sampled_image_mesh_grid_corners(quad, mesh)
-        {
-            let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-            return native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-                quad, corners, segments, vertices,
-            );
-        }
-        if motion.is_active() {
-            return native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices(
-                quad, mesh, vertices,
-            );
-        }
         native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
         let vertex_count = vertices
             .len()
             .saturating_sub(first_vertex)
             .min(u32::MAX as usize) as u32;
         return Some(vertex_count);
-    }
-    if motion.is_active() {
-        let corners = native_vulkan_scene_sampled_image_quad_grid_corners(quad)?;
-        let segments = sampled_image_motion::grid_segments(quad.width, quad.height, motion);
-        return native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-            quad, corners, segments, vertices,
-        );
     }
     let quad_vertices = native_vulkan_scene_sampled_image_quad_vertices(quad)?;
     vertices.extend_from_slice(&quad_vertices);
@@ -4410,208 +4264,6 @@ fn native_vulkan_scene_append_sampled_image_vertices_in_scene(
         return None;
     }
     Some(vertex_count)
-}
-
-fn native_vulkan_scene_sampled_image_cpu_effect_motion(
-    _quad: &NativeVulkanSceneSampledImageQuad,
-) -> SceneNativeEffectMotion {
-    SceneNativeEffectMotion::default()
-}
-
-fn native_vulkan_scene_append_sampled_image_effect_grid_vertices(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    corners: [NativeVulkanSceneSampledImageGridCorner; 4],
-    segments: usize,
-    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
-) -> Option<u32> {
-    if segments == 0 {
-        return None;
-    }
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
-    let tint = quad.tint;
-    let rotation = quad.transform.rotation_deg.to_radians();
-    let cos = rotation.cos();
-    let sin = rotation.sin();
-    let vertex_count = (segments + 1).checked_mul(segments + 1)?;
-    vertices.reserve(vertex_count);
-    for row in 0..=segments {
-        let y_factor = row as f64 / segments as f64;
-        let left = native_vulkan_scene_sampled_image_grid_lerp(corners[0], corners[2], y_factor);
-        let right = native_vulkan_scene_sampled_image_grid_lerp(corners[1], corners[3], y_factor);
-        for column in 0..=segments {
-            let x_factor = column as f64 / segments as f64;
-            let point = native_vulkan_scene_sampled_image_grid_lerp(left, right, x_factor);
-            let (x, y) =
-                sampled_image_motion::apply(point.x, point.y, quad.width, quad.height, motion);
-            let position =
-                native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
-            vertices.push(NativeVulkanSceneSampledImageVertex {
-                position,
-                uv: [point.u as f32, point.v as f32],
-                effect_uv: native_vulkan_scene_sampled_image_vertex_effect_uv(
-                    position,
-                    point.x,
-                    point.y,
-                    [point.u as f32, point.v as f32],
-                    quad,
-                ),
-                opacity,
-                tint,
-            });
-        }
-    }
-    Some(vertex_count.min(u32::MAX as usize) as u32)
-}
-
-fn native_vulkan_scene_append_sampled_image_effect_grid_indices(
-    first_vertex: u32,
-    segments: usize,
-    indices: &mut Vec<u32>,
-) -> Option<u32> {
-    if segments == 0 {
-        return None;
-    }
-    let stride = segments + 1;
-    let index_count = segments.checked_mul(segments)?.checked_mul(6)?;
-    indices.reserve(index_count);
-    for row in 0..segments {
-        for column in 0..segments {
-            let top_left = first_vertex.checked_add((row * stride + column) as u32)?;
-            let top_right = top_left.checked_add(1)?;
-            let bottom_left = top_left.checked_add(stride as u32)?;
-            let bottom_right = bottom_left.checked_add(1)?;
-            indices.extend_from_slice(&[
-                top_left,
-                top_right,
-                bottom_left,
-                bottom_left,
-                top_right,
-                bottom_right,
-            ]);
-        }
-    }
-    Some(index_count.min(u32::MAX as usize) as u32)
-}
-
-fn native_vulkan_scene_sampled_image_grid_lerp(
-    from: NativeVulkanSceneSampledImageGridCorner,
-    to: NativeVulkanSceneSampledImageGridCorner,
-    factor: f64,
-) -> NativeVulkanSceneSampledImageGridCorner {
-    let inverse = 1.0 - factor;
-    NativeVulkanSceneSampledImageGridCorner {
-        x: from.x.mul_add(inverse, to.x * factor),
-        y: from.y.mul_add(inverse, to.y * factor),
-        u: from.u.mul_add(inverse, to.u * factor),
-        v: from.v.mul_add(inverse, to.v * factor),
-    }
-}
-
-fn native_vulkan_scene_sampled_image_quad_grid_corners(
-    quad: &NativeVulkanSceneSampledImageQuad,
-) -> Option<[NativeVulkanSceneSampledImageGridCorner; 4]> {
-    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
-        u_min: 0.0,
-        v_min: 0.0,
-        u_max: 1.0,
-        v_max: 1.0,
-        frame_index: 0,
-        frame_count: 1,
-        columns: 1,
-        rows: 1,
-        fps: None,
-        loop_playback: true,
-    });
-    let left = -quad.transform.anchor_x * quad.width;
-    let top = -quad.transform.anchor_y * quad.height;
-    let right = left + quad.width;
-    let bottom = top + quad.height;
-    [
-        left,
-        top,
-        right,
-        bottom,
-        region.u_min,
-        region.u_max,
-        region.v_min,
-        region.v_max,
-    ]
-    .into_iter()
-    .all(f64::is_finite)
-    .then_some([
-        NativeVulkanSceneSampledImageGridCorner {
-            x: left,
-            y: top,
-            u: region.u_min,
-            v: region.v_max,
-        },
-        NativeVulkanSceneSampledImageGridCorner {
-            x: right,
-            y: top,
-            u: region.u_max,
-            v: region.v_max,
-        },
-        NativeVulkanSceneSampledImageGridCorner {
-            x: left,
-            y: bottom,
-            u: region.u_min,
-            v: region.v_min,
-        },
-        NativeVulkanSceneSampledImageGridCorner {
-            x: right,
-            y: bottom,
-            u: region.u_max,
-            v: region.v_min,
-        },
-    ])
-}
-
-fn native_vulkan_scene_sampled_image_mesh_grid_corners(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    mesh: &SceneMesh,
-) -> Option<[NativeVulkanSceneSampledImageGridCorner; 4]> {
-    if mesh.vertices.len() != 4 || mesh.indices.as_slice() != [0, 1, 2, 2, 1, 3] {
-        return None;
-    }
-    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
-        u_min: 0.0,
-        v_min: 0.0,
-        u_max: 1.0,
-        v_max: 1.0,
-        frame_index: 0,
-        frame_count: 1,
-        columns: 1,
-        rows: 1,
-        fps: None,
-        loop_playback: true,
-    });
-    let u_scale = region.u_max - region.u_min;
-    let v_scale = region.v_max - region.v_min;
-    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
-    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
-    let mut corners = [NativeVulkanSceneSampledImageGridCorner {
-        x: 0.0,
-        y: 0.0,
-        u: 0.0,
-        v: 0.0,
-    }; 4];
-    for (corner, vertex) in corners.iter_mut().zip(mesh.vertices.iter()) {
-        if !vertex.x.is_finite()
-            || !vertex.y.is_finite()
-            || !vertex.u.is_finite()
-            || !vertex.v.is_finite()
-        {
-            return None;
-        }
-        *corner = NativeVulkanSceneSampledImageGridCorner {
-            x: vertex.x + local_offset_x,
-            y: vertex.y + local_offset_y,
-            u: region.u_min + vertex.u * u_scale,
-            v: region.v_min + vertex.v * v_scale,
-        };
-    }
-    Some(corners)
 }
 
 #[inline]
@@ -4662,25 +4314,7 @@ fn native_vulkan_scene_sampled_image_quad_vertices(
 fn native_vulkan_scene_sampled_image_quad_positions(
     quad: &NativeVulkanSceneSampledImageQuad,
 ) -> Option<[[f32; 2]; 4]> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    if !motion.is_active() {
-        return native_vulkan_scene_quad_positions(quad.width, quad.height, quad.transform);
-    }
-    let left = -quad.transform.anchor_x * quad.width;
-    let top = -quad.transform.anchor_y * quad.height;
-    let right = left + quad.width;
-    let bottom = top + quad.height;
-    let rotation = quad.transform.rotation_deg.to_radians();
-    let cos = rotation.cos();
-    let sin = rotation.sin();
-    let points = [(left, top), (right, top), (left, bottom), (right, bottom)];
-    let mut positions = [[0.0, 0.0]; 4];
-    for (position, (x, y)) in positions.iter_mut().zip(points) {
-        let (x, y) = sampled_image_motion::apply(x, y, quad.width, quad.height, motion);
-        *position =
-            native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
-    }
-    Some(positions)
+    native_vulkan_scene_quad_positions(quad.width, quad.height, quad.transform)
 }
 
 fn native_vulkan_scene_sampled_image_mesh_geometry(
@@ -6171,247 +5805,6 @@ fn native_vulkan_scene_sampled_image_effect_base_mesh_uv(
     ]
 }
 
-fn native_vulkan_scene_sampled_image_subdivided_mesh_geometry(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    mesh: &SceneMesh,
-) -> Option<(Vec<NativeVulkanSceneSampledImageVertex>, Vec<u32>)> {
-    native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    let subdivision =
-        sampled_image_motion::mesh_subdivision(quad.width, quad.height, motion, mesh)?;
-    if subdivision <= 1 {
-        return native_vulkan_scene_sampled_image_mesh_geometry(quad, mesh);
-    }
-    let triangle_count = mesh.indices.len() / 3;
-    let vertices_per_triangle =
-        sampled_image_motion::subdivided_triangle_vertex_count(subdivision)?;
-    let mut vertices = Vec::with_capacity(triangle_count.saturating_mul(vertices_per_triangle));
-    let mut indices =
-        Vec::with_capacity(triangle_count.saturating_mul(subdivision * subdivision * 3));
-    native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
-        quad,
-        mesh,
-        0,
-        &mut vertices,
-        &mut indices,
-    )?;
-    Some((vertices, indices))
-}
-
-fn native_vulkan_scene_append_sampled_image_subdivided_mesh_geometry(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    mesh: &SceneMesh,
-    first_vertex: u32,
-    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
-    indices: &mut Vec<u32>,
-) -> Option<u32> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    let subdivision =
-        sampled_image_motion::mesh_subdivision(quad.width, quad.height, motion, mesh)?;
-    if subdivision <= 1 {
-        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
-        let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
-        let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
-        indices.extend(
-            mesh_indices
-                .iter()
-                .map(|index| first_vertex.saturating_add(*index)),
-        );
-        return Some(index_count);
-    }
-    let first_generated_vertex = vertices.len().min(u32::MAX as usize) as u32;
-    native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
-        quad,
-        mesh,
-        subdivision,
-        vertices,
-    )?;
-    sampled_image_motion::append_subdivided_mesh_indices(
-        first_generated_vertex,
-        mesh.indices.len() / 3,
-        subdivision,
-        indices,
-    )
-}
-
-fn native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    mesh: &SceneMesh,
-    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
-) -> Option<u32> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    let subdivision =
-        sampled_image_motion::mesh_subdivision(quad.width, quad.height, motion, mesh)?;
-    if subdivision <= 1 {
-        native_vulkan_scene_append_sampled_image_mesh_vertices(quad, mesh, vertices)?;
-        return Some(mesh.vertices.len().min(u32::MAX as usize) as u32);
-    }
-    let before_vertices = vertices.len();
-    native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
-        quad,
-        mesh,
-        subdivision,
-        vertices,
-    )?;
-    Some(
-        vertices
-            .len()
-            .saturating_sub(before_vertices)
-            .min(u32::MAX as usize) as u32,
-    )
-}
-
-fn native_vulkan_scene_append_sampled_image_subdivided_mesh_vertices_with_subdivision(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    mesh: &SceneMesh,
-    subdivision: usize,
-    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
-) -> Option<()> {
-    if subdivision == 0
-        || mesh.vertices.len() < 3
-        || mesh.indices.len() < 3
-        || mesh.indices.len() % 3 != 0
-        || !quad.width.is_finite()
-        || quad.width <= 0.0
-        || !quad.height.is_finite()
-        || quad.height <= 0.0
-    {
-        return None;
-    }
-    let region = quad.texture_region.unwrap_or(SceneTextureRegion {
-        u_min: 0.0,
-        v_min: 0.0,
-        u_max: 1.0,
-        v_max: 1.0,
-        frame_index: 0,
-        frame_count: 1,
-        columns: 1,
-        rows: 1,
-        fps: None,
-        loop_playback: true,
-    });
-    let u_scale = region.u_max - region.u_min;
-    let v_scale = region.v_max - region.v_min;
-    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
-    let tint = quad.tint;
-    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
-    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
-    let rotation = quad.transform.rotation_deg.to_radians();
-    let (sin, cos) = rotation.sin_cos();
-    let vertices_per_triangle =
-        sampled_image_motion::subdivided_triangle_vertex_count(subdivision)?;
-    vertices.reserve((mesh.indices.len() / 3).saturating_mul(vertices_per_triangle));
-    for triangle in mesh.indices.chunks_exact(3) {
-        let a = native_vulkan_scene_sampled_image_mesh_point(
-            mesh,
-            triangle[0],
-            local_offset_x,
-            local_offset_y,
-            region.u_min,
-            region.v_min,
-            u_scale,
-            v_scale,
-        )?;
-        let b = native_vulkan_scene_sampled_image_mesh_point(
-            mesh,
-            triangle[1],
-            local_offset_x,
-            local_offset_y,
-            region.u_min,
-            region.v_min,
-            u_scale,
-            v_scale,
-        )?;
-        let c = native_vulkan_scene_sampled_image_mesh_point(
-            mesh,
-            triangle[2],
-            local_offset_x,
-            local_offset_y,
-            region.u_min,
-            region.v_min,
-            u_scale,
-            v_scale,
-        )?;
-        for row in 0..=subdivision {
-            for column in 0..=subdivision - row {
-                let b_weight = row as f64 / subdivision as f64;
-                let c_weight = column as f64 / subdivision as f64;
-                let a_weight = 1.0 - b_weight - c_weight;
-                let point = NativeVulkanSceneSampledImageMeshPoint {
-                    x: a.x.mul_add(a_weight, b.x.mul_add(b_weight, c.x * c_weight)),
-                    y: a.y.mul_add(a_weight, b.y.mul_add(b_weight, c.y * c_weight)),
-                    u: a.u.mul_add(a_weight, b.u.mul_add(b_weight, c.u * c_weight)),
-                    v: a.v.mul_add(a_weight, b.v.mul_add(b_weight, c.v * c_weight)),
-                    opacity: a
-                        .opacity
-                        .mul_add(a_weight, b.opacity.mul_add(b_weight, c.opacity * c_weight)),
-                };
-                native_vulkan_scene_push_sampled_image_mesh_vertex(
-                    quad, point, opacity, tint, cos, sin, vertices,
-                )?;
-            }
-        }
-    }
-    Some(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn native_vulkan_scene_sampled_image_mesh_point(
-    mesh: &SceneMesh,
-    index: u32,
-    local_offset_x: f64,
-    local_offset_y: f64,
-    u_min: f64,
-    v_min: f64,
-    u_scale: f64,
-    v_scale: f64,
-) -> Option<NativeVulkanSceneSampledImageMeshPoint> {
-    let vertex = mesh.vertices.get(usize::try_from(index).ok()?)?;
-    if !vertex.x.is_finite()
-        || !vertex.y.is_finite()
-        || !vertex.u.is_finite()
-        || !vertex.v.is_finite()
-    {
-        return None;
-    }
-    Some(NativeVulkanSceneSampledImageMeshPoint {
-        x: vertex.x + local_offset_x,
-        y: vertex.y + local_offset_y,
-        u: u_min + vertex.u * u_scale,
-        v: v_min + vertex.v * v_scale,
-        opacity: vertex.opacity,
-    })
-}
-
-fn native_vulkan_scene_push_sampled_image_mesh_vertex(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    point: NativeVulkanSceneSampledImageMeshPoint,
-    opacity: f32,
-    tint: [f32; 4],
-    cos: f64,
-    sin: f64,
-    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
-) -> Option<()> {
-    let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-    let (x, y) = sampled_image_motion::apply(point.x, point.y, quad.width, quad.height, motion);
-    let position =
-        native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
-    vertices.push(NativeVulkanSceneSampledImageVertex {
-        position,
-        uv: [point.u as f32, point.v as f32],
-        effect_uv: native_vulkan_scene_sampled_image_vertex_effect_uv(
-            position,
-            point.x,
-            point.y,
-            [point.u as f32, point.v as f32],
-            quad,
-        ),
-        opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, point.opacity),
-        tint,
-    });
-    Some(())
-}
-
 fn native_vulkan_scene_sampled_image_vertex_opacity(
     layer_opacity: f32,
     vertex_opacity: f64,
@@ -6564,8 +5957,6 @@ fn native_vulkan_scene_append_sampled_image_mesh_vertices(
         let y = vertex.y + local_offset_y;
         let effect_local_x = x;
         let effect_local_y = y;
-        let motion = native_vulkan_scene_sampled_image_cpu_effect_motion(quad);
-        let (x, y) = sampled_image_motion::apply(x, y, quad.width, quad.height, motion);
         let position =
             native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
         vertices.push(NativeVulkanSceneSampledImageVertex {
@@ -10660,7 +10051,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_keeps_legacy_cpu_effect_motion_disabled_for_quads() {
+    fn draw_pass_plan_keeps_effect_motion_on_gpu_for_quads() {
         let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/water-hair.gtex"));
         image.width = Some(120.0);
@@ -10698,7 +10089,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_keeps_legacy_cpu_effect_motion_disabled_for_quad_meshes() {
+    fn draw_pass_plan_keeps_effect_motion_on_gpu_for_quad_meshes() {
         let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/hair-strand.gtex"));
         image.width = Some(728.0);
@@ -10770,7 +10161,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_keeps_legacy_cpu_effect_motion_disabled_for_complex_meshes() {
+    fn draw_pass_plan_keeps_effect_motion_on_gpu_for_complex_meshes() {
         let mut image = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         image.source = Some(PathBuf::from("/tmp/skirt-mesh.gtex"));
         image.width = Some(100.0);
@@ -10851,7 +10242,7 @@ mod tests {
         let quad = native_vulkan_scene_sampled_image_quad(&image).expect("sampled image quad");
         let dynamic_vertex_count =
             native_vulkan_scene_append_sampled_image_vertices(&quad, &mut dynamic_vertices)
-                .expect("dynamic sampled mesh vertices");
+                .expect("retained sampled mesh vertices");
         assert_eq!(dynamic_vertex_count, 5);
         assert_eq!(
             dynamic_vertices.len(),
