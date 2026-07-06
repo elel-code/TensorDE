@@ -15,7 +15,7 @@ use crate::core::{
     FitMode, PackagePath, SceneAlphaTextureMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule,
     SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
-use crate::engine::render_graph::RenderGraphRunPlan;
+use crate::engine::render_graph::{RenderGraphRunPlan, RenderGraphRunPlanCandidate};
 use crate::engine::telemetry::SceneEngineTelemetry;
 use crate::renderer::native_vulkan::effect_debug::{
     NativeVulkanEffectDebugR8UvGroup, NativeVulkanEffectDebugRgbaUvGroup,
@@ -148,6 +148,9 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_semantic_repeated_target_run_count: u32,
     pub draw_pass_sampled_image_we_graph_semantic_max_target_run_count: u32,
     pub draw_pass_sampled_image_we_graph_semantic_max_run_pass_count: u32,
+    pub draw_pass_sampled_image_we_graph_run_plan_schedule: String,
+    pub draw_pass_sampled_image_we_graph_run_plan_physical_target_count: u32,
+    pub draw_pass_sampled_image_we_graph_run_plan_candidates: Vec<RenderGraphRunPlanCandidate>,
     #[serde(skip)]
     pub(in crate::renderer::native_vulkan) draw_pass_sampled_image_we_graph_run_plan:
         Option<RenderGraphRunPlan>,
@@ -4296,6 +4299,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let engine_render_graph_derived_barriers = engine_render_graph.derived_barriers();
     let engine_render_graph_target_allocation =
         engine_render_graph.target_allocation_plan_for_run_plan(engine_render_graph_run_plan);
+    let run_plan_candidate_min_physical_targets = engine_render_graph_run_plan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.physical_target_count)
+        .min()
+        .unwrap_or_default();
+    let run_plan_candidate_min_target_runs = engine_render_graph_run_plan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.target_run_count)
+        .min()
+        .unwrap_or_default();
     let sampled_image_we_graph_first_class_target_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .first_class_target_chain_count;
@@ -4407,6 +4422,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .repeated_target_run_count,
         render_graph_semantic_max_target_runs: engine_render_graph_run_plan.max_target_run_count,
         render_graph_semantic_max_run_passes: engine_render_graph_run_plan.max_run_pass_count,
+        render_graph_run_plan_schedule: engine_render_graph_run_plan.selected_schedule.clone(),
+        render_graph_run_plan_candidate_count: engine_render_graph_run_plan
+            .candidates
+            .len()
+            .min(u32::MAX as usize) as u32,
+        render_graph_run_plan_candidate_min_physical_targets:
+            run_plan_candidate_min_physical_targets,
+        render_graph_run_plan_candidate_min_target_runs: run_plan_candidate_min_target_runs,
         render_graph_logical_targets: engine_render_graph_target_allocation.logical_target_count,
         render_graph_physical_target_slots: engine_render_graph_target_allocation
             .physical_target_count,
@@ -4603,6 +4626,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             engine_render_graph_run_plan.max_target_run_count,
         draw_pass_sampled_image_we_graph_semantic_max_run_pass_count: engine_render_graph_run_plan
             .max_run_pass_count,
+        draw_pass_sampled_image_we_graph_run_plan_schedule: engine_render_graph_run_plan
+            .selected_schedule
+            .clone(),
+        draw_pass_sampled_image_we_graph_run_plan_physical_target_count:
+            engine_render_graph_run_plan.selected_physical_target_count,
+        draw_pass_sampled_image_we_graph_run_plan_candidates: engine_render_graph_run_plan
+            .candidates
+            .clone(),
         draw_pass_sampled_image_we_graph_run_plan: Some(engine_render_graph_run_plan.clone()),
         draw_pass_sampled_image_we_graph_resource_count: sampled_image_we_graph_resources.len(),
         draw_pass_sampled_image_we_graph_texture_resource_count:
@@ -7057,6 +7088,24 @@ mod tests {
             snapshot.engine_telemetry.render_graph_semantic_target_runs,
             snapshot.draw_pass_sampled_image_we_graph_semantic_target_run_count
         );
+        assert!(
+            !snapshot
+                .draw_pass_sampled_image_we_graph_run_plan_schedule
+                .is_empty()
+        );
+        assert_eq!(
+            snapshot.engine_telemetry.render_graph_run_plan_schedule,
+            snapshot.draw_pass_sampled_image_we_graph_run_plan_schedule
+        );
+        assert_eq!(
+            snapshot
+                .engine_telemetry
+                .render_graph_run_plan_candidate_count as usize,
+            snapshot
+                .draw_pass_sampled_image_we_graph_run_plan_candidates
+                .len()
+        );
+        assert!(snapshot.draw_pass_sampled_image_we_graph_run_plan_physical_target_count > 0);
         assert_eq!(
             snapshot
                 .engine_telemetry

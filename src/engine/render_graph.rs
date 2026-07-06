@@ -25,7 +25,9 @@ pub use pass::{RenderPassNode, RenderPassRole};
 pub use resource::{
     RenderGraphBarrier, RenderGraphResourceAccess, RenderGraphResourceUsage, RenderGraphResourceUse,
 };
-pub use run::{RenderGraphRunPlan, RenderGraphTargetRun, RenderGraphTargetRunPass};
+pub use run::{
+    RenderGraphRunPlan, RenderGraphRunPlanCandidate, RenderGraphTargetRun, RenderGraphTargetRunPass,
+};
 pub use state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 pub use target::RenderTargetRole;
 pub use we_image::{

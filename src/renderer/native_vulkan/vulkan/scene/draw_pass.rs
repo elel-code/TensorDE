@@ -8917,6 +8917,7 @@ mod tests {
                     }],
                 },
             ],
+            ..RenderGraphRunPlan::default()
         };
 
         let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(
@@ -9009,6 +9010,7 @@ mod tests {
                     ],
                 },
             ],
+            ..RenderGraphRunPlan::default()
         };
 
         let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(

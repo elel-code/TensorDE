@@ -8,6 +8,9 @@ use super::target::RenderTargetRole;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderGraphRunPlan {
+    pub selected_schedule: String,
+    pub selected_physical_target_count: u32,
+    pub candidates: Vec<RenderGraphRunPlanCandidate>,
     pub pass_count: u32,
     pub target_run_count: u32,
     pub scene_color_run_count: u32,
@@ -16,6 +19,18 @@ pub struct RenderGraphRunPlan {
     pub max_target_run_count: u32,
     pub max_run_pass_count: u32,
     pub runs: Vec<RenderGraphTargetRun>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderGraphRunPlanCandidate {
+    pub schedule: String,
+    pub physical_target_count: u32,
+    pub target_run_count: u32,
+    pub scene_color_run_count: u32,
+    pub offscreen_target_run_count: u32,
+    pub repeated_target_run_count: u32,
+    pub max_target_run_count: u32,
+    pub max_run_pass_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,29 +65,51 @@ impl RenderGraph {
             return RenderGraphRunPlan::default();
         }
 
-        let mut candidates = Vec::new();
-        candidates.push(self.render_graph_run_plan_from_ordered_passes(
-            execution.pass_count,
-            self.render_graph_dependency_execution_passes(
-                execution,
+        let candidates = vec![
+            (
                 RenderGraphRunSchedule::TargetAffine,
+                self.render_graph_run_plan_from_ordered_passes(
+                    execution.pass_count,
+                    self.render_graph_dependency_execution_passes(
+                        execution,
+                        RenderGraphRunSchedule::TargetAffine,
+                    ),
+                ),
             ),
-        ));
-        candidates.push(self.render_graph_run_plan_from_ordered_passes(
-            execution.pass_count,
-            self.render_graph_dependency_execution_passes(
-                execution,
+            (
                 RenderGraphRunSchedule::LevelIndex,
+                self.render_graph_run_plan_from_ordered_passes(
+                    execution.pass_count,
+                    self.render_graph_dependency_execution_passes(
+                        execution,
+                        RenderGraphRunSchedule::LevelIndex,
+                    ),
+                ),
             ),
-        ));
-        candidates.push(self.render_graph_run_plan_from_ordered_passes(
-            execution.pass_count,
-            render_graph_target_local_execution_passes(execution),
-        ));
-        candidates
+            (
+                RenderGraphRunSchedule::TargetLocal,
+                self.render_graph_run_plan_from_ordered_passes(
+                    execution.pass_count,
+                    render_graph_target_local_execution_passes(execution),
+                ),
+            ),
+        ];
+        let candidate_summaries = candidates
+            .iter()
+            .map(|(schedule, plan)| self.render_graph_run_plan_candidate(*schedule, plan))
+            .collect::<Vec<_>>();
+        let Some((selected_schedule, mut selected_plan)) = candidates
             .into_iter()
-            .min_by_key(|plan| self.render_graph_run_plan_score(plan))
-            .unwrap_or_default()
+            .min_by_key(|(_, plan)| self.render_graph_run_plan_score(plan))
+        else {
+            return RenderGraphRunPlan::default();
+        };
+        selected_plan.selected_schedule = selected_schedule.label().to_owned();
+        selected_plan.selected_physical_target_count = self
+            .target_allocation_plan_for_run_plan(&selected_plan)
+            .physical_target_count;
+        selected_plan.candidates = candidate_summaries;
+        selected_plan
     }
 
     fn render_graph_run_plan_score(&self, plan: &RenderGraphRunPlan) -> (u32, u32, u32) {
@@ -82,6 +119,25 @@ impl RenderGraph {
             plan.target_run_count,
             plan.repeated_target_run_count,
         )
+    }
+
+    fn render_graph_run_plan_candidate(
+        &self,
+        schedule: RenderGraphRunSchedule,
+        plan: &RenderGraphRunPlan,
+    ) -> RenderGraphRunPlanCandidate {
+        RenderGraphRunPlanCandidate {
+            schedule: schedule.label().to_owned(),
+            physical_target_count: self
+                .target_allocation_plan_for_run_plan(plan)
+                .physical_target_count,
+            target_run_count: plan.target_run_count,
+            scene_color_run_count: plan.scene_color_run_count,
+            offscreen_target_run_count: plan.offscreen_target_run_count,
+            repeated_target_run_count: plan.repeated_target_run_count,
+            max_target_run_count: plan.max_target_run_count,
+            max_run_pass_count: plan.max_run_pass_count,
+        }
     }
 
     fn render_graph_run_plan_from_ordered_passes(
@@ -148,6 +204,7 @@ impl RenderGraph {
             max_target_run_count,
             max_run_pass_count,
             runs,
+            ..RenderGraphRunPlan::default()
         }
     }
 
@@ -234,6 +291,17 @@ struct RenderGraphRunTargetKey {
 enum RenderGraphRunSchedule {
     TargetAffine,
     LevelIndex,
+    TargetLocal,
+}
+
+impl RenderGraphRunSchedule {
+    fn label(self) -> &'static str {
+        match self {
+            Self::TargetAffine => "target-affine",
+            Self::LevelIndex => "level-index",
+            Self::TargetLocal => "target-local",
+        }
+    }
 }
 
 fn render_graph_target_local_execution_passes(
@@ -464,6 +532,23 @@ mod tests {
         let plan = graph.run_plan();
 
         assert_eq!(plan.pass_count, 4);
+        assert_eq!(plan.candidates.len(), 3);
+        assert!(plan.selected_physical_target_count > 0);
+        assert!(
+            plan.candidates
+                .iter()
+                .any(|candidate| candidate.schedule == "target-affine")
+        );
+        assert!(
+            plan.candidates
+                .iter()
+                .any(|candidate| candidate.schedule == "level-index")
+        );
+        assert!(
+            plan.candidates
+                .iter()
+                .any(|candidate| candidate.schedule == "target-local")
+        );
         assert_eq!(plan.target_run_count, 3);
         assert_eq!(plan.offscreen_target_run_count, 2);
         assert_eq!(plan.scene_color_run_count, 1);
