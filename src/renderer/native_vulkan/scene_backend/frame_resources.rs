@@ -33,8 +33,8 @@ use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 use super::texture_heap::{
-    NativeVulkanSceneTextureHeapFramePlan, NativeVulkanSceneTextureHeapStore,
-    NativeVulkanSceneTextureHeapSyncAction,
+    NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapFramePlan,
+    NativeVulkanSceneTextureHeapStore, NativeVulkanSceneTextureHeapSyncAction,
 };
 use super::texture_images::{
     NativeVulkanSceneTextureImageBinding, NativeVulkanSceneTextureImageStore,
@@ -207,6 +207,13 @@ impl NativeVulkanSceneFrameResources {
         &self,
     ) -> &[NativeVulkanSceneTextureHeapSyncAction] {
         self.texture_heap.last_actions()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn texture_heap_draw_bind_info(
+        &self,
+        resource: SceneResourceId,
+    ) -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String> {
+        self.texture_heap.draw_bind_info_for_texture(resource)
     }
 
     pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(

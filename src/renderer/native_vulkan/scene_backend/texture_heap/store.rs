@@ -23,6 +23,7 @@ use crate::renderer::native_vulkan::vulkan::{
     native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources,
 };
 
+use super::bind_command::NativeVulkanSceneTextureHeapDrawBindInfo;
 use super::frame_plan::{NativeVulkanSceneTextureHeapEntry, NativeVulkanSceneTextureHeapFramePlan};
 use super::vk_descriptor::write_scene_texture_heap_descriptors;
 
@@ -72,7 +73,9 @@ impl NativeVulkanSceneTextureHeapStore {
                     device, resources,
                 );
             }
-            if let Some(old_plan) = self.current.take() {
+            if let Some(old_plan) = self.current.replace(frame_plan)
+                && !old_plan.entries.is_empty()
+            {
                 self.last_actions
                     .push(NativeVulkanSceneTextureHeapSyncAction::Release {
                         entries: old_plan.entries,
@@ -179,6 +182,23 @@ impl NativeVulkanSceneTextureHeapStore {
             .ok_or_else(|| "scene texture descriptor heap has no frame plan".to_owned())?
             .heap_index(resource)?;
         native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(resources, heap_index)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn draw_bind_info_for_texture(
+        &self,
+        resource: SceneResourceId,
+    ) -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String> {
+        let current = self
+            .current
+            .as_ref()
+            .ok_or_else(|| "scene texture descriptor heap has no frame plan".to_owned())?;
+        let heap_index = current.heap_index(resource)?;
+        Ok(NativeVulkanSceneTextureHeapDrawBindInfo {
+            resource,
+            heap_index,
+            resource_bind: self.resource_bind_info_for_texture(resource)?,
+            sampler_bind: self.sampler_bind_info_for_texture(resource)?,
+        })
     }
 
     pub(in crate::renderer::native_vulkan) fn sampler_bind_info_for_texture(

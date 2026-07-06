@@ -9,10 +9,15 @@
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
+pub mod bind_command;
 pub mod frame_plan;
 pub mod store;
 pub mod vk_descriptor;
 
+pub(in crate::renderer::native_vulkan) use bind_command::{
+    NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapDrawBindPlan,
+    native_vulkan_record_scene_texture_heap_draw_bind_command, scene_mesh_draw_base_color_resource,
+};
 pub(in crate::renderer::native_vulkan) use frame_plan::NativeVulkanSceneTextureHeapFramePlan;
 pub(in crate::renderer::native_vulkan) use store::{
     NativeVulkanSceneTextureHeapStore, NativeVulkanSceneTextureHeapSyncAction,

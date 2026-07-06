@@ -42,7 +42,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
     pub target_format: vk::Format,
     pub clear_color: Option<NativeVulkanClearColor>,
     pub shaders: NativeVulkanSceneMeshPipelineShaders<'a>,
-    pub pipeline_layout: NativeVulkanSceneMeshPipelineLayoutSpec<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,6 +118,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             &texture_descriptors,
         )?
         .len();
+    let texture_descriptor_heap_plan = frame_resources
+        .current_texture_heap_frame_plan()
+        .ok_or_else(|| "scene mesh runtime missing texture descriptor heap frame plan".to_owned())?
+        .descriptor_heap_plan
+        .clone();
+    let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
+        texture_descriptor_heap_plan: &texture_descriptor_heap_plan,
+    };
     let gpu_buffer_action_count = frame_resources
         .sync_gpu_uploads(
             context.device,
@@ -134,7 +141,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             context.device,
             key,
             context.shaders,
-            context.pipeline_layout,
+            pipeline_layout,
         )?;
     }
 
@@ -149,6 +156,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
                 NativeVulkanScenePipelineCacheKey::from_bind_key(key, context.target_format)?;
             Ok(frame_resources.cached_mesh_pipeline(&cache_key)?.pipeline)
         },
+        |resource| frame_resources.texture_heap_draw_bind_info(resource),
         |geometry| frame_resources.mesh_draw_buffers(geometry),
     )?;
 
@@ -217,6 +225,7 @@ mod tests {
                 output: SceneGraphTarget::Swapchain,
                 draw_count: 1,
                 pipeline_bind_count: 1,
+                texture_heap_bind_count: 1,
                 indexed_draw_count: 1,
                 commands: Vec::new(),
             },
