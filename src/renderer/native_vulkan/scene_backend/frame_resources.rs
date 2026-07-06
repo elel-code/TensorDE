@@ -13,7 +13,7 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     RenderingDeviceCommand, SceneGeometryId, SceneGraph, ScenePuppetId, SceneResource,
-    SceneResourceResidencyPlan,
+    SceneResourceId, SceneResourceResidencyPlan,
 };
 
 use super::pipeline::{
@@ -31,10 +31,15 @@ use super::resource_buffers::{
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
+use super::texture_images::{
+    NativeVulkanSceneTextureImageBinding, NativeVulkanSceneTextureImageStore,
+    NativeVulkanSceneTextureImageSyncAction, NativeVulkanSceneTextureUploadPlan,
+};
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     resource_storage: NativeVulkanSceneResourceStorage,
     gpu_buffers: NativeVulkanSceneGpuBufferStore,
+    texture_images: NativeVulkanSceneTextureImageStore,
     pipelines: NativeVulkanScenePipelineStore,
 }
 
@@ -43,6 +48,7 @@ impl NativeVulkanSceneFrameResources {
         Self {
             resource_storage: NativeVulkanSceneResourceStorage::default(),
             gpu_buffers: NativeVulkanSceneGpuBufferStore::default(),
+            texture_images: NativeVulkanSceneTextureImageStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
         }
     }
@@ -84,6 +90,47 @@ impl NativeVulkanSceneFrameResources {
             queue,
             upload_plan,
         )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn texture_upload_plan(
+        &self,
+        resources: &[SceneResource],
+    ) -> Result<NativeVulkanSceneTextureUploadPlan, String> {
+        NativeVulkanSceneTextureUploadPlan::from_resident_resources(
+            &self.resource_storage,
+            resources,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sync_texture_images(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        command_pool: vk::CommandPool,
+        queue: vk::Queue,
+        resources: &[SceneResource],
+    ) -> Result<&[NativeVulkanSceneTextureImageSyncAction], String> {
+        let upload_plan = self.texture_upload_plan(resources)?;
+        self.texture_images.sync_upload_plan(
+            device,
+            memory_properties,
+            command_pool,
+            queue,
+            upload_plan,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_texture_image_actions(
+        &self,
+    ) -> &[NativeVulkanSceneTextureImageSyncAction] {
+        self.texture_images.last_actions()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn texture_image_binding(
+        &self,
+        resource: SceneResourceId,
+    ) -> Result<NativeVulkanSceneTextureImageBinding, String> {
+        self.texture_images.texture_binding(resource)
     }
 
     pub(in crate::renderer::native_vulkan) fn last_gpu_buffer_actions(
@@ -140,6 +187,7 @@ impl NativeVulkanSceneFrameResources {
     }
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
+        self.texture_images.destroy_all(device);
         self.gpu_buffers.destroy_all(device);
         self.pipelines.destroy_all(device);
     }
@@ -290,6 +338,31 @@ mod tests {
         );
         assert_eq!(plan.bindings[0].payload_bytes, Some(131_072));
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
+    }
+
+    #[test]
+    fn frame_resources_builds_texture_upload_plan_from_residency() {
+        let resources = vec![SceneResource::Texture {
+            id: SceneResourceId(7),
+            source: "assets/diffuse.gtex".into(),
+            width: Some(512),
+            height: Some(256),
+            format: Some(SceneTextureFormat::Bc7UnormBlock),
+            mip_count: Some(1),
+            payload_bytes: Some(131_072),
+        }];
+        let residency = SceneResourceResidencyPlan::from_resources(&resources);
+        let mut frame_resources = NativeVulkanSceneFrameResources::new();
+        frame_resources.sync_residency_plan(&residency);
+
+        let plan = frame_resources
+            .texture_upload_plan(&resources)
+            .expect("texture upload plan");
+
+        assert_eq!(plan.uploads().len(), 1);
+        assert_eq!(plan.uploads()[0].requirement.resource, SceneResourceId(7));
+        assert_eq!(plan.uploads()[0].requirement.mip_count, 1);
+        assert_eq!(plan.uploads()[0].requirement.payload_bytes, 131_072);
     }
 
     fn mesh_resource(geometry: SceneGeometryId) -> SceneResource {

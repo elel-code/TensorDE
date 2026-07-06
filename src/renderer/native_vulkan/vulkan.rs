@@ -12,6 +12,7 @@ use self::core::buffer;
 use self::core::descriptor_heap;
 use self::core::device_probe;
 use self::core::features;
+use self::core::image;
 use self::core::plan;
 use self::core::profiles;
 use self::present::clear as present_clear;
@@ -73,6 +74,13 @@ pub use features::{
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     NativeVulkanVulkanaliaFeatureChainTemplate, NativeVulkanVulkanaliaVulkan14PropertySnapshot,
     native_vulkan_vulkanalia_feature_chain_template,
+};
+#[allow(unused_imports)]
+pub(in crate::renderer::native_vulkan) use image::{
+    NativeVulkanVulkanaliaImage, NativeVulkanVulkanaliaImageMipUpload,
+    NativeVulkanVulkanaliaImageSnapshot,
+    native_vulkan_vulkanalia_create_sampled_image_with_staging_upload,
+    native_vulkan_vulkanalia_destroy_image,
 };
 pub use plan::{NativeVulkanBackendPlan, native_vulkan_backend_plan};
 pub use present_clear::{

@@ -39,6 +39,10 @@ impl NativeVulkanSceneResourceStorage {
         self.textures.get(&id)
     }
 
+    pub fn texture_residencies(&self) -> impl Iterator<Item = &SceneTextureResidency> {
+        self.textures.values()
+    }
+
     pub fn buffer(&self, id: SceneResourceId) -> Option<&SceneBufferResidency> {
         self.buffers.get(&id)
     }
