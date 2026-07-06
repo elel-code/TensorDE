@@ -376,7 +376,7 @@ mod tests {
             .expect("mesh draw command plan after GPU upload sync");
         assert_eq!(
             draw_plan.command_order,
-            vec![
+            [
                 "cmd_bind_vertex_buffers",
                 "cmd_bind_index_buffer",
                 "cmd_draw_indexed"

@@ -32,7 +32,7 @@ pub struct NativeVulkanSceneMeshDrawCommandPlan {
     pub index_bytes: u64,
     pub vertex_payload_hash: u64,
     pub index_payload_hash: u64,
-    pub command_order: Vec<&'static str>,
+    pub command_order: [&'static str; 3],
 }
 
 impl NativeVulkanSceneMeshDrawCommandPlan {
@@ -181,8 +181,8 @@ fn validate_mesh_buffer_key(
     Ok(())
 }
 
-fn scene_mesh_draw_command_order() -> Vec<&'static str> {
-    vec![
+fn scene_mesh_draw_command_order() -> [&'static str; 3] {
+    [
         "cmd_bind_vertex_buffers",
         "cmd_bind_index_buffer",
         "cmd_draw_indexed",
@@ -209,7 +209,7 @@ mod tests {
         assert_eq!(plan.index_count, 6);
         assert_eq!(
             plan.command_order,
-            vec![
+            [
                 "cmd_bind_vertex_buffers",
                 "cmd_bind_index_buffer",
                 "cmd_draw_indexed"
