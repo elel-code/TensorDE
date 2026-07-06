@@ -19,6 +19,7 @@ pub mod renderer_scene_render;
 pub mod rendering_device;
 pub mod rendering_server;
 pub mod resource;
+pub mod resource_gpu_layout;
 pub mod resource_residency;
 pub mod timeline;
 pub mod we;
@@ -35,6 +36,11 @@ pub use renderer_scene_render::RendererSceneRender;
 pub use rendering_device::{RenderingDevice, RenderingDeviceCommand};
 pub use rendering_server::RenderingServer;
 pub use resource::{SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId};
+pub use resource_gpu_layout::{
+    SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
+    SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
+    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
+};
 pub use resource_residency::{
     SceneBufferResidency, SceneMeshResidency, ScenePuppetRigResidency, SceneResidentResource,
     SceneResourceResidencyPlan, SceneTextureResidency,

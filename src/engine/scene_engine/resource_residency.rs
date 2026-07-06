@@ -6,13 +6,12 @@
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
-use std::mem::size_of;
-
 use serde::Serialize;
 
-use super::{SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId};
-use crate::core::scene::{
-    SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetTransform,
+use super::{
+    SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
+    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneGeometryId,
+    ScenePuppetId, SceneResource, SceneResourceId, scene_gpu_record_bytes,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -60,8 +59,8 @@ impl From<&SceneResource> for SceneResidentResource {
                 source_record: *source_record,
                 vertex_count: vertices.len().min(u32::MAX as usize) as u32,
                 index_count: indices.len().min(u32::MAX as usize) as u32,
-                vertex_bytes: scene_residency_bytes::<SceneMeshVertex>(vertices.len()),
-                index_bytes: scene_residency_bytes::<u32>(indices.len()),
+                vertex_bytes: scene_gpu_record_bytes(vertices.len(), SCENE_GPU_MESH_VERTEX_BYTES),
+                index_bytes: scene_gpu_record_bytes(indices.len(), SCENE_GPU_MESH_INDEX_BYTES),
             }),
             SceneResource::PuppetRig {
                 id,
@@ -77,19 +76,21 @@ impl From<&SceneResource> for SceneResidentResource {
                     .as_ref()
                     .map(|skin| skin.bones.len().min(u32::MAX as usize) as u32)
                     .unwrap_or_default(),
-                bone_bytes: scene_residency_bytes::<SceneMeshSkinBone>(
+                bone_bytes: scene_residency_bytes(
                     skin.as_ref()
                         .map(|skin| skin.bones.len())
                         .unwrap_or_default(),
+                    SCENE_GPU_PUPPET_BONE_BYTES,
                 ),
                 skin_vertex_count: skin
                     .as_ref()
                     .map(|skin| skin.vertices.len().min(u32::MAX as usize) as u32)
                     .unwrap_or_default(),
-                skin_vertex_bytes: scene_residency_bytes::<SceneMeshSkinVertex>(
+                skin_vertex_bytes: scene_residency_bytes(
                     skin.as_ref()
                         .map(|skin| skin.vertices.len())
                         .unwrap_or_default(),
+                    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
                 ),
                 attachment_count: skin
                     .as_ref()
@@ -107,12 +108,13 @@ impl From<&SceneResource> for SceneResidentResource {
                     .map(|bone| bone.frames.len())
                     .sum::<usize>()
                     .min(u32::MAX as usize) as u32,
-                clip_frame_bytes: scene_residency_bytes::<ScenePuppetTransform>(
+                clip_frame_bytes: scene_residency_bytes(
                     clips
                         .iter()
                         .flat_map(|clip| &clip.bones)
                         .map(|bone| bone.frames.len())
                         .sum(),
+                    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
                 ),
                 layer_count: layers.len().min(u32::MAX as usize) as u32,
                 clipping_record_count: clipping_records.len().min(u32::MAX as usize) as u32,
@@ -173,16 +175,14 @@ pub struct ScenePuppetRigResidency {
     pub clipping_frame_key_count: u32,
 }
 
-fn scene_residency_bytes<T>(count: usize) -> u64 {
-    count
-        .checked_mul(size_of::<T>())
-        .and_then(|bytes| u64::try_from(bytes).ok())
-        .unwrap_or(u64::MAX)
+fn scene_residency_bytes(count: usize, record_bytes: u64) -> u64 {
+    scene_gpu_record_bytes(count, record_bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::scene::{SceneMeshVertex, ScenePuppetTransform};
     use crate::core::scene::{ScenePuppetAnimationBone, ScenePuppetAnimationClip};
 
     #[test]
@@ -221,6 +221,8 @@ mod tests {
                 id: SceneGeometryId(4),
                 vertex_count: 3,
                 index_count: 3,
+                vertex_bytes: 60,
+                index_bytes: 12,
                 ..
             })
         ));
@@ -231,6 +233,7 @@ mod tests {
                 clip_count: 1,
                 clip_bone_count: 1,
                 clip_frame_count: 2,
+                clip_frame_bytes: 96,
                 ..
             })
         ));

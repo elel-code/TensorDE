@@ -209,7 +209,19 @@ pub enum NativeVulkanSceneGpuBufferRole {
     PuppetClipFrame,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+impl NativeVulkanSceneGpuBufferRole {
+    pub fn usage(self) -> NativeVulkanSceneGpuBufferUsage {
+        match self {
+            Self::MeshVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
+            Self::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
+            Self::PuppetBone | Self::PuppetSkinVertex | Self::PuppetClipFrame => {
+                NativeVulkanSceneGpuBufferUsage::Storage
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct NativeVulkanSceneGpuBufferRequirement {
     pub owner: NativeVulkanSceneGpuBufferOwner,
     pub role: NativeVulkanSceneGpuBufferRole,
@@ -217,7 +229,7 @@ pub struct NativeVulkanSceneGpuBufferRequirement {
     pub usage: NativeVulkanSceneGpuBufferUsage,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NativeVulkanSceneGpuBufferUsage {
     Vertex,
     Index,
@@ -237,15 +249,7 @@ fn push_gpu_buffer_requirement(
         owner,
         role,
         bytes,
-        usage: match role {
-            NativeVulkanSceneGpuBufferRole::MeshVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
-            NativeVulkanSceneGpuBufferRole::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
-            NativeVulkanSceneGpuBufferRole::PuppetBone
-            | NativeVulkanSceneGpuBufferRole::PuppetSkinVertex
-            | NativeVulkanSceneGpuBufferRole::PuppetClipFrame => {
-                NativeVulkanSceneGpuBufferUsage::Storage
-            }
-        },
+        usage: role.usage(),
     });
 }
 
@@ -293,7 +297,7 @@ mod tests {
                 source_record: 12,
                 vertex_count: 4,
                 index_count: 6,
-                vertex_bytes: 160,
+                vertex_bytes: 80,
                 index_bytes: 24,
             })],
         };
@@ -333,7 +337,7 @@ mod tests {
                     source_record: 12,
                     vertex_count: 4,
                     index_count: 6,
-                    vertex_bytes: 160,
+                    vertex_bytes: 80,
                     index_bytes: 24,
                 }),
                 SceneResidentResource::PuppetRig(ScenePuppetRigResidency {
@@ -342,12 +346,12 @@ mod tests {
                     bone_count: 2,
                     bone_bytes: 128,
                     skin_vertex_count: 4,
-                    skin_vertex_bytes: 256,
+                    skin_vertex_bytes: 128,
                     attachment_count: 0,
                     clip_count: 1,
                     clip_bone_count: 2,
                     clip_frame_count: 10,
-                    clip_frame_bytes: 640,
+                    clip_frame_bytes: 480,
                     layer_count: 1,
                     clipping_record_count: 0,
                     clipping_bone_count: 0,
@@ -364,7 +368,7 @@ mod tests {
                 NativeVulkanSceneGpuBufferRequirement {
                     owner: NativeVulkanSceneGpuBufferOwner::MeshGeometry(SceneGeometryId(2)),
                     role: NativeVulkanSceneGpuBufferRole::MeshVertex,
-                    bytes: 160,
+                    bytes: 80,
                     usage: NativeVulkanSceneGpuBufferUsage::Vertex,
                 },
                 NativeVulkanSceneGpuBufferRequirement {
@@ -382,13 +386,13 @@ mod tests {
                 NativeVulkanSceneGpuBufferRequirement {
                     owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
                     role: NativeVulkanSceneGpuBufferRole::PuppetSkinVertex,
-                    bytes: 256,
+                    bytes: 128,
                     usage: NativeVulkanSceneGpuBufferUsage::Storage,
                 },
                 NativeVulkanSceneGpuBufferRequirement {
                     owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
                     role: NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
-                    bytes: 640,
+                    bytes: 480,
                     usage: NativeVulkanSceneGpuBufferUsage::Storage,
                 },
             ]
