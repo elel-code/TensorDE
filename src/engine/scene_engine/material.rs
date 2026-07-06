@@ -7,7 +7,7 @@
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneBlendContract {
     NormalReplace,
     TranslucentAlpha,
@@ -15,7 +15,7 @@ pub enum SceneBlendContract {
     ShaderColorBlend(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneMaterialKey {
     pub shader: String,
     pub blend: SceneBlendContract,

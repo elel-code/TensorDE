@@ -17,7 +17,7 @@ pub enum SceneGraphTarget {
     EffectTarget(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneGraphPipelineClass {
     Quad,
     Mesh,

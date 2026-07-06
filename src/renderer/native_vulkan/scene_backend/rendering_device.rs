@@ -11,6 +11,7 @@ use crate::engine::scene_engine::{
 };
 
 use super::draw_command::NativeVulkanSceneMeshDrawCommandPlan;
+use super::pass_command::NativeVulkanSceneMeshPassCommandPlan;
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferCatalog, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBufferRecords, NativeVulkanScenePuppetStorageBufferRecords,
@@ -66,6 +67,15 @@ impl NativeVulkanRenderingDevice {
             .ok_or_else(|| "scene mesh draw command requires geometry handle".to_owned())?;
         let records = self.mesh_draw_buffer_records(geometry)?;
         NativeVulkanSceneMeshDrawCommandPlan::from_record_bindings(draw, &records)
+    }
+
+    pub fn mesh_pass_command_plan<'a>(
+        &self,
+        pass: &'a SceneGraphPass,
+    ) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String> {
+        NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(pass, |geometry| {
+            self.mesh_draw_buffer_records(geometry)
+        })
     }
 
     pub fn sync_scene_gpu_uploads(
@@ -372,5 +382,23 @@ mod tests {
                 "cmd_draw_indexed"
             ]
         );
+
+        let pass = SceneGraphPass {
+            name: "mesh-main".to_owned(),
+            input: None,
+            output: SceneGraphTarget::Swapchain,
+            draws: vec![
+                draw.clone(),
+                SceneGraphDraw {
+                    object: SceneObjectId(5),
+                    ..draw
+                },
+            ],
+        };
+        let pass_plan = device
+            .mesh_pass_command_plan(&pass)
+            .expect("mesh pass command plan after GPU upload sync");
+        assert_eq!(pass_plan.pipeline_bind_count, 1);
+        assert_eq!(pass_plan.indexed_draw_count, 2);
     }
 }
