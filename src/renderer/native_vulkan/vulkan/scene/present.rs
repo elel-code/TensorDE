@@ -1979,7 +1979,6 @@ fn with_vulkanalia_scene_solid_quad_present(
         swapchain_plan.extent,
         msaa_sample_count,
         sample_shading_enabled,
-        None,
     ) {
         Ok(pipeline) => pipeline,
         Err(err) => {
@@ -2302,12 +2301,7 @@ fn with_vulkanalia_scene_sampled_image_present(
             sampled_source_resource_count,
             geometry_payload.effect_targets.len(),
         );
-    let solid_framebuffer_snapshot_required =
-        options.solid_geometry.as_ref().is_some_and(|geometry| {
-            scene_solid_quad_draw_steps_need_framebuffer_snapshot(&geometry.draw_steps)
-        });
-    let framebuffer_snapshot_required =
-        sampled_framebuffer_snapshot_required || solid_framebuffer_snapshot_required;
+    let framebuffer_snapshot_required = sampled_framebuffer_snapshot_required;
     let framebuffer_snapshot_resource_index =
         sampled_source_resource_count.saturating_add(geometry_payload.effect_targets.len());
     let sampled_image_resource_count = scene_sampled_image_resource_count(
@@ -2315,7 +2309,7 @@ fn with_vulkanalia_scene_sampled_image_present(
         geometry_payload.effect_targets.len(),
         framebuffer_snapshot_required,
     );
-    let mut descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
+    let descriptor_slot_plan = match scene_sampled_image_descriptor_slot_plan(
         &geometry_payload.draw_steps,
         sampled_image_resource_count,
     ) {
@@ -2329,19 +2323,6 @@ fn with_vulkanalia_scene_sampled_image_present(
             return Err(err);
         }
     };
-    let solid_framebuffer_snapshot_descriptor_group_base_index =
-        if solid_framebuffer_snapshot_required {
-            let group_base_index = descriptor_slot_plan
-                .descriptor_slots
-                .len()
-                .min(u32::MAX as usize) as u32;
-            descriptor_slot_plan
-                .descriptor_slots
-                .push(framebuffer_snapshot_resource_index.min(u32::MAX as usize) as u32);
-            Some(group_base_index)
-        } else {
-            None
-        };
     let descriptor_strategy = native_vulkan_vulkanalia_scene_sampled_image_descriptor_strategy(
         present_device.feature_selection.core_features,
         present_device.feature_selection.vulkan_1_4_properties,
@@ -2580,7 +2561,6 @@ fn with_vulkanalia_scene_sampled_image_present(
             swapchain_plan.extent,
             msaa_sample_count,
             sample_shading_enabled,
-            Some(&descriptor_heap_plan),
         ) {
             Ok(pipeline) => Some(pipeline),
             Err(err) => {
@@ -2765,7 +2745,6 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .expect("sampled images are live before static-source release loop"),
             &effect_msaa_targets,
             &draw_commands,
-            solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.take(),
             descriptor_strategy,
             &selection,
@@ -2798,7 +2777,6 @@ fn with_vulkanalia_scene_sampled_image_present(
                 .expect("sampled images are live before retained loop"),
             &effect_msaa_targets,
             &draw_commands,
-            solid_framebuffer_snapshot_descriptor_group_base_index,
             descriptor_heap.as_ref(),
             descriptor_strategy,
             &selection,
@@ -3031,7 +3009,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     extent,
                     vk::SampleCountFlags::_1,
                     false,
-                    None,
                 )?,
             );
             let geometry_payload = scene_solid_quad_geometry_payload(
@@ -3183,7 +3160,6 @@ impl VulkanaliaSceneVideoOverlayResources {
                     draw_instance_buffer: frame_geometry.draw_instance_buffer,
                     index_buffer: geometry.index_buffer,
                     draw_commands: &self.solid_draw_commands,
-                    framebuffer_snapshot_descriptor_group_base_index: None,
                 })
             }
             (None, None) => None,
@@ -3699,7 +3675,6 @@ fn run_scene_sampled_image_present_loop(
     sampled_images: &[VulkanaliaSceneSampledImageResources],
     effect_msaa_targets: &[VulkanaliaSceneMsaaColorResources],
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
-    solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     descriptor_heap: Option<&VulkanaliaDescriptorHeapImageSamplerResources>,
     descriptor_strategy: NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
@@ -3756,8 +3731,6 @@ fn run_scene_sampled_image_present_loop(
                 draw_instance_buffer,
                 index_buffer: geometry.index_buffer,
                 draw_commands,
-                framebuffer_snapshot_descriptor_group_base_index:
-                    solid_framebuffer_snapshot_descriptor_group_base_index,
             })
         }
         (None, None, None) => None,
@@ -3776,8 +3749,7 @@ fn run_scene_sampled_image_present_loop(
         sampled_images.len(),
     )?;
     let effect_target_resources = &sampled_images[effect_target_resource_range];
-    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required
-        || solid_framebuffer_snapshot_descriptor_group_base_index.is_some();
+    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required;
     let framebuffer_snapshot_resource_index = geometry.framebuffer_snapshot_resource_index;
     let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
         Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
@@ -3887,8 +3859,6 @@ fn run_scene_sampled_image_present_loop(
                     draw_instance_buffer: frame_geometry.draw_instance_buffer,
                     index_buffer: draw.index_buffer,
                     draw_commands: draw.draw_commands,
-                    framebuffer_snapshot_descriptor_group_base_index:
-                        solid_framebuffer_snapshot_descriptor_group_base_index,
                 })
             }
             _ => None,
@@ -4824,9 +4794,7 @@ fn record_scene_sampled_image_static_transfer_command_buffer(
         descriptor_heap_draw_count: 0,
         framebuffer_snapshot_required: false,
         framebuffer_snapshot_copy_count: 0,
-        solid_passthroughblend_draw_count: 0,
         sampled_passthroughblend_draw_count: 0,
-        solid_framebuffer_snapshot_descriptor_group_base_index: None,
         descriptor_model: "none-transfer-only",
         push_constant_bytes: 0,
         swapchain_layout_transition: "undefined -> transfer-dst-optimal -> present-src-khr",
@@ -5004,7 +4972,6 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
     mut sampled_images: Vec<VulkanaliaSceneSampledImageResources>,
     effect_msaa_targets: &[VulkanaliaSceneMsaaColorResources],
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
-    solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     mut descriptor_heap: Option<VulkanaliaDescriptorHeapImageSamplerResources>,
     descriptor_strategy: NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
     selection: &super::swapchain::NativeVulkanVulkanaliaPresentQueueSelection,
@@ -5036,8 +5003,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
         sampled_images.len(),
     )?;
     let effect_target_resources = &sampled_images[effect_target_resource_range];
-    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required
-        || solid_framebuffer_snapshot_descriptor_group_base_index.is_some();
+    let framebuffer_snapshot_required = geometry.sampled_framebuffer_snapshot_required;
     let framebuffer_snapshot_resource_index = geometry.framebuffer_snapshot_resource_index;
     let framebuffer_snapshot_resource = if framebuffer_snapshot_required {
         Some(sampled_images.get(framebuffer_snapshot_resource_index).ok_or_else(|| {
@@ -5153,8 +5119,6 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
                     draw_instance_buffer: frame_geometry.draw_instance_buffer,
                     index_buffer: geometry.index_buffer,
                     draw_commands,
-                    framebuffer_snapshot_descriptor_group_base_index:
-                        solid_framebuffer_snapshot_descriptor_group_base_index,
                 })
             }
             (None, None, None) => None,
@@ -9603,14 +9567,6 @@ fn scene_sampled_image_draw_steps_need_framebuffer_snapshot(
                 .iter()
                 .any(|binding| binding.resource_index as usize == snapshot_resource_index)
     })
-}
-
-fn scene_solid_quad_draw_steps_need_framebuffer_snapshot(
-    draw_steps: &[NativeVulkanVulkanaliaSceneSolidQuadDrawStep],
-) -> bool {
-    draw_steps
-        .iter()
-        .any(|step| step.blend.mode == SceneBlendMode::HslColor)
 }
 
 fn scene_sampled_image_resource_count(

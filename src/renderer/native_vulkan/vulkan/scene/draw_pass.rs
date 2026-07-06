@@ -510,9 +510,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot {
     pub descriptor_heap_draw_count: u32,
     pub framebuffer_snapshot_required: bool,
     pub framebuffer_snapshot_copy_count: u32,
-    pub solid_passthroughblend_draw_count: u32,
     pub sampled_passthroughblend_draw_count: u32,
-    pub solid_framebuffer_snapshot_descriptor_group_base_index: Option<u32>,
     pub descriptor_model: &'static str,
     pub push_constant_bytes: u32,
     pub swapchain_layout_transition: &'static str,
@@ -534,8 +532,6 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadPi
     pub(in crate::renderer::native_vulkan::vulkan) modulate_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) hsl_color_pipeline: vk::Pipeline,
     pub(in crate::renderer::native_vulkan::vulkan) alpha_to_coverage_pipeline: vk::Pipeline,
-    pub(in crate::renderer::native_vulkan::vulkan) hsl_color_passthrough_pipeline:
-        Option<vk::Pipeline>,
     pub(in crate::renderer::native_vulkan::vulkan) sample_count: vk::SampleCountFlags,
     pub(in crate::renderer::native_vulkan::vulkan) sample_shading_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
@@ -745,7 +741,6 @@ struct VulkanaliaSceneOrderedDrawStep {
 enum VulkanaliaSceneBoundDrawPipeline {
     SolidQuad {
         blend: super::present::NativeVulkanVulkanaliaSceneBlendState,
-        framebuffer_passthrough: bool,
     },
     SampledImage {
         blend: super::present::NativeVulkanVulkanaliaSceneBlendState,
@@ -783,8 +778,6 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDr
     pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
         &'a [VulkanaliaSceneSolidQuadDrawCommand],
-    pub(in crate::renderer::native_vulkan::vulkan) framebuffer_snapshot_descriptor_group_base_index:
-        Option<u32>,
 }
 
 #[derive(Clone, Copy)]
@@ -803,7 +796,6 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
         VulkanaliaSceneOrderedDrawPipeline::SolidQuad => {
             VulkanaliaSceneBoundDrawPipeline::SolidQuad {
                 blend: solid_commands[draw.command_index].blend,
-                framebuffer_passthrough: false,
             }
         }
         VulkanaliaSceneOrderedDrawPipeline::SampledImage => {
@@ -1363,7 +1355,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     extent: vk::Extent2D,
     sample_count: vk::SampleCountFlags,
     sample_shading_enabled: bool,
-    descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
 ) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene solid quad pipeline requires non-zero extent".to_owned());
@@ -1399,15 +1390,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIRV,
                     "scene solid quad premultiplied fragment",
                 )?;
-                let passthrough_fragment_module = if descriptor_heap_plan.is_some() {
-                    Some(native_vulkan_vulkanalia_scene_create_shader_module(
-                        device,
-                        &NATIVE_VULKAN_VULKANALIA_SCENE_SOLID_QUAD_PASSTHROUGHBLEND_FRAGMENT_SPIRV,
-                        "scene solid quad passthroughblend fragment",
-                    )?)
-                } else {
-                    None
-                };
                 let result = native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
                     device,
                     target_format,
@@ -1418,13 +1400,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                     vertex_module,
                     fragment_module,
                     premultiplied_fragment_module,
-                    descriptor_heap_plan,
-                    passthrough_fragment_module,
                 );
                 unsafe {
-                    if let Some(module) = passthrough_fragment_module {
-                        device.destroy_shader_module(module, None);
-                    }
                     device.destroy_shader_module(premultiplied_fragment_module, None);
                 }
                 result
@@ -1459,8 +1436,6 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
     vertex_module: vk::ShaderModule,
     fragment_module: vk::ShaderModule,
     premultiplied_fragment_module: vk::ShaderModule,
-    descriptor_heap_plan: Option<&NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot>,
-    passthrough_fragment_module: Option<vk::ShaderModule>,
 ) -> Result<VulkanaliaSceneSolidQuadPipelineResources, String> {
     let shader_entry = b"main\0";
     let create_pipeline = |blend_mode| -> Result<vk::Pipeline, String> {
@@ -1611,26 +1586,6 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
         let modulate_pipeline = create_tracked_pipeline(SceneBlendMode::Modulate)?;
         let hsl_color_pipeline = create_tracked_pipeline(SceneBlendMode::HslColor)?;
         let alpha_to_coverage_pipeline = create_tracked_pipeline(SceneBlendMode::AlphaToCoverage)?;
-        let hsl_color_passthrough_pipeline =
-            if let (Some(descriptor_heap_plan), Some(passthrough_fragment_module)) =
-                (descriptor_heap_plan, passthrough_fragment_module)
-            {
-                let pipeline =
-                    native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
-                        device,
-                        target_format,
-                        extent,
-                        descriptor_heap_plan,
-                        sample_count,
-                        sample_shading_enabled,
-                        pipeline_layout,
-                        vertex_module,
-                        passthrough_fragment_module,
-                    )?;
-                Some(pipeline)
-            } else {
-                None
-            };
         Ok(VulkanaliaSceneSolidQuadPipelineResources {
             pipeline_layout,
             alpha_pipeline,
@@ -1642,7 +1597,6 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
             modulate_pipeline,
             hsl_color_pipeline,
             alpha_to_coverage_pipeline,
-            hsl_color_passthrough_pipeline,
             sample_count,
             sample_shading_enabled: scene_sample_shading_enabled(
                 sample_count,
@@ -1666,152 +1620,6 @@ fn native_vulkan_vulkanalia_create_scene_solid_quad_blend_pipelines(
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn native_vulkan_vulkanalia_create_scene_solid_quad_passthrough_pipeline(
-    device: &Device,
-    target_format: vk::Format,
-    extent: vk::Extent2D,
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    sample_count: vk::SampleCountFlags,
-    sample_shading_enabled: bool,
-    pipeline_layout: vk::PipelineLayout,
-    vertex_module: vk::ShaderModule,
-    fragment_module: vk::ShaderModule,
-) -> Result<vk::Pipeline, String> {
-    let shader_entry = b"main\0";
-    let descriptor_heap_mapping =
-        native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
-            descriptor_heap_plan,
-            0,
-            0,
-        )?;
-    let descriptor_heap_mappings = [descriptor_heap_mapping];
-    let mut descriptor_heap_mapping_info =
-        vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-            .mappings(&descriptor_heap_mappings)
-            .build();
-    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
-        .stage(vk::ShaderStageFlags::FRAGMENT)
-        .module(fragment_module)
-        .name(shader_entry);
-    fragment_stage = fragment_stage.push_next(&mut descriptor_heap_mapping_info);
-    let stages = [
-        vk::PipelineShaderStageCreateInfo::builder()
-            .stage(vk::ShaderStageFlags::VERTEX)
-            .module(vertex_module)
-            .name(shader_entry)
-            .build(),
-        fragment_stage.build(),
-    ];
-    let vertex_binding = vk::VertexInputBindingDescription::builder()
-        .binding(0)
-        .stride(SCENE_FULL_SOLID_QUAD_VERTEX_STRIDE_BYTES)
-        .input_rate(vk::VertexInputRate::VERTEX)
-        .build();
-    let draw_instance_binding = vk::VertexInputBindingDescription::builder()
-        .binding(1)
-        .stride(SCENE_FULL_SOLID_QUAD_DRAW_INSTANCE_STRIDE_BYTES)
-        .input_rate(vk::VertexInputRate::INSTANCE)
-        .build();
-    let attributes = [
-        vk::VertexInputAttributeDescription::builder()
-            .location(0)
-            .binding(0)
-            .format(vk::Format::R32G32_SFLOAT)
-            .offset(0)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(1)
-            .binding(0)
-            .format(vk::Format::R32G32B32A32_SFLOAT)
-            .offset(8)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(2)
-            .binding(1)
-            .format(vk::Format::R32G32B32A32_UINT)
-            .offset(0)
-            .build(),
-        vk::VertexInputAttributeDescription::builder()
-            .location(3)
-            .binding(1)
-            .format(vk::Format::R32G32B32A32_UINT)
-            .offset(16)
-            .build(),
-    ];
-    let bindings = [vertex_binding, draw_instance_binding];
-    let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder()
-        .vertex_binding_descriptions(&bindings)
-        .vertex_attribute_descriptions(&attributes)
-        .build();
-    let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
-        .build();
-    let viewport = vk::Viewport::builder()
-        .x(0.0)
-        .y(0.0)
-        .width(extent.width as f32)
-        .height(extent.height as f32)
-        .min_depth(0.0)
-        .max_depth(1.0)
-        .build();
-    let scissor = vk::Rect2D::builder()
-        .offset(vk::Offset2D { x: 0, y: 0 })
-        .extent(extent)
-        .build();
-    let viewports = [viewport];
-    let scissors = [scissor];
-    let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
-        .viewports(&viewports)
-        .scissors(&scissors)
-        .build();
-    let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
-        .polygon_mode(vk::PolygonMode::FILL)
-        .cull_mode(vk::CullModeFlags::NONE)
-        .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
-        .line_width(1.0)
-        .build();
-    let sample_shading = scene_sample_shading_enabled(sample_count, sample_shading_enabled);
-    let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(sample_count)
-        .sample_shading_enable(sample_shading)
-        .min_sample_shading(scene_min_sample_shading_value(sample_shading))
-        .build();
-    let color_attachment = native_vulkan_vulkanalia_scene_color_attachment(SceneBlendMode::Normal);
-    let color_attachments = [color_attachment];
-    let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
-        .attachments(&color_attachments)
-        .build();
-    let color_attachment_formats = [target_format];
-    let mut rendering_info = vk::PipelineRenderingCreateInfo::builder()
-        .color_attachment_formats(&color_attachment_formats)
-        .build();
-    let mut pipeline_flags2 = vk::PipelineCreateFlags2CreateInfo::builder()
-        .flags(vk::PipelineCreateFlags2::DESCRIPTOR_HEAP_EXT)
-        .build();
-    let mut pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
-        .stages(&stages)
-        .vertex_input_state(&vertex_input)
-        .input_assembly_state(&input_assembly)
-        .viewport_state(&viewport_state)
-        .rasterization_state(&rasterization)
-        .multisample_state(&multisample)
-        .color_blend_state(&color_blend)
-        .layout(pipeline_layout)
-        .render_pass(vk::RenderPass::null())
-        .subpass(0)
-        .push_next(&mut rendering_info);
-    pipeline_info = pipeline_info.push_next(&mut pipeline_flags2);
-    let pipeline_info = pipeline_info.build();
-    let (pipelines, _success_code) = unsafe {
-        device.create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
-    }
-    .map_err(|err| {
-        format!("vkCreateGraphicsPipelines(vulkanalia scene solid passthroughblend): {err:?}")
-    })?;
-    Ok(pipelines[0])
-}
-
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_scene_solid_quad_pipeline_resources(
     device: &Device,
     resources: VulkanaliaSceneSolidQuadPipelineResources,
@@ -1826,9 +1634,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destr
         device.destroy_pipeline(resources.modulate_pipeline, None);
         device.destroy_pipeline(resources.hsl_color_pipeline, None);
         device.destroy_pipeline(resources.alpha_to_coverage_pipeline, None);
-        if let Some(pipeline) = resources.hsl_color_passthrough_pipeline {
-            device.destroy_pipeline(pipeline, None);
-        }
         device.destroy_pipeline_layout(resources.pipeline_layout, None);
     }
 }
@@ -3861,7 +3666,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     }
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SolidQuad {
                         blend: solid_draw.blend,
-                        framebuffer_passthrough: false,
                     };
                     if bound_pipeline != Some(pipeline_key) {
                         let solid_resources = solid_quad_draw
@@ -5990,35 +5794,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     if descriptor_heap_draw.is_none() {
         return Err("scene sampled-image command requires descriptor heap resources".to_owned());
     }
-    if let Some(draw) = solid_quad_draw
-        && let Some(descriptor_group_base_index) =
-            draw.framebuffer_snapshot_descriptor_group_base_index
-    {
-        let descriptor_heap_draw = descriptor_heap_draw.expect("descriptor heap checked above");
-        let descriptor_group_end = descriptor_group_base_index as usize + 1;
-        if descriptor_group_end > descriptor_heap_draw.resources.plan.image_count {
-            return Err(format!(
-                "scene solid passthroughblend descriptor group {}..{} exceeds heap image count {}",
-                descriptor_group_base_index,
-                descriptor_group_end,
-                descriptor_heap_draw.resources.plan.image_count
-            ));
-        }
-    }
-    if solid_quad_draw.is_some_and(|draw| {
-        draw.framebuffer_snapshot_descriptor_group_base_index
-            .is_some()
-            && draw
-                .draw_commands
-                .iter()
-                .any(|draw| draw.blend.mode == SceneBlendMode::HslColor)
-    }) && framebuffer_snapshot_resource.is_none()
-    {
-        return Err(
-            "scene solid passthroughblend command requires framebuffer snapshot resource"
-                .to_owned(),
-        );
-    }
     if draw_commands.iter().any(|draw| {
         scene_sampled_image_shader_program(&draw.material)
             == VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
@@ -6077,19 +5852,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         draw_commands,
         effect_target_resources.len(),
     );
-    let solid_passthroughblend_draw_count = solid_quad_draw.map_or(0usize, |draw| {
-        if draw
-            .framebuffer_snapshot_descriptor_group_base_index
-            .is_none()
-        {
-            0
-        } else {
-            draw.draw_commands
-                .iter()
-                .filter(|draw| draw.blend.mode == SceneBlendMode::HslColor)
-                .count()
-        }
-    });
     let sampled_passthroughblend_draw_count = draw_commands
         .iter()
         .filter(|draw| {
@@ -6097,8 +5859,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                 == VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend
         })
         .count();
-    let framebuffer_snapshot_copy_count =
-        solid_passthroughblend_draw_count.saturating_add(sampled_passthroughblend_draw_count);
+    let framebuffer_snapshot_copy_count = sampled_passthroughblend_draw_count;
     let framebuffer_snapshot_required = framebuffer_snapshot_copy_count > 0;
     let mut rendering_begin_count = 0u32;
     let mut rendering_end_count = 0u32;
@@ -6354,56 +6115,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     let solid_resources = solid_quad_draw
                         .as_ref()
                         .expect("solid draw resources present");
-                    let solid_framebuffer_passthrough = solid_draw.blend.mode
-                        == SceneBlendMode::HslColor
-                        && solid_resources
-                            .framebuffer_snapshot_descriptor_group_base_index
-                            .is_some();
-                    if solid_framebuffer_passthrough {
-                        if active_target != Some(SceneSampledImageActiveRenderingTarget::Swapchain)
-                        {
-                            return Err(
-                                "scene solid passthroughblend must execute on swapchain target"
-                                    .to_owned(),
-                            );
-                        }
-                        let snapshot = framebuffer_snapshot_resource.expect(
-                            "solid passthroughblend snapshot resource checked before command recording",
-                        );
-                        end_scene_color_rendering(device, command_buffer);
-                        rendering_end_count = rendering_end_count.saturating_add(1);
-                        copy_scene_framebuffer_to_snapshot(
-                            device,
-                            command_buffer,
-                            swapchain_image,
-                            snapshot,
-                            extent,
-                            framebuffer_snapshot_layout,
-                        );
-                        image_barrier_count = image_barrier_count.saturating_add(4);
-                        pipeline_barrier_command_count =
-                            pipeline_barrier_command_count.saturating_add(2);
-                        framebuffer_snapshot_transfer_barrier_count =
-                            framebuffer_snapshot_transfer_barrier_count.saturating_add(4);
-                        framebuffer_snapshot_transfer_barrier_command_count =
-                            framebuffer_snapshot_transfer_barrier_command_count.saturating_add(2);
-                        framebuffer_snapshot_layout = vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL;
-                        begin_scene_color_rendering(
-                            device,
-                            command_buffer,
-                            swapchain_view,
-                            swapchain_msaa_target,
-                            extent,
-                            vk::AttachmentLoadOp::LOAD,
-                            clear_color,
-                        );
-                        rendering_begin_count = rendering_begin_count.saturating_add(1);
-                        swapchain_rendering_begin_count =
-                            swapchain_rendering_begin_count.saturating_add(1);
-                        active_target = Some(SceneSampledImageActiveRenderingTarget::Swapchain);
-                        active_extent = extent;
-                        active_viewport = Some(SceneDynamicViewport::full_extent(active_extent));
-                    }
                     let solid_viewport = SceneDynamicViewport::full_extent(active_extent);
                     if active_viewport != Some(solid_viewport) {
                         set_scene_dynamic_viewport_and_scissor(
@@ -6415,27 +6126,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                     }
                     let pipeline_key = VulkanaliaSceneBoundDrawPipeline::SolidQuad {
                         blend: solid_draw.blend,
-                        framebuffer_passthrough: solid_framebuffer_passthrough,
                     };
                     if bound_pipeline != Some(pipeline_key) {
-                        let pipeline = if solid_framebuffer_passthrough {
-                            solid_resources
-                                .pipeline_resources
-                                .hsl_color_passthrough_pipeline
-                                .ok_or_else(|| {
-                                    "scene solid passthroughblend pipeline was not created"
-                                        .to_owned()
-                                })?
-                        } else {
-                            native_vulkan_vulkanalia_scene_solid_quad_pipeline(
-                                solid_resources.pipeline_resources,
-                                solid_draw.blend.mode,
-                            )
-                        };
                         device.cmd_bind_pipeline(
                             command_buffer,
                             vk::PipelineBindPoint::GRAPHICS,
-                            pipeline,
+                            native_vulkan_vulkanalia_scene_solid_quad_pipeline(
+                                solid_resources.pipeline_resources,
+                                solid_draw.blend.mode,
+                            ),
                         );
                         pipeline_bind_count = pipeline_bind_count.saturating_add(1);
                         let vertex_buffers = [
@@ -6463,21 +6162,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
                             solid_push_constant_bytes,
                         );
                         bound_pipeline = Some(pipeline_key);
-                    }
-                    if let Some(descriptor_group_base_index) = solid_resources
-                        .framebuffer_snapshot_descriptor_group_base_index
-                        .filter(|_| solid_framebuffer_passthrough)
-                        && bound_descriptor_heap_group != Some(descriptor_group_base_index)
-                    {
-                        let descriptor_heap_draw =
-                            descriptor_heap_draw.expect("descriptor heap draw resources present");
-                        bind_scene_sampled_image_descriptor_heap_for_descriptor_group(
-                            device,
-                            command_buffer,
-                            descriptor_heap_draw,
-                            descriptor_group_base_index,
-                        )?;
-                        bound_descriptor_heap_group = Some(descriptor_group_base_index);
                     }
                     device.cmd_draw_indexed(
                         command_buffer,
@@ -6702,11 +6386,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
             )
         })
         .count();
-    let descriptor_heap_draw_count = saturating_u32(
-        sampled_descriptor_heap_draw_count.saturating_add(solid_passthroughblend_draw_count),
-    );
+    let descriptor_heap_draw_count = saturating_u32(sampled_descriptor_heap_draw_count);
     let framebuffer_snapshot_copy_count = saturating_u32(framebuffer_snapshot_copy_count);
-    let solid_passthroughblend_draw_count = saturating_u32(solid_passthroughblend_draw_count);
     let sampled_passthroughblend_draw_count = saturating_u32(sampled_passthroughblend_draw_count);
     let sampled_image_index_count = draw_commands
         .iter()
@@ -6781,10 +6462,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
         descriptor_heap_draw_count,
         framebuffer_snapshot_required,
         framebuffer_snapshot_copy_count,
-        solid_passthroughblend_draw_count,
         sampled_passthroughblend_draw_count,
-        solid_framebuffer_snapshot_descriptor_group_base_index: solid_quad_draw
-            .and_then(|draw| draw.framebuffer_snapshot_descriptor_group_base_index),
         descriptor_model: "VK_EXT_descriptor_heap",
         push_constant_bytes: SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES,
         swapchain_layout_transition: "undefined -> color-attachment-optimal -> present-src-khr",
@@ -6906,9 +6584,6 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIR
     12, 20, 14, 19, 327745, 17, 21, 11, 16, 262205, 6, 22, 21, 327761, 6, 23, 20, 0, 327761, 6, 24,
     20, 1, 327761, 6, 25, 20, 2, 458832, 7, 26, 23, 24, 25, 22, 196670, 9, 26, 65789, 65592,
 ];
-
-const NATIVE_VULKAN_VULKANALIA_SCENE_SOLID_QUAD_PASSTHROUGHBLEND_FRAGMENT_SPIRV: [u32; 1785] =
-    include!("shaders/solid_quad_passthroughblend.frag.spv.rs");
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 8866] =
     include!("shaders/sampled_image.vert.spv.rs");
@@ -7845,7 +7520,6 @@ mod tests {
     #[test]
     fn passthroughblend_fragments_cover_we_apply_blending_modes() {
         let sampled_source = include_str!("shaders/sampled_image_passthroughblend.frag");
-        let solid_source = include_str!("shaders/solid_quad_passthroughblend.frag");
 
         for mode in 1..=32 {
             assert!(
@@ -7856,8 +7530,6 @@ mod tests {
         assert!(sampled_source.contains("mode == 4u || mode == 20u"));
         assert!(sampled_source.contains("mode == 22u"));
         assert!(sampled_source.contains("out_color.a = screen.a;"));
-        assert!(solid_source.contains("apply_blending(28u, screen.rgb, v_color.rgb, v_color.a)"));
-        assert!(solid_source.contains("out_color.a = screen.a;"));
     }
 
     #[test]
