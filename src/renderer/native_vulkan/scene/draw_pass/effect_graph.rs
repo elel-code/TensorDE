@@ -86,6 +86,22 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
             plan.source_direct_chain_start_count =
                 plan.source_direct_chain_start_count.saturating_add(1);
         }
+        if chain.source_direct_start_candidate {
+            plan.source_direct_chain_start_candidate_count = plan
+                .source_direct_chain_start_candidate_count
+                .saturating_add(1);
+        }
+        if !chain.source_direct_start_blocked_reasons.is_empty() {
+            plan.source_direct_chain_start_blocked_count = plan
+                .source_direct_chain_start_blocked_count
+                .saturating_add(1);
+            for reason in &chain.source_direct_start_blocked_reasons {
+                *plan
+                    .source_direct_chain_start_blocked_reason_counts
+                    .entry(*reason)
+                    .or_default() += 1;
+            }
+        }
         plan.max_chain_step_count = plan.max_chain_step_count.max(chain_step_count);
         plan.final_scene_step_count += chain
             .passes
@@ -782,13 +798,20 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         };
     let unsupported_reason = (!raw_direct_composite_allowed && !material_graph_supported)
         .then_some("we-effect-graph-material-pass-not-executed");
-    let source_direct_chain_start =
-        native_vulkan_scene_we_image_pass_chain_can_source_direct_chain_start(
+    let source_direct_start_reasons =
+        native_vulkan_scene_we_image_pass_chain_source_direct_start_ineligible_reasons(
             quad,
             first_class_target,
             color_blend_passthrough,
             material_graph_supported,
         );
+    let source_direct_start_candidate = source_direct_start_reasons.is_some();
+    let source_direct_chain_start = source_direct_start_reasons
+        .as_ref()
+        .is_some_and(Vec::is_empty);
+    let source_direct_start_blocked_reasons = source_direct_start_reasons
+        .filter(|reasons| !reasons.is_empty())
+        .unwrap_or_default();
     if native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
         quad,
         first_class_target,
@@ -807,6 +830,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             final_scene_blend_mode,
             raw_direct_composite_allowed,
             unsupported_reason,
+            source_direct_start_candidate: false,
+            source_direct_start_blocked_reasons: Vec::new(),
             lowering_stats: NativeVulkanSceneWeImagePassLoweringStats::default(),
             passes: vec![NativeVulkanSceneWeImagePass {
                 pass_index: effect.pass_index,
@@ -1048,6 +1073,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         final_scene_blend_mode,
         raw_direct_composite_allowed,
         unsupported_reason,
+        source_direct_start_candidate,
+        source_direct_start_blocked_reasons,
         lowering_stats,
         passes,
     })
@@ -1173,45 +1200,73 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
     native_vulkan_scene_we_image_pass_can_sample_source_directly(&quad.effect_passes[0])
 }
 
-fn native_vulkan_scene_we_image_pass_chain_can_source_direct_chain_start(
+fn native_vulkan_scene_we_image_pass_chain_source_direct_start_ineligible_reasons(
     quad: &NativeVulkanSceneSampledImageQuad,
     first_class_target: bool,
     color_blend_passthrough: bool,
     material_graph_supported: bool,
-) -> bool {
-    if first_class_target
-        || color_blend_passthrough
-        || !material_graph_supported
-        || quad.texture_region.is_some()
-        || quad.material_pass.alpha_texture_slot.is_some()
-        || quad.effect_passes.len() < 2
-    {
-        return false;
+) -> Option<Vec<&'static str>> {
+    if quad.effect_passes.len() < 2 {
+        return None;
+    }
+    let mut reasons = Vec::new();
+    if first_class_target {
+        reasons.push("first-class-target");
+    }
+    if color_blend_passthrough {
+        reasons.push("color-blend-passthrough");
+    }
+    if !material_graph_supported {
+        reasons.push("material-graph-unsupported");
+    }
+    if quad.texture_region.is_some() {
+        reasons.push("texture-region");
+    }
+    if quad.material_pass.alpha_texture_slot.is_some() {
+        reasons.push("material-alpha-texture");
     }
     if let Some(mesh) = quad.mesh.as_ref()
         && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
     {
-        return false;
+        reasons.push("mesh-geometry");
     }
-    native_vulkan_scene_we_image_pass_can_sample_source_directly(&quad.effect_passes[0])
+    native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(
+        &quad.effect_passes[0],
+        &mut reasons,
+    );
+    Some(reasons)
 }
 
 fn native_vulkan_scene_we_image_pass_can_sample_source_directly(
     effect: &NativeVulkanSceneEffectRecord,
 ) -> bool {
-    if effect.target.is_some()
-        || effect.source.is_some()
-        || !effect.fbos.is_empty()
-        || effect.binds.contains_key(&0)
-    {
-        return false;
+    let mut reasons = Vec::new();
+    native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(effect, &mut reasons);
+    reasons.is_empty()
+}
+
+fn native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(
+    effect: &NativeVulkanSceneEffectRecord,
+    reasons: &mut Vec<&'static str>,
+) {
+    if effect.target.is_some() {
+        reasons.push("first-effect-explicit-target");
+    }
+    if effect.source.is_some() {
+        reasons.push("first-effect-explicit-source");
+    }
+    if !effect.fbos.is_empty() {
+        reasons.push("first-effect-fbos");
+    }
+    if effect.binds.contains_key(&0) {
+        reasons.push("first-effect-bind0");
     }
     if effect.kind == NativeVulkanSceneEffectKind::Skew
         && native_vulkan_scene_we_image_pass_is_vertex_skew_effect_record(effect)
     {
-        return false;
+        reasons.push("first-effect-vertex-skew");
     }
-    matches!(
+    if !matches!(
         effect.kind,
         NativeVulkanSceneEffectKind::WaterRipple
             | NativeVulkanSceneEffectKind::WaterWaves
@@ -1221,7 +1276,9 @@ fn native_vulkan_scene_we_image_pass_can_sample_source_directly(
             | NativeVulkanSceneEffectKind::Scroll
             | NativeVulkanSceneEffectKind::Skew
             | NativeVulkanSceneEffectKind::TechCircle
-    )
+    ) {
+        reasons.push("first-effect-not-source-direct-kind");
+    }
 }
 
 fn native_vulkan_scene_we_image_pass_chain_can_fold_color_blend_passthrough(
@@ -2841,7 +2898,15 @@ mod tests {
         assert_eq!(plan.suppressed_chain_count, 0);
         assert_eq!(plan.effect_kind_counts.get("auto-sway").copied(), Some(1));
         assert_eq!(plan.effect_kind_counts.get("water-waves").copied(), Some(1));
+        assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
         assert_eq!(plan.source_direct_chain_start_count, 0);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 1);
+        assert_eq!(
+            plan.source_direct_chain_start_blocked_reason_counts
+                .get("first-effect-not-source-direct-kind")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(plan.chain_length_counts.get(&3).copied(), Some(1));
         assert_eq!(
             plan.chain_signature_counts
@@ -2916,7 +2981,9 @@ mod tests {
         assert_eq!(plan.effect_material_step_count, 1);
         assert_eq!(plan.graph_target_step_count, 0);
         assert_eq!(plan.scene_target_step_count, 1);
+        assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
         assert_eq!(plan.source_direct_chain_start_count, 0);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 0);
         assert_eq!(plan.direct_terminal_source_effect_step_count, 1);
         assert_eq!(plan.all_waterwaves_chain_count, 1);
         assert_eq!(plan.all_waterwaves_multi_step_chain_count, 0);
@@ -3181,6 +3248,15 @@ mod tests {
         assert_eq!(plan.target_count, 1);
         assert_eq!(plan.graph_target_step_count, 1);
         assert_eq!(plan.scene_target_step_count, 1);
+        assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
+        assert_eq!(plan.source_direct_chain_start_count, 0);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 1);
+        assert_eq!(
+            plan.source_direct_chain_start_blocked_reason_counts
+                .get("mesh-geometry")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(plan.waterwaves_fused2_chain_count, 1);
         assert_eq!(plan.waterwaves_fused2_step_count, 1);
         assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);

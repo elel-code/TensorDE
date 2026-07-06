@@ -124,7 +124,11 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_graph_target_step_count: usize,
     pub draw_pass_sampled_image_we_graph_scene_target_step_count: usize,
     pub draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_source_direct_chain_start_candidate_count: usize,
     pub draw_pass_sampled_image_we_graph_source_direct_chain_start_count: usize,
+    pub draw_pass_sampled_image_we_graph_source_direct_chain_start_blocked_count: usize,
+    pub draw_pass_sampled_image_we_graph_source_direct_chain_start_blocked_reason_counts:
+        BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_multi_step_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_max_chain_step_count: usize,
     pub draw_pass_sampled_image_we_graph_all_waterwaves_chain_count: usize,
@@ -4353,6 +4357,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_source_direct_chain_start_count = pass_plan
         .sampled_image_we_graph_plan
         .source_direct_chain_start_count;
+    let sampled_image_we_graph_source_direct_chain_start_candidate_count = pass_plan
+        .sampled_image_we_graph_plan
+        .source_direct_chain_start_candidate_count;
+    let sampled_image_we_graph_source_direct_chain_start_blocked_count = pass_plan
+        .sampled_image_we_graph_plan
+        .source_direct_chain_start_blocked_count;
+    let sampled_image_we_graph_source_direct_chain_start_blocked_reason_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .source_direct_chain_start_blocked_reason_counts
+        .iter()
+        .map(|(reason, count)| ((*reason).to_owned(), *count))
+        .collect::<BTreeMap<_, _>>();
     let sampled_image_we_graph_multi_step_chain_count =
         pass_plan.sampled_image_we_graph_plan.multi_step_chain_count;
     let sampled_image_we_graph_max_chain_step_count =
@@ -4620,8 +4636,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_scene_target_step_count,
         draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count:
             sampled_image_we_graph_direct_terminal_source_effect_step_count,
+        draw_pass_sampled_image_we_graph_source_direct_chain_start_candidate_count:
+            sampled_image_we_graph_source_direct_chain_start_candidate_count,
         draw_pass_sampled_image_we_graph_source_direct_chain_start_count:
             sampled_image_we_graph_source_direct_chain_start_count,
+        draw_pass_sampled_image_we_graph_source_direct_chain_start_blocked_count:
+            sampled_image_we_graph_source_direct_chain_start_blocked_count,
+        draw_pass_sampled_image_we_graph_source_direct_chain_start_blocked_reason_counts:
+            sampled_image_we_graph_source_direct_chain_start_blocked_reason_counts,
         draw_pass_sampled_image_we_graph_multi_step_chain_count:
             sampled_image_we_graph_multi_step_chain_count,
         draw_pass_sampled_image_we_graph_max_chain_step_count:
