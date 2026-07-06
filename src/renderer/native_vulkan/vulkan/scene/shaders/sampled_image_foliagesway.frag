@@ -35,6 +35,7 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 120) uint effect_shader_code;
     layout(offset = 124) float foliage_direction;
     layout(offset = 128) uint foliage_flags;
+    layout(offset = 132) uint foliage_mode;
     layout(offset = 228) uint output_flags;
 } pc;
 
@@ -68,6 +69,11 @@ vec4 finalize_output(vec4 color) {
 }
 
 void main() {
+    if (pc.foliage_mode != 0u) {
+        out_color = finalize_output(apply_vertex_color(texture(g_Texture0, v_uv)));
+        return;
+    }
+
     vec2 base_resolution = pc.texture_resolution[0];
     if ((pc.texture_resolution_mask & 1u) == 0u) {
         base_resolution = max(pc.extent, vec2(1.0));

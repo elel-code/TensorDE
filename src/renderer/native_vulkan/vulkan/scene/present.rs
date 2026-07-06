@@ -131,6 +131,7 @@ pub struct NativeVulkanVulkanaliaSceneSolidQuadPresentOptions {
     pub host: NativeWaylandHostOptions,
     pub wait_configure_roundtrips: usize,
     pub duration: Duration,
+    pub scene_time_origin_ms: u64,
     pub target_max_fps: Option<u32>,
     pub quad_color: NativeVulkanClearColor,
     pub geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
@@ -142,6 +143,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
     pub host: NativeWaylandHostOptions,
     pub wait_configure_roundtrips: usize,
     pub duration: Duration,
+    pub scene_time_origin_ms: u64,
     pub target_max_fps: Option<u32>,
     pub source: PathBuf,
     pub clear_color: NativeVulkanClearColor,
@@ -157,6 +159,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaSceneVideoOv
     pub source: Option<PathBuf>,
     pub clear_color: NativeVulkanClearColor,
     pub fit: Option<FitMode>,
+    pub scene_time_origin_ms: u64,
     pub solid_geometry: Option<NativeVulkanVulkanaliaSceneSolidQuadGeometryInput>,
     pub geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
     pub scene_size: Option<SceneSize>,
@@ -1545,6 +1548,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverla
     solid_pipeline: Option<VulkanaliaSceneSolidQuadPipelineResources>,
     solid_geometry: Option<VulkanaliaSceneSolidQuadGeometryResources>,
     solid_draw_commands: Vec<VulkanaliaSceneSolidQuadDrawCommand>,
+    scene_time_origin_ms: u64,
     scene_size: Option<SceneSize>,
     scene_fit: FitMode,
 }
@@ -3048,6 +3052,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
             solid_pipeline: solid_pipeline.take(),
             solid_geometry: solid_geometry.take(),
             solid_draw_commands: std::mem::take(&mut solid_draw_commands),
+            scene_time_origin_ms: input.scene_time_origin_ms,
             scene_size: input.scene_size,
             scene_fit: input.scene_fit,
         })
@@ -3135,6 +3140,7 @@ impl VulkanaliaSceneVideoOverlayResources {
         elapsed_ms: u64,
         extent: vk::Extent2D,
     ) -> Result<Option<VulkanaliaSceneVideoOverlayFrameDraw<'_>>, String> {
+        let scene_time_ms = scene_present_scene_time_ms(self.scene_time_origin_ms, elapsed_ms);
         let video_draw = if let Some(geometry) = self.video_geometry.as_mut() {
             if self.video_draw_commands.is_empty() {
                 return Err("scene video overlay requires non-empty video layer draws".to_owned());
@@ -3151,7 +3157,11 @@ impl VulkanaliaSceneVideoOverlayResources {
         let solid_draw = match (self.solid_pipeline.as_ref(), self.solid_geometry.as_ref()) {
             (Some(pipeline), Some(geometry)) => {
                 let frame_geometry = update_scene_solid_quad_frame_geometry_for_time(
-                    device, geometry, frame_slot, elapsed_ms,
+                    device,
+                    geometry,
+                    frame_slot,
+                    scene_time_ms,
+                    elapsed_ms,
                 )?;
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources: pipeline,
@@ -3179,7 +3189,11 @@ impl VulkanaliaSceneVideoOverlayResources {
             (Some(pipeline), Some(geometry), Some(descriptor_heap)) => {
                 let vertex_buffer = geometry.vertex_buffer.buffer;
                 let draw_instance_buffer = update_scene_sampled_image_draw_instance_for_time(
-                    device, geometry, frame_slot, elapsed_ms,
+                    device,
+                    geometry,
+                    frame_slot,
+                    scene_time_ms,
+                    elapsed_ms,
                 )?;
                 Ok(Some(VulkanaliaSceneVideoOverlayFrameDraw {
                     video_draw,
@@ -3528,10 +3542,12 @@ fn run_scene_solid_quad_present_loop(
             .map(|resources| &resources.target);
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let scene_time_ms = scene_present_scene_time_ms(options.scene_time_origin_ms, elapsed_ms);
         let frame_geometry = update_scene_solid_quad_frame_geometry_for_time(
             device,
             geometry,
             image_index_usize,
+            scene_time_ms,
             elapsed_ms,
         )?;
 
@@ -3841,6 +3857,7 @@ fn run_scene_sampled_image_present_loop(
             .map(|resources| &resources.target);
 
         let elapsed_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let scene_time_ms = scene_present_scene_time_ms(options.scene_time_origin_ms, elapsed_ms);
         let geometry_frame_slot = image_index_usize;
         let geometry_started_at = Instant::now();
         let vertex_buffer = geometry.vertex_buffer.buffer;
@@ -3850,6 +3867,7 @@ fn run_scene_sampled_image_present_loop(
                     device,
                     geometry,
                     geometry_frame_slot,
+                    scene_time_ms,
                     elapsed_ms,
                 )?;
                 Some(VulkanaliaSceneSolidQuadDrawResources {
@@ -3869,6 +3887,7 @@ fn run_scene_sampled_image_present_loop(
             device,
             geometry,
             geometry_frame_slot,
+            scene_time_ms,
             elapsed_ms,
         )?;
         let command_can_reuse_framebuffer_state =
@@ -5102,16 +5121,27 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             .map(|resources| &resources.target);
 
         let vertex_buffer = geometry.vertex_buffer.buffer;
-        let draw_instance_buffer =
-            update_scene_sampled_image_draw_instance_for_time(device, &mut geometry, 0, 0)?;
+        let scene_time_ms = options.scene_time_origin_ms;
+        let draw_instance_buffer = update_scene_sampled_image_draw_instance_for_time(
+            device,
+            &mut geometry,
+            0,
+            scene_time_ms,
+            0,
+        )?;
         let solid_quad_draw = match (
             solid_pipeline.as_ref(),
             solid_geometry.as_ref(),
             solid_draw_commands.as_deref(),
         ) {
             (Some(pipeline_resources), Some(geometry), Some(draw_commands)) => {
-                let frame_geometry =
-                    update_scene_solid_quad_frame_geometry_for_time(device, geometry, 0, 0)?;
+                let frame_geometry = update_scene_solid_quad_frame_geometry_for_time(
+                    device,
+                    geometry,
+                    0,
+                    scene_time_ms,
+                    0,
+                )?;
                 Some(VulkanaliaSceneSolidQuadDrawResources {
                     pipeline_resources,
                     vertex_buffer: frame_geometry.vertex_buffer,
@@ -5351,6 +5381,10 @@ fn scene_present_submit_model(
 
 fn scene_duration_micros(duration: Duration) -> u64 {
     duration.as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn scene_present_scene_time_ms(scene_time_origin_ms: u64, elapsed_ms: u64) -> u64 {
+    scene_time_origin_ms.saturating_add(elapsed_ms)
 }
 
 fn scene_preferred_msaa_sample_count(
@@ -5986,7 +6020,7 @@ fn create_scene_solid_quad_geometry_resources(
     };
     let mut frame_time_buffers = Vec::with_capacity(solid_draw_instance_buffer_count);
     if solid_layer_pose_timeline_buffer.is_some() {
-        let frame_time_bytes = scene_sampled_image_frame_time_bytes(0);
+        let frame_time_bytes = scene_sampled_image_frame_time_bytes(0, 0);
         for frame_time_buffer_index in 0..solid_draw_instance_buffer_count {
             match create_scene_uploaded_buffer(
                 device,
@@ -6168,7 +6202,8 @@ fn update_scene_solid_quad_frame_geometry_for_time(
     device: &Device,
     geometry: &VulkanaliaSceneSolidQuadGeometryResources,
     frame_slot: usize,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
 ) -> Result<VulkanaliaSceneSolidQuadFrameGeometry, String> {
     let draw_instance = geometry
         .draw_instance_buffers
@@ -6179,7 +6214,12 @@ fn update_scene_solid_quad_frame_geometry_for_time(
             .frame_time_buffers
             .get(frame_slot % geometry.frame_time_buffers.len().max(1))
             .ok_or_else(|| "scene solid-quad geometry has no frame-time buffers".to_owned())?;
-        write_scene_sampled_image_frame_time_to_uploaded_buffer(device, frame_time, elapsed_ms)?;
+        write_scene_sampled_image_frame_time_to_uploaded_buffer(
+            device,
+            frame_time,
+            scene_time_ms,
+            timeline_elapsed_ms,
+        )?;
     }
     let vertex = geometry
         .vertex_buffers
@@ -6245,6 +6285,7 @@ fn create_scene_sampled_image_geometry_resources(
         &sampled_layer_pose_instances,
         0,
         0,
+        0,
     )?;
     let sampled_layer_pose_draw_instance_slots = scene_sampled_image_layer_pose_draw_instance_slots(
         &payload.draw_steps,
@@ -6268,7 +6309,7 @@ fn create_scene_sampled_image_geometry_resources(
                 .saturating_add(puppet_layer_pose_draw_instance_slots.len()),
         );
     let mut frame_time_buffers = Vec::with_capacity(draw_instance_buffer_count);
-    let frame_time_bytes = scene_sampled_image_frame_time_bytes(0);
+    let frame_time_bytes = scene_sampled_image_frame_time_bytes(0, 0);
     for frame_time_buffer_index in 0..draw_instance_buffer_count {
         match create_scene_uploaded_buffer(
             device,
@@ -6829,10 +6870,13 @@ fn write_scene_solid_quad_vertices_to_uploaded_buffer(
     })
 }
 
-fn scene_sampled_image_frame_time_bytes(elapsed_ms: u64) -> SceneGeometryByteBuffer {
+fn scene_sampled_image_frame_time_bytes(
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
+) -> SceneGeometryByteBuffer {
     let mut bytes = SceneGeometryByteBuffer::with_capacity(16);
-    bytes.extend_from_slice(&((elapsed_ms as f32) * 0.001).to_ne_bytes());
-    bytes.extend_from_slice(&0.0f32.to_ne_bytes());
+    bytes.extend_from_slice(&((scene_time_ms as f32) * 0.001).to_ne_bytes());
+    bytes.extend_from_slice(&((timeline_elapsed_ms as f32) * 0.001).to_ne_bytes());
     bytes.extend_from_slice(&0.0f32.to_ne_bytes());
     bytes.extend_from_slice(&0.0f32.to_ne_bytes());
     bytes
@@ -6953,9 +6997,10 @@ fn scene_solid_quad_draw_instance_bytes(
 fn write_scene_sampled_image_frame_time_to_uploaded_buffer(
     device: &Device,
     buffer: &VulkanaliaSceneUploadedBuffer,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
 ) -> Result<(), String> {
-    let bytes = scene_sampled_image_frame_time_bytes(elapsed_ms);
+    let bytes = scene_sampled_image_frame_time_bytes(scene_time_ms, timeline_elapsed_ms);
     write_scene_uploaded_buffer(device, buffer, &bytes, "sampled-image frame-time payload")
 }
 
@@ -6979,7 +7024,8 @@ fn update_scene_sampled_image_draw_instance_for_time(
     device: &Device,
     geometry: &mut VulkanaliaSceneSampledImageGeometryResources,
     frame_slot: usize,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
 ) -> Result<vk::Buffer, String> {
     if geometry.draw_instance_buffers.is_empty() {
         return Err("scene sampled-image geometry has no draw-instance buffers".to_owned());
@@ -6989,7 +7035,12 @@ fn update_scene_sampled_image_draw_instance_for_time(
         .frame_time_buffers
         .get(frame_slot % buffer_count)
         .ok_or_else(|| "scene sampled-image geometry has no frame-time buffers".to_owned())?;
-    write_scene_sampled_image_frame_time_to_uploaded_buffer(device, frame_time, elapsed_ms)?;
+    write_scene_sampled_image_frame_time_to_uploaded_buffer(
+        device,
+        frame_time,
+        scene_time_ms,
+        timeline_elapsed_ms,
+    )?;
     let draw_instance_index = frame_slot % buffer_count;
     let draw_instance = geometry
         .draw_instance_buffers
@@ -7006,7 +7057,8 @@ fn scene_sampled_image_draw_instances_for_bindings(
     pose_instances: &[VulkanaliaScenePuppetGpuPoseInstance],
     sampled_layer_pose_instances: &[VulkanaliaSceneSampledImageLayerPoseInstance],
     pose_address: vk::DeviceAddress,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
 ) -> Result<Vec<VulkanaliaSceneSampledImageDrawInstance>, String> {
     let draw_instance_indices = scene_sampled_image_layer_pose_draw_instance_indices(
         draw_steps,
@@ -7021,7 +7073,7 @@ fn scene_sampled_image_draw_instances_for_bindings(
             .saturating_add(particle_bindings.len()),
     );
     instances.push(VulkanaliaSceneSampledImageDrawInstance {
-        frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+        frame_constants: [(scene_time_ms as f32) * 0.001, 0.0, 0.0, 0.0],
         ..VulkanaliaSceneSampledImageDrawInstance::identity()
     });
     let base_layer_poses = scene_sampled_image_layer_pose_map(sampled_layer_pose_instances);
@@ -7031,10 +7083,10 @@ fn scene_sampled_image_draw_instances_for_bindings(
         }
         let base_pose = base_layer_poses.get(&step.layer_index).copied();
         let mut instance = if let Some(base_pose) = base_pose {
-            scene_sampled_image_layer_pose_draw_instance(base_pose, base_pose, elapsed_ms)?
+            scene_sampled_image_layer_pose_draw_instance(base_pose, base_pose, scene_time_ms)?
         } else {
             VulkanaliaSceneSampledImageDrawInstance {
-                frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+                frame_constants: [(scene_time_ms as f32) * 0.001, 0.0, 0.0, 0.0],
                 ..VulkanaliaSceneSampledImageDrawInstance::identity()
             }
         };
@@ -7042,8 +7094,11 @@ fn scene_sampled_image_draw_instances_for_bindings(
             let texture_region = step
                 .texture_region
                 .expect("animated texture region checked present");
-            let animation =
-                scene_sampled_image_animated_region_draw_instance(texture_region, elapsed_ms);
+            let animation = scene_sampled_image_animated_region_draw_instance(
+                texture_region,
+                scene_time_ms,
+                timeline_elapsed_ms,
+            );
             instance.frame_constants = animation.frame_constants;
             instance.effect_uv_x = animation.effect_uv_x;
             instance.effect_uv_y = animation.effect_uv_y;
@@ -7084,7 +7139,7 @@ fn scene_sampled_image_draw_instances_for_bindings(
                 .map(|pose| pose.position_transform_y)
                 .unwrap_or(pose.position_transform_y),
             frame_constants: [
-                (elapsed_ms as f32) * 0.001,
+                (scene_time_ms as f32) * 0.001,
                 layer_pose
                     .map(|pose| pose.layer_opacity)
                     .unwrap_or(pose.layer_opacity),
@@ -7117,7 +7172,7 @@ fn scene_sampled_image_draw_instances_for_bindings(
                 .map(|pose| pose.position_transform_y)
                 .unwrap_or(binding.position_transform_y),
             frame_constants: [
-                (elapsed_ms as f32) * 0.001,
+                (scene_time_ms as f32) * 0.001,
                 layer_pose
                     .map(|pose| pose.layer_opacity)
                     .unwrap_or(binding.layer_opacity),
@@ -7606,14 +7661,14 @@ fn scene_sampled_image_layer_pose_timeline_bytes(
 fn scene_sampled_image_layer_pose_draw_instance(
     base_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
     current_pose: VulkanaliaSceneSampledImageLayerPoseInstance,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
 ) -> Result<VulkanaliaSceneSampledImageDrawInstance, String> {
     let (position_transform_x, position_transform_y) =
         scene_sampled_image_layer_pose_delta_transform(base_pose, current_pose)?;
     Ok(VulkanaliaSceneSampledImageDrawInstance {
         position_transform_x,
         position_transform_y,
-        frame_constants: [(elapsed_ms as f32) * 0.001, 0.0, 0.0, 0.0],
+        frame_constants: [(scene_time_ms as f32) * 0.001, 0.0, 0.0, 0.0],
         ..VulkanaliaSceneSampledImageDrawInstance::identity()
     })
 }
@@ -7672,20 +7727,21 @@ fn scene_sampled_image_layer_pose_delta_transform(
 
 fn scene_sampled_image_animated_region_draw_instance(
     texture_region: SceneTextureRegion,
-    elapsed_ms: u64,
+    scene_time_ms: u64,
+    timeline_elapsed_ms: u64,
 ) -> VulkanaliaSceneSampledImageDrawInstance {
     let u_span = (texture_region.u_max - texture_region.u_min) as f32;
     let v_span = (texture_region.v_max - texture_region.v_min) as f32;
     VulkanaliaSceneSampledImageDrawInstance {
         frame_constants: [
-            (elapsed_ms as f32) * 0.001,
+            (scene_time_ms as f32) * 0.001,
             1.0,
             if texture_region.loop_playback {
                 1.0
             } else {
                 0.0
             },
-            0.0,
+            (timeline_elapsed_ms as f32) * 0.001,
         ],
         effect_uv_x: [
             texture_region.u_min as f32,
@@ -11663,11 +11719,12 @@ mod tests {
             loop_playback: true,
         };
 
-        let instance = scene_sampled_image_animated_region_draw_instance(region, 417);
+        let instance = scene_sampled_image_animated_region_draw_instance(region, 12_916, 417);
 
-        assert_close(instance.frame_constants[0], 0.417);
+        assert_close(instance.frame_constants[0], 12.916);
         assert_eq!(instance.frame_constants[1], 1.0);
         assert_eq!(instance.frame_constants[2], 1.0);
+        assert_close(instance.frame_constants[3], 0.417);
         assert_eq!(instance.effect_uv_x, [0.0, 1.0 / 3.0, 12.0, 12.0]);
         assert_eq!(instance.effect_uv_y, [0.0, 0.25, 3.0, 0.0]);
     }
@@ -12105,6 +12162,14 @@ mod tests {
             (actual - expected).abs() < 0.001,
             "expected {actual} to be within 0.001 of {expected}"
         );
+    }
+
+    fn scene_test_f32_at(bytes: &[u8], offset: usize) -> f32 {
+        f32::from_ne_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("test frame-time field width"),
+        )
     }
 
     fn sampled_image_positions(
@@ -12552,6 +12617,23 @@ mod tests {
         assert!(!scene_sample_rate_shading_env_enabled("false"));
     }
 
+    #[test]
+    fn scene_clock_adds_present_elapsed_to_scene_origin() {
+        assert_eq!(scene_present_scene_time_ms(12_500, 416), 12_916);
+        assert_eq!(scene_present_scene_time_ms(u64::MAX - 1, 10), u64::MAX);
+    }
+
+    #[test]
+    fn frame_time_payload_carries_scene_and_timeline_seconds() {
+        let bytes = scene_sampled_image_frame_time_bytes(12_916, 417);
+
+        assert_eq!(bytes.len(), 16);
+        assert_close(scene_test_f32_at(&bytes, 0), 12.916);
+        assert_close(scene_test_f32_at(&bytes, 4), 0.417);
+        assert_eq!(scene_test_f32_at(&bytes, 8), 0.0);
+        assert_eq!(scene_test_f32_at(&bytes, 12), 0.0);
+    }
+
     fn static_transfer_test_options(
         fit: Option<FitMode>,
         geometry: Option<NativeVulkanVulkanaliaSceneSampledImageGeometryInput>,
@@ -12560,6 +12642,7 @@ mod tests {
             host: NativeWaylandHostOptions::default(),
             wait_configure_roundtrips: 0,
             duration: Duration::ZERO,
+            scene_time_origin_ms: 0,
             target_max_fps: None,
             source: PathBuf::from("/tmp/static.gtex"),
             clear_color: NativeVulkanClearColor {

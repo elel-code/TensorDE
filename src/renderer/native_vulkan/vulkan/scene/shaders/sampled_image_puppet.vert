@@ -68,9 +68,8 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 120) uint effect_shader_code;
     layout(offset = 124) float auto_global_time_offset;
     layout(offset = 128) float auto_global_wind_offset;
-    layout(offset = 132) float auto_weight_center_offset;
-    layout(offset = 136) float auto_smooth_distance;
-    layout(offset = 140) float auto_directional_compensation;
+    layout(offset = 132) uint auto_weight_center_offset_or_foliage_mode;
+    layout(offset = 136) vec2 auto_smooth_directional_or_foliage_direction_weights;
     layout(offset = 144) vec2 auto_center1;
     layout(offset = 152) vec2 auto_center2;
     layout(offset = 160) vec2 auto_center3;
@@ -97,7 +96,6 @@ const uint EFFECT_SHADER_CODE_AUTO_SWAY = 8u;
 const float PI = 3.14159265358979323846;
 const float PI_HALF = 1.57079632679489661923;
 const float TAU = 6.28318530717958647692;
-const float FOLIAGE_SWAY_VERTEX_GAIN = 8.0;
 
 struct AutoSwayNode {
     vec2 direction;
@@ -124,11 +122,18 @@ LayerPoseBuffer layer_pose_buffer_from_ref(uvec4 ref_words) {
     return LayerPoseBuffer(address);
 }
 
-float frame_time_seconds() {
+float scene_time_seconds() {
     if (in_frame_time_ref.x == 0u && in_frame_time_ref.y == 0u) {
         return in_frame_constants.x;
     }
     return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.x;
+}
+
+float timeline_time_seconds() {
+    if (in_frame_time_ref.x == 0u && in_frame_time_ref.y == 0u) {
+        return in_frame_constants.x;
+    }
+    return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.y;
 }
 
 bool has_layer_pose_ref() {
@@ -144,6 +149,30 @@ vec2 rotate_vec2(vec2 value, float radians) {
 vec2 safe_normalize(vec2 value) {
     float len = length(value);
     return len > 0.000001 ? value / len : vec2(1.0, 0.0);
+}
+
+float auto_weight_center_offset() {
+    return uintBitsToFloat(pc.auto_weight_center_offset_or_foliage_mode);
+}
+
+float auto_smooth_distance() {
+    return pc.auto_smooth_directional_or_foliage_direction_weights.x;
+}
+
+float auto_directional_compensation() {
+    return pc.auto_smooth_directional_or_foliage_direction_weights.y;
+}
+
+uint foliage_mode() {
+    return pc.auto_weight_center_offset_or_foliage_mode;
+}
+
+vec2 foliage_direction_weights() {
+    return pc.auto_smooth_directional_or_foliage_direction_weights;
+}
+
+vec4 foliage_corner_weights() {
+    return vec4(pc.auto_center1, pc.auto_center2);
 }
 
 vec3 fallback_noise(vec2 uv) {
@@ -183,17 +212,17 @@ AutoSwayNode pre_calc_auto_sway_node(
     vec2 endpoint_direction = mix(
         safe_normalize(endpoint_node_vec),
         direction,
-        pc.auto_directional_compensation
+        auto_directional_compensation()
     );
     float len = dot(node_vec, direction);
     float endpoint_len = mix(
         len,
         dot(endpoint_node_vec, endpoint_direction),
-        pc.auto_smooth_distance
+        auto_smooth_distance()
     );
     vec2 relative_tex_coord = tex_coord - next_center;
     float endpoint_pos_x = dot(relative_tex_coord, endpoint_direction)
-        - pc.auto_weight_center_offset * len;
+        - auto_weight_center_offset() * len;
     float pos_x = dot(relative_tex_coord, endpoint_direction);
 
     float this_motion_time = pc.auto_global_time_offset + time_seconds * pc.auto_speed;
@@ -293,30 +322,32 @@ vec2 foliage_sway_local_offset(vec2 uv, vec2 local_extent, float time_seconds) {
     if (pc.effect_shader_code != EFFECT_SHADER_CODE_FOLIAGE_SWAY) {
         return vec2(0.0);
     }
-    vec2 base_resolution = pc.texture_resolution[0];
-    if ((pc.texture_resolution_mask & 1u) == 0u) {
-        base_resolution = max(local_extent, vec2(1.0));
+    if (foliage_mode() == 0u) {
+        return vec2(0.0);
     }
-    float aspect = max(base_resolution.x, 1.0) / max(base_resolution.y, 1.0)
-        * pc.auto_segment_count;
-    aspect = max(aspect, 0.0001);
-    vec3 noise = fallback_noise(uv * pc.auto_inertia);
-    float amp = pc.auto_strength * pc.auto_strength * 0.005 * FOLIAGE_SWAY_VERTEX_GAIN;
-    vec2 params = rotate_vec2(uv, pc.auto_global_time_offset);
-    float phase = (noise.g * PI * 2.0 + params.x * 10.0 + params.y * 5.0)
-        * pc.auto_x_feather;
+
+    float phase = pc.auto_x_feather;
     vec4 sines = sin(phase + pc.auto_damping * time_seconds
         * vec4(1.0, -0.16161616, 0.0083333, -0.00019841));
     vec4 csines = sin(0.4 + phase + pc.auto_damping * time_seconds
         * vec4(-0.5, 0.041666666, -0.0013888889, 0.000024801587));
     sines = pow(abs(sines), vec4(pc.auto_speed)) * sign(sines);
     csines = pow(abs(csines), vec4(pc.auto_speed)) * sign(csines);
-    vec2 noise_direction = rotate_vec2(vec2(1.0 / aspect, aspect), pc.auto_global_time_offset);
-    vec2 uv_offset = vec2(
-        noise_direction.x * dot(sines, vec4(amp)),
-        noise_direction.y * dot(csines, vec4(amp))
+
+    vec4 corners = foliage_corner_weights();
+    float weight = clamp(
+        corners.x * (1.0 - uv.x) * (1.0 - uv.y) +
+        corners.y * uv.x * (1.0 - uv.y) +
+        corners.z * uv.x * uv.y +
+        corners.w * (1.0 - uv.x) * uv.y,
+        0.0,
+        1.0
     );
-    return uv_offset * max(local_extent, vec2(1.0));
+    vec2 direction_weights = foliage_direction_weights();
+    return vec2(
+        dot(sines, vec4(1.0)) * pc.auto_strength * 100.0 * weight * direction_weights.x,
+        dot(csines, vec4(1.0)) * pc.auto_strength * 100.0 * weight * direction_weights.y
+    );
 }
 
 LayerPose layer_pose_at_time(float time_seconds) {
@@ -347,8 +378,9 @@ void main() {
     uint pose_frame_bone_count = max(in_puppet_pose_ref.w, 1u);
     float pose_fps = max(in_frame_constants.z, 1.0);
     bool pose_loops = in_frame_constants.w > 0.5;
-    float time_seconds = frame_time_seconds();
-    float pose_frame = max(time_seconds * pose_fps, 0.0);
+    float scene_seconds = scene_time_seconds();
+    float timeline_seconds = timeline_time_seconds();
+    float pose_frame = max(timeline_seconds * pose_fps, 0.0);
     if (pose_loops && pose_frame_count > 1u) {
         pose_frame = mod(pose_frame, float(pose_frame_count));
     } else {
@@ -400,14 +432,14 @@ void main() {
     if (abs(in_effect_uv_y.y) > 0.000001) {
         local_extent.y = abs(1.0 / in_effect_uv_y.y);
     }
-    local.xy += auto_sway_local_offset(in_uv, local_extent, time_seconds)
-        + foliage_sway_local_offset(in_uv, local_extent, time_seconds);
+    local.xy += auto_sway_local_offset(in_uv, local_extent, scene_seconds)
+        + foliage_sway_local_offset(in_uv, local_extent, scene_seconds);
 
     vec4 layer_transform_x = in_position_transform_x;
     vec4 layer_transform_y = in_position_transform_y;
     float layer_opacity = in_frame_constants.y;
     if (has_layer_pose_ref()) {
-        LayerPose layer_pose = layer_pose_at_time(time_seconds);
+        LayerPose layer_pose = layer_pose_at_time(timeline_seconds);
         layer_transform_x = layer_pose.position_transform_x;
         layer_transform_y = layer_pose.position_transform_y;
         layer_opacity = layer_pose.constants.x;
@@ -425,5 +457,5 @@ void main() {
     );
     v_opacity = in_vertex_opacity.x * bone_opacity * layer_opacity;
     v_tint = in_tint;
-    v_time_seconds = time_seconds;
+    v_time_seconds = scene_seconds;
 }

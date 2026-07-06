@@ -1444,6 +1444,23 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
         NativeVulkanSceneWeImagePassRole::EffectMaterial
         | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
             let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if native_vulkan_scene_we_graph_step_samples_source_texture(step) {
+                if let Some(bounds) =
+                    native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
+                {
+                    return native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
+                        &local_quad,
+                        bounds,
+                        vertices,
+                        indices,
+                    );
+                }
+                return native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                    &local_quad,
+                    vertices,
+                    indices,
+                );
+            }
             if let Some(bounds) = native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
             {
                 local_quad.mesh = None;
@@ -1561,6 +1578,21 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
         NativeVulkanSceneWeImagePassRole::EffectMaterial
         | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
             let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if native_vulkan_scene_we_graph_step_samples_source_texture(step) {
+                if let Some(bounds) =
+                    native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
+                {
+                    return native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
+                        &local_quad,
+                        bounds,
+                        vertices,
+                    );
+                }
+                return native_vulkan_scene_append_sampled_image_effect_base_vertices(
+                    &local_quad,
+                    vertices,
+                );
+            }
             if let Some(bounds) = native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
             {
                 local_quad.mesh = None;
@@ -9231,6 +9263,175 @@ mod tests {
     }
 
     #[test]
+    fn draw_pass_plan_uses_mesh_geometry_for_source_direct_material_graph_start() {
+        let mut water = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        water.layer_id = "mesh-source-direct-water".to_owned();
+        water.source = Some(PathBuf::from("/tmp/mesh-water-source.gtex"));
+        water.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/mesh-water-source.gtex"),
+            width: Some(1024),
+            height: Some(512),
+        }];
+        water.width = Some(1024.0);
+        water.height = Some(512.0);
+        water.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: 0.0,
+                    y: 0.0,
+                    u: 0.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 512.0,
+                    y: 0.0,
+                    u: 1.0,
+                    v: 0.0,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 0.0,
+                    y: 256.0,
+                    u: 0.0,
+                    v: 1.0,
+                    opacity: 0.5,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
+        }));
+        water.image_effect_passes = vec![
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/waterripple/effect.json".to_owned(),
+                runtime: Some("native-effect-motion".to_owned()),
+                pass_index: 0,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("effects/waterripple".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: Some("disabled".to_owned()),
+                depthwrite: Some("disabled".to_owned()),
+                cullmode: Some("nocull".to_owned()),
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 2,
+                    source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                    width: Some(512),
+                    height: Some(512),
+                }],
+                effect_uv_transform: None,
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            },
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/waterflow/effect.json".to_owned(),
+                runtime: Some("wallpaper-engine-effect".to_owned()),
+                pass_index: 1,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("effects/waterflow".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: Some("disabled".to_owned()),
+                depthwrite: Some("disabled".to_owned()),
+                cullmode: Some("nocull".to_owned()),
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 2,
+                    source: PathBuf::from("/tmp/waterflowphase.gtex"),
+                    width: Some(64),
+                    height: Some(64),
+                }],
+                effect_uv_transform: None,
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            },
+        ];
+
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![water],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .base_material_step_count,
+            0
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .source_direct_chain_start_count,
+            1
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .source_direct_chain_start_blocked_count,
+            0
+        );
+        assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 1);
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.steps[0].pass.role,
+            NativeVulkanSceneWeImagePassRole::EffectMaterial
+        );
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.steps[0].pass.input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        let first_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(first_step.vertex_count, 3);
+        assert_eq!(first_step.index_count, 3);
+        assert_eq!(
+            first_step.texture_slot_bindings,
+            vec![
+                NativeVulkanSceneTextureSlotResourceBinding {
+                    slot: 0,
+                    resource_index: 0
+                },
+                NativeVulkanSceneTextureSlotResourceBinding {
+                    slot: 2,
+                    resource_index: 1
+                }
+            ]
+        );
+        let first_vertex = first_step.first_vertex as usize;
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex].uv,
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex + 1].uv,
+            [1.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex + 2].uv,
+            [0.0, 1.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex + 2].opacity,
+            0.5
+        );
+    }
+
+    #[test]
     fn draw_pass_plan_routes_waterwaves_character_quad_through_first_class_graph() {
         let mut hair = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         hair.layer_id = "character-hair-waterwaves".to_owned();
@@ -9450,27 +9651,42 @@ mod tests {
         assert!((target.local_left - -20.0).abs() < 1.0e-6);
         assert!((target.local_top - -20.0).abs() < 1.0e-6);
         assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
-        let base_step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(base_step.material_pass.shader, None);
-        assert!(base_step.material_pass.combo_keys.is_empty());
-        assert!(base_step.material_pass.combo_values.is_empty());
-        assert!(base_step.material_pass.constant_shader_values.is_empty());
-        let base_vertices = &pass_plan.sampled_image_vertices[base_step.first_vertex as usize
-            ..base_step.first_vertex as usize + base_step.vertex_count as usize];
-        assert_eq!(base_step.vertex_count, 4);
-        assert_eq!(base_vertices[0].position, [0.0, 0.0]);
-        assert_eq!(base_vertices[1].position, [130.0, 0.0]);
-        assert_eq!(base_vertices[2].position, [0.0, 130.0]);
-        assert!((base_vertices[0].uv[0] - -0.2).abs() < 1.0e-6);
-        assert!((base_vertices[0].uv[1] - 1.2).abs() < 1.0e-6);
-        assert_eq!(base_vertices[0].effect_uv, base_vertices[0].uv);
-        assert!((base_vertices[0].opacity - 0.3).abs() < 1.0e-6);
-        let final_step = &pass_plan.sampled_image_recording_steps[1];
         assert_eq!(
-            final_step.material_pass.fused_effect_kind,
-            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+            pass_plan
+                .sampled_image_we_graph_plan
+                .base_material_step_count,
+            0
         );
-        assert_eq!(final_step.material_pass.fused_effect_passes.len(), 2);
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .source_direct_chain_start_count,
+            1
+        );
+        let first_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(
+            first_step.material_pass.shader,
+            Some("effects/waterwaves".to_owned())
+        );
+        assert!(first_step.material_pass.combo_keys.is_empty());
+        assert!(first_step.material_pass.combo_values.is_empty());
+        assert!(first_step.material_pass.constant_shader_values.is_empty());
+        assert_eq!(first_step.we_graph_input_target_index, None);
+        assert_eq!(first_step.we_graph_output_target_index, Some(0));
+        let first_vertices = &pass_plan.sampled_image_vertices[first_step.first_vertex as usize
+            ..first_step.first_vertex as usize + first_step.vertex_count as usize];
+        assert_eq!(first_step.vertex_count, 3);
+        assert_eq!(first_step.index_count, 3);
+        assert_eq!(first_vertices[0].position, [0.0, 10.0]);
+        assert_eq!(first_vertices[1].position, [150.0, 10.0]);
+        assert_eq!(first_vertices[2].position, [0.0, 130.0]);
+        assert!((first_vertices[0].uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((first_vertices[0].uv[1] - -0.1).abs() < 1.0e-6);
+        assert_eq!(first_vertices[0].effect_uv, [0.0, 1.0]);
+        assert!((first_vertices[0].opacity - 0.3).abs() < 1.0e-6);
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(final_step.material_pass.fused_effect_kind, None);
+        assert!(final_step.material_pass.fused_effect_passes.is_empty());
         assert_eq!(
             final_step.material_pass.effect_kinds,
             vec![NativeVulkanSceneEffectKind::WaterWaves]

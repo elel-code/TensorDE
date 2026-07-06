@@ -10,10 +10,15 @@ use crate::engine::render_graph::{
 use serde_json::Value;
 
 mod lowering;
+mod source_direct;
 
 use self::lowering::{
     native_vulkan_scene_we_image_pass_chain_lower,
     native_vulkan_scene_we_image_pass_chain_waterwaves2_ineligible_reasons,
+};
+use self::source_direct::{
+    native_vulkan_scene_we_image_pass_chain_can_sample_source_directly,
+    native_vulkan_scene_we_image_pass_chain_source_direct_start_ineligible_reasons,
 };
 use super::blend::native_vulkan_scene_render_state;
 use super::{
@@ -1192,93 +1197,7 @@ fn native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
     {
         return false;
     }
-    if let Some(mesh) = quad.mesh.as_ref()
-        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
-    {
-        return false;
-    }
-    native_vulkan_scene_we_image_pass_can_sample_source_directly(&quad.effect_passes[0])
-}
-
-fn native_vulkan_scene_we_image_pass_chain_source_direct_start_ineligible_reasons(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    first_class_target: bool,
-    color_blend_passthrough: bool,
-    material_graph_supported: bool,
-) -> Option<Vec<&'static str>> {
-    if quad.effect_passes.len() < 2 {
-        return None;
-    }
-    let mut reasons = Vec::new();
-    if first_class_target {
-        reasons.push("first-class-target");
-    }
-    if color_blend_passthrough {
-        reasons.push("color-blend-passthrough");
-    }
-    if !material_graph_supported {
-        reasons.push("material-graph-unsupported");
-    }
-    if quad.texture_region.is_some() {
-        reasons.push("texture-region");
-    }
-    if quad.material_pass.alpha_texture_slot.is_some() {
-        reasons.push("material-alpha-texture");
-    }
-    if let Some(mesh) = quad.mesh.as_ref()
-        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
-    {
-        reasons.push("mesh-geometry");
-    }
-    native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(
-        &quad.effect_passes[0],
-        &mut reasons,
-    );
-    Some(reasons)
-}
-
-fn native_vulkan_scene_we_image_pass_can_sample_source_directly(
-    effect: &NativeVulkanSceneEffectRecord,
-) -> bool {
-    let mut reasons = Vec::new();
-    native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(effect, &mut reasons);
-    reasons.is_empty()
-}
-
-fn native_vulkan_scene_we_image_pass_source_direct_ineligible_reasons(
-    effect: &NativeVulkanSceneEffectRecord,
-    reasons: &mut Vec<&'static str>,
-) {
-    if effect.target.is_some() {
-        reasons.push("first-effect-explicit-target");
-    }
-    if effect.source.is_some() {
-        reasons.push("first-effect-explicit-source");
-    }
-    if !effect.fbos.is_empty() {
-        reasons.push("first-effect-fbos");
-    }
-    if effect.binds.contains_key(&0) {
-        reasons.push("first-effect-bind0");
-    }
-    if effect.kind == NativeVulkanSceneEffectKind::Skew
-        && native_vulkan_scene_we_image_pass_is_vertex_skew_effect_record(effect)
-    {
-        reasons.push("first-effect-vertex-skew");
-    }
-    if !matches!(
-        effect.kind,
-        NativeVulkanSceneEffectKind::WaterRipple
-            | NativeVulkanSceneEffectKind::WaterWaves
-            | NativeVulkanSceneEffectKind::WaterFlow
-            | NativeVulkanSceneEffectKind::WaterCaustics
-            | NativeVulkanSceneEffectKind::FoliageSway
-            | NativeVulkanSceneEffectKind::Scroll
-            | NativeVulkanSceneEffectKind::Skew
-            | NativeVulkanSceneEffectKind::TechCircle
-    ) {
-        reasons.push("first-effect-not-source-direct-kind");
-    }
+    native_vulkan_scene_we_image_pass_chain_can_sample_source_directly(quad, &quad.effect_passes[0])
 }
 
 fn native_vulkan_scene_we_image_pass_chain_can_fold_color_blend_passthrough(
@@ -2847,6 +2766,127 @@ mod tests {
     }
 
     #[test]
+    fn single_terminal_opacity_mask_executes_directly_without_local_target() {
+        let mut opacity = iris_effect_record();
+        opacity.kind = NativeVulkanSceneEffectKind::OpacityMask;
+        opacity.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        opacity.effect_file = "effects/opacity/effect.json".to_owned();
+        opacity.runtime = Some("native-opacity-mask".to_owned());
+        opacity.shader = Some("effects/opacity".to_owned());
+        opacity.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 1,
+            source: PathBuf::from("/tmp/opacity-mask.gtex"),
+            width: Some(512),
+            height: Some(256),
+        }];
+
+        let mut quad = sampled_image_quad(Some(full_quad_mesh(663.0, 230.0)));
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![opacity];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain = native_vulkan_scene_we_image_pass_chain(&quad)
+            .expect("direct terminal opacity graph chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(
+            chain.execution,
+            NativeVulkanSceneWeImagePassExecution::FirstClassTarget
+        );
+        assert!(!chain.local_target_required);
+        assert_eq!(chain.passes.len(), 1);
+        assert_eq!(
+            chain.passes[0].effect_kind,
+            Some(NativeVulkanSceneEffectKind::OpacityMask)
+        );
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert_eq!(
+            chain.passes[0].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert!(chain.passes[0].final_scene_pass);
+        assert_eq!(plan.step_count, 1);
+        assert_eq!(plan.target_count, 0);
+        assert_eq!(plan.base_material_step_count, 0);
+        assert_eq!(plan.direct_terminal_source_effect_step_count, 1);
+        assert_eq!(
+            plan.chain_signature_counts.get("opacity-mask").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            plan.steps[0].texture_bindings[0].source,
+            NativeVulkanSceneWeImageGraphTextureBindingSource::SourceTexture
+        );
+        assert_eq!(plan.steps[0].texture_bindings[0].slot, 0);
+        assert_eq!(plan.steps[0].texture_bindings[1].slot, 1);
+    }
+
+    #[test]
+    fn composelayer_opacity_mask_blocks_source_direct_for_final_quad_semantics() {
+        let mut opacity = iris_effect_record();
+        opacity.kind = NativeVulkanSceneEffectKind::OpacityMask;
+        opacity.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        opacity.effect_file = "effects/opacity/effect.json".to_owned();
+        opacity.runtime = Some("native-opacity-mask".to_owned());
+        opacity.shader = Some("effects/opacity".to_owned());
+        opacity.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 1,
+            source: PathBuf::from("/tmp/opacity-mask.gtex"),
+            width: Some(512),
+            height: Some(256),
+        }];
+
+        let mut ripple = iris_effect_record();
+        ripple.kind = NativeVulkanSceneEffectKind::WaterRipple;
+        ripple.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        ripple.effect_file = "effects/waterripple/effect.json".to_owned();
+        ripple.runtime = Some("native-effect-motion".to_owned());
+        ripple.pass_index = 1;
+        ripple.shader = Some("effects/waterripple".to_owned());
+        ripple.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 2,
+            source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+            width: Some(512),
+            height: Some(512),
+        }];
+
+        let mut quad = sampled_image_quad(None);
+        quad.layer_id = "node-7-models-util-composelayer-json".to_owned();
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![opacity, ripple];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("composelayer opacity chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(chain.passes.len(), 3);
+        assert_eq!(
+            chain.passes[0].role,
+            NativeVulkanSceneWeImagePassRole::BaseMaterial
+        );
+        assert_eq!(plan.base_material_step_count, 1);
+        assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
+        assert_eq!(plan.source_direct_chain_start_count, 0);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 1);
+        assert_eq!(
+            plan.source_direct_chain_start_blocked_reason_counts
+                .get("composelayer-final-quad")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("base-material>opacity-mask>water-ripple")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn single_terminal_scroll_executes_directly_without_raw_fallback() {
         let mut scroll = iris_effect_record();
         scroll.kind = NativeVulkanSceneEffectKind::Scroll;
@@ -3278,7 +3318,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_waterwaves_on_layer_uv_mesh_fuse_final_pair() {
+    fn adjacent_waterwaves_on_layer_uv_mesh_starts_source_direct_without_base_copy() {
         let first = waterwaves_effect_record(0);
         let second = waterwaves_effect_record(1);
 
@@ -3300,16 +3340,27 @@ mod tests {
         assert_eq!(chain.passes.len(), 2);
         assert_eq!(
             chain.passes[0].role,
-            NativeVulkanSceneWeImagePassRole::BaseMaterial
+            NativeVulkanSceneWeImagePassRole::EffectMaterial
         );
         assert_eq!(
-            chain.passes[1].fused_effect_kind,
-            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+            chain.passes[0].effect_kind,
+            Some(NativeVulkanSceneEffectKind::WaterWaves)
         );
-        assert_eq!(chain.passes[1].fused_effect_passes.len(), 2);
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert_eq!(
+            chain.passes[0].target,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+        );
+        assert_eq!(
+            chain.passes[1].effect_kind,
+            Some(NativeVulkanSceneEffectKind::WaterWaves)
+        );
         assert_eq!(
             chain.passes[1].input,
-            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
         );
         assert_eq!(
             chain.passes[1].target,
@@ -3321,26 +3372,37 @@ mod tests {
         assert_eq!(plan.graph_target_step_count, 1);
         assert_eq!(plan.scene_target_step_count, 1);
         assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
-        assert_eq!(plan.source_direct_chain_start_count, 0);
-        assert_eq!(plan.source_direct_chain_start_blocked_count, 1);
+        assert_eq!(plan.source_direct_chain_start_count, 1);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 0);
+        assert!(
+            !plan
+                .source_direct_chain_start_blocked_reason_counts
+                .contains_key("mesh-geometry")
+        );
+        assert_eq!(plan.base_material_step_count, 0);
+        assert_eq!(plan.waterwaves_fused2_chain_count, 0);
+        assert_eq!(plan.waterwaves_fused2_step_count, 0);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 0);
+        assert_eq!(plan.waterwaves_fused2_ineligible_chain_count, 1);
         assert_eq!(
-            plan.source_direct_chain_start_blocked_reason_counts
+            plan.waterwaves_fused2_ineligible_reason_counts
                 .get("mesh-geometry")
                 .copied(),
             Some(1)
         );
-        assert_eq!(plan.waterwaves_fused2_chain_count, 1);
-        assert_eq!(plan.waterwaves_fused2_step_count, 1);
-        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
-        assert_eq!(plan.waterwaves_fused2_ineligible_chain_count, 0);
-        assert!(
-            !plan
-                .waterwaves_fused2_ineligible_reason_counts
-                .contains_key("mesh-geometry")
+        assert_eq!(plan.waterwaves_lowering_candidate_pair_count, 1);
+        assert_eq!(plan.waterwaves_lowering_direct_pair_count, 0);
+        assert_eq!(plan.waterwaves_lowering_redirected_pair_count, 0);
+        assert_eq!(plan.waterwaves_lowering_blocked_pair_count, 1);
+        assert_eq!(
+            plan.waterwaves_lowering_blocked_reason_counts
+                .get("mesh-geometry")
+                .copied(),
+            Some(1)
         );
         assert_eq!(
             plan.chain_signature_counts
-                .get("base-material>water-waves-fused2")
+                .get("water-waves>water-waves")
                 .copied(),
             Some(1)
         );
@@ -3364,28 +3426,41 @@ mod tests {
 
         assert_eq!(chain.passes.len(), 3);
         assert_eq!(chain.lowering_stats.waterwaves2_candidate_pair_count, 2);
-        assert_eq!(chain.lowering_stats.waterwaves2_direct_pair_count, 1);
+        assert_eq!(chain.lowering_stats.waterwaves2_direct_pair_count, 0);
         assert_eq!(chain.lowering_stats.waterwaves2_redirected_pair_count, 1);
-        assert_eq!(chain.lowering_stats.waterwaves2_blocked_pair_count, 0);
+        assert_eq!(chain.lowering_stats.waterwaves2_blocked_pair_count, 1);
+        assert_eq!(
+            chain
+                .lowering_stats
+                .waterwaves2_blocked_reason_counts
+                .get("mesh-geometry")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert_eq!(
+            chain.passes[0].target,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+        );
         assert_eq!(
             chain.passes[1].fused_effect_kind,
             Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
         );
         assert_eq!(
             chain.passes[1].input,
-            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
         );
         assert_eq!(
             chain.passes[1].target,
-            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
         );
-        assert_eq!(
-            chain.passes[2].fused_effect_kind,
-            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
-        );
+        assert_eq!(chain.passes[2].fused_effect_kind, None);
         assert_eq!(
             chain.passes[2].input,
-            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
         );
         assert_eq!(
             chain.passes[2].target,
@@ -3401,15 +3476,21 @@ mod tests {
         assert_eq!(plan.step_count, 3);
         assert_eq!(plan.target_count, 2);
         assert_eq!(plan.waterwaves_fused2_chain_count, 1);
-        assert_eq!(plan.waterwaves_fused2_step_count, 2);
-        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 2);
+        assert_eq!(plan.waterwaves_fused2_step_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
         assert_eq!(plan.waterwaves_lowering_candidate_pair_count, 2);
-        assert_eq!(plan.waterwaves_lowering_direct_pair_count, 1);
+        assert_eq!(plan.waterwaves_lowering_direct_pair_count, 0);
         assert_eq!(plan.waterwaves_lowering_redirected_pair_count, 1);
-        assert_eq!(plan.waterwaves_lowering_blocked_pair_count, 0);
+        assert_eq!(plan.waterwaves_lowering_blocked_pair_count, 1);
+        assert_eq!(
+            plan.waterwaves_lowering_blocked_reason_counts
+                .get("mesh-geometry")
+                .copied(),
+            Some(1)
+        );
         assert_eq!(
             plan.chain_signature_counts
-                .get("base-material>water-waves-fused2>water-waves-fused2")
+                .get("water-waves>water-waves-fused2>water-waves")
                 .copied(),
             Some(1)
         );

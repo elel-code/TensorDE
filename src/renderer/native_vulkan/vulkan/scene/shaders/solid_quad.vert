@@ -46,11 +46,11 @@ bool has_layer_pose_ref() {
     return in_layer_pose_ref.x != 0u || in_layer_pose_ref.y != 0u;
 }
 
-float frame_time_seconds() {
+float timeline_time_seconds() {
     if (in_frame_time_ref.x == 0u && in_frame_time_ref.y == 0u) {
         return 0.0;
     }
-    return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.x;
+    return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.y;
 }
 
 LayerPose layer_pose_at_frame(uint frame_index) {
@@ -62,7 +62,7 @@ LayerPose layer_pose_at_time() {
     LayerPoseBuffer timeline = layer_pose_buffer_from_ref(in_layer_pose_ref);
     uint frame_count = max(in_layer_pose_ref.z, 1u);
     float frame_rate = max(float(in_layer_pose_ref.w), 1.0);
-    float frame = max(frame_time_seconds() * frame_rate, 0.0);
+    float frame = max(timeline_time_seconds() * frame_rate, 0.0);
     if (frame_count > 1u) {
         frame = mod(frame, float(frame_count));
     } else {

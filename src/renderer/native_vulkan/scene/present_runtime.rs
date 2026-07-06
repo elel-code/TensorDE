@@ -684,6 +684,7 @@ pub fn run_scene(
             geometry.solid_layer_poses = retained_layer_poses.solid_layer_poses;
             geometry.solid_layer_pose_timeline = retained_layer_poses.solid_layer_pose_timeline;
             drop(binary_sampler);
+            let scene_time_origin_ms = plan.snapshot_time_ms;
             let scene_size = runtime.scene_size;
             let scene_fit = runtime.scene_fit;
             runtime.release_cpu_draw_payloads_for_present();
@@ -701,6 +702,7 @@ pub fn run_scene(
                             host: options.host,
                             wait_configure_roundtrips: options.wait_configure_roundtrips,
                             duration,
+                            scene_time_origin_ms,
                             target_max_fps,
                             quad_color: options.clear_color,
                             geometry: Some(geometry),
@@ -784,6 +786,7 @@ pub fn run_scene(
                 geometry.solid_layer_pose_timeline = retained_layer_poses.solid_layer_pose_timeline;
             }
             drop(binary_sampler);
+            let scene_time_origin_ms = plan.snapshot_time_ms;
             let scene_size = runtime.scene_size;
             let scene_fit = runtime.scene_fit;
             runtime.release_cpu_draw_payloads_for_present();
@@ -801,6 +804,7 @@ pub fn run_scene(
                             host: options.host,
                             wait_configure_roundtrips: options.wait_configure_roundtrips,
                             duration,
+                            scene_time_origin_ms,
                             target_max_fps,
                             source,
                             clear_color: options.clear_color,
@@ -901,6 +905,7 @@ pub fn run_scene(
                 geometry.solid_layer_pose_timeline = retained_layer_poses.solid_layer_pose_timeline;
             }
             drop(binary_sampler);
+            let scene_time_origin_ms = plan.snapshot_time_ms;
             let scene_video_overlay = (overlay_source.is_some()
                 || overlay_geometry.is_some()
                 || solid_geometry.is_some()
@@ -910,6 +915,7 @@ pub fn run_scene(
                 source: overlay_source,
                 clear_color: options.clear_color,
                 fit: overlay_fit,
+                scene_time_origin_ms,
                 solid_geometry,
                 geometry: overlay_geometry,
                 scene_size: runtime.scene_size,

@@ -56,11 +56,18 @@ LayerPoseBuffer layer_pose_buffer_from_ref(uvec4 ref_words) {
     return LayerPoseBuffer(address);
 }
 
-float frame_time_seconds() {
+float scene_time_seconds() {
     if (in_frame_time_ref.x == 0u && in_frame_time_ref.y == 0u) {
         return in_frame_constants.x;
     }
     return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.x;
+}
+
+float timeline_time_seconds() {
+    if (in_frame_time_ref.x == 0u && in_frame_time_ref.y == 0u) {
+        return in_frame_constants.x;
+    }
+    return frame_time_buffer_from_ref(in_frame_time_ref).frame.constants.y;
 }
 
 bool has_layer_pose_ref() {
@@ -102,16 +109,17 @@ vec2 rotated_corner(vec2 corner, vec2 velocity) {
 }
 
 void main() {
-    float time_seconds = frame_time_seconds();
+    float scene_seconds = scene_time_seconds();
+    float timeline_seconds = timeline_time_seconds();
     float lifetime = max(in_particle_constants.y, 0.001);
     bool loop_playback = in_frame_constants.z > 0.5;
     bool fade = in_frame_constants.w > 0.5;
     float age = 0.0;
     float alive = 1.0;
     if (loop_playback) {
-        age = mod(max(time_seconds + in_particle_constants.x, 0.0), lifetime);
+        age = mod(max(scene_seconds + in_particle_constants.x, 0.0), lifetime);
     } else {
-        float raw_age = max(time_seconds - in_particle_constants.x, 0.0);
+        float raw_age = max(scene_seconds - in_particle_constants.x, 0.0);
         alive = raw_age <= lifetime ? 1.0 : 0.0;
         age = min(raw_age, lifetime);
     }
@@ -124,7 +132,7 @@ void main() {
     vec4 layer_transform_y = in_position_transform_y;
     float layer_opacity = in_frame_constants.y;
     if (has_layer_pose_ref()) {
-        LayerPose layer_pose = layer_pose_at_time(time_seconds);
+        LayerPose layer_pose = layer_pose_at_time(timeline_seconds);
         layer_transform_x = layer_pose.position_transform_x;
         layer_transform_y = layer_pose.position_transform_y;
         layer_opacity = layer_pose.constants.x;
@@ -140,5 +148,5 @@ void main() {
     v_effect_uv = in_uv;
     v_opacity = layer_opacity * fade_opacity * alive;
     v_tint = in_tint;
-    v_time_seconds = time_seconds;
+    v_time_seconds = scene_seconds;
 }

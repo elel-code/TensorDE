@@ -36,6 +36,7 @@ pub fn run_static_image(
             host: options.host,
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
+            scene_time_origin_ms: 0,
             target_max_fps: options.target_max_fps,
             source,
             clear_color,
