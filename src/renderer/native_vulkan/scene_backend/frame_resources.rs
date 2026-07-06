@@ -16,6 +16,10 @@ use crate::engine::scene_engine::{
     SceneResourceResidencyPlan,
 };
 
+use super::pipeline::{
+    NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
+    NativeVulkanScenePipelineResources, NativeVulkanScenePipelineStore,
+};
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
@@ -26,6 +30,7 @@ use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     resource_storage: NativeVulkanSceneResourceStorage,
     gpu_buffers: NativeVulkanSceneGpuBufferStore,
+    pipelines: NativeVulkanScenePipelineStore,
 }
 
 impl NativeVulkanSceneFrameResources {
@@ -33,6 +38,7 @@ impl NativeVulkanSceneFrameResources {
         Self {
             resource_storage: NativeVulkanSceneResourceStorage::default(),
             gpu_buffers: NativeVulkanSceneGpuBufferStore::default(),
+            pipelines: NativeVulkanScenePipelineStore::default(),
         }
     }
 
@@ -95,8 +101,22 @@ impl NativeVulkanSceneFrameResources {
         self.gpu_buffers.puppet_storage_buffers(puppet)
     }
 
-    pub(in crate::renderer::native_vulkan) fn destroy_gpu_buffers(&mut self, device: &Device) {
+    pub(in crate::renderer::native_vulkan) fn resolve_pipeline<CreatePipeline>(
+        &mut self,
+        key: NativeVulkanScenePipelineCacheKey,
+        create_pipeline: CreatePipeline,
+    ) -> Result<NativeVulkanScenePipelineBinding, String>
+    where
+        CreatePipeline: FnOnce(
+            &NativeVulkanScenePipelineCacheKey,
+        ) -> Result<NativeVulkanScenePipelineResources, String>,
+    {
+        self.pipelines.resolve_pipeline(key, create_pipeline)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         self.gpu_buffers.destroy_all(device);
+        self.pipelines.destroy_all(device);
     }
 }
 
@@ -111,8 +131,10 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
-        RenderingDeviceCommand, SceneGeometryId, SceneResource, SceneResourceResidencyPlan,
+        RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraphPipelineClass,
+        SceneResource, SceneResourceResidencyPlan,
     };
+    use vulkanalia::vk;
 
     #[test]
     fn frame_resources_sync_residency_before_upload_plan() {
@@ -167,12 +189,58 @@ mod tests {
         assert!(err.contains("missing resident scene GPU payload"));
     }
 
+    #[test]
+    fn frame_resources_resolve_pipeline_reuses_cached_pipeline() {
+        let mut frame_resources = NativeVulkanSceneFrameResources::new();
+        let key = pipeline_key();
+        let mut creates = 0usize;
+
+        let first = frame_resources
+            .resolve_pipeline(key.clone(), |_| {
+                creates += 1;
+                Ok(pipeline_resources(11, 12))
+            })
+            .expect("create pipeline");
+        let second = frame_resources
+            .resolve_pipeline(key, |_| {
+                creates += 1;
+                Ok(pipeline_resources(21, 22))
+            })
+            .expect("reuse pipeline");
+
+        assert_eq!(creates, 1);
+        assert_eq!(first.pipeline, second.pipeline);
+    }
+
     fn mesh_resource(geometry: SceneGeometryId) -> SceneResource {
         SceneResource::MeshGeometry {
             id: geometry,
             source_record: 12,
             vertices: vec![SceneMeshVertex::default(); 2],
             indices: vec![0, 1, 0],
+        }
+    }
+
+    fn pipeline_key() -> NativeVulkanScenePipelineCacheKey {
+        NativeVulkanScenePipelineCacheKey {
+            shader: "we/genericimage4".to_owned(),
+            blend: SceneBlendContract::TranslucentAlpha,
+            writes_depth: false,
+            tests_depth: false,
+            pipeline_class: SceneGraphPipelineClass::Mesh,
+            vertex_layout:
+                super::super::pipeline::NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            target_format: vk::Format::B8G8R8A8_UNORM,
+        }
+    }
+
+    fn pipeline_resources(
+        pipeline: u64,
+        pipeline_layout: u64,
+    ) -> NativeVulkanScenePipelineResources {
+        NativeVulkanScenePipelineResources {
+            pipeline: vk::Pipeline::from_raw(pipeline),
+            pipeline_layout: vk::PipelineLayout::from_raw(pipeline_layout),
         }
     }
 }
