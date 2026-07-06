@@ -8967,16 +8967,12 @@ mod tests {
         assert!(pass_plan.backend_ready);
         assert!(pass_plan.sampled_image_recording_ready);
         assert_eq!(pass_plan.sampled_image_quads.len(), 2);
-        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 3);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
         assert_eq!(
             pass_plan.sampled_image_recording_steps[0].layer_id,
             "water-effect-carrier"
         );
-        assert_eq!(
-            pass_plan.sampled_image_recording_steps[1].layer_id,
-            "water-effect-carrier"
-        );
-        assert_eq!(pass_plan.sampled_image_recording_steps[2].layer_id, "hero");
+        assert_eq!(pass_plan.sampled_image_recording_steps[1].layer_id, "hero");
         assert_eq!(
             pass_plan.sampled_image_sources,
             vec![
@@ -8985,14 +8981,14 @@ mod tests {
                 PathBuf::from("/tmp/hero.gtex")
             ]
         );
-        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 1);
+        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 0);
         assert_eq!(
             chain.execution,
             NativeVulkanSceneWeImagePassExecution::FirstClassTarget
         );
-        assert!(chain.local_target_required);
+        assert!(!chain.local_target_required);
         assert!(!chain.color_blend_passthrough);
-        assert!(chain.first_pass_blend_moved_to_final);
+        assert!(!chain.first_pass_blend_moved_to_final);
         assert!(!chain.raw_direct_composite_allowed);
         assert_eq!(chain.final_scene_blend_mode, SceneBlendMode::Modulate);
         assert_eq!(
@@ -9001,10 +8997,11 @@ mod tests {
                 .iter()
                 .map(|pass| pass.role)
                 .collect::<Vec<_>>(),
-            vec![
-                NativeVulkanSceneWeImagePassRole::BaseMaterial,
-                NativeVulkanSceneWeImagePassRole::EffectMaterial
-            ]
+            vec![NativeVulkanSceneWeImagePassRole::EffectMaterial]
+        );
+        assert_eq!(
+            chain.passes.first().map(|pass| pass.input),
+            Some(NativeVulkanSceneWeImagePassEndpoint::SourceTexture)
         );
         assert_eq!(
             chain.passes.last().map(|pass| pass.target),
@@ -9021,53 +9018,48 @@ mod tests {
                 .first_class_target_chain_count,
             1
         );
-        assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 1);
+        assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 0);
         assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.final_scene_step_count,
-            1
+            pass_plan
+                .sampled_image_we_graph_plan
+                .base_material_step_count,
+            0
         );
         assert_eq!(
             pass_plan
                 .sampled_image_we_graph_plan
-                .targets
-                .iter()
-                .map(|target| target.endpoint)
-                .collect::<Vec<_>>(),
-            vec![NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain]
+                .direct_terminal_source_effect_step_count,
+            1
         );
-        assert_eq!(pass_plan.sampled_image_we_graph_plan.step_count, 2);
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.final_scene_step_count,
+            1
+        );
+        assert!(pass_plan.sampled_image_we_graph_plan.targets.is_empty());
+        assert_eq!(pass_plan.sampled_image_we_graph_plan.step_count, 1);
         assert_eq!(
             pass_plan.sampled_image_we_graph_plan.steps[0].output_target_index,
-            Some(0)
-        );
-        assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1].input_target_index,
-            Some(0)
-        );
-        let base_step = &pass_plan.sampled_image_recording_steps[0];
-        let ripple_step = &pass_plan.sampled_image_recording_steps[1];
-        assert_eq!(
-            pass_plan.sampled_image_vertices[base_step.first_vertex as usize].opacity,
-            0.24
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[base_step.first_vertex as usize].tint,
-            native_vulkan_scene_tint_from_color(Some("#102030"))
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[ripple_step.first_vertex as usize].opacity,
-            1.0
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[ripple_step.first_vertex as usize].tint,
-            SCENE_SAMPLED_IMAGE_DEFAULT_TINT
-        );
-        assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1].output_target_index,
             None
         );
         assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1]
+            pass_plan.sampled_image_we_graph_plan.steps[0].input_target_index,
+            None
+        );
+        let ripple_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(
+            pass_plan.sampled_image_vertices[ripple_step.first_vertex as usize].opacity,
+            0.24
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[ripple_step.first_vertex as usize].tint,
+            native_vulkan_scene_tint_from_color(Some("#102030"))
+        );
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.steps[0].output_target_index,
+            None
+        );
+        assert_eq!(
+            pass_plan.sampled_image_we_graph_plan.steps[0]
                 .pass
                 .scene_blend_mode,
             SceneBlendMode::Modulate
@@ -9078,18 +9070,10 @@ mod tests {
                 .render_state
                 .blend
                 .mode,
-            SceneBlendMode::Normal
-        );
-        assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1]
-                .pass
-                .render_state
-                .blend
-                .mode,
             SceneBlendMode::Modulate
         );
         assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1]
+            pass_plan.sampled_image_we_graph_plan.steps[0]
                 .pass
                 .render_state
                 .blend
@@ -9098,35 +9082,22 @@ mod tests {
             NativeVulkanSceneBlendFactor::DstColor
         );
         assert_eq!(
-            pass_plan.sampled_image_we_graph_plan.steps[1]
+            pass_plan.sampled_image_we_graph_plan.steps[0]
                 .pass
                 .texture_slots[0]
                 .slot,
             2
         );
-        let base_bindings = &pass_plan.sampled_image_we_graph_plan.steps[0].texture_bindings;
-        assert_eq!(base_bindings.len(), 1);
-        assert_eq!(base_bindings[0].slot, 0);
-        assert_eq!(
-            base_bindings[0].source,
-            NativeVulkanSceneWeImageGraphTextureBindingSource::SourceTexture
-        );
-        assert_eq!(
-            base_bindings[0].source_path,
-            Some(PathBuf::from("/tmp/water-source.gtex"))
-        );
-        assert_eq!(base_bindings[0].resolution, Some([3450, 3000]));
-        let ripple_bindings = &pass_plan.sampled_image_we_graph_plan.steps[1].texture_bindings;
+        let ripple_bindings = &pass_plan.sampled_image_we_graph_plan.steps[0].texture_bindings;
         assert_eq!(ripple_bindings.len(), 2);
         assert_eq!(ripple_bindings[0].slot, 0);
         assert_eq!(
             ripple_bindings[0].source,
-            NativeVulkanSceneWeImageGraphTextureBindingSource::PreviousGraphTarget
+            NativeVulkanSceneWeImageGraphTextureBindingSource::SourceTexture
         );
-        assert_eq!(ripple_bindings[0].target_index, Some(0));
         assert_eq!(
-            ripple_bindings[0].endpoint,
-            Some(NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain)
+            ripple_bindings[0].source_path,
+            Some(PathBuf::from("/tmp/water-source.gtex"))
         );
         assert_eq!(ripple_bindings[0].resolution, Some([3450, 3000]));
         assert_eq!(ripple_bindings[1].slot, 2);

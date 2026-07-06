@@ -7137,8 +7137,8 @@ mod tests {
         let snapshot = native_vulkan_scene_runtime_snapshot(&item).expect("scene snapshot");
 
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_chain_count, 2);
-        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_step_count, 4);
-        assert_eq!(snapshot.engine_telemetry.render_graph_passes, 4);
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_step_count, 3);
+        assert_eq!(snapshot.engine_telemetry.render_graph_passes, 3);
         assert_eq!(snapshot.engine_telemetry.unsupported_graph_boundaries, 0);
         assert!(
             snapshot.engine_telemetry.render_graph_resource_uses
@@ -7196,27 +7196,27 @@ mod tests {
                 .render_graph_semantic_repeated_target_runs,
             snapshot.draw_pass_sampled_image_we_graph_semantic_repeated_target_run_count
         );
-        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 2);
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 1);
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_texture_resource_count,
             4
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_target_resource_count,
-            2
+            1
         );
-        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_resource_count, 6);
+        assert_eq!(snapshot.draw_pass_sampled_image_we_graph_resource_count, 5);
         assert_eq!(
             snapshot
                 .draw_pass_sampled_image_we_graph_resources
                 .iter()
                 .map(|resource| resource.resource_index)
                 .collect::<Vec<_>>(),
-            vec![0, 1, 2, 3, 4, 5]
+            vec![0, 1, 2, 3, 4]
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_base_material_step_count,
-            2
+            1
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_effect_material_step_count,
@@ -7228,7 +7228,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_graph_target_step_count,
-            2
+            1
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_scene_target_step_count,
@@ -7236,7 +7236,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_multi_step_chain_count,
-            2
+            1
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_max_chain_step_count,
@@ -7244,7 +7244,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_direct_terminal_source_effect_step_count,
-            0
+            1
         );
         assert_eq!(
             snapshot.draw_pass_sampled_image_we_graph_source_direct_chain_start_count,
@@ -7261,9 +7261,16 @@ mod tests {
         assert_eq!(
             snapshot
                 .draw_pass_sampled_image_we_graph_chain_length_counts
+                .get("1")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            snapshot
+                .draw_pass_sampled_image_we_graph_chain_length_counts
                 .get("2")
                 .copied(),
-            Some(2)
+            Some(1)
         );
         assert_eq!(
             snapshot
@@ -7275,7 +7282,7 @@ mod tests {
         assert_eq!(
             snapshot
                 .draw_pass_sampled_image_we_graph_chain_signature_counts
-                .get("base-material>water-ripple")
+                .get("water-ripple")
                 .copied(),
             Some(1)
         );
@@ -7319,27 +7326,14 @@ mod tests {
             .iter()
             .filter(|resource| resource.layer_id.as_deref() == Some("water-carrier"))
             .collect::<Vec<_>>();
-        assert_eq!(water_target_resources.len(), 1);
-        assert_eq!(water_target_resources[0].resource_index, 5);
-        assert_eq!(
-            water_target_resources[0].execution,
-            Some("first-class-target")
-        );
-        assert_eq!(
-            water_target_resources[0].allocation,
-            "allocated-vulkan-effect-target"
-        );
-        assert_eq!(
-            water_target_resources[0].vulkan_effect_target_index,
-            Some(1)
-        );
+        assert!(water_target_resources.is_empty());
 
         let water_ripple_step = snapshot
             .draw_pass_sampled_image_recording_steps
             .iter()
-            .find(|step| step.layer_id == "water-carrier" && step.we_graph_step_index == Some(1))
+            .find(|step| step.layer_id == "water-carrier" && step.we_graph_step_index == Some(0))
             .expect("water ripple recording step");
-        assert_eq!(water_ripple_step.we_graph_input_target_index, Some(1));
+        assert_eq!(water_ripple_step.we_graph_input_target_index, None);
         assert_eq!(water_ripple_step.we_graph_output_target_index, None);
         assert_eq!(
             water_ripple_step.render_target,
@@ -7377,7 +7371,7 @@ mod tests {
         let (_source, vulkan_geometry) = vulkan_snapshot
             .take_vulkanalia_sampled_image_geometry_input()
             .expect("vulkanalia sampled image geometry");
-        assert_eq!(vulkan_geometry.we_graph_resources.len(), 6);
+        assert_eq!(vulkan_geometry.we_graph_resources.len(), 5);
         assert_eq!(
             vulkan_geometry
                 .we_graph_resources
@@ -7392,14 +7386,10 @@ mod tests {
                 .iter()
                 .filter(|resource| resource.resource_kind == "graph-target")
                 .count(),
-            2
+            1
         );
         assert_eq!(
             vulkan_geometry.we_graph_resources[4].allocation,
-            "allocated-vulkan-effect-target"
-        );
-        assert_eq!(
-            vulkan_geometry.we_graph_resources[5].allocation,
             "allocated-vulkan-effect-target"
         );
         vulkan_snapshot.release_cpu_draw_payloads_for_present();
@@ -7420,7 +7410,7 @@ mod tests {
         );
         assert_eq!(
             vulkan_snapshot.draw_pass_sampled_image_we_graph_execution_pass_count,
-            4
+            3
         );
         assert_eq!(
             vulkan_snapshot.draw_pass_sampled_image_we_graph_execution_dependency_count,
@@ -7432,7 +7422,7 @@ mod tests {
         );
         assert_eq!(
             vulkan_snapshot.draw_pass_sampled_image_we_graph_multi_step_chain_count,
-            2
+            1
         );
     }
 

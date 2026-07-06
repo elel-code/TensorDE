@@ -788,6 +788,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         && native_vulkan_scene_we_image_pass_chain_supports_framebuffer_passthrough(
             quad.base_blend_mode,
         );
+    let color_blend_passthrough_pass = color_blend_passthrough && !color_blend_passthrough_folded;
     let execution =
         if first_class_target || material_graph_supported || framebuffer_passthrough_supported {
             NativeVulkanSceneWeImagePassExecution::FirstClassTarget
@@ -802,7 +803,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
         native_vulkan_scene_we_image_pass_chain_source_direct_start_ineligible_reasons(
             quad,
             first_class_target,
-            color_blend_passthrough,
+            color_blend_passthrough_pass,
             material_graph_supported,
         );
     let source_direct_start_candidate = source_direct_start_reasons.is_some();
@@ -815,7 +816,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
     if native_vulkan_scene_we_image_pass_chain_can_direct_terminal_effect(
         quad,
         first_class_target,
-        color_blend_passthrough,
+        color_blend_passthrough_pass,
         material_graph_supported,
     ) {
         let effect = &quad.effect_passes[0];
@@ -871,7 +872,6 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
             }],
         });
     }
-    let color_blend_passthrough_pass = color_blend_passthrough && !color_blend_passthrough_folded;
     let base_pass_required = !source_direct_chain_start;
     let logical_pass_count = usize::from(base_pass_required)
         + quad.effect_passes.len()
@@ -2576,6 +2576,78 @@ mod tests {
             Some(1)
         );
         assert_eq!(plan.effect_kind_counts.get("water-flow").copied(), Some(1));
+    }
+
+    #[test]
+    fn folded_color_blend_material_graph_starts_from_source_texture() {
+        let mut ripple = iris_effect_record();
+        ripple.kind = NativeVulkanSceneEffectKind::WaterRipple;
+        ripple.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        ripple.effect_file = "effects/waterripple/effect.json".to_owned();
+        ripple.runtime = Some("native-effect-motion".to_owned());
+        ripple.shader = Some("effects/waterripple".to_owned());
+        ripple.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 2,
+            source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+            width: Some(512),
+            height: Some(512),
+        }];
+
+        let mut flow = iris_effect_record();
+        flow.kind = NativeVulkanSceneEffectKind::WaterFlow;
+        flow.evaluation_boundary = NativeVulkanSceneEffectEvaluationBoundary::MaterialPass;
+        flow.effect_file = "effects/waterflow/effect.json".to_owned();
+        flow.runtime = Some("wallpaper-engine-effect".to_owned());
+        flow.pass_index = 1;
+        flow.shader = Some("effects/waterflow".to_owned());
+        flow.texture_slots = vec![NativeVulkanSceneTextureSlot {
+            slot: 2,
+            source: PathBuf::from("/tmp/waterflowphase.gtex"),
+            width: Some(64),
+            height: Some(64),
+        }];
+
+        let mut quad = sampled_image_quad(None);
+        quad.effect_target_pass = None;
+        quad.base_blend_mode = SceneBlendMode::Modulate;
+        quad.effect_passes = vec![ripple, flow];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain = native_vulkan_scene_we_image_pass_chain(&quad)
+            .expect("folded color blend material graph chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert!(!chain.color_blend_passthrough);
+        assert_eq!(chain.final_scene_blend_mode, SceneBlendMode::Modulate);
+        assert_eq!(chain.passes.len(), 2);
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert_eq!(
+            chain.passes[0].role,
+            NativeVulkanSceneWeImagePassRole::EffectMaterial
+        );
+        assert_eq!(
+            chain.passes[1].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert_eq!(chain.passes[1].scene_blend_mode, SceneBlendMode::Modulate);
+        assert_eq!(plan.base_material_step_count, 0);
+        assert_eq!(plan.source_direct_chain_start_candidate_count, 1);
+        assert_eq!(plan.source_direct_chain_start_count, 1);
+        assert_eq!(plan.source_direct_chain_start_blocked_count, 0);
+        assert!(
+            !plan
+                .source_direct_chain_start_blocked_reason_counts
+                .contains_key("color-blend-passthrough")
+        );
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("water-ripple>water-flow")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
