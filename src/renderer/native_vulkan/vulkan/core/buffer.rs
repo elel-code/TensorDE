@@ -170,6 +170,158 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
     result
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    command_pool: vk::CommandPool,
+    queue: vk::Queue,
+    role: &'static str,
+    requested_bytes: u64,
+    usage: vk::BufferUsageFlags,
+    upload_payload: &[u8],
+) -> Result<NativeVulkanVulkanaliaBuffer, String> {
+    if upload_payload.is_empty() {
+        return native_vulkan_vulkanalia_create_buffer(
+            device,
+            memory_properties,
+            role,
+            requested_bytes,
+            usage | vk::BufferUsageFlags::TRANSFER_DST,
+            NativeVulkanVulkanaliaBufferMemoryPreference::DeviceLocal,
+            None,
+        );
+    }
+
+    let mut target = Some(native_vulkan_vulkanalia_create_buffer(
+        device,
+        memory_properties,
+        role,
+        requested_bytes,
+        usage | vk::BufferUsageFlags::TRANSFER_DST,
+        NativeVulkanVulkanaliaBufferMemoryPreference::DeviceLocal,
+        None,
+    )?);
+
+    let staging_role = "scene-staging-upload";
+    let mut staging = match native_vulkan_vulkanalia_create_buffer(
+        device,
+        memory_properties,
+        staging_role,
+        upload_payload.len() as u64,
+        vk::BufferUsageFlags::TRANSFER_SRC,
+        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+        Some(upload_payload),
+    ) {
+        Ok(staging) => Some(staging),
+        Err(err) => {
+            if let Some(target) = target.take() {
+                native_vulkan_vulkanalia_destroy_buffer(device, target);
+            }
+            return Err(err);
+        }
+    };
+
+    let mut command_buffers = Vec::new();
+    let mut fence = vk::Fence::null();
+    let result = (|| -> Result<(), String> {
+        let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
+            .command_pool(command_pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
+            .map_err(|err| {
+                format!("vkAllocateCommandBuffers(vulkanalia {role} staging upload): {err:?}")
+            })?;
+        let command_buffer = command_buffers.first().copied().ok_or_else(|| {
+            format!("vkAllocateCommandBuffers(vulkanalia {role} staging upload) returned none")
+        })?;
+
+        let begin_info = vk::CommandBufferBeginInfo::builder()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        unsafe {
+            device
+                .begin_command_buffer(command_buffer, &begin_info)
+                .map_err(|err| {
+                    format!("vkBeginCommandBuffer(vulkanalia {role} staging upload): {err:?}")
+                })?;
+            let copy_region = vk::BufferCopy::builder()
+                .src_offset(0)
+                .dst_offset(0)
+                .size(upload_payload.len() as u64)
+                .build();
+            let target_buffer = target
+                .as_ref()
+                .ok_or_else(|| format!("vulkanalia {role} staging upload lost target buffer"))?
+                .buffer;
+            let staging_buffer = staging
+                .as_ref()
+                .ok_or_else(|| format!("vulkanalia {role} staging upload lost staging buffer"))?
+                .buffer;
+            device.cmd_copy_buffer(
+                command_buffer,
+                staging_buffer,
+                target_buffer,
+                &[copy_region],
+            );
+            device.end_command_buffer(command_buffer).map_err(|err| {
+                format!("vkEndCommandBuffer(vulkanalia {role} staging upload): {err:?}")
+            })?;
+
+            let fence_info = vk::FenceCreateInfo::builder();
+            fence = device.create_fence(&fence_info, None).map_err(|err| {
+                format!("vkCreateFence(vulkanalia {role} staging upload): {err:?}")
+            })?;
+            let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
+                .command_buffer(command_buffer)
+                .build();
+            let command_buffer_infos = [command_buffer_info];
+            let submit_info = vk::SubmitInfo2::builder()
+                .command_buffer_infos(&command_buffer_infos)
+                .build();
+            device
+                .queue_submit2(queue, &[submit_info], fence)
+                .map_err(|err| {
+                    format!("vkQueueSubmit2(vulkanalia {role} staging upload): {err:?}")
+                })?;
+            device
+                .wait_for_fences(&[fence], true, u64::MAX)
+                .map_err(|err| {
+                    format!("vkWaitForFences(vulkanalia {role} staging upload): {err:?}")
+                })?;
+        }
+
+        Ok(())
+    })();
+
+    unsafe {
+        if fence != vk::Fence::null() {
+            device.destroy_fence(fence, None);
+        }
+        if !command_buffers.is_empty() {
+            device.free_command_buffers(command_pool, &command_buffers);
+        }
+    }
+    if let Some(staging) = staging.take() {
+        native_vulkan_vulkanalia_destroy_buffer(device, staging);
+    }
+
+    match result {
+        Ok(()) => {
+            let mut target = target
+                .take()
+                .ok_or_else(|| format!("vulkanalia {role} staging upload lost retained buffer"))?;
+            target.snapshot.payload_uploaded = true;
+            Ok(target)
+        }
+        Err(err) => {
+            if let Some(target) = target.take() {
+                native_vulkan_vulkanalia_destroy_buffer(device, target);
+            }
+            Err(err)
+        }
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_buffer(
     device: &Device,
     buffer: NativeVulkanVulkanaliaBuffer,

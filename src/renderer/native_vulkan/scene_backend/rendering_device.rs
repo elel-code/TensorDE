@@ -7,15 +7,20 @@
 
 use crate::engine::scene_engine::{
     RenderingDevice, RenderingDeviceCommand, SceneFramePlan, SceneGraph, SceneGraphDraw,
-    SceneGraphPass, SceneResourceResidencyPlan,
+    SceneGraphPass, SceneResource, SceneResourceResidencyPlan,
 };
 
+use super::resource_buffers::{
+    NativeVulkanSceneGpuBufferCatalog, NativeVulkanSceneGpuBufferSyncAction,
+};
 use super::resource_storage::NativeVulkanSceneResourceStorage;
+use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 
 #[derive(Debug, Default)]
 pub struct NativeVulkanRenderingDevice {
     commands: Vec<RenderingDeviceCommand>,
     resource_storage: NativeVulkanSceneResourceStorage,
+    gpu_buffer_catalog: NativeVulkanSceneGpuBufferCatalog,
 }
 
 impl NativeVulkanRenderingDevice {
@@ -29,6 +34,24 @@ impl NativeVulkanRenderingDevice {
 
     pub fn resource_storage(&self) -> &NativeVulkanSceneResourceStorage {
         &self.resource_storage
+    }
+
+    pub fn gpu_buffer_actions(&self) -> &[NativeVulkanSceneGpuBufferSyncAction] {
+        self.gpu_buffer_catalog.last_actions()
+    }
+
+    pub fn sync_scene_gpu_uploads(
+        &mut self,
+        resources: &[SceneResource],
+    ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
+        let upload_plan = NativeVulkanSceneGpuUploadPlan::from_resident_resources(
+            &self.resource_storage,
+            resources,
+        )
+        .map_err(|err| err.to_string())?;
+        self.gpu_buffer_catalog
+            .sync_upload_plan(&upload_plan)
+            .map_err(|err| err.to_string())
     }
 
     fn record_residency_plan(&mut self, residency: &SceneResourceResidencyPlan) {
@@ -97,11 +120,13 @@ impl RenderingDevice for NativeVulkanRenderingDevice {
 
 #[cfg(test)]
 mod tests {
+    use super::super::resource_buffers::NativeVulkanSceneGpuBufferSyncAction;
     use super::*;
+    use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneFramePlan, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
         SceneGraphPipelineClass, SceneGraphTarget, SceneMaterialKey, SceneMeshResidency,
-        SceneObjectId, SceneResidentResource, SceneResourceResidencyPlan,
+        SceneObjectId, SceneResidentResource, SceneResource, SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -255,6 +280,37 @@ mod tests {
                 index_count: 6,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn device_syncs_scene_gpu_uploads_after_residency() {
+        let resources = vec![SceneResource::MeshGeometry {
+            id: SceneGeometryId(2),
+            source_record: 12,
+            vertices: vec![SceneMeshVertex::default(); 2],
+            indices: vec![0, 1, 0],
+        }];
+        let residency = SceneResourceResidencyPlan::from_resources(&resources);
+        let mut device = NativeVulkanRenderingDevice::new();
+        device.record_resource_residency(&residency);
+
+        let first = device.sync_scene_gpu_uploads(&resources).unwrap().to_vec();
+        let second = device.sync_scene_gpu_uploads(&resources).unwrap().to_vec();
+
+        assert!(matches!(
+            first.as_slice(),
+            [
+                NativeVulkanSceneGpuBufferSyncAction::Create { .. },
+                NativeVulkanSceneGpuBufferSyncAction::Create { .. }
+            ]
+        ));
+        assert!(matches!(
+            second.as_slice(),
+            [
+                NativeVulkanSceneGpuBufferSyncAction::Reuse { .. },
+                NativeVulkanSceneGpuBufferSyncAction::Reuse { .. }
+            ]
         ));
     }
 }

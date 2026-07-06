@@ -138,6 +138,13 @@ impl NativeVulkanSceneGpuUploadPlan {
     pub fn into_uploads(self) -> Vec<NativeVulkanSceneGpuBufferUpload> {
         self.uploads
     }
+
+    #[cfg(test)]
+    pub(in crate::renderer::native_vulkan) fn from_uploads_for_test(
+        uploads: Vec<NativeVulkanSceneGpuBufferUpload>,
+    ) -> Self {
+        Self { uploads }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -57,6 +57,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_h265_std_shor
 pub(in crate::renderer::native_vulkan) use buffer::{
     NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
     NativeVulkanVulkanaliaBufferSnapshot, native_vulkan_vulkanalia_create_buffer,
+    native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload,
     native_vulkan_vulkanalia_destroy_buffer,
 };
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
