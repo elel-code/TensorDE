@@ -1076,7 +1076,12 @@ fn native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(
     second: &NativeVulkanSceneWeImagePass,
 ) -> Vec<&'static str> {
     let mut reasons = Vec::new();
-    native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(quad, &mut reasons);
+    native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
+        quad,
+        first,
+        second,
+        &mut reasons,
+    );
     if first.role != NativeVulkanSceneWeImagePassRole::EffectMaterial
         || second.role != NativeVulkanSceneWeImagePassRole::EffectMaterial
     {
@@ -1101,6 +1106,12 @@ fn native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(
             != native_vulkan_scene_we_image_graph_endpoint_name(first).map(str::to_owned)
     {
         reasons.push("second-input-not-first-target");
+    }
+    if first.input.is_graph_target()
+        && first.input == second.target
+        && first.input_name == second.target_name
+    {
+        reasons.push("same-input-output-target");
     }
     if first.target_name.is_some() || second.target_name.is_some() {
         reasons.push("explicit-target");
@@ -1134,9 +1145,14 @@ fn native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(
 
 fn native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
     quad: &NativeVulkanSceneSampledImageQuad,
+    first: &NativeVulkanSceneWeImagePass,
+    second: &NativeVulkanSceneWeImagePass,
     reasons: &mut Vec<&'static str>,
 ) {
-    if quad.mesh.is_some() {
+    if let Some(mesh) = quad.mesh.as_ref()
+        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
+        && !native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(first, second)
+    {
         reasons.push("mesh-geometry");
     }
     if quad.effect_motion.is_active() {
@@ -1164,6 +1180,16 @@ fn native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
     {
         reasons.push("invalid-extent");
     }
+}
+
+fn native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(
+    first: &NativeVulkanSceneWeImagePass,
+    second: &NativeVulkanSceneWeImagePass,
+) -> bool {
+    first.input.is_graph_target()
+        && first.target.is_graph_target()
+        && second.target == NativeVulkanSceneWeImagePassEndpoint::Scene
+        && second.final_scene_pass
 }
 
 fn native_vulkan_scene_we_image_passes_have_fusible_waterwaves_texture_slots(
@@ -3210,7 +3236,7 @@ mod tests {
     }
 
     #[test]
-    fn adjacent_waterwaves_on_mesh_keep_physical_passes() {
+    fn adjacent_waterwaves_on_layer_uv_mesh_fuse_final_pair() {
         let first = waterwaves_effect_record(0);
         let second = waterwaves_effect_record(1);
 
@@ -3228,29 +3254,81 @@ mod tests {
             NativeVulkanSceneWeImagePassExecution::FirstClassTarget
         );
         assert!(chain.local_target_required);
-        assert!(chain.ping_pong_required);
-        assert_eq!(chain.passes.len(), 3);
-        assert!(
-            chain
-                .passes
-                .iter()
-                .all(|pass| pass.fused_effect_kind.is_none())
-        );
-        assert_eq!(plan.step_count, 3);
-        assert_eq!(plan.waterwaves_fused2_chain_count, 0);
-        assert_eq!(plan.waterwaves_fused2_ineligible_chain_count, 1);
+        assert!(!chain.ping_pong_required);
+        assert_eq!(chain.passes.len(), 2);
         assert_eq!(
-            plan.waterwaves_fused2_ineligible_reason_counts
-                .get("mesh-geometry")
-                .copied(),
-            Some(1)
+            chain.passes[0].role,
+            NativeVulkanSceneWeImagePassRole::BaseMaterial
+        );
+        assert_eq!(
+            chain.passes[1].fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+        );
+        assert_eq!(chain.passes[1].fused_effect_passes.len(), 2);
+        assert_eq!(
+            chain.passes[1].input,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+        );
+        assert_eq!(
+            chain.passes[1].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert!(chain.passes[1].final_scene_pass);
+        assert_eq!(plan.step_count, 2);
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(plan.graph_target_step_count, 1);
+        assert_eq!(plan.scene_target_step_count, 1);
+        assert_eq!(plan.waterwaves_fused2_chain_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
+        assert_eq!(plan.waterwaves_fused2_ineligible_chain_count, 0);
+        assert!(
+            !plan
+                .waterwaves_fused2_ineligible_reason_counts
+                .contains_key("mesh-geometry")
         );
         assert_eq!(
             plan.chain_signature_counts
-                .get("base-material>water-waves>water-waves")
+                .get("base-material>water-waves-fused2")
                 .copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn multi_waterwaves_on_mesh_do_not_fuse_same_graph_target_pair() {
+        let first = waterwaves_effect_record(0);
+        let second = waterwaves_effect_record(1);
+        let third = waterwaves_effect_record(2);
+
+        let mut quad = sampled_image_quad(Some(mesh()));
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![first, second, third];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("mesh waterwaves graph chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(chain.passes.len(), 3);
+        assert_eq!(
+            chain.passes[1].fused_effect_kind, None,
+            "first graph-target pair must keep the ping-pong dependency"
+        );
+        assert_eq!(
+            chain.passes[2].fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+        );
+        assert!(chain.passes.iter().all(|pass| {
+            !(pass.fused_effect_kind.is_some()
+                && pass.input.is_graph_target()
+                && pass.input == pass.target
+                && pass.input_name == pass.target_name)
+        }));
+        assert_eq!(plan.step_count, 3);
+        assert_eq!(plan.target_count, 2);
+        assert_eq!(plan.waterwaves_fused2_chain_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
     }
 
     #[test]

@@ -9470,7 +9470,7 @@ mod tests {
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
-        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 2);
+        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 1);
         for target in &pass_plan.sampled_image_effect_targets {
             assert_eq!(target.width, 130);
             assert_eq!(target.height, 130);
@@ -9478,10 +9478,7 @@ mod tests {
         let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
         assert!((target.local_left - -20.0).abs() < 1.0e-6);
         assert!((target.local_top - -20.0).abs() < 1.0e-6);
-        let target = &pass_plan.sampled_image_we_graph_plan.targets[1];
-        assert!((target.local_left - -20.0).abs() < 1.0e-6);
-        assert!((target.local_top - -20.0).abs() < 1.0e-6);
-        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 3);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
         let base_step = &pass_plan.sampled_image_recording_steps[0];
         assert_eq!(base_step.material_pass.shader, None);
         assert!(base_step.material_pass.combo_keys.is_empty());
@@ -9497,26 +9494,18 @@ mod tests {
         assert!((base_vertices[0].uv[1] - 1.2).abs() < 1.0e-6);
         assert_eq!(base_vertices[0].effect_uv, base_vertices[0].uv);
         assert!((base_vertices[0].opacity - 0.3).abs() < 1.0e-6);
-        let first_effect_step = &pass_plan.sampled_image_recording_steps[1];
-        assert_eq!(first_effect_step.material_pass.fused_effect_kind, None);
-        assert!(
-            first_effect_step
-                .material_pass
-                .fused_effect_passes
-                .is_empty()
-        );
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
         assert_eq!(
-            first_effect_step.material_pass.effect_kinds,
-            vec![NativeVulkanSceneEffectKind::WaterWaves]
+            final_step.material_pass.fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
         );
-        assert_eq!(first_effect_step.vertex_count, 4);
-        let final_step = &pass_plan.sampled_image_recording_steps[2];
-        assert_eq!(final_step.material_pass.fused_effect_kind, None);
-        assert!(final_step.material_pass.fused_effect_passes.is_empty());
+        assert_eq!(final_step.material_pass.fused_effect_passes.len(), 2);
         assert_eq!(
             final_step.material_pass.effect_kinds,
             vec![NativeVulkanSceneEffectKind::WaterWaves]
         );
+        assert_eq!(final_step.we_graph_input_target_index, Some(0));
+        assert_eq!(final_step.we_graph_output_target_index, None);
         let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
             ..final_step.first_vertex as usize + final_step.vertex_count as usize];
         assert_eq!(final_step.vertex_count, 3);
