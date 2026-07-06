@@ -705,6 +705,36 @@ impl NativeVulkanVulkanaliaSceneFusedEffectKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel {
+    #[default]
+    PixelStrength,
+    NormalizedStrength100,
+}
+
+impl NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel {
+    pub fn from_label(label: &str) -> Self {
+        match label {
+            "normalized-strength-100" => Self::NormalizedStrength100,
+            _ => Self::PixelStrength,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::PixelStrength => "pixel-strength",
+            Self::NormalizedStrength100 => "normalized-strength-100",
+        }
+    }
+
+    pub fn vertex_strength_multiplier(self) -> f32 {
+        match self {
+            Self::PixelStrength => 1.0,
+            Self::NormalizedStrength100 => 100.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneEffectUniform {
     pub name: String,
@@ -821,6 +851,8 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub system_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
     pub combo_keys: Vec<String>,
     pub combo_values: BTreeMap<String, i64>,
+    pub foliage_sway_vertex_strength_model:
+        NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel,
 }
 
 impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
@@ -852,6 +884,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             system_shader_uniforms: Vec::new(),
             combo_keys: Vec::new(),
             combo_values: BTreeMap::new(),
+            foliage_sway_vertex_strength_model: Default::default(),
         }
     }
 
@@ -874,7 +907,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             .map(|kind| kind.as_str())
             .unwrap_or("<none>");
         format!(
-            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} constants={} uniforms={} system_uniforms={} elapsed_frame_constants={} effects={} fused_effect={} fused_passes={} pipeline={}",
+            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} constants={} uniforms={} system_uniforms={} elapsed_frame_constants={} effects={} fused_effect={} fused_passes={} foliage_vertex_strength_model={} pipeline={}",
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
@@ -898,6 +931,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             effect_kinds,
             fused_effect,
             self.fused_effect_passes.len(),
+            self.foliage_sway_vertex_strength_model.as_str(),
             self.render_state.sampled_image_pipeline_label(),
         )
     }
@@ -4113,7 +4147,7 @@ fn run_scene_sampled_image_present_loop(
 
 fn native_vulkan_vulkanalia_scene_effect_target_source_label(
     target: &NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
-    fallback_target_index: usize,
+    ordinal_target_index: usize,
 ) -> String {
     match (
         target.we_graph_chain_index,
@@ -4130,7 +4164,7 @@ fn native_vulkan_vulkanalia_scene_effect_target_source_label(
         ),
         _ => format!(
             "we-image-effect-target-layer-{}-{}",
-            target.layer_index, fallback_target_index
+            target.layer_index, ordinal_target_index
         ),
     }
 }

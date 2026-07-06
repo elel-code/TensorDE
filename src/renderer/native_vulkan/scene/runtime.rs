@@ -37,9 +37,11 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
     NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneFusedEffectKind,
-    NativeVulkanVulkanaliaSceneFusedEffectPass, NativeVulkanVulkanaliaSceneMaterialFlag,
-    NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
+    NativeVulkanVulkanaliaSceneEffectUniform,
+    NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel,
+    NativeVulkanVulkanaliaSceneFusedEffectKind, NativeVulkanVulkanaliaSceneFusedEffectPass,
+    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneRenderState,
+    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
     NativeVulkanVulkanaliaSceneSampledImageMaterial,
@@ -114,7 +116,6 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_step_count: usize,
     pub draw_pass_sampled_image_we_graph_first_class_target_chain_count: usize,
-    pub draw_pass_sampled_image_we_graph_temporary_raw_fallback_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_suppressed_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_target_count: usize,
     pub draw_pass_sampled_image_we_graph_final_scene_step_count: usize,
@@ -1627,39 +1628,35 @@ fn native_vulkan_scene_sampled_layer_uses_executable_material_graph(
 fn native_vulkan_scene_render_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneRenderLayer,
 ) -> bool {
-    !layer.image_effect_passes.iter().any(|pass| {
-        native_vulkan_scene_effect_pass_uses_first_class_target(
-            pass.runtime.as_deref(),
-            &pass.effect_file,
-        )
-    }) && !native_vulkan_scene_render_layer_uses_executable_material_graph(layer)
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
+    !layer.image_effect_passes.is_empty()
+        && !layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
         })
+        && !native_vulkan_scene_render_layer_uses_executable_material_graph(layer)
 }
 
 fn native_vulkan_scene_snapshot_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneSnapshotLayer,
 ) -> bool {
-    !layer.image_effect_passes.iter().any(|pass| {
-        native_vulkan_scene_effect_pass_uses_first_class_target(
-            pass.runtime.as_deref(),
-            &pass.effect_file,
-        )
-    }) && !native_vulkan_scene_snapshot_layer_uses_executable_material_graph(layer)
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
+    !layer.image_effect_passes.is_empty()
+        && !layer.image_effect_passes.iter().any(|pass| {
+            native_vulkan_scene_effect_pass_uses_first_class_target(
+                pass.runtime.as_deref(),
+                &pass.effect_file,
+            )
         })
+        && !native_vulkan_scene_snapshot_layer_uses_executable_material_graph(layer)
 }
 
 fn native_vulkan_scene_sampled_layer_suppresses_unimplemented_we_effect_chain(
     layer: &SceneSnapshotSampledImageLayer,
 ) -> bool {
-    !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
+    !layer.image_effect_passes.is_empty()
+        && !native_vulkan_scene_sampled_layer_uses_first_class_effect_target(layer)
         && !native_vulkan_scene_sampled_layer_uses_executable_material_graph(layer)
-        && layer.image_effect_passes.iter().any(|pass| {
-            native_vulkan_scene_effect_pass_blocks_raw_material_fallback(&pass.effect_file)
-        })
 }
 
 fn native_vulkan_scene_render_layer_uses_executable_material_graph(
@@ -1692,25 +1689,6 @@ fn native_vulkan_scene_effect_pass_uses_first_class_target(
         || file.ends_with("/effects/iris/effect.json")
         || file == "effects/opacity/effect.json"
         || file.ends_with("/effects/opacity/effect.json")
-}
-
-fn native_vulkan_scene_effect_pass_is_unimplemented_water_chain(effect_file: &str) -> bool {
-    native_vulkan_scene_effect_pass_is_water_ripple(effect_file)
-        || native_vulkan_scene_effect_pass_is_unimplemented_water_non_ripple(effect_file)
-}
-
-fn native_vulkan_scene_effect_pass_blocks_raw_material_fallback(effect_file: &str) -> bool {
-    native_vulkan_scene_effect_pass_is_unimplemented_water_chain(effect_file)
-        || native_vulkan_scene_effect_pass_is_color_key(effect_file)
-        || native_vulkan_scene_effect_pass_is_clipping_mask(effect_file)
-}
-
-fn native_vulkan_scene_effect_pass_is_unimplemented_water_non_ripple(effect_file: &str) -> bool {
-    let file = effect_file.replace('\\', "/").to_ascii_lowercase();
-    file.contains("waterflow")
-        || file.contains("water_flow")
-        || file.contains("watercaustics")
-        || file.contains("water_caustics")
 }
 
 fn native_vulkan_scene_effect_pass_is_executable_material_graph(effect_file: &str) -> bool {
@@ -3167,6 +3145,7 @@ pub struct NativeVulkanSceneEffectRecordSnapshot {
     pub constant_shader_values: BTreeMap<String, Value>,
     pub combo_keys: Vec<String>,
     pub combo_values: BTreeMap<String, i64>,
+    pub foliage_sway_vertex_strength_model: &'static str,
     pub depth_test: &'static str,
     pub depth_write: &'static str,
     pub cull_mode: String,
@@ -3189,6 +3168,7 @@ pub struct NativeVulkanSceneMaterialPassSnapshot {
     pub system_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
     pub combo_keys: Vec<String>,
     pub combo_values: BTreeMap<String, i64>,
+    pub foliage_sway_vertex_strength_model: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -3232,6 +3212,7 @@ pub struct NativeVulkanSceneWeImagePassSnapshot {
     pub constant_shader_values: BTreeMap<String, Value>,
     pub combo_keys: Vec<String>,
     pub combo_values: BTreeMap<String, i64>,
+    pub foliage_sway_vertex_strength_model: &'static str,
     pub depth_test: &'static str,
     pub depth_write: &'static str,
     pub cull_mode: String,
@@ -3245,7 +3226,6 @@ pub struct NativeVulkanSceneWeImagePassChainSnapshot {
     pub first_pass_blend_moved_to_final: bool,
     pub color_blend_passthrough: bool,
     pub final_scene_blend_mode: SceneBlendMode,
-    pub raw_direct_composite_allowed: bool,
     pub unsupported_reason: Option<&'static str>,
     pub passes: Vec<NativeVulkanSceneWeImagePassSnapshot>,
 }
@@ -3258,7 +3238,6 @@ pub struct NativeVulkanSceneWeImageGraphStepSnapshot {
     pub chain_index: usize,
     pub step_index: usize,
     pub execution: &'static str,
-    pub raw_direct_composite_allowed: bool,
     pub unsupported_reason: Option<&'static str>,
     pub input_target_index: Option<u32>,
     pub output_target_index: Option<u32>,
@@ -3405,6 +3384,7 @@ fn native_vulkan_scene_material_pass_snapshot(
         ),
         combo_keys: material.combo_keys.clone(),
         combo_values: material.combo_values.clone(),
+        foliage_sway_vertex_strength_model: material.foliage_sway_vertex_strength_model.as_str(),
     }
 }
 
@@ -3494,6 +3474,7 @@ fn native_vulkan_scene_effect_record_snapshot(
         constant_shader_values: effect.constant_shader_values.clone(),
         combo_keys: effect.combo_keys.clone(),
         combo_values: effect.combo_values.clone(),
+        foliage_sway_vertex_strength_model: effect.foliage_sway_vertex_strength_model.as_str(),
         depth_test: effect.depth_test.as_str(),
         depth_write: effect.depth_write.as_str(),
         cull_mode: effect.cull_mode.label().to_owned(),
@@ -3510,7 +3491,6 @@ fn native_vulkan_scene_we_image_pass_chain_snapshot(
         first_pass_blend_moved_to_final: chain.first_pass_blend_moved_to_final,
         color_blend_passthrough: chain.color_blend_passthrough,
         final_scene_blend_mode: chain.final_scene_blend_mode,
-        raw_direct_composite_allowed: chain.raw_direct_composite_allowed,
         unsupported_reason: chain.unsupported_reason,
         passes: chain
             .passes
@@ -3559,6 +3539,7 @@ fn native_vulkan_scene_we_image_pass_snapshot(
         constant_shader_values: pass.constant_shader_values,
         combo_keys: pass.combo_keys,
         combo_values: pass.combo_values,
+        foliage_sway_vertex_strength_model: pass.foliage_sway_vertex_strength_model.as_str(),
         depth_test: pass.depth_test.as_str(),
         depth_write: pass.depth_write.as_str(),
         cull_mode: pass.cull_mode.label().to_owned(),
@@ -3752,7 +3733,6 @@ fn native_vulkan_scene_we_image_graph_steps_snapshot(
             chain_index: step.chain_index,
             step_index: step.step_index,
             execution: step.execution.as_str(),
-            raw_direct_composite_allowed: step.raw_direct_composite_allowed,
             unsupported_reason: step.unsupported_reason,
             input_target_index: step.input_target_index,
             output_target_index: step.output_target_index,
@@ -4162,6 +4142,10 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         system_shader_uniforms,
         combo_keys: material.combo_keys,
         combo_values: material.combo_values,
+        foliage_sway_vertex_strength_model:
+            NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel::from_label(
+                material.foliage_sway_vertex_strength_model,
+            ),
     }
 }
 
@@ -4328,9 +4312,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_first_class_target_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .first_class_target_chain_count;
-    let sampled_image_we_graph_temporary_raw_fallback_chain_count = pass_plan
-        .sampled_image_we_graph_plan
-        .temporary_raw_fallback_chain_count;
     let sampled_image_we_graph_suppressed_chain_count =
         pass_plan.sampled_image_we_graph_plan.suppressed_chain_count;
     let sampled_image_we_graph_target_count = pass_plan.sampled_image_we_graph_plan.target_count;
@@ -4617,8 +4598,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         draw_pass_sampled_image_we_graph_step_count: sampled_image_we_graph_step_count,
         draw_pass_sampled_image_we_graph_first_class_target_chain_count:
             sampled_image_we_graph_first_class_target_chain_count,
-        draw_pass_sampled_image_we_graph_temporary_raw_fallback_chain_count:
-            sampled_image_we_graph_temporary_raw_fallback_chain_count,
         draw_pass_sampled_image_we_graph_suppressed_chain_count:
             sampled_image_we_graph_suppressed_chain_count,
         draw_pass_sampled_image_we_graph_target_count: sampled_image_we_graph_target_count,
@@ -5709,6 +5688,7 @@ mod tests {
             system_shader_uniforms: Vec::new(),
             combo_keys: Vec::new(),
             combo_values: BTreeMap::new(),
+            foliage_sway_vertex_strength_model: "pixel-strength",
         }
     }
 

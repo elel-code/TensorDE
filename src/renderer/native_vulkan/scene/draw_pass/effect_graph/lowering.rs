@@ -3,10 +3,7 @@ use super::super::{
     NativeVulkanSceneWeImagePassChain, NativeVulkanSceneWeImagePassEndpoint,
     NativeVulkanSceneWeImagePassLoweringStats,
 };
-use super::{
-    native_vulkan_scene_we_image_graph_endpoint_name,
-    native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad,
-};
+use super::native_vulkan_scene_we_image_graph_endpoint_name;
 
 mod residency;
 mod waterwaves;
@@ -246,16 +243,9 @@ fn native_vulkan_scene_we_image_passes_can_fuse_redirected_waterwaves2(
     {
         return false;
     }
-    let layer_uv_mesh_pair = quad
-        .mesh
-        .as_ref()
-        .is_some_and(|mesh| !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh));
     native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(quad, first, second)
         .into_iter()
-        .all(|reason| {
-            reason == "same-input-output-target"
-                || (layer_uv_mesh_pair && reason == "mesh-geometry")
-        })
+        .all(|reason| reason == "same-input-output-target")
 }
 
 fn native_vulkan_scene_we_image_pass_chain_swap_following_endpoints(

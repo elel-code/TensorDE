@@ -70,9 +70,10 @@ pub(super) use self::types::{
     NativeVulkanSceneBlendState, NativeVulkanSceneCullMode,
     NativeVulkanSceneDirectSampledImageGraphPass, NativeVulkanSceneDrawPassPlan,
     NativeVulkanSceneEffectEvaluationBoundary, NativeVulkanSceneEffectKind,
-    NativeVulkanSceneEffectRecord, NativeVulkanSceneFusedEffectKind,
-    NativeVulkanSceneFusedEffectPass, NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind,
-    NativeVulkanSceneMaterialPass, NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
+    NativeVulkanSceneEffectRecord, NativeVulkanSceneFoliageSwayVertexStrengthModel,
+    NativeVulkanSceneFusedEffectKind, NativeVulkanSceneFusedEffectPass,
+    NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
+    NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
     NativeVulkanSceneRecordableQuad, NativeVulkanSceneRenderState,
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
     NativeVulkanSceneSampledImageEffectTargetAlias, NativeVulkanSceneSampledImageGeometryRange,
@@ -1170,7 +1171,6 @@ fn native_vulkan_scene_allocate_we_graph_effect_targets(
         .engine_graph
         .target_allocation_plan_for_run_plan(&plan.engine_run_plan);
     let mut physical_slot_to_effect_target = BTreeMap::<u32, u32>::new();
-    let mut fallback_physical_slot = engine_allocation_plan.physical_target_count;
     let mut allocation = NativeVulkanSceneEffectTargetAllocation::default();
 
     for target in plan.targets.iter().filter(|target| {
@@ -1195,9 +1195,15 @@ fn native_vulkan_scene_allocate_we_graph_effect_targets(
             &engine_allocation_plan.allocations,
         )
         .unwrap_or_else(|| {
-            let slot = fallback_physical_slot;
-            fallback_physical_slot = fallback_physical_slot.saturating_add(1);
-            slot
+            panic!(
+                "WE graph target layer={} chain={} target={} endpoint={} extent={}x{} has no engine render-graph physical allocation",
+                target.layer_index,
+                target.chain_index,
+                target.target_index,
+                target.endpoint.as_str(),
+                target.width,
+                target.height
+            )
         });
         let effect_target_index = if let Some(effect_target_index) =
             physical_slot_to_effect_target.get(&physical_slot)
@@ -1355,118 +1361,237 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
     indices: &mut Vec<u32>,
 ) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    native_vulkan_scene_append_sampled_image_we_graph_step_geometry_domain(
+        quad,
+        step,
+        native_vulkan_scene_we_graph_step_geometry_domain(quad, step, plan, scene_size),
+        scene_size,
+        vertices,
+        indices,
+    )
+}
+
+fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    native_vulkan_scene_append_sampled_image_we_graph_step_vertices_domain(
+        quad,
+        step,
+        native_vulkan_scene_we_graph_step_geometry_domain(quad, step, plan, scene_size),
+        scene_size,
+        vertices,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum NativeVulkanSceneWeGraphStepGeometryDomain {
+    SourceScene,
+    SourceLayerUvPuppetScene,
+    BaseSource {
+        output_bounds: Option<NativeVulkanSceneWeImageGraphTargetBounds>,
+        layer_uv_puppet_target: bool,
+    },
+    SourceMaterial {
+        output_bounds: Option<NativeVulkanSceneWeImageGraphTargetBounds>,
+        layer_uv_puppet_target: bool,
+    },
+    TargetPassSpace {
+        output_bounds: Option<NativeVulkanSceneWeImageGraphTargetBounds>,
+        vertex_skew: bool,
+    },
+    FinalLayerUvPuppet {
+        input_bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    },
+    FinalPassSpaceProjection {
+        input_bounds: NativeVulkanSceneWeImageGraphTargetBounds,
+    },
+    FinalSceneProjection {
+        input_bounds: Option<NativeVulkanSceneWeImageGraphTargetBounds>,
+        mask_uv_uses_target_uv: bool,
+    },
+}
+
+fn native_vulkan_scene_we_graph_step_geometry_domain(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    plan: &NativeVulkanSceneWeImageGraphPlan,
+    scene_size: Option<SceneSize>,
+) -> NativeVulkanSceneWeGraphStepGeometryDomain {
     if native_vulkan_scene_we_graph_step_is_direct_terminal_source_effect(step) {
-        return native_vulkan_scene_append_sampled_image_geometry(
-            quad, scene_size, vertices, indices,
-        );
-    }
-    if step.pass.final_scene_pass {
-        let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
         if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
             quad, step, plan,
         ) {
-            if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan)
-            {
-                return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_geometry(
-                    &final_quad,
-                    bounds,
-                    step.pass.effect_uv_transform,
-                    scene_size,
-                    vertices,
-                    indices,
-                );
-            }
+            return NativeVulkanSceneWeGraphStepGeometryDomain::SourceLayerUvPuppetScene;
         }
-        if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan) {
-            if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
-                &final_quad,
-                step,
-                scene_size,
+        return NativeVulkanSceneWeGraphStepGeometryDomain::SourceScene;
+    }
+    if step.pass.final_scene_pass {
+        let input_bounds = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan);
+        if let Some(input_bounds) = input_bounds {
+            if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
+                quad, step, plan,
             ) {
-                return native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bounds(
-                    &final_quad,
-                    bounds,
-                    step.pass.effect_uv_transform,
-                    vertices,
-                    indices,
-                );
+                return NativeVulkanSceneWeGraphStepGeometryDomain::FinalLayerUvPuppet {
+                    input_bounds,
+                };
             }
-            return native_vulkan_scene_append_sampled_image_effect_final_geometry_with_target_bounds(
-                &final_quad,
-                bounds,
-                step.pass.effect_uv_transform,
-                native_vulkan_scene_we_graph_step_final_mask_uv_uses_target_uv(step),
-                scene_size,
-                vertices,
-                indices,
-            );
+            if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
+                quad, step, scene_size,
+            ) {
+                return NativeVulkanSceneWeGraphStepGeometryDomain::FinalPassSpaceProjection {
+                    input_bounds,
+                };
+            }
         }
-        return native_vulkan_scene_append_sampled_image_effect_final_geometry(
-            &final_quad,
-            scene_size,
-            vertices,
-            indices,
-        );
+        return NativeVulkanSceneWeGraphStepGeometryDomain::FinalSceneProjection {
+            input_bounds,
+            mask_uv_uses_target_uv: native_vulkan_scene_we_graph_step_final_mask_uv_uses_target_uv(
+                step,
+            ),
+        };
     }
     match step.pass.role {
         NativeVulkanSceneWeImagePassRole::BaseMaterial => {
-            native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-                .and_then(|bounds| {
-                    if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
+            NativeVulkanSceneWeGraphStepGeometryDomain::BaseSource {
+                output_bounds: native_vulkan_scene_we_graph_step_output_target_bounds(step, plan),
+                layer_uv_puppet_target:
+                    native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
                         quad, step, plan,
-                    ) {
-                        let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
-                        let first_index = indices.len().min(u32::MAX as usize) as u32;
-                        return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
-                            quad,
-                            bounds,
-                            first_vertex,
-                            vertices,
-                            indices,
-                        )
-                        .map(|index_count| NativeVulkanSceneSampledImageGeometryRange {
-                            first_vertex,
-                            vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
-                            first_index,
-                            index_count,
-                        });
-                    }
-                    native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
-                        quad, bounds, vertices, indices,
-                    )
-                })
-                .or_else(|| {
-                    native_vulkan_scene_append_sampled_image_effect_base_geometry(
-                        quad, vertices, indices,
-                    )
-                })
+                    ),
+            }
         }
         NativeVulkanSceneWeImagePassRole::EffectMaterial
         | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
-            let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
             if native_vulkan_scene_we_graph_step_samples_source_texture(step) {
-                if let Some(bounds) =
-                    native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-                {
-                    return native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
-                        &local_quad,
+                NativeVulkanSceneWeGraphStepGeometryDomain::SourceMaterial {
+                    output_bounds: native_vulkan_scene_we_graph_step_output_target_bounds(
+                        step, plan,
+                    ),
+                    layer_uv_puppet_target:
+                        native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
+                            quad, step, plan,
+                        ),
+                }
+            } else {
+                NativeVulkanSceneWeGraphStepGeometryDomain::TargetPassSpace {
+                    output_bounds: native_vulkan_scene_we_graph_step_output_target_bounds(
+                        step, plan,
+                    ),
+                    vertex_skew: native_vulkan_scene_we_graph_step_is_vertex_skew(step),
+                }
+            }
+        }
+    }
+}
+
+fn native_vulkan_scene_we_graph_step_target_pass_space_quad(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> NativeVulkanSceneSampledImageQuad {
+    let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+    local_quad.mesh = None;
+    local_quad.effect_motion = SceneNativeEffectMotion::default();
+    local_quad.texture_region = None;
+    local_quad
+}
+
+fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry_domain(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    step: &NativeVulkanSceneWeImageGraphStep,
+    domain: NativeVulkanSceneWeGraphStepGeometryDomain,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    match domain {
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceScene => {
+            native_vulkan_scene_append_sampled_image_geometry(quad, scene_size, vertices, indices)
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceLayerUvPuppetScene => {
+            native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_source_geometry(
+                quad,
+                step.pass.effect_uv_transform,
+                scene_size,
+                vertices,
+                indices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::BaseSource {
+            output_bounds,
+            layer_uv_puppet_target,
+        } => {
+            if let Some(bounds) = output_bounds {
+                if layer_uv_puppet_target {
+                    let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+                    let first_index = indices.len().min(u32::MAX as usize) as u32;
+                    return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
+                        quad,
                         bounds,
+                        first_vertex,
                         vertices,
                         indices,
-                    );
+                    )
+                    .map(|index_count| NativeVulkanSceneSampledImageGeometryRange {
+                        first_vertex,
+                        vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
+                        first_index,
+                        index_count,
+                    });
                 }
-                return native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                return native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
+                    quad, bounds, vertices, indices,
+                );
+            }
+            native_vulkan_scene_append_sampled_image_effect_base_geometry(quad, vertices, indices)
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceMaterial {
+            output_bounds,
+            layer_uv_puppet_target,
+        } => {
+            let local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if let Some(bounds) = output_bounds {
+                if layer_uv_puppet_target {
+                    let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+                    let first_index = indices.len().min(u32::MAX as usize) as u32;
+                    return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_geometry_with_target_bounds(
+                        &local_quad,
+                        bounds,
+                        first_vertex,
+                        vertices,
+                        indices,
+                    )
+                    .map(|index_count| NativeVulkanSceneSampledImageGeometryRange {
+                        first_vertex,
+                        vertex_count: SCENE_FULL_SAMPLED_IMAGE_VERTEX_COUNT,
+                        first_index,
+                        index_count,
+                    });
+                }
+                return native_vulkan_scene_append_sampled_image_effect_base_geometry_with_target_bounds(
                     &local_quad,
+                    bounds,
                     vertices,
                     indices,
                 );
             }
-            if let Some(bounds) = native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-            {
-                local_quad.mesh = None;
-                local_quad.effect_motion = SceneNativeEffectMotion::default();
-                local_quad.texture_region = None;
-                if native_vulkan_scene_we_graph_step_is_vertex_skew(step) {
+            native_vulkan_scene_append_sampled_image_effect_base_geometry(
+                &local_quad,
+                vertices,
+                indices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::TargetPassSpace {
+            output_bounds,
+            vertex_skew,
+        } => {
+            let mut local_quad =
+                native_vulkan_scene_we_graph_step_target_pass_space_quad(quad, step);
+            if let Some(bounds) = output_bounds {
+                if vertex_skew {
                     return native_vulkan_scene_append_sampled_image_vertex_skew_effect_pass_geometry_with_target_bounds(
                         &local_quad,
                         bounds,
@@ -1483,12 +1608,6 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
                     indices,
                 );
             }
-            // Reverse-engineered WE graph-local effect passes after the base
-            // material draw use pass-space quad geometry and texcoordPass, not
-            // the puppet mesh UVs.
-            local_quad.mesh = None;
-            local_quad.effect_motion = SceneNativeEffectMotion::default();
-            local_quad.texture_region = None;
             local_quad.effect_uv_space =
                 native_vulkan_scene_we_graph_step_effect_uv_space(quad, step);
             native_vulkan_scene_append_sampled_image_effect_base_geometry(
@@ -1497,108 +1616,119 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_geometry(
                 indices,
             )
         }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalLayerUvPuppet { input_bounds } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_geometry(
+                &final_quad,
+                input_bounds,
+                step.pass.effect_uv_transform,
+                scene_size,
+                vertices,
+                indices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalPassSpaceProjection { input_bounds } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            native_vulkan_scene_append_sampled_image_effect_pass_geometry_with_target_bounds(
+                &final_quad,
+                input_bounds,
+                step.pass.effect_uv_transform,
+                vertices,
+                indices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalSceneProjection {
+            input_bounds,
+            mask_uv_uses_target_uv,
+        } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if let Some(bounds) = input_bounds {
+                return native_vulkan_scene_append_sampled_image_effect_final_geometry_with_target_bounds(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    mask_uv_uses_target_uv,
+                    scene_size,
+                    vertices,
+                    indices,
+                );
+            }
+            native_vulkan_scene_append_sampled_image_effect_final_geometry(
+                &final_quad,
+                scene_size,
+                vertices,
+                indices,
+            )
+        }
     }
 }
 
-fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
+fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices_domain(
     quad: &NativeVulkanSceneSampledImageQuad,
     step: &NativeVulkanSceneWeImageGraphStep,
-    plan: &NativeVulkanSceneWeImageGraphPlan,
+    domain: NativeVulkanSceneWeGraphStepGeometryDomain,
     scene_size: Option<SceneSize>,
     vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
 ) -> Option<u32> {
-    if native_vulkan_scene_we_graph_step_is_direct_terminal_source_effect(step) {
-        return native_vulkan_scene_append_sampled_image_vertices_in_scene(
-            quad, scene_size, vertices,
-        );
-    }
-    if step.pass.final_scene_pass {
-        let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
-        if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
-            quad, step, plan,
-        ) {
-            if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan)
-            {
-                return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_vertices(
-                    &final_quad,
-                    bounds,
-                    step.pass.effect_uv_transform,
-                    scene_size,
-                    vertices,
-                );
-            }
+    match domain {
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceScene => {
+            native_vulkan_scene_append_sampled_image_vertices_in_scene(quad, scene_size, vertices)
         }
-        if let Some(bounds) = native_vulkan_scene_we_graph_step_input_target_bounds(step, plan) {
-            if native_vulkan_scene_we_graph_step_uses_pass_space_scene_geometry(
-                &final_quad,
-                step,
-                scene_size,
-            ) {
-                return native_vulkan_scene_append_sampled_image_effect_pass_vertices_with_target_bounds(
-                    &final_quad,
-                    bounds,
-                    step.pass.effect_uv_transform,
-                    vertices,
-                );
-            }
-            return native_vulkan_scene_append_sampled_image_effect_final_vertices_with_target_bounds(
-                &final_quad,
-                bounds,
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceLayerUvPuppetScene => {
+            native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_source_vertices(
+                quad,
                 step.pass.effect_uv_transform,
-                native_vulkan_scene_we_graph_step_final_mask_uv_uses_target_uv(step),
                 scene_size,
                 vertices,
-            );
+            )
         }
-        return native_vulkan_scene_append_sampled_image_effect_final_vertices(
-            &final_quad,
-            scene_size,
-            vertices,
-        );
-    }
-    match step.pass.role {
-        NativeVulkanSceneWeImagePassRole::BaseMaterial => {
-            native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-                .and_then(|bounds| {
-                    if native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
-                        quad, step, plan,
-                    ) {
-                        return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_vertices_with_target_bounds(
-                            quad,
-                            bounds,
-                            vertices,
-                        );
-                    }
-                    native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
-                        quad, bounds, vertices,
-                    )
-                })
-                .or_else(|| native_vulkan_scene_append_sampled_image_effect_base_vertices(quad, vertices))
+        NativeVulkanSceneWeGraphStepGeometryDomain::BaseSource {
+            output_bounds,
+            layer_uv_puppet_target,
+        } => {
+            if let Some(bounds) = output_bounds {
+                if layer_uv_puppet_target {
+                    return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_vertices_with_target_bounds(
+                        quad,
+                        bounds,
+                        vertices,
+                    );
+                }
+                return native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
+                    quad, bounds, vertices,
+                );
+            }
+            native_vulkan_scene_append_sampled_image_effect_base_vertices(quad, vertices)
         }
-        NativeVulkanSceneWeImagePassRole::EffectMaterial
-        | NativeVulkanSceneWeImagePassRole::ColorBlendPassthrough => {
-            let mut local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
-            if native_vulkan_scene_we_graph_step_samples_source_texture(step) {
-                if let Some(bounds) =
-                    native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-                {
-                    return native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
+        NativeVulkanSceneWeGraphStepGeometryDomain::SourceMaterial {
+            output_bounds,
+            layer_uv_puppet_target,
+        } => {
+            let local_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if let Some(bounds) = output_bounds {
+                if layer_uv_puppet_target {
+                    return native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_base_vertices_with_target_bounds(
                         &local_quad,
                         bounds,
                         vertices,
                     );
                 }
-                return native_vulkan_scene_append_sampled_image_effect_base_vertices(
+                return native_vulkan_scene_append_sampled_image_effect_base_vertices_with_target_bounds(
                     &local_quad,
+                    bounds,
                     vertices,
                 );
             }
-            if let Some(bounds) = native_vulkan_scene_we_graph_step_output_target_bounds(step, plan)
-            {
-                local_quad.mesh = None;
-                local_quad.effect_motion = SceneNativeEffectMotion::default();
-                local_quad.texture_region = None;
-                if native_vulkan_scene_we_graph_step_is_vertex_skew(step) {
+            native_vulkan_scene_append_sampled_image_effect_base_vertices(&local_quad, vertices)
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::TargetPassSpace {
+            output_bounds,
+            vertex_skew,
+        } => {
+            let mut local_quad =
+                native_vulkan_scene_we_graph_step_target_pass_space_quad(quad, step);
+            if let Some(bounds) = output_bounds {
+                if vertex_skew {
                     return native_vulkan_scene_append_sampled_image_vertex_skew_effect_pass_vertices_with_target_bounds(
                         &local_quad,
                         bounds,
@@ -1613,12 +1743,49 @@ fn native_vulkan_scene_append_sampled_image_we_graph_step_vertices(
                     vertices,
                 );
             }
-            local_quad.mesh = None;
-            local_quad.effect_motion = SceneNativeEffectMotion::default();
-            local_quad.texture_region = None;
             local_quad.effect_uv_space =
                 native_vulkan_scene_we_graph_step_effect_uv_space(quad, step);
             native_vulkan_scene_append_sampled_image_effect_base_vertices(&local_quad, vertices)
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalLayerUvPuppet { input_bounds } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_vertices(
+                &final_quad,
+                input_bounds,
+                step.pass.effect_uv_transform,
+                scene_size,
+                vertices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalPassSpaceProjection { input_bounds } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            native_vulkan_scene_append_sampled_image_effect_pass_vertices_with_target_bounds(
+                &final_quad,
+                input_bounds,
+                step.pass.effect_uv_transform,
+                vertices,
+            )
+        }
+        NativeVulkanSceneWeGraphStepGeometryDomain::FinalSceneProjection {
+            input_bounds,
+            mask_uv_uses_target_uv,
+        } => {
+            let final_quad = native_vulkan_scene_we_graph_step_colored_quad(quad, step);
+            if let Some(bounds) = input_bounds {
+                return native_vulkan_scene_append_sampled_image_effect_final_vertices_with_target_bounds(
+                    &final_quad,
+                    bounds,
+                    step.pass.effect_uv_transform,
+                    mask_uv_uses_target_uv,
+                    scene_size,
+                    vertices,
+                );
+            }
+            native_vulkan_scene_append_sampled_image_effect_final_vertices(
+                &final_quad,
+                scene_size,
+                vertices,
+            )
         }
     }
 }
@@ -1649,13 +1816,29 @@ fn native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_targets(
             .filter(|candidate| {
                 candidate.pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
             })
-            .all(|candidate| {
-                candidate.pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves)
-            })
+            .all(native_vulkan_scene_we_graph_step_uses_layer_uv_domain_effect)
         && plan.steps.iter().any(|candidate| {
             candidate.chain_index == step.chain_index
-                && candidate.pass.effect_kind == Some(NativeVulkanSceneEffectKind::WaterWaves)
+                && candidate.pass.role == NativeVulkanSceneWeImagePassRole::EffectMaterial
+                && native_vulkan_scene_we_graph_step_uses_layer_uv_domain_effect(candidate)
         })
+}
+
+fn native_vulkan_scene_we_graph_step_uses_layer_uv_domain_effect(
+    step: &NativeVulkanSceneWeImageGraphStep,
+) -> bool {
+    match step.pass.effect_kind {
+        Some(
+            NativeVulkanSceneEffectKind::WaterWaves
+            | NativeVulkanSceneEffectKind::WaterRipple
+            | NativeVulkanSceneEffectKind::WaterFlow
+            | NativeVulkanSceneEffectKind::WaterCaustics,
+        ) => true,
+        Some(NativeVulkanSceneEffectKind::FoliageSway) => {
+            step.pass.combo_values.get("MODE").copied().unwrap_or(0) == 0
+        }
+        _ => false,
+    }
 }
 
 fn native_vulkan_scene_we_graph_step_uses_layer_uv_domain_puppet_scene_mesh(
@@ -2088,6 +2271,7 @@ fn native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
         system_shader_uniforms: native_vulkan_scene_we_graph_step_system_shader_uniforms(step),
         combo_keys: step.pass.combo_keys.clone(),
         combo_values: step.pass.combo_values.clone(),
+        foliage_sway_vertex_strength_model: step.pass.foliage_sway_vertex_strength_model,
     }
 }
 
@@ -4552,6 +4736,106 @@ fn native_vulkan_scene_append_sampled_image_effect_final_vertices(
     final_quad.texture_region = None;
     final_quad.effect_uv_space = native_vulkan_scene_sampled_image_effect_final_uv_space(quad);
     native_vulkan_scene_append_sampled_image_vertices_in_scene(&final_quad, scene_size, vertices)
+}
+
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_source_vertices(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+) -> Option<u32> {
+    let mesh = quad.mesh.as_deref()?;
+    if mesh.vertices.len() < 3
+        || !quad.width.is_finite()
+        || !quad.height.is_finite()
+        || quad.width <= f64::EPSILON
+        || quad.height <= f64::EPSILON
+    {
+        return None;
+    }
+    let before_vertices = vertices.len();
+    let opacity = quad.opacity.clamp(0.0, 1.0) as f32;
+    let tint = quad.tint;
+    let local_offset_x = (0.5 - quad.transform.anchor_x) * quad.width;
+    let local_offset_y = (0.5 - quad.transform.anchor_y) * quad.height;
+    let rotation = quad.transform.rotation_deg.to_radians();
+    let (sin, cos) = rotation.sin_cos();
+    vertices.reserve(mesh.vertices.len());
+    for vertex in &mesh.vertices {
+        if !vertex.x.is_finite()
+            || !vertex.y.is_finite()
+            || !vertex.u.is_finite()
+            || !vertex.v.is_finite()
+        {
+            vertices.truncate(before_vertices);
+            return None;
+        }
+        let x = vertex.x + local_offset_x;
+        let y = vertex.y + local_offset_y;
+        let position =
+            native_vulkan_scene_transform_point_with_rotation(x, y, quad.transform, cos, sin)?;
+        let layer_uv = [vertex.u as f32, vertex.v as f32];
+        vertices.push(NativeVulkanSceneSampledImageVertex {
+            position,
+            uv: native_vulkan_scene_apply_texture_region_to_uv(layer_uv, quad.texture_region),
+            effect_uv: native_vulkan_scene_apply_effect_uv_transform(layer_uv, effect_uv_transform),
+            opacity: native_vulkan_scene_sampled_image_vertex_opacity(opacity, vertex.opacity),
+            tint,
+        });
+    }
+    if !native_vulkan_scene_sampled_image_vertices_visible_in_scene(
+        &vertices[before_vertices..],
+        scene_size,
+    ) {
+        vertices.truncate(before_vertices);
+        return None;
+    }
+    Some(
+        vertices
+            .len()
+            .saturating_sub(before_vertices)
+            .min(u32::MAX as usize) as u32,
+    )
+}
+
+fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_source_geometry(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    effect_uv_transform: Option<SceneEffectUvTransform>,
+    scene_size: Option<SceneSize>,
+    vertices: &mut Vec<NativeVulkanSceneSampledImageVertex>,
+    indices: &mut Vec<u32>,
+) -> Option<NativeVulkanSceneSampledImageGeometryRange> {
+    let mesh = quad.mesh.as_deref()?;
+    if mesh.indices.len() < 3 || mesh.indices.len() % 3 != 0 {
+        return None;
+    }
+    let mesh_indices = native_vulkan_scene_sampled_image_mesh_indices(mesh)?;
+    let first_vertex = vertices.len().min(u32::MAX as usize) as u32;
+    let first_index = indices.len().min(u32::MAX as usize) as u32;
+    let before_indices = indices.len();
+    let vertex_count =
+        native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_source_vertices(
+            quad,
+            effect_uv_transform,
+            scene_size,
+            vertices,
+        )?;
+    let index_count = mesh_indices.len().min(u32::MAX as usize) as u32;
+    indices.extend(
+        mesh_indices
+            .iter()
+            .map(|index| first_vertex.saturating_add(*index)),
+    );
+    if vertex_count < 3 {
+        indices.truncate(before_indices);
+        return None;
+    }
+    Some(NativeVulkanSceneSampledImageGeometryRange {
+        first_vertex,
+        vertex_count,
+        first_index,
+        index_count,
+    })
 }
 
 fn native_vulkan_scene_append_sampled_image_waterwaves_uv_domain_puppet_final_vertices(
@@ -9021,7 +9305,6 @@ mod tests {
         assert!(!chain.local_target_required);
         assert!(!chain.color_blend_passthrough);
         assert!(!chain.first_pass_blend_moved_to_final);
-        assert!(!chain.raw_direct_composite_allowed);
         assert_eq!(chain.final_scene_blend_mode, SceneBlendMode::Modulate);
         assert_eq!(
             chain
@@ -9221,7 +9504,6 @@ mod tests {
             NativeVulkanSceneWeImagePassExecution::FirstClassTarget
         );
         assert!(!chain.color_blend_passthrough);
-        assert!(!chain.raw_direct_composite_allowed);
         assert_eq!(
             pass_plan.sampled_image_we_graph_plan.suppressed_chain_count,
             0
@@ -9231,12 +9513,6 @@ mod tests {
                 .sampled_image_we_graph_plan
                 .first_class_target_chain_count,
             1
-        );
-        assert_eq!(
-            pass_plan
-                .sampled_image_we_graph_plan
-                .temporary_raw_fallback_chain_count,
-            0
         );
         assert_eq!(pass_plan.sampled_image_effect_targets.len(), 0);
         assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 0);
@@ -9263,7 +9539,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_uses_mesh_geometry_for_source_direct_material_graph_start() {
+    fn draw_pass_plan_uses_layer_uv_target_for_source_direct_fragment_uv_graph_start() {
         let mut water = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         water.layer_id = "mesh-source-direct-water".to_owned();
         water.source = Some(PathBuf::from("/tmp/mesh-water-source.gtex"));
@@ -9388,6 +9664,17 @@ mod tests {
             0
         );
         assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 1);
+        let engine_allocation = pass_plan
+            .sampled_image_we_graph_plan
+            .engine_graph
+            .target_allocation_plan_for_run_plan(
+                &pass_plan.sampled_image_we_graph_plan.engine_run_plan,
+            );
+        assert_eq!(engine_allocation.logical_target_count, 1);
+        assert_eq!(
+            pass_plan.sampled_image_effect_target_aliases.len(),
+            pass_plan.sampled_image_we_graph_plan.target_count
+        );
         assert_eq!(
             pass_plan.sampled_image_we_graph_plan.steps[0].pass.role,
             NativeVulkanSceneWeImagePassRole::EffectMaterial
@@ -9396,9 +9683,15 @@ mod tests {
             pass_plan.sampled_image_we_graph_plan.steps[0].pass.input,
             NativeVulkanSceneWeImagePassEndpoint::SourceTexture
         );
+        let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
+        assert!((target.local_left - 0.0).abs() < 1.0e-6);
+        assert!((target.local_top - 0.0).abs() < 1.0e-6);
+        assert_eq!(target.width, 1024);
+        assert_eq!(target.height, 512);
+
         let first_step = &pass_plan.sampled_image_recording_steps[0];
-        assert_eq!(first_step.vertex_count, 3);
-        assert_eq!(first_step.index_count, 3);
+        assert_eq!(first_step.vertex_count, 4);
+        assert_eq!(first_step.index_count, 6);
         assert_eq!(
             first_step.texture_slot_bindings,
             vec![
@@ -9415,20 +9708,211 @@ mod tests {
         let first_vertex = first_step.first_vertex as usize;
         assert_eq!(
             pass_plan.sampled_image_vertices[first_vertex].uv,
-            [0.0, 0.0]
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[first_vertex + 1].uv,
-            [1.0, 0.0]
-        );
-        assert_eq!(
-            pass_plan.sampled_image_vertices[first_vertex + 2].uv,
             [0.0, 1.0]
         );
         assert_eq!(
-            pass_plan.sampled_image_vertices[first_vertex + 2].opacity,
+            pass_plan.sampled_image_vertices[first_vertex + 1].uv,
+            [1.0, 1.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex + 2].uv,
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[first_vertex + 3].uv,
+            [1.0, 0.0]
+        );
+
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(final_step.vertex_count, 3);
+        assert_eq!(final_step.index_count, 3);
+        assert_eq!(final_step.we_graph_input_target_index, Some(0));
+        assert_eq!(final_step.we_graph_output_target_index, None);
+        let final_vertex = final_step.first_vertex as usize;
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex].position,
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex + 1].position,
+            [512.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex + 2].position,
+            [0.0, 256.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex].uv,
+            [0.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex + 1].uv,
+            [1.0, 0.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex + 2].uv,
+            [0.0, 1.0]
+        );
+        assert_eq!(
+            pass_plan.sampled_image_vertices[final_vertex + 2].opacity,
             0.5
         );
+    }
+
+    #[test]
+    fn draw_pass_plan_uses_layer_uv_target_for_foliage_sway_water_ripple_mesh_chain() {
+        let mut layer = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
+        layer.layer_id = "foliage-ripple-mesh".to_owned();
+        layer.source = Some(PathBuf::from("/tmp/body.gtex"));
+        layer.texture_slots = vec![SceneRenderTextureSlot {
+            slot: 0,
+            source: PathBuf::from("/tmp/body.gtex"),
+            width: Some(100),
+            height: Some(100),
+        }];
+        layer.width = Some(100.0);
+        layer.height = Some(100.0);
+        layer.mesh = Some(Arc::new(SceneMesh {
+            vertices: vec![
+                SceneMeshVertex {
+                    x: -70.0,
+                    y: -60.0,
+                    u: -0.2,
+                    v: -0.1,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: 80.0,
+                    y: -60.0,
+                    u: 1.1,
+                    v: -0.1,
+                    opacity: 1.0,
+                },
+                SceneMeshVertex {
+                    x: -70.0,
+                    y: 60.0,
+                    u: -0.2,
+                    v: 1.2,
+                    opacity: 1.0,
+                },
+            ],
+            indices: vec![0, 1, 2],
+            skin: None,
+            puppet_clips: Vec::new(),
+            puppet_clipping_records: Vec::new(),
+        }));
+        layer.image_effect_passes = vec![
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/workshop/2790231929/foliagesway/effect.json".to_owned(),
+                runtime: Some("wallpaper-engine-effect".to_owned()),
+                pass_index: 0,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("workshop/2790231929/effects/foliagesway".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: Some("disabled".to_owned()),
+                depthwrite: Some("disabled".to_owned()),
+                cullmode: Some("nocull".to_owned()),
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 2,
+                    source: PathBuf::from("/tmp/noise.gtex"),
+                    width: Some(256),
+                    height: Some(256),
+                }],
+                effect_uv_transform: None,
+                combos: Default::default(),
+                constant_shader_values: BTreeMap::from([
+                    ("strength".to_owned(), serde_json::json!(0.5)),
+                    ("scale".to_owned(), serde_json::json!(0.05)),
+                ]),
+            },
+            crate::renderer::SceneRenderImageEffectPass {
+                effect_file: "effects/workshop/2790231929/waterripple/effect.json".to_owned(),
+                runtime: Some("native-effect-motion".to_owned()),
+                pass_index: 1,
+                command: None,
+                source: None,
+                target: None,
+                binds: Default::default(),
+                fbos: Default::default(),
+                shader: Some("workshop/2790231929/effects/waterripple".to_owned()),
+                blending: Some("normal".to_owned()),
+                depthtest: Some("disabled".to_owned()),
+                depthwrite: Some("disabled".to_owned()),
+                cullmode: Some("nocull".to_owned()),
+                texture_slots: vec![SceneRenderTextureSlot {
+                    slot: 2,
+                    source: PathBuf::from("/tmp/waterripplenormal.gtex"),
+                    width: Some(512),
+                    height: Some(512),
+                }],
+                effect_uv_transform: None,
+                combos: Default::default(),
+                constant_shader_values: Default::default(),
+            },
+        ];
+
+        let draw_plan = NativeVulkanSceneDrawPlan {
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            dynamic_topology_required: false,
+            draw_ops: vec![layer],
+            unsupported_layers: Vec::new(),
+            runtime_display_available: false,
+        };
+
+        let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
+
+        assert!(pass_plan.backend_ready);
+        assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 1);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
+        assert!((target.local_left - -20.0).abs() < 1.0e-6);
+        assert!((target.local_top - -20.0).abs() < 1.0e-6);
+        assert_eq!(target.width, 130);
+        assert_eq!(target.height, 130);
+
+        let source_step = &pass_plan.sampled_image_recording_steps[0];
+        assert_eq!(source_step.vertex_count, 4);
+        assert_eq!(source_step.index_count, 6);
+        assert_eq!(source_step.we_graph_input_target_index, None);
+        assert_eq!(source_step.we_graph_output_target_index, Some(0));
+        assert_eq!(
+            source_step.material_pass.effect_kinds,
+            vec![NativeVulkanSceneEffectKind::FoliageSway]
+        );
+        let source_vertices = &pass_plan.sampled_image_vertices[source_step.first_vertex as usize
+            ..source_step.first_vertex as usize + source_step.vertex_count as usize];
+        assert_eq!(source_vertices[0].position, [0.0, 0.0]);
+        assert_eq!(source_vertices[1].position, [130.0, 0.0]);
+        assert_eq!(source_vertices[2].position, [0.0, 130.0]);
+        assert!((source_vertices[0].uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((source_vertices[0].uv[1] - 1.2).abs() < 1.0e-6);
+
+        let final_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(final_step.vertex_count, 3);
+        assert_eq!(final_step.index_count, 3);
+        assert_eq!(final_step.we_graph_input_target_index, Some(0));
+        assert_eq!(final_step.we_graph_output_target_index, None);
+        assert_eq!(
+            final_step.material_pass.effect_kinds,
+            vec![NativeVulkanSceneEffectKind::WaterRipple]
+        );
+        let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
+            ..final_step.first_vertex as usize + final_step.vertex_count as usize];
+        assert_eq!(final_vertices[0].position, [-70.0, -60.0]);
+        assert_eq!(final_vertices[1].position, [80.0, -60.0]);
+        assert_eq!(final_vertices[2].position, [-70.0, 60.0]);
+        assert!((final_vertices[0].uv[0] - 0.0).abs() < 1.0e-6);
+        assert!((final_vertices[0].uv[1] - 0.0).abs() < 1.0e-6);
+        assert!((final_vertices[1].uv[0] - 1.0).abs() < 1.0e-6);
+        assert!((final_vertices[1].uv[1] - 0.0).abs() < 1.0e-6);
+        assert!((final_vertices[2].uv[0] - 0.0).abs() < 1.0e-6);
+        assert!((final_vertices[2].uv[1] - 1.0).abs() < 1.0e-6);
     }
 
     #[test]
@@ -9529,7 +10013,6 @@ mod tests {
         );
         assert!(!chain.local_target_required);
         assert!(!chain.color_blend_passthrough);
-        assert!(chain.raw_direct_composite_allowed);
         assert_eq!(chain.final_scene_blend_mode, SceneBlendMode::Alpha);
         assert_eq!(pass_plan.sampled_image_we_graph_plan.chain_count, 1);
         assert_eq!(
@@ -9537,12 +10020,6 @@ mod tests {
                 .sampled_image_we_graph_plan
                 .first_class_target_chain_count,
             1
-        );
-        assert_eq!(
-            pass_plan
-                .sampled_image_we_graph_plan
-                .temporary_raw_fallback_chain_count,
-            0
         );
         assert_eq!(
             pass_plan.sampled_image_we_graph_plan.suppressed_chain_count,
@@ -9565,7 +10042,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_runs_waterwaves_puppet_mesh_in_layer_uv_domain() {
+    fn draw_pass_plan_runs_waterwaves_puppet_mesh_in_direct_layer_uv_domain() {
         let mut layer = draw_op(0, NativeVulkanSceneDrawOpKind::Image);
         layer.layer_id = "overhanging-puppet-waterwaves".to_owned();
         layer.source = Some(PathBuf::from("/tmp/body.gtex"));
@@ -9642,15 +10119,9 @@ mod tests {
 
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
-        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 1);
-        for target in &pass_plan.sampled_image_effect_targets {
-            assert_eq!(target.width, 130);
-            assert_eq!(target.height, 130);
-        }
-        let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
-        assert!((target.local_left - -20.0).abs() < 1.0e-6);
-        assert!((target.local_top - -20.0).abs() < 1.0e-6);
-        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 2);
+        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 0);
+        assert_eq!(pass_plan.sampled_image_we_graph_plan.targets.len(), 0);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
         assert_eq!(
             pass_plan
                 .sampled_image_we_graph_plan
@@ -9661,6 +10132,24 @@ mod tests {
             pass_plan
                 .sampled_image_we_graph_plan
                 .source_direct_chain_start_count,
+            0
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .direct_terminal_source_effect_step_count,
+            1
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .waterwaves_fused2_step_count,
+            1
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .waterwaves_fused2_step_eliminated_count,
             1
         );
         let first_step = &pass_plan.sampled_image_recording_steps[0];
@@ -9668,50 +10157,36 @@ mod tests {
             first_step.material_pass.shader,
             Some("effects/waterwaves".to_owned())
         );
+        assert_eq!(
+            first_step.material_pass.fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+        );
+        assert_eq!(first_step.material_pass.fused_effect_passes.len(), 2);
         assert!(first_step.material_pass.combo_keys.is_empty());
         assert!(first_step.material_pass.combo_values.is_empty());
         assert!(first_step.material_pass.constant_shader_values.is_empty());
         assert_eq!(first_step.we_graph_input_target_index, None);
-        assert_eq!(first_step.we_graph_output_target_index, Some(0));
+        assert_eq!(first_step.we_graph_output_target_index, None);
         let first_vertices = &pass_plan.sampled_image_vertices[first_step.first_vertex as usize
             ..first_step.first_vertex as usize + first_step.vertex_count as usize];
         assert_eq!(first_step.vertex_count, 3);
         assert_eq!(first_step.index_count, 3);
-        assert_eq!(first_vertices[0].position, [0.0, 10.0]);
-        assert_eq!(first_vertices[1].position, [150.0, 10.0]);
-        assert_eq!(first_vertices[2].position, [0.0, 130.0]);
+        assert_eq!(first_vertices[0].position, [-70.0, -60.0]);
+        assert_eq!(first_vertices[1].position, [80.0, -60.0]);
+        assert_eq!(first_vertices[2].position, [-70.0, 60.0]);
         assert!((first_vertices[0].uv[0] - -0.2).abs() < 1.0e-6);
         assert!((first_vertices[0].uv[1] - -0.1).abs() < 1.0e-6);
-        assert_eq!(first_vertices[0].effect_uv, [0.0, 1.0]);
+        assert!((first_vertices[1].uv[0] - 1.1).abs() < 1.0e-6);
+        assert!((first_vertices[1].uv[1] - -0.1).abs() < 1.0e-6);
+        assert!((first_vertices[2].uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((first_vertices[2].uv[1] - 1.2).abs() < 1.0e-6);
+        assert!((first_vertices[0].effect_uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((first_vertices[0].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert!((first_vertices[1].effect_uv[0] - 1.1).abs() < 1.0e-6);
+        assert!((first_vertices[1].effect_uv[1] - -0.1).abs() < 1.0e-6);
+        assert!((first_vertices[2].effect_uv[0] - -0.2).abs() < 1.0e-6);
+        assert!((first_vertices[2].effect_uv[1] - 1.2).abs() < 1.0e-6);
         assert!((first_vertices[0].opacity - 0.3).abs() < 1.0e-6);
-        let final_step = &pass_plan.sampled_image_recording_steps[1];
-        assert_eq!(final_step.material_pass.fused_effect_kind, None);
-        assert!(final_step.material_pass.fused_effect_passes.is_empty());
-        assert_eq!(
-            final_step.material_pass.effect_kinds,
-            vec![NativeVulkanSceneEffectKind::WaterWaves]
-        );
-        assert_eq!(final_step.we_graph_input_target_index, Some(0));
-        assert_eq!(final_step.we_graph_output_target_index, None);
-        let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
-            ..final_step.first_vertex as usize + final_step.vertex_count as usize];
-        assert_eq!(final_step.vertex_count, 3);
-        assert_eq!(final_vertices[0].position, [-70.0, -60.0]);
-        assert_eq!(final_vertices[1].position, [80.0, -60.0]);
-        assert_eq!(final_vertices[2].position, [-70.0, 60.0]);
-        assert!(final_vertices[0].uv[0].abs() < 1.0e-6);
-        assert!(final_vertices[0].uv[1].abs() < 1.0e-6);
-        assert!((final_vertices[1].uv[0] - 1.0).abs() < 1.0e-6);
-        assert!(final_vertices[1].uv[1].abs() < 1.0e-6);
-        assert!(final_vertices[2].uv[0].abs() < 1.0e-6);
-        assert!((final_vertices[2].uv[1] - 1.0).abs() < 1.0e-6);
-        assert!((final_vertices[0].effect_uv[0] - -0.2).abs() < 1.0e-6);
-        assert!((final_vertices[0].effect_uv[1] - -0.1).abs() < 1.0e-6);
-        assert!((final_vertices[1].effect_uv[0] - 1.1).abs() < 1.0e-6);
-        assert!((final_vertices[1].effect_uv[1] - -0.1).abs() < 1.0e-6);
-        assert!((final_vertices[2].effect_uv[0] - -0.2).abs() < 1.0e-6);
-        assert!((final_vertices[2].effect_uv[1] - 1.2).abs() < 1.0e-6);
-        assert_eq!(final_vertices[0].opacity, 1.0);
     }
 
     #[test]

@@ -75,7 +75,7 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 212) float auto_time_offset2;
     layout(offset = 216) float auto_time_offset3;
     layout(offset = 220) float auto_time_offset4;
-    layout(offset = 224) uint auto_flags;
+    layout(offset = 224) uint effect_flags_or_foliage_vertex_strength_multiplier_bits;
     layout(offset = 228) uint output_flags;
     layout(offset = 232) vec2 vertex_extent;
 } pc;
@@ -157,6 +157,10 @@ vec2 foliage_direction_weights() {
 
 vec4 foliage_corner_weights() {
     return vec4(pc.auto_center1, pc.auto_center2);
+}
+
+float foliage_vertex_strength_multiplier() {
+    return uintBitsToFloat(pc.effect_flags_or_foliage_vertex_strength_multiplier_bits);
 }
 
 vec3 fallback_noise(vec2 uv) {
@@ -332,8 +336,8 @@ vec2 foliage_sway_vertex_offset(vec2 uv) {
     );
     vec2 direction_weights = foliage_direction_weights();
     return vec2(
-        dot(sines, vec4(1.0)) * pc.auto_strength * 100.0 * weight * direction_weights.x,
-        dot(csines, vec4(1.0)) * pc.auto_strength * 100.0 * weight * direction_weights.y
+        dot(sines, vec4(1.0)) * pc.auto_strength * foliage_vertex_strength_multiplier() * weight * direction_weights.x,
+        dot(csines, vec4(1.0)) * pc.auto_strength * foliage_vertex_strength_multiplier() * weight * direction_weights.y
     );
 }
 

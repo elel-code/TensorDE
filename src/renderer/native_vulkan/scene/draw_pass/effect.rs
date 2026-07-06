@@ -15,7 +15,8 @@ use super::blend::{
 };
 use super::{
     NativeVulkanSceneCullMode, NativeVulkanSceneEffectEvaluationBoundary,
-    NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag,
+    NativeVulkanSceneEffectKind, NativeVulkanSceneEffectRecord,
+    NativeVulkanSceneFoliageSwayVertexStrengthModel, NativeVulkanSceneMaterialFlag,
     NativeVulkanSceneMaterialKind, NativeVulkanSceneMaterialPass,
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneTextureSlot,
 };
@@ -41,6 +42,12 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_effect_pass
         .map(|pass| {
             let semantics =
                 native_vulkan_scene_effect_semantics(pass.runtime.as_deref(), &pass.effect_file);
+            let foliage_sway_vertex_strength_model =
+                native_vulkan_scene_foliage_sway_vertex_strength_model(
+                    semantics.kind,
+                    &pass.effect_file,
+                    pass.shader.as_deref(),
+                );
             NativeVulkanSceneEffectRecord {
                 kind: semantics.kind,
                 evaluation_boundary: semantics.evaluation_boundary,
@@ -69,6 +76,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_effect_pass
                 constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
                 combo_values: pass.combos.clone(),
+                foliage_sway_vertex_strength_model,
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
                 ),
@@ -89,6 +97,12 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
         .map(|pass| {
             let semantics =
                 native_vulkan_scene_effect_semantics(pass.runtime.as_deref(), &pass.effect_file);
+            let foliage_sway_vertex_strength_model =
+                native_vulkan_scene_foliage_sway_vertex_strength_model(
+                    semantics.kind,
+                    &pass.effect_file,
+                    pass.shader.as_deref(),
+                );
             NativeVulkanSceneEffectRecord {
                 kind: semantics.kind,
                 evaluation_boundary: semantics.evaluation_boundary,
@@ -110,6 +124,7 @@ pub(super) fn native_vulkan_scene_effect_passes_from_scene_passes(
                 constant_shader_values: pass.constant_shader_values.clone(),
                 combo_keys: pass.combos.keys().cloned().collect(),
                 combo_values: pass.combos.clone(),
+                foliage_sway_vertex_strength_model,
                 depth_test: native_vulkan_scene_material_flag_from_optional(
                     pass.depthtest.as_deref(),
                 ),
@@ -186,6 +201,8 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
         system_shader_uniforms: Vec::new(),
         combo_keys: native_vulkan_scene_effect_combo_key_list(effect_passes),
         combo_values: native_vulkan_scene_effect_combo_value_map(effect_passes),
+        foliage_sway_vertex_strength_model:
+            native_vulkan_scene_foliage_sway_vertex_strength_model_from_passes(effect_passes),
     }
 }
 
@@ -421,6 +438,36 @@ fn native_vulkan_scene_effect_constant_shader_value_map(
         }
     }
     values
+}
+
+fn native_vulkan_scene_foliage_sway_vertex_strength_model(
+    kind: NativeVulkanSceneEffectKind,
+    effect_file: &str,
+    shader: Option<&str>,
+) -> NativeVulkanSceneFoliageSwayVertexStrengthModel {
+    if kind != NativeVulkanSceneEffectKind::FoliageSway {
+        return NativeVulkanSceneFoliageSwayVertexStrengthModel::PixelStrength;
+    }
+    let effect_file = native_vulkan_scene_normalized_effect_file(effect_file);
+    let shader = shader
+        .map(native_vulkan_scene_normalized_effect_file)
+        .unwrap_or_default();
+    if effect_file == "effects/workshop/2790231929/foliagesway/effect.json"
+        || shader == "workshop/2790231929/effects/foliagesway"
+    {
+        return NativeVulkanSceneFoliageSwayVertexStrengthModel::NormalizedStrength100;
+    }
+    NativeVulkanSceneFoliageSwayVertexStrengthModel::PixelStrength
+}
+
+fn native_vulkan_scene_foliage_sway_vertex_strength_model_from_passes(
+    passes: &[NativeVulkanSceneEffectRecord],
+) -> NativeVulkanSceneFoliageSwayVertexStrengthModel {
+    passes
+        .iter()
+        .find(|pass| pass.kind == NativeVulkanSceneEffectKind::FoliageSway)
+        .map(|pass| pass.foliage_sway_vertex_strength_model)
+        .unwrap_or_default()
 }
 
 fn native_vulkan_scene_effect_combo_key_list(
@@ -695,6 +742,60 @@ mod tests {
     }
 
     #[test]
+    fn foliage_sway_vertex_strength_model_is_resolved_before_vulkan_draw() {
+        let standard_pass = SceneRenderImageEffectPass {
+            effect_file: "effects/foliagesway/effect.json".to_owned(),
+            runtime: None,
+            pass_index: 0,
+            command: None,
+            source: None,
+            target: None,
+            binds: Default::default(),
+            fbos: Default::default(),
+            shader: Some("effects/foliagesway".to_owned()),
+            blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            texture_slots: Vec::new(),
+            effect_uv_transform: None,
+            combos: Default::default(),
+            constant_shader_values: Default::default(),
+        };
+        let workshop_pass = SceneRenderImageEffectPass {
+            effect_file: "effects/workshop/2790231929/foliagesway/effect.json".to_owned(),
+            shader: Some("workshop/2790231929/effects/foliagesway".to_owned()),
+            ..standard_pass.clone()
+        };
+
+        let standard_records =
+            native_vulkan_scene_effect_passes_from_render_passes(&[standard_pass]);
+        assert_eq!(
+            standard_records[0].foliage_sway_vertex_strength_model,
+            NativeVulkanSceneFoliageSwayVertexStrengthModel::PixelStrength
+        );
+
+        let workshop_records =
+            native_vulkan_scene_effect_passes_from_render_passes(&[workshop_pass]);
+        assert_eq!(
+            workshop_records[0].foliage_sway_vertex_strength_model,
+            NativeVulkanSceneFoliageSwayVertexStrengthModel::NormalizedStrength100
+        );
+        let material = native_vulkan_scene_sampled_image_material_pass(
+            NativeVulkanSceneMaterialKind::SampledImage,
+            SceneBlendMode::Normal,
+            None,
+            SceneRenderAlphaTextureMode::Multiply,
+            1,
+            &workshop_records,
+        );
+        assert_eq!(
+            material.foliage_sway_vertex_strength_model,
+            NativeVulkanSceneFoliageSwayVertexStrengthModel::NormalizedStrength100
+        );
+    }
+
+    #[test]
     fn material_pass_keeps_scene_alpha_when_effect_material_blends_normal() {
         let effect_pass = NativeVulkanSceneEffectRecord {
             kind: NativeVulkanSceneEffectKind::Iris,
@@ -715,6 +816,7 @@ mod tests {
             constant_shader_values: Default::default(),
             combo_keys: Vec::new(),
             combo_values: Default::default(),
+            foliage_sway_vertex_strength_model: Default::default(),
             depth_test: NativeVulkanSceneMaterialFlag::Unspecified,
             depth_write: NativeVulkanSceneMaterialFlag::Unspecified,
             cull_mode: NativeVulkanSceneCullMode::Unspecified,

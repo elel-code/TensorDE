@@ -180,6 +180,8 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_FLAGS_OFFSET_BYTES: usize = 128
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_MODE_OFFSET_BYTES: usize = 132;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_DIRECTION_WEIGHTS_OFFSET_BYTES: usize = 136;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_CORNER_WEIGHTS_OFFSET_BYTES: usize = 144;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_VERTEX_STRENGTH_MULTIPLIER_OFFSET_BYTES: usize =
+    SCENE_FULL_SAMPLED_IMAGE_PUSH_AUTO_SWAY_FLAGS_OFFSET_BYTES;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_SCALE2_OFFSET_BYTES: usize = 124;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_OFFSET2_OFFSET_BYTES: usize = 128;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_EXPONENT2_OFFSET_BYTES: usize = 132;
@@ -4364,6 +4366,13 @@ fn scene_sampled_image_push_constant_bytes(
                 SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_MODE_OFFSET_BYTES,
                 mode.max(0).min(u32::MAX as i64) as u32,
             );
+            scene_sampled_image_push_constant_f32(
+                &mut push_constant_bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_VERTEX_STRENGTH_MULTIPLIER_OFFSET_BYTES,
+                material
+                    .foliage_sway_vertex_strength_model
+                    .vertex_strength_multiplier(),
+            );
             for (index, value) in direction_weights.into_iter().enumerate() {
                 scene_sampled_image_push_constant_f32(
                     &mut push_constant_bytes,
@@ -6540,9 +6549,9 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SOLID_QUAD_PREMULTIPLIED_FRAGMENT_SPIR
     20, 1, 327761, 6, 25, 20, 2, 458832, 7, 26, 23, 24, 25, 22, 196670, 9, 26, 65789, 65592,
 ];
 
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 8858] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV: [u32; 8911] =
     include!("shaders/sampled_image.vert.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV: [u32; 9139] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV: [u32; 9192] =
     include!("shaders/sampled_image_puppet.vert.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PARTICLE_VERTEX_SPIRV: [u32; 3066] =
     include!("shaders/sampled_image_particle.vert.spv.rs");
@@ -8303,6 +8312,7 @@ mod tests {
     #[test]
     fn sampled_image_push_constants_encode_foliagesway_constants() {
         let mut material = sampled_image_material(SceneBlendMode::Normal);
+        material.shader = Some("effects/foliagesway".to_owned());
         material.effect_kinds =
             vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::FoliageSway];
         material.combo_values.insert("MODE".to_owned(), 1);
@@ -8433,6 +8443,13 @@ mod tests {
         assert_eq!(
             push_f32(
                 &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_VERTEX_STRENGTH_MULTIPLIER_OFFSET_BYTES
+            ),
+            1.0
+        );
+        assert_eq!(
+            push_f32(
+                &bytes,
                 SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_DIRECTION_WEIGHTS_OFFSET_BYTES
             ),
             0.75
@@ -8471,6 +8488,34 @@ mod tests {
                 SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_CORNER_WEIGHTS_OFFSET_BYTES + 12
             ),
             0.4
+        );
+    }
+
+    #[test]
+    fn sampled_image_push_constants_encode_foliagesway_vertex_strength_model() {
+        let mut material = sampled_image_material(SceneBlendMode::Normal);
+        material.shader = Some("workshop/2790231929/effects/foliagesway".to_owned());
+        material.effect_kinds =
+            vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::FoliageSway];
+        material.foliage_sway_vertex_strength_model =
+            super::super::present::NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel::NormalizedStrength100;
+        material.combo_values.insert("MODE".to_owned(), 1);
+
+        let bytes = scene_sampled_image_push_constant_bytes(
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            full_sampled_viewport(3840, 2160),
+            &material,
+        );
+
+        assert_eq!(
+            push_f32(
+                &bytes,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_FOLIAGE_SWAY_VERTEX_STRENGTH_MULTIPLIER_OFFSET_BYTES
+            ),
+            100.0
         );
     }
 
@@ -9357,13 +9402,13 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_VERTEX_SPIRV
             ),
-            35432
+            35644
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PUPPET_VERTEX_SPIRV
             ),
-            36556
+            36768
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -9481,10 +9526,14 @@ mod tests {
 
         for source in [sampled_vertex, puppet_vertex] {
             assert!(source.contains("uint foliage_mode()"));
+            assert!(source.contains("float foliage_vertex_strength_multiplier()"));
             assert!(source.contains("if (foliage_mode() == 0u)"));
-            assert!(source.contains("pc.auto_strength * 100.0 * weight"));
+            assert!(
+                source.contains("pc.auto_strength * foliage_vertex_strength_multiplier() * weight")
+            );
+            assert!(!source.contains("pc.auto_strength * 100.0 * weight"));
             assert!(!source.contains("pc.auto_strength * pc.auto_strength * 0.005"));
-            assert!(!source.contains("FOLIAGE_SWAY_VERTEX_GAIN"));
+            assert!(!source.contains("foliage_vertex_gain"));
         }
         assert!(fragment.contains("layout(offset = 132) uint foliage_mode;"));
         assert!(fragment.contains("if (pc.foliage_mode != 0u)"));

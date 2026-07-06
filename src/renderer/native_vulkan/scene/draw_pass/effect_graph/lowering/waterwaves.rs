@@ -3,13 +3,9 @@ use crate::core::SceneBlendMode;
 use super::super::super::{
     NativeVulkanSceneEffectKind, NativeVulkanSceneFusedEffectKind,
     NativeVulkanSceneFusedEffectPass, NativeVulkanSceneSampledImageQuad,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneWeImagePass,
-    NativeVulkanSceneWeImagePassEndpoint, NativeVulkanSceneWeImagePassRole,
+    NativeVulkanSceneTextureSlot, NativeVulkanSceneWeImagePass, NativeVulkanSceneWeImagePassRole,
 };
-use super::super::{
-    native_vulkan_scene_we_image_graph_endpoint_name,
-    native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad,
-};
+use super::super::native_vulkan_scene_we_image_graph_endpoint_name;
 use super::residency::WATERWAVES3_SHADER_VARIANT_BLOCK_REASON;
 
 pub(super) fn native_vulkan_scene_we_image_passes_waterwaves3_ineligible_reasons(
@@ -110,19 +106,11 @@ pub(super) fn native_vulkan_scene_we_image_passes_waterwaves3_ineligible_reasons
 
 fn native_vulkan_scene_we_image_passes_waterwaves3_surface_ineligible_reasons(
     quad: &NativeVulkanSceneSampledImageQuad,
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-    third: &NativeVulkanSceneWeImagePass,
+    _first: &NativeVulkanSceneWeImagePass,
+    _second: &NativeVulkanSceneWeImagePass,
+    _third: &NativeVulkanSceneWeImagePass,
     reasons: &mut Vec<&'static str>,
 ) {
-    if let Some(mesh) = quad.mesh.as_ref()
-        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
-        && !native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves3(
-            first, second, third,
-        )
-    {
-        reasons.push("mesh-geometry");
-    }
     if quad.effect_motion.is_active() {
         reasons.push("dynamic-effect-motion");
     }
@@ -225,16 +213,10 @@ pub(super) fn native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons
 
 fn native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
     quad: &NativeVulkanSceneSampledImageQuad,
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
+    _first: &NativeVulkanSceneWeImagePass,
+    _second: &NativeVulkanSceneWeImagePass,
     reasons: &mut Vec<&'static str>,
 ) {
-    if let Some(mesh) = quad.mesh.as_ref()
-        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
-        && !native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(first, second)
-    {
-        reasons.push("mesh-geometry");
-    }
     if quad.effect_motion.is_active() {
         reasons.push("dynamic-effect-motion");
     }
@@ -260,28 +242,6 @@ fn native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
     {
         reasons.push("invalid-extent");
     }
-}
-
-fn native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-) -> bool {
-    first.input.is_graph_target()
-        && first.target.is_graph_target()
-        && second.target == NativeVulkanSceneWeImagePassEndpoint::Scene
-        && second.final_scene_pass
-}
-
-fn native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves3(
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-    third: &NativeVulkanSceneWeImagePass,
-) -> bool {
-    first.input.is_graph_target()
-        && first.target.is_graph_target()
-        && second.target.is_graph_target()
-        && third.target == NativeVulkanSceneWeImagePassEndpoint::Scene
-        && third.final_scene_pass
 }
 
 fn native_vulkan_scene_we_image_passes_have_fusible_waterwaves_texture_slots(
@@ -349,6 +309,7 @@ pub(super) fn native_vulkan_scene_we_image_pass_fused_waterwaves2(
         constant_shader_values: first.constant_shader_values.clone(),
         combo_keys: first.combo_keys.clone(),
         combo_values: first.combo_values.clone(),
+        foliage_sway_vertex_strength_model: Default::default(),
         depth_test: second.depth_test,
         depth_write: second.depth_write,
         cull_mode: second.cull_mode.clone(),

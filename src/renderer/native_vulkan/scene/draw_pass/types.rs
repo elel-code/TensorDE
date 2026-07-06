@@ -253,7 +253,6 @@ impl NativeVulkanSceneWeImagePassEndpoint {
 pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneWeImagePassExecution {
     Direct,
     FirstClassTarget,
-    TemporaryRawFallback,
     SuppressedUntilGraphExecutor,
 }
 
@@ -262,7 +261,6 @@ impl NativeVulkanSceneWeImagePassExecution {
         match self {
             Self::Direct => "direct",
             Self::FirstClassTarget => "first-class-target",
-            Self::TemporaryRawFallback => "temporary-raw-fallback",
             Self::SuppressedUntilGraphExecutor => "suppressed-until-graph-executor",
         }
     }
@@ -366,6 +364,22 @@ impl NativeVulkanSceneFusedEffectKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneFoliageSwayVertexStrengthModel {
+    #[default]
+    PixelStrength,
+    NormalizedStrength100,
+}
+
+impl NativeVulkanSceneFoliageSwayVertexStrengthModel {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::PixelStrength => "pixel-strength",
+            Self::NormalizedStrength100 => "normalized-strength-100",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneFusedEffectPass {
     pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
@@ -410,6 +424,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
+    pub(in crate::renderer::native_vulkan::scene) foliage_sway_vertex_strength_model:
+        NativeVulkanSceneFoliageSwayVertexStrengthModel,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
@@ -423,7 +439,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
     pub(in crate::renderer::native_vulkan::scene) first_pass_blend_moved_to_final: bool,
     pub(in crate::renderer::native_vulkan::scene) color_blend_passthrough: bool,
     pub(in crate::renderer::native_vulkan::scene) final_scene_blend_mode: SceneBlendMode,
-    pub(in crate::renderer::native_vulkan::scene) raw_direct_composite_allowed: bool,
     pub(in crate::renderer::native_vulkan::scene) unsupported_reason: Option<&'static str>,
     pub(in crate::renderer::native_vulkan::scene) source_direct_start_candidate: bool,
     pub(in crate::renderer::native_vulkan::scene) source_direct_start_blocked_reasons:
@@ -455,7 +470,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) chain_index: usize,
     pub(in crate::renderer::native_vulkan::scene) step_index: usize,
     pub(in crate::renderer::native_vulkan::scene) execution: NativeVulkanSceneWeImagePassExecution,
-    pub(in crate::renderer::native_vulkan::scene) raw_direct_composite_allowed: bool,
     pub(in crate::renderer::native_vulkan::scene) unsupported_reason: Option<&'static str>,
     pub(in crate::renderer::native_vulkan::scene) input_target_index: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) output_target_index: Option<u32>,
@@ -505,7 +519,6 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
         crate::engine::render_graph::RenderGraphRunPlan,
     pub(in crate::renderer::native_vulkan::scene) chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) first_class_target_chain_count: usize,
-    pub(in crate::renderer::native_vulkan::scene) temporary_raw_fallback_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) suppressed_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) target_count: usize,
     pub(in crate::renderer::native_vulkan::scene) final_scene_step_count: usize,
@@ -614,6 +627,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
+    pub(in crate::renderer::native_vulkan::scene) foliage_sway_vertex_strength_model:
+        NativeVulkanSceneFoliageSwayVertexStrengthModel,
     pub(in crate::renderer::native_vulkan::scene) depth_test: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) depth_write: NativeVulkanSceneMaterialFlag,
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
@@ -638,6 +653,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
         Vec<NativeVulkanSceneShaderUniform>,
     pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
     pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
+    pub(in crate::renderer::native_vulkan::scene) foliage_sway_vertex_strength_model:
+        NativeVulkanSceneFoliageSwayVertexStrengthModel,
 }
 
 #[derive(Debug, Clone, PartialEq)]
