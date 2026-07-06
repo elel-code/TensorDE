@@ -1,16 +1,18 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::{FitMode, SceneNodeKind, ScenePathFillRule, SceneSystems, SceneTransform};
+use gilder::core::{
+    FitMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule, SceneSystems, SceneTransform,
+};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
 #[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
 use gilder::renderer::native_vulkan::{
-    NativeVulkanAudioOutputMode, NativeVulkanSceneVideoPresentOptions,
-    NativeVulkanSceneVideoPresentSourceOptions, NativeVulkanVideoSessionSmokeOptions,
+    NativeVulkanAudioOutputMode, NativeVulkanVideoSessionSmokeOptions,
     native_vulkan_resolve_ffmpeg_video_session_codec, native_vulkan_video_run_route,
 };
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan,
+    scene_engine_plan_from_gscn_path_with_properties,
     scene_wallpaper_plan_from_gscn_path_with_properties,
 };
 #[cfg(feature = "native-vulkan-renderer")]
@@ -131,78 +133,6 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gtex"))
 }
 
-#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
-fn native_vulkan_scene_video_present_options_from_plan(
-    plan: &SceneWallpaperPlan,
-    base_options: &NativeVulkanVideoSessionSmokeOptions,
-    video_width_set: bool,
-    video_height_set: bool,
-    ready_prefix_playback_frames: u32,
-    duration_playback_frames: Option<u32>,
-    audio_clock_probe_requested: bool,
-    audio_output_mode: NativeVulkanAudioOutputMode,
-) -> Result<Option<NativeVulkanSceneVideoPresentOptions>, Box<dyn std::error::Error>> {
-    let mut sources = Vec::new();
-    for layer in plan.layers.iter().filter(|layer| {
-        layer.kind == SceneNodeKind::Video && layer.opacity > 0.0 && layer.source.is_some()
-    }) {
-        let Some(source) = layer.source.as_ref() else {
-            continue;
-        };
-        if sources
-            .iter()
-            .any(|entry: &NativeVulkanSceneVideoPresentSourceOptions| entry.source == *source)
-        {
-            continue;
-        }
-        let mut options = base_options.clone();
-        options.codec = native_vulkan_resolve_ffmpeg_video_session_codec(source)?;
-        if !video_width_set {
-            options.width =
-                native_vulkan_scene_video_present_route_extent(layer.width, options.width);
-        }
-        if !video_height_set {
-            options.height =
-                native_vulkan_scene_video_present_route_extent(layer.height, options.height);
-        }
-
-        let route = native_vulkan_video_run_route(
-            &options,
-            ready_prefix_playback_frames,
-            duration_playback_frames,
-        );
-        if !route.is_ffmpeg_vulkan_hw_decode() {
-            return Err(format!(
-                "scene video layer cannot use FFmpeg Vulkan HW decode route for {}: {}",
-                source.display(),
-                route.status
-            )
-            .into());
-        }
-        sources.push(NativeVulkanSceneVideoPresentSourceOptions {
-            source: source.clone(),
-            codec: options.codec,
-            playback_frames: route.playback_frames.max(1),
-        });
-    }
-    if sources.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(NativeVulkanSceneVideoPresentOptions {
-        sources,
-        audio_clock_probe_requested,
-        audio_output_mode,
-    }))
-}
-
-#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
-fn native_vulkan_scene_video_present_route_extent(layer_extent: Option<f64>, fallback: u32) -> u32 {
-    layer_extent
-        .filter(|extent| extent.is_finite() && *extent > 0.0)
-        .map(|extent| extent.round().clamp(1.0, f64::from(u32::MAX)) as u32)
-        .unwrap_or(fallback)
-}
-
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::StaticWallpaperPlan;
@@ -211,9 +141,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
         NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
-        native_vulkan_scene_runtime_snapshot_from_plan,
         native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
-        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene, run_static_image,
+        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_static_image,
         wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
@@ -265,6 +194,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
+    #[cfg(not(feature = "native-vulkan-video"))]
+    let audio_clock_probe_requested = false;
     let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
@@ -727,27 +658,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .clone()
                 .unwrap_or_else(|| "native-vulkan".to_owned());
             let target_max_fps = options.target_max_fps;
-            let plan = scene_cli_plan(
-                output_name,
-                source,
-                scene_video_layer,
-                scene_root,
-                fit,
-                fit_set.then_some(fit),
-                background,
-                scene_color,
-                scene_path_data,
-                scene_path_fill_rule,
-                scene_stroke_color,
-                scene_stroke_width,
-                scene_text,
-                scene_text_color,
-                scene_text_font_size,
-                scene_snapshot_time_ms,
-                target_max_fps,
-                &scene_properties,
-            )?;
-            json!(native_vulkan_scene_runtime_snapshot_from_plan(&plan)?)
+            if let Some(gscn_source) = source
+                .as_ref()
+                .filter(|source| !scene_video_layer && scene_cli_source_is_gscn(source))
+            {
+                let plan = scene_engine_plan_from_gscn_path_with_properties(
+                    gscn_source.clone(),
+                    scene_snapshot_time_ms,
+                    Some(&scene_properties),
+                )?;
+                json!(scene_engine_cli_snapshot_from_engine_plan(plan))
+            } else {
+                let plan = scene_cli_plan(
+                    output_name,
+                    source,
+                    scene_video_layer,
+                    scene_root,
+                    fit,
+                    fit_set.then_some(fit),
+                    background,
+                    scene_color,
+                    scene_path_data,
+                    scene_path_fill_rule,
+                    scene_stroke_color,
+                    scene_stroke_width,
+                    scene_text,
+                    scene_text_color,
+                    scene_text_font_size,
+                    scene_snapshot_time_ms,
+                    target_max_fps,
+                    &scene_properties,
+                )?;
+                json!(scene_engine_cli_snapshot_from_plan(&plan))
+            }
         }
         NativeVulkanCliMode::RunScene => {
             if let Some(source) = source.as_ref() {
@@ -781,26 +724,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 target_max_fps,
                 &scene_properties,
             )?;
-            #[cfg(feature = "native-vulkan-video")]
-            let scene_video = native_vulkan_scene_video_present_options_from_plan(
-                &plan,
-                &video_session_options,
+            let _ = (
+                options,
+                duration,
+                video_session_options,
                 video_width_set,
                 video_height_set,
                 ready_prefix_playback_frames,
                 duration_playback_frames,
                 audio_clock_probe_requested,
-                audio_output_policy.resolve(_muted),
-            )?;
-            #[cfg(not(feature = "native-vulkan-video"))]
-            let scene_video = None;
-            json!(run_scene(
-                options,
-                duration,
-                plan,
-                audio_output_policy.resolve(_muted),
-                scene_video
-            )?)
+                audio_output_policy,
+                _muted,
+            );
+            return Err(format!(
+                "--run-scene old native-vulkan scene runtime was deleted for the new engine rewrite; new graph snapshot is available with --scene-runtime-snapshot for {} layers",
+                plan.layers.len()
+            )
+            .into());
         }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -1245,6 +1185,221 @@ fn scene_cli_source_is_gscn(path: &Path) -> bool {
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+#[derive(Debug, serde::Serialize)]
+struct SceneEngineCliSnapshot {
+    engine: &'static str,
+    references: [&'static str; 4],
+    layer_count: usize,
+    resource_count: usize,
+    object_count: usize,
+    frame: gilder::engine::scene_engine::SceneFramePlan,
+    recorded_commands: Vec<gilder::engine::scene_engine::RenderingDeviceCommand>,
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_engine_cli_snapshot_from_plan(plan: &SceneWallpaperPlan) -> SceneEngineCliSnapshot {
+    use gilder::engine::scene_engine::{
+        RenderingDevice, RenderingServer, SceneFrameContext, SceneGeometryId,
+        SceneMaterialContract, SceneObject, SceneObjectGeometry, SceneObjectId, ScenePuppetId,
+        SceneResource, SceneResourceId,
+    };
+    use gilder::renderer::native_vulkan::{
+        NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice,
+    };
+
+    let mut resources = Vec::new();
+    let mut objects = Vec::new();
+    for (index, layer) in plan.layers.iter().enumerate() {
+        let source = layer.source.as_ref().map(|source| {
+            let id = SceneResourceId(resources.len().min(u32::MAX as usize) as u32);
+            resources.push(SceneResource::Texture {
+                id,
+                source: source.clone(),
+                width: layer.width.and_then(scene_engine_f64_to_u32),
+                height: layer.height.and_then(scene_engine_f64_to_u32),
+            });
+            id
+        });
+        let geometry = if let Some(mesh) = layer.mesh.as_ref() {
+            let vertex_count = mesh.vertices.len().min(u32::MAX as usize) as u32;
+            let index_count = mesh.indices.len().min(u32::MAX as usize) as u32;
+            let geometry = SceneGeometryId(index.min(u32::MAX as usize) as u32);
+            resources.push(SceneResource::MeshGeometry {
+                id: geometry,
+                source_record: index.min(u32::MAX as usize) as u32,
+                vertices: mesh.vertices.clone(),
+                indices: mesh.indices.clone(),
+            });
+            if mesh.skin.is_some()
+                || !mesh.puppet_clips.is_empty()
+                || !mesh.puppet_clipping_records.is_empty()
+            {
+                let puppet = ScenePuppetId(index.min(u32::MAX as usize) as u32);
+                resources.push(SceneResource::PuppetRig {
+                    id: puppet,
+                    source_record: index.min(u32::MAX as usize) as u32,
+                    skin: mesh.skin.clone(),
+                    clips: mesh.puppet_clips.clone(),
+                    layers: Vec::new(),
+                    clipping_records: mesh.puppet_clipping_records.clone(),
+                });
+                SceneObjectGeometry::Puppet {
+                    geometry,
+                    puppet,
+                    vertex_count,
+                    index_count,
+                }
+            } else {
+                SceneObjectGeometry::Mesh {
+                    geometry,
+                    vertex_count,
+                    index_count,
+                }
+            }
+        } else {
+            match layer.kind {
+                SceneNodeKind::Image | SceneNodeKind::Color | SceneNodeKind::Video => {
+                    SceneObjectGeometry::Quad
+                }
+                _ => SceneObjectGeometry::Quad,
+            }
+        };
+        objects.push(SceneObject {
+            id: SceneObjectId(index.min(u32::MAX as usize) as u32),
+            geometry,
+            material: SceneMaterialContract {
+                shader: scene_engine_shader_name(layer),
+                blend: scene_engine_blend_contract(layer.blend_mode),
+                writes_depth: false,
+                tests_depth: false,
+            },
+            source,
+        });
+    }
+
+    let resource_count = resources.len();
+    let object_count = objects.len();
+    let mut server = RenderingServer::new();
+    server.replace_scene(resources, objects);
+    let renderer = NativeVulkanRendererSceneRender::new();
+    let context = SceneFrameContext {
+        time_ms: plan.snapshot_time_ms,
+        target_width: plan
+            .scene_size
+            .map(|size| size.width)
+            .unwrap_or(3840)
+            .max(1),
+        target_height: plan
+            .scene_size
+            .map(|size| size.height)
+            .unwrap_or(2160)
+            .max(1),
+    };
+    let frame = server.draw(&renderer, context);
+    let mut device = NativeVulkanRenderingDevice::new();
+    device.record_scene_frame(&frame);
+    SceneEngineCliSnapshot {
+        engine: "rendering-server/renderer-scene-render/rendering-device",
+        references: [
+            "reverse-engineered/docs/scene-format.md",
+            "reverse-engineered/docs/effect-format.md",
+            "reverse-engineered/docs/material-format.md",
+            "reverse-engineered/docs/exe/blend-and-render.md",
+        ],
+        layer_count: plan.layers.len(),
+        resource_count,
+        object_count,
+        frame,
+        recorded_commands: device.into_commands(),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_engine_cli_snapshot_from_engine_plan(
+    plan: gilder::engine::scene_engine::SceneEnginePlan,
+) -> SceneEngineCliSnapshot {
+    use gilder::engine::scene_engine::{RenderingDevice, RenderingServer};
+    use gilder::renderer::native_vulkan::{
+        NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice,
+    };
+
+    let resource_count = plan.resources.len();
+    let object_count = plan.objects.len();
+    let context = plan.frame_context();
+    let mut server = RenderingServer::new();
+    server.replace_scene(plan.resources, plan.objects);
+    let renderer = NativeVulkanRendererSceneRender::new();
+    let frame = server.draw(&renderer, context);
+    let mut device = NativeVulkanRenderingDevice::new();
+    device.record_scene_frame(&frame);
+    SceneEngineCliSnapshot {
+        engine: "rendering-server/renderer-scene-render/rendering-device",
+        references: [
+            "reverse-engineered/docs/scene-format.md",
+            "reverse-engineered/docs/effect-format.md",
+            "reverse-engineered/docs/material-format.md",
+            "reverse-engineered/docs/exe/blend-and-render.md",
+        ],
+        layer_count: object_count,
+        resource_count,
+        object_count,
+        frame,
+        recorded_commands: device.into_commands(),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_engine_f64_to_u32(value: f64) -> Option<u32> {
+    value
+        .is_finite()
+        .then(|| value.round().clamp(1.0, f64::from(u32::MAX)) as u32)
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_engine_shader_name(layer: &SceneRenderLayer) -> String {
+    layer
+        .image_effect_passes
+        .last()
+        .and_then(|pass| pass.shader.clone())
+        .unwrap_or_else(|| match layer.kind {
+            SceneNodeKind::Video => "we/video".to_owned(),
+            SceneNodeKind::Color => "we/color".to_owned(),
+            SceneNodeKind::Text => "we/text".to_owned(),
+            SceneNodeKind::Path => "we/path".to_owned(),
+            _ => "we/genericimage4".to_owned(),
+        })
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+fn scene_engine_blend_contract(
+    mode: SceneBlendMode,
+) -> gilder::engine::scene_engine::SceneBlendContract {
+    match mode {
+        SceneBlendMode::Normal => gilder::engine::scene_engine::SceneBlendContract::NormalReplace,
+        SceneBlendMode::Additive => gilder::engine::scene_engine::SceneBlendContract::Additive,
+        SceneBlendMode::Alpha => gilder::engine::scene_engine::SceneBlendContract::TranslucentAlpha,
+        SceneBlendMode::Multiply => {
+            gilder::engine::scene_engine::SceneBlendContract::ShaderColorBlend(2)
+        }
+        SceneBlendMode::Screen => {
+            gilder::engine::scene_engine::SceneBlendContract::ShaderColorBlend(7)
+        }
+        SceneBlendMode::Max => {
+            gilder::engine::scene_engine::SceneBlendContract::ShaderColorBlend(10)
+        }
+        SceneBlendMode::Modulate => {
+            gilder::engine::scene_engine::SceneBlendContract::ShaderColorBlend(32)
+        }
+        SceneBlendMode::HslColor => {
+            gilder::engine::scene_engine::SceneBlendContract::ShaderColorBlend(28)
+        }
+        SceneBlendMode::AlphaToCoverage => {
+            gilder::engine::scene_engine::SceneBlendContract::NormalReplace
+        }
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn scene_cli_layer(id: &str, kind: SceneNodeKind) -> SceneRenderLayer {
     SceneRenderLayer {
         id: id.to_owned(),
@@ -1668,7 +1823,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_cli_gscn_binary_source_samples_puppet_mesh() {
+    fn scene_cli_gscn_binary_source_keeps_puppet_mesh_facts() {
         let nonce = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
@@ -1753,12 +1908,12 @@ mod tests {
 
         assert_eq!(plan.puppet_animation_layer_count, 1);
         assert_eq!(plan.layers.len(), 1);
-        let mesh = plan.layers[0].mesh.as_ref().expect("sampled mesh");
-        assert!(mesh.skin.is_none());
-        assert!(mesh.puppet_clips.is_empty());
-        assert!((mesh.vertices[0].x - 1.0).abs() < 0.001);
-        assert!((mesh.vertices[1].x - 3.0).abs() < 0.001);
-        assert!(mesh.indices.is_empty());
+        let mesh = plan.layers[0].mesh.as_ref().expect("puppet mesh facts");
+        assert!(mesh.skin.is_some());
+        assert_eq!(mesh.puppet_clips.len(), 1);
+        assert!((mesh.vertices[0].x - 0.0).abs() < 0.001);
+        assert!((mesh.vertices[1].x - 2.0).abs() < 0.001);
+        assert_eq!(mesh.indices, vec![0, 1, 2]);
     }
 
     #[test]

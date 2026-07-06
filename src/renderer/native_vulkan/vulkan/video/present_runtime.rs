@@ -55,11 +55,6 @@ use crate::renderer::native_vulkan::{
     audio::clock::NativeVulkanAudioClockRuntimeSnapshot, audio::policy::NativeVulkanAudioOutputMode,
 };
 
-use super::super::scene::present::{
-    NativeVulkanVulkanaliaSceneVideoOverlayInput, VulkanaliaSceneVideoOverlayResources,
-    native_vulkan_vulkanalia_create_scene_video_overlay_resources,
-    native_vulkan_vulkanalia_destroy_scene_video_overlay_resources,
-};
 use super::instance::{
     NativeVulkanVulkanaliaInstance,
     native_vulkan_vulkanalia_create_instance_with_required_extensions,
@@ -71,11 +66,10 @@ use super::render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
     NativeVulkanVulkanaliaDecodedImagePresentSlowFrameSnapshot,
     VulkanaliaDecodedImagePresentPipelineResources, VulkanaliaDecodedImagePresentSamplerResources,
-    VulkanaliaDecodedImagePresentTimingConfig,
+    VulkanaliaDecodedImagePresentTimingConfig, VulkanaliaSceneVideoOverlayFrameDraw,
     native_vulkan_vulkanalia_create_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_pipeline_resources,
     native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources,
-    native_vulkan_vulkanalia_decoded_image_present_command_pool,
     native_vulkan_vulkanalia_decoded_image_present_frame_slot_count,
     native_vulkan_vulkanalia_destroy_decoded_image_present_frame_resources,
     native_vulkan_vulkanalia_destroy_decoded_image_present_pipeline_resources,
@@ -176,6 +170,33 @@ const VIDEO_PRESENT_SLEEP_GUARD_DEFAULT_MICROS: u64 = 0;
 const VIDEO_PRESENT_SPIN_GUARD_DEFAULT_MICROS: u64 = 0;
 const VIDEO_PRESENT_SLEEP_GUARD_ENV: &str = "GILDER_VIDEO_PRESENT_SLEEP_GUARD_MICROS";
 const VIDEO_PRESENT_SPIN_GUARD_ENV: &str = "GILDER_VIDEO_PRESENT_SPIN_GUARD_MICROS";
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaSceneVideoOverlayInput;
+
+struct VulkanaliaSceneVideoOverlayResources;
+
+impl VulkanaliaSceneVideoOverlayResources {
+    fn frame_draw(
+        &mut self,
+        _device: &Device,
+        _present_frame_slot: u32,
+        _elapsed_ms: u64,
+        _swapchain_extent: vk::Extent2D,
+    ) -> Result<Option<VulkanaliaSceneVideoOverlayFrameDraw<'static>>, String> {
+        Err(native_vulkan_scene_video_overlay_removed_error())
+    }
+}
+
+fn native_vulkan_scene_video_overlay_removed_error() -> String {
+    "old native-vulkan scene video overlay was deleted; scene/video composition must be rebuilt through engine::scene_engine RenderingServer -> RendererSceneRender -> RenderingDevice".to_owned()
+}
+
+fn native_vulkan_vulkanalia_destroy_scene_video_overlay_resources(
+    _device: &Device,
+    _resources: VulkanaliaSceneVideoOverlayResources,
+) {
+}
 
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaVideoPresentSessionRuntime
 {
@@ -2890,34 +2911,12 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
         selection.present_queue_family_index,
     )?;
     let mut frame_resources = Some(frame_resources);
-    let mut scene_video_overlay = if let Some(scene_video_overlay_input) =
-        options.scene_video_overlay.take()
-    {
-        let frame_resources_ref = frame_resources.as_ref().ok_or_else(|| {
-            "FFmpeg scene video overlay requires decoded-image present frame resources".to_owned()
-        })?;
-        native_vulkan_vulkanalia_create_scene_video_overlay_resources(
-            &context.device,
-            &memory_properties,
-            native_vulkan_vulkanalia_decoded_image_present_command_pool(frame_resources_ref),
-            context.present_queue,
-            swapchain_format,
-            swapchain_extent,
-            native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(frame_resources_ref),
-            context
-                .video_feature_selection
-                .core_features
-                .texture_compression_bc,
-            context
-                .video_feature_selection
-                .core_features
-                .descriptor_heap,
-            context.video_feature_selection.descriptor_heap_properties,
-            scene_video_overlay_input,
-        )?
-    } else {
-        None
-    };
+    let mut scene_video_overlay: Option<VulkanaliaSceneVideoOverlayResources> =
+        if options.scene_video_overlay.take().is_some() {
+            return Err(native_vulkan_scene_video_overlay_removed_error());
+        } else {
+            None
+        };
     let mut decoded_image_present_pipeline = None;
     let sequence_result =
         (|| -> Result<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot, String> {
@@ -3766,38 +3765,9 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_multi_str
                     )?;
                 let mut decoded_image_present_frame_resources =
                     Some(decoded_image_present_frame_resources);
-                let memory_properties =
-                    unsafe { instance.get_physical_device_memory_properties(selection.physical_device) };
-                let mut scene_video_overlay_resources = if let Some(scene_video_overlay) =
-                    scene_video_overlay
-                {
-                    native_vulkan_vulkanalia_create_scene_video_overlay_resources(
-                        &context.device,
-                        &memory_properties,
-                        native_vulkan_vulkanalia_decoded_image_present_command_pool(
-                            decoded_image_present_frame_resources
-                                .as_ref()
-                                .expect("multi-source frame resources are live"),
-                        ),
-                        context.present_queue,
-                        swapchain_plan.format.format,
-                        swapchain_plan.extent,
-                        native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
-                            decoded_image_present_frame_resources
-                                .as_ref()
-                                .expect("multi-source frame resources are live"),
-                        ),
-                        context
-                            .video_feature_selection
-                            .core_features
-                            .texture_compression_bc,
-                        context
-                            .video_feature_selection
-                            .core_features
-                            .descriptor_heap,
-                        context.video_feature_selection.descriptor_heap_properties,
-                        scene_video_overlay,
-                    )?
+                let mut scene_video_overlay_resources: Option<VulkanaliaSceneVideoOverlayResources> =
+                    if scene_video_overlay.is_some() {
+                        return Err(native_vulkan_scene_video_overlay_removed_error());
                 } else {
                     None
                 };
@@ -4796,6 +4766,9 @@ fn create_video_present_session_pieces(
     requested_present_frame_count: u32,
     scene_video_overlay_input: Option<NativeVulkanVulkanaliaSceneVideoOverlayInput>,
 ) -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
+    if scene_video_overlay_input.is_some() {
+        return Err(native_vulkan_scene_video_overlay_removed_error());
+    }
     with_native_vulkan_vulkanalia_video_session_capabilities(
         instance,
         selection.physical_device,
@@ -4885,7 +4858,7 @@ fn create_video_present_session_pieces(
             let mut decoded_image_present_pipeline = None;
             let mut decoded_image_present_sampler = None;
             let mut decoded_image_present_frame_resources = None;
-            let mut scene_video_overlay = None;
+            let mut scene_video_overlay: Option<VulkanaliaSceneVideoOverlayResources> = None;
             let result = (|| -> Result<NativeVulkanVulkanaliaVideoPresentSessionPieces, String> {
                 let memory_properties = unsafe {
                     instance.get_physical_device_memory_properties(selection.physical_device)
@@ -5017,43 +4990,6 @@ fn create_video_present_session_pieces(
                             Err(err) => {
                                 decoded_image_present_sequence_error = Some(err);
                             }
-                        }
-                    }
-                }
-                if let Some(scene_video_overlay_input) = scene_video_overlay_input {
-                    if decoded_image_present_sequence_error.is_none() {
-                        if let Some(frame_resources) =
-                            decoded_image_present_frame_resources.as_ref()
-                        {
-                            scene_video_overlay =
-                                native_vulkan_vulkanalia_create_scene_video_overlay_resources(
-                                    &context.device,
-                                    &memory_properties,
-                                    native_vulkan_vulkanalia_decoded_image_present_command_pool(
-                                        frame_resources,
-                                    ),
-                                    context.present_queue,
-                                    swapchain_format,
-                                    swapchain_extent,
-                                    native_vulkan_vulkanalia_decoded_image_present_frame_slot_count(
-                                        frame_resources,
-                                    ),
-                                    context
-                                        .video_feature_selection
-                                        .core_features
-                                        .texture_compression_bc,
-                                    context
-                                        .video_feature_selection
-                                        .core_features
-                                        .descriptor_heap,
-                                    context.video_feature_selection.descriptor_heap_properties,
-                                    scene_video_overlay_input,
-                                )?;
-                        } else {
-                            decoded_image_present_sequence_error = Some(
-                                "scene video overlay requires decoded-image present frame resources"
-                                    .to_owned(),
-                            );
                         }
                     }
                 }
@@ -5293,7 +5229,7 @@ fn create_video_present_session_pieces(
                                             {
                                                 scene_video_overlay.frame_draw(
                                                     device,
-                                                    present_frame_slot,
+                                                    present_frame_slot as u32,
                                                     overlay_elapsed_ms,
                                                     swapchain_extent,
                                                 )?

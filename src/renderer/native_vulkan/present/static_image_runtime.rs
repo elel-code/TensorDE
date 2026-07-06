@@ -1,23 +1,14 @@
 use std::time::Duration;
 
-use crate::core::FitMode;
 use crate::renderer::StaticWallpaperPlan;
 
-use super::super::{
-    NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
-    NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
-    NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
-    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
-    run_native_vulkan_vulkanalia_scene_sampled_image_present,
-};
+use super::super::{NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions};
 
 pub fn run_static_image(
     mut options: NativeVulkanOptions,
-    duration: Duration,
+    _duration: Duration,
     plan: StaticWallpaperPlan,
-) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
-    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator();
-
+) -> Result<NativeVulkanStaticImagePresentSnapshot, NativeVulkanError> {
     if !native_vulkan_static_source_is_gtex(&plan.source) {
         return Err(NativeVulkanError::StaticImage(format!(
             "native static image runtime requires a .gtex BC7 source {}; runtime PNG/JPG decoding is disabled",
@@ -28,34 +19,27 @@ pub fn run_static_image(
         options.host.output_name = Some(plan.output_name.clone());
     }
     let clear_color = native_vulkan_static_background_clear_color(plan.background.as_deref());
-    let source = plan.source.clone();
-    let fit = plan.fit;
-
-    run_native_vulkan_vulkanalia_scene_sampled_image_present(
-        NativeVulkanVulkanaliaSceneSampledImagePresentOptions {
-            host: options.host,
-            wait_configure_roundtrips: options.wait_configure_roundtrips,
-            duration,
-            scene_time_origin_ms: 0,
-            target_max_fps: options.target_max_fps,
-            source,
-            clear_color,
-            fit: Some(fit),
-            scene_size: None,
-            scene_fit: FitMode::Cover,
-            solid_geometry: None,
-            geometry: None,
-        },
-    )
-    .map_err(NativeVulkanError::StaticImage)
+    Err(NativeVulkanError::StaticImage(format!(
+        "native static image runtime previously reused the deleted scene sampled-image renderer; rebuild it on the new scene_engine RenderingDevice path before use (source={}, output={}, clear={:?}, target_max_fps={:?}, wait_configure_roundtrips={})",
+        plan.source.display(),
+        plan.output_name,
+        clear_color,
+        options.target_max_fps,
+        options.wait_configure_roundtrips
+    )))
 }
 
 pub fn run_static_image_vulkanalia(
     options: NativeVulkanOptions,
     duration: Duration,
     plan: StaticWallpaperPlan,
-) -> Result<NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot, NativeVulkanError> {
+) -> Result<NativeVulkanStaticImagePresentSnapshot, NativeVulkanError> {
     run_static_image(options, duration, plan)
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct NativeVulkanStaticImagePresentSnapshot {
+    pub binding: &'static str,
 }
 
 fn native_vulkan_static_background_clear_color(background: Option<&str>) -> NativeVulkanClearColor {

@@ -11,3 +11,4 @@
 /references/*
 artifacts/
 reverse-engineered/extracted/
+scripts/__pycache__/

@@ -6,7 +6,6 @@
 
 mod core;
 mod present;
-mod scene;
 mod video;
 
 use self::core::descriptor_heap;
@@ -18,9 +17,6 @@ use self::present::clear as present_clear;
 use self::present::render as render_present;
 use self::present::render_descriptors as render_present_descriptors;
 use self::present::swapchain;
-use self::scene::draw_pass as scene_draw_pass;
-use self::scene::present as scene_present;
-use self::scene::sampled_image as scene_sampled_image;
 use self::video::bitstream_buffer as video_bitstream_buffer;
 use self::video::decode_submit as video_decode_submit;
 use self::video::decode_submit_av1 as video_decode_submit_av1;
@@ -85,64 +81,6 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
 pub use render_present_descriptors::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
-pub(crate) use scene_draw_pass::{
-    NativeVulkanVulkanaliaSceneDrawPassInput, native_vulkan_vulkanalia_scene_draw_pass_snapshot,
-};
-pub use scene_draw_pass::{
-    NativeVulkanVulkanaliaSceneDrawPassSnapshot,
-    NativeVulkanVulkanaliaSceneSampledImageCommandSnapshot,
-    NativeVulkanVulkanaliaSceneSampledImagePipelineSnapshot,
-    NativeVulkanVulkanaliaSceneSolidQuadCommandSnapshot,
-    NativeVulkanVulkanaliaSceneSolidQuadPipelineSnapshot,
-};
-#[cfg(feature = "native-vulkan-video")]
-pub(in crate::renderer::native_vulkan) use scene_present::NativeVulkanVulkanaliaSceneVideoOverlayInput;
-pub use scene_present::{
-    NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
-    NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneEffectUniform,
-    NativeVulkanVulkanaliaSceneFoliageSwayVertexStrengthModel,
-    NativeVulkanVulkanaliaSceneFusedEffectKind, NativeVulkanVulkanaliaSceneFusedEffectPass,
-    NativeVulkanVulkanaliaSceneMaterialFlag, NativeVulkanVulkanaliaSceneParticleGpuPayload,
-    NativeVulkanVulkanaliaSceneParticleGpuVertexPayload,
-    NativeVulkanVulkanaliaScenePuppetGpuPayload, NativeVulkanVulkanaliaScenePuppetGpuPosePayload,
-    NativeVulkanVulkanaliaScenePuppetGpuVertexPayload, NativeVulkanVulkanaliaSceneRenderState,
-    NativeVulkanVulkanaliaSceneSampledImageDrawStep,
-    NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
-    NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
-    NativeVulkanVulkanaliaSceneSampledImageGeometrySnapshot,
-    NativeVulkanVulkanaliaSceneSampledImageLayerPosePayload,
-    NativeVulkanVulkanaliaSceneSampledImageLayerPoseTimelinePayload,
-    NativeVulkanVulkanaliaSceneSampledImageMaterial,
-    NativeVulkanVulkanaliaSceneSampledImageMaterialKind,
-    NativeVulkanVulkanaliaSceneSampledImagePresentOptions,
-    NativeVulkanVulkanaliaSceneSampledImagePresentSnapshot,
-    NativeVulkanVulkanaliaSceneSampledImageRenderTarget,
-    NativeVulkanVulkanaliaSceneSampledImageVertex, NativeVulkanVulkanaliaSceneSolidQuadDrawStep,
-    NativeVulkanVulkanaliaSceneSolidQuadGeometryInput,
-    NativeVulkanVulkanaliaSceneSolidQuadGeometrySnapshot,
-    NativeVulkanVulkanaliaSceneSolidQuadLayerPosePayload,
-    NativeVulkanVulkanaliaSceneSolidQuadLayerPoseTimelinePayload,
-    NativeVulkanVulkanaliaSceneSolidQuadPresentOptions,
-    NativeVulkanVulkanaliaSceneSolidQuadPresentSnapshot,
-    NativeVulkanVulkanaliaSceneSolidQuadVertex,
-    NativeVulkanVulkanaliaSceneTextureSlotResourceBinding,
-    NativeVulkanVulkanaliaSceneVideoLayerDrawStep,
-    NativeVulkanVulkanaliaSceneVideoLayerGeometryInput,
-    NativeVulkanVulkanaliaSceneWeImageGraphResource,
-    run_native_vulkan_vulkanalia_scene_sampled_image_present,
-    run_native_vulkan_vulkanalia_scene_solid_quad_present,
-};
-pub use scene_sampled_image::{
-    NativeVulkanVulkanaliaSceneSampledImageDescriptorStrategySnapshot,
-    NativeVulkanVulkanaliaSceneSampledImagePlanSnapshot,
-};
-pub(crate) use scene_sampled_image::{
-    NativeVulkanVulkanaliaSceneSampledImagePlanInput,
-    native_vulkan_vulkanalia_configure_scene_sampled_image_allocator,
-    native_vulkan_vulkanalia_scene_sampled_image_plan,
-    native_vulkan_vulkanalia_trim_scene_sampled_image_decode_heap,
-};
 #[allow(unused_imports)]
 pub use swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,

@@ -10,10 +10,6 @@ use vulkanalia::vk::{
 
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
-use super::super::scene::present::{
-    VulkanaliaSceneVideoLayerFrameDraw, VulkanaliaSceneVideoOverlayFrameDraw,
-    native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering,
-};
 use super::descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
@@ -37,6 +33,27 @@ use super::video_session_images::VulkanaliaVideoSessionResourceImage;
 pub(in crate::renderer::native_vulkan::vulkan) const DECODED_IMAGE_PRESENT_TELEMETRY_RETAINED_FRAMES: usize = 0;
 const DECODED_IMAGE_SCENE_VIDEO_LAYER_VERTEX_STRIDE_BYTES: u32 = 20;
 const DECODED_IMAGE_SCENE_VIDEO_LAYER_PUSH_CONSTANT_BYTES: u32 = 8;
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerDrawCommand {
+    pub(in crate::renderer::native_vulkan::vulkan) first_index: u32,
+    pub(in crate::renderer::native_vulkan::vulkan) index_count: u32,
+    pub(in crate::renderer::native_vulkan::vulkan) resource_index: u32,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoLayerFrameDraw<'a> {
+    pub(in crate::renderer::native_vulkan::vulkan) vertex_buffer: vk::Buffer,
+    pub(in crate::renderer::native_vulkan::vulkan) index_buffer: vk::Buffer,
+    pub(in crate::renderer::native_vulkan::vulkan) draw_commands:
+        &'a [VulkanaliaSceneVideoLayerDrawCommand],
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneVideoOverlayFrameDraw<'a> {
+    pub(in crate::renderer::native_vulkan::vulkan) video_layer:
+        Option<VulkanaliaSceneVideoLayerFrameDraw<'a>>,
+}
 
 fn native_vulkan_vulkanalia_elapsed_micros(start: Instant) -> u64 {
     u64::try_from(start.elapsed().as_micros()).unwrap_or(u64::MAX)
@@ -1210,9 +1227,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_prese
     let present_call_total_micros =
         native_vulkan_vulkanalia_elapsed_micros(present_call_started_at);
     let scene_video_layer_draw_enabled =
-        scene_overlay_draw.is_some_and(|draw| draw.video_draw.is_some());
-    let scene_overlay_blend_draw_enabled =
-        scene_overlay_draw.is_some_and(|draw| draw.overlay_draw.is_some());
+        scene_overlay_draw.is_some_and(|draw| draw.video_layer.is_some());
+    let scene_overlay_blend_draw_enabled = false;
 
     Ok(NativeVulkanVulkanaliaDecodedImagePresentDrawSnapshot {
         binding: "vulkanalia",
@@ -1542,7 +1558,7 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             .color_attachments(&color_attachments)
             .build();
         device.cmd_begin_rendering(command_buffer, &rendering_info);
-        let scene_video_layer_draw = scene_overlay_draw.and_then(|draw| draw.video_draw);
+        let scene_video_layer_draw = scene_overlay_draw.and_then(|draw| draw.video_layer);
         if let Some(scene_video_layer_draw) = scene_video_layer_draw {
             native_vulkan_vulkanalia_record_decoded_image_scene_video_layer_draws_inside_rendering(
                 device,
@@ -1584,12 +1600,16 @@ fn native_vulkan_vulkanalia_record_decoded_image_present_command_buffer(
             );
         }
         if let Some(scene_overlay_draw) = scene_overlay_draw {
-            native_vulkan_vulkanalia_record_scene_video_overlay_draws_inside_rendering(
-                device,
-                command_buffer,
-                extent,
-                scene_overlay_draw,
-            )?;
+            if let Some(video_layer) = scene_overlay_draw.video_layer {
+                native_vulkan_vulkanalia_record_decoded_image_scene_video_layer_draws_inside_rendering(
+                    device,
+                    command_buffer,
+                    extent,
+                    &pipeline.scene_video_layer,
+                    video_layer,
+                    decoded_sources,
+                )?;
+            }
         }
         device.cmd_end_rendering(command_buffer);
 

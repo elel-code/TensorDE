@@ -7,14 +7,6 @@ pub mod native_wayland;
 #[cfg(feature = "native-vulkan-renderer")]
 mod scene_binary;
 
-#[cfg(feature = "native-vulkan-renderer")]
-pub(crate) use self::scene_binary::{
-    SceneBinaryLayerGpuPosePayloads, SceneBinaryParticleGpuPayload,
-    SceneBinaryParticleGpuVertexPayload, SceneBinaryPuppetGpuPayload,
-    SceneBinaryPuppetGpuPosePayload, SceneBinaryPuppetGpuVertexPayload,
-    SceneBinaryRetainedGpuPayloads, SceneBinaryRuntimeSampler,
-    SceneBinarySampledLayerGpuPosePayload,
-};
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
@@ -202,16 +194,6 @@ impl SceneRenderAlphaTextureMode {
             Self::Coverage => "coverage",
         }
     }
-
-    #[cfg(feature = "native-vulkan-renderer")]
-    pub(in crate::renderer) fn shader_code(self) -> u32 {
-        match self {
-            Self::Multiply => 0,
-            Self::Inverse => 1,
-            Self::Iris => 2,
-            Self::Coverage => 3,
-        }
-    }
 }
 
 impl From<SceneAlphaTextureMode> for SceneRenderAlphaTextureMode {
@@ -341,6 +323,19 @@ pub fn scene_wallpaper_plan_from_gscn_path_with_properties(
         target_max_fps,
         snapshot_time_ms,
         fit_override,
+        render_properties,
+    )
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+pub fn scene_engine_plan_from_gscn_path_with_properties(
+    source_path: PathBuf,
+    snapshot_time_ms: u64,
+    render_properties: Option<&BTreeMap<String, Value>>,
+) -> Result<crate::engine::scene_engine::SceneEnginePlan, RendererPlanError> {
+    scene_binary::scene_engine_plan_from_gscn_path_with_properties(
+        source_path,
+        snapshot_time_ms,
         render_properties,
     )
 }
@@ -4502,18 +4497,6 @@ exit 0
             layer.mesh.is_none(),
             "retained particle marker should not carry CPU quad vertices"
         );
-
-        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
-            .unwrap()
-            .expect("binary sampler");
-        let payloads = sampler
-            .retained_gpu_payloads(250)
-            .unwrap()
-            .particle_payloads;
-        assert_eq!(payloads.len(), 1);
-        assert_eq!(payloads[0].layer_index, 0);
-        assert_eq!(payloads[0].vertices.len(), 12);
-        assert_eq!(payloads[0].indices.len(), 18);
     }
 
     #[cfg(feature = "native-vulkan-renderer")]
@@ -4560,16 +4543,6 @@ exit 0
         assert!(
             plan.layers.is_empty(),
             "untextured particles should not fall back to per-particle CPU layers"
-        );
-        let mut sampler = SceneBinaryRuntimeSampler::from_plan(&plan)
-            .unwrap()
-            .expect("binary sampler");
-        assert!(
-            sampler
-                .retained_gpu_payloads(250)
-                .unwrap()
-                .particle_payloads
-                .is_empty()
         );
     }
 

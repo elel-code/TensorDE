@@ -108,7 +108,7 @@ mod interop;
 mod labels;
 mod pipeline;
 mod present;
-mod scene;
+mod scene_backend;
 mod video;
 mod vulkan;
 
@@ -131,8 +131,6 @@ use audio::policy as audio_policy;
 use present::clear_runtime as clear_present_runtime;
 use present::render_item;
 use present::static_image_runtime as static_image_present_runtime;
-use scene::present_runtime as scene_present_runtime;
-use scene::runtime as scene_runtime;
 use video::codec as video_codec;
 use video::codec_snapshots;
 use video::flow as video_flow;
@@ -161,16 +159,7 @@ pub use ffmpeg_hw::{
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
-pub use scene_present_runtime::{
-    NativeVulkanSceneAudioCueRuntimeSnapshot, NativeVulkanScenePresentSnapshot,
-    NativeVulkanSceneVideoPresentOptions, NativeVulkanSceneVideoPresentSourceOptions,
-    native_vulkan_scene_runtime_snapshot_from_plan, run_scene,
-};
-pub use scene_runtime::{
-    NativeVulkanSceneDrawOpSnapshot, NativeVulkanSceneQuadRecordingStepSnapshot,
-    NativeVulkanSceneQuadVertexSnapshot, NativeVulkanSceneRuntimeSnapshot,
-    NativeVulkanSceneUnsupportedLayerSnapshot,
-};
+pub use scene_backend::{NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice};
 pub use static_image_present_runtime::{run_static_image, run_static_image_vulkanalia};
 pub use video_codec::NativeVulkanVideoSessionCodec;
 #[cfg(feature = "native-vulkan-video")]
