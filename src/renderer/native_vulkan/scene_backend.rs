@@ -21,6 +21,7 @@ pub mod resource_storage;
 pub mod resource_upload;
 pub mod runtime;
 pub mod texture_descriptors;
+pub mod texture_heap;
 pub mod texture_images;
 
 pub use renderer_scene_render::NativeVulkanRendererSceneRender;

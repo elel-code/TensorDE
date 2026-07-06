@@ -100,8 +100,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDescriptorHeapBu
 // The mapped pointer moves with the owning Vulkan resource and is not shared.
 unsafe impl Send for VulkanaliaDescriptorHeapBuffer {}
 
-pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDescriptorHeapImageSamplerResources
-{
+pub(in crate::renderer::native_vulkan) struct VulkanaliaDescriptorHeapImageSamplerResources {
     pub(in crate::renderer::native_vulkan::vulkan) resource_heap: VulkanaliaDescriptorHeapBuffer,
     pub(in crate::renderer::native_vulkan::vulkan) sampler_heap: VulkanaliaDescriptorHeapBuffer,
     pub(in crate::renderer::native_vulkan::vulkan) plan:
@@ -110,7 +109,7 @@ pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDescriptorHeapIm
         NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot,
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
     input: NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
 ) -> NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
     let properties = input.properties;
@@ -222,7 +221,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
     }
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
@@ -282,7 +281,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
     })
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_image_sampler(
     device: &Device,
     resources: &mut VulkanaliaDescriptorHeapImageSamplerResources,
     image_index: usize,
@@ -358,7 +357,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_write
     Ok(())
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     image_index: usize,
 ) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
@@ -369,7 +368,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
     )
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     binding: u32,
     image_index: usize,
@@ -399,7 +398,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
         .build())
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
 ) -> vk::BindHeapInfoEXT {
     vk::BindHeapInfoEXT::builder()
@@ -414,7 +413,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
         .build()
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
     image_index: usize,
 ) -> Result<vk::BindHeapInfoEXT, String> {
@@ -432,7 +431,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
     )
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
 ) -> vk::BindHeapInfoEXT {
     vk::BindHeapInfoEXT::builder()
@@ -447,7 +446,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descr
         .build()
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
     image_index: usize,
 ) -> Result<vk::BindHeapInfoEXT, String> {
@@ -500,7 +499,7 @@ fn descriptor_heap_indexed_bind_info(
         .build())
 }
 
-pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources(
     device: &Device,
     resources: VulkanaliaDescriptorHeapImageSamplerResources,
 ) {

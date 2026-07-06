@@ -62,6 +62,21 @@ pub(in crate::renderer::native_vulkan) use buffer::{
     native_vulkan_vulkanalia_destroy_buffer,
 };
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
+#[allow(unused_imports)]
+pub(in crate::renderer::native_vulkan) use descriptor_heap::{
+    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
+    VulkanaliaDescriptorHeapImageSamplerResources,
+    native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan,
+    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image,
+    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image,
+    native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
+};
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,
     NativeVulkanVulkanaliaRoadmap2026FeatureProbeSnapshot,

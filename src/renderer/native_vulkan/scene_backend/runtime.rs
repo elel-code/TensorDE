@@ -17,6 +17,7 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{SceneFramePlan, SceneGraph, SceneGraphPass, SceneGraphTarget};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
+use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
 use super::frame_command::{
     NativeVulkanSceneMeshFrameCommandPlan, native_vulkan_record_scene_mesh_frame_commands,
@@ -35,6 +36,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
     pub memory_properties: &'a vk::PhysicalDeviceMemoryProperties,
     pub command_pool: vk::CommandPool,
     pub queue: vk::Queue,
+    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub command_buffer: vk::CommandBuffer,
     pub target: NativeVulkanSceneSwapchainRenderTarget,
     pub target_format: vk::Format,
@@ -48,10 +50,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub residency_command_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
     pub texture_image_action_count: usize,
+    pub texture_heap_action_count: usize,
     pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -59,6 +62,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         residency_command_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
         texture_image_action_count: usize,
+        texture_heap_action_count: usize,
         gpu_buffer_action_count: usize,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
@@ -67,6 +71,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             residency_command_count,
             texture_descriptors,
             texture_image_action_count,
+            texture_heap_action_count,
             gpu_buffer_action_count,
             pipeline_warmup,
             frame,
@@ -74,6 +79,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "sync_residency",
                 "prepare_texture_descriptors",
                 "sync_texture_images",
+                "sync_texture_descriptor_heap",
                 "sync_gpu_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands",
@@ -103,6 +109,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             context.command_pool,
             context.queue,
             resources,
+        )?
+        .len();
+    let texture_heap_action_count = frame_resources
+        .sync_texture_descriptor_heap(
+            context.device,
+            context.memory_properties,
+            context.descriptor_heap_properties,
+            &texture_descriptors,
         )?
         .len();
     let gpu_buffer_action_count = frame_resources
@@ -142,6 +156,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         residency_command_count,
         texture_descriptors,
         texture_image_action_count,
+        texture_heap_action_count,
         gpu_buffer_action_count,
         pipeline_warmup,
         frame_plan,
@@ -229,8 +244,15 @@ mod tests {
             ],
         };
 
-        let plan =
-            NativeVulkanSceneMeshRuntimeFramePlan::from_parts(2, descriptors, 4, 3, warmup, frame);
+        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
+            2,
+            descriptors,
+            4,
+            1,
+            3,
+            warmup,
+            frame,
+        );
 
         assert_eq!(
             plan.command_order,
@@ -238,6 +260,7 @@ mod tests {
                 "sync_residency",
                 "prepare_texture_descriptors",
                 "sync_texture_images",
+                "sync_texture_descriptor_heap",
                 "sync_gpu_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands"
@@ -246,6 +269,7 @@ mod tests {
         assert_eq!(plan.residency_command_count, 2);
         assert_eq!(plan.texture_descriptors.binding_count, 1);
         assert_eq!(plan.texture_image_action_count, 4);
+        assert_eq!(plan.texture_heap_action_count, 1);
         assert_eq!(plan.gpu_buffer_action_count, 3);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);
