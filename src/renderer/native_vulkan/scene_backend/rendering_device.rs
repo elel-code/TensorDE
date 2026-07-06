@@ -7,12 +7,15 @@
 
 use crate::engine::scene_engine::{
     RenderingDevice, RenderingDeviceCommand, SceneFramePlan, SceneGraph, SceneGraphDraw,
-    SceneGraphPass, SceneResidentResource, SceneResourceResidencyPlan,
+    SceneGraphPass, SceneResourceResidencyPlan,
 };
+
+use super::resource_storage::NativeVulkanSceneResourceStorage;
 
 #[derive(Debug, Default)]
 pub struct NativeVulkanRenderingDevice {
     commands: Vec<RenderingDeviceCommand>,
+    resource_storage: NativeVulkanSceneResourceStorage,
 }
 
 impl NativeVulkanRenderingDevice {
@@ -24,55 +27,13 @@ impl NativeVulkanRenderingDevice {
         self.commands
     }
 
+    pub fn resource_storage(&self) -> &NativeVulkanSceneResourceStorage {
+        &self.resource_storage
+    }
+
     fn record_residency_plan(&mut self, residency: &SceneResourceResidencyPlan) {
-        for resource in &residency.resources {
-            match resource {
-                SceneResidentResource::Texture(texture) => {
-                    self.commands
-                        .push(RenderingDeviceCommand::EnsureTextureResident {
-                            resource: texture.id,
-                            width: texture.width,
-                            height: texture.height,
-                        });
-                }
-                SceneResidentResource::Buffer(buffer) => {
-                    self.commands
-                        .push(RenderingDeviceCommand::EnsureBufferResident {
-                            resource: buffer.id,
-                            bytes: buffer.bytes,
-                        });
-                }
-                SceneResidentResource::MeshGeometry(mesh) => {
-                    self.commands
-                        .push(RenderingDeviceCommand::EnsureMeshGeometryResident {
-                            geometry: mesh.id,
-                            source_record: mesh.source_record,
-                            vertex_count: mesh.vertex_count,
-                            index_count: mesh.index_count,
-                            vertex_bytes: mesh.vertex_bytes,
-                            index_bytes: mesh.index_bytes,
-                        });
-                }
-                SceneResidentResource::PuppetRig(puppet) => {
-                    self.commands
-                        .push(RenderingDeviceCommand::EnsurePuppetRigResident {
-                            puppet: puppet.id,
-                            source_record: puppet.source_record,
-                            bone_count: puppet.bone_count,
-                            skin_vertex_count: puppet.skin_vertex_count,
-                            attachment_count: puppet.attachment_count,
-                            clip_count: puppet.clip_count,
-                            clip_bone_count: puppet.clip_bone_count,
-                            clip_frame_count: puppet.clip_frame_count,
-                            clip_frame_bytes: puppet.clip_frame_bytes,
-                            layer_count: puppet.layer_count,
-                            clipping_record_count: puppet.clipping_record_count,
-                            clipping_bone_count: puppet.clipping_bone_count,
-                            clipping_frame_key_count: puppet.clipping_frame_key_count,
-                        });
-                }
-            }
-        }
+        self.commands
+            .extend(self.resource_storage.sync_residency_plan(residency));
     }
 
     fn record_graph(&mut self, graph: &SceneGraph) {
@@ -230,6 +191,65 @@ mod tests {
         ));
         assert!(matches!(
             device.commands()[3],
+            RenderingDeviceCommand::DrawIndexed {
+                geometry: Some(SceneGeometryId(2)),
+                index_count: 6,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn frame_recording_reuses_unchanged_mesh_residency() {
+        let frame = SceneFramePlan {
+            residency: SceneResourceResidencyPlan {
+                resources: vec![SceneResidentResource::MeshGeometry(SceneMeshResidency {
+                    id: SceneGeometryId(2),
+                    source_record: 12,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_bytes: 160,
+                    index_bytes: 24,
+                })],
+            },
+            graph: SceneGraph {
+                passes: vec![SceneGraphPass {
+                    name: "mesh".to_owned(),
+                    input: None,
+                    output: SceneGraphTarget::Swapchain,
+                    draws: vec![SceneGraphDraw {
+                        object: SceneObjectId(4),
+                        pipeline: SceneGraphPipelineClass::Mesh,
+                        material: SceneMaterialKey {
+                            shader: "we/genericimage4".to_owned(),
+                            blend: SceneBlendContract::TranslucentAlpha,
+                            writes_depth: false,
+                            tests_depth: false,
+                        },
+                        geometry: Some(SceneGeometryId(2)),
+                        puppet: None,
+                        resources: Vec::new(),
+                        index_count: 6,
+                    }],
+                }],
+            },
+        };
+        let mut device = NativeVulkanRenderingDevice::new();
+        device.record_scene_frame(&frame);
+        device.record_scene_frame(&frame);
+
+        assert!(
+            device
+                .resource_storage()
+                .mesh_geometry(SceneGeometryId(2))
+                .is_some()
+        );
+        assert!(!device.commands().iter().any(|command| matches!(
+            command,
+            RenderingDeviceCommand::EnsureMeshGeometryResident { .. }
+        )));
+        assert!(matches!(
+            device.commands()[2],
             RenderingDeviceCommand::DrawIndexed {
                 geometry: Some(SceneGeometryId(2)),
                 index_count: 6,

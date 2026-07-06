@@ -8,6 +8,7 @@
 
 pub mod renderer_scene_render;
 pub mod rendering_device;
+pub mod resource_storage;
 
 pub use renderer_scene_render::NativeVulkanRendererSceneRender;
 pub use rendering_device::NativeVulkanRenderingDevice;

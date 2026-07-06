@@ -26,7 +26,7 @@ impl SceneResourceResidencyPlan {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SceneResidentResource {
     Texture(SceneTextureResidency),
     Buffer(SceneBufferResidency),

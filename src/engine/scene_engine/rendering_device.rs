@@ -28,9 +28,15 @@ pub enum RenderingDeviceCommand {
         width: Option<u32>,
         height: Option<u32>,
     },
+    ReleaseTextureResident {
+        resource: SceneResourceId,
+    },
     EnsureBufferResident {
         resource: SceneResourceId,
         bytes: u64,
+    },
+    ReleaseBufferResident {
+        resource: SceneResourceId,
     },
     EnsureMeshGeometryResident {
         geometry: SceneGeometryId,
@@ -39,6 +45,9 @@ pub enum RenderingDeviceCommand {
         index_count: u32,
         vertex_bytes: u64,
         index_bytes: u64,
+    },
+    ReleaseMeshGeometryResident {
+        geometry: SceneGeometryId,
     },
     EnsurePuppetRigResident {
         puppet: ScenePuppetId,
@@ -54,6 +63,9 @@ pub enum RenderingDeviceCommand {
         clipping_record_count: u32,
         clipping_bone_count: u32,
         clipping_frame_key_count: u32,
+    },
+    ReleasePuppetRigResident {
+        puppet: ScenePuppetId,
     },
     DrawIndexed {
         object: SceneObjectId,
