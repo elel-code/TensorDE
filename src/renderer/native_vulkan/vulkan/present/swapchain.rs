@@ -1,6 +1,5 @@
 #![allow(dead_code)]
 
-use std::env;
 use std::ffi::{CStr, CString};
 
 use serde::Serialize;
@@ -910,7 +909,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
         &present_modes,
         feature_selection.present_mode_fifo_latest_ready_enabled,
         uncapped_present,
-    );
+    )?;
     let (extent, extent_selection) = choose_swapchain_extent(&capabilities, buffer_size)?;
     let image_count = swapchain_image_count(&capabilities);
     let composite_alpha = choose_composite_alpha(capabilities.supported_composite_alpha);
@@ -1049,71 +1048,23 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Surface
 fn choose_present_mode(
     present_modes: &[vk::PresentModeKHR],
     present_mode_fifo_latest_ready_enabled: bool,
-    uncapped_present: bool,
-) -> vk::PresentModeKHR {
-    if let Some(mode) = env_present_mode_policy()
-        .and_then(|policy| choose_present_mode_for_policy(present_modes, policy))
-    {
-        return mode;
+    _uncapped_present: bool,
+) -> Result<vk::PresentModeKHR, String> {
+    if !present_mode_fifo_latest_ready_enabled {
+        return Err(
+            "Vulkanalia present requires VK_KHR_present_mode_fifo_latest_ready; mailbox/immediate fallback is forbidden"
+                .to_owned(),
+        );
     }
     if present_mode_fifo_latest_ready_enabled
         && present_modes.contains(&vk::PresentModeKHR::FIFO_LATEST_READY)
     {
-        return vk::PresentModeKHR::FIFO_LATEST_READY;
+        return Ok(vk::PresentModeKHR::FIFO_LATEST_READY);
     }
-    if uncapped_present {
-        if present_modes.contains(&vk::PresentModeKHR::IMMEDIATE) {
-            return vk::PresentModeKHR::IMMEDIATE;
-        }
-        if present_modes.contains(&vk::PresentModeKHR::MAILBOX) {
-            return vk::PresentModeKHR::MAILBOX;
-        }
-    }
-    if present_modes.contains(&vk::PresentModeKHR::FIFO_RELAXED) {
-        return vk::PresentModeKHR::FIFO_RELAXED;
-    }
-    vk::PresentModeKHR::FIFO
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PresentModePolicy {
-    Fifo,
-    FifoRelaxed,
-    FifoLatestReady,
-    Mailbox,
-    Immediate,
-}
-
-fn env_present_mode_policy() -> Option<PresentModePolicy> {
-    env::var("GILDER_VULKAN_PRESENT_MODE_POLICY")
-        .ok()
-        .and_then(|value| parse_present_mode_policy(&value))
-}
-
-fn parse_present_mode_policy(value: &str) -> Option<PresentModePolicy> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "fifo" => Some(PresentModePolicy::Fifo),
-        "fifo-relaxed" | "relaxed" => Some(PresentModePolicy::FifoRelaxed),
-        "fifo-latest-ready" | "latest-ready" => Some(PresentModePolicy::FifoLatestReady),
-        "mailbox" => Some(PresentModePolicy::Mailbox),
-        "immediate" => Some(PresentModePolicy::Immediate),
-        "default" | "auto" | "" => None,
-        _ => None,
-    }
-}
-
-fn choose_present_mode_for_policy(
-    present_modes: &[vk::PresentModeKHR],
-    policy: PresentModePolicy,
-) -> Option<vk::PresentModeKHR> {
-    let requested = match policy {
-        PresentModePolicy::Fifo => vk::PresentModeKHR::FIFO,
-        PresentModePolicy::FifoRelaxed => vk::PresentModeKHR::FIFO_RELAXED,
-        PresentModePolicy::FifoLatestReady => vk::PresentModeKHR::FIFO_LATEST_READY,
-        PresentModePolicy::Mailbox => vk::PresentModeKHR::MAILBOX,
-        PresentModePolicy::Immediate => vk::PresentModeKHR::IMMEDIATE,
-    };
-    present_modes.contains(&requested).then_some(requested)
+    Err(
+        "Vulkanalia present requires VK_PRESENT_MODE_FIFO_LATEST_READY_KHR; FIFO/mailbox/immediate fallback is forbidden"
+            .to_owned(),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1557,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn present_mode_prefers_low_blocking_video_swapchain_modes() {
+    fn present_mode_requires_fifo_latest_ready_policy_without_mailbox_or_immediate_fallback() {
         assert_eq!(
             choose_present_mode(
                 &[
@@ -1567,10 +1518,11 @@ mod tests {
                 ],
                 true,
                 false,
-            ),
+            )
+            .expect("fifo latest ready present mode"),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
-        assert_eq!(
+        assert!(
             choose_present_mode(
                 &[
                     vk::PresentModeKHR::FIFO,
@@ -1579,24 +1531,28 @@ mod tests {
                 ],
                 false,
                 false,
-            ),
-            vk::PresentModeKHR::FIFO
+            )
+            .expect_err("fifo latest ready feature is mandatory")
+            .contains("requires VK_KHR_present_mode_fifo_latest_ready")
         );
-        assert_eq!(
-            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true, false),
-            vk::PresentModeKHR::FIFO
+        assert!(
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true, false)
+                .expect_err("mailbox-only present surface is forbidden")
+                .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
-        assert_eq!(
+        assert!(
             choose_present_mode(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::FIFO_RELAXED,],
                 true,
                 false,
-            ),
-            vk::PresentModeKHR::FIFO_RELAXED
+            )
+            .expect_err("fifo relaxed fallback is forbidden")
+            .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
-        assert_eq!(
-            choose_present_mode(&[vk::PresentModeKHR::FIFO], true, false),
-            vk::PresentModeKHR::FIFO
+        assert!(
+            choose_present_mode(&[vk::PresentModeKHR::FIFO], true, false)
+                .expect_err("fifo fallback is forbidden")
+                .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
         assert_eq!(
             choose_present_mode(
@@ -1606,10 +1562,11 @@ mod tests {
                 ],
                 true,
                 false,
-            ),
+            )
+            .expect("fifo latest ready present mode"),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
-        assert_eq!(
+        assert!(
             choose_present_mode(
                 &[
                     vk::PresentModeKHR::FIFO,
@@ -1617,8 +1574,9 @@ mod tests {
                 ],
                 false,
                 false,
-            ),
-            vk::PresentModeKHR::FIFO
+            )
+            .expect_err("fifo latest ready feature is mandatory")
+            .contains("requires VK_KHR_present_mode_fifo_latest_ready")
         );
         assert_eq!(
             choose_present_mode(
@@ -1629,7 +1587,8 @@ mod tests {
                 ],
                 true,
                 true,
-            ),
+            )
+            .expect("uncapped still uses fifo latest ready"),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
         assert_eq!(
@@ -1642,43 +1601,18 @@ mod tests {
                 ],
                 true,
                 true,
-            ),
+            )
+            .expect("uncapped ignores mailbox/immediate when latest ready exists"),
             vk::PresentModeKHR::FIFO_LATEST_READY
         );
-        assert_eq!(
+        assert!(
             choose_present_mode(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE],
                 true,
                 true,
-            ),
-            vk::PresentModeKHR::IMMEDIATE
-        );
-    }
-
-    #[test]
-    fn present_mode_policy_can_force_fifo_for_video_pacing_trials() {
-        assert_eq!(
-            parse_present_mode_policy("fifo"),
-            Some(PresentModePolicy::Fifo)
-        );
-        assert_eq!(
-            parse_present_mode_policy("latest-ready"),
-            Some(PresentModePolicy::FifoLatestReady)
-        );
-        assert_eq!(
-            choose_present_mode_for_policy(
-                &[
-                    vk::PresentModeKHR::FIFO,
-                    vk::PresentModeKHR::MAILBOX,
-                    vk::PresentModeKHR::FIFO_LATEST_READY,
-                ],
-                PresentModePolicy::Fifo,
-            ),
-            Some(vk::PresentModeKHR::FIFO)
-        );
-        assert_eq!(
-            choose_present_mode_for_policy(&[vk::PresentModeKHR::FIFO], PresentModePolicy::Mailbox),
-            None
+            )
+            .expect_err("uncapped immediate fallback is forbidden")
+            .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
     }
 

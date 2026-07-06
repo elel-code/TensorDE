@@ -16,13 +16,13 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneGeometryId, SceneGraphPass, SceneGraphPipelineClass, SceneGraphTarget, SceneObjectId,
-    SceneResourceId,
+    SceneGeometryId, SceneGraphPass, SceneGraphTarget, SceneObjectId, SceneResourceId,
 };
 
 use super::draw_command::{
     NativeVulkanSceneMeshDrawCommandPlan, native_vulkan_record_scene_mesh_draw_command,
 };
+use super::draw_list::NativeVulkanSceneMeshDrawListState;
 use super::pipeline::{
     NativeVulkanScenePipelineBindPlan, NativeVulkanScenePipelineKey,
     native_vulkan_record_scene_pipeline_bind_command,
@@ -32,7 +32,7 @@ use super::resource_buffers::{
 };
 use super::texture_heap::{
     NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapDrawBindPlan,
-    native_vulkan_record_scene_texture_heap_draw_bind_command, scene_mesh_draw_base_color_resource,
+    native_vulkan_record_scene_texture_heap_draw_bind_command,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,24 +83,16 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
             output: pass.output,
         });
 
-        let mut last_pipeline = None;
+        let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
         let mut pipeline_bind_count = 0usize;
         let mut indexed_draw_count = 0usize;
 
         for draw in &pass.draws {
-            if draw.pipeline != SceneGraphPipelineClass::Mesh {
-                return Err(format!(
-                    "scene mesh pass '{}' requires Mesh pipeline, got {:?} for object {:?}",
-                    pass.name, draw.pipeline, draw.object
-                ));
-            }
-
-            let key = NativeVulkanScenePipelineKey::from_draw(draw)?;
-            if last_pipeline != Some(key) {
+            let transition = draw_list_state.next_draw(&pass.name, draw)?;
+            if transition.bind_pipeline {
                 commands.push(NativeVulkanSceneMeshPassCommand::BindPipeline {
-                    bind: NativeVulkanScenePipelineBindPlan::from_key(key),
+                    bind: NativeVulkanScenePipelineBindPlan::from_key(transition.pipeline_key),
                 });
-                last_pipeline = Some(key);
                 pipeline_bind_count += 1;
             }
 
@@ -163,34 +155,32 @@ where
         output: pass.output,
     });
 
-    let mut last_pipeline = None;
+    let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
     let mut pipeline_bind_count = 0usize;
     let mut texture_heap_bind_count = 0usize;
     let mut indexed_draw_count = 0usize;
 
     for draw in &pass.draws {
-        if draw.pipeline != SceneGraphPipelineClass::Mesh {
-            return Err(format!(
-                "scene mesh pass '{}' requires Mesh pipeline, got {:?} for object {:?}",
-                pass.name, draw.pipeline, draw.object
-            ));
-        }
-
-        let key = NativeVulkanScenePipelineKey::from_draw(draw)?;
-        if last_pipeline != Some(key) {
-            let pipeline = pipeline_for_key(key)?;
+        let transition = draw_list_state.next_draw(&pass.name, draw)?;
+        if transition.bind_pipeline {
+            let pipeline = pipeline_for_key(transition.pipeline_key)?;
             let bind = native_vulkan_record_scene_pipeline_bind_command(
                 device,
                 command_buffer,
-                key,
+                transition.pipeline_key,
                 pipeline,
             )?;
             commands.push(NativeVulkanSceneMeshPassCommand::BindPipeline { bind });
-            last_pipeline = Some(key);
             pipeline_bind_count += 1;
         }
 
-        if let Some(resource) = scene_mesh_draw_base_color_resource(draw)? {
+        if transition.bind_texture_heap {
+            let resource = transition.base_color_resource.ok_or_else(|| {
+                format!(
+                    "scene mesh pass '{}' texture heap transition lost BaseColor for object {:?}",
+                    pass.name, draw.object
+                )
+            })?;
             let bind_info = texture_heap_bind_for_resource(resource)?;
             let bind = native_vulkan_record_scene_texture_heap_draw_bind_command(
                 device,
@@ -242,7 +232,8 @@ mod tests {
     };
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGraphDraw, SceneGraphResourceBinding, SceneMaterialKey,
+        SceneBlendContract, SceneGraphDraw, SceneGraphPipelineClass, SceneGraphResourceBinding,
+        SceneMaterialKey,
     };
 
     #[test]

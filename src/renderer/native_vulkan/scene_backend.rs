@@ -7,6 +7,7 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
 pub mod draw_command;
+pub mod draw_list;
 pub mod frame_command;
 pub mod frame_resources;
 pub mod pass_command;
