@@ -92,6 +92,9 @@ fn gscn_resources(resources: &[BinarySceneResource]) -> Vec<GscnResourceFact> {
             source: resource.source.clone(),
             width: resource.width,
             height: resource.height,
+            format: resource.format,
+            mip_count: resource.mip_count,
+            payload_bytes: resource.payload_bytes,
         })
         .collect()
 }

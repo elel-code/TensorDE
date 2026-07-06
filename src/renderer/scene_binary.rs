@@ -37,6 +37,7 @@ mod engine_plan;
 mod facts;
 mod mesh;
 mod reader;
+mod texture;
 mod topology;
 
 pub(super) use engine_plan::scene_engine_plan_from_gscn_path_with_properties;
@@ -1636,7 +1637,7 @@ fn binary_plan_error(err: SceneBinaryError) -> RendererPlanError {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use serde_json::json;
@@ -1645,6 +1646,7 @@ mod tests {
     use crate::core::SceneSize;
     use crate::core::scene::SceneDocument;
     use crate::core::scene::binary::encode_scene_binary_document;
+    use crate::engine::scene_engine::{SceneResource, SceneTextureFormat};
 
     #[test]
     fn gscn_direct_ingest_defaults_to_we_projection_stretch_fit() {
@@ -1919,6 +1921,54 @@ mod tests {
     }
 
     #[test]
+    fn gscn_engine_plan_preserves_native_gtex_metadata() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 32, "height": 16 }
+            ],
+            "nodes": [
+                {
+                    "id": "eye-node",
+                    "type": "image",
+                    "resource": "eye",
+                    "width": 32,
+                    "height": 16
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-gtex-metadata");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        write_test_gtex_header(&assets.join("eye.gtex"), 663, 230, 7, 1, 155_520);
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_engine_plan_from_gscn_path_with_properties(scene_path, 0, None)
+            .expect("scene engine plan");
+
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        let SceneResource::Texture {
+            width,
+            height,
+            format,
+            mip_count,
+            payload_bytes,
+            ..
+        } = &plan.resources[0]
+        else {
+            panic!("expected texture resource");
+        };
+        assert_eq!(*width, Some(663));
+        assert_eq!(*height, Some(230));
+        assert_eq!(*format, Some(SceneTextureFormat::Bc7UnormBlock));
+        assert_eq!(*mip_count, Some(1));
+        assert_eq!(*payload_bytes, Some(155_520));
+    }
+
+    #[test]
     fn gscn_direct_ingest_preserves_puppet_clipping_records() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
@@ -2066,5 +2116,23 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!("{prefix}-{}-{nanos}", std::process::id()))
+    }
+
+    fn write_test_gtex_header(
+        path: &Path,
+        width: u32,
+        height: u32,
+        format: u32,
+        mip_count: u32,
+        payload_bytes: u64,
+    ) {
+        let mut bytes = [0u8; 32];
+        bytes[0..8].copy_from_slice(b"GDTEX002");
+        bytes[8..12].copy_from_slice(&width.to_le_bytes());
+        bytes[12..16].copy_from_slice(&height.to_le_bytes());
+        bytes[16..20].copy_from_slice(&format.to_le_bytes());
+        bytes[20..24].copy_from_slice(&mip_count.to_le_bytes());
+        bytes[24..32].copy_from_slice(&payload_bytes.to_le_bytes());
+        fs::write(path, bytes).expect("write test gtex");
     }
 }

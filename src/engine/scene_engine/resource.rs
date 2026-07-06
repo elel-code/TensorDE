@@ -23,6 +23,15 @@ pub struct SceneGeometryId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct ScenePuppetId(pub u32);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum SceneTextureFormat {
+    Bc1RgbaUnormBlock,
+    Bc3UnormBlock,
+    Bc7UnormBlock,
+    R8Unorm,
+    R8G8B8A8Unorm,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum SceneResource {
     Texture {
@@ -30,6 +39,9 @@ pub enum SceneResource {
         source: PathBuf,
         width: Option<u32>,
         height: Option<u32>,
+        format: Option<SceneTextureFormat>,
+        mip_count: Option<u32>,
+        payload_bytes: Option<u64>,
     },
     Buffer {
         id: SceneResourceId,

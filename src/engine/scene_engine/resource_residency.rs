@@ -11,7 +11,7 @@ use serde::Serialize;
 use super::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
     SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneGeometryId,
-    ScenePuppetId, SceneResource, SceneResourceId, scene_gpu_record_bytes,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat, scene_gpu_record_bytes,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -39,11 +39,20 @@ impl From<&SceneResource> for SceneResidentResource {
     fn from(resource: &SceneResource) -> Self {
         match resource {
             SceneResource::Texture {
-                id, width, height, ..
+                id,
+                width,
+                height,
+                format,
+                mip_count,
+                payload_bytes,
+                ..
             } => Self::Texture(SceneTextureResidency {
                 id: *id,
                 width: *width,
                 height: *height,
+                format: *format,
+                mip_count: *mip_count,
+                payload_bytes: *payload_bytes,
             }),
             SceneResource::Buffer { id, bytes } => Self::Buffer(SceneBufferResidency {
                 id: *id,
@@ -138,6 +147,9 @@ pub struct SceneTextureResidency {
     pub id: SceneResourceId,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub format: Option<SceneTextureFormat>,
+    pub mip_count: Option<u32>,
+    pub payload_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -237,5 +249,32 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn residency_plan_preserves_native_texture_metadata() {
+        let resources = vec![SceneResource::Texture {
+            id: SceneResourceId(9),
+            source: "assets/eye.gtex".into(),
+            width: Some(663),
+            height: Some(230),
+            format: Some(SceneTextureFormat::Bc7UnormBlock),
+            mip_count: Some(1),
+            payload_bytes: Some(155_520),
+        }];
+
+        let plan = SceneResourceResidencyPlan::from_resources(&resources);
+
+        assert_eq!(
+            plan.resources,
+            vec![SceneResidentResource::Texture(SceneTextureResidency {
+                id: SceneResourceId(9),
+                width: Some(663),
+                height: Some(230),
+                format: Some(SceneTextureFormat::Bc7UnormBlock),
+                mip_count: Some(1),
+                payload_bytes: Some(155_520),
+            })]
+        );
     }
 }

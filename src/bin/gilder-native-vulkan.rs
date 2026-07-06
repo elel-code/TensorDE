@@ -1217,6 +1217,9 @@ fn scene_engine_cli_snapshot_from_plan(plan: &SceneWallpaperPlan) -> SceneEngine
                 source: source.clone(),
                 width: layer.width.and_then(scene_engine_f64_to_u32),
                 height: layer.height.and_then(scene_engine_f64_to_u32),
+                format: None,
+                mip_count: None,
+                payload_bytes: None,
             });
             id
         });

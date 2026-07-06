@@ -160,7 +160,7 @@ mod tests {
         RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw,
         SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
         SceneGraphTarget, SceneMaterialKey, SceneObjectId, SceneResource, SceneResourceId,
-        SceneResourceResidencyPlan,
+        SceneResourceResidencyPlan, SceneTextureFormat,
     };
     use vulkanalia::vk;
 
@@ -268,6 +268,9 @@ mod tests {
                 source: "diffuse.png".into(),
                 width: Some(512),
                 height: Some(256),
+                format: Some(SceneTextureFormat::Bc7UnormBlock),
+                mip_count: Some(1),
+                payload_bytes: Some(131_072),
             },
         ];
         let residency = SceneResourceResidencyPlan::from_resources(&resources);
@@ -281,6 +284,11 @@ mod tests {
         assert_eq!(plan.binding_count, 1);
         assert_eq!(plan.bindings[0].resource, SceneResourceId(7));
         assert_eq!(plan.bindings[0].width, Some(512));
+        assert_eq!(
+            plan.bindings[0].format,
+            Some(SceneTextureFormat::Bc7UnormBlock)
+        );
+        assert_eq!(plan.bindings[0].payload_bytes, Some(131_072));
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
     }
 

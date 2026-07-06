@@ -19,6 +19,7 @@ use crate::core::scene::{
 use super::super::{
     SceneBlendContract, SceneEnginePlan, SceneGeometryId, SceneMaterialContract, SceneObject,
     SceneObjectGeometry, SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId,
+    SceneTextureFormat,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +51,9 @@ pub struct GscnResourceFact {
     pub source: Option<PathBuf>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub format: Option<SceneTextureFormat>,
+    pub mip_count: Option<u32>,
+    pub payload_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -244,6 +248,9 @@ fn engine_resources(
                 source: resource.source?,
                 width: resource.width,
                 height: resource.height,
+                format: resource.format,
+                mip_count: resource.mip_count,
+                payload_bytes: resource.payload_bytes,
             })
         })
         .collect::<Vec<_>>();
@@ -410,12 +417,18 @@ mod tests {
                     source: Some(PathBuf::from("/tmp/albedo.gtex")),
                     width: Some(64),
                     height: Some(32),
+                    format: Some(SceneTextureFormat::Bc7UnormBlock),
+                    mip_count: Some(1),
+                    payload_bytes: Some(8192),
                 },
                 GscnResourceFact {
                     id_name: None,
                     source: None,
                     width: None,
                     height: None,
+                    format: None,
+                    mip_count: None,
+                    payload_bytes: None,
                 },
             ],
             mesh_resources: vec![GscnMeshResourceFact {
@@ -487,10 +500,20 @@ mod tests {
 
         assert_eq!(plan.resources.len(), 3);
         assert_eq!(plan.objects.len(), 2);
-        let SceneResource::Texture { id, .. } = &plan.resources[0] else {
+        let SceneResource::Texture {
+            id,
+            format,
+            mip_count,
+            payload_bytes,
+            ..
+        } = &plan.resources[0]
+        else {
             panic!("expected texture resource");
         };
         assert_eq!(*id, SceneResourceId(77));
+        assert_eq!(*format, Some(SceneTextureFormat::Bc7UnormBlock));
+        assert_eq!(*mip_count, Some(1));
+        assert_eq!(*payload_bytes, Some(8192));
         let SceneResource::MeshGeometry {
             id,
             vertices,

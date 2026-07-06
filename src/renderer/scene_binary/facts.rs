@@ -16,10 +16,12 @@ use crate::core::scene::binary::{
     SceneBinaryResourceRecord, decode_debug_name_record, decode_puppet_record,
     decode_render_state_record, decode_resource_record, decode_transform_timeline_record,
 };
+use crate::engine::scene_engine::SceneTextureFormat;
 use crate::renderer::RendererPlanError;
 
 use super::binary_plan_error;
 use super::reader::BinarySceneReader;
+use super::texture::binary_scene_texture_metadata;
 
 #[derive(Debug, Clone)]
 pub(super) struct BinarySceneResource {
@@ -27,6 +29,9 @@ pub(super) struct BinarySceneResource {
     pub(super) source: Option<PathBuf>,
     pub(super) width: Option<u32>,
     pub(super) height: Option<u32>,
+    pub(super) format: Option<SceneTextureFormat>,
+    pub(super) mip_count: Option<u32>,
+    pub(super) payload_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -57,7 +62,7 @@ pub(super) fn binary_scene_resources(
     )?;
     let mut resources = Vec::with_capacity(records.len());
     for record in records {
-        resources.push(binary_scene_resource(record, names, package_root));
+        resources.push(binary_scene_resource(record, names, package_root)?);
     }
     Ok(resources)
 }
@@ -66,15 +71,29 @@ fn binary_scene_resource(
     record: SceneBinaryResourceRecord,
     names: &BinarySceneNames,
     package_root: &Path,
-) -> BinarySceneResource {
+) -> Result<BinarySceneResource, RendererPlanError> {
     let source = binary_name(names, record.source_name)
         .map(|source| binary_scene_resource_path(package_root, source));
-    BinarySceneResource {
+    let texture = source
+        .as_ref()
+        .map(|source| binary_scene_texture_metadata(source))
+        .transpose()?
+        .flatten();
+    Ok(BinarySceneResource {
         id_name: record.id_name,
         source,
-        width: (record.width > 0).then_some(record.width),
-        height: (record.height > 0).then_some(record.height),
-    }
+        width: texture
+            .as_ref()
+            .map(|texture| texture.width)
+            .or_else(|| (record.width > 0).then_some(record.width)),
+        height: texture
+            .as_ref()
+            .map(|texture| texture.height)
+            .or_else(|| (record.height > 0).then_some(record.height)),
+        format: texture.as_ref().map(|texture| texture.format),
+        mip_count: texture.as_ref().map(|texture| texture.mip_count),
+        payload_bytes: texture.as_ref().map(|texture| texture.payload_bytes),
+    })
 }
 
 pub(super) fn binary_scene_names(

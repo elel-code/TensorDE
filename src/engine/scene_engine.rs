@@ -35,7 +35,9 @@ pub use plan::SceneEnginePlan;
 pub use renderer_scene_render::RendererSceneRender;
 pub use rendering_device::{RenderingDevice, RenderingDeviceCommand};
 pub use rendering_server::RenderingServer;
-pub use resource::{SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId};
+pub use resource::{
+    SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
+};
 pub use resource_gpu_layout::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
     SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,

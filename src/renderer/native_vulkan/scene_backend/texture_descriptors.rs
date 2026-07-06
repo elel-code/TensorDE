@@ -15,7 +15,7 @@ use serde::Serialize;
 
 use crate::engine::scene_engine::{
     SceneGraph, SceneGraphPipelineClass, SceneGraphResourceRole, SceneObjectId, SceneResourceId,
-    SceneTextureResidency,
+    SceneTextureFormat, SceneTextureResidency,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -35,6 +35,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptor
     pub resource: SceneResourceId,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub format: Option<SceneTextureFormat>,
+    pub mip_count: Option<u32>,
+    pub payload_bytes: Option<u64>,
     pub shader_mapping: &'static str,
 }
 
@@ -93,6 +96,9 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                         resource: resource.resource,
                         width: texture.width,
                         height: texture.height,
+                        format: texture.format,
+                        mip_count: texture.mip_count,
+                        payload_bytes: texture.payload_bytes,
                         shader_mapping: "set0.binding0.base_color",
                     });
                 }
@@ -136,6 +142,9 @@ mod tests {
                 id: resource,
                 width: Some(1024),
                 height: Some(512),
+                format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+                mip_count: Some(10),
+                payload_bytes: Some(2_796_204),
             })
         })
         .expect("texture descriptor frame plan");
@@ -145,6 +154,12 @@ mod tests {
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
         assert_eq!(plan.bindings[0].object, SceneObjectId(7));
         assert_eq!(plan.bindings[0].resource, SceneResourceId(3));
+        assert_eq!(
+            plan.bindings[0].format,
+            Some(SceneTextureFormat::R8G8B8A8Unorm)
+        );
+        assert_eq!(plan.bindings[0].mip_count, Some(10));
+        assert_eq!(plan.bindings[0].payload_bytes, Some(2_796_204));
         assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.base_color");
         assert_eq!(
             plan.command_order,
@@ -200,6 +215,9 @@ mod tests {
                 id: SceneResourceId(3),
                 width: None,
                 height: None,
+                format: None,
+                mip_count: None,
+                payload_bytes: None,
             })
         })
         .expect_err("BaseColor slot mismatch must fail");
