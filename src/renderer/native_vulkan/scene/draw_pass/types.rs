@@ -432,6 +432,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePassLoweringStats {
+    pub(in crate::renderer::native_vulkan::scene) waterwaves3_candidate_triple_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves3_blocked_triple_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves3_blocked_reason_counts:
+        BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) waterwaves2_candidate_pair_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves2_direct_pair_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves2_redirected_pair_count: usize,
@@ -518,6 +522,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_step_eliminated_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_reason_counts:
+        BTreeMap<&'static str, usize>,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_candidate_triple_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_blocked_triple_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_blocked_triple_reason_counts:
         BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_candidate_pair_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_direct_pair_count: usize,

@@ -105,6 +105,18 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
                 .entry(reason)
                 .or_default() += 1;
         }
+        plan.waterwaves_lowering_candidate_triple_count = plan
+            .waterwaves_lowering_candidate_triple_count
+            .saturating_add(chain.lowering_stats.waterwaves3_candidate_triple_count);
+        plan.waterwaves_lowering_blocked_triple_count = plan
+            .waterwaves_lowering_blocked_triple_count
+            .saturating_add(chain.lowering_stats.waterwaves3_blocked_triple_count);
+        for (reason, count) in &chain.lowering_stats.waterwaves3_blocked_reason_counts {
+            *plan
+                .waterwaves_lowering_blocked_triple_reason_counts
+                .entry(*reason)
+                .or_default() += count;
+        }
         plan.waterwaves_lowering_candidate_pair_count = plan
             .waterwaves_lowering_candidate_pair_count
             .saturating_add(chain.lowering_stats.waterwaves2_candidate_pair_count);
@@ -204,7 +216,8 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_gr
         if chain_has_waterwaves2 {
             plan.waterwaves_fused2_chain_count =
                 plan.waterwaves_fused2_chain_count.saturating_add(1);
-        } else if chain_has_multiple_waterwaves {
+        }
+        if !chain_has_waterwaves2 && chain_has_multiple_waterwaves {
             plan.waterwaves_fused2_ineligible_chain_count = plan
                 .waterwaves_fused2_ineligible_chain_count
                 .saturating_add(1);
@@ -2993,6 +3006,133 @@ mod tests {
         assert_eq!(
             plan.chain_signature_counts
                 .get("water-waves-fused2")
+                .copied(),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn simple_three_waterwaves_records_residency_block_and_falls_back_to_fused2_pair() {
+        let mut first = waterwaves_effect_record(0);
+        first.texture_slots = vec![
+            NativeVulkanSceneTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/waterwaves-mask-a.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+            NativeVulkanSceneTextureSlot {
+                slot: 2,
+                source: PathBuf::from("/tmp/waterwaves-time-a.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+        ];
+        first.combo_keys = vec!["TIMEOFFSET".to_owned()];
+
+        let mut second = waterwaves_effect_record(1);
+        second.texture_slots = vec![
+            NativeVulkanSceneTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/waterwaves-mask-b.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+            NativeVulkanSceneTextureSlot {
+                slot: 2,
+                source: PathBuf::from("/tmp/waterwaves-time-b.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+        ];
+        second.combo_keys = vec!["TIMEOFFSET".to_owned()];
+
+        let mut third = waterwaves_effect_record(2);
+        third.texture_slots = vec![
+            NativeVulkanSceneTextureSlot {
+                slot: 1,
+                source: PathBuf::from("/tmp/waterwaves-mask-c.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+            NativeVulkanSceneTextureSlot {
+                slot: 2,
+                source: PathBuf::from("/tmp/waterwaves-time-c.gtex"),
+                width: Some(512),
+                height: Some(256),
+            },
+        ];
+        third.combo_keys = vec!["TIMEOFFSET".to_owned()];
+
+        let mut quad = sampled_image_quad(None);
+        quad.effect_target_pass = None;
+        quad.effect_passes = vec![first, second, third];
+        quad.image_effect_pass_count = quad.effect_passes.len();
+
+        let chain =
+            native_vulkan_scene_we_image_pass_chain(&quad).expect("fused waterwaves3 graph chain");
+        let plan = native_vulkan_scene_we_image_graph_plan(&[quad]);
+
+        assert_eq!(chain.passes.len(), 2);
+        assert_eq!(chain.lowering_stats.waterwaves3_candidate_triple_count, 1);
+        assert_eq!(chain.lowering_stats.waterwaves3_blocked_triple_count, 1);
+        assert_eq!(
+            chain
+                .lowering_stats
+                .waterwaves3_blocked_reason_counts
+                .get("shader-variant-residency")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(chain.lowering_stats.waterwaves2_candidate_pair_count, 1);
+        assert_eq!(chain.lowering_stats.waterwaves2_direct_pair_count, 1);
+        assert_eq!(
+            chain.passes[0].fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+        );
+        assert_eq!(chain.passes[0].fused_effect_passes.len(), 2);
+        assert_eq!(
+            chain.passes[0]
+                .texture_slots
+                .iter()
+                .map(|slot| slot.slot)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4]
+        );
+        assert_eq!(
+            chain.passes[0].input,
+            NativeVulkanSceneWeImagePassEndpoint::SourceTexture
+        );
+        assert!(chain.passes[0].target.is_graph_target());
+        assert!(!chain.passes[0].final_scene_pass);
+        assert_eq!(
+            chain.passes[1].effect_kind,
+            Some(NativeVulkanSceneEffectKind::WaterWaves)
+        );
+        assert_eq!(chain.passes[1].fused_effect_kind, None);
+        assert_eq!(
+            chain.passes[1].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert!(chain.passes[1].final_scene_pass);
+
+        assert_eq!(plan.step_count, 2);
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(plan.waterwaves_fused2_chain_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
+        assert_eq!(plan.waterwaves_lowering_candidate_triple_count, 1);
+        assert_eq!(plan.waterwaves_lowering_blocked_triple_count, 1);
+        assert_eq!(plan.waterwaves_lowering_candidate_pair_count, 1);
+        assert_eq!(
+            plan.fused_effect_kind_counts
+                .get("water-waves-fused2")
+                .copied(),
+            Some(1)
+        );
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("water-waves-fused2>water-waves")
                 .copied(),
             Some(1)
         );

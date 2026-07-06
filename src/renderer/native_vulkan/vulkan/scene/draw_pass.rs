@@ -6426,7 +6426,7 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1688] =
     include!("shaders/sampled_image_waterripple.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 4891] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 3764] =
     include!("shaders/sampled_image_waterwaves.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERFLOW_FRAGMENT_SPIRV: [u32; 1765] =
     include!("shaders/sampled_image_waterflow.frag.spv.rs");
@@ -9189,7 +9189,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
             ),
-            19564
+            15056
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -9291,23 +9291,30 @@ mod tests {
         assert!(source.contains("bool effect_uv_inside(vec2 uv)"));
         assert!(source.contains("vec4 sample_single_waterwaves()"));
         assert!(source.contains("vec4 sample_fused_waterwaves2()"));
+        assert!(!source.contains("vec4 sample_fused_waterwaves3()"));
         assert!(source.contains("float pass1_mask_sample("));
         assert!(source.contains("float pass1_timeoffset_sample("));
         assert!(source.contains("float pass2_mask_sample("));
         assert!(source.contains("float pass2_timeoffset_sample("));
+        assert!(!source.contains("float pass3_mask_sample("));
+        assert!(!source.contains("float pass3_timeoffset_sample("));
+        assert!(!source.contains("layout(set = 0, binding = 5) uniform sampler2D g_Texture5;"));
+        assert!(!source.contains("layout(set = 0, binding = 6) uniform sampler2D g_Texture6;"));
         assert!(source.contains("source_alpha_at(source_coord, cached_source_alpha) <= 0.001"));
         assert!(source.contains("texture(g_Texture1, clamp(uv, vec2(0.0), vec2(1.0))).r"));
         assert!(source.contains("vec2 target_uv_per_layer_uv()"));
         assert!(source.contains("dFdx(v_effect_uv.x)"));
         assert!(
-            source.contains("vec2 offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha);")
+            source
+                .contains("vec2 offset = pass1_layer_offset(effect_uv, target_uv, source_alpha);")
         );
-        assert!(source.contains("vec2 source_coord = v_uv + offset * target_uv_per_layer_uv();"));
+        assert!(source.contains("vec2 source_coord = target_uv + offset * target_scale;"));
         assert!(source.contains(
-            "vec2 pass1_output_offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha_at_output);"
+            "vec4 pass1_at_output = sample_after_pass1(target_uv, effect_uv, target_scale);"
         ));
-        assert!(source.contains("vec2 intermediate_coord = v_uv + pass2_offset * target_scale;"));
+        assert!(source.contains("vec2 pass2_input_uv = target_uv + pass2_offset * target_scale;"));
         assert!(source.contains("pc.effect_shader_code == EFFECT_SHADER_CODE_WATERWAVES2"));
+        assert!(!source.contains("pc.effect_shader_code == EFFECT_SHADER_CODE_WATERWAVES3"));
     }
 
     #[test]
@@ -9330,11 +9337,6 @@ mod tests {
             (
                 "waterripple",
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV
-                    as &[u32],
-            ),
-            (
-                "waterwaves",
-                &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
                     as &[u32],
             ),
             (
@@ -9380,6 +9382,10 @@ mod tests {
                 "{label} fragment must keep layer opacity"
             );
         }
+        let waterwaves_source = include_str!("shaders/sampled_image_waterwaves.frag");
+        assert!(waterwaves_source.contains("vec4 apply_vertex_color(vec4 color)"));
+        assert!(waterwaves_source.contains("color *= v_tint;"));
+        assert!(waterwaves_source.contains("color.a *= v_opacity;"));
     }
 
     fn spirv_function_argument_loads_named_input(

@@ -1,8 +1,8 @@
 #version 450
 
 // WaterWaves effect-family shader. Normal WaterWaves runs one WE pass; graph
-// lowering may mark adjacent WaterWaves passes as WaterWaves2, which reuses this
-// pipeline and executes the two-pass UV dependency in one fragment invocation.
+// lowering may mark adjacent WaterWaves passes as WaterWaves2, which executes
+// the previous-texture UV dependency in one fragment invocation.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -240,26 +240,26 @@ vec2 pass2_layer_offset(vec2 effect_uv, float cached_temp_alpha) {
     return waterwaves_layer_offset(effect_uv, params, mask, time_offset);
 }
 
-vec4 sample_single_waterwaves() {
+vec4 sample_after_pass1(vec2 target_uv, vec2 effect_uv, vec2 target_scale) {
     float source_alpha = -1.0;
-    vec2 offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha);
-    vec2 source_coord = v_uv + offset * target_uv_per_layer_uv();
+    vec2 offset = pass1_layer_offset(effect_uv, target_uv, source_alpha);
+    vec2 source_coord = target_uv + offset * target_scale;
     return texture(g_Texture0, source_coord);
 }
 
-vec4 sample_fused_waterwaves2() {
-    vec2 target_scale = target_uv_per_layer_uv();
-    float source_alpha_at_output = -1.0;
-    vec2 pass1_output_offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha_at_output);
-    float temp_alpha_at_output = texture(g_Texture0, v_uv + pass1_output_offset * target_scale).a;
+vec4 sample_after_pass2(vec2 target_uv, vec2 effect_uv, vec2 target_scale) {
+    vec4 pass1_at_output = sample_after_pass1(target_uv, effect_uv, target_scale);
+    vec2 pass2_offset = pass2_layer_offset(effect_uv, pass1_at_output.a);
+    vec2 pass2_input_uv = target_uv + pass2_offset * target_scale;
+    return sample_after_pass1(pass2_input_uv, effect_uv + pass2_offset, target_scale);
+}
 
-    vec2 pass2_offset = pass2_layer_offset(v_effect_uv, temp_alpha_at_output);
-    vec2 intermediate_coord = v_uv + pass2_offset * target_scale;
-    float source_alpha_at_intermediate = -1.0;
-    vec2 pass1_offset =
-        pass1_layer_offset(v_effect_uv + pass2_offset, intermediate_coord, source_alpha_at_intermediate);
-    vec2 source_coord = intermediate_coord + pass1_offset * target_scale;
-    return texture(g_Texture0, source_coord);
+vec4 sample_single_waterwaves() {
+    return sample_after_pass1(v_uv, v_effect_uv, target_uv_per_layer_uv());
+}
+
+vec4 sample_fused_waterwaves2() {
+    return sample_after_pass2(v_uv, v_effect_uv, target_uv_per_layer_uv());
 }
 
 void main() {

@@ -1,15 +1,20 @@
-use crate::core::SceneBlendMode;
-
 use super::super::{
-    NativeVulkanSceneEffectKind, NativeVulkanSceneFusedEffectKind,
-    NativeVulkanSceneFusedEffectPass, NativeVulkanSceneSampledImageQuad,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneWeImagePass, NativeVulkanSceneWeImagePassChain,
-    NativeVulkanSceneWeImagePassEndpoint, NativeVulkanSceneWeImagePassLoweringStats,
-    NativeVulkanSceneWeImagePassRole,
+    NativeVulkanSceneEffectKind, NativeVulkanSceneSampledImageQuad, NativeVulkanSceneWeImagePass,
+    NativeVulkanSceneWeImagePassChain, NativeVulkanSceneWeImagePassEndpoint,
+    NativeVulkanSceneWeImagePassLoweringStats,
 };
 use super::{
     native_vulkan_scene_we_image_graph_endpoint_name,
     native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad,
+};
+
+mod residency;
+mod waterwaves;
+
+use self::waterwaves::{
+    native_vulkan_scene_we_image_pass_fused_waterwaves2,
+    native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons,
+    native_vulkan_scene_we_image_passes_waterwaves3_ineligible_reasons,
 };
 
 pub(super) fn native_vulkan_scene_we_image_pass_chain_lower(
@@ -57,6 +62,24 @@ impl<'a> NativeVulkanSceneWeImagePassLowering<'a> {
     }
 
     fn lower_next_window(&mut self) {
+        if let Some(reasons) = self.waterwaves3_candidate_reasons() {
+            self.stats.waterwaves3_candidate_triple_count = self
+                .stats
+                .waterwaves3_candidate_triple_count
+                .saturating_add(1);
+            self.stats.waterwaves3_blocked_triple_count = self
+                .stats
+                .waterwaves3_blocked_triple_count
+                .saturating_add(1);
+            for reason in reasons {
+                *self
+                    .stats
+                    .waterwaves3_blocked_reason_counts
+                    .entry(reason)
+                    .or_default() += 1;
+            }
+        }
+
         let waterwaves2_candidate_reasons = self.waterwaves2_candidate_reasons();
         if waterwaves2_candidate_reasons.is_some() {
             self.stats.waterwaves2_candidate_pair_count = self
@@ -144,6 +167,26 @@ impl<'a> NativeVulkanSceneWeImagePassLowering<'a> {
                         .map(str::to_owned),
                 },
             },
+        )
+    }
+
+    fn waterwaves3_candidate_reasons(&self) -> Option<Vec<&'static str>> {
+        if self.index + 2 >= self.passes.len() {
+            return None;
+        }
+        let first = &self.passes[self.index];
+        let second = &self.passes[self.index + 1];
+        let third = &self.passes[self.index + 2];
+        if first.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves)
+            || second.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves)
+            || third.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves)
+        {
+            return None;
+        }
+        Some(
+            native_vulkan_scene_we_image_passes_waterwaves3_ineligible_reasons(
+                self.quad, first, second, third,
+            ),
         )
     }
 
@@ -269,219 +312,4 @@ pub(super) fn native_vulkan_scene_we_image_pass_chain_waterwaves2_ineligible_rea
         );
     }
     reasons
-}
-
-fn native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-) -> Vec<&'static str> {
-    let mut reasons = Vec::new();
-    native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
-        quad,
-        first,
-        second,
-        &mut reasons,
-    );
-    if first.role != NativeVulkanSceneWeImagePassRole::EffectMaterial
-        || second.role != NativeVulkanSceneWeImagePassRole::EffectMaterial
-    {
-        reasons.push("non-effect-material");
-    }
-    if first.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves)
-        || second.effect_kind != Some(NativeVulkanSceneEffectKind::WaterWaves)
-    {
-        reasons.push("non-waterwaves-kind");
-    }
-    if first.fused_effect_kind.is_some() || second.fused_effect_kind.is_some() {
-        reasons.push("already-fused");
-    }
-    if first.final_scene_pass {
-        reasons.push("first-final-scene-pass");
-    }
-    if !first.target.is_graph_target() {
-        reasons.push("first-target-not-graph");
-    }
-    if second.input != first.target
-        || second.input_name
-            != native_vulkan_scene_we_image_graph_endpoint_name(first).map(str::to_owned)
-    {
-        reasons.push("second-input-not-first-target");
-    }
-    if first.input.is_graph_target()
-        && first.input == second.target
-        && first.input_name == second.target_name
-    {
-        reasons.push("same-input-output-target");
-    }
-    if first.target_name.is_some() || second.target_name.is_some() {
-        reasons.push("explicit-target");
-    }
-    if first.source.is_some() || second.source.is_some() {
-        reasons.push("explicit-source");
-    }
-    if !first.binds.is_empty() || !second.binds.is_empty() {
-        reasons.push("binds");
-    }
-    if !first.fbos.is_empty() || !second.fbos.is_empty() {
-        reasons.push("fbos");
-    }
-    if !native_vulkan_scene_we_image_passes_have_fusible_waterwaves_texture_slots(first, second) {
-        reasons.push("texture-slots");
-    }
-    if first.effect_uv_transform != second.effect_uv_transform {
-        reasons.push("effect-uv-transform");
-    }
-    if first.scene_blend_mode != SceneBlendMode::Normal {
-        reasons.push("first-blend-not-normal");
-    }
-    if first.depth_test != second.depth_test
-        || first.depth_write != second.depth_write
-        || first.cull_mode != second.cull_mode
-    {
-        reasons.push("render-state-mismatch");
-    }
-    reasons
-}
-
-fn native_vulkan_scene_we_image_passes_waterwaves2_surface_ineligible_reasons(
-    quad: &NativeVulkanSceneSampledImageQuad,
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-    reasons: &mut Vec<&'static str>,
-) {
-    if let Some(mesh) = quad.mesh.as_ref()
-        && !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh)
-        && !native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(first, second)
-    {
-        reasons.push("mesh-geometry");
-    }
-    if quad.effect_motion.is_active() {
-        reasons.push("dynamic-effect-motion");
-    }
-    if quad.texture_region.is_some() {
-        reasons.push("texture-region");
-    }
-    if quad.effect_uv_space.is_some() {
-        reasons.push("effect-uv-space");
-    }
-    if quad.effect_target_pass.is_some() {
-        reasons.push("first-class-effect-target");
-    }
-    if quad.material_pass.alpha_texture_slot.is_some() {
-        reasons.push("material-alpha-texture");
-    }
-    if quad.composite_key.is_some() {
-        reasons.push("composite-key");
-    }
-    if !quad.width.is_finite()
-        || !quad.height.is_finite()
-        || quad.width <= 0.0
-        || quad.height <= 0.0
-    {
-        reasons.push("invalid-extent");
-    }
-}
-
-fn native_vulkan_scene_we_image_passes_can_fuse_layer_uv_mesh_waterwaves2(
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-) -> bool {
-    first.input.is_graph_target()
-        && first.target.is_graph_target()
-        && second.target == NativeVulkanSceneWeImagePassEndpoint::Scene
-        && second.final_scene_pass
-}
-
-fn native_vulkan_scene_we_image_passes_have_fusible_waterwaves_texture_slots(
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-) -> bool {
-    first
-        .texture_slots
-        .iter()
-        .chain(second.texture_slots.iter())
-        .all(|slot| matches!(slot.slot, 1 | 2))
-}
-
-fn native_vulkan_scene_we_image_pass_fused_waterwaves2(
-    first: &NativeVulkanSceneWeImagePass,
-    second: &NativeVulkanSceneWeImagePass,
-) -> NativeVulkanSceneWeImagePass {
-    let first_texture_slots = native_vulkan_scene_fused_waterwaves_texture_slots(first, 0);
-    let second_texture_slots = native_vulkan_scene_fused_waterwaves_texture_slots(second, 2);
-    let texture_slots = first_texture_slots
-        .iter()
-        .chain(second_texture_slots.iter())
-        .cloned()
-        .collect::<Vec<_>>();
-    NativeVulkanSceneWeImagePass {
-        pass_index: first.pass_index,
-        role: NativeVulkanSceneWeImagePassRole::EffectMaterial,
-        effect_kind: Some(NativeVulkanSceneEffectKind::WaterWaves),
-        fused_effect_kind: Some(NativeVulkanSceneFusedEffectKind::WaterWaves2),
-        fused_effect_passes: vec![
-            native_vulkan_scene_fused_effect_pass_from_we_pass(first, first_texture_slots),
-            native_vulkan_scene_fused_effect_pass_from_we_pass(second, second_texture_slots),
-        ],
-        effect_file: first.effect_file.clone(),
-        command: None,
-        source: None,
-        target_name: second.target_name.clone(),
-        binds: Default::default(),
-        fbos: Default::default(),
-        shader: first.shader.clone(),
-        blending: second.blending.clone(),
-        scene_blend_mode: second.scene_blend_mode,
-        render_state: second.render_state.clone(),
-        input: first.input,
-        input_name: first.input_name.clone(),
-        target: second.target,
-        final_scene_pass: second.final_scene_pass,
-        texture_slot_count: texture_slots.len(),
-        texture_slots,
-        effect_uv_transform: first.effect_uv_transform,
-        parameter_keys: first.parameter_keys.clone(),
-        constant_shader_values: first.constant_shader_values.clone(),
-        combo_keys: first.combo_keys.clone(),
-        combo_values: first.combo_values.clone(),
-        depth_test: second.depth_test,
-        depth_write: second.depth_write,
-        cull_mode: second.cull_mode.clone(),
-    }
-}
-
-fn native_vulkan_scene_fused_waterwaves_texture_slots(
-    pass: &NativeVulkanSceneWeImagePass,
-    slot_offset: u32,
-) -> Vec<NativeVulkanSceneTextureSlot> {
-    pass.texture_slots
-        .iter()
-        .filter_map(|slot| {
-            if !matches!(slot.slot, 1 | 2) {
-                return None;
-            }
-            let mut remapped = slot.clone();
-            remapped.slot = remapped.slot.saturating_add(slot_offset);
-            Some(remapped)
-        })
-        .collect()
-}
-
-fn native_vulkan_scene_fused_effect_pass_from_we_pass(
-    pass: &NativeVulkanSceneWeImagePass,
-    texture_slots: Vec<NativeVulkanSceneTextureSlot>,
-) -> NativeVulkanSceneFusedEffectPass {
-    NativeVulkanSceneFusedEffectPass {
-        pass_index: pass.pass_index,
-        effect_kind: pass
-            .effect_kind
-            .expect("fused WE effect pass requires an effect kind"),
-        effect_file: pass.effect_file.clone(),
-        texture_slots,
-        effect_uv_transform: pass.effect_uv_transform,
-        constant_shader_values: pass.constant_shader_values.clone(),
-        combo_keys: pass.combo_keys.clone(),
-        combo_values: pass.combo_values.clone(),
-    }
 }
