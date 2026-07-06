@@ -18,7 +18,7 @@ use crate::engine::scene_engine::{
 
 use super::pipeline::{
     NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
-    NativeVulkanScenePipelineResources, NativeVulkanScenePipelineStore,
+    NativeVulkanScenePipelineStore,
 };
 use super::pipeline_factory::{
     NativeVulkanSceneMeshPipelineLayoutSpec, NativeVulkanSceneMeshPipelineShaders,
@@ -105,19 +105,6 @@ impl NativeVulkanSceneFrameResources {
         self.gpu_buffers.puppet_storage_buffers(puppet)
     }
 
-    pub(in crate::renderer::native_vulkan) fn resolve_pipeline<CreatePipeline>(
-        &mut self,
-        key: NativeVulkanScenePipelineCacheKey,
-        create_pipeline: CreatePipeline,
-    ) -> Result<NativeVulkanScenePipelineBinding, String>
-    where
-        CreatePipeline: FnOnce(
-            &NativeVulkanScenePipelineCacheKey,
-        ) -> Result<NativeVulkanScenePipelineResources, String>,
-    {
-        self.pipelines.resolve_pipeline(key, create_pipeline)
-    }
-
     pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(
         &mut self,
         device: &Device,
@@ -156,6 +143,7 @@ impl Default for NativeVulkanSceneFrameResources {
 
 #[cfg(test)]
 mod tests {
+    use super::super::pipeline::NativeVulkanScenePipelineResources;
     use super::*;
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
@@ -224,12 +212,14 @@ mod tests {
         let mut creates = 0usize;
 
         let first = frame_resources
+            .pipelines
             .resolve_pipeline(key.clone(), |_| {
                 creates += 1;
                 Ok(pipeline_resources(11, 12))
             })
             .expect("create pipeline");
         let second = frame_resources
+            .pipelines
             .resolve_pipeline(key, |_| {
                 creates += 1;
                 Ok(pipeline_resources(21, 22))
@@ -245,6 +235,7 @@ mod tests {
         let mut frame_resources = NativeVulkanSceneFrameResources::new();
         let key = pipeline_key();
         frame_resources
+            .pipelines
             .resolve_pipeline(key.clone(), |_| Ok(pipeline_resources(11, 12)))
             .expect("warm pipeline");
 
