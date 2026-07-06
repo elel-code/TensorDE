@@ -130,6 +130,18 @@ impl NativeVulkanSceneFrameResources {
         })
     }
 
+    pub(in crate::renderer::native_vulkan) fn cached_mesh_pipeline(
+        &self,
+        key: &NativeVulkanScenePipelineCacheKey,
+    ) -> Result<NativeVulkanScenePipelineBinding, String> {
+        self.pipelines.cached_pipeline(key).ok_or_else(|| {
+            format!(
+                "missing warmed scene mesh pipeline for shader '{}' format {:?}",
+                key.shader, key.target_format
+            )
+        })
+    }
+
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         self.gpu_buffers.destroy_all(device);
         self.pipelines.destroy_all(device);
@@ -226,6 +238,22 @@ mod tests {
 
         assert_eq!(creates, 1);
         assert_eq!(first.pipeline, second.pipeline);
+    }
+
+    #[test]
+    fn frame_resources_reads_cached_pipeline_after_warmup() {
+        let mut frame_resources = NativeVulkanSceneFrameResources::new();
+        let key = pipeline_key();
+        frame_resources
+            .resolve_pipeline(key.clone(), |_| Ok(pipeline_resources(11, 12)))
+            .expect("warm pipeline");
+
+        let binding = frame_resources
+            .cached_mesh_pipeline(&key)
+            .expect("cached mesh pipeline");
+
+        assert_eq!(binding.pipeline, vk::Pipeline::from_raw(11));
+        assert_eq!(binding.pipeline_layout, vk::PipelineLayout::from_raw(12));
     }
 
     fn mesh_resource(geometry: SceneGeometryId) -> SceneResource {

@@ -172,6 +172,13 @@ impl NativeVulkanScenePipelineStore {
         Ok(pipeline_binding(resources))
     }
 
+    pub(in crate::renderer::native_vulkan) fn cached_pipeline(
+        &self,
+        key: &NativeVulkanScenePipelineCacheKey,
+    ) -> Option<NativeVulkanScenePipelineBinding> {
+        self.pipelines.get(key).copied().map(pipeline_binding)
+    }
+
     pub(in crate::renderer::native_vulkan) fn last_actions(
         &self,
     ) -> &[NativeVulkanScenePipelineCacheAction] {
@@ -383,6 +390,27 @@ mod tests {
 
         assert!(err.contains("valid vk::Pipeline"));
         assert_eq!(store.len(), 0);
+    }
+
+    #[test]
+    fn pipeline_store_exposes_cached_pipeline_without_factory_call() {
+        let draw = mesh_draw("we/genericimage4");
+        let key = NativeVulkanScenePipelineCacheKey::from_bind_key(
+            NativeVulkanScenePipelineKey::from_draw(&draw).unwrap(),
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .unwrap();
+        let mut store = NativeVulkanScenePipelineStore::new();
+        store
+            .resolve_pipeline(key.clone(), |_| Ok(pipeline_resources(11, 12)))
+            .expect("create pipeline");
+
+        let binding = store
+            .cached_pipeline(&key)
+            .expect("cached pipeline after warmup");
+
+        assert_eq!(binding.pipeline, vk::Pipeline::from_raw(11));
+        assert_eq!(binding.pipeline_layout, vk::PipelineLayout::from_raw(12));
     }
 
     fn mesh_draw(shader: &str) -> SceneGraphDraw {
