@@ -26,8 +26,8 @@ pub mod we;
 
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
-    SceneGraph, SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding,
-    SceneGraphResourceRole, SceneGraphTarget,
+    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneGraph, SceneGraphDraw, SceneGraphPass,
+    SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
 };
 pub use material::{SceneBlendContract, SceneMaterialContract, SceneMaterialKey};
 pub use object::{SceneObject, SceneObjectGeometry, SceneObjectId};

@@ -11,14 +11,15 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
-use crate::engine::scene_engine::{
-    SceneGraphDraw, SceneGraphResourceRole, SceneObjectId, SceneResourceId,
-};
+use crate::engine::scene_engine::{SceneGraphDraw, SceneObjectId};
 
-#[derive(Debug, Clone, Copy)]
+use super::texture_set::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
+
+#[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapDrawBindInfo {
-    pub resource: SceneResourceId,
-    pub heap_index: usize,
+    pub texture_set: NativeVulkanSceneTextureSetKey,
+    pub base_heap_index: usize,
+    pub texture_count: usize,
     pub resource_bind: vk::BindHeapInfoEXT,
     pub sampler_bind: vk::BindHeapInfoEXT,
 }
@@ -26,34 +27,45 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapDrawBi
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneTextureHeapDrawBindPlan {
     pub(in crate::renderer::native_vulkan) object: SceneObjectId,
-    pub(in crate::renderer::native_vulkan) resource: SceneResourceId,
-    pub(in crate::renderer::native_vulkan) heap_index: usize,
-    pub(in crate::renderer::native_vulkan) shader_mapping: &'static str,
+    pub(in crate::renderer::native_vulkan) texture_set: NativeVulkanSceneTextureSetKey,
+    pub(in crate::renderer::native_vulkan) base_heap_index: usize,
+    pub(in crate::renderer::native_vulkan) texture_count: usize,
+    pub(in crate::renderer::native_vulkan) shader_mappings: Vec<String>,
     pub(in crate::renderer::native_vulkan) command_order: [&'static str; 2],
 }
 
 impl NativeVulkanSceneTextureHeapDrawBindPlan {
     pub(in crate::renderer::native_vulkan) fn from_draw_and_bind_info(
         draw: &SceneGraphDraw,
-        bind_info: NativeVulkanSceneTextureHeapDrawBindInfo,
+        bind_info: &NativeVulkanSceneTextureHeapDrawBindInfo,
     ) -> Result<Self, String> {
-        let resource = scene_mesh_draw_base_color_resource(draw)?.ok_or_else(|| {
-            format!(
-                "scene mesh draw {:?} requires BaseColor texture before indexed draw",
-                draw.object
-            )
-        })?;
-        if resource != bind_info.resource {
+        let texture_set = scene_mesh_draw_texture_set_key(draw)?;
+        if texture_set.is_empty() {
             return Err(format!(
-                "scene texture heap bind resource mismatch for object {:?}: draw {:?}, heap {:?}",
-                draw.object, resource, bind_info.resource
+                "scene mesh draw {:?} requires a WE texture set before indexed draw",
+                draw.object
+            ));
+        }
+        if texture_set != bind_info.texture_set {
+            return Err(format!(
+                "scene texture heap bind texture-set mismatch for object {:?}: draw {:?}, heap {:?}",
+                draw.object, texture_set, bind_info.texture_set
+            ));
+        }
+        if texture_set.texture_count() != bind_info.texture_count {
+            return Err(format!(
+                "scene texture heap bind count mismatch for object {:?}: draw {}, heap {}",
+                draw.object,
+                texture_set.texture_count(),
+                bind_info.texture_count
             ));
         }
         Ok(Self {
             object: draw.object,
-            resource,
-            heap_index: bind_info.heap_index,
-            shader_mapping: "set0.binding0.base_color",
+            shader_mappings: texture_set.shader_mappings(),
+            texture_set,
+            base_heap_index: bind_info.base_heap_index,
+            texture_count: bind_info.texture_count,
             command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
         })
     }
@@ -65,7 +77,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_texture_hea
     draw: &SceneGraphDraw,
     bind_info: NativeVulkanSceneTextureHeapDrawBindInfo,
 ) -> Result<NativeVulkanSceneTextureHeapDrawBindPlan, String> {
-    let plan = NativeVulkanSceneTextureHeapDrawBindPlan::from_draw_and_bind_info(draw, bind_info)?;
+    let plan = NativeVulkanSceneTextureHeapDrawBindPlan::from_draw_and_bind_info(draw, &bind_info)?;
     unsafe {
         device.cmd_bind_resource_heap_ext(command_buffer, &bind_info.resource_bind);
         device.cmd_bind_sampler_heap_ext(command_buffer, &bind_info.sampler_bind);
@@ -73,58 +85,46 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_texture_hea
     Ok(plan)
 }
 
-pub(in crate::renderer::native_vulkan) fn scene_mesh_draw_base_color_resource(
-    draw: &SceneGraphDraw,
-) -> Result<Option<SceneResourceId>, String> {
-    let mut base_color = None;
-    for resource in &draw.resources {
-        if resource.role != SceneGraphResourceRole::BaseColor {
-            return Err(format!(
-                "scene texture heap bind only supports BaseColor resources, got {:?} for object {:?}",
-                resource.role, draw.object
-            ));
-        }
-        if resource.slot != 0 {
-            return Err(format!(
-                "scene texture heap bind requires BaseColor at slot 0, got slot {} for object {:?}",
-                resource.slot, draw.object
-            ));
-        }
-        if base_color.replace(resource.resource).is_some() {
-            return Err(format!(
-                "scene texture heap bind got duplicate BaseColor slot 0 for object {:?}",
-                draw.object
-            ));
-        }
-    }
-    Ok(base_color)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphPipelineClass, SceneGraphResourceBinding,
-        SceneMaterialKey,
+        SceneGraphResourceRole, SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
 
     #[test]
-    fn texture_heap_draw_bind_plan_requires_base_color_slot_zero() {
-        let draw = mesh_draw(vec![SceneGraphResourceBinding {
-            slot: 0,
-            role: SceneGraphResourceRole::BaseColor,
-            resource: SceneResourceId(7),
-        }]);
+    fn texture_heap_draw_bind_plan_requires_we_texture_set() {
+        let draw = mesh_draw(vec![
+            SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource: SceneResourceId(7),
+            },
+            SceneGraphResourceBinding {
+                slot: 4,
+                role: SceneGraphResourceRole::shader_texture(4),
+                resource: SceneResourceId(8),
+            },
+        ]);
+        let texture_set = scene_mesh_draw_texture_set_key(&draw).expect("texture set");
 
         let plan = NativeVulkanSceneTextureHeapDrawBindPlan::from_draw_and_bind_info(
             &draw,
-            draw_bind_info(SceneResourceId(7), 2),
+            &draw_bind_info(texture_set, 3),
         )
         .expect("draw texture heap bind plan");
 
         assert_eq!(plan.object, SceneObjectId(4));
-        assert_eq!(plan.resource, SceneResourceId(7));
-        assert_eq!(plan.heap_index, 2);
+        assert_eq!(plan.base_heap_index, 3);
+        assert_eq!(plan.texture_count, 2);
+        assert_eq!(
+            plan.shader_mappings,
+            vec![
+                "set0.binding0.g_Texture0".to_owned(),
+                "set0.binding4.g_Texture4".to_owned()
+            ]
+        );
         assert_eq!(
             plan.command_order,
             ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"]
@@ -132,42 +132,53 @@ mod tests {
     }
 
     #[test]
-    fn texture_heap_draw_bind_plan_rejects_missing_base_color() {
+    fn texture_heap_draw_bind_plan_rejects_missing_texture_set() {
         let draw = mesh_draw(Vec::new());
+        let texture_set = NativeVulkanSceneTextureSetKey {
+            bindings: Vec::new(),
+        };
 
         let err = NativeVulkanSceneTextureHeapDrawBindPlan::from_draw_and_bind_info(
             &draw,
-            draw_bind_info(SceneResourceId(7), 2),
+            &draw_bind_info(texture_set, 2),
         )
-        .expect_err("missing BaseColor texture must fail");
+        .expect_err("missing texture set must fail");
 
-        assert!(err.contains("requires BaseColor texture"));
+        assert!(err.contains("requires a WE texture set"));
     }
 
     #[test]
-    fn texture_heap_draw_bind_plan_rejects_resource_mismatch() {
+    fn texture_heap_draw_bind_plan_rejects_texture_set_mismatch() {
         let draw = mesh_draw(vec![SceneGraphResourceBinding {
             slot: 0,
-            role: SceneGraphResourceRole::BaseColor,
+            role: SceneGraphResourceRole::shader_texture(0),
             resource: SceneResourceId(7),
         }]);
+        let different = mesh_draw(vec![SceneGraphResourceBinding {
+            slot: 0,
+            role: SceneGraphResourceRole::shader_texture(0),
+            resource: SceneResourceId(9),
+        }]);
+        let texture_set = scene_mesh_draw_texture_set_key(&different).expect("texture set");
 
         let err = NativeVulkanSceneTextureHeapDrawBindPlan::from_draw_and_bind_info(
             &draw,
-            draw_bind_info(SceneResourceId(9), 2),
+            &draw_bind_info(texture_set, 2),
         )
-        .expect_err("resource mismatch must fail");
+        .expect_err("texture set mismatch must fail");
 
-        assert!(err.contains("resource mismatch"));
+        assert!(err.contains("texture-set mismatch"));
     }
 
     fn draw_bind_info(
-        resource: SceneResourceId,
-        heap_index: usize,
+        texture_set: NativeVulkanSceneTextureSetKey,
+        base_heap_index: usize,
     ) -> NativeVulkanSceneTextureHeapDrawBindInfo {
+        let texture_count = texture_set.texture_count();
         NativeVulkanSceneTextureHeapDrawBindInfo {
-            resource,
-            heap_index,
+            texture_set,
+            base_heap_index,
+            texture_count,
             resource_bind: vk::BindHeapInfoEXT::default(),
             sampler_bind: vk::BindHeapInfoEXT::default(),
         }

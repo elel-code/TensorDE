@@ -26,6 +26,7 @@ use super::super::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
 };
 use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
+use super::texture_set::{NativeVulkanSceneTextureSetBinding, NativeVulkanSceneTextureSetKey};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapFramePlan {
@@ -43,6 +44,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapFrameP
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapEntry {
     pub resource: SceneResourceId,
+    pub slot: u32,
+    pub role: SceneGraphResourceRole,
     pub heap_index: usize,
     pub image_handle: u64,
     pub view_handle: u64,
@@ -51,17 +54,17 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapEntry 
     pub width: u32,
     pub height: u32,
     pub mip_count: u32,
-    pub shader_mapping: &'static str,
+    pub shader_mapping: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureHeapDrawBinding {
     pub object: SceneObjectId,
-    pub slot: u32,
-    pub role: SceneGraphResourceRole,
-    pub resource: SceneResourceId,
-    pub heap_index: usize,
-    pub shader_mapping: &'static str,
+    pub draw_index: usize,
+    pub texture_set: NativeVulkanSceneTextureSetKey,
+    pub base_heap_index: usize,
+    pub texture_count: usize,
+    pub shader_mappings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,33 +88,43 @@ impl NativeVulkanSceneTextureHeapFramePlan {
         ResolveBinding:
             FnMut(SceneResourceId) -> Result<NativeVulkanSceneTextureImageBinding, String>,
     {
-        let mut resource_to_heap_index = BTreeMap::new();
+        let descriptors_by_draw = descriptors_by_draw(descriptors)?;
+        let mut texture_set_to_slice =
+            BTreeMap::<NativeVulkanSceneTextureSetKey, (usize, usize)>::new();
         let mut entries = Vec::new();
         let mut bindings = Vec::new();
-        let mut draw_bindings = Vec::with_capacity(descriptors.bindings.len());
+        let mut draw_bindings = Vec::with_capacity(descriptors.draw_count);
 
-        for descriptor in &descriptors.bindings {
-            let heap_index = if let Some(heap_index) =
-                resource_to_heap_index.get(&descriptor.resource).copied()
-            {
-                heap_index
-            } else {
-                let heap_index = entries.len();
-                let binding = resolve_binding(descriptor.resource)?;
-                let image_binding = heap_image_binding(descriptor, binding, heap_index)?;
-                let entry = heap_entry(descriptor, binding, heap_index);
-                resource_to_heap_index.insert(descriptor.resource, heap_index);
-                entries.push(entry);
-                bindings.push(image_binding);
-                heap_index
-            };
+        for (draw_index, draw_descriptors) in descriptors_by_draw.iter().enumerate() {
+            if draw_descriptors.is_empty() {
+                continue;
+            }
+            let texture_set = texture_set_key_from_descriptors(draw_descriptors)?;
+            let (base_heap_index, texture_count) =
+                if let Some(slice) = texture_set_to_slice.get(&texture_set).copied() {
+                    slice
+                } else {
+                    let base_heap_index = entries.len();
+                    for (ordinal, descriptor) in draw_descriptors.iter().enumerate() {
+                        let heap_index = base_heap_index + ordinal;
+                        let binding = resolve_binding(descriptor.resource)?;
+                        let image_binding = heap_image_binding(descriptor, binding, heap_index)?;
+                        let entry = heap_entry(descriptor, binding, heap_index);
+                        entries.push(entry);
+                        bindings.push(image_binding);
+                    }
+                    let slice = (base_heap_index, draw_descriptors.len());
+                    texture_set_to_slice.insert(texture_set.clone(), slice);
+                    slice
+                };
+            let object = draw_descriptors[0].object;
             draw_bindings.push(NativeVulkanSceneTextureHeapDrawBinding {
-                object: descriptor.object,
-                slot: descriptor.slot,
-                role: descriptor.role,
-                resource: descriptor.resource,
-                heap_index,
-                shader_mapping: descriptor.shader_mapping,
+                object,
+                draw_index,
+                shader_mappings: texture_set.shader_mappings(),
+                texture_set,
+                base_heap_index,
+                texture_count,
             });
         }
 
@@ -145,15 +158,15 @@ impl NativeVulkanSceneTextureHeapFramePlan {
         })
     }
 
-    pub(in crate::renderer::native_vulkan) fn heap_index(
+    pub(in crate::renderer::native_vulkan) fn texture_set_slice(
         &self,
-        resource: SceneResourceId,
-    ) -> Result<usize, String> {
-        self.entries
+        texture_set: &NativeVulkanSceneTextureSetKey,
+    ) -> Result<(usize, usize), String> {
+        self.draw_bindings
             .iter()
-            .find(|entry| entry.resource == resource)
-            .map(|entry| entry.heap_index)
-            .ok_or_else(|| format!("missing scene texture heap entry for {resource:?}"))
+            .find(|binding| &binding.texture_set == texture_set)
+            .map(|binding| (binding.base_heap_index, binding.texture_count))
+            .ok_or_else(|| format!("missing scene texture heap slice for {texture_set:?}"))
     }
 }
 
@@ -181,6 +194,8 @@ fn heap_entry(
 ) -> NativeVulkanSceneTextureHeapEntry {
     NativeVulkanSceneTextureHeapEntry {
         resource: binding.resource,
+        slot: descriptor.slot,
+        role: descriptor.role,
         heap_index,
         image_handle: binding.image.as_raw(),
         view_handle: binding.view.as_raw(),
@@ -189,7 +204,7 @@ fn heap_entry(
         width: binding.width,
         height: binding.height,
         mip_count: binding.mip_count,
-        shader_mapping: descriptor.shader_mapping,
+        shader_mapping: descriptor.shader_mapping.clone(),
     }
 }
 
@@ -197,10 +212,11 @@ fn validate_descriptor_binding_metadata(
     descriptor: &NativeVulkanSceneTextureDescriptorBinding,
     binding: NativeVulkanSceneTextureImageBinding,
 ) -> Result<(), String> {
-    if descriptor.role != SceneGraphResourceRole::BaseColor || descriptor.slot != 0 {
+    let texture_index = descriptor.role.shader_texture_index();
+    if texture_index != descriptor.slot {
         return Err(format!(
-            "scene texture heap only supports BaseColor slot 0, got {:?} slot {} for {:?}",
-            descriptor.role, descriptor.slot, descriptor.resource
+            "scene texture heap descriptor slot {} does not match WE g_Texture{} role for {:?}",
+            descriptor.slot, texture_index, descriptor.resource
         ));
     }
     if descriptor.resource != binding.resource {
@@ -243,6 +259,46 @@ fn validate_descriptor_binding_metadata(
     Ok(())
 }
 
+fn descriptors_by_draw(
+    descriptors: &NativeVulkanSceneTextureDescriptorFramePlan,
+) -> Result<Vec<Vec<&NativeVulkanSceneTextureDescriptorBinding>>, String> {
+    let mut by_draw = vec![Vec::new(); descriptors.draw_count];
+    for descriptor in &descriptors.bindings {
+        let draw = by_draw.get_mut(descriptor.draw_index).ok_or_else(|| {
+            format!(
+                "scene texture descriptor draw index {} exceeds draw count {}",
+                descriptor.draw_index, descriptors.draw_count
+            )
+        })?;
+        draw.push(descriptor);
+    }
+    for draw in &mut by_draw {
+        draw.sort_by_key(|descriptor| descriptor.slot);
+    }
+    Ok(by_draw)
+}
+
+fn texture_set_key_from_descriptors(
+    descriptors: &[&NativeVulkanSceneTextureDescriptorBinding],
+) -> Result<NativeVulkanSceneTextureSetKey, String> {
+    let mut bindings = Vec::with_capacity(descriptors.len());
+    let mut seen_slots = std::collections::BTreeSet::new();
+    for descriptor in descriptors {
+        if !seen_slots.insert(descriptor.slot) {
+            return Err(format!(
+                "duplicate scene texture descriptor slot {} for object {:?}",
+                descriptor.slot, descriptor.object
+            ));
+        }
+        bindings.push(NativeVulkanSceneTextureSetBinding {
+            slot: descriptor.slot,
+            role: descriptor.role,
+            resource: descriptor.resource,
+        });
+    }
+    Ok(NativeVulkanSceneTextureSetKey { bindings })
+}
+
 fn validate_optional_descriptor_u32(
     descriptor_value: Option<u32>,
     binding_value: u32,
@@ -272,21 +328,37 @@ fn scene_texture_vk_format(format: SceneTextureFormat) -> vk::Format {
 
 #[cfg(test)]
 mod tests {
+    use super::super::texture_set::scene_shader_texture_mapping;
     use super::*;
     use crate::engine::scene_engine::SceneObjectId;
 
     #[test]
     fn texture_heap_plan_deduplicates_resource_bindings_and_tracks_image_handle() {
         let descriptors = descriptor_frame_plan(vec![
-            descriptor_binding(SceneObjectId(1), SceneResourceId(7)),
-            descriptor_binding(SceneObjectId(2), SceneResourceId(7)),
-            descriptor_binding(SceneObjectId(3), SceneResourceId(8)),
+            vec![descriptor_binding(
+                0,
+                SceneObjectId(1),
+                0,
+                SceneResourceId(7),
+            )],
+            vec![descriptor_binding(
+                1,
+                SceneObjectId(2),
+                0,
+                SceneResourceId(7),
+            )],
+            vec![descriptor_binding(
+                2,
+                SceneObjectId(3),
+                0,
+                SceneResourceId(8),
+            )],
         ]);
 
         let plan = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
             &descriptors,
             ready_descriptor_heap_properties(),
-            fake_binding,
+            retained_image_binding,
         )
         .expect("texture heap plan");
 
@@ -297,16 +369,54 @@ mod tests {
         assert_eq!(plan.entries[0].image_handle, 107);
         assert_eq!(plan.entries[1].resource, SceneResourceId(8));
         assert_eq!(plan.entries[1].heap_index, 1);
-        assert_eq!(plan.draw_bindings[1].heap_index, 0);
+        assert_eq!(plan.draw_bindings[1].base_heap_index, 0);
         assert!(plan.descriptor_heap_plan.backend_ready);
     }
 
     #[test]
+    fn texture_heap_plan_allocates_contiguous_slice_per_we_texture_set() {
+        let descriptors = descriptor_frame_plan(vec![
+            vec![
+                descriptor_binding(0, SceneObjectId(1), 0, SceneResourceId(7)),
+                descriptor_binding(0, SceneObjectId(1), 4, SceneResourceId(8)),
+            ],
+            vec![
+                descriptor_binding(1, SceneObjectId(2), 0, SceneResourceId(7)),
+                descriptor_binding(1, SceneObjectId(2), 4, SceneResourceId(8)),
+            ],
+        ]);
+
+        let plan = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
+            &descriptors,
+            ready_descriptor_heap_properties(),
+            retained_image_binding,
+        )
+        .expect("texture heap plan");
+
+        assert_eq!(plan.texture_count, 2);
+        assert_eq!(plan.draw_binding_count, 2);
+        assert_eq!(plan.entries[0].slot, 0);
+        assert_eq!(plan.entries[1].slot, 4);
+        assert_eq!(plan.draw_bindings[0].base_heap_index, 0);
+        assert_eq!(plan.draw_bindings[0].texture_count, 2);
+        assert_eq!(plan.draw_bindings[1].base_heap_index, 0);
+        assert_eq!(
+            plan.draw_bindings[0].shader_mappings,
+            vec![
+                "set0.binding0.g_Texture0".to_owned(),
+                "set0.binding4.g_Texture4".to_owned()
+            ]
+        );
+    }
+
+    #[test]
     fn texture_heap_plan_rejects_missing_retained_image_binding() {
-        let descriptors = descriptor_frame_plan(vec![descriptor_binding(
+        let descriptors = descriptor_frame_plan(vec![vec![descriptor_binding(
+            0,
             SceneObjectId(1),
+            0,
             SceneResourceId(7),
-        )]);
+        )]]);
 
         let err = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
             &descriptors,
@@ -320,10 +430,12 @@ mod tests {
 
     #[test]
     fn texture_heap_plan_rejects_descriptor_image_format_mismatch() {
-        let descriptors = descriptor_frame_plan(vec![descriptor_binding(
+        let descriptors = descriptor_frame_plan(vec![vec![descriptor_binding(
+            0,
             SceneObjectId(1),
+            0,
             SceneResourceId(7),
-        )]);
+        )]]);
 
         let err = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
             &descriptors,
@@ -331,7 +443,7 @@ mod tests {
             |resource| {
                 Ok(NativeVulkanSceneTextureImageBinding {
                     format: vk::Format::BC7_UNORM_BLOCK,
-                    ..fake_binding(resource)?
+                    ..retained_image_binding(resource)?
                 })
             },
         )
@@ -342,15 +454,17 @@ mod tests {
 
     #[test]
     fn texture_heap_plan_rejects_unready_descriptor_heap_capabilities() {
-        let descriptors = descriptor_frame_plan(vec![descriptor_binding(
+        let descriptors = descriptor_frame_plan(vec![vec![descriptor_binding(
+            0,
             SceneObjectId(1),
+            0,
             SceneResourceId(7),
-        )]);
+        )]]);
 
         let err = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
             &descriptors,
             NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
-            fake_binding,
+            retained_image_binding,
         )
         .expect_err("descriptor heap must be ready for sampled textures");
 
@@ -373,7 +487,7 @@ mod tests {
         let plan = NativeVulkanSceneTextureHeapFramePlan::from_texture_descriptors(
             &descriptors,
             NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
-            fake_binding,
+            retained_image_binding,
         )
         .expect("texture-free frame does not need heap capabilities");
 
@@ -385,10 +499,15 @@ mod tests {
     }
 
     fn descriptor_frame_plan(
-        bindings: Vec<NativeVulkanSceneTextureDescriptorBinding>,
+        draw_bindings: Vec<Vec<NativeVulkanSceneTextureDescriptorBinding>>,
     ) -> NativeVulkanSceneTextureDescriptorFramePlan {
+        let bindings = draw_bindings.into_iter().flatten().collect::<Vec<_>>();
         NativeVulkanSceneTextureDescriptorFramePlan {
-            draw_count: bindings.len(),
+            draw_count: bindings
+                .iter()
+                .map(|binding| binding.draw_index + 1)
+                .max()
+                .unwrap_or_default(),
             binding_count: bindings.len(),
             bindings,
             descriptor_model: "VK_EXT_descriptor_heap",
@@ -400,24 +519,27 @@ mod tests {
     }
 
     fn descriptor_binding(
+        draw_index: usize,
         object: SceneObjectId,
+        slot: u32,
         resource: SceneResourceId,
     ) -> NativeVulkanSceneTextureDescriptorBinding {
         NativeVulkanSceneTextureDescriptorBinding {
+            draw_index,
             object,
-            slot: 0,
-            role: SceneGraphResourceRole::BaseColor,
+            slot,
+            role: SceneGraphResourceRole::shader_texture(slot),
             resource,
             width: Some(512),
             height: Some(256),
             format: Some(SceneTextureFormat::R8G8B8A8Unorm),
             mip_count: Some(4),
             payload_bytes: Some(524_288),
-            shader_mapping: "set0.binding0.base_color",
+            shader_mapping: scene_shader_texture_mapping(slot),
         }
     }
 
-    fn fake_binding(
+    fn retained_image_binding(
         resource: SceneResourceId,
     ) -> Result<NativeVulkanSceneTextureImageBinding, String> {
         let raw = u64::from(100 + resource.0);

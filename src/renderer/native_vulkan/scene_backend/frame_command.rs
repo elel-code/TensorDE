@@ -15,7 +15,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneGeometryId, SceneGraphPass, SceneResourceId};
+use crate::engine::scene_engine::{SceneGeometryId, SceneGraphPass};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::pass_command::{
@@ -28,7 +28,9 @@ use super::render_target::{
     native_vulkan_record_scene_swapchain_render_target_end,
 };
 use super::resource_buffers::NativeVulkanSceneMeshDrawBuffers;
-use super::texture_heap::NativeVulkanSceneTextureHeapDrawBindInfo;
+use super::texture_heap::{
+    NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureSetKey,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneMeshFrameCommandPlan<'a> {
@@ -73,8 +75,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_frame_
 ) -> Result<NativeVulkanSceneMeshFrameCommandPlan<'a>, String>
 where
     PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
-    TextureHeapBindForResource:
-        FnMut(SceneResourceId) -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
+    TextureHeapBindForResource: FnMut(
+        &NativeVulkanSceneTextureSetKey,
+    )
+        -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
     MeshBuffersForGeometry:
         FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
 {

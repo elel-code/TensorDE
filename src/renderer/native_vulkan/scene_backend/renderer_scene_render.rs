@@ -57,7 +57,7 @@ fn scene_graph_draw_for_object(object: &SceneObject) -> SceneGraphDraw {
             .map(|resource| {
                 vec![SceneGraphResourceBinding {
                     slot: 0,
-                    role: SceneGraphResourceRole::BaseColor,
+                    role: SceneGraphResourceRole::shader_texture(0),
                     resource,
                 }]
             })

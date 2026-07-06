@@ -156,7 +156,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
                 NativeVulkanScenePipelineCacheKey::from_bind_key(key, context.target_format)?;
             Ok(frame_resources.cached_mesh_pipeline(&cache_key)?.pipeline)
         },
-        |resource| frame_resources.texture_heap_draw_bind_info(resource),
+        |texture_set| frame_resources.texture_heap_draw_bind_info_for_set(texture_set),
         |geometry| frame_resources.mesh_draw_buffers(geometry),
     )?;
 
@@ -235,16 +235,17 @@ mod tests {
             draw_count: 1,
             binding_count: 1,
             bindings: vec![NativeVulkanSceneTextureDescriptorBinding {
+                draw_index: 0,
                 object: SceneObjectId(1),
                 slot: 0,
-                role: crate::engine::scene_engine::SceneGraphResourceRole::BaseColor,
+                role: crate::engine::scene_engine::SceneGraphResourceRole::shader_texture(0),
                 resource: crate::engine::scene_engine::SceneResourceId(9),
                 width: Some(1024),
                 height: Some(1024),
                 format: Some(crate::engine::scene_engine::SceneTextureFormat::R8G8B8A8Unorm),
                 mip_count: Some(1),
                 payload_bytes: Some(4_194_304),
-                shader_mapping: "set0.binding0.base_color",
+                shader_mapping: "set0.binding0.g_Texture0".to_owned(),
             }],
             descriptor_model: "VK_EXT_descriptor_heap",
             command_order: [

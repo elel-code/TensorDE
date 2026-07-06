@@ -17,7 +17,7 @@ use vulkanalia::vk;
 use crate::engine::scene_engine::{SCENE_GPU_MESH_VERTEX_BYTES, SceneBlendContract};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
 };
 
 use super::pipeline::{
@@ -44,11 +44,11 @@ pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub vertex_stride_bytes: u32,
     pub vertex_attributes: [&'static str; 3],
     pub dynamic_states: [&'static str; 2],
-    pub shader_resource_mapping: &'static str,
+    pub shader_resource_mappings: Vec<String>,
     pub blend: &'static str,
     pub depth_test: bool,
     pub depth_write: bool,
-    pub render_pass_compatibility: &'static str,
+    pub dynamic_rendering_scope: &'static str,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_create_plan(
@@ -61,11 +61,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         vertex_stride_bytes: u32::try_from(SCENE_GPU_MESH_VERTEX_BYTES).unwrap_or(u32::MAX),
         vertex_attributes: ["location0.xy", "location1.uv", "location2.opacity"],
         dynamic_states: ["viewport", "scissor"],
-        shader_resource_mapping: "VK_EXT_descriptor_heap set0.binding0 -> heap-offset0",
+        shader_resource_mappings: scene_mesh_shader_resource_mapping_labels(key),
         blend: scene_pipeline_blend_label(key.blend),
         depth_test: key.tests_depth,
         depth_write: key.writes_depth,
-        render_pass_compatibility: "dynamic-rendering-no-render-pass",
+        dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
 }
 
@@ -78,7 +78,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
     validate_scene_mesh_pipeline_key(key)?;
     validate_spirv(shaders.vertex_spirv, "scene mesh vertex")?;
     validate_spirv(shaders.fragment_spirv, "scene mesh fragment")?;
-    validate_scene_mesh_descriptor_heap_pipeline_layout(layout.texture_descriptor_heap_plan)?;
+    validate_scene_mesh_descriptor_heap_pipeline_layout(layout.texture_descriptor_heap_plan, key)?;
 
     let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
         let vertex_module =
@@ -88,28 +88,30 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
                 create_scene_shader_module(device, shaders.fragment_spirv, "scene mesh fragment")?;
             let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
                 let shader_entry = b"main\0";
-                let descriptor_heap_mapping =
-                    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
-                        layout.texture_descriptor_heap_plan,
-                        0,
-                    )?;
-                let descriptor_heap_mappings = [descriptor_heap_mapping];
+                let descriptor_heap_mappings =
+                    scene_mesh_descriptor_heap_mappings(layout.texture_descriptor_heap_plan, key)?;
                 let mut descriptor_heap_mapping_info =
                     vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
                         .mappings(&descriptor_heap_mappings)
                         .build();
-                let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+                let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
                     .stage(vk::ShaderStageFlags::FRAGMENT)
                     .module(fragment_module)
-                    .name(shader_entry)
-                    .push_next(&mut descriptor_heap_mapping_info);
+                    .name(shader_entry);
+                let fragment_stage = if descriptor_heap_mappings.is_empty() {
+                    fragment_stage_builder.build()
+                } else {
+                    fragment_stage_builder
+                        .push_next(&mut descriptor_heap_mapping_info)
+                        .build()
+                };
                 let stages = [
                     vk::PipelineShaderStageCreateInfo::builder()
                         .stage(vk::ShaderStageFlags::VERTEX)
                         .module(vertex_module)
                         .name(shader_entry)
                         .build(),
-                    fragment_stage.build(),
+                    fragment_stage,
                 ];
 
                 let vertex_bindings = scene_mesh_vertex_input_bindings();
@@ -279,6 +281,44 @@ fn scene_pipeline_blend_label(blend: SceneBlendContract) -> &'static str {
     }
 }
 
+fn scene_mesh_shader_resource_mapping_labels(
+    key: &NativeVulkanScenePipelineCacheKey,
+) -> Vec<String> {
+    scene_mesh_texture_slots(key.texture_slot_mask)
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, slot)| {
+            format!(
+                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> texture-set-offset{ordinal}"
+            )
+        })
+        .collect()
+}
+
+fn scene_mesh_descriptor_heap_mappings(
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    key: &NativeVulkanScenePipelineCacheKey,
+) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
+    validate_scene_mesh_descriptor_heap_pipeline_layout(descriptor_heap_plan, key)?;
+    scene_mesh_texture_slots(key.texture_slot_mask)
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, slot)| {
+            native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+                descriptor_heap_plan,
+                slot,
+                ordinal,
+            )
+        })
+        .collect()
+}
+
+fn scene_mesh_texture_slots(texture_slot_mask: u32) -> Vec<u32> {
+    (0..u32::BITS)
+        .filter(|slot| texture_slot_mask & (1u32 << slot) != 0)
+        .collect()
+}
+
 fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> Result<(), String> {
     if key.shader.is_empty() {
         return Err("scene mesh pipeline requires non-empty shader name".to_owned());
@@ -303,7 +343,12 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
 
 fn validate_scene_mesh_descriptor_heap_pipeline_layout(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<(), String> {
+    let texture_slot_count = key.texture_slot_mask.count_ones() as usize;
+    if texture_slot_count == 0 {
+        return Ok(());
+    }
     if !descriptor_heap_plan.backend_ready {
         return Err(format!(
             "scene mesh pipeline requires ready texture descriptor heap mapping: {:?}",
@@ -314,6 +359,12 @@ fn validate_scene_mesh_descriptor_heap_pipeline_layout(
         return Err(
             "scene mesh pipeline requires at least one sampled texture descriptor".to_owned(),
         );
+    }
+    if descriptor_heap_plan.image_count < texture_slot_count {
+        return Err(format!(
+            "scene mesh pipeline shader '{}' requires {} WE texture mappings but descriptor heap has {} images",
+            key.shader, texture_slot_count, descriptor_heap_plan.image_count
+        ));
     }
     Ok(())
 }
@@ -353,13 +404,10 @@ mod tests {
             ["location0.xy", "location1.uv", "location2.opacity"]
         );
         assert_eq!(plan.dynamic_states, ["viewport", "scissor"]);
-        assert_eq!(
-            plan.shader_resource_mapping,
-            "VK_EXT_descriptor_heap set0.binding0 -> heap-offset0"
-        );
+        assert_eq!(plan.shader_resource_mappings, Vec::<String>::new());
         assert_eq!(plan.blend, "translucent-src-alpha-inv-src-alpha");
         assert_eq!(
-            plan.render_pass_compatibility,
+            plan.dynamic_rendering_scope,
             "dynamic-rendering-no-render-pass"
         );
     }
@@ -398,6 +446,10 @@ mod tests {
 
     #[test]
     fn mesh_pipeline_descriptor_heap_layout_requires_ready_sampled_texture_mapping() {
+        let key = NativeVulkanScenePipelineCacheKey {
+            texture_slot_mask: 1,
+            ..pipeline_key()
+        };
         let err = validate_scene_mesh_descriptor_heap_pipeline_layout(
             &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
                 binding: "vulkanalia",
@@ -426,10 +478,29 @@ mod tests {
                 next_gate: "test",
                 primary_reference: "test",
             },
+            &key,
         )
         .expect_err("descriptor heap mapping must be ready");
 
         assert!(err.contains("ready texture descriptor heap mapping"));
+    }
+
+    #[test]
+    fn mesh_pipeline_plan_maps_we_texture_slots_to_texture_set_offsets() {
+        let plan =
+            native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
+                texture_slot_mask: 0b1_0001,
+                ..pipeline_key()
+            })
+            .unwrap();
+
+        assert_eq!(
+            plan.shader_resource_mappings,
+            vec![
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> texture-set-offset0".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding4.g_Texture4 -> texture-set-offset1".to_owned()
+            ]
+        );
     }
 
     fn pipeline_key() -> NativeVulkanScenePipelineCacheKey {
@@ -441,6 +512,7 @@ mod tests {
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
             target_format: vk::Format::B8G8R8A8_UNORM,
+            texture_slot_mask: 0,
         }
     }
 }

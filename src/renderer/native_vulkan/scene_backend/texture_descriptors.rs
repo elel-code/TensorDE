@@ -18,6 +18,8 @@ use crate::engine::scene_engine::{
     SceneTextureFormat, SceneTextureResidency,
 };
 
+use super::texture_heap::texture_set::scene_shader_texture_mapping;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptorFramePlan {
     pub draw_count: usize,
@@ -29,6 +31,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptor
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptorBinding {
+    pub draw_index: usize,
     pub object: SceneObjectId,
     pub slot: u32,
     pub role: SceneGraphResourceRole,
@@ -38,7 +41,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptor
     pub format: Option<SceneTextureFormat>,
     pub mip_count: Option<u32>,
     pub payload_bytes: Option<u64>,
-    pub shader_mapping: &'static str,
+    pub shader_mapping: String,
 }
 
 impl NativeVulkanSceneTextureDescriptorFramePlan {
@@ -50,7 +53,7 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
         TextureResidency: FnMut(SceneResourceId) -> Option<SceneTextureResidency>,
     {
         let mut bindings = Vec::new();
-        let mut draw_count = 0usize;
+        let mut draw_index = 0usize;
 
         for pass in &graph.passes {
             for draw in &pass.draws {
@@ -61,19 +64,14 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                     ));
                 }
 
-                draw_count += 1;
+                let _ = draw.shader_texture_slot_mask()?;
                 let mut used_slots = BTreeSet::new();
                 for resource in &draw.resources {
-                    if resource.role != SceneGraphResourceRole::BaseColor {
+                    let texture_index = resource.role.shader_texture_index();
+                    if texture_index != resource.slot {
                         return Err(format!(
-                            "scene texture descriptor plan only supports BaseColor, got {:?} for object {:?}",
-                            resource.role, draw.object
-                        ));
-                    }
-                    if resource.slot != 0 {
-                        return Err(format!(
-                            "scene texture descriptor plan requires BaseColor at slot 0, got slot {} for object {:?}",
-                            resource.slot, draw.object
+                            "scene texture descriptor plan slot {} does not match WE g_Texture{} role for object {:?}",
+                            resource.slot, texture_index, draw.object
                         ));
                     }
                     if !used_slots.insert(resource.slot) {
@@ -90,6 +88,7 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                         )
                     })?;
                     bindings.push(NativeVulkanSceneTextureDescriptorBinding {
+                        draw_index,
                         object: draw.object,
                         slot: resource.slot,
                         role: resource.role,
@@ -99,14 +98,15 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                         format: texture.format,
                         mip_count: texture.mip_count,
                         payload_bytes: texture.payload_bytes,
-                        shader_mapping: "set0.binding0.base_color",
+                        shader_mapping: scene_shader_texture_mapping(resource.slot),
                     });
                 }
+                draw_index += 1;
             }
         }
 
         Ok(Self {
-            draw_count,
+            draw_count: draw_index,
             binding_count: bindings.len(),
             bindings,
             descriptor_model: "VK_EXT_descriptor_heap",
@@ -127,31 +127,41 @@ mod tests {
     };
 
     #[test]
-    fn texture_descriptor_plan_resolves_base_color_texture_binding() {
+    fn texture_descriptor_plan_resolves_we_texture_bindings() {
         let graph = mesh_graph(vec![mesh_draw(
             SceneObjectId(7),
-            Some(SceneGraphResourceBinding {
-                slot: 0,
-                role: SceneGraphResourceRole::BaseColor,
-                resource: SceneResourceId(3),
-            }),
+            vec![
+                SceneGraphResourceBinding {
+                    slot: 0,
+                    role: SceneGraphResourceRole::shader_texture(0),
+                    resource: SceneResourceId(3),
+                },
+                SceneGraphResourceBinding {
+                    slot: 4,
+                    role: SceneGraphResourceRole::shader_texture(4),
+                    resource: SceneResourceId(5),
+                },
+            ],
         )]);
 
         let plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |resource| {
-            (resource == SceneResourceId(3)).then_some(SceneTextureResidency {
-                id: resource,
-                width: Some(1024),
-                height: Some(512),
-                format: Some(SceneTextureFormat::R8G8B8A8Unorm),
-                mip_count: Some(10),
-                payload_bytes: Some(2_796_204),
-            })
+            matches!(resource, SceneResourceId(3) | SceneResourceId(5)).then_some(
+                SceneTextureResidency {
+                    id: resource,
+                    width: Some(1024),
+                    height: Some(512),
+                    format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+                    mip_count: Some(10),
+                    payload_bytes: Some(2_796_204),
+                },
+            )
         })
         .expect("texture descriptor frame plan");
 
         assert_eq!(plan.draw_count, 1);
-        assert_eq!(plan.binding_count, 1);
+        assert_eq!(plan.binding_count, 2);
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
+        assert_eq!(plan.bindings[0].draw_index, 0);
         assert_eq!(plan.bindings[0].object, SceneObjectId(7));
         assert_eq!(plan.bindings[0].resource, SceneResourceId(3));
         assert_eq!(
@@ -160,7 +170,9 @@ mod tests {
         );
         assert_eq!(plan.bindings[0].mip_count, Some(10));
         assert_eq!(plan.bindings[0].payload_bytes, Some(2_796_204));
-        assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.base_color");
+        assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.g_Texture0");
+        assert_eq!(plan.bindings[1].slot, 4);
+        assert_eq!(plan.bindings[1].shader_mapping, "set0.binding4.g_Texture4");
         assert_eq!(
             plan.command_order,
             [
@@ -172,7 +184,7 @@ mod tests {
 
     #[test]
     fn texture_descriptor_plan_allows_mesh_draw_without_texture_binding() {
-        let graph = mesh_graph(vec![mesh_draw(SceneObjectId(7), None)]);
+        let graph = mesh_graph(vec![mesh_draw(SceneObjectId(7), Vec::new())]);
 
         let plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |_| None)
             .expect("texture-free mesh descriptor frame plan");
@@ -186,11 +198,11 @@ mod tests {
     fn texture_descriptor_plan_rejects_missing_resident_texture() {
         let graph = mesh_graph(vec![mesh_draw(
             SceneObjectId(7),
-            Some(SceneGraphResourceBinding {
+            vec![SceneGraphResourceBinding {
                 slot: 0,
-                role: SceneGraphResourceRole::BaseColor,
+                role: SceneGraphResourceRole::shader_texture(0),
                 resource: SceneResourceId(3),
-            }),
+            }],
         )]);
 
         let err = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |_| None)
@@ -200,14 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn texture_descriptor_plan_rejects_nonzero_base_color_slot() {
+    fn texture_descriptor_plan_rejects_slot_role_mismatch() {
         let graph = mesh_graph(vec![mesh_draw(
             SceneObjectId(7),
-            Some(SceneGraphResourceBinding {
+            vec![SceneGraphResourceBinding {
                 slot: 1,
-                role: SceneGraphResourceRole::BaseColor,
+                role: SceneGraphResourceRole::shader_texture(0),
                 resource: SceneResourceId(3),
-            }),
+            }],
         )]);
 
         let err = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |_| {
@@ -220,9 +232,9 @@ mod tests {
                 payload_bytes: None,
             })
         })
-        .expect_err("BaseColor slot mismatch must fail");
+        .expect_err("WE texture slot mismatch must fail");
 
-        assert!(err.contains("slot 0"));
+        assert!(err.contains("does not match WE g_Texture0"));
     }
 
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {
@@ -238,7 +250,7 @@ mod tests {
 
     fn mesh_draw(
         object: SceneObjectId,
-        resource: Option<SceneGraphResourceBinding>,
+        resources: Vec<SceneGraphResourceBinding>,
     ) -> SceneGraphDraw {
         SceneGraphDraw {
             object,
@@ -251,7 +263,7 @@ mod tests {
             },
             geometry: Some(SceneGeometryId(object.0)),
             puppet: None,
-            resources: resource.into_iter().collect(),
+            resources,
             index_count: 6,
         }
     }

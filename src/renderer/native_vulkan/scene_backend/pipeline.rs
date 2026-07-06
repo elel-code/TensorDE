@@ -25,6 +25,7 @@ pub struct NativeVulkanScenePipelineKey<'a> {
     pub writes_depth: bool,
     pub tests_depth: bool,
     pub pipeline_class: SceneGraphPipelineClass,
+    pub texture_slot_mask: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -47,6 +48,7 @@ pub struct NativeVulkanScenePipelineCacheKey {
     pub pipeline_class: SceneGraphPipelineClass,
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
     pub target_format: vk::Format,
+    pub texture_slot_mask: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,6 +88,7 @@ impl<'a> NativeVulkanScenePipelineKey<'a> {
             writes_depth: draw.material.writes_depth,
             tests_depth: draw.material.tests_depth,
             pipeline_class: draw.pipeline,
+            texture_slot_mask: draw.shader_texture_slot_mask()?,
         })
     }
 }
@@ -106,6 +109,7 @@ impl NativeVulkanScenePipelineCacheKey {
             pipeline_class: key.pipeline_class,
             vertex_layout: scene_pipeline_vertex_layout(key.pipeline_class)?,
             target_format,
+            texture_slot_mask: key.texture_slot_mask,
         })
     }
 }
@@ -264,8 +268,8 @@ fn scene_pipeline_cache_action_reuse(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraphResourceBinding, SceneMaterialKey,
-        SceneObjectId,
+        SceneBlendContract, SceneGeometryId, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
 
     #[test]
@@ -278,6 +282,7 @@ mod tests {
         assert_eq!(key.shader.as_ptr(), draw.material.shader.as_ptr());
         assert_eq!(key.blend, SceneBlendContract::TranslucentAlpha);
         assert_eq!(key.pipeline_class, SceneGraphPipelineClass::Mesh);
+        assert_eq!(key.texture_slot_mask, 0);
     }
 
     #[test]
@@ -301,6 +306,7 @@ mod tests {
 
         assert_eq!(cache_key.shader, "we/genericimage4");
         assert_eq!(cache_key.target_format, vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(cache_key.texture_slot_mask, 0);
         assert_eq!(
             cache_key.vertex_layout,
             NativeVulkanScenePipelineVertexLayout::SceneMeshV0
@@ -375,6 +381,54 @@ mod tests {
     }
 
     #[test]
+    fn pipeline_store_separates_we_texture_slot_interfaces() {
+        let slot0 = NativeVulkanScenePipelineCacheKey::from_bind_key(
+            NativeVulkanScenePipelineKey::from_draw(&mesh_draw_with_resources(
+                "we/genericimage4",
+                vec![SceneGraphResourceBinding {
+                    slot: 0,
+                    role: SceneGraphResourceRole::shader_texture(0),
+                    resource: SceneResourceId(7),
+                }],
+            ))
+            .unwrap(),
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .unwrap();
+        let slot0_and_4 = NativeVulkanScenePipelineCacheKey::from_bind_key(
+            NativeVulkanScenePipelineKey::from_draw(&mesh_draw_with_resources(
+                "we/genericimage4",
+                vec![
+                    SceneGraphResourceBinding {
+                        slot: 0,
+                        role: SceneGraphResourceRole::shader_texture(0),
+                        resource: SceneResourceId(7),
+                    },
+                    SceneGraphResourceBinding {
+                        slot: 4,
+                        role: SceneGraphResourceRole::shader_texture(4),
+                        resource: SceneResourceId(8),
+                    },
+                ],
+            ))
+            .unwrap(),
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .unwrap();
+        let mut store = NativeVulkanScenePipelineStore::new();
+
+        let first = store
+            .resolve_pipeline(slot0, |_| Ok(pipeline_resources(11, 12)))
+            .expect("slot0 pipeline");
+        let second = store
+            .resolve_pipeline(slot0_and_4, |_| Ok(pipeline_resources(21, 22)))
+            .expect("slot0+4 pipeline");
+
+        assert_eq!(store.len(), 2);
+        assert_ne!(first.pipeline, second.pipeline);
+    }
+
+    #[test]
     fn pipeline_store_rejects_null_pipeline_from_factory() {
         let draw = mesh_draw("we/genericimage4");
         let key = NativeVulkanScenePipelineCacheKey::from_bind_key(
@@ -414,6 +468,13 @@ mod tests {
     }
 
     fn mesh_draw(shader: &str) -> SceneGraphDraw {
+        mesh_draw_with_resources(shader, Vec::new())
+    }
+
+    fn mesh_draw_with_resources(
+        shader: &str,
+        resources: Vec<SceneGraphResourceBinding>,
+    ) -> SceneGraphDraw {
         SceneGraphDraw {
             object: SceneObjectId(2),
             pipeline: SceneGraphPipelineClass::Mesh,
@@ -425,7 +486,7 @@ mod tests {
             },
             geometry: Some(SceneGeometryId(4)),
             puppet: None,
-            resources: Vec::<SceneGraphResourceBinding>::new(),
+            resources,
             index_count: 6,
         }
     }

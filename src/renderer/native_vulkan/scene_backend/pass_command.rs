@@ -16,7 +16,7 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneGeometryId, SceneGraphPass, SceneGraphTarget, SceneObjectId, SceneResourceId,
+    SceneGeometryId, SceneGraphPass, SceneGraphTarget, SceneObjectId,
 };
 
 use super::draw_command::{
@@ -32,7 +32,7 @@ use super::resource_buffers::{
 };
 use super::texture_heap::{
     NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapDrawBindPlan,
-    native_vulkan_record_scene_texture_heap_draw_bind_command,
+    NativeVulkanSceneTextureSetKey, native_vulkan_record_scene_texture_heap_draw_bind_command,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -143,8 +143,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_d
 ) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String>
 where
     PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
-    TextureHeapBindForResource:
-        FnMut(SceneResourceId) -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
+    TextureHeapBindForResource: FnMut(
+        &NativeVulkanSceneTextureSetKey,
+    )
+        -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
     MeshBuffersForGeometry:
         FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
 {
@@ -175,13 +177,13 @@ where
         }
 
         if transition.bind_texture_heap {
-            let resource = transition.base_color_resource.ok_or_else(|| {
+            let texture_set = transition.texture_set.as_ref().ok_or_else(|| {
                 format!(
-                    "scene mesh pass '{}' texture heap transition lost BaseColor for object {:?}",
+                    "scene mesh pass '{}' texture heap transition lost WE texture set for object {:?}",
                     pass.name, draw.object
                 )
             })?;
-            let bind_info = texture_heap_bind_for_resource(resource)?;
+            let bind_info = texture_heap_bind_for_resource(texture_set)?;
             let bind = native_vulkan_record_scene_texture_heap_draw_bind_command(
                 device,
                 command_buffer,

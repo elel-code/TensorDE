@@ -35,6 +35,7 @@ use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 use super::texture_heap::{
     NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapFramePlan,
     NativeVulkanSceneTextureHeapStore, NativeVulkanSceneTextureHeapSyncAction,
+    NativeVulkanSceneTextureSetKey,
 };
 use super::texture_images::{
     NativeVulkanSceneTextureImageBinding, NativeVulkanSceneTextureImageStore,
@@ -209,11 +210,12 @@ impl NativeVulkanSceneFrameResources {
         self.texture_heap.last_actions()
     }
 
-    pub(in crate::renderer::native_vulkan) fn texture_heap_draw_bind_info(
+    pub(in crate::renderer::native_vulkan) fn texture_heap_draw_bind_info_for_set(
         &self,
-        resource: SceneResourceId,
+        texture_set: &NativeVulkanSceneTextureSetKey,
     ) -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String> {
-        self.texture_heap.draw_bind_info_for_texture(resource)
+        self.texture_heap
+            .draw_bind_info_for_texture_set(texture_set)
     }
 
     pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(
@@ -448,7 +450,7 @@ mod tests {
                     puppet: None,
                     resources: vec![SceneGraphResourceBinding {
                         slot: 0,
-                        role: SceneGraphResourceRole::BaseColor,
+                        role: SceneGraphResourceRole::shader_texture(0),
                         resource: SceneResourceId(7),
                     }],
                     index_count: 3,
@@ -467,6 +469,7 @@ mod tests {
             vertex_layout:
                 super::super::pipeline::NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
             target_format: vk::Format::B8G8R8A8_UNORM,
+            texture_slot_mask: 0,
         }
     }
 

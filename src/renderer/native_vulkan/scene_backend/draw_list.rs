@@ -8,23 +8,23 @@
 //! - `references/godot/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
-use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphPipelineClass, SceneResourceId};
+use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphPipelineClass};
 
 use super::pipeline::NativeVulkanScenePipelineKey;
-use super::texture_heap::scene_mesh_draw_base_color_resource;
+use super::texture_heap::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshDrawListTransition<'a> {
     pub pipeline_key: NativeVulkanScenePipelineKey<'a>,
     pub bind_pipeline: bool,
-    pub base_color_resource: Option<SceneResourceId>,
+    pub texture_set: Option<NativeVulkanSceneTextureSetKey>,
     pub bind_texture_heap: bool,
 }
 
 #[derive(Debug, Default)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshDrawListState<'a> {
     last_pipeline_key: Option<NativeVulkanScenePipelineKey<'a>>,
-    last_base_color_resource: Option<Option<SceneResourceId>>,
+    last_texture_set: Option<Option<NativeVulkanSceneTextureSetKey>>,
 }
 
 impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
@@ -41,18 +41,19 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
         }
 
         let pipeline_key = NativeVulkanScenePipelineKey::from_draw(draw)?;
-        let base_color_resource = scene_mesh_draw_base_color_resource(draw)?;
+        let texture_set_key = scene_mesh_draw_texture_set_key(draw)?;
+        let texture_set = (!texture_set_key.is_empty()).then_some(texture_set_key);
         let bind_pipeline = self.last_pipeline_key != Some(pipeline_key);
-        let bind_texture_heap = base_color_resource.is_some()
-            && self.last_base_color_resource != Some(base_color_resource);
+        let bind_texture_heap =
+            texture_set.is_some() && self.last_texture_set != Some(texture_set.clone());
 
         self.last_pipeline_key = Some(pipeline_key);
-        self.last_base_color_resource = Some(base_color_resource);
+        self.last_texture_set = Some(texture_set.clone());
 
         Ok(NativeVulkanSceneMeshDrawListTransition {
             pipeline_key,
             bind_pipeline,
-            base_color_resource,
+            texture_set,
             bind_texture_heap,
         })
     }
@@ -63,7 +64,7 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphResourceBinding, SceneGraphResourceRole,
-        SceneMaterialKey, SceneObjectId,
+        SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
 
     #[test]
@@ -158,7 +159,7 @@ mod tests {
                 .map(|resource| {
                     vec![SceneGraphResourceBinding {
                         slot: 0,
-                        role: SceneGraphResourceRole::BaseColor,
+                        role: SceneGraphResourceRole::shader_texture(0),
                         resource,
                     }]
                 })
