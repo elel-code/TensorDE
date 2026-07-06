@@ -12,7 +12,7 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneGeometryId, ScenePuppetId, SceneResource,
+    RenderingDeviceCommand, SceneGeometryId, SceneGraph, ScenePuppetId, SceneResource,
     SceneResourceResidencyPlan,
 };
 
@@ -30,6 +30,7 @@ use super::resource_buffers::{
 };
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
+use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     resource_storage: NativeVulkanSceneResourceStorage,
@@ -105,6 +106,15 @@ impl NativeVulkanSceneFrameResources {
         self.gpu_buffers.puppet_storage_buffers(puppet)
     }
 
+    pub(in crate::renderer::native_vulkan) fn texture_descriptor_frame_plan(
+        &self,
+        graph: &SceneGraph,
+    ) -> Result<NativeVulkanSceneTextureDescriptorFramePlan, String> {
+        NativeVulkanSceneTextureDescriptorFramePlan::from_graph(graph, |resource| {
+            self.resource_storage.texture(resource).copied()
+        })
+    }
+
     pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(
         &mut self,
         device: &Device,
@@ -147,8 +157,10 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
-        RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraphPipelineClass,
-        SceneResource, SceneResourceResidencyPlan,
+        RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw,
+        SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneGraphTarget, SceneMaterialKey, SceneObjectId, SceneResource, SceneResourceId,
+        SceneResourceResidencyPlan,
     };
     use vulkanalia::vk;
 
@@ -247,12 +259,65 @@ mod tests {
         assert_eq!(binding.pipeline_layout, vk::PipelineLayout::from_raw(12));
     }
 
+    #[test]
+    fn frame_resources_resolves_texture_descriptor_plan_from_residency() {
+        let resources = vec![
+            mesh_resource(SceneGeometryId(4)),
+            SceneResource::Texture {
+                id: SceneResourceId(7),
+                source: "diffuse.png".into(),
+                width: Some(512),
+                height: Some(256),
+            },
+        ];
+        let residency = SceneResourceResidencyPlan::from_resources(&resources);
+        let mut frame_resources = NativeVulkanSceneFrameResources::new();
+        frame_resources.sync_residency_plan(&residency);
+
+        let plan = frame_resources
+            .texture_descriptor_frame_plan(&texture_graph())
+            .expect("texture descriptor frame plan");
+
+        assert_eq!(plan.binding_count, 1);
+        assert_eq!(plan.bindings[0].resource, SceneResourceId(7));
+        assert_eq!(plan.bindings[0].width, Some(512));
+        assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
+    }
+
     fn mesh_resource(geometry: SceneGeometryId) -> SceneResource {
         SceneResource::MeshGeometry {
             id: geometry,
             source_record: 12,
             vertices: vec![SceneMeshVertex::default(); 2],
             indices: vec![0, 1, 0],
+        }
+    }
+
+    fn texture_graph() -> SceneGraph {
+        SceneGraph {
+            passes: vec![SceneGraphPass {
+                name: "scene-main".to_owned(),
+                input: None,
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![SceneGraphDraw {
+                    object: SceneObjectId(4),
+                    pipeline: SceneGraphPipelineClass::Mesh,
+                    material: SceneMaterialKey {
+                        shader: "we/genericimage4".to_owned(),
+                        blend: SceneBlendContract::TranslucentAlpha,
+                        writes_depth: false,
+                        tests_depth: false,
+                    },
+                    geometry: Some(SceneGeometryId(4)),
+                    puppet: None,
+                    resources: vec![SceneGraphResourceBinding {
+                        slot: 0,
+                        role: SceneGraphResourceRole::BaseColor,
+                        resource: SceneResourceId(7),
+                    }],
+                    index_count: 3,
+                }],
+            }],
         }
     }
 

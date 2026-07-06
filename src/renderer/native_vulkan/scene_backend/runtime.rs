@@ -28,6 +28,7 @@ use super::pipeline_factory::{
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
+use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameContext<'a> {
     pub device: &'a Device,
@@ -45,26 +46,30 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     pub residency_command_count: usize,
+    pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
     pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
         residency_command_count: usize,
+        texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
         gpu_buffer_action_count: usize,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
     ) -> Self {
         Self {
             residency_command_count,
+            texture_descriptors,
             gpu_buffer_action_count,
             pipeline_warmup,
             frame,
             command_order: [
                 "sync_residency",
+                "prepare_texture_descriptors",
                 "sync_gpu_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands",
@@ -86,6 +91,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     let residency_command_count = frame_resources.sync_residency_plan(&frame.residency).len();
+    let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
     let gpu_buffer_action_count = frame_resources
         .sync_gpu_uploads(
             context.device,
@@ -121,6 +127,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         residency_command_count,
+        texture_descriptors,
         gpu_buffer_action_count,
         pipeline_warmup,
         frame_plan,
@@ -147,6 +154,9 @@ mod tests {
     use super::super::pass_command::NativeVulkanSceneMeshPassCommandPlan;
     use super::super::render_target::{
         NativeVulkanSceneRenderTargetLoadOp, NativeVulkanSceneRenderTargetScopePlan,
+    };
+    use super::super::texture_descriptors::{
+        NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
     };
     use super::*;
     use crate::engine::scene_engine::{
@@ -183,18 +193,40 @@ mod tests {
             },
         );
 
-        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(2, 3, warmup, frame);
+        let descriptors = NativeVulkanSceneTextureDescriptorFramePlan {
+            draw_count: 1,
+            binding_count: 1,
+            bindings: vec![NativeVulkanSceneTextureDescriptorBinding {
+                object: SceneObjectId(1),
+                slot: 0,
+                role: crate::engine::scene_engine::SceneGraphResourceRole::BaseColor,
+                resource: crate::engine::scene_engine::SceneResourceId(9),
+                width: Some(1024),
+                height: Some(1024),
+                shader_mapping: "set0.binding0.base_color",
+            }],
+            descriptor_model: "VK_EXT_descriptor_heap",
+            command_order: [
+                "resolve_resident_texture_descriptors",
+                "bind_descriptor_heap_texture_mapping",
+            ],
+        };
+
+        let plan =
+            NativeVulkanSceneMeshRuntimeFramePlan::from_parts(2, descriptors, 3, warmup, frame);
 
         assert_eq!(
             plan.command_order,
             [
                 "sync_residency",
+                "prepare_texture_descriptors",
                 "sync_gpu_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands"
             ]
         );
         assert_eq!(plan.residency_command_count, 2);
+        assert_eq!(plan.texture_descriptors.binding_count, 1);
         assert_eq!(plan.gpu_buffer_action_count, 3);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);
