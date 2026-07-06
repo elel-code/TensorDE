@@ -6,12 +6,13 @@
 //! - `references/godot/servers/rendering/rendering_device.h`
 
 use crate::engine::scene_engine::{
-    RenderingDevice, RenderingDeviceCommand, SceneFramePlan, SceneGraph, SceneGraphDraw,
-    SceneGraphPass, SceneResource, SceneResourceResidencyPlan,
+    RenderingDevice, RenderingDeviceCommand, SceneFramePlan, SceneGeometryId, SceneGraph,
+    SceneGraphDraw, SceneGraphPass, ScenePuppetId, SceneResource, SceneResourceResidencyPlan,
 };
 
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferCatalog, NativeVulkanSceneGpuBufferSyncAction,
+    NativeVulkanSceneMeshDrawBufferRecords, NativeVulkanScenePuppetStorageBufferRecords,
 };
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
@@ -38,6 +39,21 @@ impl NativeVulkanRenderingDevice {
 
     pub fn gpu_buffer_actions(&self) -> &[NativeVulkanSceneGpuBufferSyncAction] {
         self.gpu_buffer_catalog.last_actions()
+    }
+
+    pub fn mesh_draw_buffer_records(
+        &self,
+        geometry: SceneGeometryId,
+    ) -> Result<NativeVulkanSceneMeshDrawBufferRecords, String> {
+        self.gpu_buffer_catalog.mesh_draw_buffer_records(geometry)
+    }
+
+    pub fn puppet_storage_buffer_records(
+        &self,
+        puppet: ScenePuppetId,
+    ) -> NativeVulkanScenePuppetStorageBufferRecords {
+        self.gpu_buffer_catalog
+            .puppet_storage_buffer_records(puppet)
     }
 
     pub fn sync_scene_gpu_uploads(
@@ -312,5 +328,11 @@ mod tests {
                 NativeVulkanSceneGpuBufferSyncAction::Reuse { .. }
             ]
         ));
+
+        let mesh_records = device
+            .mesh_draw_buffer_records(SceneGeometryId(2))
+            .expect("mesh draw records after GPU upload sync");
+        assert_eq!(mesh_records.vertex.bytes, 40);
+        assert_eq!(mesh_records.index.bytes, 12);
     }
 }

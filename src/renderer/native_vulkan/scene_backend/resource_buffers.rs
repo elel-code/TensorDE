@@ -16,6 +16,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
+use crate::engine::scene_engine::{SceneGeometryId, ScenePuppetId};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaBuffer,
     native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload,
@@ -48,6 +49,51 @@ pub struct NativeVulkanSceneGpuBufferRecord {
     pub key: NativeVulkanSceneGpuBufferKey,
     pub requirement: NativeVulkanSceneGpuBufferRequirement,
     pub payload_hash: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneGpuBufferRecordBinding {
+    pub key: NativeVulkanSceneGpuBufferKey,
+    pub bytes: u64,
+    pub payload_hash: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneMeshDrawBufferRecords {
+    pub geometry: SceneGeometryId,
+    pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
+    pub index: NativeVulkanSceneGpuBufferRecordBinding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanScenePuppetStorageBufferRecords {
+    pub puppet: ScenePuppetId,
+    pub bones: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub skin_vertices: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub clip_frames: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneGpuBufferBinding {
+    pub key: NativeVulkanSceneGpuBufferKey,
+    pub buffer: vk::Buffer,
+    pub bytes: u64,
+    pub payload_hash: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneMeshDrawBuffers {
+    pub geometry: SceneGeometryId,
+    pub vertex: NativeVulkanSceneGpuBufferBinding,
+    pub index: NativeVulkanSceneGpuBufferBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanScenePuppetStorageBuffers {
+    pub puppet: ScenePuppetId,
+    pub bones: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub skin_vertices: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub clip_frames: Option<NativeVulkanSceneGpuBufferBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -159,6 +205,64 @@ impl NativeVulkanSceneGpuBufferCatalog {
     pub fn last_actions(&self) -> &[NativeVulkanSceneGpuBufferSyncAction] {
         &self.last_actions
     }
+
+    pub fn mesh_draw_buffer_records(
+        &self,
+        geometry: SceneGeometryId,
+    ) -> Result<NativeVulkanSceneMeshDrawBufferRecords, String> {
+        Ok(NativeVulkanSceneMeshDrawBufferRecords {
+            geometry,
+            vertex: self.required_record_binding(
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(geometry),
+                NativeVulkanSceneGpuBufferRole::MeshVertex,
+            )?,
+            index: self.required_record_binding(
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(geometry),
+                NativeVulkanSceneGpuBufferRole::MeshIndex,
+            )?,
+        })
+    }
+
+    pub fn puppet_storage_buffer_records(
+        &self,
+        puppet: ScenePuppetId,
+    ) -> NativeVulkanScenePuppetStorageBufferRecords {
+        NativeVulkanScenePuppetStorageBufferRecords {
+            puppet,
+            bones: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetBone,
+            ),
+            skin_vertices: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetSkinVertex,
+            ),
+            clip_frames: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+            ),
+        }
+    }
+
+    fn required_record_binding(
+        &self,
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+    ) -> Result<NativeVulkanSceneGpuBufferRecordBinding, String> {
+        self.record_binding(owner, role).ok_or_else(|| {
+            format!("missing retained scene GPU buffer record for {owner:?} {role:?}")
+        })
+    }
+
+    fn record_binding(
+        &self,
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+    ) -> Option<NativeVulkanSceneGpuBufferRecordBinding> {
+        self.records
+            .get(&NativeVulkanSceneGpuBufferKey { owner, role })
+            .map(record_binding)
+    }
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneGpuBufferStore {
@@ -263,6 +367,63 @@ impl NativeVulkanSceneGpuBufferStore {
     ) -> &[NativeVulkanSceneGpuBufferSyncAction] {
         &self.last_actions
     }
+
+    pub(in crate::renderer::native_vulkan) fn mesh_draw_buffers(
+        &self,
+        geometry: SceneGeometryId,
+    ) -> Result<NativeVulkanSceneMeshDrawBuffers, String> {
+        Ok(NativeVulkanSceneMeshDrawBuffers {
+            geometry,
+            vertex: self.required_buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(geometry),
+                NativeVulkanSceneGpuBufferRole::MeshVertex,
+            )?,
+            index: self.required_buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(geometry),
+                NativeVulkanSceneGpuBufferRole::MeshIndex,
+            )?,
+        })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn puppet_storage_buffers(
+        &self,
+        puppet: ScenePuppetId,
+    ) -> NativeVulkanScenePuppetStorageBuffers {
+        NativeVulkanScenePuppetStorageBuffers {
+            puppet,
+            bones: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetBone,
+            ),
+            skin_vertices: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetSkinVertex,
+            ),
+            clip_frames: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+            ),
+        }
+    }
+
+    fn required_buffer_binding(
+        &self,
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+    ) -> Result<NativeVulkanSceneGpuBufferBinding, String> {
+        self.buffer_binding(owner, role)
+            .ok_or_else(|| format!("missing retained scene GPU buffer for {owner:?} {role:?}"))
+    }
+
+    fn buffer_binding(
+        &self,
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+    ) -> Option<NativeVulkanSceneGpuBufferBinding> {
+        self.buffers
+            .get(&NativeVulkanSceneGpuBufferKey { owner, role })
+            .map(|slot| buffer_binding(slot))
+    }
 }
 
 impl Default for NativeVulkanSceneGpuBufferStore {
@@ -327,6 +488,25 @@ fn upload_record(
     })
 }
 
+fn record_binding(
+    record: &NativeVulkanSceneGpuBufferRecord,
+) -> NativeVulkanSceneGpuBufferRecordBinding {
+    NativeVulkanSceneGpuBufferRecordBinding {
+        key: record.key,
+        bytes: record.requirement.bytes,
+        payload_hash: record.payload_hash,
+    }
+}
+
+fn buffer_binding(slot: &NativeVulkanSceneGpuBufferSlot) -> NativeVulkanSceneGpuBufferBinding {
+    NativeVulkanSceneGpuBufferBinding {
+        key: slot.record.key,
+        buffer: slot.buffer.buffer,
+        bytes: slot.record.requirement.bytes,
+        payload_hash: slot.record.payload_hash,
+    }
+}
+
 fn scene_gpu_buffer_usage_flags(usage: NativeVulkanSceneGpuBufferUsage) -> vk::BufferUsageFlags {
     match usage {
         NativeVulkanSceneGpuBufferUsage::Vertex => vk::BufferUsageFlags::VERTEX_BUFFER,
@@ -360,7 +540,7 @@ mod tests {
         NativeVulkanSceneGpuBufferRole, NativeVulkanSceneGpuBufferUsage,
     };
     use super::*;
-    use crate::engine::scene_engine::SceneGeometryId;
+    use crate::engine::scene_engine::{SceneGeometryId, ScenePuppetId};
 
     #[test]
     fn catalog_creates_then_reuses_unchanged_uploads() {
@@ -451,6 +631,69 @@ mod tests {
     }
 
     #[test]
+    fn catalog_exposes_mesh_draw_and_puppet_storage_records() {
+        let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
+        let plan = upload_plan(vec![
+            upload(
+                SceneGeometryId(4),
+                NativeVulkanSceneGpuBufferRole::MeshVertex,
+                vec![1, 2, 3, 4],
+            ),
+            upload(
+                SceneGeometryId(4),
+                NativeVulkanSceneGpuBufferRole::MeshIndex,
+                vec![0, 0, 0, 0],
+            ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetBone,
+                vec![5; 64],
+            ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+                vec![6; 48],
+            ),
+        ]);
+        catalog.sync_upload_plan(&plan).unwrap();
+
+        let mesh = catalog
+            .mesh_draw_buffer_records(SceneGeometryId(4))
+            .unwrap();
+        assert_eq!(mesh.geometry, SceneGeometryId(4));
+        assert_eq!(
+            mesh.vertex.key.role,
+            NativeVulkanSceneGpuBufferRole::MeshVertex
+        );
+        assert_eq!(
+            mesh.index.key.role,
+            NativeVulkanSceneGpuBufferRole::MeshIndex
+        );
+
+        let puppet = catalog.puppet_storage_buffer_records(ScenePuppetId(9));
+        assert!(puppet.bones.is_some());
+        assert!(puppet.skin_vertices.is_none());
+        assert!(puppet.clip_frames.is_some());
+    }
+
+    #[test]
+    fn catalog_requires_complete_mesh_draw_records() {
+        let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
+        let plan = upload_plan(vec![upload(
+            SceneGeometryId(4),
+            NativeVulkanSceneGpuBufferRole::MeshVertex,
+            vec![1, 2, 3, 4],
+        )]);
+        catalog.sync_upload_plan(&plan).unwrap();
+
+        let err = catalog
+            .mesh_draw_buffer_records(SceneGeometryId(4))
+            .expect_err("mesh draw binding without index buffer must fail");
+
+        assert!(err.contains("MeshIndex"));
+    }
+
+    #[test]
     fn catalog_hash_matches_native_vulkan_fnv1a() {
         assert_eq!(
             scene_stable_byte_hash(b"gilder-scene"),
@@ -487,6 +730,22 @@ mod tests {
                         NativeVulkanSceneGpuBufferUsage::Storage
                     }
                 },
+            },
+            payload,
+        }
+    }
+
+    fn puppet_upload(
+        puppet: ScenePuppetId,
+        role: NativeVulkanSceneGpuBufferRole,
+        payload: Vec<u8>,
+    ) -> NativeVulkanSceneGpuBufferUpload {
+        NativeVulkanSceneGpuBufferUpload {
+            requirement: NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                role,
+                bytes: payload.len() as u64,
+                usage: NativeVulkanSceneGpuBufferUsage::Storage,
             },
             payload,
         }
