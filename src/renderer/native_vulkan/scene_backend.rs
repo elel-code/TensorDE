@@ -12,6 +12,7 @@ pub mod frame_resources;
 pub mod pass_command;
 pub mod pipeline;
 pub mod pipeline_factory;
+pub mod pipeline_warmup;
 pub mod render_target;
 pub mod renderer_scene_render;
 pub mod rendering_device;
