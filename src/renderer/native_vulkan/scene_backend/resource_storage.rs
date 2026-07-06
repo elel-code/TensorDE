@@ -8,6 +8,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::Serialize;
+
 use crate::engine::scene_engine::{
     RenderingDeviceCommand, SceneBufferResidency, SceneGeometryId, SceneMeshResidency,
     ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceId,
@@ -47,6 +49,45 @@ impl NativeVulkanSceneResourceStorage {
 
     pub fn puppet_rig(&self, id: ScenePuppetId) -> Option<&ScenePuppetRigResidency> {
         self.puppet_rigs.get(&id)
+    }
+
+    pub fn gpu_buffer_requirements(&self) -> Vec<NativeVulkanSceneGpuBufferRequirement> {
+        let mut requirements = Vec::new();
+        for mesh in self.mesh_geometries.values() {
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(mesh.id),
+                NativeVulkanSceneGpuBufferRole::MeshVertex,
+                mesh.vertex_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::MeshGeometry(mesh.id),
+                NativeVulkanSceneGpuBufferRole::MeshIndex,
+                mesh.index_bytes,
+            );
+        }
+        for puppet in self.puppet_rigs.values() {
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetBone,
+                puppet.bone_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetSkinVertex,
+                puppet.skin_vertex_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+                puppet.clip_frame_bytes,
+            );
+        }
+        requirements
     }
 
     fn release_stale_resources(
@@ -132,7 +173,9 @@ impl NativeVulkanSceneResourceStorage {
                             puppet: puppet.id,
                             source_record: puppet.source_record,
                             bone_count: puppet.bone_count,
+                            bone_bytes: puppet.bone_bytes,
                             skin_vertex_count: puppet.skin_vertex_count,
+                            skin_vertex_bytes: puppet.skin_vertex_bytes,
                             attachment_count: puppet.attachment_count,
                             clip_count: puppet.clip_count,
                             clip_bone_count: puppet.clip_bone_count,
@@ -149,6 +192,61 @@ impl NativeVulkanSceneResourceStorage {
         }
         commands
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum NativeVulkanSceneGpuBufferOwner {
+    MeshGeometry(SceneGeometryId),
+    PuppetRig(ScenePuppetId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum NativeVulkanSceneGpuBufferRole {
+    MeshVertex,
+    MeshIndex,
+    PuppetBone,
+    PuppetSkinVertex,
+    PuppetClipFrame,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneGpuBufferRequirement {
+    pub owner: NativeVulkanSceneGpuBufferOwner,
+    pub role: NativeVulkanSceneGpuBufferRole,
+    pub bytes: u64,
+    pub usage: NativeVulkanSceneGpuBufferUsage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub enum NativeVulkanSceneGpuBufferUsage {
+    Vertex,
+    Index,
+    Storage,
+}
+
+fn push_gpu_buffer_requirement(
+    requirements: &mut Vec<NativeVulkanSceneGpuBufferRequirement>,
+    owner: NativeVulkanSceneGpuBufferOwner,
+    role: NativeVulkanSceneGpuBufferRole,
+    bytes: u64,
+) {
+    if bytes == 0 {
+        return;
+    }
+    requirements.push(NativeVulkanSceneGpuBufferRequirement {
+        owner,
+        role,
+        bytes,
+        usage: match role {
+            NativeVulkanSceneGpuBufferRole::MeshVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
+            NativeVulkanSceneGpuBufferRole::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
+            NativeVulkanSceneGpuBufferRole::PuppetBone
+            | NativeVulkanSceneGpuBufferRole::PuppetSkinVertex
+            | NativeVulkanSceneGpuBufferRole::PuppetClipFrame => {
+                NativeVulkanSceneGpuBufferUsage::Storage
+            }
+        },
+    });
 }
 
 #[derive(Debug, Default)]
@@ -223,5 +321,77 @@ mod tests {
             }]
         ));
         assert!(storage.mesh_geometry(SceneGeometryId(2)).is_none());
+    }
+
+    #[test]
+    fn storage_exposes_mesh_and_puppet_gpu_buffer_requirements() {
+        let mut storage = NativeVulkanSceneResourceStorage::default();
+        let residency = SceneResourceResidencyPlan {
+            resources: vec![
+                SceneResidentResource::MeshGeometry(SceneMeshResidency {
+                    id: SceneGeometryId(2),
+                    source_record: 12,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_bytes: 160,
+                    index_bytes: 24,
+                }),
+                SceneResidentResource::PuppetRig(ScenePuppetRigResidency {
+                    id: ScenePuppetId(3),
+                    source_record: 4,
+                    bone_count: 2,
+                    bone_bytes: 128,
+                    skin_vertex_count: 4,
+                    skin_vertex_bytes: 256,
+                    attachment_count: 0,
+                    clip_count: 1,
+                    clip_bone_count: 2,
+                    clip_frame_count: 10,
+                    clip_frame_bytes: 640,
+                    layer_count: 1,
+                    clipping_record_count: 0,
+                    clipping_bone_count: 0,
+                    clipping_frame_key_count: 0,
+                }),
+            ],
+        };
+        storage.sync_residency_plan(&residency);
+
+        let requirements = storage.gpu_buffer_requirements();
+        assert_eq!(
+            requirements,
+            vec![
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::MeshGeometry(SceneGeometryId(2)),
+                    role: NativeVulkanSceneGpuBufferRole::MeshVertex,
+                    bytes: 160,
+                    usage: NativeVulkanSceneGpuBufferUsage::Vertex,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::MeshGeometry(SceneGeometryId(2)),
+                    role: NativeVulkanSceneGpuBufferRole::MeshIndex,
+                    bytes: 24,
+                    usage: NativeVulkanSceneGpuBufferUsage::Index,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetBone,
+                    bytes: 128,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetSkinVertex,
+                    bytes: 256,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+                    bytes: 640,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+            ]
+        );
     }
 }

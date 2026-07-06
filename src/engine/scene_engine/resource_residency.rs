@@ -11,7 +11,9 @@ use std::mem::size_of;
 use serde::Serialize;
 
 use super::{SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId};
-use crate::core::scene::{SceneMeshVertex, ScenePuppetTransform};
+use crate::core::scene::{
+    SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetTransform,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct SceneResourceResidencyPlan {
@@ -75,10 +77,20 @@ impl From<&SceneResource> for SceneResidentResource {
                     .as_ref()
                     .map(|skin| skin.bones.len().min(u32::MAX as usize) as u32)
                     .unwrap_or_default(),
+                bone_bytes: scene_residency_bytes::<SceneMeshSkinBone>(
+                    skin.as_ref()
+                        .map(|skin| skin.bones.len())
+                        .unwrap_or_default(),
+                ),
                 skin_vertex_count: skin
                     .as_ref()
                     .map(|skin| skin.vertices.len().min(u32::MAX as usize) as u32)
                     .unwrap_or_default(),
+                skin_vertex_bytes: scene_residency_bytes::<SceneMeshSkinVertex>(
+                    skin.as_ref()
+                        .map(|skin| skin.vertices.len())
+                        .unwrap_or_default(),
+                ),
                 attachment_count: skin
                     .as_ref()
                     .map(|skin| skin.attachments.len().min(u32::MAX as usize) as u32)
@@ -147,7 +159,9 @@ pub struct ScenePuppetRigResidency {
     pub id: ScenePuppetId,
     pub source_record: u32,
     pub bone_count: u32,
+    pub bone_bytes: u64,
     pub skin_vertex_count: u32,
+    pub skin_vertex_bytes: u64,
     pub attachment_count: u32,
     pub clip_count: u32,
     pub clip_bone_count: u32,

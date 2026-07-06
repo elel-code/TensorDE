@@ -8,6 +8,7 @@ mod core;
 mod present;
 mod video;
 
+use self::core::buffer;
 use self::core::descriptor_heap;
 use self::core::device_probe;
 use self::core::features;
@@ -52,6 +53,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_h265_std_shor
     )
 }
 
+#[allow(unused_imports)]
+pub(in crate::renderer::native_vulkan) use buffer::{
+    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
+    NativeVulkanVulkanaliaBufferSnapshot, native_vulkan_vulkanalia_create_buffer,
+    native_vulkan_vulkanalia_destroy_buffer,
+};
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,

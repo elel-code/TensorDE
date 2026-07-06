@@ -1,3 +1,4 @@
+pub(in crate::renderer::native_vulkan::vulkan) mod buffer;
 pub(in crate::renderer::native_vulkan::vulkan) mod descriptor_heap;
 pub(in crate::renderer::native_vulkan::vulkan) mod device_probe;
 pub(in crate::renderer::native_vulkan::vulkan) mod features;
