@@ -20,6 +20,10 @@ use super::pipeline::{
     NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
     NativeVulkanScenePipelineResources, NativeVulkanScenePipelineStore,
 };
+use super::pipeline_factory::{
+    NativeVulkanSceneMeshPipelineLayoutSpec, NativeVulkanSceneMeshPipelineShaders,
+    native_vulkan_create_scene_mesh_pipeline_resources,
+};
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
@@ -112,6 +116,18 @@ impl NativeVulkanSceneFrameResources {
         ) -> Result<NativeVulkanScenePipelineResources, String>,
     {
         self.pipelines.resolve_pipeline(key, create_pipeline)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(
+        &mut self,
+        device: &Device,
+        key: NativeVulkanScenePipelineCacheKey,
+        shaders: NativeVulkanSceneMeshPipelineShaders<'_>,
+        layout: NativeVulkanSceneMeshPipelineLayoutSpec<'_>,
+    ) -> Result<NativeVulkanScenePipelineBinding, String> {
+        self.pipelines.resolve_pipeline(key, |key| {
+            native_vulkan_create_scene_mesh_pipeline_resources(device, key, shaders, layout)
+        })
     }
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
