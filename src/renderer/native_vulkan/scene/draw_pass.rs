@@ -85,7 +85,7 @@ pub(super) use self::types::{
     NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImageGraphTextureBindingSource,
     NativeVulkanSceneWeImagePass, NativeVulkanSceneWeImagePassChain,
     NativeVulkanSceneWeImagePassEndpoint, NativeVulkanSceneWeImagePassExecution,
-    NativeVulkanSceneWeImagePassRole,
+    NativeVulkanSceneWeImagePassLoweringStats, NativeVulkanSceneWeImagePassRole,
 };
 use super::super::present::render_plan::{
     NativeVulkanSceneDrawOp, NativeVulkanSceneDrawOpKind, NativeVulkanSceneDrawPlan,

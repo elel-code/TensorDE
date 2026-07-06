@@ -135,6 +135,12 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts:
         BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_waterwaves_lowering_candidate_pair_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_lowering_direct_pair_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_lowering_redirected_pair_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_lowering_blocked_pair_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_lowering_blocked_reason_counts:
+        BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_fused_effect_kind_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_chain_length_counts: BTreeMap<String, usize>,
@@ -4371,6 +4377,24 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
         .iter()
         .map(|(reason, count)| ((*reason).to_owned(), *count))
         .collect::<BTreeMap<_, _>>();
+    let sampled_image_we_graph_waterwaves_lowering_candidate_pair_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_lowering_candidate_pair_count;
+    let sampled_image_we_graph_waterwaves_lowering_direct_pair_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_lowering_direct_pair_count;
+    let sampled_image_we_graph_waterwaves_lowering_redirected_pair_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_lowering_redirected_pair_count;
+    let sampled_image_we_graph_waterwaves_lowering_blocked_pair_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_lowering_blocked_pair_count;
+    let sampled_image_we_graph_waterwaves_lowering_blocked_reason_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_lowering_blocked_reason_counts
+        .iter()
+        .map(|(reason, count)| ((*reason).to_owned(), *count))
+        .collect::<BTreeMap<_, _>>();
     let sampled_image_we_graph_effect_kind_counts = pass_plan
         .sampled_image_we_graph_plan
         .effect_kind_counts
@@ -4600,6 +4624,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count,
         draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts:
             sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts,
+        draw_pass_sampled_image_we_graph_waterwaves_lowering_candidate_pair_count:
+            sampled_image_we_graph_waterwaves_lowering_candidate_pair_count,
+        draw_pass_sampled_image_we_graph_waterwaves_lowering_direct_pair_count:
+            sampled_image_we_graph_waterwaves_lowering_direct_pair_count,
+        draw_pass_sampled_image_we_graph_waterwaves_lowering_redirected_pair_count:
+            sampled_image_we_graph_waterwaves_lowering_redirected_pair_count,
+        draw_pass_sampled_image_we_graph_waterwaves_lowering_blocked_pair_count:
+            sampled_image_we_graph_waterwaves_lowering_blocked_pair_count,
+        draw_pass_sampled_image_we_graph_waterwaves_lowering_blocked_reason_counts:
+            sampled_image_we_graph_waterwaves_lowering_blocked_reason_counts,
         draw_pass_sampled_image_we_graph_effect_kind_counts:
             sampled_image_we_graph_effect_kind_counts,
         draw_pass_sampled_image_we_graph_fused_effect_kind_counts:

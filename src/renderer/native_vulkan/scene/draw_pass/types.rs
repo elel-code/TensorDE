@@ -425,7 +425,19 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
     pub(in crate::renderer::native_vulkan::scene) final_scene_blend_mode: SceneBlendMode,
     pub(in crate::renderer::native_vulkan::scene) raw_direct_composite_allowed: bool,
     pub(in crate::renderer::native_vulkan::scene) unsupported_reason: Option<&'static str>,
+    pub(in crate::renderer::native_vulkan::scene) lowering_stats:
+        NativeVulkanSceneWeImagePassLoweringStats,
     pub(in crate::renderer::native_vulkan::scene) passes: Vec<NativeVulkanSceneWeImagePass>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePassLoweringStats {
+    pub(in crate::renderer::native_vulkan::scene) waterwaves2_candidate_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves2_direct_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves2_redirected_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves2_blocked_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves2_blocked_reason_counts:
+        BTreeMap<&'static str, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,6 +518,12 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_step_eliminated_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_reason_counts:
+        BTreeMap<&'static str, usize>,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_candidate_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_direct_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_redirected_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_blocked_pair_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_lowering_blocked_reason_counts:
         BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kind_counts: BTreeMap<&'static str, usize>,
