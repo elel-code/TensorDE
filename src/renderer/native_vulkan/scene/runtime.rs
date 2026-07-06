@@ -15,6 +15,7 @@ use crate::core::{
     FitMode, PackagePath, SceneAlphaTextureMode, SceneBlendMode, SceneNodeKind, ScenePathFillRule,
     SceneSize, SceneSystemStatus, SceneTextAlign, SceneTextureRegion, SceneTransform,
 };
+use crate::engine::render_graph::RenderGraphRunPlan;
 use crate::engine::telemetry::SceneEngineTelemetry;
 use crate::renderer::native_vulkan::effect_debug::{
     NativeVulkanEffectDebugR8UvGroup, NativeVulkanEffectDebugRgbaUvGroup,
@@ -36,7 +37,8 @@ use super::super::vulkan::{
     NativeVulkanVulkanaliaSceneBlendEquation, NativeVulkanVulkanaliaSceneBlendState,
     NativeVulkanVulkanaliaSceneCullMode, NativeVulkanVulkanaliaSceneDrawPassInput,
     NativeVulkanVulkanaliaSceneDrawPassSnapshot, NativeVulkanVulkanaliaSceneEffectKind,
-    NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneMaterialFlag,
+    NativeVulkanVulkanaliaSceneEffectUniform, NativeVulkanVulkanaliaSceneFusedEffectKind,
+    NativeVulkanVulkanaliaSceneFusedEffectPass, NativeVulkanVulkanaliaSceneMaterialFlag,
     NativeVulkanVulkanaliaSceneRenderState, NativeVulkanVulkanaliaSceneSampledImageDrawStep,
     NativeVulkanVulkanaliaSceneSampledImageEffectTarget,
     NativeVulkanVulkanaliaSceneSampledImageGeometryInput,
@@ -58,14 +60,14 @@ use super::binary_ingest::{
     NativeVulkanSceneBinaryIngestSummary, native_vulkan_scene_binary_ingest_from_reader,
 };
 use super::draw_pass::{
-    NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialPass,
-    NativeVulkanSceneRenderState, NativeVulkanSceneSampledImageEffectTarget,
-    NativeVulkanSceneSampledImageEffectTargetAlias, NativeVulkanSceneSampledImageRenderTarget,
-    NativeVulkanSceneSampledImageVertex, NativeVulkanSceneShaderUniform,
-    NativeVulkanSceneTextureSlot, NativeVulkanSceneTextureSlotResourceBinding,
-    NativeVulkanSceneWeImageGraphPlan, NativeVulkanSceneWeImageGraphTarget,
-    NativeVulkanSceneWeImageGraphTextureBinding, NativeVulkanSceneWeImagePassChain,
-    NativeVulkanSceneWeImagePassEndpoint,
+    NativeVulkanSceneBlendState, NativeVulkanSceneEffectRecord, NativeVulkanSceneFusedEffectPass,
+    NativeVulkanSceneMaterialPass, NativeVulkanSceneRenderState,
+    NativeVulkanSceneSampledImageEffectTarget, NativeVulkanSceneSampledImageEffectTargetAlias,
+    NativeVulkanSceneSampledImageRenderTarget, NativeVulkanSceneSampledImageVertex,
+    NativeVulkanSceneShaderUniform, NativeVulkanSceneTextureSlot,
+    NativeVulkanSceneTextureSlotResourceBinding, NativeVulkanSceneWeImageGraphPlan,
+    NativeVulkanSceneWeImageGraphTarget, NativeVulkanSceneWeImageGraphTextureBinding,
+    NativeVulkanSceneWeImagePassChain, NativeVulkanSceneWeImagePassEndpoint,
     native_vulkan_scene_append_sampled_image_geometry_from_render_layer,
     native_vulkan_scene_append_sampled_image_geometry_from_snapshot_layer,
     native_vulkan_scene_append_sampled_image_vertices_from_render_layer,
@@ -127,12 +129,28 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub draw_pass_sampled_image_we_graph_max_chain_step_count: usize,
     pub draw_pass_sampled_image_we_graph_all_waterwaves_chain_count: usize,
     pub draw_pass_sampled_image_we_graph_all_waterwaves_multi_step_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_fused2_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_fused2_step_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_fused2_step_eliminated_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count: usize,
+    pub draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts:
+        BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_effect_kind_counts: BTreeMap<String, usize>,
+    pub draw_pass_sampled_image_we_graph_fused_effect_kind_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_chain_length_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_chain_signature_counts: BTreeMap<String, usize>,
     pub draw_pass_sampled_image_we_graph_execution_pass_count: u32,
     pub draw_pass_sampled_image_we_graph_execution_dependency_count: u32,
     pub draw_pass_sampled_image_we_graph_execution_level_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_target_run_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_scene_color_run_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_offscreen_target_run_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_repeated_target_run_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_max_target_run_count: u32,
+    pub draw_pass_sampled_image_we_graph_semantic_max_run_pass_count: u32,
+    #[serde(skip)]
+    pub(in crate::renderer::native_vulkan) draw_pass_sampled_image_we_graph_run_plan:
+        Option<RenderGraphRunPlan>,
     pub draw_pass_sampled_image_we_graph_resource_count: usize,
     pub draw_pass_sampled_image_we_graph_texture_resource_count: usize,
     pub draw_pass_sampled_image_we_graph_target_resource_count: usize,
@@ -392,6 +410,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         self.draw_pass_sampled_image_we_graph_resources = Vec::new();
         self.draw_pass_sampled_image_we_graph_targets = Vec::new();
         self.draw_pass_sampled_image_we_graph_steps = Vec::new();
+        self.draw_pass_sampled_image_we_graph_run_plan = None;
         self.draw_pass_sampled_image_sources = Vec::new();
         self.draw_pass_sampled_image_recording_steps = Vec::new();
         self.draw_pass_sampled_image_vertices = Vec::new();
@@ -420,6 +439,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         let draw_steps = std::mem::take(&mut self.draw_pass_quad_recording_steps)
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: step.engine_pass_id,
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
@@ -465,6 +485,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         let draw_steps = std::mem::take(&mut self.draw_pass_sampled_image_recording_steps)
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: step.engine_pass_id,
                 layer_index: step.layer_index,
                 first_vertex: step.first_vertex,
                 vertex_count: step.vertex_count,
@@ -518,6 +539,9 @@ impl NativeVulkanSceneRuntimeSnapshot {
                 self.draw_pass_sampled_image_we_graph_execution_pass_count,
                 self.draw_pass_sampled_image_we_graph_execution_dependency_count,
                 self.draw_pass_sampled_image_we_graph_execution_level_count,
+            )
+            .with_we_graph_run_plan(
+                self.draw_pass_sampled_image_we_graph_run_plan.take(),
             ),
         ))
     }
@@ -589,6 +613,7 @@ impl NativeVulkanSceneRuntimeSnapshot {
         let draw_steps = std::mem::take(&mut self.draw_pass_quad_recording_steps)
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: step.engine_pass_id,
                 layer_index: step.layer_index,
                 first_index: step.first_index,
                 index_count: step.index_count,
@@ -768,6 +793,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 &mut sampled_sources,
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index,
                 first_vertex: range.first_vertex,
                 vertex_count: range.vertex_count,
@@ -799,6 +825,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             let first_index = solid_indices.len().min(u32::MAX as usize) as u32;
             let index_count = indices.len().min(u32::MAX as usize) as u32;
             solid_draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: None,
                 layer_index,
                 first_index,
                 index_count,
@@ -916,6 +943,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
                 sampled_source_indices,
             )?;
             sampled_draw_steps.push(NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index,
                 first_vertex: range.first_vertex,
                 vertex_count: range.vertex_count,
@@ -950,6 +978,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_geometry_i
             let first_index = solid_indices.len().min(u32::MAX as usize) as u32;
             let index_count = indices.len().min(u32::MAX as usize) as u32;
             solid_draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: None,
                 layer_index,
                 first_index,
                 index_count,
@@ -1054,6 +1083,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_sampled_vertex_inp
             let first_index = solid_indices.len().min(u32::MAX as usize) as u32;
             let index_count = indices.len().min(u32::MAX as usize) as u32;
             solid_draw_steps.push(NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: None,
                 layer_index,
                 first_index,
                 index_count,
@@ -3135,9 +3165,25 @@ pub struct NativeVulkanSceneMaterialPassSnapshot {
     pub alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub texture_slot_count: usize,
     pub effect_kinds: Vec<&'static str>,
+    pub fused_effect_kind: Option<&'static str>,
+    pub fused_effect_passes: Vec<NativeVulkanSceneFusedEffectPassSnapshot>,
     pub constant_shader_values: BTreeMap<String, Value>,
     pub constant_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
     pub system_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
+    pub combo_keys: Vec<String>,
+    pub combo_values: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneFusedEffectPassSnapshot {
+    pub pass_index: usize,
+    pub effect_kind: &'static str,
+    pub effect_file: Option<String>,
+    pub texture_slots: Vec<NativeVulkanSceneTextureSlotSnapshot>,
+    pub texture_slot_count: usize,
+    pub effect_uv_transform: Option<SceneEffectUvTransform>,
+    pub constant_shader_values: BTreeMap<String, Value>,
+    pub constant_shader_uniforms: Vec<NativeVulkanSceneEffectUniformSnapshot>,
     pub combo_keys: Vec<String>,
     pub combo_values: BTreeMap<String, i64>,
 }
@@ -3147,6 +3193,8 @@ pub struct NativeVulkanSceneWeImagePassSnapshot {
     pub pass_index: usize,
     pub role: &'static str,
     pub effect_kind: Option<&'static str>,
+    pub fused_effect_kind: Option<&'static str>,
+    pub fused_effect_passes: Vec<NativeVulkanSceneFusedEffectPassSnapshot>,
     pub effect_file: Option<String>,
     pub command: Option<String>,
     pub source: Option<String>,
@@ -3187,6 +3235,7 @@ pub struct NativeVulkanSceneWeImagePassChainSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneWeImageGraphStepSnapshot {
+    pub engine_pass_id: u32,
     pub layer_index: usize,
     pub layer_id: String,
     pub chain_index: usize,
@@ -3324,6 +3373,12 @@ fn native_vulkan_scene_material_pass_snapshot(
             .iter()
             .map(|kind| kind.as_str())
             .collect(),
+        fused_effect_kind: material.fused_effect_kind.map(|kind| kind.as_str()),
+        fused_effect_passes: material
+            .fused_effect_passes
+            .iter()
+            .map(native_vulkan_scene_fused_effect_pass_snapshot)
+            .collect(),
         constant_shader_values: material.constant_shader_values.clone(),
         constant_shader_uniforms: native_vulkan_scene_effect_uniform_snapshots(
             &material.constant_shader_values,
@@ -3333,6 +3388,29 @@ fn native_vulkan_scene_material_pass_snapshot(
         ),
         combo_keys: material.combo_keys.clone(),
         combo_values: material.combo_values.clone(),
+    }
+}
+
+fn native_vulkan_scene_fused_effect_pass_snapshot(
+    pass: &NativeVulkanSceneFusedEffectPass,
+) -> NativeVulkanSceneFusedEffectPassSnapshot {
+    NativeVulkanSceneFusedEffectPassSnapshot {
+        pass_index: pass.pass_index,
+        effect_kind: pass.effect_kind.as_str(),
+        effect_file: pass.effect_file.clone(),
+        texture_slots: pass
+            .texture_slots
+            .iter()
+            .map(native_vulkan_scene_texture_slot_snapshot)
+            .collect(),
+        texture_slot_count: pass.texture_slots.len(),
+        effect_uv_transform: pass.effect_uv_transform,
+        constant_shader_values: pass.constant_shader_values.clone(),
+        constant_shader_uniforms: native_vulkan_scene_effect_uniform_snapshots(
+            &pass.constant_shader_values,
+        ),
+        combo_keys: pass.combo_keys.clone(),
+        combo_values: pass.combo_values.clone(),
     }
 }
 
@@ -3433,10 +3511,17 @@ fn native_vulkan_scene_we_image_pass_snapshot(
         .iter()
         .map(native_vulkan_scene_texture_slot_snapshot)
         .collect();
+    let fused_effect_passes = pass
+        .fused_effect_passes
+        .iter()
+        .map(native_vulkan_scene_fused_effect_pass_snapshot)
+        .collect();
     NativeVulkanSceneWeImagePassSnapshot {
         pass_index: pass.pass_index,
         role: pass.role.as_str(),
         effect_kind: pass.effect_kind.map(|kind| kind.as_str()),
+        fused_effect_kind: pass.fused_effect_kind.map(|kind| kind.as_str()),
+        fused_effect_passes,
         effect_file: pass.effect_file,
         command: pass.command,
         source: pass.source,
@@ -3644,6 +3729,7 @@ fn native_vulkan_scene_we_image_graph_steps_snapshot(
         .steps
         .into_iter()
         .map(|step| NativeVulkanSceneWeImageGraphStepSnapshot {
+            engine_pass_id: step.engine_pass_id,
             layer_index: step.layer_index,
             layer_id: step.layer_id,
             chain_index: step.chain_index,
@@ -3798,6 +3884,7 @@ pub struct NativeVulkanSceneRecordableQuadSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneQuadRecordingStepSnapshot {
+    pub engine_pass_id: Option<u32>,
     pub layer_index: usize,
     pub layer_id: String,
     pub kind: &'static str,
@@ -3836,6 +3923,7 @@ pub struct NativeVulkanSceneSampledImageQuadSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneSampledImageRecordingStepSnapshot {
+    pub engine_pass_id: Option<u32>,
     pub layer_index: usize,
     pub layer_id: String,
     pub source: PathBuf,
@@ -4003,9 +4091,21 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         .into_iter()
         .map(NativeVulkanVulkanaliaSceneEffectKind::from_label)
         .collect();
+    let fused_effect_kind = material
+        .fused_effect_kind
+        .and_then(NativeVulkanVulkanaliaSceneFusedEffectKind::from_label);
+    let fused_effect_passes = material
+        .fused_effect_passes
+        .into_iter()
+        .map(native_vulkan_scene_vulkanalia_fused_effect_pass)
+        .collect::<Vec<_>>();
     let uses_elapsed_frame_constants = effect_kinds
         .iter()
-        .any(|kind| kind.uses_elapsed_frame_constants());
+        .any(|kind| kind.uses_elapsed_frame_constants())
+        || fused_effect_kind.is_some_and(|kind| kind.uses_elapsed_frame_constants())
+        || fused_effect_passes
+            .iter()
+            .any(|pass| pass.effect_kind.uses_elapsed_frame_constants());
     let constant_shader_uniforms = material
         .constant_shader_values
         .iter()
@@ -4038,11 +4138,34 @@ fn native_vulkan_scene_vulkanalia_sampled_image_material(
         texture_slot_count: material.texture_slot_count,
         uses_elapsed_frame_constants,
         effect_kinds,
+        fused_effect_kind,
+        fused_effect_passes,
         constant_shader_values: material.constant_shader_values,
         constant_shader_uniforms,
         system_shader_uniforms,
         combo_keys: material.combo_keys,
         combo_values: material.combo_values,
+    }
+}
+
+fn native_vulkan_scene_vulkanalia_fused_effect_pass(
+    pass: NativeVulkanSceneFusedEffectPassSnapshot,
+) -> NativeVulkanVulkanaliaSceneFusedEffectPass {
+    let constant_shader_uniforms = pass
+        .constant_shader_values
+        .iter()
+        .filter_map(|(name, value)| {
+            NativeVulkanVulkanaliaSceneEffectUniform::from_constant_shader_value(name, value)
+        })
+        .collect();
+    NativeVulkanVulkanaliaSceneFusedEffectPass {
+        pass_index: pass.pass_index,
+        effect_kind: NativeVulkanVulkanaliaSceneEffectKind::from_label(pass.effect_kind),
+        texture_slots: pass.texture_slots.iter().map(|slot| slot.slot).collect(),
+        constant_shader_values: pass.constant_shader_values,
+        constant_shader_uniforms,
+        combo_keys: pass.combo_keys,
+        combo_values: pass.combo_values,
     }
 }
 
@@ -4168,9 +4291,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let engine_render_graph = &pass_plan.sampled_image_we_graph_plan.engine_graph;
     let engine_render_graph_execution =
         &pass_plan.sampled_image_we_graph_plan.engine_execution_plan;
+    let engine_render_graph_run_plan = &pass_plan.sampled_image_we_graph_plan.engine_run_plan;
     let engine_render_graph_resource_uses = engine_render_graph.resource_uses();
     let engine_render_graph_derived_barriers = engine_render_graph.derived_barriers();
-    let engine_render_graph_target_allocation = engine_render_graph.target_allocation_plan();
+    let engine_render_graph_target_allocation =
+        engine_render_graph.target_allocation_plan_for_run_plan(engine_render_graph_run_plan);
     let sampled_image_we_graph_first_class_target_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .first_class_target_chain_count;
@@ -4213,9 +4338,33 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
     let sampled_image_we_graph_all_waterwaves_multi_step_chain_count = pass_plan
         .sampled_image_we_graph_plan
         .all_waterwaves_multi_step_chain_count;
+    let sampled_image_we_graph_waterwaves_fused2_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_fused2_chain_count;
+    let sampled_image_we_graph_waterwaves_fused2_step_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_fused2_step_count;
+    let sampled_image_we_graph_waterwaves_fused2_step_eliminated_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_fused2_step_eliminated_count;
+    let sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_fused2_ineligible_chain_count;
+    let sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .waterwaves_fused2_ineligible_reason_counts
+        .iter()
+        .map(|(reason, count)| ((*reason).to_owned(), *count))
+        .collect::<BTreeMap<_, _>>();
     let sampled_image_we_graph_effect_kind_counts = pass_plan
         .sampled_image_we_graph_plan
         .effect_kind_counts
+        .iter()
+        .map(|(kind, count)| ((*kind).to_owned(), *count))
+        .collect::<BTreeMap<_, _>>();
+    let sampled_image_we_graph_fused_effect_kind_counts = pass_plan
+        .sampled_image_we_graph_plan
+        .fused_effect_kind_counts
         .iter()
         .map(|(kind, count)| ((*kind).to_owned(), *count))
         .collect::<BTreeMap<_, _>>();
@@ -4250,6 +4399,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .min(u32::MAX as usize) as u32,
         render_graph_execution_dependencies: engine_render_graph_execution.dependency_count,
         render_graph_execution_levels: engine_render_graph_execution.level_count,
+        render_graph_semantic_target_runs: engine_render_graph_run_plan.target_run_count,
+        render_graph_semantic_scene_color_runs: engine_render_graph_run_plan.scene_color_run_count,
+        render_graph_semantic_offscreen_target_runs: engine_render_graph_run_plan
+            .offscreen_target_run_count,
+        render_graph_semantic_repeated_target_runs: engine_render_graph_run_plan
+            .repeated_target_run_count,
+        render_graph_semantic_max_target_runs: engine_render_graph_run_plan.max_target_run_count,
+        render_graph_semantic_max_run_passes: engine_render_graph_run_plan.max_run_pass_count,
         render_graph_logical_targets: engine_render_graph_target_allocation.logical_target_count,
         render_graph_physical_target_slots: engine_render_graph_target_allocation
             .physical_target_count,
@@ -4316,6 +4473,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .quad_recording_steps
             .into_iter()
             .map(|step| NativeVulkanSceneQuadRecordingStepSnapshot {
+                engine_pass_id: step.engine_pass_id,
                 layer_index: step.layer_index,
                 layer_id: step.layer_id,
                 kind: step.kind,
@@ -4409,8 +4567,20 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             sampled_image_we_graph_all_waterwaves_chain_count,
         draw_pass_sampled_image_we_graph_all_waterwaves_multi_step_chain_count:
             sampled_image_we_graph_all_waterwaves_multi_step_chain_count,
+        draw_pass_sampled_image_we_graph_waterwaves_fused2_chain_count:
+            sampled_image_we_graph_waterwaves_fused2_chain_count,
+        draw_pass_sampled_image_we_graph_waterwaves_fused2_step_count:
+            sampled_image_we_graph_waterwaves_fused2_step_count,
+        draw_pass_sampled_image_we_graph_waterwaves_fused2_step_eliminated_count:
+            sampled_image_we_graph_waterwaves_fused2_step_eliminated_count,
+        draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count:
+            sampled_image_we_graph_waterwaves_fused2_ineligible_chain_count,
+        draw_pass_sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts:
+            sampled_image_we_graph_waterwaves_fused2_ineligible_reason_counts,
         draw_pass_sampled_image_we_graph_effect_kind_counts:
             sampled_image_we_graph_effect_kind_counts,
+        draw_pass_sampled_image_we_graph_fused_effect_kind_counts:
+            sampled_image_we_graph_fused_effect_kind_counts,
         draw_pass_sampled_image_we_graph_chain_length_counts:
             sampled_image_we_graph_chain_length_counts,
         draw_pass_sampled_image_we_graph_chain_signature_counts:
@@ -4421,6 +4591,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .dependency_count,
         draw_pass_sampled_image_we_graph_execution_level_count: engine_render_graph_execution
             .level_count,
+        draw_pass_sampled_image_we_graph_semantic_target_run_count: engine_render_graph_run_plan
+            .target_run_count,
+        draw_pass_sampled_image_we_graph_semantic_scene_color_run_count:
+            engine_render_graph_run_plan.scene_color_run_count,
+        draw_pass_sampled_image_we_graph_semantic_offscreen_target_run_count:
+            engine_render_graph_run_plan.offscreen_target_run_count,
+        draw_pass_sampled_image_we_graph_semantic_repeated_target_run_count:
+            engine_render_graph_run_plan.repeated_target_run_count,
+        draw_pass_sampled_image_we_graph_semantic_max_target_run_count:
+            engine_render_graph_run_plan.max_target_run_count,
+        draw_pass_sampled_image_we_graph_semantic_max_run_pass_count: engine_render_graph_run_plan
+            .max_run_pass_count,
+        draw_pass_sampled_image_we_graph_run_plan: Some(engine_render_graph_run_plan.clone()),
         draw_pass_sampled_image_we_graph_resource_count: sampled_image_we_graph_resources.len(),
         draw_pass_sampled_image_we_graph_texture_resource_count:
             sampled_image_we_graph_texture_resources.len(),
@@ -4442,6 +4625,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_runtime_snapshot(
             .sampled_image_recording_steps
             .into_iter()
             .map(|step| NativeVulkanSceneSampledImageRecordingStepSnapshot {
+                engine_pass_id: step.engine_pass_id,
                 layer_index: step.layer_index,
                 layer_id: step.layer_id,
                 source: step.source,
@@ -5409,6 +5593,8 @@ mod tests {
             alpha_texture_mode: SceneRenderAlphaTextureMode::Multiply,
             texture_slot_count: 1,
             effect_kinds,
+            fused_effect_kind: None,
+            fused_effect_passes: Vec::new(),
             constant_shader_values: Default::default(),
             constant_shader_uniforms: Vec::new(),
             system_shader_uniforms: Vec::new(),
@@ -5482,6 +5668,41 @@ mod tests {
         assert_eq!(
             animated_material.system_shader_uniforms[0].float_values(),
             vec![512.0_f32, 256.0_f32]
+        );
+
+        let fused_material = native_vulkan_scene_vulkanalia_sampled_image_material(
+            NativeVulkanSceneMaterialPassSnapshot {
+                effect_kinds: vec!["water-waves"],
+                fused_effect_kind: Some("water-waves-fused2"),
+                fused_effect_passes: vec![NativeVulkanSceneFusedEffectPassSnapshot {
+                    pass_index: 1,
+                    effect_kind: "water-waves",
+                    effect_file: Some("effects/waterwaves/effect.json".to_owned()),
+                    texture_slots: Vec::new(),
+                    texture_slot_count: 0,
+                    effect_uv_transform: None,
+                    constant_shader_values: BTreeMap::from([(
+                        "speed".to_owned(),
+                        serde_json::json!(7.0),
+                    )]),
+                    constant_shader_uniforms: Vec::new(),
+                    combo_keys: vec!["DUALWAVES".to_owned()],
+                    combo_values: BTreeMap::new(),
+                }],
+                ..scene_test_material_snapshot(Vec::new())
+            },
+        );
+        assert_eq!(
+            fused_material.fused_effect_kind,
+            Some(NativeVulkanVulkanaliaSceneFusedEffectKind::WaterWaves2)
+        );
+        assert!(fused_material.uses_elapsed_frame_constants);
+        assert_eq!(fused_material.fused_effect_passes.len(), 1);
+        assert_eq!(
+            fused_material.fused_effect_passes[0]
+                .constant_shader_values
+                .get("speed"),
+            Some(&serde_json::json!(7.0))
         );
     }
 
@@ -6830,6 +7051,23 @@ mod tests {
         assert_eq!(
             snapshot.engine_telemetry.render_graph_execution_levels,
             snapshot.draw_pass_sampled_image_we_graph_execution_level_count
+        );
+        assert!(snapshot.draw_pass_sampled_image_we_graph_semantic_target_run_count > 0);
+        assert_eq!(
+            snapshot.engine_telemetry.render_graph_semantic_target_runs,
+            snapshot.draw_pass_sampled_image_we_graph_semantic_target_run_count
+        );
+        assert_eq!(
+            snapshot
+                .engine_telemetry
+                .render_graph_semantic_offscreen_target_runs,
+            snapshot.draw_pass_sampled_image_we_graph_semantic_offscreen_target_run_count
+        );
+        assert_eq!(
+            snapshot
+                .engine_telemetry
+                .render_graph_semantic_repeated_target_runs,
+            snapshot.draw_pass_sampled_image_we_graph_semantic_repeated_target_run_count
         );
         assert_eq!(snapshot.draw_pass_sampled_image_we_graph_target_count, 2);
         assert_eq!(

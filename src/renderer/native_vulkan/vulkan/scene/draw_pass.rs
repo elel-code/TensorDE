@@ -175,6 +175,17 @@ const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_OFFSET2_OFFSET_BYTES: usize = 128
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_EXPONENT2_OFFSET_BYTES: usize = 132;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_DIRECTION2_OFFSET_BYTES: usize = 136;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_FLAGS_OFFSET_BYTES: usize = 140;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_STRENGTH_OFFSET_BYTES: usize = 144;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SPEED_OFFSET_BYTES: usize = 148;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SCALE_OFFSET_BYTES: usize = 152;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_EXPONENT_OFFSET_BYTES: usize = 156;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_DIRECTION_OFFSET_BYTES: usize = 160;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SPEED2_OFFSET_BYTES: usize = 164;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SCALE2_OFFSET_BYTES: usize = 168;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_OFFSET2_OFFSET_BYTES: usize = 172;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_EXPONENT2_OFFSET_BYTES: usize = 176;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_DIRECTION2_OFFSET_BYTES: usize = 180;
+const SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_FLAGS_OFFSET_BYTES: usize = 184;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_RADIUS_OFFSET_BYTES: usize = 124;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_WIDTH_OFFSET_BYTES: usize = 128;
 const SCENE_FULL_SAMPLED_IMAGE_PUSH_TECH_RING_SEGMENT_COUNT_OFFSET_BYTES: usize = 132;
@@ -250,6 +261,7 @@ const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_SKEW: u32 = 10;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_PASSTHROUGHBLEND: u32 = 11;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_TECHCIRCLE: u32 = 12;
 const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_AUDIOBARS: u32 = 13;
+const SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERWAVES2: u32 = 14;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_MASK: u32 = 1;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_DUAL: u32 = 2;
 const SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_TIMEOFFSET: u32 = 4;
@@ -628,6 +640,7 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageR
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSampledImageDrawCommand {
+    pub(in crate::renderer::native_vulkan::vulkan) engine_pass_id: Option<u32>,
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) material:
@@ -689,6 +702,7 @@ impl VulkanaliaSceneSampledImageDrawInstance {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaSceneSolidQuadDrawCommand {
+    pub(in crate::renderer::native_vulkan::vulkan) engine_pass_id: Option<u32>,
     pub(in crate::renderer::native_vulkan::vulkan) layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) last_layer_index: usize,
     pub(in crate::renderer::native_vulkan::vulkan) blend:
@@ -745,6 +759,7 @@ pub(in crate::renderer::native_vulkan::vulkan) enum VulkanaliaSceneSampledImageS
     Generic,
     WaterRipple,
     WaterWaves,
+    WaterWaves2,
     WaterFlow,
     WaterCaustics,
     FoliageSway,
@@ -805,6 +820,11 @@ fn native_vulkan_vulkanalia_scene_bound_pipeline_key(
 fn scene_sampled_image_shader_program(
     material: &super::present::NativeVulkanVulkanaliaSceneSampledImageMaterial,
 ) -> VulkanaliaSceneSampledImageShaderProgram {
+    if material.fused_effect_kind
+        == Some(super::present::NativeVulkanVulkanaliaSceneFusedEffectKind::WaterWaves2)
+    {
+        return VulkanaliaSceneSampledImageShaderProgram::WaterWaves2;
+    }
     if scene_sampled_image_material_uses_passthroughblend(material) {
         return VulkanaliaSceneSampledImageShaderProgram::PassthroughBlend;
     }
@@ -931,6 +951,7 @@ fn scene_sampled_image_pipeline_set(
         VulkanaliaSceneSampledImageShaderProgram::Generic => &resources.generic_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterRipple => &resources.water_ripple_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterWaves => &resources.water_waves_pipelines,
+        VulkanaliaSceneSampledImageShaderProgram::WaterWaves2 => &resources.water_waves_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterFlow => &resources.water_flow_pipelines,
         VulkanaliaSceneSampledImageShaderProgram::WaterCaustics => {
             &resources.water_caustics_pipelines
@@ -3806,8 +3827,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
 
     let solid_draw_commands: &[VulkanaliaSceneSolidQuadDrawCommand] =
         solid_quad_draw.map_or(&[], |draw| draw.draw_commands);
-    let ordered_draws =
-        native_vulkan_vulkanalia_scene_ordered_draw_steps(solid_draw_commands, draw_commands, 0, 0);
+    let ordered_draws = native_vulkan_vulkanalia_scene_ordered_draw_steps(
+        solid_draw_commands,
+        draw_commands,
+        None,
+        0,
+        0,
+    );
 
     unsafe {
         let full_viewport = SceneDynamicViewport::full_extent(extent);
@@ -4231,6 +4257,42 @@ fn scene_sampled_image_push_constant_bytes(
                 &mut push_constant_bytes,
                 SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_FLAGS_OFFSET_BYTES,
                 flags,
+            );
+        }
+        VulkanaliaSceneSampledImageShaderProgram::WaterWaves2 => {
+            scene_sampled_image_write_waterwaves_fused_pass_push_constants(
+                &mut push_constant_bytes,
+                material.fused_effect_passes.first(),
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_STRENGTH_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_SPEED_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_SCALE_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_EXPONENT_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_DIRECTION_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_SPEED2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_SCALE2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_OFFSET2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_EXPONENT2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_DIRECTION2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES_FLAGS_OFFSET_BYTES,
+                1,
+                2,
+            );
+            scene_sampled_image_write_waterwaves_fused_pass_push_constants(
+                &mut push_constant_bytes,
+                material.fused_effect_passes.get(1),
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_STRENGTH_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SPEED_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SCALE_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_EXPONENT_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_DIRECTION_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SPEED2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_SCALE2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_OFFSET2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_EXPONENT2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_DIRECTION2_OFFSET_BYTES,
+                SCENE_FULL_SAMPLED_IMAGE_PUSH_WATERWAVES2_FLAGS_OFFSET_BYTES,
+                3,
+                4,
             );
         }
         VulkanaliaSceneSampledImageShaderProgram::WaterFlow => {
@@ -5107,6 +5169,7 @@ impl VulkanaliaSceneSampledImageShaderProgram {
             Self::Generic => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_GENERIC,
             Self::WaterRipple => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERRIPPLE,
             Self::WaterWaves => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERWAVES,
+            Self::WaterWaves2 => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERWAVES2,
             Self::WaterFlow => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERFLOW,
             Self::WaterCaustics => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_WATERCAUSTICS,
             Self::FoliageSway => SCENE_SAMPLED_IMAGE_EFFECT_SHADER_CODE_FOLIAGE_SWAY,
@@ -5125,6 +5188,176 @@ impl VulkanaliaSceneSampledImageShaderProgram {
 fn scene_sampled_image_texture_resolution_uniform_slot(name: &str) -> Option<usize> {
     let slot = name.strip_prefix("g_Texture")?.strip_suffix("Resolution")?;
     slot.parse::<usize>().ok()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scene_sampled_image_write_waterwaves_fused_pass_push_constants(
+    push_constant_bytes: &mut [u8; SCENE_FULL_SAMPLED_IMAGE_PUSH_CONSTANT_BYTES as usize],
+    pass: Option<&super::present::NativeVulkanVulkanaliaSceneFusedEffectPass>,
+    strength_offset: usize,
+    speed_offset: usize,
+    scale_offset: usize,
+    exponent_offset: usize,
+    direction_offset: usize,
+    speed2_offset: usize,
+    scale2_offset: usize,
+    offset2_offset: usize,
+    exponent2_offset: usize,
+    direction2_offset: usize,
+    flags_offset: usize,
+    mask_slot: u32,
+    timeoffset_slot: u32,
+) {
+    let mut flags = 0u32;
+    if scene_sampled_image_fused_effect_pass_has_texture_slot(pass, mask_slot) {
+        flags |= SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_MASK;
+    }
+    if scene_sampled_image_fused_effect_pass_combo_enabled(pass, "DUALWAVES") {
+        flags |= SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_DUAL;
+    }
+    if scene_sampled_image_fused_effect_pass_has_texture_slot(pass, timeoffset_slot)
+        && scene_sampled_image_fused_effect_pass_combo_enabled(pass, "TIMEOFFSET")
+    {
+        flags |= SCENE_SAMPLED_IMAGE_WATERWAVES_FLAG_TIMEOFFSET;
+    }
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        strength_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["strength", "g_Strength"],
+            0.1,
+        ),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        speed_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(pass, &["speed", "g_Speed"], 5.0),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        scale_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["scale", "scale1", "g_Scale"],
+            200.0,
+        ),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        exponent_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["exponent", "g_Exponent"],
+            1.0,
+        ),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        direction_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["direction", "g_Direction"],
+            0.0,
+        ),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        speed2_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(pass, &["speed2", "g_Speed2"], 3.0),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        scale2_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(pass, &["scale2", "g_Scale2"], 66.0),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        offset2_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(pass, &["offset2", "g_Offset2"], 0.0),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        exponent2_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["exponent2", "g_Exponent2"],
+            1.0,
+        ),
+    );
+    scene_sampled_image_push_constant_f32(
+        push_constant_bytes,
+        direction2_offset,
+        scene_sampled_image_fused_effect_pass_constant_float(
+            pass,
+            &["direction2", "g_Direction2"],
+            0.0,
+        ),
+    );
+    scene_sampled_image_write_push_constant_u32(push_constant_bytes, flags_offset, flags);
+}
+
+fn scene_sampled_image_fused_effect_pass_has_texture_slot(
+    pass: Option<&super::present::NativeVulkanVulkanaliaSceneFusedEffectPass>,
+    slot: u32,
+) -> bool {
+    pass.map(|pass| pass.texture_slots.contains(&slot))
+        .unwrap_or(false)
+}
+
+fn scene_sampled_image_fused_effect_pass_constant_float(
+    pass: Option<&super::present::NativeVulkanVulkanaliaSceneFusedEffectPass>,
+    names: &[&str],
+    default_value: f32,
+) -> f32 {
+    names
+        .iter()
+        .find_map(|name| {
+            pass.and_then(|pass| {
+                scene_sampled_image_fused_effect_pass_constant_named_float(pass, name)
+            })
+        })
+        .unwrap_or(default_value)
+}
+
+fn scene_sampled_image_fused_effect_pass_constant_named_float(
+    pass: &super::present::NativeVulkanVulkanaliaSceneFusedEffectPass,
+    name: &str,
+) -> Option<f32> {
+    pass.constant_shader_uniforms
+        .iter()
+        .find(|uniform| uniform.name == name)
+        .and_then(scene_sampled_image_effect_uniform_first_float)
+        .or_else(|| {
+            pass.constant_shader_values
+                .get(name)
+                .and_then(scene_sampled_image_constant_value_float)
+        })
+}
+
+fn scene_sampled_image_fused_effect_pass_combo_enabled(
+    pass: Option<&super::present::NativeVulkanVulkanaliaSceneFusedEffectPass>,
+    key: &str,
+) -> bool {
+    pass.map(|pass| {
+        scene_sampled_image_fused_effect_pass_combo_value(pass, key)
+            .map(|value| value != 0)
+            .unwrap_or_else(|| {
+                pass.combo_keys
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(key))
+            })
+    })
+    .unwrap_or(false)
+}
+
+fn scene_sampled_image_fused_effect_pass_combo_value(
+    pass: &super::present::NativeVulkanVulkanaliaSceneFusedEffectPass,
+    key: &str,
+) -> Option<i64> {
+    pass.combo_values
+        .iter()
+        .find_map(|(candidate, value)| candidate.eq_ignore_ascii_case(key).then_some(*value))
 }
 
 fn scene_sampled_image_push_constant_f32(
@@ -5654,6 +5887,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     descriptor_heap_draw: Option<VulkanaliaSceneDescriptorHeapDrawResources<'_>>,
     pipeline_resources: &VulkanaliaSceneSampledImagePipelineResources,
     draw_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    engine_run_plan: Option<&crate::engine::render_graph::RenderGraphRunPlan>,
     effect_target_resource_base_index: usize,
     effect_target_resources: &[VulkanaliaSceneSampledImageResources],
     effect_msaa_targets: &[VulkanaliaSceneMsaaColorTarget],
@@ -5834,6 +6068,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_recor
     let ordered_draws = native_vulkan_vulkanalia_scene_ordered_draw_steps(
         solid_draw_commands,
         draw_commands,
+        engine_run_plan,
         effect_target_resource_base_index,
         effect_target_resources.len(),
     );
@@ -6690,7 +6925,7 @@ const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_PREMULTIPLIED_FRAGMENT_S
 
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERRIPPLE_FRAGMENT_SPIRV: [u32; 1688] =
     include!("shaders/sampled_image_waterripple.frag.spv.rs");
-const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 2890] =
+const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV: [u32; 4891] =
     include!("shaders/sampled_image_waterwaves.frag.spv.rs");
 const NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERFLOW_FRAGMENT_SPIRV: [u32; 1765] =
     include!("shaders/sampled_image_waterflow.frag.spv.rs");
@@ -6748,6 +6983,7 @@ mod tests {
             material.effect_kinds = vec![effect];
         }
         VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index,
             last_layer_index: layer_index,
             material,
@@ -6814,6 +7050,7 @@ mod tests {
         descriptor_group_base_index: u32,
     ) -> VulkanaliaSceneSampledImageDrawCommand {
         VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index,
             last_layer_index: layer_index,
             material: sampled_image_material(SceneBlendMode::Alpha),
@@ -6841,6 +7078,7 @@ mod tests {
         input_target_index: u32,
     ) -> VulkanaliaSceneSampledImageDrawCommand {
         VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index,
             last_layer_index: layer_index,
             material: sampled_image_material(SceneBlendMode::Alpha),
@@ -6870,6 +7108,7 @@ mod tests {
         target_index: u32,
     ) -> VulkanaliaSceneSampledImageDrawCommand {
         VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index,
             last_layer_index: layer_index,
             material: sampled_image_material(SceneBlendMode::Alpha),
@@ -7653,6 +7892,13 @@ mod tests {
             scene_sampled_image_shader_program(&material),
             VulkanaliaSceneSampledImageShaderProgram::WaterWaves
         );
+        material.fused_effect_kind =
+            Some(super::super::present::NativeVulkanVulkanaliaSceneFusedEffectKind::WaterWaves2);
+        assert_eq!(
+            scene_sampled_image_shader_program(&material),
+            VulkanaliaSceneSampledImageShaderProgram::WaterWaves2
+        );
+        material.fused_effect_kind = None;
 
         material.effect_kinds =
             vec![super::super::present::NativeVulkanVulkanaliaSceneEffectKind::WaterFlow];
@@ -8974,6 +9220,7 @@ mod tests {
     #[test]
     fn mixed_ordered_draw_steps_follow_scene_layer_order() {
         let solid_commands = [VulkanaliaSceneSolidQuadDrawCommand {
+            engine_pass_id: None,
             layer_index: 2,
             last_layer_index: 2,
             blend: blend_state(SceneBlendMode::Alpha),
@@ -8983,6 +9230,7 @@ mod tests {
         }];
         let sampled_commands = [
             VulkanaliaSceneSampledImageDrawCommand {
+                engine_pass_id: None,
                 layer_index: 1,
                 last_layer_index: 1,
                 material: sampled_image_material(SceneBlendMode::Alpha),
@@ -8998,6 +9246,7 @@ mod tests {
                 index_count: 6,
             },
             VulkanaliaSceneSampledImageDrawCommand {
+                engine_pass_id: None,
                 layer_index: 3,
                 last_layer_index: 3,
                 material: sampled_image_material(SceneBlendMode::Alpha),
@@ -9018,6 +9267,7 @@ mod tests {
         let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(
             &solid_commands,
             &sampled_commands,
+            None,
             0,
             0,
         );
@@ -9046,7 +9296,7 @@ mod tests {
         ];
 
         let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, None, 16, 2);
         let order = ordered
             .iter()
             .map(|step| (step.layer_index, step.command_index))
@@ -9065,7 +9315,7 @@ mod tests {
         ];
 
         let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 1);
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, None, 16, 1);
         let order = ordered
             .iter()
             .map(|step| (step.layer_index, step.command_index))
@@ -9084,13 +9334,212 @@ mod tests {
         ];
 
         let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, None, 16, 2);
         let order = ordered
             .iter()
             .map(|step| (step.layer_index, step.command_index))
             .collect::<Vec<_>>();
 
         assert_eq!(order, vec![(1, 1), (3, 3), (0, 0), (2, 2)]);
+    }
+
+    #[test]
+    fn ordered_draw_steps_can_consume_engine_run_plan() {
+        use crate::engine::render_graph::{
+            RenderGraphRunPlan, RenderGraphTargetRun, RenderGraphTargetRunPass, RenderPassRole,
+            RenderTargetRole,
+        };
+
+        let mut sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            effect_target_command(1, 1, 1, 16),
+            effect_target_command(2, 2, 0, 32),
+            swapchain_command_reading_effect_target(3, 3, 16, 0),
+        ];
+        for (pass_id, command) in sampled_commands.iter_mut().enumerate() {
+            command.engine_pass_id = Some(pass_id.min(u32::MAX as usize) as u32);
+        }
+        let run_plan = RenderGraphRunPlan {
+            pass_count: 4,
+            target_run_count: 3,
+            scene_color_run_count: 1,
+            offscreen_target_run_count: 2,
+            repeated_target_run_count: 0,
+            max_target_run_count: 1,
+            max_run_pass_count: 2,
+            runs: vec![
+                RenderGraphTargetRun {
+                    run_index: 0,
+                    first_level: 0,
+                    last_level: 1,
+                    target: RenderTargetRole::ImageLocalMain,
+                    target_name: Some("a".to_owned()),
+                    pass_count: 2,
+                    passes: vec![
+                        RenderGraphTargetRunPass {
+                            level: 0,
+                            pass_id: 0,
+                            role: RenderPassRole::EffectMaterial,
+                            priority: 3,
+                        },
+                        RenderGraphTargetRunPass {
+                            level: 1,
+                            pass_id: 2,
+                            role: RenderPassRole::EffectMaterial,
+                            priority: 3,
+                        },
+                    ],
+                },
+                RenderGraphTargetRun {
+                    run_index: 1,
+                    first_level: 0,
+                    last_level: 0,
+                    target: RenderTargetRole::ImageLocalSub,
+                    target_name: Some("b".to_owned()),
+                    pass_count: 1,
+                    passes: vec![RenderGraphTargetRunPass {
+                        level: 0,
+                        pass_id: 1,
+                        role: RenderPassRole::EffectMaterial,
+                        priority: 3,
+                    }],
+                },
+                RenderGraphTargetRun {
+                    run_index: 2,
+                    first_level: 2,
+                    last_level: 2,
+                    target: RenderTargetRole::SceneColor,
+                    target_name: None,
+                    pass_count: 1,
+                    passes: vec![RenderGraphTargetRunPass {
+                        level: 2,
+                        pass_id: 3,
+                        role: RenderPassRole::SceneComposite,
+                        priority: 3,
+                    }],
+                },
+            ],
+        };
+
+        let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(
+            &[],
+            &sampled_commands,
+            Some(&run_plan),
+            16,
+            2,
+        );
+        let order = ordered
+            .iter()
+            .map(|step| step.command_index)
+            .collect::<Vec<_>>();
+        let stats = native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
+            &ordered,
+            &sampled_commands,
+            2,
+        );
+
+        assert_eq!(order, vec![0, 2, 1, 3]);
+        assert_eq!(stats.ordered_target_run_count, 3);
+        assert_eq!(stats.ordered_max_target_run_draw_count, 2);
+    }
+
+    #[test]
+    fn ordered_draw_steps_can_consume_engine_run_plan_with_solid_scene_passes() {
+        use crate::engine::render_graph::{
+            RenderGraphRunPlan, RenderGraphTargetRun, RenderGraphTargetRunPass, RenderPassRole,
+            RenderTargetRole,
+        };
+
+        let solid_commands = [VulkanaliaSceneSolidQuadDrawCommand {
+            engine_pass_id: Some(2),
+            layer_index: 1,
+            last_layer_index: 1,
+            blend: blend_state(SceneBlendMode::Alpha),
+            draw_instance_index: 0,
+            first_index: 0,
+            index_count: 6,
+        }];
+        let mut sampled_commands = [
+            effect_target_command(0, 0, 0, 0),
+            swapchain_command_reading_effect_target(2, 1, 16, 0),
+        ];
+        sampled_commands[0].engine_pass_id = Some(0);
+        sampled_commands[1].engine_pass_id = Some(1);
+        let run_plan = RenderGraphRunPlan {
+            pass_count: 3,
+            target_run_count: 2,
+            scene_color_run_count: 1,
+            offscreen_target_run_count: 1,
+            repeated_target_run_count: 0,
+            max_target_run_count: 1,
+            max_run_pass_count: 2,
+            runs: vec![
+                RenderGraphTargetRun {
+                    run_index: 0,
+                    first_level: 0,
+                    last_level: 0,
+                    target: RenderTargetRole::ImageLocalMain,
+                    target_name: Some("a".to_owned()),
+                    pass_count: 1,
+                    passes: vec![RenderGraphTargetRunPass {
+                        level: 0,
+                        pass_id: 0,
+                        role: RenderPassRole::EffectMaterial,
+                        priority: 3,
+                    }],
+                },
+                RenderGraphTargetRun {
+                    run_index: 1,
+                    first_level: 1,
+                    last_level: 2,
+                    target: RenderTargetRole::SceneColor,
+                    target_name: None,
+                    pass_count: 2,
+                    passes: vec![
+                        RenderGraphTargetRunPass {
+                            level: 1,
+                            pass_id: 2,
+                            role: RenderPassRole::SceneComposite,
+                            priority: 3,
+                        },
+                        RenderGraphTargetRunPass {
+                            level: 2,
+                            pass_id: 1,
+                            role: RenderPassRole::SceneComposite,
+                            priority: 3,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let ordered = native_vulkan_vulkanalia_scene_ordered_draw_steps(
+            &solid_commands,
+            &sampled_commands,
+            Some(&run_plan),
+            16,
+            1,
+        );
+        let order = ordered
+            .iter()
+            .map(|step| (step.pipeline.label(), step.command_index))
+            .collect::<Vec<_>>();
+        let stats = native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
+            &ordered,
+            &sampled_commands,
+            1,
+        );
+
+        assert_eq!(
+            order,
+            vec![
+                ("sampled-image", 0),
+                ("solid-quad", 0),
+                ("sampled-image", 1)
+            ]
+        );
+        assert_eq!(stats.ordered_target_run_count, 2);
+        assert_eq!(stats.ordered_max_target_run_draw_count, 2);
     }
 
     #[test]
@@ -9102,7 +9551,7 @@ mod tests {
         ];
 
         let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, None, 16, 2);
         let order = ordered
             .iter()
             .map(|step| (step.layer_index, step.command_index))
@@ -9121,7 +9570,7 @@ mod tests {
         ];
 
         let ordered =
-            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, 16, 2);
+            native_vulkan_vulkanalia_scene_ordered_draw_steps(&[], &sampled_commands, None, 16, 2);
         let stats = native_vulkan_vulkanalia_scene_ordered_draw_target_stats(
             &ordered,
             &sampled_commands,
@@ -9240,7 +9689,7 @@ mod tests {
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
                 &NATIVE_VULKAN_VULKANALIA_SCENE_FULL_SAMPLED_IMAGE_WATERWAVES_FRAGMENT_SPIRV
             ),
-            11560
+            19564
         );
         assert_eq!(
             native_vulkan_vulkanalia_scene_shader_code_size_bytes(
@@ -9340,23 +9789,25 @@ mod tests {
     fn sampled_image_waterwaves_uses_layer_uv_basis_for_expanded_targets() {
         let source = include_str!("shaders/sampled_image_waterwaves.frag");
         assert!(source.contains("bool effect_uv_inside(vec2 uv)"));
-        assert!(source.contains("vec2 source_coord = v_uv;"));
-        assert!(source.contains("vec2 tex_coord_motion = v_effect_uv;"));
-        assert!(source.contains("vec2 mask_uv = v_effect_uv;"));
-        assert!(source.contains("float waterwaves_mask_sample("));
-        assert!(source.contains("float waterwaves_timeoffset_sample("));
+        assert!(source.contains("vec4 sample_single_waterwaves()"));
+        assert!(source.contains("vec4 sample_fused_waterwaves2()"));
+        assert!(source.contains("float pass1_mask_sample("));
+        assert!(source.contains("float pass1_timeoffset_sample("));
+        assert!(source.contains("float pass2_mask_sample("));
+        assert!(source.contains("float pass2_timeoffset_sample("));
         assert!(source.contains("source_alpha_at(source_coord, cached_source_alpha) <= 0.001"));
         assert!(source.contains("texture(g_Texture1, clamp(uv, vec2(0.0), vec2(1.0))).r"));
         assert!(source.contains("vec2 target_uv_per_layer_uv()"));
         assert!(source.contains("dFdx(v_effect_uv.x)"));
+        assert!(
+            source.contains("vec2 offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha);")
+        );
+        assert!(source.contains("vec2 source_coord = v_uv + offset * target_uv_per_layer_uv();"));
         assert!(source.contains(
-            "mask = waterwaves_mask_sample(mask_uv, source_coord, cached_source_alpha);"
+            "vec2 pass1_output_offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha_at_output);"
         ));
-        assert!(source.contains(
-            "waterwaves_timeoffset_sample(mask_uv, source_coord, cached_source_alpha) * M_PI_2"
-        ));
-        assert!(source.contains("vec2 layer_uv_offset = val * offset * strength * mask;"));
-        assert!(source.contains("source_coord += layer_uv_offset * target_uv_per_layer_uv();"));
+        assert!(source.contains("vec2 intermediate_coord = v_uv + pass2_offset * target_scale;"));
+        assert!(source.contains("pc.effect_shader_code == EFFECT_SHADER_CODE_WATERWAVES2"));
     }
 
     #[test]

@@ -124,7 +124,8 @@ impl NativeVulkanSceneDrawPassBuild {
             .filter_map(|op| native_vulkan_scene_recordable_quad(op, draw_plan.snapshot_time_ms))
             .collect::<Vec<_>>();
         let recordable_op_count = recordable_quads.len();
-        let quad_recording_payload = native_vulkan_scene_quad_recording_payload(&recordable_quads);
+        let mut quad_recording_payload =
+            native_vulkan_scene_quad_recording_payload(&recordable_quads);
         let recorded_path_geometry_count = quad_recording_payload
             .steps
             .iter()
@@ -146,14 +147,15 @@ impl NativeVulkanSceneDrawPassBuild {
             .iter()
             .filter_map(native_vulkan_scene_sampled_image_quad)
             .collect::<Vec<_>>();
-        let sampled_image_we_graph_plan =
+        let mut sampled_image_we_graph_plan =
             native_vulkan_scene_we_image_graph_plan(&sampled_image_quads);
         let sampled_image_recording_payload = native_vulkan_scene_sampled_image_recording_payload(
             &sampled_image_quads,
             (!draw_plan.dynamic_topology_required)
                 .then_some(draw_plan.scene_size)
                 .flatten(),
-            &sampled_image_we_graph_plan,
+            &mut sampled_image_we_graph_plan,
+            &mut quad_recording_payload.steps,
         );
         let sampled_image_recording_ready = sampled_image_op_count > 0
             && sampled_image_recording_payload.recordable_quad_count == sampled_image_op_count;

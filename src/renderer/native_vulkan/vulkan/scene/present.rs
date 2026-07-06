@@ -294,6 +294,7 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
     pub we_graph_execution_pass_count: u32,
     pub we_graph_execution_dependency_count: u32,
     pub we_graph_execution_level_count: u32,
+    pub we_graph_run_plan: Option<crate::engine::render_graph::RenderGraphRunPlan>,
     pub puppet_gpu_payloads: Vec<NativeVulkanVulkanaliaScenePuppetGpuPayload>,
     pub puppet_gpu_poses: Vec<NativeVulkanVulkanaliaScenePuppetGpuPosePayload>,
     pub particle_gpu_payloads: Vec<NativeVulkanVulkanaliaSceneParticleGpuPayload>,
@@ -675,6 +676,32 @@ impl NativeVulkanVulkanaliaSceneEffectKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanVulkanaliaSceneFusedEffectKind {
+    WaterWaves2,
+}
+
+impl NativeVulkanVulkanaliaSceneFusedEffectKind {
+    pub fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "water-waves-fused2" => Some(Self::WaterWaves2),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::WaterWaves2 => "water-waves-fused2",
+        }
+    }
+
+    pub fn uses_elapsed_frame_constants(self) -> bool {
+        match self {
+            Self::WaterWaves2 => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneEffectUniform {
     pub name: String,
@@ -763,6 +790,17 @@ impl NativeVulkanVulkanaliaSceneEffectUniform {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaSceneFusedEffectPass {
+    pub pass_index: usize,
+    pub effect_kind: NativeVulkanVulkanaliaSceneEffectKind,
+    pub texture_slots: Vec<u32>,
+    pub constant_shader_values: BTreeMap<String, Value>,
+    pub constant_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
+    pub combo_keys: Vec<String>,
+    pub combo_values: BTreeMap<String, i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub kind: NativeVulkanVulkanaliaSceneSampledImageMaterialKind,
     pub shader: Option<String>,
@@ -773,6 +811,8 @@ pub struct NativeVulkanVulkanaliaSceneSampledImageMaterial {
     pub texture_slot_count: usize,
     pub uses_elapsed_frame_constants: bool,
     pub effect_kinds: Vec<NativeVulkanVulkanaliaSceneEffectKind>,
+    pub fused_effect_kind: Option<NativeVulkanVulkanaliaSceneFusedEffectKind>,
+    pub fused_effect_passes: Vec<NativeVulkanVulkanaliaSceneFusedEffectPass>,
     pub constant_shader_values: BTreeMap<String, Value>,
     pub constant_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
     pub system_shader_uniforms: Vec<NativeVulkanVulkanaliaSceneEffectUniform>,
@@ -802,6 +842,8 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             texture_slot_count,
             uses_elapsed_frame_constants: false,
             effect_kinds: Vec::new(),
+            fused_effect_kind: None,
+            fused_effect_passes: Vec::new(),
             constant_shader_values: Default::default(),
             constant_shader_uniforms: Vec::new(),
             system_shader_uniforms: Vec::new(),
@@ -824,8 +866,12 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             label.push(']');
             label
         };
+        let fused_effect = self
+            .fused_effect_kind
+            .map(|kind| kind.as_str())
+            .unwrap_or("<none>");
         format!(
-            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} constants={} uniforms={} system_uniforms={} elapsed_frame_constants={} effects={} pipeline={}",
+            "kind={} shader={} blending={} blend={:?} equation=color={}*src {} {}*dst/alpha={}*src {} {}*dst alpha_slot={:?} mode={} depth_test={} depth_write={} cull={} texture_slots={} constants={} uniforms={} system_uniforms={} elapsed_frame_constants={} effects={} fused_effect={} fused_passes={} pipeline={}",
             self.kind.as_str(),
             self.shader.as_deref().unwrap_or("<none>"),
             self.blending.as_deref().unwrap_or("<none>"),
@@ -847,6 +893,8 @@ impl NativeVulkanVulkanaliaSceneSampledImageMaterial {
             self.system_shader_uniforms.len(),
             self.uses_elapsed_frame_constants,
             effect_kinds,
+            fused_effect,
+            self.fused_effect_passes.len(),
             self.render_state.sampled_image_pipeline_label(),
         )
     }
@@ -875,6 +923,7 @@ fn scene_texture_slot_resource_bindings(
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+    pub engine_pass_id: Option<u32>,
     pub layer_index: usize,
     pub first_vertex: u32,
     pub vertex_count: u32,
@@ -898,6 +947,7 @@ pub struct NativeVulkanVulkanaliaSceneVideoLayerDrawStep {
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+    pub engine_pass_id: Option<u32>,
     pub layer_index: usize,
     pub first_index: u32,
     pub index_count: u32,
@@ -939,12 +989,14 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
             sampled_layer_poses: Vec::new(),
             sampled_layer_pose_timeline: None,
             draw_steps: vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: 0,
                 first_vertex: 0,
                 vertex_count,
@@ -981,6 +1033,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -1008,6 +1061,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -1036,6 +1090,7 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: Vec::new(),
@@ -1057,6 +1112,14 @@ impl NativeVulkanVulkanaliaSceneSampledImageGeometryInput {
         self.we_graph_execution_level_count = level_count;
         self
     }
+
+    pub fn with_we_graph_run_plan(
+        mut self,
+        run_plan: Option<crate::engine::render_graph::RenderGraphRunPlan>,
+    ) -> Self {
+        self.we_graph_run_plan = run_plan;
+        self
+    }
 }
 
 impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
@@ -1070,6 +1133,7 @@ impl NativeVulkanVulkanaliaSceneSolidQuadGeometryInput {
             vertices,
             indices,
             vec![NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: None,
                 layer_index: 0,
                 first_index: 0,
                 index_count,
@@ -1332,6 +1396,7 @@ struct VulkanaliaSceneSampledImageGeometryResources {
     index_buffer: vk::Buffer,
     index_memory: vk::DeviceMemory,
     draw_steps: Vec<NativeVulkanVulkanaliaSceneSampledImageDrawStep>,
+    we_graph_run_plan: Option<crate::engine::render_graph::RenderGraphRunPlan>,
     effect_targets: Vec<NativeVulkanVulkanaliaSceneSampledImageEffectTarget>,
     effect_target_resource_base: usize,
     effect_target_count: usize,
@@ -1683,6 +1748,7 @@ struct VulkanaliaSceneSampledImageGeometryPayload {
     we_graph_execution_pass_count: u32,
     we_graph_execution_dependency_count: u32,
     we_graph_execution_level_count: u32,
+    we_graph_run_plan: Option<crate::engine::render_graph::RenderGraphRunPlan>,
     puppet_gpu_payload_count: u32,
     puppet_gpu_payload_vertex_count: u32,
     puppet_gpu_payload_index_count: u32,
@@ -3868,6 +3934,7 @@ fn run_scene_sampled_image_present_loop(
                 descriptor_heap_draw,
                 pipeline,
                 draw_commands,
+                geometry.we_graph_run_plan.as_ref(),
                 effect_target_resource_base,
                 effect_target_resources,
                 &effect_msaa_target_views,
@@ -5122,6 +5189,7 @@ fn run_scene_sampled_image_present_loop_release_static_sources(
             descriptor_heap_draw,
             &pipeline,
             draw_commands,
+            geometry.we_graph_run_plan.as_ref(),
             effect_target_resource_base,
             effect_target_resources,
             &effect_msaa_target_views,
@@ -6540,6 +6608,7 @@ fn create_scene_sampled_image_geometry_resources(
             && !scene_sampled_image_draw_steps_use_elapsed_time(&payload.draw_steps);
     let draw_step_count = payload.draw_steps.len().min(u32::MAX as usize) as u32;
     let draw_steps = payload.draw_steps;
+    let we_graph_run_plan = payload.we_graph_run_plan;
     let effect_target_count = payload.effect_target_count;
     let effect_targets = payload.effect_targets;
     Ok(VulkanaliaSceneSampledImageGeometryResources {
@@ -6558,6 +6627,7 @@ fn create_scene_sampled_image_geometry_resources(
         index_buffer: index.buffer,
         index_memory: index.memory,
         draw_steps,
+        we_graph_run_plan,
         effect_targets,
         effect_target_resource_base,
         effect_target_count: effect_target_count_usize,
@@ -8083,6 +8153,7 @@ fn scene_video_layer_geometry_payload(
             .draw_steps
             .into_iter()
             .map(|step| NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: step.layer_index,
                 first_vertex: 0,
                 vertex_count,
@@ -8729,6 +8800,7 @@ fn scene_sampled_image_draw_commands_for_count(
             )
         };
         let command = VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: step.engine_pass_id,
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
             material: step.material.clone(),
@@ -8766,6 +8838,8 @@ fn scene_sampled_image_draw_commands_can_merge(
     next: &VulkanaliaSceneSampledImageDrawCommand,
 ) -> bool {
     previous.last_layer_index.saturating_add(1) == next.layer_index
+        && previous.engine_pass_id.is_none()
+        && next.engine_pass_id.is_none()
         && previous.material == next.material
         && previous.descriptor_binding == next.descriptor_binding
         && previous.render_target == next.render_target
@@ -8860,6 +8934,7 @@ fn scene_solid_quad_draw_commands(
             ));
         }
         let command = VulkanaliaSceneSolidQuadDrawCommand {
+            engine_pass_id: step.engine_pass_id,
             layer_index: step.layer_index,
             last_layer_index: step.layer_index,
             blend: step.blend,
@@ -8886,6 +8961,9 @@ fn scene_solid_quad_draw_commands_can_merge(
     previous: &VulkanaliaSceneSolidQuadDrawCommand,
     next: &VulkanaliaSceneSolidQuadDrawCommand,
 ) -> bool {
+    if previous.engine_pass_id.is_some() || next.engine_pass_id.is_some() {
+        return false;
+    }
     previous.last_layer_index.saturating_add(1) == next.layer_index
         && previous.blend == next.blend
         && previous.draw_instance_index == next.draw_instance_index
@@ -9087,6 +9165,7 @@ fn scene_sampled_image_geometry_payload_from_input(
     let we_graph_execution_pass_count = input.we_graph_execution_pass_count;
     let we_graph_execution_dependency_count = input.we_graph_execution_dependency_count;
     let we_graph_execution_level_count = input.we_graph_execution_level_count;
+    let we_graph_run_plan = input.we_graph_run_plan;
     for (step_index, step) in input.draw_steps.iter().enumerate() {
         let _ = scene_sampled_image_draw_step_primary_resource_index(step, step_index)?;
         if step.index_count == 0 {
@@ -9237,6 +9316,7 @@ fn scene_sampled_image_geometry_payload_from_input(
         we_graph_execution_pass_count,
         we_graph_execution_dependency_count,
         we_graph_execution_level_count,
+        we_graph_run_plan,
         puppet_gpu_payload_count,
         puppet_gpu_payload_vertex_count,
         puppet_gpu_payload_index_count,
@@ -10392,18 +10472,21 @@ mod tests {
         let commands = scene_solid_quad_draw_commands(
             &[
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 4,
                     first_index: 0,
                     index_count: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
                 },
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 5,
                     first_index: 6,
                     index_count: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
                 },
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 6,
                     first_index: 12,
                     index_count: 12,
@@ -10417,6 +10500,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![VulkanaliaSceneSolidQuadDrawCommand {
+                engine_pass_id: None,
                 layer_index: 4,
                 last_layer_index: 6,
                 blend: blend_state(SceneBlendMode::Alpha),
@@ -10432,18 +10516,21 @@ mod tests {
         let commands = scene_solid_quad_draw_commands(
             &[
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 4,
                     first_index: 0,
                     index_count: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
                 },
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 6,
                     first_index: 6,
                     index_count: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
                 },
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 7,
                     first_index: 24,
                     index_count: 6,
@@ -10458,6 +10545,7 @@ mod tests {
             commands,
             vec![
                 VulkanaliaSceneSolidQuadDrawCommand {
+                    engine_pass_id: None,
                     layer_index: 4,
                     last_layer_index: 4,
                     blend: blend_state(SceneBlendMode::Alpha),
@@ -10466,6 +10554,7 @@ mod tests {
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
+                    engine_pass_id: None,
                     layer_index: 6,
                     last_layer_index: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
@@ -10474,6 +10563,7 @@ mod tests {
                     index_count: 6,
                 },
                 VulkanaliaSceneSolidQuadDrawCommand {
+                    engine_pass_id: None,
                     layer_index: 7,
                     last_layer_index: 7,
                     blend: blend_state(SceneBlendMode::Alpha),
@@ -10490,12 +10580,14 @@ mod tests {
         let commands = scene_solid_quad_draw_commands(
             &[
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 4,
                     first_index: 0,
                     index_count: 6,
                     blend: blend_state(SceneBlendMode::Alpha),
                 },
                 NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: None,
                     layer_index: 5,
                     first_index: 6,
                     index_count: 6,
@@ -10512,10 +10604,39 @@ mod tests {
     }
 
     #[test]
+    fn solid_quad_draw_commands_keep_engine_pass_identity_separate() {
+        let commands = scene_solid_quad_draw_commands(
+            &[
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: Some(10),
+                    layer_index: 4,
+                    first_index: 0,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+                NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                    engine_pass_id: Some(11),
+                    layer_index: 5,
+                    first_index: 6,
+                    index_count: 6,
+                    blend: blend_state(SceneBlendMode::Alpha),
+                },
+            ],
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(commands.len(), 2);
+        assert_eq!(commands[0].engine_pass_id, Some(10));
+        assert_eq!(commands[1].engine_pass_id, Some(11));
+    }
+
+    #[test]
     fn sampled_image_draw_commands_merge_same_resource_contiguous_ranges() {
         let commands = scene_sampled_image_draw_commands_for_count(
             &[
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 10,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -10533,6 +10654,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 11,
                     first_vertex: 4,
                     vertex_count: 4,
@@ -10561,6 +10683,7 @@ mod tests {
         assert_eq!(
             commands,
             vec![VulkanaliaSceneSampledImageDrawCommand {
+                engine_pass_id: None,
                 layer_index: 10,
                 last_layer_index: 11,
                 material: sampled_image_material(
@@ -10586,6 +10709,7 @@ mod tests {
     #[test]
     fn sampled_image_command_buffer_reuse_allows_static_effect_targets() {
         let commands = vec![VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index: 10,
             last_layer_index: 10,
             material: sampled_image_material(
@@ -10622,6 +10746,7 @@ mod tests {
         );
         material.uses_elapsed_frame_constants = true;
         let commands = vec![VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index: 10,
             last_layer_index: 10,
             material,
@@ -10726,6 +10851,7 @@ mod tests {
     fn sampled_image_descriptor_slot_plan_preserves_sparse_texture_slots() {
         let steps = vec![
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: 10,
                 first_vertex: 0,
                 vertex_count: 4,
@@ -10743,6 +10869,7 @@ mod tests {
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
             },
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: 11,
                 first_vertex: 4,
                 vertex_count: 4,
@@ -10760,6 +10887,7 @@ mod tests {
                 render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
             },
             NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: 12,
                 first_vertex: 8,
                 vertex_count: 4,
@@ -10799,6 +10927,7 @@ mod tests {
     fn sampled_image_descriptor_slot_plan_rejects_missing_alpha_slot_resource() {
         let err = scene_sampled_image_descriptor_slot_plan(
             &[NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                 layer_index: 10,
                 first_vertex: 0,
                 vertex_count: 4,
@@ -10827,6 +10956,7 @@ mod tests {
         let commands = scene_sampled_image_draw_commands_for_count(
             &[
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 10,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -10844,6 +10974,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 11,
                     first_vertex: 4,
                     vertex_count: 4,
@@ -10891,6 +11022,7 @@ mod tests {
         let commands = scene_sampled_image_draw_commands_for_count(
             &[
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 10,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -10908,6 +11040,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 11,
                     first_vertex: 4,
                     vertex_count: 4,
@@ -11288,6 +11421,7 @@ mod tests {
                 }],
                 vec![
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                        engine_pass_id: None,
                         layer_index: 7,
                         first_vertex: 0,
                         vertex_count: 3,
@@ -11309,6 +11443,7 @@ mod tests {
                             },
                     },
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                        engine_pass_id: None,
                         layer_index: 7,
                         first_vertex: 3,
                         vertex_count: 3,
@@ -11500,6 +11635,7 @@ mod tests {
                 ],
                 vec![
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                         layer_index: 7,
                         first_vertex: 0,
                         vertex_count: 3,
@@ -11521,6 +11657,7 @@ mod tests {
                             },
                     },
                     NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                engine_pass_id: None,
                         layer_index: 7,
                         first_vertex: 3,
                         vertex_count: 3,
@@ -11582,6 +11719,7 @@ mod tests {
     #[test]
     fn sampled_image_animated_atlas_uses_draw_instance_not_vertex_upload() {
         let static_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             layer_index: 0,
             first_vertex: 0,
             vertex_count: 4,
@@ -11599,6 +11737,7 @@ mod tests {
             render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
         }];
         let animated_steps = [NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             texture_region: Some(SceneTextureRegion {
                 u_min: 0.0,
                 v_min: 0.0,
@@ -11627,6 +11766,7 @@ mod tests {
     #[test]
     fn sampled_image_layer_pose_uses_draw_instance_delta_not_vertex_upload() {
         let step = NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             layer_index: 5,
             first_vertex: 0,
             vertex_count: 4,
@@ -11697,6 +11837,7 @@ mod tests {
             ],
             vec![0, 1, 2, 2, 3, 0],
             vec![NativeVulkanVulkanaliaSceneSolidQuadDrawStep {
+                engine_pass_id: None,
                 layer_index: 5,
                 first_index: 0,
                 index_count: 6,
@@ -11776,6 +11917,7 @@ mod tests {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: vec![NativeVulkanVulkanaliaScenePuppetGpuPayload {
                 layer_index: 7,
                 layer_id: "puppet".to_owned(),
@@ -11830,6 +11972,7 @@ mod tests {
             sampled_layer_pose_timeline: None,
             draw_steps: vec![
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 0,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -11842,6 +11985,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 7,
                     first_vertex: 4,
                     vertex_count: 3,
@@ -11926,6 +12070,7 @@ mod tests {
             we_graph_execution_pass_count: 0,
             we_graph_execution_dependency_count: 0,
             we_graph_execution_level_count: 0,
+            we_graph_run_plan: None,
             puppet_gpu_payloads: Vec::new(),
             puppet_gpu_poses: Vec::new(),
             particle_gpu_payloads: vec![NativeVulkanVulkanaliaSceneParticleGpuPayload {
@@ -11945,6 +12090,7 @@ mod tests {
             sampled_layer_pose_timeline: None,
             draw_steps: vec![
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 0,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -11957,6 +12103,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 7,
                     first_vertex: 4,
                     vertex_count: 4,
@@ -12125,6 +12272,7 @@ mod tests {
             vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")],
             vec![
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 0,
                     first_vertex: 0,
                     vertex_count: 4,
@@ -12142,6 +12290,7 @@ mod tests {
                     render_target: NativeVulkanVulkanaliaSceneSampledImageRenderTarget::Swapchain,
                 },
                 NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+                    engine_pass_id: None,
                     layer_index: 1,
                     first_vertex: 4,
                     vertex_count: 4,
@@ -12191,6 +12340,7 @@ mod tests {
         );
         ripple_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterRipple];
         let steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             layer_index: 0,
             first_vertex: 0,
             vertex_count: 4,
@@ -12229,6 +12379,7 @@ mod tests {
         );
         caustics_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterCaustics];
         let caustics_steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             layer_index: 0,
             first_vertex: 0,
             vertex_count: 4,
@@ -12284,6 +12435,7 @@ mod tests {
         );
         waves_material.effect_kinds = vec![NativeVulkanVulkanaliaSceneEffectKind::WaterWaves];
         let steps = vec![NativeVulkanVulkanaliaSceneSampledImageDrawStep {
+            engine_pass_id: None,
             layer_index: 0,
             first_vertex: 0,
             vertex_count: 4,

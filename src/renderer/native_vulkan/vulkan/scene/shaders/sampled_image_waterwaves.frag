@@ -1,12 +1,8 @@
 #version 450
 
-// reverse-engineered reference: WallpaperEngine effects/waterwaves keeps
-// geometry fixed, computes one or two sine-wave UV offsets in fragment space,
-// optionally gates them by mask/time-offset textures, then samples g_Texture0.
-// Gilder may enlarge a graph target to retain puppet overhang. v_uv samples
-// that enlarged target. v_effect_uv carries WE's logical a_TexCoord basis after
-// Gilder has applied the texture-resolution transform for authored masks, so it
-// drives phase/mask and must be converted back before offsetting the target UV.
+// WaterWaves effect-family shader. Normal WaterWaves runs one WE pass; graph
+// lowering may mark adjacent WaterWaves passes as WaterWaves2, which reuses this
+// pipeline and executes the two-pass UV dependency in one fragment invocation.
 
 layout(location = 0) in vec2 v_uv;
 layout(location = 1) in vec2 v_effect_uv;
@@ -19,6 +15,8 @@ layout(location = 0) out vec4 out_color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
 layout(set = 0, binding = 2) uniform sampler2D g_Texture2;
+layout(set = 0, binding = 3) uniform sampler2D g_Texture3;
+layout(set = 0, binding = 4) uniform sampler2D g_Texture4;
 
 layout(push_constant) uniform ScenePush {
     layout(offset = 0) vec2 extent;
@@ -40,14 +38,40 @@ layout(push_constant) uniform ScenePush {
     layout(offset = 132) float waterwaves_exponent2;
     layout(offset = 136) float waterwaves_direction2;
     layout(offset = 140) uint waterwaves_flags;
+    layout(offset = 144) float waterwaves2_strength;
+    layout(offset = 148) float waterwaves2_speed;
+    layout(offset = 152) float waterwaves2_scale;
+    layout(offset = 156) float waterwaves2_exponent;
+    layout(offset = 160) float waterwaves2_direction;
+    layout(offset = 164) float waterwaves2_speed2;
+    layout(offset = 168) float waterwaves2_scale2;
+    layout(offset = 172) float waterwaves2_offset2;
+    layout(offset = 176) float waterwaves2_exponent2;
+    layout(offset = 180) float waterwaves2_direction2;
+    layout(offset = 184) uint waterwaves2_flags;
     layout(offset = 228) uint output_flags;
 } pc;
 
 const uint WATERWAVES_FLAG_MASK = 1u;
 const uint WATERWAVES_FLAG_DUAL = 2u;
 const uint WATERWAVES_FLAG_TIMEOFFSET = 4u;
+const uint EFFECT_SHADER_CODE_WATERWAVES2 = 14u;
 const uint OUTPUT_FLAG_PREMULTIPLY_RGB = 1u;
 const float M_PI_2 = 6.28318530718;
+
+struct WaterWavesParams {
+    float strength;
+    float speed;
+    float scale;
+    float exponent;
+    float direction_angle;
+    float speed2;
+    float scale2;
+    float offset2;
+    float exponent2;
+    float direction2_angle;
+    uint flags;
+};
 
 vec2 rotate_up(float radians) {
     return vec2(-sin(radians), cos(radians));
@@ -82,7 +106,7 @@ float source_alpha_at(vec2 source_coord, inout float cached_alpha) {
     return cached_alpha;
 }
 
-float waterwaves_mask_sample(vec2 uv, vec2 source_coord, inout float cached_source_alpha) {
+float pass1_mask_sample(vec2 uv, vec2 source_coord, inout float cached_source_alpha) {
     if (effect_uv_inside(uv)) {
         return texture(g_Texture1, uv).r;
     }
@@ -92,7 +116,7 @@ float waterwaves_mask_sample(vec2 uv, vec2 source_coord, inout float cached_sour
     return texture(g_Texture1, clamp(uv, vec2(0.0), vec2(1.0))).r;
 }
 
-float waterwaves_timeoffset_sample(vec2 uv, vec2 source_coord, inout float cached_source_alpha) {
+float pass1_timeoffset_sample(vec2 uv, vec2 source_coord, inout float cached_source_alpha) {
     if (effect_uv_inside(uv)) {
         return texture(g_Texture2, uv).r;
     }
@@ -100,6 +124,26 @@ float waterwaves_timeoffset_sample(vec2 uv, vec2 source_coord, inout float cache
         return 0.0;
     }
     return texture(g_Texture2, clamp(uv, vec2(0.0), vec2(1.0))).r;
+}
+
+float pass2_mask_sample(vec2 uv, float cached_temp_alpha) {
+    if (effect_uv_inside(uv)) {
+        return texture(g_Texture3, uv).r;
+    }
+    if (cached_temp_alpha <= 0.001) {
+        return 0.0;
+    }
+    return texture(g_Texture3, clamp(uv, vec2(0.0), vec2(1.0))).r;
+}
+
+float pass2_timeoffset_sample(vec2 uv, float cached_temp_alpha) {
+    if (effect_uv_inside(uv)) {
+        return texture(g_Texture4, uv).r;
+    }
+    if (cached_temp_alpha <= 0.001) {
+        return 0.0;
+    }
+    return texture(g_Texture4, clamp(uv, vec2(0.0), vec2(1.0))).r;
 }
 
 float uv_axis_scale(float target_dx, float target_dy, float effect_dx, float effect_dy) {
@@ -117,47 +161,110 @@ vec2 target_uv_per_layer_uv() {
     );
 }
 
-void main() {
-    vec2 source_coord = v_uv;
-    vec2 tex_coord_motion = v_effect_uv;
-    vec2 mask_uv = v_effect_uv;
-    float cached_source_alpha = -1.0;
+WaterWavesParams pass1_params() {
+    WaterWavesParams params;
+    params.strength = pc.waterwaves_strength;
+    params.speed = pc.waterwaves_speed;
+    params.scale = pc.waterwaves_scale;
+    params.exponent = pc.waterwaves_exponent;
+    params.direction_angle = pc.waterwaves_direction;
+    params.speed2 = pc.waterwaves_speed2;
+    params.scale2 = pc.waterwaves_scale2;
+    params.offset2 = pc.waterwaves_offset2;
+    params.exponent2 = pc.waterwaves_exponent2;
+    params.direction2_angle = pc.waterwaves_direction2;
+    params.flags = pc.waterwaves_flags;
+    return params;
+}
 
-    float mask = 1.0;
-    if ((pc.waterwaves_flags & WATERWAVES_FLAG_MASK) != 0u
-        && (pc.texture_resolution_mask & (1u << 1)) != 0u) {
-        // Gilder can enlarge image-local EffectTargets to hold retained puppet
-        // overhang. Empty synthetic padding must not smear a nonzero border
-        // mask, but real overhanging mesh pixels still need WE's clamp-to-edge
-        // sampler behavior; source alpha separates those two cases.
-        mask = waterwaves_mask_sample(mask_uv, source_coord, cached_source_alpha);
-    }
+WaterWavesParams pass2_params() {
+    WaterWavesParams params;
+    params.strength = pc.waterwaves2_strength;
+    params.speed = pc.waterwaves2_speed;
+    params.scale = pc.waterwaves2_scale;
+    params.exponent = pc.waterwaves2_exponent;
+    params.direction_angle = pc.waterwaves2_direction;
+    params.speed2 = pc.waterwaves2_speed2;
+    params.scale2 = pc.waterwaves2_scale2;
+    params.offset2 = pc.waterwaves2_offset2;
+    params.exponent2 = pc.waterwaves2_exponent2;
+    params.direction2_angle = pc.waterwaves2_direction2;
+    params.flags = pc.waterwaves2_flags;
+    return params;
+}
 
-    float time_offset = 0.0;
-    if ((pc.waterwaves_flags & WATERWAVES_FLAG_TIMEOFFSET) != 0u
-        && (pc.texture_resolution_mask & (1u << 2)) != 0u) {
-        time_offset =
-            waterwaves_timeoffset_sample(mask_uv, source_coord, cached_source_alpha) * M_PI_2;
-    }
-
-    vec2 direction = rotate_up(pc.waterwaves_direction);
-    float distance = v_time_seconds * pc.waterwaves_speed
-        + dot(tex_coord_motion, direction) * pc.waterwaves_scale
+vec2 waterwaves_layer_offset(vec2 tex_coord_motion, WaterWavesParams params, float mask, float time_offset) {
+    vec2 direction = rotate_up(params.direction_angle);
+    float distance = v_time_seconds * params.speed
+        + dot(tex_coord_motion, direction) * params.scale
         + time_offset;
-    float strength = pc.waterwaves_strength * pc.waterwaves_strength;
+    float strength = params.strength * params.strength;
     vec2 offset = vec2(direction.y, -direction.x);
-    float val = signed_pow_sin(distance, pc.waterwaves_exponent);
+    float val = signed_pow_sin(distance, params.exponent);
 
-    if ((pc.waterwaves_flags & WATERWAVES_FLAG_DUAL) != 0u) {
-        vec2 direction2 = rotate_up(pc.waterwaves_direction2);
-        float distance2 = (v_time_seconds + pc.waterwaves_offset2)
-            * pc.waterwaves_speed2
-            + dot(tex_coord_motion, direction2) * pc.waterwaves_scale2
+    if ((params.flags & WATERWAVES_FLAG_DUAL) != 0u) {
+        vec2 direction2 = rotate_up(params.direction2_angle);
+        float distance2 = (v_time_seconds + params.offset2)
+            * params.speed2
+            + dot(tex_coord_motion, direction2) * params.scale2
             + time_offset;
-        val *= signed_pow_sin(distance2, pc.waterwaves_exponent2);
+        val *= signed_pow_sin(distance2, params.exponent2);
     }
 
-    vec2 layer_uv_offset = val * offset * strength * mask;
-    source_coord += layer_uv_offset * target_uv_per_layer_uv();
-    out_color = finalize_output(apply_vertex_color(texture(g_Texture0, source_coord)));
+    return val * offset * strength * mask;
+}
+
+vec2 pass1_layer_offset(vec2 effect_uv, vec2 source_coord, inout float cached_source_alpha) {
+    WaterWavesParams params = pass1_params();
+    float mask = 1.0;
+    if ((params.flags & WATERWAVES_FLAG_MASK) != 0u) {
+        mask = pass1_mask_sample(effect_uv, source_coord, cached_source_alpha);
+    }
+    float time_offset = 0.0;
+    if ((params.flags & WATERWAVES_FLAG_TIMEOFFSET) != 0u) {
+        time_offset = pass1_timeoffset_sample(effect_uv, source_coord, cached_source_alpha) * M_PI_2;
+    }
+    return waterwaves_layer_offset(effect_uv, params, mask, time_offset);
+}
+
+vec2 pass2_layer_offset(vec2 effect_uv, float cached_temp_alpha) {
+    WaterWavesParams params = pass2_params();
+    float mask = 1.0;
+    if ((params.flags & WATERWAVES_FLAG_MASK) != 0u) {
+        mask = pass2_mask_sample(effect_uv, cached_temp_alpha);
+    }
+    float time_offset = 0.0;
+    if ((params.flags & WATERWAVES_FLAG_TIMEOFFSET) != 0u) {
+        time_offset = pass2_timeoffset_sample(effect_uv, cached_temp_alpha) * M_PI_2;
+    }
+    return waterwaves_layer_offset(effect_uv, params, mask, time_offset);
+}
+
+vec4 sample_single_waterwaves() {
+    float source_alpha = -1.0;
+    vec2 offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha);
+    vec2 source_coord = v_uv + offset * target_uv_per_layer_uv();
+    return texture(g_Texture0, source_coord);
+}
+
+vec4 sample_fused_waterwaves2() {
+    vec2 target_scale = target_uv_per_layer_uv();
+    float source_alpha_at_output = -1.0;
+    vec2 pass1_output_offset = pass1_layer_offset(v_effect_uv, v_uv, source_alpha_at_output);
+    float temp_alpha_at_output = texture(g_Texture0, v_uv + pass1_output_offset * target_scale).a;
+
+    vec2 pass2_offset = pass2_layer_offset(v_effect_uv, temp_alpha_at_output);
+    vec2 intermediate_coord = v_uv + pass2_offset * target_scale;
+    float source_alpha_at_intermediate = -1.0;
+    vec2 pass1_offset =
+        pass1_layer_offset(v_effect_uv + pass2_offset, intermediate_coord, source_alpha_at_intermediate);
+    vec2 source_coord = intermediate_coord + pass1_offset * target_scale;
+    return texture(g_Texture0, source_coord);
+}
+
+void main() {
+    vec4 color = pc.effect_shader_code == EFFECT_SHADER_CODE_WATERWAVES2
+        ? sample_fused_waterwaves2()
+        : sample_single_waterwaves();
+    out_color = finalize_output(apply_vertex_color(color));
 }

@@ -180,6 +180,8 @@ pub(super) fn native_vulkan_scene_sampled_image_material_pass_with_effect_blend(
         alpha_texture_mode,
         texture_slot_count,
         effect_kinds: native_vulkan_scene_effect_kind_list(effect_passes),
+        fused_effect_kind: None,
+        fused_effect_passes: Vec::new(),
         constant_shader_values: native_vulkan_scene_effect_constant_shader_value_map(effect_passes),
         system_shader_uniforms: Vec::new(),
         combo_keys: native_vulkan_scene_effect_combo_key_list(effect_passes),

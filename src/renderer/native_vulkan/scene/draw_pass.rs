@@ -48,7 +48,8 @@ use self::effect::{
 };
 pub(super) use self::effect_graph::{
     native_vulkan_scene_engine_graph_target_name, native_vulkan_scene_engine_render_target_role,
-    native_vulkan_scene_we_image_graph_plan, native_vulkan_scene_we_image_pass_chain,
+    native_vulkan_scene_finalize_scene_render_graph, native_vulkan_scene_we_image_graph_plan,
+    native_vulkan_scene_we_image_pass_chain,
 };
 use self::geometry_common::{
     native_vulkan_scene_quad_positions, native_vulkan_scene_sampled_image_index_buffer_bytes,
@@ -66,9 +67,11 @@ use self::texture_slots::{
 pub use self::types::NativeVulkanSceneSampledImageVertex;
 pub(super) use self::types::{
     NativeVulkanSceneBlendEquation, NativeVulkanSceneBlendFactor, NativeVulkanSceneBlendOp,
-    NativeVulkanSceneBlendState, NativeVulkanSceneCullMode, NativeVulkanSceneDrawPassPlan,
+    NativeVulkanSceneBlendState, NativeVulkanSceneCullMode,
+    NativeVulkanSceneDirectSampledImageGraphPass, NativeVulkanSceneDrawPassPlan,
     NativeVulkanSceneEffectEvaluationBoundary, NativeVulkanSceneEffectKind,
-    NativeVulkanSceneEffectRecord, NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind,
+    NativeVulkanSceneEffectRecord, NativeVulkanSceneFusedEffectKind,
+    NativeVulkanSceneFusedEffectPass, NativeVulkanSceneMaterialFlag, NativeVulkanSceneMaterialKind,
     NativeVulkanSceneMaterialPass, NativeVulkanSceneQuadRecordingStep, NativeVulkanSceneQuadVertex,
     NativeVulkanSceneRecordableQuad, NativeVulkanSceneRenderState,
     NativeVulkanSceneSampledImageEffectPass, NativeVulkanSceneSampledImageEffectTarget,
@@ -870,6 +873,7 @@ fn native_vulkan_scene_quad_recording_payload(
             let vertex_count = solid_vertices.len().min(u32::MAX as usize) as u32;
             let index_count = solid_indices.len().min(u32::MAX as usize) as u32;
             steps.push(NativeVulkanSceneQuadRecordingStep {
+                engine_pass_id: None,
                 layer_index: quad.layer_index,
                 layer_id: quad.layer_id.clone(),
                 kind: quad.kind,
@@ -907,7 +911,8 @@ fn native_vulkan_scene_quad_recording_payload(
 fn native_vulkan_scene_sampled_image_recording_payload(
     quads: &[NativeVulkanSceneSampledImageQuad],
     scene_size: Option<SceneSize>,
-    we_graph_plan: &NativeVulkanSceneWeImageGraphPlan,
+    we_graph_plan: &mut NativeVulkanSceneWeImageGraphPlan,
+    solid_steps: &mut [NativeVulkanSceneQuadRecordingStep],
 ) -> NativeVulkanSceneSampledImageRecordingPayload {
     let mut sources = Vec::new();
     let recordable_quads = quads
@@ -934,6 +939,30 @@ fn native_vulkan_scene_sampled_image_recording_payload(
         }
     }
     let file_source_count = sources.len().max(1);
+    let direct_sampled_graph_passes = visible_quads
+        .iter()
+        .filter(|quad| !native_vulkan_scene_sampled_image_needs_we_effect_chain(quad))
+        .map(|quad| {
+            let resource_index =
+                native_vulkan_scene_sampled_image_source_index(&mut sources, quad.source.clone());
+            NativeVulkanSceneDirectSampledImageGraphPass {
+                layer_index: quad.layer_index,
+                layer_id: quad.layer_id.clone(),
+                texture_slot_bindings:
+                    native_vulkan_scene_sampled_image_material_texture_slot_bindings(
+                        &mut sources,
+                        quad,
+                        resource_index,
+                    ),
+                material_pass: quad.material_pass.clone(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let direct_sampled_engine_pass_ids = native_vulkan_scene_finalize_scene_render_graph(
+        we_graph_plan,
+        &direct_sampled_graph_passes,
+        solid_steps,
+    );
     let effect_target_allocation =
         native_vulkan_scene_allocate_we_graph_effect_targets(we_graph_plan, &visible_quads);
     let effect_targets = effect_target_allocation.effect_targets;
@@ -979,6 +1008,10 @@ fn native_vulkan_scene_sampled_image_recording_payload(
                 range,
                 quad.material_pass.render_state.blend.mode,
             );
+            let mut step = step;
+            step.engine_pass_id = direct_sampled_engine_pass_ids
+                .get(&quad.layer_index)
+                .copied();
             native_vulkan_scene_debug_sampled_image_recording_step(quad, &step, range, &vertices);
             steps.push(step);
         }
@@ -1133,7 +1166,9 @@ fn native_vulkan_scene_allocate_we_graph_effect_targets(
     plan: &NativeVulkanSceneWeImageGraphPlan,
     visible_quads: &[&NativeVulkanSceneSampledImageQuad],
 ) -> NativeVulkanSceneEffectTargetAllocation {
-    let engine_allocation_plan = plan.engine_graph.target_allocation_plan();
+    let engine_allocation_plan = plan
+        .engine_graph
+        .target_allocation_plan_for_run_plan(&plan.engine_run_plan);
     let mut physical_slot_to_effect_target = BTreeMap::<u32, u32>::new();
     let mut fallback_physical_slot = engine_allocation_plan.physical_target_count;
     let mut allocation = NativeVulkanSceneEffectTargetAllocation::default();
@@ -1956,6 +1991,7 @@ fn native_vulkan_scene_sampled_image_recording_step(
         },
     );
     NativeVulkanSceneSampledImageRecordingStep {
+        engine_pass_id: we_graph_step.map(|step| step.engine_pass_id),
         layer_index: quad.layer_index,
         layer_id: quad.layer_id.clone(),
         source: quad.source.clone(),
@@ -2014,6 +2050,8 @@ fn native_vulkan_scene_sampled_image_material_pass_for_we_graph_step(
         alpha_texture_mode,
         texture_slot_count,
         effect_kinds: native_vulkan_scene_we_graph_step_effect_kinds(step),
+        fused_effect_kind: step.pass.fused_effect_kind,
+        fused_effect_passes: step.pass.fused_effect_passes.clone(),
         constant_shader_values: step.pass.constant_shader_values.clone(),
         system_shader_uniforms: native_vulkan_scene_we_graph_step_system_shader_uniforms(step),
         combo_keys: step.pass.combo_keys.clone(),
@@ -9433,13 +9471,17 @@ mod tests {
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
         assert_eq!(pass_plan.sampled_image_effect_targets.len(), 2);
-        assert_eq!(pass_plan.sampled_image_effect_targets[0].width, 130);
-        assert_eq!(pass_plan.sampled_image_effect_targets[0].height, 130);
-        assert_eq!(pass_plan.sampled_image_effect_targets[1].width, 130);
-        assert_eq!(pass_plan.sampled_image_effect_targets[1].height, 130);
+        for target in &pass_plan.sampled_image_effect_targets {
+            assert_eq!(target.width, 130);
+            assert_eq!(target.height, 130);
+        }
         let target = &pass_plan.sampled_image_we_graph_plan.targets[0];
         assert!((target.local_left - -20.0).abs() < 1.0e-6);
         assert!((target.local_top - -20.0).abs() < 1.0e-6);
+        let target = &pass_plan.sampled_image_we_graph_plan.targets[1];
+        assert!((target.local_left - -20.0).abs() < 1.0e-6);
+        assert!((target.local_top - -20.0).abs() < 1.0e-6);
+        assert_eq!(pass_plan.sampled_image_recording_steps.len(), 3);
         let base_step = &pass_plan.sampled_image_recording_steps[0];
         assert_eq!(base_step.material_pass.shader, None);
         assert!(base_step.material_pass.combo_keys.is_empty());
@@ -9455,19 +9497,26 @@ mod tests {
         assert!((base_vertices[0].uv[1] - 1.2).abs() < 1.0e-6);
         assert_eq!(base_vertices[0].effect_uv, base_vertices[0].uv);
         assert!((base_vertices[0].opacity - 0.3).abs() < 1.0e-6);
-        let effect_step = &pass_plan.sampled_image_recording_steps[1];
-        let effect_vertices = &pass_plan.sampled_image_vertices[effect_step.first_vertex as usize
-            ..effect_step.first_vertex as usize + effect_step.vertex_count as usize];
-        assert_eq!(effect_vertices[0].position, [0.0, 0.0]);
-        assert_eq!(effect_vertices[3].position, [130.0, 130.0]);
-        assert_eq!(effect_vertices[0].uv, [0.0, 1.0]);
-        assert_eq!(effect_vertices[3].uv, [1.0, 0.0]);
-        assert!((effect_vertices[0].effect_uv[0] - -0.2).abs() < 1.0e-6);
-        assert!((effect_vertices[0].effect_uv[1] - 1.2).abs() < 1.0e-6);
-        assert!((effect_vertices[3].effect_uv[0] - 1.1).abs() < 1.0e-6);
-        assert!((effect_vertices[3].effect_uv[1] - -0.1).abs() < 1.0e-6);
-        assert_eq!(effect_vertices[0].opacity, 1.0);
+        let first_effect_step = &pass_plan.sampled_image_recording_steps[1];
+        assert_eq!(first_effect_step.material_pass.fused_effect_kind, None);
+        assert!(
+            first_effect_step
+                .material_pass
+                .fused_effect_passes
+                .is_empty()
+        );
+        assert_eq!(
+            first_effect_step.material_pass.effect_kinds,
+            vec![NativeVulkanSceneEffectKind::WaterWaves]
+        );
+        assert_eq!(first_effect_step.vertex_count, 4);
         let final_step = &pass_plan.sampled_image_recording_steps[2];
+        assert_eq!(final_step.material_pass.fused_effect_kind, None);
+        assert!(final_step.material_pass.fused_effect_passes.is_empty());
+        assert_eq!(
+            final_step.material_pass.effect_kinds,
+            vec![NativeVulkanSceneEffectKind::WaterWaves]
+        );
         let final_vertices = &pass_plan.sampled_image_vertices[final_step.first_vertex as usize
             ..final_step.first_vertex as usize + final_step.vertex_count as usize];
         assert_eq!(final_step.vertex_count, 3);
@@ -9638,7 +9687,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_pass_plan_aliases_non_overlapping_same_extent_we_targets() {
+    fn draw_pass_plan_keeps_run_plan_overlapping_we_targets_separate() {
         fn iris_image(layer_index: usize, source: &str, mask: &str) -> NativeVulkanSceneDrawOp {
             let mut image = draw_op(layer_index, NativeVulkanSceneDrawOpKind::Image);
             image.source = Some(PathBuf::from(source));
@@ -9693,13 +9742,15 @@ mod tests {
         let pass_plan = native_vulkan_scene_draw_pass_plan(&draw_plan);
 
         assert_eq!(pass_plan.sampled_image_we_graph_plan.target_count, 2);
-        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 1);
+        assert_eq!(pass_plan.sampled_image_effect_targets.len(), 2);
         assert_eq!(pass_plan.sampled_image_effect_target_aliases.len(), 2);
-        assert!(
+        assert_eq!(
             pass_plan
                 .sampled_image_effect_target_aliases
                 .iter()
-                .all(|alias| alias.effect_target_index == 0)
+                .map(|alias| alias.effect_target_index)
+                .collect::<Vec<_>>(),
+            vec![0, 1]
         );
         assert_eq!(
             pass_plan
@@ -9721,13 +9772,19 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(effect_target_steps.len(), 2);
-        assert!(effect_target_steps.iter().all(|step| {
-            step.render_target
-                == NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
-                    target_index: 0,
-                    clear: true,
-                }
-        }));
+        assert_eq!(
+            effect_target_steps
+                .iter()
+                .filter_map(|step| match step.render_target {
+                    NativeVulkanSceneSampledImageRenderTarget::EffectTarget {
+                        target_index,
+                        clear: true,
+                    } => Some(target_index),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![0, 1]
+        );
 
         let physical_target_resource_index = pass_plan
             .sampled_image_sources
@@ -9745,10 +9802,15 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(final_target_bindings.len(), 2);
-        assert!(
+        assert_eq!(
             final_target_bindings
                 .iter()
-                .all(|binding| { binding.resource_index == physical_target_resource_index })
+                .map(|binding| binding.resource_index)
+                .collect::<Vec<_>>(),
+            vec!(
+                physical_target_resource_index,
+                physical_target_resource_index.saturating_add(1)
+            )
         );
     }
 
@@ -10663,6 +10725,31 @@ mod tests {
         assert!(pass_plan.sampled_image_recording_ready);
         assert_eq!(pass_plan.quad_recording_steps.len(), 1);
         assert_eq!(pass_plan.sampled_image_recording_steps.len(), 1);
+        assert!(pass_plan.quad_recording_steps[0].engine_pass_id.is_some());
+        assert!(
+            pass_plan.sampled_image_recording_steps[0]
+                .engine_pass_id
+                .is_some()
+        );
+        assert_ne!(
+            pass_plan.quad_recording_steps[0].engine_pass_id,
+            pass_plan.sampled_image_recording_steps[0].engine_pass_id
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .engine_graph
+                .passes
+                .len(),
+            2
+        );
+        assert_eq!(
+            pass_plan
+                .sampled_image_we_graph_plan
+                .engine_run_plan
+                .pass_count,
+            2
+        );
         assert_eq!(pass_plan.quad_vertex_buffer_bytes, 96);
         assert_eq!(pass_plan.sampled_image_vertex_buffer_bytes, 176);
     }

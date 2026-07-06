@@ -10,6 +10,7 @@ pub mod execution;
 pub mod graph;
 pub mod pass;
 pub mod resource;
+pub mod run;
 pub mod state;
 pub mod target;
 pub mod we_image;
@@ -24,6 +25,7 @@ pub use pass::{RenderPassNode, RenderPassRole};
 pub use resource::{
     RenderGraphBarrier, RenderGraphResourceAccess, RenderGraphResourceUsage, RenderGraphResourceUse,
 };
+pub use run::{RenderGraphRunPlan, RenderGraphTargetRun, RenderGraphTargetRunPass};
 pub use state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 pub use target::RenderTargetRole;
 pub use we_image::{

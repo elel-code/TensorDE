@@ -353,11 +353,41 @@ impl NativeVulkanSceneShaderUniform {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan::scene) enum NativeVulkanSceneFusedEffectKind {
+    WaterWaves2,
+}
+
+impl NativeVulkanSceneFusedEffectKind {
+    pub(in crate::renderer::native_vulkan::scene) fn as_str(self) -> &'static str {
+        match self {
+            Self::WaterWaves2 => "water-waves-fused2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneFusedEffectPass {
+    pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) effect_kind: NativeVulkanSceneEffectKind,
+    pub(in crate::renderer::native_vulkan::scene) effect_file: Option<String>,
+    pub(in crate::renderer::native_vulkan::scene) texture_slots: Vec<NativeVulkanSceneTextureSlot>,
+    pub(in crate::renderer::native_vulkan::scene) effect_uv_transform:
+        Option<SceneEffectUvTransform>,
+    pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
+    pub(in crate::renderer::native_vulkan::scene) combo_keys: Vec<String>,
+    pub(in crate::renderer::native_vulkan::scene) combo_values: BTreeMap<String, i64>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePass {
     pub(in crate::renderer::native_vulkan::scene) pass_index: usize,
     pub(in crate::renderer::native_vulkan::scene) role: NativeVulkanSceneWeImagePassRole,
     pub(in crate::renderer::native_vulkan::scene) effect_kind: Option<NativeVulkanSceneEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) fused_effect_kind:
+        Option<NativeVulkanSceneFusedEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) fused_effect_passes:
+        Vec<NativeVulkanSceneFusedEffectPass>,
     pub(in crate::renderer::native_vulkan::scene) effect_file: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) command: Option<String>,
     pub(in crate::renderer::native_vulkan::scene) source: Option<String>,
@@ -400,6 +430,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImagePas
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGraphStep {
+    pub(in crate::renderer::native_vulkan::scene) engine_pass_id: u32,
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) chain_index: usize,
@@ -451,6 +482,8 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
         crate::engine::render_graph::RenderGraph,
     pub(in crate::renderer::native_vulkan::scene) engine_execution_plan:
         crate::engine::render_graph::RenderGraphExecutionPlan,
+    pub(in crate::renderer::native_vulkan::scene) engine_run_plan:
+        crate::engine::render_graph::RenderGraphRunPlan,
     pub(in crate::renderer::native_vulkan::scene) chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) first_class_target_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) temporary_raw_fallback_chain_count: usize,
@@ -468,8 +501,16 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneWeImageGra
     pub(in crate::renderer::native_vulkan::scene) max_chain_step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) all_waterwaves_chain_count: usize,
     pub(in crate::renderer::native_vulkan::scene) all_waterwaves_multi_step_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_step_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_step_eliminated_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_chain_count: usize,
+    pub(in crate::renderer::native_vulkan::scene) waterwaves_fused2_ineligible_reason_counts:
+        BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) step_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kind_counts: BTreeMap<&'static str, usize>,
+    pub(in crate::renderer::native_vulkan::scene) fused_effect_kind_counts:
+        BTreeMap<&'static str, usize>,
     pub(in crate::renderer::native_vulkan::scene) chain_length_counts: BTreeMap<usize, usize>,
     pub(in crate::renderer::native_vulkan::scene) chain_signature_counts: BTreeMap<String, usize>,
     pub(in crate::renderer::native_vulkan::scene) targets: Vec<NativeVulkanSceneWeImageGraphTarget>,
@@ -545,7 +586,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneEffectReco
     pub(in crate::renderer::native_vulkan::scene) cull_mode: NativeVulkanSceneCullMode,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPass {
     pub(in crate::renderer::native_vulkan::scene) kind: NativeVulkanSceneMaterialKind,
     pub(in crate::renderer::native_vulkan::scene) shader: Option<String>,
@@ -555,6 +596,10 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneMaterialPa
     pub(in crate::renderer::native_vulkan::scene) alpha_texture_mode: SceneRenderAlphaTextureMode,
     pub(in crate::renderer::native_vulkan::scene) texture_slot_count: usize,
     pub(in crate::renderer::native_vulkan::scene) effect_kinds: Vec<NativeVulkanSceneEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) fused_effect_kind:
+        Option<NativeVulkanSceneFusedEffectKind>,
+    pub(in crate::renderer::native_vulkan::scene) fused_effect_passes:
+        Vec<NativeVulkanSceneFusedEffectPass>,
     pub(in crate::renderer::native_vulkan::scene) constant_shader_values: BTreeMap<String, Value>,
     pub(in crate::renderer::native_vulkan::scene) system_shader_uniforms:
         Vec<NativeVulkanSceneShaderUniform>,
@@ -593,6 +638,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneRecordable
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneQuadRecordingStep {
+    pub(in crate::renderer::native_vulkan::scene) engine_pass_id: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) kind: &'static str,
@@ -607,6 +653,15 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneQuadRecord
     pub(in crate::renderer::native_vulkan::scene) index_buffer_size_bytes: u64,
     pub(in crate::renderer::native_vulkan::scene) fill_geometry: bool,
     pub(in crate::renderer::native_vulkan::scene) stroke_geometry: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneDirectSampledImageGraphPass {
+    pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
+    pub(in crate::renderer::native_vulkan::scene) layer_id: String,
+    pub(in crate::renderer::native_vulkan::scene) texture_slot_bindings:
+        Vec<NativeVulkanSceneTextureSlotResourceBinding>,
+    pub(in crate::renderer::native_vulkan::scene) material_pass: NativeVulkanSceneMaterialPass,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -637,6 +692,7 @@ pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledIma
 
 #[derive(Debug, Clone, PartialEq)]
 pub(in crate::renderer::native_vulkan::scene) struct NativeVulkanSceneSampledImageRecordingStep {
+    pub(in crate::renderer::native_vulkan::scene) engine_pass_id: Option<u32>,
     pub(in crate::renderer::native_vulkan::scene) layer_index: usize,
     pub(in crate::renderer::native_vulkan::scene) layer_id: String,
     pub(in crate::renderer::native_vulkan::scene) source: PathBuf,

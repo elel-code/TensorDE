@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 
 use super::graph::RenderGraph;
 use super::resource::{render_target_resource_key, texture_binding_resource_key};
+use super::run::RenderGraphRunPlan;
 use super::target::RenderTargetRole;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,22 +35,40 @@ struct TargetLifetime {
     has_unknown_extent: bool,
     first_write_pass_id: u32,
     last_use_pass_id: u32,
+    first_write_order: u32,
+    last_use_order: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PhysicalTargetSlot {
     extent: Option<[u32; 2]>,
     format: Option<String>,
-    last_use_pass_id: u32,
+    last_use_order: u32,
 }
 
 impl RenderGraph {
     pub fn target_allocation_plan(&self) -> RenderGraphTargetAllocationPlan {
-        let mut lifetimes = self.target_lifetimes();
+        self.target_allocation_plan_with_pass_order(&self.render_graph_identity_pass_order())
+    }
+
+    pub fn target_allocation_plan_for_run_plan(
+        &self,
+        run_plan: &RenderGraphRunPlan,
+    ) -> RenderGraphTargetAllocationPlan {
+        self.target_allocation_plan_with_pass_order(
+            &self.render_graph_run_plan_pass_order(run_plan),
+        )
+    }
+
+    fn target_allocation_plan_with_pass_order(
+        &self,
+        pass_order_by_id: &BTreeMap<u32, u32>,
+    ) -> RenderGraphTargetAllocationPlan {
+        let mut lifetimes = self.target_lifetimes(pass_order_by_id);
         lifetimes.sort_by(|left, right| {
-            left.first_write_pass_id
-                .cmp(&right.first_write_pass_id)
-                .then_with(|| left.last_use_pass_id.cmp(&right.last_use_pass_id))
+            left.first_write_order
+                .cmp(&right.first_write_order)
+                .then_with(|| left.last_use_order.cmp(&right.last_use_order))
                 .then_with(|| left.resource_key.cmp(&right.resource_key))
         });
 
@@ -59,7 +78,7 @@ impl RenderGraph {
             let slot = physical_slots
                 .iter()
                 .position(|slot| {
-                    slot.last_use_pass_id < lifetime.first_write_pass_id
+                    slot.last_use_order < lifetime.first_write_order
                         && lifetime.extent.is_some()
                         && slot.extent == lifetime.extent
                         && slot.format == lifetime.format
@@ -68,11 +87,11 @@ impl RenderGraph {
                     physical_slots.push(PhysicalTargetSlot {
                         extent: lifetime.extent,
                         format: lifetime.format.clone(),
-                        last_use_pass_id: 0,
+                        last_use_order: 0,
                     });
                     physical_slots.len() - 1
                 });
-            physical_slots[slot].last_use_pass_id = lifetime.last_use_pass_id;
+            physical_slots[slot].last_use_order = lifetime.last_use_order;
             allocations.push(RenderGraphTargetAllocation {
                 resource_key: lifetime.resource_key,
                 role: lifetime.role,
@@ -95,18 +114,24 @@ impl RenderGraph {
         }
     }
 
-    fn target_lifetimes(&self) -> Vec<RenderGraphTargetLifetime> {
+    fn target_lifetimes(
+        &self,
+        pass_order_by_id: &BTreeMap<u32, u32>,
+    ) -> Vec<RenderGraphTargetLifetime> {
         let mut lifetimes = BTreeMap::<String, TargetLifetime>::new();
         for pass in &self.passes {
             if !render_graph_target_role_is_allocatable(pass.target) {
                 continue;
             }
+            let pass_order = render_graph_pass_order(pass_order_by_id, pass.id);
             let resource_key = render_target_resource_key(pass.target, pass.target_name.as_deref());
             lifetimes
                 .entry(resource_key)
                 .and_modify(|lifetime| {
                     lifetime.first_write_pass_id = lifetime.first_write_pass_id.min(pass.id);
                     lifetime.last_use_pass_id = lifetime.last_use_pass_id.max(pass.id);
+                    lifetime.first_write_order = lifetime.first_write_order.min(pass_order);
+                    lifetime.last_use_order = lifetime.last_use_order.max(pass_order);
                     target_lifetime_record_extent(lifetime, pass.target_extent);
                     target_lifetime_record_format(lifetime, pass.target_format.as_deref());
                 })
@@ -118,14 +143,18 @@ impl RenderGraph {
                     has_unknown_extent: pass.target_extent.is_none(),
                     first_write_pass_id: pass.id,
                     last_use_pass_id: pass.id,
+                    first_write_order: pass_order,
+                    last_use_order: pass_order,
                 });
         }
 
         for pass in &self.passes {
+            let pass_order = render_graph_pass_order(pass_order_by_id, pass.id);
             for binding in &pass.bindings {
                 let resource_key = texture_binding_resource_key(pass.object_index, binding);
                 if let Some(lifetime) = lifetimes.get_mut(&resource_key) {
                     lifetime.last_use_pass_id = lifetime.last_use_pass_id.max(pass.id);
+                    lifetime.last_use_order = lifetime.last_use_order.max(pass_order);
                 }
             }
         }
@@ -140,9 +169,42 @@ impl RenderGraph {
                 format: lifetime.format,
                 first_write_pass_id: lifetime.first_write_pass_id,
                 last_use_pass_id: lifetime.last_use_pass_id,
+                first_write_order: lifetime.first_write_order,
+                last_use_order: lifetime.last_use_order,
             })
             .collect()
     }
+
+    fn render_graph_identity_pass_order(&self) -> BTreeMap<u32, u32> {
+        self.passes
+            .iter()
+            .enumerate()
+            .map(|(index, pass)| (pass.id, index.min(u32::MAX as usize) as u32))
+            .collect()
+    }
+
+    fn render_graph_run_plan_pass_order(
+        &self,
+        run_plan: &RenderGraphRunPlan,
+    ) -> BTreeMap<u32, u32> {
+        let mut pass_order_by_id = BTreeMap::new();
+        for (order, pass) in run_plan
+            .runs
+            .iter()
+            .flat_map(|run| run.passes.iter())
+            .enumerate()
+        {
+            pass_order_by_id.insert(pass.pass_id, order.min(u32::MAX as usize) as u32);
+        }
+        for (pass_id, fallback_order) in self.render_graph_identity_pass_order() {
+            pass_order_by_id.entry(pass_id).or_insert(fallback_order);
+        }
+        pass_order_by_id
+    }
+}
+
+fn render_graph_pass_order(pass_order_by_id: &BTreeMap<u32, u32>, pass_id: u32) -> u32 {
+    pass_order_by_id.get(&pass_id).copied().unwrap_or(pass_id)
 }
 
 fn target_lifetime_record_extent(lifetime: &mut TargetLifetime, extent: Option<[u32; 2]>) {
@@ -182,6 +244,8 @@ struct RenderGraphTargetLifetime {
     format: Option<String>,
     first_write_pass_id: u32,
     last_use_pass_id: u32,
+    first_write_order: u32,
+    last_use_order: u32,
 }
 
 fn render_graph_target_role_is_allocatable(role: RenderTargetRole) -> bool {
@@ -266,6 +330,42 @@ mod tests {
         assert_eq!(plan.aliased_target_count, 1);
         assert_eq!(plan.allocations[0].physical_slot, 0);
         assert_eq!(plan.allocations[1].physical_slot, 0);
+    }
+
+    #[test]
+    fn target_allocation_can_follow_run_plan_lifetimes() {
+        let graph = RenderGraph {
+            passes: vec![
+                pass(0, RenderTargetRole::ImageLocalMain, Some("a"), vec![]),
+                pass(
+                    1,
+                    RenderTargetRole::SceneColor,
+                    None,
+                    vec![TextureBindingRole::GraphTarget {
+                        role: RenderTargetRole::ImageLocalMain,
+                        name: Some("a".to_owned()),
+                    }],
+                ),
+                pass(2, RenderTargetRole::ImageLocalMain, Some("b"), vec![]),
+                pass(
+                    3,
+                    RenderTargetRole::SceneColor,
+                    None,
+                    vec![TextureBindingRole::GraphTarget {
+                        role: RenderTargetRole::ImageLocalMain,
+                        name: Some("b".to_owned()),
+                    }],
+                ),
+            ],
+            unsupported: Vec::new(),
+        };
+
+        let original_order_plan = graph.target_allocation_plan();
+        let run_order_plan = graph.target_allocation_plan_for_run_plan(&graph.run_plan());
+
+        assert_eq!(original_order_plan.physical_target_count, 1);
+        assert_eq!(run_order_plan.physical_target_count, 2);
+        assert_eq!(run_order_plan.aliased_target_count, 0);
     }
 
     #[test]

@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::engine::render_graph::{RenderGraphRunPlan, RenderTargetRole};
+
 use super::{
     VulkanaliaSceneOrderedDrawPipeline, VulkanaliaSceneOrderedDrawStep,
     VulkanaliaSceneSampledImageDescriptorBinding, VulkanaliaSceneSampledImageDrawCommand,
@@ -23,9 +25,20 @@ pub(super) struct VulkanaliaSceneOrderedDrawTargetStats {
 pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
     solid_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
     sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    engine_run_plan: Option<&RenderGraphRunPlan>,
     effect_target_resource_base_index: usize,
     effect_target_resource_count: usize,
 ) -> Vec<VulkanaliaSceneOrderedDrawStep> {
+    if let Some(engine_ordered) = engine_run_plan.and_then(|run_plan| {
+        native_vulkan_vulkanalia_scene_engine_run_ordered_draw_steps(
+            solid_commands,
+            sampled_commands,
+            run_plan,
+        )
+    }) {
+        return engine_ordered;
+    }
+
     let mut scene_steps =
         Vec::with_capacity(solid_commands.len().saturating_add(sampled_commands.len()));
     for (command_index, command) in solid_commands.iter().enumerate() {
@@ -131,6 +144,103 @@ pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_steps(
         }
     }
     ordered
+}
+
+fn native_vulkan_vulkanalia_scene_engine_run_ordered_draw_steps(
+    solid_commands: &[VulkanaliaSceneSolidQuadDrawCommand],
+    sampled_commands: &[VulkanaliaSceneSampledImageDrawCommand],
+    run_plan: &RenderGraphRunPlan,
+) -> Option<Vec<VulkanaliaSceneOrderedDrawStep>> {
+    if solid_commands.is_empty() && sampled_commands.is_empty() {
+        return None;
+    }
+
+    let mut command_by_pass_id = BTreeMap::<u32, SceneEngineDrawCommand>::new();
+    for (command_index, command) in solid_commands.iter().enumerate() {
+        let pass_id = command.engine_pass_id?;
+        if command_by_pass_id
+            .insert(
+                pass_id,
+                SceneEngineDrawCommand::Solid {
+                    command_index,
+                    layer_index: command.layer_index,
+                },
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+    for (command_index, command) in sampled_commands.iter().enumerate() {
+        let pass_id = command.engine_pass_id?;
+        if command_by_pass_id
+            .insert(
+                pass_id,
+                SceneEngineDrawCommand::Sampled {
+                    command_index,
+                    layer_index: command.layer_index,
+                },
+            )
+            .is_some()
+        {
+            return None;
+        }
+    }
+
+    let mut ordered = Vec::with_capacity(sampled_commands.len());
+    for run in &run_plan.runs {
+        if !native_vulkan_vulkanalia_scene_run_target_is_recordable(run.target) {
+            return None;
+        }
+        for pass in &run.passes {
+            match *command_by_pass_id.get(&pass.pass_id)? {
+                SceneEngineDrawCommand::Solid {
+                    command_index,
+                    layer_index,
+                } => ordered.push(VulkanaliaSceneOrderedDrawStep {
+                    layer_index,
+                    pipeline: VulkanaliaSceneOrderedDrawPipeline::SolidQuad,
+                    command_index,
+                }),
+                SceneEngineDrawCommand::Sampled {
+                    command_index,
+                    layer_index,
+                } => ordered.push(VulkanaliaSceneOrderedDrawStep {
+                    layer_index,
+                    pipeline: VulkanaliaSceneOrderedDrawPipeline::SampledImage,
+                    command_index,
+                }),
+            }
+        }
+    }
+
+    (ordered.len() == solid_commands.len().saturating_add(sampled_commands.len()))
+        .then_some(ordered)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneEngineDrawCommand {
+    Solid {
+        command_index: usize,
+        layer_index: usize,
+    },
+    Sampled {
+        command_index: usize,
+        layer_index: usize,
+    },
+}
+
+fn native_vulkan_vulkanalia_scene_run_target_is_recordable(target: RenderTargetRole) -> bool {
+    matches!(
+        target,
+        RenderTargetRole::SceneColor
+            | RenderTargetRole::Swapchain
+            | RenderTargetRole::ImageLocalMain
+            | RenderTargetRole::ImageLocalSub
+            | RenderTargetRole::NamedFbo
+            | RenderTargetRole::FirstClassEffectTarget
+            | RenderTargetRole::Temporary
+    )
 }
 
 pub(super) fn native_vulkan_vulkanalia_scene_ordered_draw_target_stats(

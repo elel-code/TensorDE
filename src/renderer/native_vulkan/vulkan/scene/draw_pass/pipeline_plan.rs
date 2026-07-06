@@ -163,6 +163,7 @@ fn scene_pipeline_program_index(
             }
             VulkanaliaSceneSampledImageShaderProgram::WaterRipple => 5,
             VulkanaliaSceneSampledImageShaderProgram::WaterWaves => 6,
+            VulkanaliaSceneSampledImageShaderProgram::WaterWaves2 => 6,
             VulkanaliaSceneSampledImageShaderProgram::WaterFlow => 7,
             VulkanaliaSceneSampledImageShaderProgram::WaterCaustics => 8,
             VulkanaliaSceneSampledImageShaderProgram::FoliageSway => 9,
@@ -201,6 +202,7 @@ mod tests {
             material.effect_kinds = vec![effect];
         }
         VulkanaliaSceneSampledImageDrawCommand {
+            engine_pass_id: None,
             layer_index: 0,
             last_layer_index: 0,
             material,
@@ -225,6 +227,13 @@ mod tests {
 
     #[test]
     fn program_usage_collapses_puppet_and_particle_to_backing_pipeline_sets() {
+        let mut fused_waterwaves = command(
+            Some(super::super::super::present::NativeVulkanVulkanaliaSceneEffectKind::WaterWaves),
+            VulkanaliaSceneSampledImageVertexProgram::Sampled,
+        );
+        fused_waterwaves.material.fused_effect_kind = Some(
+            super::super::super::present::NativeVulkanVulkanaliaSceneFusedEffectKind::WaterWaves2,
+        );
         let usage = VulkanaliaScenePipelineProgramUsage::from_draw_commands(&[
             command(None, VulkanaliaSceneSampledImageVertexProgram::ParticleGpu),
             command(
@@ -233,6 +242,7 @@ mod tests {
                 ),
                 VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
             ),
+            fused_waterwaves,
         ]);
 
         assert!(usage.contains(
@@ -243,10 +253,14 @@ mod tests {
             VulkanaliaSceneSampledImageShaderProgram::WaterWaves,
             VulkanaliaSceneSampledImageVertexProgram::PuppetGpu,
         ));
-        assert!(!usage.contains(
+        assert!(usage.contains(
             VulkanaliaSceneSampledImageShaderProgram::WaterWaves,
             VulkanaliaSceneSampledImageVertexProgram::Sampled,
         ));
-        assert_eq!(usage.enabled_count(), 2);
+        assert!(usage.contains(
+            VulkanaliaSceneSampledImageShaderProgram::WaterWaves2,
+            VulkanaliaSceneSampledImageVertexProgram::Sampled,
+        ));
+        assert_eq!(usage.enabled_count(), 3);
     }
 }
