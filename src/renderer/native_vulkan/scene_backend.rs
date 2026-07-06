@@ -6,6 +6,7 @@
 //! - `references/godot/servers/rendering/rendering_device.h`
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
+pub mod draw_command;
 pub mod renderer_scene_render;
 pub mod rendering_device;
 pub mod resource_buffers;

@@ -10,6 +10,7 @@ use crate::engine::scene_engine::{
     SceneGraphDraw, SceneGraphPass, ScenePuppetId, SceneResource, SceneResourceResidencyPlan,
 };
 
+use super::draw_command::NativeVulkanSceneMeshDrawCommandPlan;
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferCatalog, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBufferRecords, NativeVulkanScenePuppetStorageBufferRecords,
@@ -54,6 +55,17 @@ impl NativeVulkanRenderingDevice {
     ) -> NativeVulkanScenePuppetStorageBufferRecords {
         self.gpu_buffer_catalog
             .puppet_storage_buffer_records(puppet)
+    }
+
+    pub fn mesh_draw_command_plan(
+        &self,
+        draw: &SceneGraphDraw,
+    ) -> Result<NativeVulkanSceneMeshDrawCommandPlan, String> {
+        let geometry = draw
+            .geometry
+            .ok_or_else(|| "scene mesh draw command requires geometry handle".to_owned())?;
+        let records = self.mesh_draw_buffer_records(geometry)?;
+        NativeVulkanSceneMeshDrawCommandPlan::from_record_bindings(draw, &records)
     }
 
     pub fn sync_scene_gpu_uploads(
@@ -334,5 +346,31 @@ mod tests {
             .expect("mesh draw records after GPU upload sync");
         assert_eq!(mesh_records.vertex.bytes, 40);
         assert_eq!(mesh_records.index.bytes, 12);
+
+        let draw = SceneGraphDraw {
+            object: SceneObjectId(4),
+            pipeline: SceneGraphPipelineClass::Mesh,
+            material: SceneMaterialKey {
+                shader: "we/genericimage4".to_owned(),
+                blend: SceneBlendContract::TranslucentAlpha,
+                writes_depth: false,
+                tests_depth: false,
+            },
+            geometry: Some(SceneGeometryId(2)),
+            puppet: None,
+            resources: Vec::new(),
+            index_count: 3,
+        };
+        let draw_plan = device
+            .mesh_draw_command_plan(&draw)
+            .expect("mesh draw command plan after GPU upload sync");
+        assert_eq!(
+            draw_plan.command_order,
+            vec![
+                "cmd_bind_vertex_buffers",
+                "cmd_bind_index_buffer",
+                "cmd_draw_indexed"
+            ]
+        );
     }
 }
