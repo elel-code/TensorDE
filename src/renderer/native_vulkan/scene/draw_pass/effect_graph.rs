@@ -1016,7 +1016,7 @@ pub(in crate::renderer::native_vulkan::scene) fn native_vulkan_scene_we_image_pa
 
 fn native_vulkan_scene_we_image_pass_chain_fuse_waterwaves2(
     quad: &NativeVulkanSceneSampledImageQuad,
-    passes: Vec<NativeVulkanSceneWeImagePass>,
+    mut passes: Vec<NativeVulkanSceneWeImagePass>,
 ) -> Vec<NativeVulkanSceneWeImagePass> {
     let mut fused = Vec::with_capacity(passes.len());
     let mut index = 0usize;
@@ -1033,6 +1033,36 @@ fn native_vulkan_scene_we_image_pass_chain_fuse_waterwaves2(
                 &passes[index + 1],
             ));
             index += 2;
+        } else if index + 1 < passes.len()
+            && native_vulkan_scene_we_image_passes_can_fuse_redirected_waterwaves2(
+                quad,
+                &passes[index],
+                &passes[index + 1],
+            )
+        {
+            let redirected_target = passes[index].target;
+            let redirected_target_name =
+                native_vulkan_scene_we_image_graph_endpoint_name(&passes[index]).map(str::to_owned);
+            let original_output = passes[index + 1].target;
+            let original_output_name =
+                native_vulkan_scene_we_image_graph_endpoint_name(&passes[index + 1])
+                    .map(str::to_owned);
+            let mut fused_pass = native_vulkan_scene_we_image_pass_fused_waterwaves2(
+                &passes[index],
+                &passes[index + 1],
+            );
+            fused_pass.target = redirected_target;
+            fused_pass.target_name = redirected_target_name.clone();
+            fused_pass.final_scene_pass = false;
+            native_vulkan_scene_we_image_pass_chain_swap_following_endpoints(
+                &mut passes[index + 2..],
+                original_output,
+                original_output_name.as_deref(),
+                redirected_target,
+                redirected_target_name.as_deref(),
+            );
+            fused.push(fused_pass);
+            index += 2;
         } else {
             fused.push(passes[index].clone());
             index += 1;
@@ -1048,6 +1078,76 @@ fn native_vulkan_scene_we_image_passes_can_fuse_waterwaves2(
 ) -> bool {
     native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(quad, first, second)
         .is_empty()
+}
+
+fn native_vulkan_scene_we_image_passes_can_fuse_redirected_waterwaves2(
+    quad: &NativeVulkanSceneSampledImageQuad,
+    first: &NativeVulkanSceneWeImagePass,
+    second: &NativeVulkanSceneWeImagePass,
+) -> bool {
+    if first.input != second.target
+        || first.input_name
+            != native_vulkan_scene_we_image_graph_endpoint_name(second).map(str::to_owned)
+        || !first.input.is_graph_target()
+        || !first.target.is_graph_target()
+        || !second.target.is_graph_target()
+    {
+        return false;
+    }
+    let layer_uv_mesh_pair = quad
+        .mesh
+        .as_ref()
+        .is_some_and(|mesh| !native_vulkan_scene_we_image_pass_chain_mesh_is_full_quad(quad, mesh));
+    native_vulkan_scene_we_image_passes_waterwaves2_ineligible_reasons(quad, first, second)
+        .into_iter()
+        .all(|reason| {
+            reason == "same-input-output-target"
+                || (layer_uv_mesh_pair && reason == "mesh-geometry")
+        })
+}
+
+fn native_vulkan_scene_we_image_pass_chain_swap_following_endpoints(
+    passes: &mut [NativeVulkanSceneWeImagePass],
+    left_endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    left_name: Option<&str>,
+    right_endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    right_name: Option<&str>,
+) {
+    for pass in passes {
+        native_vulkan_scene_we_image_pass_swap_endpoint_reference(
+            &mut pass.input,
+            &mut pass.input_name,
+            left_endpoint,
+            left_name,
+            right_endpoint,
+            right_name,
+        );
+        native_vulkan_scene_we_image_pass_swap_endpoint_reference(
+            &mut pass.target,
+            &mut pass.target_name,
+            left_endpoint,
+            left_name,
+            right_endpoint,
+            right_name,
+        );
+    }
+}
+
+fn native_vulkan_scene_we_image_pass_swap_endpoint_reference(
+    endpoint: &mut NativeVulkanSceneWeImagePassEndpoint,
+    name: &mut Option<String>,
+    left_endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    left_name: Option<&str>,
+    right_endpoint: NativeVulkanSceneWeImagePassEndpoint,
+    right_name: Option<&str>,
+) {
+    if *endpoint == left_endpoint && name.as_deref() == left_name {
+        *endpoint = right_endpoint;
+        *name = right_name.map(ToOwned::to_owned);
+    } else if *endpoint == right_endpoint && name.as_deref() == right_name {
+        *endpoint = left_endpoint;
+        *name = left_name.map(ToOwned::to_owned);
+    }
 }
 
 fn native_vulkan_scene_we_image_pass_chain_waterwaves2_ineligible_reasons(
@@ -3296,14 +3396,15 @@ mod tests {
     }
 
     #[test]
-    fn multi_waterwaves_on_mesh_do_not_fuse_same_graph_target_pair() {
+    fn multi_waterwaves_on_mesh_redirect_ping_pong_pairs_without_self_sampling() {
         let first = waterwaves_effect_record(0);
         let second = waterwaves_effect_record(1);
         let third = waterwaves_effect_record(2);
+        let fourth = waterwaves_effect_record(3);
 
         let mut quad = sampled_image_quad(Some(mesh()));
         quad.effect_target_pass = None;
-        quad.effect_passes = vec![first, second, third];
+        quad.effect_passes = vec![first, second, third, fourth];
         quad.image_effect_pass_count = quad.effect_passes.len();
 
         let chain =
@@ -3312,13 +3413,30 @@ mod tests {
 
         assert_eq!(chain.passes.len(), 3);
         assert_eq!(
-            chain.passes[1].fused_effect_kind, None,
-            "first graph-target pair must keep the ping-pong dependency"
+            chain.passes[1].fused_effect_kind,
+            Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
+        );
+        assert_eq!(
+            chain.passes[1].input,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalMain
+        );
+        assert_eq!(
+            chain.passes[1].target,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
         );
         assert_eq!(
             chain.passes[2].fused_effect_kind,
             Some(NativeVulkanSceneFusedEffectKind::WaterWaves2)
         );
+        assert_eq!(
+            chain.passes[2].input,
+            NativeVulkanSceneWeImagePassEndpoint::ImageLocalSub
+        );
+        assert_eq!(
+            chain.passes[2].target,
+            NativeVulkanSceneWeImagePassEndpoint::Scene
+        );
+        assert!(chain.passes[2].final_scene_pass);
         assert!(chain.passes.iter().all(|pass| {
             !(pass.fused_effect_kind.is_some()
                 && pass.input.is_graph_target()
@@ -3328,7 +3446,14 @@ mod tests {
         assert_eq!(plan.step_count, 3);
         assert_eq!(plan.target_count, 2);
         assert_eq!(plan.waterwaves_fused2_chain_count, 1);
-        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 1);
+        assert_eq!(plan.waterwaves_fused2_step_count, 2);
+        assert_eq!(plan.waterwaves_fused2_step_eliminated_count, 2);
+        assert_eq!(
+            plan.chain_signature_counts
+                .get("base-material>water-waves-fused2>water-waves-fused2")
+                .copied(),
+            Some(1)
+        );
     }
 
     #[test]
