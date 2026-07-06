@@ -12,14 +12,23 @@
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
 use serde::Serialize;
+use vulkanalia::prelude::v1_4::*;
+use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SceneGeometryId, SceneGraphPass, SceneGraphPipelineClass, SceneGraphTarget, SceneObjectId,
 };
 
-use super::draw_command::NativeVulkanSceneMeshDrawCommandPlan;
-use super::pipeline::{NativeVulkanScenePipelineBindPlan, NativeVulkanScenePipelineKey};
-use super::resource_buffers::NativeVulkanSceneMeshDrawBufferRecords;
+use super::draw_command::{
+    NativeVulkanSceneMeshDrawCommandPlan, native_vulkan_record_scene_mesh_draw_command,
+};
+use super::pipeline::{
+    NativeVulkanScenePipelineBindPlan, NativeVulkanScenePipelineKey,
+    native_vulkan_record_scene_pipeline_bind_command,
+};
+use super::resource_buffers::{
+    NativeVulkanSceneMeshDrawBufferRecords, NativeVulkanSceneMeshDrawBuffers,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneMeshPassCommandPlan<'a> {
@@ -115,6 +124,85 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
             commands,
         })
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_draw_commands<
+    'a,
+    PipelineForKey,
+    MeshBuffersForGeometry,
+>(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    pass: &'a SceneGraphPass,
+    mut pipeline_for_key: PipelineForKey,
+    mut mesh_buffers: MeshBuffersForGeometry,
+) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String>
+where
+    PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
+    MeshBuffersForGeometry:
+        FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
+{
+    let mut commands = Vec::with_capacity(pass.draws.len().saturating_mul(2) + 2);
+    commands.push(NativeVulkanSceneMeshPassCommand::BeginPass {
+        name: pass.name.as_str(),
+        input: pass.input,
+        output: pass.output,
+    });
+
+    let mut last_pipeline = None;
+    let mut pipeline_bind_count = 0usize;
+    let mut indexed_draw_count = 0usize;
+
+    for draw in &pass.draws {
+        if draw.pipeline != SceneGraphPipelineClass::Mesh {
+            return Err(format!(
+                "scene mesh pass '{}' requires Mesh pipeline, got {:?} for object {:?}",
+                pass.name, draw.pipeline, draw.object
+            ));
+        }
+
+        let key = NativeVulkanScenePipelineKey::from_draw(draw)?;
+        if last_pipeline != Some(key) {
+            let pipeline = pipeline_for_key(key)?;
+            let bind = native_vulkan_record_scene_pipeline_bind_command(
+                device,
+                command_buffer,
+                key,
+                pipeline,
+            )?;
+            commands.push(NativeVulkanSceneMeshPassCommand::BindPipeline { bind });
+            last_pipeline = Some(key);
+            pipeline_bind_count += 1;
+        }
+
+        let geometry = draw.geometry.ok_or_else(|| {
+            format!(
+                "scene mesh pass '{}' draw requires geometry handle",
+                pass.name
+            )
+        })?;
+        let buffers = mesh_buffers(geometry)?;
+        let draw_plan =
+            native_vulkan_record_scene_mesh_draw_command(device, command_buffer, draw, buffers)?;
+        commands.push(NativeVulkanSceneMeshPassCommand::DrawIndexed {
+            object: draw.object,
+            geometry: draw_plan.geometry,
+            draw: draw_plan,
+        });
+        indexed_draw_count += 1;
+    }
+
+    commands.push(NativeVulkanSceneMeshPassCommand::EndPass);
+
+    Ok(NativeVulkanSceneMeshPassCommandPlan {
+        name: pass.name.as_str(),
+        input: pass.input,
+        output: pass.output,
+        draw_count: pass.draws.len(),
+        pipeline_bind_count,
+        indexed_draw_count,
+        commands,
+    })
 }
 
 #[cfg(test)]
