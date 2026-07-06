@@ -9,6 +9,7 @@
 pub mod draw_command;
 pub mod pass_command;
 pub mod pipeline;
+pub mod render_target;
 pub mod renderer_scene_render;
 pub mod rendering_device;
 pub mod resource_buffers;
