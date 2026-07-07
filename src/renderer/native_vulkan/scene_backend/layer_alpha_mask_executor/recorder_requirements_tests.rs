@@ -14,11 +14,13 @@ use super::super::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
     NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan, NativeVulkanSceneLayerAlphaMaskTargetPlan,
     NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms,
 };
 use super::*;
 use crate::engine::scene_engine::{SceneLayerCompositorBlendKey, ScenePuppetId, SceneResourceId};
@@ -61,8 +63,12 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             &schedule,
         )
         .expect("generated consumer draws");
-    let (generated_consumer_targets, generated_consumer_pipelines, generated_consumer_commands) =
-        generated_consumer_target_pipeline_command_plans(&generated_consumer_draws);
+    let (
+        generated_consumer_targets,
+        generated_consumer_pipelines,
+        generated_consumer_commands,
+        generated_consumer_uniforms,
+    ) = generated_consumer_target_pipeline_command_uniform_plans(&generated_consumer_draws);
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -74,6 +80,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
+        &generated_consumer_uniforms,
     )
     .expect("recorder requirements");
 
@@ -129,6 +136,10 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     assert!(plan.requirements[3].missing_we_facts.is_empty());
     assert_eq!(plan.requirements[4].generated_consumer_draw_index, Some(0));
     assert_eq!(
+        plan.requirements[4].generated_consumer_uniform_index,
+        Some(0)
+    );
+    assert_eq!(
         plan.requirements[4].source_mask,
         Some(SceneGraphTarget::FullAlphaMask)
     );
@@ -146,7 +157,13 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         plan.requirements[4]
             .missing_we_facts
             .iter()
-            .any(|fact| fact.contains("CLIPPINGUVS"))
+            .all(|fact| !fact.contains("CLIPPINGUVS"))
+    );
+    assert!(
+        plan.requirements[4]
+            .reference_points
+            .iter()
+            .any(|reference| reference.contains("CLIPPINGUVS projected screen UV"))
     );
     assert!(
         plan.requirements[4]
@@ -189,8 +206,12 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
             &schedule,
         )
         .expect("generated consumer draws");
-    let (generated_consumer_targets, generated_consumer_pipelines, generated_consumer_commands) =
-        generated_consumer_target_pipeline_command_plans(&generated_consumer_draws);
+    let (
+        generated_consumer_targets,
+        generated_consumer_pipelines,
+        generated_consumer_commands,
+        generated_consumer_uniforms,
+    ) = generated_consumer_target_pipeline_command_uniform_plans(&generated_consumer_draws);
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -202,18 +223,20 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
+        &generated_consumer_uniforms,
     )
     .expect_err("copy-back must require retained draw bind");
 
     assert!(err.contains("requires exactly one retained copy-back draw heap bind"));
 }
 
-fn generated_consumer_target_pipeline_command_plans(
+fn generated_consumer_target_pipeline_command_uniform_plans(
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
 ) -> (
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
 ) {
     let targets = native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
         generated_consumer_draws,
@@ -245,7 +268,9 @@ fn generated_consumer_target_pipeline_command_plans(
             pipelines.cache_keys().len(),
         )
         .expect("generated consumer commands");
-    (targets, pipelines, commands)
+    let uniforms = native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms(&commands)
+        .expect("generated consumer uniforms");
+    (targets, pipelines, commands, uniforms)
 }
 
 fn runtime(

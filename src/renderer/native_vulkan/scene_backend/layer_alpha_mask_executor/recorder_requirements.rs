@@ -17,10 +17,17 @@ use crate::engine::scene_engine::{
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 
-use super::consumer_command::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan;
+use super::consumer_command::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+};
 use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
 use super::consumer_pipeline::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan;
 use super::consumer_target::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan;
+use super::consumer_uniform::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformBindingPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
+};
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
 use super::producer_target_graph::NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan;
 use super::resource_binds::{
@@ -79,6 +86,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub producer_draw_index: Option<usize>,
     pub producer_target_scope_index: Option<usize>,
     pub generated_consumer_draw_index: Option<usize>,
+    pub generated_consumer_uniform_index: Option<usize>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
@@ -106,6 +114,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+    generated_consumer_uniforms: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan, String> {
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan::empty());
@@ -154,6 +163,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             generated_consumer_targets,
             generated_consumer_pipelines,
             generated_consumer_commands,
+            generated_consumer_uniforms,
         )?);
     }
 
@@ -256,6 +266,7 @@ fn requirement_from_step(
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+    generated_consumer_uniforms: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirement, String> {
     match step.kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
@@ -267,6 +278,7 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
@@ -326,6 +338,7 @@ fn requirement_from_step(
                 Some(producer.producer_draw_index),
                 Some(target_scope.target_scope_index),
                 None,
+                None,
                 Some(target_scope.load_op),
                 Some(target_scope.requires_initialized_initial_layout),
                 None,
@@ -355,6 +368,7 @@ fn requirement_from_step(
                 Some(SceneGraphPipelineClass::LayerUtilityIndexed),
                 Some("R8_UNORM"),
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
+                None,
                 None,
                 None,
                 None,
@@ -416,6 +430,14 @@ fn requirement_from_step(
                         step.command_index
                     )
                 })?;
+            let generated_uniform = generated_consumer_uniforms
+                .uniform_for_consumer_draw(consumer.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no generated uniform contract",
+                        step.command_index
+                    )
+                })?;
             if generated_command.command_index != pipeline.command_index
                 || generated_command.command_index != target.command_index
                 || generated_command.color_target != target.color_target
@@ -426,6 +448,11 @@ fn requirement_from_step(
                     step.command_index
                 ));
             }
+            validate_generated_consumer_uniform_contract(
+                step.command_index,
+                generated_command,
+                generated_uniform,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -437,6 +464,7 @@ fn requirement_from_step(
                 None,
                 None,
                 Some(consumer.consumer_draw_index),
+                Some(generated_uniform.uniform_binding_index),
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -444,6 +472,8 @@ fn requirement_from_step(
                 generated_clippingtarget_missing_we_facts(),
                 vec![
                     "reverse-engineered/docs/exe/clipping-pipeline.md: CLIPPINGTARGET consumes g_Texture8",
+                    "reverse-engineered/docs/exe/clipping-pipeline.md: CLIPPINGUVS projected screen UV formula",
+                    "reverse-engineered/docs/exe/clipping-pipeline.md: active clipping uniform upload at 0x14020cff0",
                     "reverse-engineered/docs/exe/clipping-pipeline.md: 0x140208b8f copies subdraw +0x40 to generated material +0x1f0",
                     "reverse-engineered/docs/exe/blend-and-render.md: token generated draw at 0x140208bbb/0x14020908c",
                     "reverse-engineered/docs/exe/blend-and-render.md: [layer+0x490] is RT method [8] draw receiver, separate from current color target",
@@ -454,7 +484,7 @@ fn requirement_from_step(
                     "bind_generated_clippingtarget_resource_heap",
                     "bind_generated_clippingtarget_pipeline_variant",
                     "use_generated_clippingtarget_command_plan",
-                    "resolve_generated_material_0x428_uniforms",
+                    "apply_generated_clippingtarget_uniform_contract",
                     "record_layer_0x490_rt_method_8_generated_draw",
                 ],
             ))
@@ -473,6 +503,7 @@ fn base_requirement(
     producer_draw_index: Option<usize>,
     producer_target_scope_index: Option<usize>,
     generated_consumer_draw_index: Option<usize>,
+    generated_consumer_uniform_index: Option<usize>,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
@@ -502,6 +533,7 @@ fn base_requirement(
         producer_draw_index,
         producer_target_scope_index,
         generated_consumer_draw_index,
+        generated_consumer_uniform_index,
         target_scope_load_op,
         requires_initialized_initial_layout,
         source_mask,
@@ -649,6 +681,52 @@ fn validate_generated_consumer_draw_contract(
     Ok(())
 }
 
+fn validate_generated_consumer_uniform_contract(
+    command_index: usize,
+    generated_command: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan,
+    generated_uniform: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformBindingPlan,
+) -> Result<(), String> {
+    if generated_uniform.command_index != generated_command.command_index
+        || generated_uniform.consumer_draw_index != generated_command.consumer_draw_index
+        || generated_uniform.object != generated_command.object
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {command_index} uniform contract identity drifted"
+        ));
+    }
+    if generated_uniform.source_mask != SceneGraphTarget::FullAlphaMask
+        || generated_uniform.color_target != generated_command.color_target
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {command_index} uniform contract target drifted"
+        ));
+    }
+    if generated_uniform.shader != "we/genericimage4"
+        || !generated_uniform
+            .shader_combo_values
+            .iter()
+            .any(|combo| combo == "CLIPPINGTARGET=1")
+        || !generated_uniform
+            .shader_combo_values
+            .iter()
+            .any(|combo| combo == "CLIPPINGUVS=1")
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {command_index} uniform contract lost CLIPPINGTARGET/CLIPPINGUVS shader semantics"
+        ));
+    }
+    if generated_uniform.screen_uv_formula != "(v_ScreenPos.xy / v_ScreenPos.z) * 0.5 + 0.5"
+        || generated_uniform.alpha_apply_formula
+            != "gl_FragColor.a *= texSample2D(g_Texture8, screenUV).r"
+        || generated_uniform.active_clipping_max_count != 0x0b
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {command_index} uniform contract drifted from WE screen-UV/active-clipping facts"
+        ));
+    }
+    Ok(())
+}
+
 fn requirement_for_step_kind(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
 ) -> NativeVulkanSceneLayerAlphaMaskBindRequirement {
@@ -679,9 +757,8 @@ fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "generated material +0x428 uniform layout for CLIPPINGUVS/CLIPPINGTARGET",
+        "generated material +0x428 retained uniform-buffer allocation/write binding",
         "generated draw geometry payload/buffer binding for [layer+0x490].vtable+0x40",
-        "genericimage4 CLIPPINGTARGET projected UV constant source",
     ]
 }
 

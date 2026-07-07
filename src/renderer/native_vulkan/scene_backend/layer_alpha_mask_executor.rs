@@ -17,6 +17,7 @@ mod consumer_command;
 mod consumer_draws;
 pub(in crate::renderer::native_vulkan) mod consumer_pipeline;
 mod consumer_target;
+mod consumer_uniform;
 mod copy_back;
 mod copy_back_command;
 mod copy_back_geometry;
@@ -58,6 +59,10 @@ pub(in crate::renderer::native_vulkan) use consumer_target::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
+};
+pub(in crate::renderer::native_vulkan) use consumer_uniform::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms,
 };
 pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHADER;
 pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
