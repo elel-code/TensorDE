@@ -8,9 +8,12 @@
 
 pub mod draw_command;
 pub mod draw_list;
+pub mod frame_acquire;
 pub mod frame_command;
 pub mod frame_completion;
+pub mod frame_present;
 pub mod frame_resources;
+pub mod frame_submit;
 pub mod material_uniforms;
 pub mod pass_command;
 pub mod pipeline;
