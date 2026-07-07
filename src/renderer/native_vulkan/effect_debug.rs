@@ -1,9 +1,8 @@
 use std::fmt;
 use std::fs;
 use std::path::Path;
-use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 
 const GILDER_SCENE_TEXTURE_MAGIC: &[u8; 8] = b"GDTEX002";
 const GILDER_SCENE_TEXTURE_HEADER_BYTES: usize = 32;
@@ -101,34 +100,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_bc7_mode6_g
     path: &Path,
     groups: &[NativeVulkanEffectDebugRgbaUvGroup<'_>],
 ) -> Result<String, String> {
-    let texture = native_vulkan_effect_debug_read_bc7_mode6_gtex_cached(path)?;
+    let texture = native_vulkan_effect_debug_read_bc7_mode6_gtex(path)?;
     Ok(native_vulkan_effect_debug_rgba_payload_group_report(
         texture.width,
         texture.height,
         texture.payload(),
         groups,
     ))
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_read_r8_gtex_cached(
-    path: &Path,
-) -> Result<Arc<NativeVulkanEffectDebugR8Texture>, String> {
-    static CACHE: OnceLock<
-        Mutex<std::collections::BTreeMap<PathBuf, Arc<NativeVulkanEffectDebugR8Texture>>>,
-    > = OnceLock::new();
-    let key = path.to_path_buf();
-    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
-    if let Ok(cache) = cache.lock()
-        && let Some(texture) = cache.get(&key)
-    {
-        return Ok(Arc::clone(texture));
-    }
-
-    let texture = Arc::new(native_vulkan_effect_debug_read_r8_gtex(path)?);
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(key, Arc::clone(&texture));
-    }
-    Ok(texture)
 }
 
 fn native_vulkan_effect_debug_read_r8_gtex(
@@ -186,27 +164,6 @@ fn native_vulkan_effect_debug_read_r8_gtex(
             ..GILDER_SCENE_TEXTURE_HEADER_BYTES + expected_len as usize]
             .to_vec(),
     })
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_effect_debug_read_bc7_mode6_gtex_cached(
-    path: &Path,
-) -> Result<Arc<NativeVulkanEffectDebugRgbaTexture>, String> {
-    static CACHE: OnceLock<
-        Mutex<std::collections::BTreeMap<PathBuf, Arc<NativeVulkanEffectDebugRgbaTexture>>>,
-    > = OnceLock::new();
-    let key = path.to_path_buf();
-    let cache = CACHE.get_or_init(|| Mutex::new(std::collections::BTreeMap::new()));
-    if let Ok(cache) = cache.lock()
-        && let Some(texture) = cache.get(&key)
-    {
-        return Ok(Arc::clone(texture));
-    }
-
-    let texture = Arc::new(native_vulkan_effect_debug_read_bc7_mode6_gtex(path)?);
-    if let Ok(mut cache) = cache.lock() {
-        cache.insert(key, Arc::clone(&texture));
-    }
-    Ok(texture)
 }
 
 fn native_vulkan_effect_debug_read_bc7_mode6_gtex(

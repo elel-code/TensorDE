@@ -11,9 +11,8 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneResource};
+use crate::engine::scene_engine::SceneFramePlan;
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
-use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
 use super::frame_acquire::{
     NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS, NativeVulkanSceneFrameAcquirePlan,
@@ -32,7 +31,6 @@ use super::frame_slots::{
 use super::frame_submit::{
     NativeVulkanSceneFrameSubmitPlan, native_vulkan_submit_scene_frame_commands2,
 };
-use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 use super::runtime::{
     NativeVulkanSceneMeshRuntimeFrameContext, NativeVulkanSceneMeshRuntimeFramePlan,
     native_vulkan_record_scene_mesh_runtime_frame,
@@ -41,14 +39,11 @@ use super::runtime::{
 pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFrameContext<'a> {
     pub device: &'a Device,
     pub queue: vk::Queue,
-    pub memory_properties: &'a vk::PhysicalDeviceMemoryProperties,
-    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: &'a [vk::Image],
     pub swapchain_extent: vk::Extent2D,
     pub target_format: vk::Format,
     pub clear_color: Option<NativeVulkanClearColor>,
-    pub shaders: NativeVulkanSceneMeshPipelineShaders<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,7 +80,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
     frame_slots: &mut NativeVulkanSceneFrameSlotResources,
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: NativeVulkanScenePresentFrameContext<'_>,
-    resources: &[SceneResource],
     frame: &'a SceneFramePlan,
 ) -> Result<NativeVulkanScenePresentFramePlan<'a>, String> {
     validate_scene_present_frame_context(&context)?;
@@ -128,16 +122,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
             frame_resources,
             NativeVulkanSceneMeshRuntimeFrameContext {
                 device: context.device,
-                memory_properties: context.memory_properties,
-                descriptor_heap_properties: context.descriptor_heap_properties,
                 command_buffer: slot_sync.command_buffer,
-                frame_submission,
                 target,
                 target_format: context.target_format,
                 clear_color: context.clear_color,
-                shaders: context.shaders,
             },
-            resources,
             frame,
         )?;
         let command_buffer_end =

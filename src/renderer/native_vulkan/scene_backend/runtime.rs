@@ -17,79 +17,39 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{SceneFramePlan, SceneGraph, SceneGraphPass, SceneGraphTarget};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
-use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
 use super::frame_command::{
     NativeVulkanSceneMeshFrameCommandPlan, native_vulkan_record_scene_mesh_frame_commands,
 };
-use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::NativeVulkanScenePipelineCacheKey;
-use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
-use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
-use super::resource_prepare::{
-    NativeVulkanSceneMeshResourcePrepareContext,
-    native_vulkan_record_scene_mesh_resource_prepare_frame,
-};
-use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameContext<'a> {
     pub device: &'a Device,
-    pub memory_properties: &'a vk::PhysicalDeviceMemoryProperties,
-    pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub command_buffer: vk::CommandBuffer,
-    pub frame_submission: NativeVulkanSceneFrameSubmission,
     pub target: NativeVulkanSceneSwapchainRenderTarget,
     pub target_format: vk::Format,
     pub clear_color: Option<NativeVulkanClearColor>,
-    pub shaders: NativeVulkanSceneMeshPipelineShaders<'a>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
-    pub residency_command_count: usize,
-    pub material_uniform_gpu_buffer_action_count: usize,
-    pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
-    pub resource_heap: NativeVulkanSceneResourceHeapFramePlan,
-    pub resource_heap_action_count: usize,
-    pub texture_image_action_count: usize,
-    pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 8],
+    pub command_order: [&'static str; 2],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
-        residency_command_count: usize,
-        material_uniform_gpu_buffer_action_count: usize,
-        texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
-        resource_heap: NativeVulkanSceneResourceHeapFramePlan,
-        resource_heap_action_count: usize,
-        texture_image_action_count: usize,
-        gpu_buffer_action_count: usize,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
     ) -> Self {
         Self {
-            residency_command_count,
-            material_uniform_gpu_buffer_action_count,
-            texture_descriptors,
-            resource_heap,
-            resource_heap_action_count,
-            texture_image_action_count,
-            gpu_buffer_action_count,
             pipeline_warmup,
             frame,
             command_order: [
-                "sync_residency",
-                "record_material_uniform_buffer_uploads",
-                "prepare_texture_descriptors",
-                "record_texture_image_uploads",
-                "sync_draw_resource_heap",
-                "record_gpu_buffer_uploads",
                 "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands",
             ],
@@ -100,26 +60,12 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtime_frame<'a>(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: NativeVulkanSceneMeshRuntimeFrameContext<'_>,
-    resources: &[crate::engine::scene_engine::SceneResource],
     frame: &'a SceneFramePlan,
 ) -> Result<NativeVulkanSceneMeshRuntimeFramePlan<'a>, String> {
     let pass = native_vulkan_scene_mesh_runtime_pass(&frame.graph)?;
     let pipeline_warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
         &frame.graph,
         context.target_format,
-    )?;
-
-    let resource_prepare = native_vulkan_record_scene_mesh_resource_prepare_frame(
-        frame_resources,
-        NativeVulkanSceneMeshResourcePrepareContext {
-            device: context.device,
-            memory_properties: context.memory_properties,
-            descriptor_heap_properties: context.descriptor_heap_properties,
-            command_buffer: context.command_buffer,
-            frame_submission: context.frame_submission,
-        },
-        resources,
-        frame,
     )?;
 
     for key in pipeline_warmup.cache_keys() {
@@ -146,13 +92,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
-        resource_prepare.residency_command_count,
-        resource_prepare.material_uniform_gpu_buffer_action_count,
-        resource_prepare.texture_descriptors,
-        resource_prepare.resource_heap,
-        resource_prepare.resource_heap_action_count,
-        resource_prepare.texture_image_action_count,
-        resource_prepare.gpu_buffer_action_count,
         pipeline_warmup,
         frame_plan,
     ))
@@ -175,28 +114,17 @@ fn native_vulkan_scene_mesh_runtime_pass(graph: &SceneGraph) -> Result<&SceneGra
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use super::super::material_uniforms::{
-        NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
-        NativeVulkanSceneMaterialUniformUploadPlan,
-    };
     use super::super::pass_command::NativeVulkanSceneMeshPassCommandPlan;
     use super::super::render_target::{
         NativeVulkanSceneRenderTargetLoadOp, NativeVulkanSceneRenderTargetScopePlan,
-    };
-    use super::super::texture_descriptors::{
-        NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
     };
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneMaterialKey, SceneObjectId,
     };
-    use vulkanalia::vk::Handle;
 
     #[test]
-    fn runtime_frame_plan_preserves_godot_style_execution_order() {
-        let submission = NativeVulkanSceneFrameSubmission::new(2, 42);
+    fn runtime_frame_plan_preserves_hot_path_execution_order() {
         let graph = mesh_graph(vec![mesh_draw(SceneObjectId(1))]);
         let warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
             &graph,
@@ -226,89 +154,17 @@ mod tests {
             },
         );
 
-        let descriptors = NativeVulkanSceneTextureDescriptorFramePlan {
-            draw_count: 1,
-            binding_count: 1,
-            bindings: vec![NativeVulkanSceneTextureDescriptorBinding {
-                draw_index: 0,
-                object: SceneObjectId(1),
-                slot: 0,
-                role: crate::engine::scene_engine::SceneGraphResourceRole::shader_texture(0),
-                resource: crate::engine::scene_engine::SceneResourceId(9),
-                width: Some(1024),
-                height: Some(1024),
-                format: Some(crate::engine::scene_engine::SceneTextureFormat::R8G8B8A8Unorm),
-                mip_count: Some(1),
-                payload_bytes: Some(4_194_304),
-                shader_mapping: "set0.binding0.g_Texture0".to_owned(),
-            }],
-            descriptor_model: "VK_EXT_descriptor_heap",
-            command_order: [
-                "resolve_resident_texture_descriptors",
-                "bind_descriptor_heap_texture_mapping",
-            ],
-        };
-        let material_bindings = material_bindings(&graph);
-        let resource_heap =
-            super::super::resource_heap::NativeVulkanSceneResourceHeapFramePlan::from_graph(
-                &graph,
-                &descriptors,
-                NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
-                    resource_heap_alignment: 64,
-                    sampler_heap_alignment: 32,
-                    max_resource_heap_size: 4096,
-                    min_resource_heap_reserved_range: 96,
-                    max_sampler_heap_size: 4096,
-                    min_sampler_heap_reserved_range: 48,
-                    image_descriptor_size: 24,
-                    image_descriptor_alignment: 32,
-                    buffer_descriptor_size: 16,
-                    buffer_descriptor_alignment: 16,
-                    sampler_descriptor_size: 12,
-                    sampler_descriptor_alignment: 16,
-                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
-                },
-                |key| material_binding(&material_bindings, key),
-                texture_binding,
-            )
-            .expect("draw resource heap plan");
-
-        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
-            2,
-            1,
-            descriptors,
-            resource_heap,
-            2,
-            4,
-            3,
-            warmup,
-            frame,
-        );
+        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(warmup, frame);
 
         assert_eq!(
             plan.command_order,
             [
-                "sync_residency",
-                "record_material_uniform_buffer_uploads",
-                "prepare_texture_descriptors",
-                "record_texture_image_uploads",
-                "sync_draw_resource_heap",
-                "record_gpu_buffer_uploads",
                 "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands"
             ]
         );
-        assert_eq!(plan.residency_command_count, 2);
-        assert_eq!(plan.material_uniform_gpu_buffer_action_count, 1);
-        assert_eq!(plan.texture_descriptors.binding_count, 1);
-        assert_eq!(plan.resource_heap.resource_descriptor_count, 2);
-        assert_eq!(plan.resource_heap_action_count, 2);
-        assert_eq!(plan.texture_image_action_count, 4);
-        assert_eq!(plan.gpu_buffer_action_count, 3);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);
-        assert_eq!(submission.frame_slot, 2);
-        assert_eq!(submission.submission_index, 42);
     }
 
     #[test]
@@ -398,71 +254,5 @@ mod tests {
             }],
             index_count: 6,
         }
-    }
-
-    fn material_bindings(
-        graph: &SceneGraph,
-    ) -> BTreeMap<
-        NativeVulkanSceneMaterialUniformKey,
-        NativeVulkanSceneMaterialUniformGpuBufferBinding,
-    > {
-        let frame_plan =
-            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(graph)
-                .expect("shader uniform frame plan");
-        NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
-            .expect("material uniform plan")
-            .uploads()
-            .iter()
-            .enumerate()
-            .map(|(index, upload)| {
-                (
-                    upload.key.clone(),
-                    NativeVulkanSceneMaterialUniformGpuBufferBinding {
-                        key: upload.key.clone(),
-                        buffer: vk::Buffer::from_raw(0x2000 + index as u64),
-                        device_address: 0x0200_0000 + (index as u64 * 0x100),
-                        record_index: upload.record_index,
-                        bytes: upload.payload.len() as u64,
-                        payload_hash: stable_hash(&upload.payload),
-                    },
-                )
-            })
-            .collect()
-    }
-
-    fn material_binding(
-        bindings: &BTreeMap<
-            NativeVulkanSceneMaterialUniformKey,
-            NativeVulkanSceneMaterialUniformGpuBufferBinding,
-        >,
-        key: &NativeVulkanSceneMaterialUniformKey,
-    ) -> Result<NativeVulkanSceneMaterialUniformGpuBufferBinding, String> {
-        bindings
-            .get(key)
-            .cloned()
-            .ok_or_else(|| format!("missing fake material uniform binding for {key:?}"))
-    }
-
-    fn texture_binding(
-        resource: crate::engine::scene_engine::SceneResourceId,
-    ) -> Result<super::super::texture_images::NativeVulkanSceneTextureImageBinding, String> {
-        Ok(
-            super::super::texture_images::NativeVulkanSceneTextureImageBinding {
-                resource,
-                image: vk::Image::from_raw(0x3000 + u64::from(resource.0)),
-                view: vk::ImageView::from_raw(0x4000 + u64::from(resource.0)),
-                sampler: vk::Sampler::from_raw(0x5000 + u64::from(resource.0)),
-                format: vk::Format::R8G8B8A8_UNORM,
-                width: 1024,
-                height: 1024,
-                mip_count: 1,
-            },
-        )
-    }
-
-    fn stable_hash(bytes: &[u8]) -> u64 {
-        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-        })
     }
 }
