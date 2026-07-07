@@ -941,6 +941,7 @@ mod tests {
     fn pipeline_key() -> NativeVulkanScenePipelineCacheKey {
         NativeVulkanScenePipelineCacheKey {
             shader: "we/genericimage4".to_owned(),
+            shader_combo_values: Vec::new(),
             blend: SceneBlendContract::TranslucentAlpha,
             render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,

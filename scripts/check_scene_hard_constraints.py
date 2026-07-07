@@ -50,12 +50,31 @@ def forbidden_patterns() -> tuple[Pattern[str], ...]:
     legacy_binding_b = "resource"
     low_b = "set"
     camel_b = low_b.title()
+    pool_b = "pool"
+    pool_camel = pool_b.title()
+    vk_prefix = "V" + "k"
+    vk_func_prefix = "v" + "k"
+    desc_camel = legacy_binding_a.title()
+    desc_upper = legacy_binding_a.upper()
+    set_upper = low_b.upper()
+    pool_upper = pool_b.upper()
     return (
         re.compile(rf"\b{legacy_binding_a}[\s_-]+{low_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_a}{camel_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_b}[\s_-]+{low_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_b}{camel_b}s?\b", re.IGNORECASE),
         re.compile(r"\bset\d+\.binding\d+\b", re.IGNORECASE),
+        re.compile(rf"\b{vk_prefix}(?:Write)?{desc_camel}{camel_b}[A-Za-z0-9_]*\b"),
+        re.compile(
+            rf"\b{vk_func_prefix}(?:CmdBind|CmdPush|Allocate|Free|Update|Create|Destroy|Reset)"
+            rf"{desc_camel}{camel_b}[A-Za-z0-9_]*\b"
+        ),
+        re.compile(rf"\bVK_[A-Z0-9_]*{desc_upper}_{set_upper}[A-Z0-9_]*\b"),
+        re.compile(rf"\b{vk_prefix}{desc_camel}{pool_camel}[A-Za-z0-9_]*\b"),
+        re.compile(
+            rf"\b{vk_func_prefix}(?:Create|Destroy|Reset){desc_camel}{pool_camel}[A-Za-z0-9_]*\b"
+        ),
+        re.compile(rf"\bVK_[A-Z0-9_]*{desc_upper}_{pool_upper}[A-Z0-9_]*\b"),
     )
 
 

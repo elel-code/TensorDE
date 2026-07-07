@@ -14,6 +14,7 @@ use serde::Serialize;
 use vulkanalia::vk;
 
 mod consumer_draws;
+pub(in crate::renderer::native_vulkan) mod consumer_pipeline;
 mod copy_back;
 mod copy_back_command;
 mod copy_back_geometry;
@@ -598,6 +599,7 @@ impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
         }
         let cache_key = NativeVulkanScenePipelineCacheKey {
             shader: "we/clippingmaskimage4".to_owned(),
+            shader_combo_values: Vec::new(),
             blend: SceneBlendContract::TranslucentAlpha,
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,

@@ -170,6 +170,7 @@ impl NativeVulkanSceneLayerAlphaMaskProducerPipelineBindingPlan {
     ) -> NativeVulkanScenePipelineCacheKey {
         NativeVulkanScenePipelineCacheKey {
             shader: self.shader.to_owned(),
+            shader_combo_values: Vec::new(),
             blend: SceneBlendContract::TranslucentAlpha,
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: self.pipeline_class,
@@ -303,6 +304,7 @@ fn producer_pipeline_cache_key(
     }
     Ok(NativeVulkanScenePipelineCacheKey {
         shader: draw.shader.to_owned(),
+        shader_combo_values: Vec::new(),
         blend: SceneBlendContract::TranslucentAlpha,
         render_state: SceneMaterialRenderState::translucent_2d(),
         pipeline_class: SceneGraphPipelineClass::PuppetSkinning,

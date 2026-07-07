@@ -51,6 +51,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineLayou
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub shader: String,
+    pub shader_combo_values: Vec<String>,
     pub target_format: String,
     pub vertex_stride_bytes: u32,
     pub vertex_attributes: Vec<&'static str>,
@@ -70,6 +71,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
     validate_scene_mesh_pipeline_key(key)?;
     Ok(NativeVulkanSceneMeshPipelineCreatePlan {
         shader: key.shader.clone(),
+        shader_combo_values: scene_pipeline_shader_combo_value_labels(key),
         target_format: format!("{:?}", key.target_format),
         vertex_stride_bytes: scene_pipeline_vertex_stride_bytes(key.vertex_layout),
         vertex_attributes: scene_pipeline_vertex_attribute_labels(key.vertex_layout),
@@ -82,6 +84,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         alpha_write: scene_alpha_write_label(key.render_state.alpha_write),
         dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
+}
+
+fn scene_pipeline_shader_combo_value_labels(
+    key: &NativeVulkanScenePipelineCacheKey,
+) -> Vec<String> {
+    key.shader_combo_values
+        .iter()
+        .map(|combo| format!("{}={}", combo.name, combo.value))
+        .collect()
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeline_resources(
@@ -546,6 +557,32 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
             key.shader
         )
     })?;
+    for combo in &key.shader_combo_values {
+        if combo.name.is_empty() {
+            return Err(format!(
+                "scene mesh pipeline shader '{}' has empty WE combo override",
+                key.shader
+            ));
+        }
+        if !interface
+            .combos
+            .iter()
+            .any(|declared| declared.name == combo.name)
+        {
+            return Err(format!(
+                "scene mesh pipeline shader '{}' does not declare WE combo '{}'",
+                key.shader, combo.name
+            ));
+        }
+    }
+    for pair in key.shader_combo_values.windows(2) {
+        if pair[0].name >= pair[1].name {
+            return Err(format!(
+                "scene mesh pipeline shader '{}' WE combo overrides must be sorted and unique, got '{}' before '{}'",
+                key.shader, pair[0].name, pair[1].name
+            ));
+        }
+    }
     let _ = interface.texture_slot_mask_for_material(&key.shader, key.texture_slot_mask)?;
     Ok(())
 }
@@ -717,6 +754,7 @@ fn scene_alpha_mask_resource_heap_texture_layout(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::SceneGraphPipelineClass;
+    use crate::renderer::native_vulkan::scene_backend::pipeline::native_vulkan_scene_pipeline_shader_combo_values;
     use crate::renderer::native_vulkan::vulkan::{
         NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
@@ -763,6 +801,40 @@ mod tests {
     }
 
     #[test]
+    fn mesh_pipeline_plan_preserves_we_shader_combo_variant_labels() {
+        let plan =
+            native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
+                shader_combo_values: native_vulkan_scene_pipeline_shader_combo_values(&[
+                    ("CLIPPINGTARGET", 1),
+                    ("CLIPPINGUVS", 1),
+                ]),
+                texture_slot_mask: (1u32 << 0) | (1u32 << 8),
+                ..pipeline_key()
+            })
+            .expect("clippingtarget genericimage4 variant");
+
+        assert_eq!(
+            plan.shader_combo_values,
+            vec!["CLIPPINGTARGET=1".to_owned(), "CLIPPINGUVS=1".to_owned()]
+        );
+    }
+
+    #[test]
+    fn mesh_pipeline_plan_rejects_unknown_we_shader_combo() {
+        let err =
+            native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
+                shader_combo_values: native_vulkan_scene_pipeline_shader_combo_values(&[(
+                    "NOT_A_WE_COMBO",
+                    1,
+                )]),
+                ..pipeline_key()
+            })
+            .expect_err("unknown WE combo must fail");
+
+        assert!(err.contains("does not declare WE combo"));
+    }
+
+    #[test]
     fn mesh_pipeline_plan_accepts_puppet_skinning_pipeline_class() {
         let plan =
             native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
@@ -783,6 +855,7 @@ mod tests {
         let plan =
             native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
                 shader: "util/minimalalpha".to_owned(),
+                shader_combo_values: Vec::new(),
                 blend: SceneBlendContract::DestColorCopyBackBit0x100,
                 pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
                 vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
@@ -1007,6 +1080,7 @@ mod tests {
     fn pipeline_key() -> NativeVulkanScenePipelineCacheKey {
         NativeVulkanScenePipelineCacheKey {
             shader: "we/genericimage4".to_owned(),
+            shader_combo_values: Vec::new(),
             blend: SceneBlendContract::TranslucentAlpha,
             render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,

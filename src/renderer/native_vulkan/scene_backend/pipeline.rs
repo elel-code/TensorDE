@@ -41,9 +41,16 @@ pub enum NativeVulkanScenePipelineVertexLayout {
     FlatTexturePositionUv,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct NativeVulkanScenePipelineShaderComboValue {
+    pub name: String,
+    pub value: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NativeVulkanScenePipelineCacheKey {
     pub shader: String,
+    pub shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
     pub blend: SceneBlendContract,
     pub render_state: SceneMaterialRenderState,
     pub pipeline_class: SceneGraphPipelineClass,
@@ -110,6 +117,7 @@ impl NativeVulkanScenePipelineCacheKey {
         }
         Ok(Self {
             shader: key.shader.to_owned(),
+            shader_combo_values: Vec::new(),
             blend: key.blend,
             render_state: key.render_state,
             pipeline_class: key.pipeline_class,
@@ -118,6 +126,20 @@ impl NativeVulkanScenePipelineCacheKey {
             texture_slot_mask: key.texture_slot_mask,
         })
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_pipeline_shader_combo_values(
+    values: &[(&str, u32)],
+) -> Vec<NativeVulkanScenePipelineShaderComboValue> {
+    let mut combos = values
+        .iter()
+        .map(|(name, value)| NativeVulkanScenePipelineShaderComboValue {
+            name: (*name).to_owned(),
+            value: *value,
+        })
+        .collect::<Vec<_>>();
+    combos.sort_by(|left, right| left.name.cmp(&right.name));
+    combos
 }
 
 impl<'a> NativeVulkanScenePipelineBindPlan<'a> {
@@ -461,6 +483,32 @@ mod tests {
         let second = store
             .resolve_pipeline(slot0_and_4, |_| Ok(pipeline_resources(21, 22)))
             .expect("slot0+4 pipeline");
+
+        assert_eq!(store.len(), 2);
+        assert_ne!(first.pipeline, second.pipeline);
+    }
+
+    #[test]
+    fn pipeline_store_separates_we_shader_combo_variants() {
+        let ordinary = NativeVulkanScenePipelineCacheKey::from_bind_key(
+            NativeVulkanScenePipelineKey::from_draw(&mesh_draw("we/genericimage4")).unwrap(),
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .unwrap();
+        let mut clipping = ordinary.clone();
+        clipping.shader_combo_values = native_vulkan_scene_pipeline_shader_combo_values(&[
+            ("CLIPPINGUVS", 1),
+            ("CLIPPINGTARGET", 1),
+        ]);
+        clipping.texture_slot_mask = (1u32 << 0) | (1u32 << 8);
+        let mut store = NativeVulkanScenePipelineStore::new();
+
+        let first = store
+            .resolve_pipeline(ordinary, |_| Ok(pipeline_resources(11, 12)))
+            .expect("ordinary genericimage4 pipeline");
+        let second = store
+            .resolve_pipeline(clipping, |_| Ok(pipeline_resources(21, 22)))
+            .expect("clipping genericimage4 pipeline");
 
         assert_eq!(store.len(), 2);
         assert_ne!(first.pipeline, second.pipeline);
