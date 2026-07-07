@@ -14,6 +14,7 @@ use serde::Serialize;
 use vulkanalia::vk;
 
 mod copy_back;
+mod copy_back_pipeline;
 mod resource_binds;
 
 use crate::engine::scene_engine::{

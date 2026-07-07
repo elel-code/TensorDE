@@ -18,6 +18,10 @@ use super::copy_back::{
     NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_draws,
 };
+use super::copy_back_pipeline::{
+    NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_copy_back_pipelines,
+};
 use super::{
     NativeVulkanSceneLayerAlphaMaskDescriptorSetRole, NativeVulkanSceneLayerAlphaMaskRuntimePlan,
 };
@@ -47,7 +51,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub token_commands: Vec<NativeVulkanSceneLayerAlphaMaskTokenCommandResourceBindPlan>,
     pub copy_back_draws: Vec<NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan>,
     pub copy_back_draw_binds: Vec<NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan>,
-    pub command_order: [&'static str; 8],
+    pub copy_back_pipelines: NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan,
+    pub command_order: [&'static str; 9],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -172,6 +177,10 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             .count();
         let copy_back_draws = native_vulkan_plan_scene_layer_alpha_mask_copy_back_draws(runtime)?;
         let copy_back_draw_binds = copy_back_draw_bind_plans(&copy_back_draws, &binds)?;
+        let copy_back_pipelines = native_vulkan_plan_scene_layer_alpha_mask_copy_back_pipelines(
+            &copy_back_draws,
+            &copy_back_draw_binds,
+        )?;
 
         Ok(Self {
             descriptor_set_count: binds.len(),
@@ -190,6 +199,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             token_commands,
             copy_back_draws,
             copy_back_draw_binds,
+            copy_back_pipelines,
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
                 "resolve_descriptor_set_bind_info",
@@ -198,6 +208,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
                 "require_heap_bind_for_tokenized_mask_draws",
                 "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "pair_flattexture_copy_back_draws_with_heap_binds",
+                "derive_flattexture_copy_back_pipeline_mapping",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw",
             ],
         })
@@ -221,6 +232,18 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             token_commands: Vec::new(),
             copy_back_draws: Vec::new(),
             copy_back_draw_binds: Vec::new(),
+            copy_back_pipelines: NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
+                pipeline_count: 0,
+                texture_slot_mask: 0,
+                keys: Vec::new(),
+                command_order: [
+                    "read_copy_back_draw_resources",
+                    "read_copy_back_heap_bind_pairings",
+                    "derive_minimalalpha_copy_back_pipeline_keys",
+                    "map_copy_back_texture_slots_to_descriptor_heap_offsets",
+                    "preserve_target_like_flattexture_draw_shape",
+                ],
+            },
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
                 "resolve_descriptor_set_bind_info",
@@ -229,6 +252,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
                 "require_heap_bind_for_tokenized_mask_draws",
                 "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "pair_flattexture_copy_back_draws_with_heap_binds",
+                "derive_flattexture_copy_back_pipeline_mapping",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw",
             ],
         }
@@ -617,6 +641,13 @@ mod tests {
                 "draw_minimalalpha_copy_back"
             ]
         );
+        assert_eq!(plan.copy_back_pipelines.pipeline_count, 1);
+        assert_eq!(plan.copy_back_pipelines.texture_slot_mask, 1);
+        assert_eq!(plan.copy_back_pipelines.keys[0].shader, "util/minimalalpha");
+        assert_eq!(
+            plan.copy_back_pipelines.keys[0].shader_mapping,
+            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-resource-set2-resource4-sampler4"
+        );
         assert_eq!(
             plan.command_order,
             [
@@ -627,6 +658,7 @@ mod tests {
                 "require_heap_bind_for_tokenized_mask_draws",
                 "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "pair_flattexture_copy_back_draws_with_heap_binds",
+                "derive_flattexture_copy_back_pipeline_mapping",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw"
             ]
         );
