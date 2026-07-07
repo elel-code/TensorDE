@@ -4,6 +4,7 @@
 //! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
+//! - `reverse-engineered/docs/exe/blend-and-render.md`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.vert`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.frag`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
@@ -18,14 +19,12 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_hea
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorVkFormat;
 
 use super::NativeVulkanSceneLayerAlphaMaskDescriptorSetRole;
+use super::copy_back_geometry::{
+    FLATTEXTURE_COPY_BACK_INDEX_COUNT, FLATTEXTURE_COPY_BACK_VK_INDEX_TYPE,
+    NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers,
+    NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan,
+};
 use super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan;
-
-const FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES: u32 = 20;
-const FLATTEXTURE_COPY_BACK_INDEX_COUNT: u32 = 6;
-const FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES: u64 =
-    FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES as u64 * 4;
-const FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES: u64 =
-    FLATTEXTURE_COPY_BACK_INDEX_COUNT as u64 * 4;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan {
@@ -46,31 +45,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub command_order: [&'static str; 5],
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers
-{
-    pub vertex: vk::Buffer,
-    pub index: vk::Buffer,
-    pub vertex_bytes: u64,
-    pub index_bytes: u64,
-    pub vertex_payload_hash: u64,
-    pub index_payload_hash: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan
-{
-    pub raster_geometry: &'static str,
-    pub vertex_layout: &'static str,
-    pub vertex_stride_bytes: u32,
-    pub index_count: u32,
-    pub vertex_bytes: u64,
-    pub index_bytes: u64,
-    pub vertex_payload_hash: u64,
-    pub index_payload_hash: u64,
-    pub command_order: [&'static str; 3],
-}
-
 impl NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan {
     pub(in crate::renderer::native_vulkan) fn from_pipeline_heap_and_geometry(
         pipeline: &NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan,
@@ -79,10 +53,11 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan {
     ) -> Result<Self, String> {
         validate_copy_back_pipeline_for_command(pipeline)?;
         validate_copy_back_heap_bind_for_command(pipeline, bind_info)?;
-        let geometry = NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan::from_buffers(
-            pipeline.raster_geometry,
-            geometry,
-        )?;
+        let geometry =
+            NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan::from_raster_geometry_and_buffers(
+                pipeline.raster_geometry,
+                geometry,
+            )?;
         Ok(Self {
             command_index: pipeline.command_index,
             object: pipeline.object,
@@ -104,52 +79,6 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan {
                 "cmd_bind_alpha_mask_copy_back_sampler_heap_ext",
                 "cmd_bind_target_like_flattexture_geometry",
                 "cmd_draw_indexed_target_like_flattexture",
-            ],
-        })
-    }
-}
-
-impl NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan {
-    fn from_buffers(
-        raster_geometry: &'static str,
-        buffers: NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers,
-    ) -> Result<Self, String> {
-        if raster_geometry != "target-like-flattexture" {
-            return Err(format!(
-                "scene layer alpha-mask copy-back command requires target-like-flattexture geometry, got {raster_geometry}"
-            ));
-        }
-        if buffers.vertex == vk::Buffer::null() || buffers.index == vk::Buffer::null() {
-            return Err(
-                "scene layer alpha-mask copy-back command requires resident target-like flattexture vertex/index buffers"
-                    .to_owned(),
-            );
-        }
-        if buffers.vertex_bytes < FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES {
-            return Err(format!(
-                "scene layer alpha-mask copy-back target-like vertex buffer too small: {} bytes",
-                buffers.vertex_bytes
-            ));
-        }
-        if buffers.index_bytes < FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES {
-            return Err(format!(
-                "scene layer alpha-mask copy-back target-like index buffer too small: {} bytes",
-                buffers.index_bytes
-            ));
-        }
-        Ok(Self {
-            raster_geometry,
-            vertex_layout: "a_Position.xyz+a_TexCoord.xy",
-            vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
-            index_count: FLATTEXTURE_COPY_BACK_INDEX_COUNT,
-            vertex_bytes: buffers.vertex_bytes,
-            index_bytes: buffers.index_bytes,
-            vertex_payload_hash: buffers.vertex_payload_hash,
-            index_payload_hash: buffers.index_payload_hash,
-            command_order: [
-                "cmd_bind_vertex_buffers",
-                "cmd_bind_index_buffer",
-                "cmd_draw_indexed",
             ],
         })
     }
@@ -185,7 +114,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
         let vertex_buffers = [geometry.vertex];
         let vertex_offsets = [0u64];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
-        device.cmd_bind_index_buffer(command_buffer, geometry.index, 0, vk::IndexType::UINT32);
+        device.cmd_bind_index_buffer(
+            command_buffer,
+            geometry.index,
+            0,
+            FLATTEXTURE_COPY_BACK_VK_INDEX_TYPE,
+        );
         device.cmd_draw_indexed(
             command_buffer,
             FLATTEXTURE_COPY_BACK_INDEX_COUNT,
@@ -299,6 +233,10 @@ mod tests {
         SceneGraphResourceRole, SceneLayerCompositorOperation, ScenePuppetId,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::copy_back::NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan;
+    use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::copy_back_geometry::{
+        FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH, FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES,
+        FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES,
+    };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
         NativeVulkanSceneLayerAlphaMaskResourceSetBinding,
@@ -329,7 +267,11 @@ mod tests {
         assert_eq!(plan.resource_heap_bind_count, 1);
         assert_eq!(plan.indexed_draw_count, 1);
         assert_eq!(plan.geometry.vertex_layout, "a_Position.xyz+a_TexCoord.xy");
+        assert_eq!(plan.geometry.index_format, "DXGI_FORMAT_R16_UINT");
+        assert_eq!(plan.geometry.index_element_bytes, 2);
         assert_eq!(plan.geometry.index_count, 6);
+        assert_eq!(plan.geometry.index_bytes, 12);
+        assert_eq!(plan.geometry.index_payload_u16, [0, 2, 1, 1, 2, 3]);
         assert_eq!(
             plan.command_order,
             [
@@ -475,10 +417,10 @@ mod tests {
         NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers {
             vertex: vk::Buffer::from_raw(11),
             index: vk::Buffer::from_raw(12),
-            vertex_bytes: 80,
-            index_bytes: 24,
+            vertex_bytes: FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES,
+            index_bytes: FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES,
             vertex_payload_hash: 100,
-            index_payload_hash: 200,
+            index_payload_hash: FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH,
         }
     }
 }
