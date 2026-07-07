@@ -12,9 +12,9 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
-use vulkanalia::vk::Handle;
+use vulkanalia::vk::{self, Handle};
 
-use crate::engine::scene_engine::{SceneGraph, SceneObjectId, SceneResourceId};
+use crate::engine::scene_engine::{SceneGraph, SceneObjectId, SceneResourceId, SceneTextureFormat};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
@@ -32,6 +32,7 @@ use super::super::texture_descriptors::{
 use super::super::texture_heap::texture_set::{
     NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key,
 };
+use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
 
 const WE_GENERICIMAGE4_PS_MATERIAL_CONSTANT_BUFFER_SLOT: u32 = 3;
 
@@ -47,6 +48,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapFrame
     pub draw_bindings: Vec<NativeVulkanSceneResourceHeapDrawBinding>,
     pub descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     pub command_order: [&'static str; 5],
+    #[serde(skip)]
+    pub(super) bindings: Vec<NativeVulkanSceneResourceHeapDescriptorBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -76,6 +79,13 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneResourceHeapEntryRo
     WeSampledTexture {
         resource: SceneResourceId,
         slot: u32,
+        image_handle: u64,
+        view_handle: u64,
+        sampler_handle: u64,
+        format: String,
+        width: u32,
+        height: u32,
+        mip_count: u32,
         shader_mapping: String,
     },
 }
@@ -94,9 +104,30 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawB
     pub texture_set: NativeVulkanSceneTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub base_resource_heap_offset: u64,
+    pub base_sampler_descriptor_index: Option<usize>,
+    pub base_sampler_heap_offset: Option<u64>,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
     pub shader_mappings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeVulkanSceneResourceHeapDescriptorBinding {
+    UniformBuffer {
+        descriptor_index: usize,
+        device_address: vk::DeviceAddress,
+        bytes: u64,
+    },
+    SampledImage {
+        descriptor_index: usize,
+        sampler_descriptor_index: usize,
+        resource: SceneResourceId,
+        image: vk::Image,
+        format: vk::Format,
+        width: u32,
+        height: u32,
+        mip_count: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -113,7 +144,9 @@ struct NativeVulkanSceneResourceSetKey {
 struct NativeVulkanSceneResourceSetSlice {
     resource_set_index: usize,
     base_resource_descriptor_index: usize,
+    base_sampler_descriptor_index: Option<usize>,
     resource_descriptor_count: usize,
+    texture_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -138,12 +171,16 @@ impl NativeVulkanSceneResourceHeapFramePlan {
             NativeVulkanSceneMaterialUniformGpuBufferBinding,
             String,
         >,
+        texture_image_binding: impl Fn(
+            SceneResourceId,
+        ) -> Result<NativeVulkanSceneTextureImageBinding, String>,
     ) -> Result<Self, String> {
         let textures_by_draw = texture_descriptors_by_draw(texture_descriptors)?;
         let mut resource_set_to_slice =
             BTreeMap::<NativeVulkanSceneResourceSetKey, NativeVulkanSceneResourceSetSlice>::new();
         let mut descriptor_kinds = Vec::new();
         let mut pending_entries = Vec::new();
+        let mut descriptor_bindings = Vec::new();
         let mut draw_bindings = Vec::with_capacity(texture_descriptors.draw_count);
         let mut draw_index = 0usize;
         let mut sampler_descriptor_count = 0usize;
@@ -172,40 +209,44 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                 } else {
                     let resource_set_index = resource_set_to_slice.len();
                     let base_resource_descriptor_index = descriptor_kinds.len();
+                    let draw_textures = textures_by_draw.get(draw_index).ok_or_else(|| {
+                        format!(
+                            "scene resource heap draw index {} exceeds texture descriptor draw count {}",
+                            draw_index, texture_descriptors.draw_count
+                        )
+                    })?;
+                    let base_sampler_descriptor_index =
+                        (!draw_textures.is_empty()).then_some(sampler_descriptor_count);
                     push_material_descriptor(
                         &mut descriptor_kinds,
                         &mut pending_entries,
+                        &mut descriptor_bindings,
                         resource_set_index,
                         draw_index,
                         draw.object,
                         &material,
                     );
-                    for descriptor in textures_by_draw
-                            .get(draw_index)
-                            .ok_or_else(|| {
-                                format!(
-                                    "scene resource heap draw index {} exceeds texture descriptor draw count {}",
-                                    draw_index, texture_descriptors.draw_count
-                                )
-                            })?
-                            .iter()
-                        {
-                            push_texture_descriptor(
-                                &mut descriptor_kinds,
-                                &mut pending_entries,
-                                resource_set_index,
-                                draw_index,
-                                *descriptor,
-                                sampler_descriptor_count,
-                            );
-                            sampler_descriptor_count = sampler_descriptor_count.saturating_add(1);
-                        }
+                    for descriptor in draw_textures.iter() {
+                        push_texture_descriptor(
+                            &mut descriptor_kinds,
+                            &mut pending_entries,
+                            &mut descriptor_bindings,
+                            resource_set_index,
+                            draw_index,
+                            *descriptor,
+                            texture_image_binding(descriptor.resource)?,
+                            sampler_descriptor_count,
+                        )?;
+                        sampler_descriptor_count = sampler_descriptor_count.saturating_add(1);
+                    }
                     let slice = NativeVulkanSceneResourceSetSlice {
                         resource_set_index,
                         base_resource_descriptor_index,
+                        base_sampler_descriptor_index,
                         resource_descriptor_count: descriptor_kinds
                             .len()
                             .saturating_sub(base_resource_descriptor_index),
+                        texture_count: draw_textures.len(),
                     };
                     resource_set_to_slice.insert(resource_set_key.clone(), slice);
                     slice
@@ -223,8 +264,10 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                     texture_set,
                     base_resource_descriptor_index: slice.base_resource_descriptor_index,
                     base_resource_heap_offset: 0,
+                    base_sampler_descriptor_index: slice.base_sampler_descriptor_index,
+                    base_sampler_heap_offset: None,
                     resource_descriptor_count: slice.resource_descriptor_count,
-                    texture_count: draw.resources.len(),
+                    texture_count: slice.texture_count,
                     shader_mappings: draw_resource_set_shader_mappings(),
                 });
                 draw_index = draw_index.saturating_add(1);
@@ -262,6 +305,21 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                         binding.draw_index
                     )
                 })?;
+            binding.base_sampler_heap_offset = binding
+                .base_sampler_descriptor_index
+                .map(|sampler_index| {
+                    descriptor_heap_plan
+                        .sampler_descriptor_offsets
+                        .get(sampler_index)
+                        .copied()
+                        .ok_or_else(|| {
+                            format!(
+                                "scene resource heap draw binding {} missing sampler descriptor offset",
+                                binding.draw_index
+                            )
+                        })
+                })
+                .transpose()?;
         }
 
         Ok(Self {
@@ -281,6 +339,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                 "pack_mixed_descriptor_heap_slices",
                 "bind_draw_resource_set_slice",
             ],
+            bindings: descriptor_bindings,
         })
     }
 }
@@ -288,6 +347,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
 fn push_material_descriptor(
     descriptor_kinds: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     pending_entries: &mut Vec<PendingResourceHeapEntry>,
+    descriptor_bindings: &mut Vec<NativeVulkanSceneResourceHeapDescriptorBinding>,
     resource_set_index: usize,
     draw_index: usize,
     object: SceneObjectId,
@@ -296,6 +356,13 @@ fn push_material_descriptor(
     let descriptor_index = descriptor_kinds.len();
     descriptor_kinds
         .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
+    descriptor_bindings.push(
+        NativeVulkanSceneResourceHeapDescriptorBinding::UniformBuffer {
+            descriptor_index,
+            device_address: material.device_address,
+            bytes: material.bytes,
+        },
+    );
     pending_entries.push(PendingResourceHeapEntry {
         resource_set_index,
         descriptor_index,
@@ -318,13 +385,28 @@ fn push_material_descriptor(
 fn push_texture_descriptor(
     descriptor_kinds: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     pending_entries: &mut Vec<PendingResourceHeapEntry>,
+    descriptor_bindings: &mut Vec<NativeVulkanSceneResourceHeapDescriptorBinding>,
     resource_set_index: usize,
     draw_index: usize,
     descriptor: &NativeVulkanSceneTextureDescriptorBinding,
+    texture: NativeVulkanSceneTextureImageBinding,
     sampler_descriptor_index: usize,
-) {
+) -> Result<(), String> {
+    validate_texture_binding(descriptor, texture)?;
     let descriptor_index = descriptor_kinds.len();
     descriptor_kinds.push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage);
+    descriptor_bindings.push(
+        NativeVulkanSceneResourceHeapDescriptorBinding::SampledImage {
+            descriptor_index,
+            sampler_descriptor_index,
+            resource: texture.resource,
+            image: texture.image,
+            format: texture.format,
+            width: texture.width,
+            height: texture.height,
+            mip_count: texture.mip_count,
+        },
+    );
     pending_entries.push(PendingResourceHeapEntry {
         resource_set_index,
         descriptor_index,
@@ -335,9 +417,17 @@ fn push_texture_descriptor(
         role: NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture {
             resource: descriptor.resource,
             slot: descriptor.slot,
+            image_handle: texture.image.as_raw(),
+            view_handle: texture.view.as_raw(),
+            sampler_handle: texture.sampler.as_raw(),
+            format: format!("{:?}", texture.format),
+            width: texture.width,
+            height: texture.height,
+            mip_count: texture.mip_count,
             shader_mapping: descriptor.shader_mapping.clone(),
         },
     });
+    Ok(())
 }
 
 fn finalize_entries(
@@ -434,6 +524,77 @@ fn validate_material_binding(
         ));
     }
     Ok(())
+}
+
+fn validate_texture_binding(
+    descriptor: &NativeVulkanSceneTextureDescriptorBinding,
+    binding: NativeVulkanSceneTextureImageBinding,
+) -> Result<(), String> {
+    if descriptor.resource != binding.resource {
+        return Err(format!(
+            "scene resource heap texture resolver returned {:?} for descriptor {:?}",
+            binding.resource, descriptor.resource
+        ));
+    }
+    validate_optional_descriptor_u32(
+        descriptor.width,
+        binding.width,
+        descriptor.resource,
+        "width",
+    )?;
+    validate_optional_descriptor_u32(
+        descriptor.height,
+        binding.height,
+        descriptor.resource,
+        "height",
+    )?;
+    validate_optional_descriptor_u32(
+        descriptor.mip_count,
+        binding.mip_count,
+        descriptor.resource,
+        "mip count",
+    )?;
+    let descriptor_format = descriptor.format.ok_or_else(|| {
+        format!(
+            "scene resource heap texture {:?} descriptor missing native format",
+            descriptor.resource
+        )
+    })?;
+    let expected_format = scene_texture_vk_format(descriptor_format);
+    if expected_format != binding.format {
+        return Err(format!(
+            "scene resource heap texture {:?} descriptor format {:?} does not match retained image {:?}",
+            descriptor.resource, expected_format, binding.format
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_descriptor_u32(
+    descriptor_value: Option<u32>,
+    binding_value: u32,
+    resource: SceneResourceId,
+    label: &'static str,
+) -> Result<(), String> {
+    match descriptor_value {
+        Some(value) if value == binding_value => Ok(()),
+        Some(value) => Err(format!(
+            "scene resource heap texture {resource:?} descriptor {label} {value} does not match retained image {binding_value}"
+        )),
+        None => Err(format!(
+            "scene resource heap texture {resource:?} descriptor missing {label}"
+        )),
+    }
+}
+
+fn scene_texture_vk_format(format: SceneTextureFormat) -> vk::Format {
+    match format {
+        SceneTextureFormat::Bc1RgbaUnormBlock => vk::Format::BC1_RGBA_UNORM_BLOCK,
+        SceneTextureFormat::Bc3UnormBlock => vk::Format::BC3_UNORM_BLOCK,
+        SceneTextureFormat::Bc7UnormBlock => vk::Format::BC7_UNORM_BLOCK,
+        SceneTextureFormat::R8Unorm => vk::Format::R8_UNORM,
+        SceneTextureFormat::R8G8B8A8Unorm => vk::Format::R8G8B8A8_UNORM,
+    }
 }
 
 fn draw_resource_set_shader_mappings() -> Vec<String> {

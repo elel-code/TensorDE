@@ -38,7 +38,10 @@ use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
 };
-use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
+use super::resource_heap::{
+    NativeVulkanSceneResourceHeapDrawBindInfo, NativeVulkanSceneResourceHeapFramePlan,
+    NativeVulkanSceneResourceHeapStore, NativeVulkanSceneResourceHeapSyncAction,
+};
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
@@ -57,6 +60,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     gpu_buffers: NativeVulkanSceneGpuBufferStore,
     texture_images: NativeVulkanSceneTextureImageStore,
     texture_heap: NativeVulkanSceneTextureHeapStore,
+    resource_heap: NativeVulkanSceneResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
 }
@@ -68,6 +72,7 @@ impl NativeVulkanSceneFrameResources {
             gpu_buffers: NativeVulkanSceneGpuBufferStore::default(),
             texture_images: NativeVulkanSceneTextureImageStore::default(),
             texture_heap: NativeVulkanSceneTextureHeapStore::default(),
+            resource_heap: NativeVulkanSceneResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
         }
@@ -291,7 +296,46 @@ impl NativeVulkanSceneFrameResources {
             texture_descriptors,
             descriptor_heap_properties,
             |key| self.material_uniform_gpu_buffer(key),
+            |resource| self.texture_image_binding(resource),
         )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sync_draw_resource_heap(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        graph: &SceneGraph,
+        texture_descriptors: &NativeVulkanSceneTextureDescriptorFramePlan,
+        descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    ) -> Result<&[NativeVulkanSceneResourceHeapSyncAction], String> {
+        let frame_plan = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+            graph,
+            texture_descriptors,
+            descriptor_heap_properties,
+            |key| self.material_uniform_buffers.material_uniform_buffer(key),
+            |resource| self.texture_images.texture_binding(resource),
+        )?;
+        self.resource_heap
+            .sync_frame_plan(device, memory_properties, frame_plan)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn current_resource_heap_frame_plan(
+        &self,
+    ) -> Option<&NativeVulkanSceneResourceHeapFramePlan> {
+        self.resource_heap.current_frame_plan()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_resource_heap_actions(
+        &self,
+    ) -> &[NativeVulkanSceneResourceHeapSyncAction] {
+        self.resource_heap.last_actions()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn resource_heap_draw_bind_info_for_draw(
+        &self,
+        draw_index: usize,
+    ) -> Result<NativeVulkanSceneResourceHeapDrawBindInfo, String> {
+        self.resource_heap.draw_bind_info_for_draw_index(draw_index)
     }
 
     pub(in crate::renderer::native_vulkan) fn last_material_uniform_gpu_buffer_actions(
@@ -333,6 +377,7 @@ impl NativeVulkanSceneFrameResources {
     }
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
+        self.resource_heap.destroy_all(device);
         self.texture_heap.destroy_all(device);
         self.texture_images.destroy_all(device);
         self.material_uniform_buffers.destroy_all(device);

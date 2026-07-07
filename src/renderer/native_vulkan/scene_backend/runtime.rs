@@ -51,6 +51,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub material_uniform_gpu_buffer_action_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
     pub resource_heap: NativeVulkanSceneResourceHeapFramePlan,
+    pub resource_heap_action_count: usize,
     pub texture_image_action_count: usize,
     pub texture_heap_action_count: usize,
     pub gpu_buffer_action_count: usize,
@@ -65,6 +66,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         material_uniform_gpu_buffer_action_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
         resource_heap: NativeVulkanSceneResourceHeapFramePlan,
+        resource_heap_action_count: usize,
         texture_image_action_count: usize,
         texture_heap_action_count: usize,
         gpu_buffer_action_count: usize,
@@ -76,6 +78,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             material_uniform_gpu_buffer_action_count,
             texture_descriptors,
             resource_heap,
+            resource_heap_action_count,
             texture_image_action_count,
             texture_heap_action_count,
             gpu_buffer_action_count,
@@ -85,8 +88,8 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "sync_residency",
                 "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
-                "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
+                "sync_draw_resource_heap",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
@@ -119,11 +122,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         )?
         .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
-    let resource_heap = frame_resources.resource_heap_frame_plan(
-        &frame.graph,
-        &texture_descriptors,
-        context.descriptor_heap_properties,
-    )?;
     let texture_image_action_count = frame_resources
         .sync_texture_images_recorded(
             context.device,
@@ -133,6 +131,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             resources,
         )?
         .len();
+    let resource_heap_action_count = frame_resources
+        .sync_draw_resource_heap(
+            context.device,
+            context.memory_properties,
+            &frame.graph,
+            &texture_descriptors,
+            context.descriptor_heap_properties,
+        )?
+        .len();
+    let resource_heap = frame_resources
+        .current_resource_heap_frame_plan()
+        .ok_or_else(|| "scene mesh runtime missing draw resource heap frame plan".to_owned())?
+        .clone();
     let texture_heap_action_count = frame_resources
         .sync_texture_descriptor_heap(
             context.device,
@@ -188,6 +199,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         material_uniform_gpu_buffer_action_count,
         texture_descriptors,
         resource_heap,
+        resource_heap_action_count,
         texture_image_action_count,
         texture_heap_action_count,
         gpu_buffer_action_count,
@@ -307,6 +319,7 @@ mod tests {
                     ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
                 },
                 |key| material_binding(&material_bindings, key),
+                texture_binding,
             )
             .expect("draw resource heap plan");
 
@@ -315,6 +328,7 @@ mod tests {
             1,
             descriptors,
             resource_heap,
+            2,
             4,
             1,
             3,
@@ -328,8 +342,8 @@ mod tests {
                 "sync_residency",
                 "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
-                "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
+                "sync_draw_resource_heap",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
@@ -340,6 +354,7 @@ mod tests {
         assert_eq!(plan.material_uniform_gpu_buffer_action_count, 1);
         assert_eq!(plan.texture_descriptors.binding_count, 1);
         assert_eq!(plan.resource_heap.resource_descriptor_count, 2);
+        assert_eq!(plan.resource_heap_action_count, 2);
         assert_eq!(plan.texture_image_action_count, 4);
         assert_eq!(plan.texture_heap_action_count, 1);
         assert_eq!(plan.gpu_buffer_action_count, 3);
@@ -479,6 +494,23 @@ mod tests {
             .get(key)
             .cloned()
             .ok_or_else(|| format!("missing fake material uniform binding for {key:?}"))
+    }
+
+    fn texture_binding(
+        resource: crate::engine::scene_engine::SceneResourceId,
+    ) -> Result<super::super::texture_images::NativeVulkanSceneTextureImageBinding, String> {
+        Ok(
+            super::super::texture_images::NativeVulkanSceneTextureImageBinding {
+                resource,
+                image: vk::Image::from_raw(0x3000 + u64::from(resource.0)),
+                view: vk::ImageView::from_raw(0x4000 + u64::from(resource.0)),
+                sampler: vk::Sampler::from_raw(0x5000 + u64::from(resource.0)),
+                format: vk::Format::R8G8B8A8_UNORM,
+                width: 1024,
+                height: 1024,
+                mip_count: 1,
+            },
+        )
     }
 
     fn stable_hash(bytes: &[u8]) -> u64 {

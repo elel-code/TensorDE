@@ -5,6 +5,7 @@ use super::super::material_uniforms::{
     NativeVulkanSceneMaterialUniformUploadPlan,
 };
 use super::super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
+use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
 use super::frame_plan::{
     NativeVulkanSceneResourceHeapEntryRole, NativeVulkanSceneResourceHeapFramePlan,
 };
@@ -46,6 +47,7 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
         &texture_plan,
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
+        texture_binding,
     )
     .expect("resource heap frame plan");
 
@@ -74,13 +76,19 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
     ));
     assert!(matches!(
         plan.entries[1].role,
-        NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture { slot: 0, .. }
+        NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture {
+            slot: 0,
+            image_handle,
+            ..
+        } if image_handle == 0x3003
     ));
     assert_eq!(plan.entries[1].sampler_heap_offset, Some(0));
     assert_eq!(plan.entries[2].sampler_heap_offset, Some(16));
     assert_eq!(plan.draw_bindings[0].base_resource_heap_offset, 0);
+    assert_eq!(plan.draw_bindings[0].base_sampler_heap_offset, Some(0));
     assert_eq!(plan.draw_bindings[0].resource_descriptor_count, 3);
     assert_eq!(plan.draw_bindings[0].texture_count, 2);
+    assert_eq!(plan.bindings.len(), 3);
 }
 
 #[test]
@@ -111,6 +119,7 @@ fn resource_heap_plan_dedupes_identical_draw_resource_sets() {
         &texture_plan,
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
+        texture_binding,
     )
     .expect("resource heap frame plan");
 
@@ -140,6 +149,7 @@ fn resource_heap_plan_rejects_mismatched_draw_count() {
         &texture_plan,
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
+        texture_binding,
     )
     .expect_err("draw count mismatch must fail");
 
@@ -167,6 +177,7 @@ fn resource_heap_plan_requires_retained_material_uniform_gpu_binding() {
                 "missing retained scene material uniform GPU buffer for {key:?}"
             ))
         },
+        texture_binding,
     )
     .expect_err("missing retained material uniform GPU binding must fail");
 
@@ -196,10 +207,40 @@ fn resource_heap_plan_rejects_zero_material_uniform_device_address() {
         &texture_plan,
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
+        texture_binding,
     )
     .expect_err("zero material uniform device address must fail");
 
     assert!(err.contains("zero device address"));
+}
+
+#[test]
+fn resource_heap_plan_rejects_texture_image_metadata_mismatch() {
+    let graph = mesh_graph(vec![mesh_draw(
+        SceneObjectId(7),
+        vec![SceneGraphResourceBinding {
+            slot: 0,
+            role: SceneGraphResourceRole::shader_texture(0),
+            resource: SceneResourceId(3),
+        }],
+    )]);
+    let material_bindings = material_bindings(&graph);
+    let texture_plan = texture_plan(&graph);
+
+    let err = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+        &graph,
+        &texture_plan,
+        descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
+        |resource| {
+            let mut binding = texture_binding(resource)?;
+            binding.width = 2048;
+            Ok(binding)
+        },
+    )
+    .expect_err("texture metadata mismatch must fail");
+
+    assert!(err.contains("descriptor width"));
 }
 
 fn material_bindings(
@@ -253,6 +294,21 @@ fn texture_plan(graph: &SceneGraph) -> NativeVulkanSceneTextureDescriptorFramePl
         })
     })
     .unwrap()
+}
+
+fn texture_binding(
+    resource: SceneResourceId,
+) -> Result<NativeVulkanSceneTextureImageBinding, String> {
+    Ok(NativeVulkanSceneTextureImageBinding {
+        resource,
+        image: vk::Image::from_raw(0x3000 + u64::from(resource.0)),
+        view: vk::ImageView::from_raw(0x4000 + u64::from(resource.0)),
+        sampler: vk::Sampler::from_raw(0x5000 + u64::from(resource.0)),
+        format: vk::Format::R8G8B8A8_UNORM,
+        width: 1024,
+        height: 512,
+        mip_count: 10,
+    })
 }
 
 fn descriptor_heap_properties() -> NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
