@@ -24,6 +24,10 @@ use super::consumer_draws::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
 };
+use super::consumer_target::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+};
 
 const GENERATED_CLIPPINGTARGET_SHADER_COMBOS: [(&str, u32); 2] =
     [("CLIPPINGTARGET", 1), ("CLIPPINGUVS", 1)];
@@ -74,21 +78,86 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     target_format: NativeVulkanSceneTextureDescriptorVkFormat,
     pipeline_class: SceneGraphPipelineClass,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan, String> {
+    let targets = NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan {
+        consumer_draw_count: consumer_draws.consumer_draw_count,
+        target_binding_count: consumer_draws.bindings.len(),
+        color_target_count: usize::from(!consumer_draws.bindings.is_empty()),
+        bindings: consumer_draws
+            .bindings
+            .iter()
+            .map(|consumer| {
+                Ok(
+                    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan {
+                        consumer_draw_index: consumer.consumer_draw_index,
+                        command_index: consumer.command_index,
+                        object: consumer.object,
+                        draw_receiver: consumer.target,
+                        color_target: SceneGraphTarget::Swapchain,
+                        target_format,
+                        target_format_label: target_format_label(target_format),
+                        width: 1,
+                        height: 1,
+                        pipeline_class,
+                        vertex_layout: generated_consumer_vertex_layout(pipeline_class)?,
+                        geometry_source: "[layer+0x490].vtable+0x40 generated material draw geometry",
+                        command_order: [
+                            "resolve_layer_0x490_rt_draw_receiver",
+                            "keep_color_target_separate_from_layer_receiver",
+                            "read_current_layer_color_target_format",
+                            "validate_generated_consumer_color_attachment_format",
+                            "select_scene_mesh_vertex_layout_for_layer_0x490",
+                            "defer_exact_subdraw_geometry_to_token_recorder",
+                        ],
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+        command_order: [
+            "read_generated_clippingtarget_draw_contracts",
+            "resolve_layer_0x490_color_target",
+            "validate_color_target_format_and_extent",
+            "preserve_layer_0x490_rt_method_8_receiver",
+            "select_mesh_or_puppet_pipeline_class",
+            "produce_generated_consumer_target_plan",
+        ],
+    };
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets(
+        consumer_draws,
+        &targets,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets(
+    consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+) -> Result<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan, String> {
     if consumer_draws.bindings.is_empty() {
         return Ok(NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan::empty());
     }
-    let vertex_layout = generated_consumer_vertex_layout(pipeline_class)?;
-    validate_generated_consumer_target_format(target_format)?;
+    if consumer_draws.consumer_draw_count != targets.consumer_draw_count
+        || consumer_draws.bindings.len() != targets.target_binding_count
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer pipeline expected {} target bindings for {} draws, got {} / {}",
+            consumer_draws.bindings.len(),
+            consumer_draws.consumer_draw_count,
+            targets.target_binding_count,
+            targets.consumer_draw_count
+        ));
+    }
 
     let mut bindings = Vec::with_capacity(consumer_draws.bindings.len());
     let mut cache_keys = Vec::new();
     for consumer in &consumer_draws.bindings {
-        let binding = generated_consumer_pipeline_binding(
-            consumer,
-            target_format,
-            pipeline_class,
-            vertex_layout,
-        )?;
+        let target = targets
+            .target_for_consumer_draw(consumer.consumer_draw_index)
+            .ok_or_else(|| {
+                format!(
+                    "scene layer alpha-mask generated consumer command {} has no LayerTarget490 target binding",
+                    consumer.command_index
+                )
+            })?;
+        let binding = generated_consumer_pipeline_binding(consumer, target)?;
         let cache_key = binding.cache_key();
         if !cache_keys.iter().any(|existing| existing == &cache_key) {
             cache_keys.push(cache_key);
@@ -168,11 +237,10 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan {
 
 fn generated_consumer_pipeline_binding(
     consumer: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
-    target_format: NativeVulkanSceneTextureDescriptorVkFormat,
-    pipeline_class: SceneGraphPipelineClass,
-    vertex_layout: NativeVulkanScenePipelineVertexLayout,
+    target: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan, String> {
     validate_generated_consumer_draw_for_pipeline(consumer)?;
+    validate_generated_consumer_target_for_pipeline(consumer, target)?;
     Ok(
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan {
             consumer_draw_index: consumer.consumer_draw_index,
@@ -184,9 +252,9 @@ fn generated_consumer_pipeline_binding(
             ),
             source_mask: consumer.source_mask,
             target: consumer.target,
-            target_format,
-            pipeline_class,
-            vertex_layout,
+            target_format: target.target_format,
+            pipeline_class: target.pipeline_class,
+            vertex_layout: target.vertex_layout,
             texture_slot_mask: CLIPPINGTARGET_TEXTURE_SLOT_MASK,
             heap_bind_index: consumer.heap_bind_index,
             heap_slice_index: consumer.heap_slice_index,
@@ -202,7 +270,7 @@ fn generated_consumer_pipeline_binding(
                 "read_generated_clippingtarget_draw_contract",
                 "require_clippinguvs_and_clippingtarget_shader_combos",
                 "validate_slot0_source_and_slot8_full_alpha_mask",
-                "select_current_layer_target_color_format",
+                "select_resolved_layer_0x490_color_target_format",
                 "preserve_layer_0x490_rt_method_8_geometry_source",
                 "derive_generated_clippingtarget_pipeline_cache_key",
             ],
@@ -255,6 +323,36 @@ fn generated_consumer_vertex_layout(
             "scene layer alpha-mask generated consumer pipeline requires mesh/subdraw geometry, got {:?}",
             pipeline_class
         )),
+    }
+}
+
+fn validate_generated_consumer_target_for_pipeline(
+    consumer: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
+    target: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
+) -> Result<(), String> {
+    if consumer.consumer_draw_index != target.consumer_draw_index
+        || consumer.command_index != target.command_index
+        || consumer.object != target.object
+        || consumer.target != target.draw_receiver
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} target binding does not match draw contract",
+            consumer.command_index
+        ));
+    }
+    validate_generated_consumer_target_format(target.target_format)?;
+    generated_consumer_vertex_layout(target.pipeline_class)?;
+    Ok(())
+}
+
+fn target_format_label(target_format: NativeVulkanSceneTextureDescriptorVkFormat) -> &'static str {
+    match target_format {
+        NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat => "R16G16B16A16_SFLOAT",
+        NativeVulkanSceneTextureDescriptorVkFormat::R16G16Sfloat => "R16G16_SFLOAT",
+        NativeVulkanSceneTextureDescriptorVkFormat::R8G8B8A8Unorm => "R8G8B8A8_UNORM",
+        NativeVulkanSceneTextureDescriptorVkFormat::B8G8R8A8Unorm => "B8G8R8A8_UNORM",
+        NativeVulkanSceneTextureDescriptorVkFormat::R16Sfloat => "R16_SFLOAT",
+        NativeVulkanSceneTextureDescriptorVkFormat::R8Unorm => "R8_UNORM",
     }
 }
 

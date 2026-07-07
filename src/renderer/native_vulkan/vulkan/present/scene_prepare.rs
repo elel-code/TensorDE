@@ -33,8 +33,12 @@ use crate::renderer::native_vulkan::scene_backend::frame_submit::{
 };
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorPlan;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
+    native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
@@ -44,6 +48,7 @@ use crate::renderer::native_vulkan::scene_backend::resource_prepare::{
     NativeVulkanSceneMeshResourcePrepareContext, NativeVulkanSceneMeshResourcePreparePlan,
     native_vulkan_record_scene_mesh_resource_prepare_frame,
 };
+use crate::renderer::native_vulkan::scene_backend::runtime::native_vulkan_resolve_scene_layer_490_color_target;
 use crate::renderer::native_vulkan::scene_backend::shader_artifacts::{
     NativeVulkanSceneEffectShaderArtifactCatalog, NativeVulkanSceneShaderArtifactCatalog,
 };
@@ -268,6 +273,36 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 frame_resources,
                 &layer_alpha_mask_plan,
             )?;
+        let layer_alpha_mask_token_schedule =
+            native_vulkan_plan_scene_layer_alpha_mask_token_schedule(
+                &layer_alpha_mask_plan,
+                &layer_alpha_mask_resource_binds,
+            )?;
+        let layer_alpha_mask_generated_consumer_draws =
+            native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws(
+                &layer_alpha_mask_plan,
+                &layer_alpha_mask_resource_binds,
+                &layer_alpha_mask_token_schedule,
+            )?;
+        let layer_alpha_mask_generated_consumer_targets =
+            native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
+                &layer_alpha_mask_generated_consumer_draws,
+                |object, target| {
+                    native_vulkan_resolve_scene_layer_490_color_target(
+                        frame_resources,
+                        &target_formats,
+                        swapchain_extent,
+                        &frame.layer_compositor,
+                        object,
+                        target,
+                    )
+                },
+            )?;
+        let layer_alpha_mask_generated_consumer_pipelines =
+            native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets(
+                &layer_alpha_mask_generated_consumer_draws,
+                &layer_alpha_mask_generated_consumer_targets,
+            )?;
         let mut layer_alpha_mask_pipeline_keys =
             layer_alpha_mask_plan.pipeline_warmup.cache_keys().to_vec();
         layer_alpha_mask_pipeline_keys.extend_from_slice(
@@ -275,6 +310,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 .copy_back_pipelines
                 .cache_keys(),
         );
+        layer_alpha_mask_pipeline_keys
+            .extend_from_slice(layer_alpha_mask_generated_consumer_pipelines.cache_keys());
         let pipeline_prepare =
             native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys(
                 device,

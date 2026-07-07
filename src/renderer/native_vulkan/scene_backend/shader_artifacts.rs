@@ -22,6 +22,10 @@ use super::effect_pipeline::{
     NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanSceneEffectPipelineShaders,
 };
 use super::layer_alpha_mask_executor::ALPHA_MASK_FLATTEXTURE_SHADER;
+use super::pipeline::{
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineShaderComboValue,
+    native_vulkan_scene_pipeline_shader_combo_values,
+};
 use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 
 const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -29,6 +33,7 @@ const SPIRV_MAGIC: u32 = 0x0723_0203;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifactPathPlan {
     pub shader: String,
+    pub shader_combo_values: Vec<String>,
     pub vertex_path: PathBuf,
     pub fragment_path: PathBuf,
     pub command_order: [&'static str; 3],
@@ -46,6 +51,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtif
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifacts {
     pub shader: String,
+    pub shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
     pub vertex_spirv: Vec<u32>,
     pub fragment_spirv: Vec<u32>,
 }
@@ -77,9 +83,15 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtif
     plan: NativeVulkanSceneEffectShaderArtifactCatalogPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct NativeVulkanSceneShaderArtifactKey {
+    shader: String,
+    shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifactCatalog {
-    shaders: BTreeMap<String, NativeVulkanSceneShaderArtifacts>,
+    shaders: BTreeMap<NativeVulkanSceneShaderArtifactKey, NativeVulkanSceneShaderArtifacts>,
     plan: NativeVulkanSceneShaderArtifactCatalogPlan,
 }
 
@@ -107,20 +119,24 @@ impl NativeVulkanSceneShaderArtifactCatalog {
         graph: &SceneGraph,
         layer_compositor: &SceneLayerCompositorPlan,
     ) -> Result<Self, String> {
-        let shader_names = required_scene_shader_names(graph, layer_compositor)?;
+        let shader_keys = required_scene_shader_artifact_keys(graph, layer_compositor)?;
         let mut shaders = BTreeMap::new();
-        for shader in &shader_names {
-            let artifacts = native_vulkan_load_scene_shader_artifacts(artifact_root, shader)?;
-            shaders.insert(shader.clone(), artifacts);
+        for key in &shader_keys {
+            let artifacts = native_vulkan_load_scene_shader_artifacts_for_key(artifact_root, key)?;
+            shaders.insert(key.clone(), artifacts);
         }
+        let shader_labels = shader_keys
+            .iter()
+            .map(NativeVulkanSceneShaderArtifactKey::label)
+            .collect::<Vec<_>>();
         Ok(Self {
             plan: NativeVulkanSceneShaderArtifactCatalogPlan {
-                shader_count: shader_names.len(),
-                shaders: shader_names,
+                shader_count: shader_labels.len(),
+                shaders: shader_labels,
                 command_order: [
                     "collect_scene_graph_draw_shader_names",
-                    "append_layer_alpha_mask_shader_names",
-                    "resolve_we_scene_shader_artifact_paths",
+                    "append_layer_alpha_mask_shader_variant_keys",
+                    "resolve_we_scene_shader_variant_artifact_paths",
                     "read_unique_scene_shader_spirv",
                 ],
             },
@@ -136,8 +152,8 @@ impl NativeVulkanSceneShaderArtifactCatalog {
                 shaders: Vec::new(),
                 command_order: [
                     "collect_scene_graph_draw_shader_names",
-                    "append_layer_alpha_mask_shader_names",
-                    "resolve_we_scene_shader_artifact_paths",
+                    "append_layer_alpha_mask_shader_variant_keys",
+                    "resolve_we_scene_shader_variant_artifact_paths",
                     "read_unique_scene_shader_spirv",
                 ],
             },
@@ -146,15 +162,23 @@ impl NativeVulkanSceneShaderArtifactCatalog {
 
     pub(in crate::renderer::native_vulkan) fn mesh_pipeline_shaders_for_key(
         &self,
-        key: &super::pipeline::NativeVulkanScenePipelineCacheKey,
+        key: &NativeVulkanScenePipelineCacheKey,
     ) -> Result<NativeVulkanSceneMeshPipelineShaders<'_>, String> {
+        let artifact_key = NativeVulkanSceneShaderArtifactKey::from_pipeline_cache_key(key);
         self.shaders
-            .get(&key.shader)
+            .get(&artifact_key)
             .ok_or_else(|| {
-                format!(
-                    "scene shader catalog has no artifact for shader '{}'",
-                    key.shader
-                )
+                if key.shader_combo_values.is_empty() {
+                    format!(
+                        "scene shader catalog has no artifact for shader '{}'",
+                        key.shader
+                    )
+                } else {
+                    format!(
+                        "scene shader catalog has no WE combo variant artifact for {}",
+                        artifact_key.label()
+                    )
+                }
             })
             .map(|artifacts| artifacts.mesh_pipeline_shaders())
     }
@@ -266,19 +290,69 @@ impl NativeVulkanSceneEffectShaderArtifactCatalog {
     }
 }
 
+impl NativeVulkanSceneShaderArtifactKey {
+    fn plain(shader: &str) -> Self {
+        Self {
+            shader: shader.to_owned(),
+            shader_combo_values: Vec::new(),
+        }
+    }
+
+    fn variant(
+        shader: &str,
+        shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
+    ) -> Self {
+        Self {
+            shader: shader.to_owned(),
+            shader_combo_values,
+        }
+    }
+
+    fn from_pipeline_cache_key(key: &NativeVulkanScenePipelineCacheKey) -> Self {
+        Self {
+            shader: key.shader.clone(),
+            shader_combo_values: key.shader_combo_values.clone(),
+        }
+    }
+
+    fn combo_labels(&self) -> Vec<String> {
+        self.shader_combo_values
+            .iter()
+            .map(|combo| format!("{}={}", combo.name, combo.value))
+            .collect()
+    }
+
+    fn label(&self) -> String {
+        if self.shader_combo_values.is_empty() {
+            self.shader.clone()
+        } else {
+            format!("{}[{}]", self.shader, self.combo_labels().join(","))
+        }
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_shader_artifact_path_plan(
     artifact_root: &Path,
     shader: &str,
 ) -> Result<NativeVulkanSceneShaderArtifactPathPlan, String> {
+    native_vulkan_scene_shader_artifact_path_plan_for_key(
+        artifact_root,
+        &NativeVulkanSceneShaderArtifactKey::plain(shader),
+    )
+}
+
+fn native_vulkan_scene_shader_artifact_path_plan_for_key(
+    artifact_root: &Path,
+    key: &NativeVulkanSceneShaderArtifactKey,
+) -> Result<NativeVulkanSceneShaderArtifactPathPlan, String> {
     if artifact_root.as_os_str().is_empty() {
         return Err("scene shader artifact root cannot be empty".to_owned());
     }
-    WeShaderInterface::for_shader(shader).ok_or_else(|| {
-        format!("scene shader artifact plan references unknown WE shader '{shader}'")
-    })?;
-    let shader_path = scene_shader_artifact_relative_path(shader)?;
+    validate_scene_shader_artifact_key(key)?;
+    let shader_path = scene_shader_artifact_relative_path_for_key(key)?;
     Ok(NativeVulkanSceneShaderArtifactPathPlan {
-        shader: shader.to_owned(),
+        shader: key.shader.clone(),
+        shader_combo_values: key.combo_labels(),
         vertex_path: artifact_root.join(shader_path.with_extension("vert.spv")),
         fragment_path: artifact_root.join(shader_path.with_extension("frag.spv")),
         command_order: [
@@ -287,6 +361,54 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_shader_artifact_pa
             "read_fragment_spirv",
         ],
     })
+}
+
+fn validate_scene_shader_artifact_key(
+    key: &NativeVulkanSceneShaderArtifactKey,
+) -> Result<(), String> {
+    let interface = WeShaderInterface::for_shader(&key.shader).ok_or_else(|| {
+        format!(
+            "scene shader artifact plan references unknown WE shader '{}'",
+            key.shader
+        )
+    })?;
+    for combo in &key.shader_combo_values {
+        if combo.name.is_empty() {
+            return Err(format!(
+                "scene shader artifact key for '{}' has empty WE combo override",
+                key.shader
+            ));
+        }
+        if !combo
+            .name
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        {
+            return Err(format!(
+                "scene shader artifact key for '{}' has unsafe WE combo name '{}'",
+                key.shader, combo.name
+            ));
+        }
+        if !interface
+            .combos
+            .iter()
+            .any(|declared| declared.name == combo.name)
+        {
+            return Err(format!(
+                "scene shader artifact key for '{}' references undeclared WE combo '{}'",
+                key.shader, combo.name
+            ));
+        }
+    }
+    for pair in key.shader_combo_values.windows(2) {
+        if pair[0].name >= pair[1].name {
+            return Err(format!(
+                "scene shader artifact key for '{}' WE combo overrides must be sorted and unique, got '{}' before '{}'",
+                key.shader, pair[0].name, pair[1].name
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_shader_artifact_path_plan(
@@ -316,7 +438,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_load_scene_shader_artifa
     artifact_root: &Path,
     shader: &str,
 ) -> Result<NativeVulkanSceneShaderArtifacts, String> {
-    let plan = native_vulkan_scene_shader_artifact_path_plan(artifact_root, shader)?;
+    native_vulkan_load_scene_shader_artifacts_for_key(
+        artifact_root,
+        &NativeVulkanSceneShaderArtifactKey::plain(shader),
+    )
+}
+
+fn native_vulkan_load_scene_shader_artifacts_for_key(
+    artifact_root: &Path,
+    key: &NativeVulkanSceneShaderArtifactKey,
+) -> Result<NativeVulkanSceneShaderArtifacts, String> {
+    let plan = native_vulkan_scene_shader_artifact_path_plan_for_key(artifact_root, key)?;
     let vertex_bytes = std::fs::read(&plan.vertex_path).map_err(|err| {
         format!(
             "read scene vertex shader artifact {}: {err}",
@@ -331,6 +463,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_load_scene_shader_artifa
     })?;
     Ok(NativeVulkanSceneShaderArtifacts {
         shader: plan.shader,
+        shader_combo_values: key.shader_combo_values.clone(),
         vertex_spirv: native_vulkan_scene_spirv_words_from_bytes(
             &vertex_bytes,
             "scene vertex shader artifact",
@@ -422,8 +555,20 @@ fn required_scene_shader_names(
     graph: &SceneGraph,
     layer_compositor: &SceneLayerCompositorPlan,
 ) -> Result<Vec<String>, String> {
+    Ok(
+        required_scene_shader_artifact_keys(graph, layer_compositor)?
+            .into_iter()
+            .map(|key| key.shader)
+            .collect(),
+    )
+}
+
+fn required_scene_shader_artifact_keys(
+    graph: &SceneGraph,
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> Result<Vec<NativeVulkanSceneShaderArtifactKey>, String> {
     let mut unique = BTreeSet::new();
-    let mut shaders = Vec::new();
+    let mut shader_keys = Vec::new();
     for pass in &graph.passes {
         for draw in &pass.draws {
             let shader = draw.material.shader.as_str();
@@ -439,22 +584,53 @@ fn required_scene_shader_names(
                     draw.object, shader
                 )
             })?;
-            if unique.insert(shader.to_owned()) {
-                shaders.push(shader.to_owned());
+            let key = NativeVulkanSceneShaderArtifactKey::plain(shader);
+            if unique.insert(key.clone()) {
+                shader_keys.push(key);
             }
         }
     }
+    if layer_compositor_uses_generated_clipping_target(layer_compositor) {
+        let key = NativeVulkanSceneShaderArtifactKey::variant(
+            "we/genericimage4",
+            native_vulkan_scene_pipeline_shader_combo_values(&[
+                ("CLIPPINGTARGET", 1),
+                ("CLIPPINGUVS", 1),
+            ]),
+        );
+        if unique.insert(key.clone()) {
+            shader_keys.push(key);
+        }
+    }
     if layer_compositor.tokenized_layer_count > 0
-        && unique.insert("we/clippingmaskimage4".to_owned())
+        && unique.insert(NativeVulkanSceneShaderArtifactKey::plain(
+            "we/clippingmaskimage4",
+        ))
     {
-        shaders.push("we/clippingmaskimage4".to_owned());
+        shader_keys.push(NativeVulkanSceneShaderArtifactKey::plain(
+            "we/clippingmaskimage4",
+        ));
     }
     if layer_compositor_uses_flattexture_copy_back(layer_compositor)
-        && unique.insert(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned())
+        && unique.insert(NativeVulkanSceneShaderArtifactKey::plain(
+            ALPHA_MASK_FLATTEXTURE_SHADER,
+        ))
     {
-        shaders.push(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned());
+        shader_keys.push(NativeVulkanSceneShaderArtifactKey::plain(
+            ALPHA_MASK_FLATTEXTURE_SHADER,
+        ));
     }
-    Ok(shaders)
+    Ok(shader_keys)
+}
+
+fn layer_compositor_uses_generated_clipping_target(
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> bool {
+    layer_compositor.layers.iter().any(|layer| {
+        layer.commands.iter().any(|command| {
+            command.operation == SceneLayerCompositorOperation::DrawGeneratedClippingTarget
+        })
+    })
 }
 
 fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
@@ -473,6 +649,32 @@ fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> 
         ));
     }
     Ok(PathBuf::from("we").join(normalized))
+}
+
+fn scene_shader_artifact_relative_path_for_key(
+    key: &NativeVulkanSceneShaderArtifactKey,
+) -> Result<PathBuf, String> {
+    let base = scene_shader_artifact_relative_path(&key.shader)?;
+    if key.shader_combo_values.is_empty() {
+        return Ok(base);
+    }
+    let file_name = base
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "scene shader artifact key '{}' cannot be mapped to a variant path",
+                key.label()
+            )
+        })?;
+    let mut variant_name = file_name.to_owned();
+    for combo in &key.shader_combo_values {
+        variant_name.push_str("__");
+        variant_name.push_str(&combo.name);
+        variant_name.push('_');
+        variant_name.push_str(&combo.value.to_string());
+    }
+    Ok(base.with_file_name(variant_name))
 }
 
 fn scene_effect_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
@@ -562,6 +764,7 @@ mod tests {
         .expect("artifact path plan");
 
         assert_eq!(plan.shader, "we/genericimage4");
+        assert!(plan.shader_combo_values.is_empty());
         assert_eq!(
             plan.vertex_path,
             PathBuf::from("artifacts/scene-shaders/we/genericimage4.vert.spv")
@@ -577,6 +780,40 @@ mod tests {
                 "read_vertex_spirv",
                 "read_fragment_spirv"
             ]
+        );
+    }
+
+    #[test]
+    fn shader_artifact_plan_maps_we_combo_variant_to_distinct_stage_spirv_paths() {
+        let key = NativeVulkanSceneShaderArtifactKey::variant(
+            "we/genericimage4",
+            native_vulkan_scene_pipeline_shader_combo_values(&[
+                ("CLIPPINGTARGET", 1),
+                ("CLIPPINGUVS", 1),
+            ]),
+        );
+        let plan = native_vulkan_scene_shader_artifact_path_plan_for_key(
+            Path::new("artifacts/scene-shaders"),
+            &key,
+        )
+        .expect("combo variant artifact path plan");
+
+        assert_eq!(plan.shader, "we/genericimage4");
+        assert_eq!(
+            plan.shader_combo_values,
+            vec!["CLIPPINGTARGET=1".to_owned(), "CLIPPINGUVS=1".to_owned()]
+        );
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from(
+                "artifacts/scene-shaders/we/genericimage4__CLIPPINGTARGET_1__CLIPPINGUVS_1.vert.spv"
+            )
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from(
+                "artifacts/scene-shaders/we/genericimage4__CLIPPINGTARGET_1__CLIPPINGUVS_1.frag.spv"
+            )
         );
     }
 
@@ -673,6 +910,51 @@ mod tests {
                 "we/genericimage4".to_owned(),
                 "we/clippingmaskimage4".to_owned(),
                 "util/minimalalpha".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn scene_shader_catalog_keys_append_generated_clippingtarget_combo_variant() {
+        use crate::engine::scene_engine::{
+            SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+            SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorLayer,
+            SceneLayerCompositorOperation, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+            SceneObjectId,
+        };
+
+        let graph = scene_graph_with_shader("we/genericimage4");
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.tokenized_layer_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(7),
+            route: SceneLayerCompositorRoute::DirectSwapchain,
+            uses_tokenized_subdraw: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::TokenizedCompositeWithMaterialEntry53,
+                operation: SceneLayerCompositorOperation::DrawGeneratedClippingTarget,
+                condition: SceneLayerCompositorCondition::TokenizedGeneratedMaterial,
+                source: Some(SceneLayerCompositorTarget::FullAlphaMask),
+                target: SceneLayerCompositorTarget::LayerTarget490,
+                blend_key: SceneLayerCompositorBlendKey::SubdrawBlendByteToGeneratedMaterial1f0,
+            }],
+        }];
+
+        let keys = required_scene_shader_artifact_keys(&graph, &layer_compositor)
+            .expect("scene shader variant key collection");
+        let labels = keys
+            .iter()
+            .map(NativeVulkanSceneShaderArtifactKey::label)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            labels,
+            vec![
+                "we/genericimage4".to_owned(),
+                "we/genericimage4[CLIPPINGTARGET=1,CLIPPINGUVS=1]".to_owned(),
+                "we/clippingmaskimage4".to_owned()
             ]
         );
     }
@@ -816,6 +1098,7 @@ mod tests {
     fn loaded_shader_artifacts_borrow_as_pipeline_shader_slices() {
         let artifacts = NativeVulkanSceneShaderArtifacts {
             shader: "we/genericimage4".to_owned(),
+            shader_combo_values: Vec::new(),
             vertex_spirv: vec![SPIRV_MAGIC, 1],
             fragment_spirv: vec![SPIRV_MAGIC, 2],
         };
@@ -824,6 +1107,62 @@ mod tests {
 
         assert_eq!(shaders.vertex_spirv, &[SPIRV_MAGIC, 1]);
         assert_eq!(shaders.fragment_spirv, &[SPIRV_MAGIC, 2]);
+    }
+
+    #[test]
+    fn shader_catalog_requires_exact_we_combo_variant_for_pipeline_key() {
+        use crate::engine::scene_engine::{
+            SceneBlendContract, SceneGraphPipelineClass, SceneMaterialRenderState,
+        };
+        use crate::renderer::native_vulkan::scene_backend::pipeline::NativeVulkanScenePipelineVertexLayout;
+        use vulkanalia::vk;
+
+        let ordinary_key = NativeVulkanSceneShaderArtifactKey::plain("we/genericimage4");
+        let variant_key = NativeVulkanSceneShaderArtifactKey::variant(
+            "we/genericimage4",
+            native_vulkan_scene_pipeline_shader_combo_values(&[
+                ("CLIPPINGTARGET", 1),
+                ("CLIPPINGUVS", 1),
+            ]),
+        );
+        let catalog = NativeVulkanSceneShaderArtifactCatalog {
+            shaders: BTreeMap::from([(
+                ordinary_key,
+                NativeVulkanSceneShaderArtifacts {
+                    shader: "we/genericimage4".to_owned(),
+                    shader_combo_values: Vec::new(),
+                    vertex_spirv: vec![SPIRV_MAGIC, 1],
+                    fragment_spirv: vec![SPIRV_MAGIC, 2],
+                },
+            )]),
+            plan: NativeVulkanSceneShaderArtifactCatalogPlan {
+                shader_count: 1,
+                shaders: vec!["we/genericimage4".to_owned()],
+                command_order: [
+                    "collect_scene_graph_draw_shader_names",
+                    "append_layer_alpha_mask_shader_variant_keys",
+                    "resolve_we_scene_shader_variant_artifact_paths",
+                    "read_unique_scene_shader_spirv",
+                ],
+            },
+        };
+        let variant_pipeline_key = NativeVulkanScenePipelineCacheKey {
+            shader: "we/genericimage4".to_owned(),
+            shader_combo_values: variant_key.shader_combo_values.clone(),
+            blend: SceneBlendContract::TranslucentAlpha,
+            render_state: SceneMaterialRenderState::translucent_2d(),
+            pipeline_class: SceneGraphPipelineClass::Mesh,
+            vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            target_format: vk::Format::B8G8R8A8_UNORM,
+            texture_slot_mask: (1u32 << 0) | (1u32 << 8),
+        };
+
+        let err = catalog
+            .mesh_pipeline_shaders_for_key(&variant_pipeline_key)
+            .expect_err("ordinary artifact must not satisfy combo variant key");
+
+        assert!(err.contains("combo variant artifact"));
+        assert!(err.contains("CLIPPINGTARGET=1"));
     }
 
     #[test]

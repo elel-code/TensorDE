@@ -18,6 +18,8 @@ use crate::engine::scene_engine::{
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 
 use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
+use super::consumer_pipeline::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan;
+use super::consumer_target::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan;
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
 use super::producer_target_graph::NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan;
 use super::resource_binds::{
@@ -100,6 +102,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan, String> {
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan::empty());
@@ -145,6 +149,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             producer_draws,
             producer_target_graph,
             generated_consumer_draws,
+            generated_consumer_targets,
+            generated_consumer_pipelines,
         )?);
     }
 
@@ -244,6 +250,8 @@ fn requirement_from_step(
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirement, String> {
     match step.kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
@@ -378,13 +386,31 @@ fn requirement_from_step(
                     )
                 })?;
             validate_generated_consumer_draw_contract(step, consumer)?;
+            let target = generated_consumer_targets
+                .target_for_consumer_draw(consumer.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no LayerTarget490 target contract",
+                        step.command_index
+                    )
+                })?;
+            let pipeline = generated_consumer_pipelines
+                .bindings
+                .iter()
+                .find(|pipeline| pipeline.consumer_draw_index == consumer.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no generated pipeline contract",
+                        step.command_index
+                    )
+                })?;
             Ok(base_requirement(
                 step,
                 command,
                 NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::GeneratedClippingTargetConsumer,
                 Some("we/genericimage4"),
-                None,
-                None,
+                Some(pipeline.pipeline_class),
+                Some(target.target_format_label),
                 CLIPPINGTARGET_TEXTURE_SLOT_MASK,
                 None,
                 None,
@@ -392,16 +418,19 @@ fn requirement_from_step(
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
-                command.target_graph_target,
+                Some(target.color_target),
                 generated_clippingtarget_missing_we_facts(),
                 vec![
                     "reverse-engineered/docs/exe/clipping-pipeline.md: CLIPPINGTARGET consumes g_Texture8",
                     "reverse-engineered/docs/exe/clipping-pipeline.md: 0x140208b8f copies subdraw +0x40 to generated material +0x1f0",
                     "reverse-engineered/docs/exe/blend-and-render.md: token generated draw at 0x140208bbb/0x14020908c",
+                    "reverse-engineered/docs/exe/blend-and-render.md: [layer+0x490] is RT method [8] draw receiver, separate from current color target",
                 ],
                 vec![
                     "require_full_alpha_mask_ready",
+                    "resolve_layer_0x490_current_color_target",
                     "bind_generated_clippingtarget_resource_heap",
+                    "bind_generated_clippingtarget_pipeline_variant",
                     "use_generated_clippingtarget_draw_contract",
                     "resolve_generated_material_0x428_uniforms",
                     "record_layer_0x490_rt_method_8_generated_draw",

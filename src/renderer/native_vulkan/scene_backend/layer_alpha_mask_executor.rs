@@ -15,6 +15,7 @@ use vulkanalia::vk;
 
 mod consumer_draws;
 pub(in crate::renderer::native_vulkan) mod consumer_pipeline;
+mod consumer_target;
 mod copy_back;
 mod copy_back_command;
 mod copy_back_geometry;
@@ -43,6 +44,15 @@ use super::resource_heap::texture_set::scene_shader_texture_mapping;
 pub(in crate::renderer::native_vulkan) use consumer_draws::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
+};
+pub(in crate::renderer::native_vulkan) use consumer_pipeline::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
+};
+pub(in crate::renderer::native_vulkan) use consumer_target::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
 };
 pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHADER;
 pub(in crate::renderer::native_vulkan) use copy_back_runtime::{

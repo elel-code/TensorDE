@@ -17,7 +17,10 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneGraphExecutionPlan};
+use crate::engine::scene_engine::{
+    SceneFramePlan, SceneGraphExecutionPlan, SceneGraphPipelineClass, SceneGraphTarget,
+    SceneLayerCompositorPlan, SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneObjectId,
+};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::draw_family::{
@@ -35,6 +38,9 @@ use super::graph_executor::{
 use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskProducerPipelinePlan,
     NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
@@ -43,6 +49,8 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
     native_vulkan_plan_scene_layer_alpha_mask_producer_draws,
     native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines,
     native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph,
@@ -78,12 +86,16 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     pub layer_alpha_mask_generated_consumer_draws:
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    pub layer_alpha_mask_generated_consumer_targets:
+        NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    pub layer_alpha_mask_generated_consumer_pipelines:
+        NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     pub layer_alpha_mask_recorder_requirements:
         NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 12],
+    pub command_order: [&'static str; 14],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -179,6 +191,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_resource_binds,
             &layer_alpha_mask_token_schedule,
         )?;
+    let layer_alpha_mask_generated_consumer_targets =
+        native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
+            &layer_alpha_mask_generated_consumer_draws,
+            |object, target| {
+                native_vulkan_resolve_scene_layer_490_color_target(
+                    frame_resources,
+                    context.target_formats,
+                    context.target.extent,
+                    &frame.layer_compositor,
+                    object,
+                    target,
+                )
+            },
+        )?;
+    let layer_alpha_mask_generated_consumer_pipelines =
+        native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets(
+            &layer_alpha_mask_generated_consumer_draws,
+            &layer_alpha_mask_generated_consumer_targets,
+        )?;
+    for key in layer_alpha_mask_generated_consumer_pipelines.cache_keys() {
+        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
+            format!(
+                "{err}; scene layer alpha-mask runtime requires generated CLIPPINGTARGET consumer pipeline warmup before command-list assembly"
+            )
+        })?;
+    }
     let layer_alpha_mask_recorder_requirements =
         native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
             &layer_alpha_masks,
@@ -187,6 +225,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_producer_draws,
             &layer_alpha_mask_producer_target_graph,
             &layer_alpha_mask_generated_consumer_draws,
+            &layer_alpha_mask_generated_consumer_targets,
+            &layer_alpha_mask_generated_consumer_pipelines,
         )?;
     let layer_alpha_mask_copy_back_commands =
         native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands(
@@ -213,6 +253,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_producer_pipelines,
         layer_alpha_mask_producer_target_graph,
         layer_alpha_mask_generated_consumer_draws,
+        layer_alpha_mask_generated_consumer_targets,
+        layer_alpha_mask_generated_consumer_pipelines,
         layer_alpha_mask_recorder_requirements,
         layer_alpha_mask_copy_back_commands,
         mesh,
@@ -226,10 +268,58 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_producer_pipelines",
             "plan_layer_alpha_mask_producer_target_graph",
             "plan_layer_alpha_mask_generated_consumer_draws",
+            "plan_layer_alpha_mask_generated_consumer_targets",
+            "plan_layer_alpha_mask_generated_consumer_pipelines",
             "plan_layer_alpha_mask_recorder_requirements",
             "plan_layer_alpha_mask_copy_back_command_list",
             "record_scene_mesh_graph_runtime",
         ],
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_resolve_scene_layer_490_color_target(
+    frame_resources: &NativeVulkanSceneFrameResources,
+    target_formats: &NativeVulkanSceneGraphTargetFormatPlan,
+    swapchain_extent: vk::Extent2D,
+    layer_compositor: &SceneLayerCompositorPlan,
+    object: SceneObjectId,
+    target: SceneLayerCompositorTarget,
+) -> Result<NativeVulkanSceneLayerAlphaMaskLayerTargetBinding, String> {
+    if target != SceneLayerCompositorTarget::LayerTarget490 {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer target resolver requires LayerTarget490, got {target:?}"
+        ));
+    }
+    let layer = layer_compositor.layer_for_object(object).ok_or_else(|| {
+        format!("scene layer alpha-mask generated consumer target resolver missing layer for object {object:?}")
+    })?;
+    let color_target = match layer.route {
+        SceneLayerCompositorRoute::DirectSwapchain => SceneGraphTarget::Swapchain,
+        SceneLayerCompositorRoute::ObjectFinalMeshComposite => {
+            SceneGraphTarget::ObjectFinal(object)
+        }
+    };
+    let format = target_formats.format(color_target)?;
+    let (width, height) = if color_target == SceneGraphTarget::Swapchain {
+        (swapchain_extent.width, swapchain_extent.height)
+    } else {
+        let binding = frame_resources.offscreen_target_binding(color_target)?;
+        if binding.format != format {
+            return Err(format!(
+                "scene layer alpha-mask generated consumer color target {:?} format mismatch: target plan {:?}, retained {:?}",
+                color_target, format, binding.format
+            ));
+        }
+        (binding.width, binding.height)
+    };
+    Ok(NativeVulkanSceneLayerAlphaMaskLayerTargetBinding {
+        object,
+        layer_target: target,
+        color_target,
+        format,
+        width,
+        height,
+        pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
     })
 }
 

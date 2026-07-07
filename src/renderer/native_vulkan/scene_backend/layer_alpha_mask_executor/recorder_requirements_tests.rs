@@ -10,8 +10,14 @@ use super::super::token_schedule::native_vulkan_plan_scene_layer_alpha_mask_toke
 use super::super::{
     NativeVulkanSceneLayerAlphaMaskAccess, NativeVulkanSceneLayerAlphaMaskCommandPlan,
     NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan, NativeVulkanSceneLayerAlphaMaskTargetPlan,
     NativeVulkanSceneLayerAlphaMaskTextureBindRole,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
 };
 use super::*;
 use crate::engine::scene_engine::{SceneLayerCompositorBlendKey, ScenePuppetId, SceneResourceId};
@@ -21,6 +27,7 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_hea
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
+use vulkanalia::vk;
 
 #[test]
 fn recorder_requirements_classify_pending_and_ready_steps() {
@@ -51,6 +58,8 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             &schedule,
         )
         .expect("generated consumer draws");
+    let (generated_consumer_targets, generated_consumer_pipelines) =
+        generated_consumer_target_pipeline_plans(&generated_consumer_draws);
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -59,6 +68,8 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &producer_draws,
         &producer_target_graph,
         &generated_consumer_draws,
+        &generated_consumer_targets,
+        &generated_consumer_pipelines,
     )
     .expect("recorder requirements");
 
@@ -118,6 +129,15 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         Some(SceneGraphTarget::FullAlphaMask)
     );
     assert_eq!(plan.requirements[4].shader, Some("we/genericimage4"));
+    assert_eq!(
+        plan.requirements[4].pipeline_class,
+        Some(SceneGraphPipelineClass::PuppetSkinning)
+    );
+    assert_eq!(plan.requirements[4].target_format, Some("B8G8R8A8_UNORM"));
+    assert_eq!(
+        plan.requirements[4].target_mask,
+        Some(SceneGraphTarget::ObjectFinal(SceneObjectId(7)))
+    );
     assert!(
         plan.requirements[4]
             .missing_we_facts
@@ -165,6 +185,8 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
             &schedule,
         )
         .expect("generated consumer draws");
+    let (generated_consumer_targets, generated_consumer_pipelines) =
+        generated_consumer_target_pipeline_plans(&generated_consumer_draws);
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -173,10 +195,42 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &producer_draws,
         &producer_target_graph,
         &generated_consumer_draws,
+        &generated_consumer_targets,
+        &generated_consumer_pipelines,
     )
     .expect_err("copy-back must require retained draw bind");
 
     assert!(err.contains("requires exactly one retained copy-back draw heap bind"));
+}
+
+fn generated_consumer_target_pipeline_plans(
+    generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+) -> (
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+) {
+    let targets = native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
+        generated_consumer_draws,
+        |object, target| {
+            Ok(NativeVulkanSceneLayerAlphaMaskLayerTargetBinding {
+                object,
+                layer_target: target,
+                color_target: SceneGraphTarget::ObjectFinal(object),
+                format: vk::Format::B8G8R8A8_UNORM,
+                width: 3840,
+                height: 2160,
+                pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+            })
+        },
+    )
+    .expect("generated consumer targets");
+    let pipelines =
+        native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets(
+            generated_consumer_draws,
+            &targets,
+        )
+        .expect("generated consumer pipelines");
+    (targets, pipelines)
 }
 
 fn runtime(
