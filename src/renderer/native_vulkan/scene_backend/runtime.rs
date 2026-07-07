@@ -22,6 +22,7 @@ use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeap
 use super::frame_command::{
     NativeVulkanSceneMeshFrameCommandPlan, native_vulkan_record_scene_mesh_frame_commands,
 };
+use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::NativeVulkanScenePipelineCacheKey;
 use super::pipeline_factory::{
@@ -36,6 +37,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
     pub memory_properties: &'a vk::PhysicalDeviceMemoryProperties,
     pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub command_buffer: vk::CommandBuffer,
+    pub frame_submission: NativeVulkanSceneFrameSubmission,
     pub target: NativeVulkanSceneSwapchainRenderTarget,
     pub target_format: vk::Format,
     pub clear_color: Option<NativeVulkanClearColor>,
@@ -111,6 +113,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             context.device,
             context.memory_properties,
             context.command_buffer,
+            context.frame_submission,
             resources,
         )?
         .len();
@@ -135,6 +138,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             context.device,
             context.memory_properties,
             context.command_buffer,
+            context.frame_submission,
             resources,
         )?
         .len();
@@ -206,6 +210,7 @@ mod tests {
 
     #[test]
     fn runtime_frame_plan_preserves_godot_style_execution_order() {
+        let submission = NativeVulkanSceneFrameSubmission::new(2, 42);
         let graph = mesh_graph(vec![mesh_draw(SceneObjectId(1))]);
         let warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
             &graph,
@@ -290,6 +295,8 @@ mod tests {
         assert_eq!(plan.gpu_buffer_action_count, 3);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);
+        assert_eq!(submission.frame_slot, 2);
+        assert_eq!(submission.submission_index, 42);
     }
 
     #[test]

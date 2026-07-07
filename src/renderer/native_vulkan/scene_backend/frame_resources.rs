@@ -17,6 +17,9 @@ use crate::engine::scene_engine::{
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
+use super::frame_completion::{
+    NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
+};
 use super::material_uniforms::{
     NativeVulkanSceneMaterialUniformCatalog, NativeVulkanSceneMaterialUniformSyncAction,
     NativeVulkanSceneMaterialUniformUploadPlan,
@@ -93,6 +96,7 @@ impl NativeVulkanSceneFrameResources {
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
         command_buffer: vk::CommandBuffer,
+        frame_submission: NativeVulkanSceneFrameSubmission,
         resources: &[SceneResource],
     ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
         let upload_plan = self.gpu_upload_plan(resources)?;
@@ -100,15 +104,9 @@ impl NativeVulkanSceneFrameResources {
             device,
             memory_properties,
             command_buffer,
+            frame_submission,
             upload_plan,
         )
-    }
-
-    pub(in crate::renderer::native_vulkan) fn release_completed_gpu_uploads(
-        &mut self,
-        device: &Device,
-    ) -> usize {
-        self.gpu_buffers.release_completed_uploads(device)
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_upload_plan(
@@ -126,6 +124,7 @@ impl NativeVulkanSceneFrameResources {
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
         command_buffer: vk::CommandBuffer,
+        frame_submission: NativeVulkanSceneFrameSubmission,
         resources: &[SceneResource],
     ) -> Result<&[NativeVulkanSceneTextureImageSyncAction], String> {
         let upload_plan = self.texture_upload_plan(resources)?;
@@ -133,15 +132,28 @@ impl NativeVulkanSceneFrameResources {
             device,
             memory_properties,
             command_buffer,
+            frame_submission,
             upload_plan,
         )
     }
 
-    pub(in crate::renderer::native_vulkan) fn release_completed_texture_uploads(
+    pub(in crate::renderer::native_vulkan) fn release_completed_frame_resources(
         &mut self,
         device: &Device,
-    ) -> usize {
-        self.texture_images.release_completed_uploads(device)
+        completed_submission: NativeVulkanSceneFrameSubmission,
+    ) -> NativeVulkanSceneFrameResourceRelease {
+        let gpu_buffers = self
+            .gpu_buffers
+            .release_completed_uploads(device, completed_submission);
+        let texture_release = self
+            .texture_images
+            .release_completed_uploads(device, completed_submission);
+        NativeVulkanSceneFrameResourceRelease {
+            completed_submission,
+            gpu_buffers,
+            texture_images: texture_release.images,
+            texture_staging_buffers: texture_release.staging_buffers,
+        }
     }
 
     pub(in crate::renderer::native_vulkan) fn last_texture_image_actions(
