@@ -70,6 +70,14 @@ impl NativeVulkanSceneGraphTargetFormatPlan {
                 source,
             });
         }
+        if !formats.contains_key(&SceneGraphTarget::Swapchain) {
+            formats.insert(SceneGraphTarget::Swapchain, swapchain_format);
+            entries.push(NativeVulkanSceneGraphTargetFormatEntry {
+                target: SceneGraphTarget::Swapchain,
+                format: vulkan_format_label(swapchain_format),
+                source: "swapchain_surface_format",
+            });
+        }
 
         Ok(Self {
             target_count: entries.len(),
@@ -166,6 +174,24 @@ mod tests {
         .expect_err("NamedFbo format must be explicit");
 
         assert!(err.contains("explicit effect FBO format metadata"));
+    }
+
+    #[test]
+    fn target_format_plan_keeps_swapchain_format_even_without_mesh_swapchain_pass() {
+        let graph = SceneGraph::default();
+        let execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let plan = NativeVulkanSceneGraphTargetFormatPlan::from_execution_plan(
+            &execution,
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("swapchain format plan");
+
+        assert!(plan.contains_swapchain());
+        assert_eq!(
+            plan.format(SceneGraphTarget::Swapchain).unwrap(),
+            vk::Format::B8G8R8A8_UNORM
+        );
     }
 
     fn pass(

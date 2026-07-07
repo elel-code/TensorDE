@@ -14,7 +14,7 @@
 mod command_sequence;
 mod copy_command;
 mod material_command;
-mod target_access;
+pub(in crate::renderer::native_vulkan::scene_backend) mod target_access;
 
 #[cfg(test)]
 mod tests;

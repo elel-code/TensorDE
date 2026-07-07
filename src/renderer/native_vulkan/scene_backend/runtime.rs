@@ -49,8 +49,8 @@ pub(in crate::renderer::native_vulkan) type NativeVulkanSceneRuntimeFrameContext
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<'a> {
-    pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
     pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
+    pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
     pub command_order: [&'static str; 2],
 }
 
@@ -90,6 +90,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
     context: NativeVulkanSceneRuntimeFrameContext<'_>,
     frame: &'a SceneFramePlan,
 ) -> Result<NativeVulkanSceneRuntimeFramePlan<'a>, String> {
+    let effects = native_vulkan_record_scene_effect_runtime_frame(
+        frame_resources,
+        NativeVulkanSceneEffectRuntimeFrameContext {
+            device: context.device,
+            command_buffer: context.command_buffer,
+            target_formats: context.target_formats,
+        },
+        &frame.effect_pass_graph,
+    )?;
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -101,21 +110,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         },
         frame,
     )?;
-    let effects = native_vulkan_record_scene_effect_runtime_frame(
-        frame_resources,
-        NativeVulkanSceneEffectRuntimeFrameContext {
-            device: context.device,
-            command_buffer: context.command_buffer,
-            target_formats: context.target_formats,
-        },
-        &frame.effect_pass_graph,
-    )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
-        mesh,
         effects,
+        mesh,
         command_order: [
-            "record_scene_mesh_graph_runtime",
             "record_scene_effect_graph_runtime",
+            "record_scene_mesh_graph_runtime",
         ],
     })
 }

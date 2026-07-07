@@ -86,6 +86,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
             })?;
         let render_target =
             resolve_pass_render_target(frame_resources, &context, graph_execution, execution_pass)?;
+        record_pass_input_access(frame_resources, &context, execution_pass)?;
         let clear_color = pass_clear_color(
             graph_execution,
             execution_pass,
@@ -251,6 +252,32 @@ fn pass_output_final_layout(
     } else {
         Ok(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
     }
+}
+
+fn record_pass_input_access(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    context: &NativeVulkanSceneGraphRuntimeFrameContext<'_>,
+    execution_pass: &SceneGraphExecutionPass,
+) -> Result<(), String> {
+    let Some(input) = execution_pass.input else {
+        return Ok(());
+    };
+    if input == SceneGraphTarget::Swapchain {
+        return Err("scene mesh graph cannot sample the swapchain as a pass input".to_owned());
+    }
+    if input == execution_pass.output {
+        return Err(format!(
+            "scene mesh graph pass '{}' reads and writes {:?}; explicit ping-pong targets are required",
+            execution_pass.name, input
+        ));
+    }
+    super::effect_executor::target_access::record_effect_target_shader_read_access(
+        frame_resources,
+        context.device,
+        context.command_buffer,
+        input,
+    )?;
+    Ok(())
 }
 
 fn pass_clear_color(

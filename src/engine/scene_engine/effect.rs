@@ -92,6 +92,7 @@ pub enum SceneEffectImageRef {
     SourceTexture,
     Scene,
     NamedFbo(String),
+    GraphTarget(SceneGraphTarget),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -211,6 +212,10 @@ mod tests {
         assert_eq!(
             SceneEffectImageRef::from_we_name("_rt_SmokeVelocity1"),
             SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity1".to_owned())
+        );
+        assert_eq!(
+            SceneEffectImageRef::GraphTarget(SceneGraphTarget::ObjectFinal(SceneObjectId(7))),
+            SceneEffectImageRef::GraphTarget(SceneGraphTarget::ObjectFinal(SceneObjectId(7)))
         );
     }
 

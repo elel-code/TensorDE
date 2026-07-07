@@ -8,10 +8,13 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.cpp`
 
+use std::collections::BTreeMap;
+
 use crate::engine::scene_engine::{
-    RendererSceneRender, SceneFrameContext, SceneGraph, SceneGraphDraw, SceneGraphPass,
-    SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
-    SceneObject, SceneObjectEffectProgram, SceneObjectGeometry, SceneResource,
+    RendererSceneRender, SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneFrameContext,
+    SceneGraph, SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding,
+    SceneGraphResourceRole, SceneGraphTarget, SceneLayerCompositorPlan, SceneObject,
+    SceneObjectEffectProgram, SceneObjectGeometry, SceneResource,
 };
 
 #[derive(Debug, Default)]
@@ -30,19 +33,78 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
         _resources: &[SceneResource],
         objects: &[SceneObject],
         _effects: &[SceneObjectEffectProgram],
+        _effect_pass_graph: &SceneEffectPassGraphPlan,
+        final_compositor: &SceneFinalCompositorPlan,
+        layer_compositor: &SceneLayerCompositorPlan,
     ) -> Result<SceneGraph, String> {
         if objects.is_empty() {
             return Ok(SceneGraph::default());
         }
 
-        Ok(SceneGraph {
-            passes: vec![SceneGraphPass {
-                name: "scene-main".to_owned(),
-                input: None,
-                output: SceneGraphTarget::Swapchain,
-                draws: objects.iter().map(scene_graph_draw_for_object).collect(),
-            }],
-        })
+        if layer_compositor.object_final_layer_count == 0 {
+            return Ok(SceneGraph {
+                passes: vec![direct_scene_pass(
+                    0,
+                    objects.iter().map(scene_graph_draw_for_object),
+                )],
+            });
+        }
+
+        let final_passes_by_object = final_compositor
+            .passes
+            .iter()
+            .filter_map(|pass| pass.draws.first().map(|draw| (draw.object, pass)))
+            .collect::<BTreeMap<_, _>>();
+        let mut passes = Vec::new();
+        let mut direct_draws = Vec::new();
+        for object in objects {
+            let routes_object_final = layer_compositor
+                .layer_for_object(object.id)
+                .is_some_and(|layer| layer.routes_object_final());
+            if routes_object_final {
+                let final_pass = final_passes_by_object.get(&object.id).ok_or_else(|| {
+                    format!(
+                        "scene layer compositor routes object {:?} through ObjectFinal but final compositor has no mesh pass",
+                        object.id
+                    )
+                })?;
+                flush_direct_scene_pass(&mut passes, &mut direct_draws);
+                passes.push((*final_pass).clone());
+            } else {
+                direct_draws.push(scene_graph_draw_for_object(object));
+            }
+        }
+        flush_direct_scene_pass(&mut passes, &mut direct_draws);
+
+        Ok(SceneGraph { passes })
+    }
+}
+
+fn flush_direct_scene_pass(
+    passes: &mut Vec<SceneGraphPass>,
+    direct_draws: &mut Vec<SceneGraphDraw>,
+) {
+    if direct_draws.is_empty() {
+        return;
+    }
+    let pass_index = passes.len();
+    let draws = std::mem::take(direct_draws);
+    passes.push(direct_scene_pass(pass_index, draws));
+}
+
+fn direct_scene_pass(
+    pass_index: usize,
+    draws: impl IntoIterator<Item = SceneGraphDraw>,
+) -> SceneGraphPass {
+    SceneGraphPass {
+        name: if pass_index == 0 {
+            "scene-main".to_owned()
+        } else {
+            format!("scene-main-{pass_index}")
+        },
+        input: None,
+        output: SceneGraphTarget::Swapchain,
+        draws: draws.into_iter().collect(),
     }
 }
 
@@ -101,8 +163,9 @@ fn scene_graph_puppet_id(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneFrameContext, SceneGeometryId, SceneMaterialContract,
-        SceneObjectId, SceneResourceId,
+        SceneBlendContract, SceneEffectPassBlend, SceneEffectPassGraphMaterialPass,
+        SceneEffectPassGraphOutput, SceneFrameContext, SceneGeometryId, SceneMaterialContract,
+        SceneObjectId, SceneResourceId, we::WeEffectKind,
     };
 
     #[test]
@@ -133,6 +196,9 @@ mod tests {
                 &[],
                 &[object],
                 &[],
+                &SceneEffectPassGraphPlan::empty(),
+                &SceneFinalCompositorPlan::empty(),
+                &SceneLayerCompositorPlan::empty(),
             )
             .expect("scene graph");
 
@@ -164,6 +230,9 @@ mod tests {
                 &[],
                 &objects,
                 &[],
+                &SceneEffectPassGraphPlan::empty(),
+                &SceneFinalCompositorPlan::empty(),
+                &SceneLayerCompositorPlan::empty(),
             )
             .expect("scene graph");
 
@@ -198,10 +267,63 @@ mod tests {
                 &[],
                 &[],
                 &[],
+                &SceneEffectPassGraphPlan::empty(),
+                &SceneFinalCompositorPlan::empty(),
+                &SceneLayerCompositorPlan::empty(),
             )
             .expect("scene graph");
 
         assert!(graph.passes.is_empty());
+    }
+
+    #[test]
+    fn graph_routes_effect_objects_through_object_final_mesh_passes() {
+        let renderer = NativeVulkanRendererSceneRender::new();
+        let objects = vec![
+            mesh_object(SceneObjectId(1), SceneGeometryId(3), SceneResourceId(7)),
+            mesh_object(SceneObjectId(2), SceneGeometryId(4), SceneResourceId(8)),
+            mesh_object(SceneObjectId(3), SceneGeometryId(5), SceneResourceId(9)),
+        ];
+        let effect_graph = SceneEffectPassGraphPlan {
+            material_pass_count: 1,
+            passes: vec![effect_output_pass(SceneObjectId(2))],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+        let final_compositor =
+            SceneFinalCompositorPlan::from_effect_pass_graph(&objects, &effect_graph);
+        let layer_compositor =
+            SceneLayerCompositorPlan::from_scene(&[], &objects, &effect_graph, &final_compositor);
+
+        let graph = renderer
+            .build_graph(
+                SceneFrameContext {
+                    time_ms: 250,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &objects,
+                &[],
+                &effect_graph,
+                &final_compositor,
+                &layer_compositor,
+            )
+            .expect("scene graph");
+
+        assert_eq!(graph.passes.len(), 3);
+        assert_eq!(graph.passes[0].draws[0].object, SceneObjectId(1));
+        assert_eq!(graph.passes[1].name, "scene-object-final-2");
+        assert_eq!(
+            graph.passes[1].input,
+            Some(SceneGraphTarget::ObjectFinal(SceneObjectId(2)))
+        );
+        assert_eq!(graph.passes[1].draws[0].object, SceneObjectId(2));
+        assert_eq!(graph.passes[1].draws[0].resources, Vec::new());
+        assert_eq!(
+            graph.passes[1].draws[0].material.blend,
+            SceneBlendContract::NormalReplace
+        );
+        assert_eq!(graph.passes[2].draws[0].object, SceneObjectId(3));
     }
 
     fn mesh_object(
@@ -223,6 +345,30 @@ mod tests {
                 ),
             },
             source: Some(source),
+        }
+    }
+
+    fn effect_output_pass(object: SceneObjectId) -> SceneEffectPassGraphMaterialPass {
+        SceneEffectPassGraphMaterialPass {
+            graph_command_index: 0,
+            graph_pass_index: 0,
+            object,
+            program_index: 0,
+            pass_index: 0,
+            effect_file: "effects/iris/effect.json".to_owned(),
+            effect: WeEffectKind::Iris,
+            shader: Some("effects/iris".to_owned()),
+            source: None,
+            input_bindings: Vec::new(),
+            output: SceneEffectPassGraphOutput::ObjectFinal(object),
+            blend: SceneEffectPassBlend::NormalReplace,
+            depth_test: crate::engine::scene_engine::SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: crate::engine::scene_engine::SceneCullMode::None,
+            alpha_write: crate::engine::scene_engine::SceneAlphaWriteMode::Default,
+            texture_resources: Vec::new(),
+            combos: Default::default(),
+            constants: Default::default(),
         }
     }
 }

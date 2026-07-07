@@ -6,8 +6,9 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
 use super::{
-    RenderingDevice, SceneEffectPassGraphPlan, SceneFrameContext, SceneFramePlan, SceneGraph,
-    SceneObject, SceneObjectEffectProgram, SceneResource, SceneResourceResidencyPlan,
+    RenderingDevice, SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneFrameContext,
+    SceneFramePlan, SceneGraph, SceneLayerCompositorPlan, SceneObject, SceneObjectEffectProgram,
+    SceneResource, SceneResourceResidencyPlan,
 };
 
 pub trait RendererSceneRender {
@@ -17,6 +18,9 @@ pub trait RendererSceneRender {
         resources: &[SceneResource],
         objects: &[SceneObject],
         effects: &[SceneObjectEffectProgram],
+        effect_pass_graph: &SceneEffectPassGraphPlan,
+        final_compositor: &SceneFinalCompositorPlan,
+        layer_compositor: &SceneLayerCompositorPlan,
     ) -> Result<SceneGraph, String>;
 
     fn build_frame(
@@ -38,10 +42,30 @@ pub trait RendererSceneRender {
         objects: &[SceneObject],
         effects: &[SceneObjectEffectProgram],
     ) -> Result<SceneFramePlan, String> {
+        let effect_pass_graph = SceneEffectPassGraphPlan::from_scene(objects, effects)?;
+        let final_compositor =
+            SceneFinalCompositorPlan::from_effect_pass_graph(objects, &effect_pass_graph);
+        let layer_compositor = SceneLayerCompositorPlan::from_scene(
+            resources,
+            objects,
+            &effect_pass_graph,
+            &final_compositor,
+        );
+        let graph = self.build_graph(
+            context,
+            resources,
+            objects,
+            effects,
+            &effect_pass_graph,
+            &final_compositor,
+            &layer_compositor,
+        )?;
         Ok(SceneFramePlan {
             residency: residency.clone(),
-            graph: self.build_graph(context, resources, objects, effects)?,
-            effect_pass_graph: SceneEffectPassGraphPlan::from_scene(objects, effects)?,
+            graph,
+            effect_pass_graph,
+            final_compositor,
+            layer_compositor,
         })
     }
 

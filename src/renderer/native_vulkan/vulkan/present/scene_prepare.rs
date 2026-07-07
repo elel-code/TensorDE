@@ -14,7 +14,8 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget, SceneResource,
+    SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget,
+    SceneResource,
 };
 use crate::renderer::native_vulkan::scene_backend::effect_pipeline_prepare::{
     NativeVulkanSceneEffectPipelinePreparePlan,
@@ -126,6 +127,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     resources: &[SceneResource],
     frame: &SceneFramePlan,
     graph_execution: &SceneGraphExecutionPlan,
+    post_effect_graph: &SceneEffectPassGraphPlan,
     target_formats: &NativeVulkanSceneGraphTargetFormatPlan,
     swapchain_extent: vk::Extent2D,
     shaders: NativeVulkanSceneMeshPipelineShaders<'_>,
@@ -144,7 +146,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     let mut submitted_to_queue = false;
     let result = (|| -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
         let effect_target_plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
-            &frame.effect_pass_graph,
+            post_effect_graph,
             swapchain_extent,
             target_formats.format(SceneGraphTarget::Swapchain)?,
         )?;
@@ -179,7 +181,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             frame,
         )?;
         let effect_texture_descriptors =
-            frame_resources.effect_texture_descriptor_frame_plan(&frame.effect_pass_graph)?;
+            frame_resources.effect_texture_descriptor_frame_plan(post_effect_graph)?;
         let effect_texture_descriptor_binding_count = effect_texture_descriptors.binding_count;
         let effect_resource_heap_action_count = frame_resources
             .sync_effect_resource_heap(
@@ -226,7 +228,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             native_vulkan_prepare_scene_effect_pipeline_cache_with_target_formats(
                 device,
                 frame_resources,
-                &frame.effect_pass_graph,
+                post_effect_graph,
                 |target| {
                     effect_target_plan
                     .format(target)

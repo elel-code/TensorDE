@@ -205,9 +205,9 @@ fn validate_scene_effect_pipeline_key(
     if key.shader.is_empty() {
         return Err("scene effect pipeline requires non-empty shader name".to_owned());
     }
-    if !key.shader.starts_with("effects/") {
+    if !key.shader.starts_with("effects/") && !key.shader.starts_with("util/") {
         return Err(format!(
-            "scene effect pipeline shader '{}' must use the effects/ namespace",
+            "scene effect pipeline shader '{}' must use the effects/ or util/ namespace",
             key.shader
         ));
     }
@@ -462,6 +462,18 @@ mod tests {
         assert_eq!(plan.depth_test, "disabled");
         assert_eq!(plan.depth_write, false);
         assert_eq!(plan.cull_mode, "nocull");
+    }
+
+    #[test]
+    fn effect_pipeline_plan_accepts_util_passthrough_materials() {
+        let mut key = effect_key();
+        key.shader = "util/passthrough";
+
+        let plan = native_vulkan_scene_effect_pipeline_create_plan(&key)
+            .expect("util passthrough is a valid WE utility shader");
+
+        assert_eq!(plan.shader, "util/passthrough");
+        assert_eq!(plan.raster_geometry, "fullscreen-triangle");
     }
 
     #[test]

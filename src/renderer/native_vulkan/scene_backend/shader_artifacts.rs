@@ -301,11 +301,23 @@ fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> 
 }
 
 fn scene_effect_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
-    let Some(normalized) = shader.strip_prefix("effects/") else {
+    let shader_path = if let Some(normalized) = shader.strip_prefix("effects/") {
+        safe_shader_artifact_relative_path(shader, "effects", normalized)?
+    } else if let Some(normalized) = shader.strip_prefix("util/") {
+        safe_shader_artifact_relative_path(shader, "", normalized)?
+    } else {
         return Err(format!(
-            "scene effect shader artifact name '{shader}' must use the effects/ namespace"
+            "scene effect shader artifact name '{shader}' must use the effects/ or util/ namespace"
         ));
     };
+    Ok(shader_path)
+}
+
+fn safe_shader_artifact_relative_path(
+    shader: &str,
+    root: &str,
+    normalized: &str,
+) -> Result<PathBuf, String> {
     if normalized.is_empty()
         || normalized.contains('\\')
         || normalized
@@ -316,7 +328,12 @@ fn scene_effect_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, S
             "scene effect shader artifact name '{shader}' cannot be mapped to a safe artifact path"
         ));
     }
-    Ok(PathBuf::from("effects").join(normalized))
+    let path = if root.is_empty() {
+        PathBuf::from(normalized)
+    } else {
+        PathBuf::from(root).join(normalized)
+    };
+    Ok(path)
 }
 
 fn native_vulkan_scene_spirv_words_from_bytes(
@@ -405,6 +422,29 @@ mod tests {
     }
 
     #[test]
+    fn effect_shader_artifact_plan_maps_util_passthrough_to_top_level_shader() {
+        let plan = native_vulkan_scene_effect_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "util/passthrough",
+        )
+        .expect("util artifact path plan");
+
+        assert_eq!(plan.shader, "util/passthrough");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/passthrough.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/passthrough.frag.spv")
+        );
+        assert_eq!(
+            plan.source_reference,
+            "reverse-engineered/shaders/passthrough"
+        );
+    }
+
+    #[test]
     fn shader_artifact_plan_rejects_unknown_or_unsafe_shader_names() {
         assert!(
             native_vulkan_scene_shader_artifact_path_plan(Path::new("artifacts"), "we/notreal")
@@ -419,7 +459,7 @@ mod tests {
         assert!(
             native_vulkan_scene_effect_shader_artifact_path_plan(Path::new("artifacts"), "we/iris")
                 .expect_err("wrong namespace")
-                .contains("effects/ namespace")
+                .contains("effects/ or util/ namespace")
         );
         assert!(
             scene_effect_shader_artifact_relative_path("effects/../iris")

@@ -387,6 +387,9 @@ fn resolve_effect_input_source(
                 .get(name)
                 .ok_or_else(|| format!("scene effect references undeclared FBO '{name}'"))?,
         )),
+        SceneEffectImageRef::GraphTarget(target) => {
+            Ok(SceneEffectPassGraphInputSource::GraphTarget(*target))
+        }
         SceneEffectImageRef::PreviousFramebuffer => {
             Ok(SceneEffectPassGraphInputSource::PreviousFramebuffer)
         }
@@ -410,6 +413,9 @@ fn effect_pass_output(
         }
         Some(SceneEffectImageRef::SourceTexture) => {
             Err("scene effect source texture cannot be a render target".to_owned())
+        }
+        Some(SceneEffectImageRef::GraphTarget(target)) => {
+            Ok(SceneEffectPassGraphOutput::GraphTarget(*target))
         }
         Some(SceneEffectImageRef::PreviousFramebuffer) => {
             Err("scene effect previous framebuffer cannot be a render target".to_owned())

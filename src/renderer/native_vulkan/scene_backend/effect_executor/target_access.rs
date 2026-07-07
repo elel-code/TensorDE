@@ -58,7 +58,7 @@ struct NativeVulkanSceneEffectLayoutAccess {
     access_label: &'static str,
 }
 
-pub(super) fn record_effect_target_shader_read_access(
+pub(in crate::renderer::native_vulkan::scene_backend) fn record_effect_target_shader_read_access(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -134,7 +134,7 @@ pub(super) fn record_effect_target_transition(
     reason: &'static str,
 ) -> Result<Option<NativeVulkanSceneEffectTargetTransitionPlan>, String> {
     if target == SceneGraphTarget::Swapchain {
-        return Err("scene effect runtime does not write direct swapchain targets before the object-final compositor exists".to_owned());
+        return Err("scene effect runtime direct swapchain writes must be lowered to ObjectFinal and composited by the mesh graph".to_owned());
     }
     if command_buffer == vk::CommandBuffer::null() {
         return Err("scene effect target transition requires a valid command buffer".to_owned());
@@ -187,7 +187,7 @@ pub(super) fn effect_offscreen_render_target(
 ) -> Result<NativeVulkanSceneRenderTarget, String> {
     if target == SceneGraphTarget::Swapchain {
         return Err(
-            "scene effect runtime direct swapchain output requires the object-final compositor"
+            "scene effect runtime direct swapchain output must be lowered to ObjectFinal before mesh graph compositing"
                 .to_owned(),
         );
     }
@@ -242,7 +242,7 @@ pub(super) fn effect_pass_render_target(
     }
 }
 
-pub(super) fn effect_access_transition_count(
+pub(in crate::renderer::native_vulkan::scene_backend) fn effect_access_transition_count(
     accesses: &[NativeVulkanSceneEffectTargetAccessPlan],
 ) -> usize {
     accesses

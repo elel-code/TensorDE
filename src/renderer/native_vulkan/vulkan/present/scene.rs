@@ -269,6 +269,7 @@ fn with_vulkanalia_scene_present(
             server.resources(),
             &frame,
             &graph_execution,
+            &frame.effect_pass_graph,
             &target_formats,
             swapchain_plan.extent,
             shader_artifacts.mesh_pipeline_shaders(),
