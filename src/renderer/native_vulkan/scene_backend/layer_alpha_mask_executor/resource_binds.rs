@@ -242,7 +242,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
                     "read_copy_back_heap_bind_pairings",
                     "derive_minimalalpha_copy_back_pipeline_keys",
                     "map_copy_back_texture_slots_to_descriptor_heap_offsets",
-                    "preserve_target_like_flattexture_draw_shape",
+                    "preserve_render_state_flattexture_copy_back_draw_shape",
                 ],
                 cache_keys: Vec::new(),
             },

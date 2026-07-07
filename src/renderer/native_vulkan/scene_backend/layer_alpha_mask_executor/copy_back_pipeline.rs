@@ -28,6 +28,7 @@ use super::copy_back::{
     NativeVulkanSceneLayerAlphaMaskCopyBackAlphaUniform,
     NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan,
 };
+use super::copy_back_geometry::FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY;
 use super::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -117,10 +118,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
                 draw_bind.base_resource_descriptor_index,
                 draw_bind.base_sampler_descriptor_index
             ),
-            raster_geometry: "target-like-flattexture",
+            raster_geometry: FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
             command_order: [
                 "select_util_minimalalpha_shader",
-                "select_target_like_flattexture_geometry",
+                "select_render_state_flattexture_copy_back_geometry",
                 "select_r8_unorm_full_alpha_mask_target",
                 "select_dest_color_copy_back_blend_key_0x100",
                 "map_g_Texture0_to_alpha_mask_copy_back_heap_slice",
@@ -142,7 +143,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             "read_copy_back_heap_bind_pairings",
             "derive_minimalalpha_copy_back_pipeline_keys",
             "map_copy_back_texture_slots_to_descriptor_heap_offsets",
-            "preserve_target_like_flattexture_draw_shape",
+            "preserve_render_state_flattexture_copy_back_draw_shape",
         ],
         cache_keys,
     })
@@ -246,7 +247,7 @@ mod tests {
                 "bind_g_Texture0_to_full_alpha_mask_intermediate",
                 "set_g_Alpha_to_1",
                 "toggle_wrapper_blend_key_0x100",
-                "draw_target_like_flattexture_copy_back",
+                "draw_render_state_flattexture_copy_back",
             ],
         };
         let draw_bind = NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan {
@@ -292,7 +293,7 @@ mod tests {
             key.vertex_layout,
             NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv
         );
-        assert_eq!(key.raster_geometry, "target-like-flattexture");
+        assert_eq!(key.raster_geometry, "render-state-flattexture-copy-back");
         assert_eq!(key.base_resource_descriptor_index, 4);
         assert_eq!(key.base_sampler_descriptor_index, 4);
         assert_eq!(key.resource_descriptor_index, 4);

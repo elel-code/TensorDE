@@ -1,8 +1,9 @@
-//! Target-like flattexture geometry facts for WE alpha-mask copy-back draws.
+//! Geometry facts for WE alpha-mask flattexture copy-back draws.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/blend-and-render.md`
 //! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.vert`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
@@ -12,55 +13,181 @@ use vulkanalia::vk;
 use vulkanalia::vk::Handle;
 
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY: &str =
-    "target-like-flattexture";
+    "render-state-flattexture-copy-back";
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_SOURCE_FIELD: &str =
+    "render_state+0x48";
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_SOURCE_FIELD_OFFSET: u32 = 0x48;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_RENDER_STATE_CTOR_VMA: u64 =
+    0x14017c6d0;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_FIELD_NULL_INIT_VMA: u64 =
+    0x14017c73f;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_DRAW_LOAD_VMA: u64 = 0x14020da78;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_DRAW_CALL_VMA: u64 = 0x14020da7f;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_BLEND_TOGGLE_VMA: u64 =
+    0x14020da40;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_BLEND_KEY_BIT: u32 = 0x100;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_FULL_ALPHA_MASK_OFFSET: u32 =
+    0x1500;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INTERMEDIATE_OFFSET: u32 =
+    0x1508;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_OFFSET: u32 = 0x1518;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_STORE_VMA: u64 =
+    0x14017d01e;
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT: &str =
     "a_Position.xyz+a_TexCoord.xy";
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_HELPER_VMA: u64 = 0x1401ede30;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_LAYOUT_KEY_HELPER_VMA: u64 =
-    0x140098c30;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_ATTRIBUTE_IDS: [u32; 2] =
-    [0, 7];
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT_BITMASK: u32 = 0x9;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_POSITION_ATTRIBUTE_BYTES: u32 =
-    12;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_TEXCOORD_ATTRIBUTE_BYTES: u32 =
-    8;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_COUNT: u32 = 4;
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES: u32 = 20;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES: u64 =
-    FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES as u64 * FLATTEXTURE_COPY_BACK_VERTEX_COUNT as u64;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_COUNT: u32 = 6;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_ELEMENT_BYTES: u32 = 2;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES: u64 =
-    FLATTEXTURE_COPY_BACK_INDEX_ELEMENT_BYTES as u64 * FLATTEXTURE_COPY_BACK_INDEX_COUNT as u64;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_FORMAT: &str =
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_MIN_VERTEX_COUNT: u32 = 3;
+
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY: &str =
+    "target-like-indexed-quad-helper";
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_HELPER_VMA: u64 = 0x1401ede30;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_LAYOUT_KEY_HELPER_VMA: u64 =
+    0x140098c30;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_VERTEX_ATTRIBUTE_IDS: [u32;
+    2] = [0, 7];
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_VERTEX_LAYOUT_BITMASK: u32 =
+    0x9;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_POSITION_ATTRIBUTE_BYTES:
+    u32 = 12;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_TEXCOORD_ATTRIBUTE_BYTES:
+    u32 = 8;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_VERTEX_COUNT: u32 = 4;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_VERTEX_STRIDE_BYTES: u32 = 20;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES: u64 =
+    TARGET_LIKE_INDEXED_QUAD_VERTEX_STRIDE_BYTES as u64
+        * TARGET_LIKE_INDEXED_QUAD_VERTEX_COUNT as u64;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_COUNT: u32 = 6;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_ELEMENT_BYTES: u32 = 2;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_REQUIRED_INDEX_BYTES: u64 =
+    TARGET_LIKE_INDEXED_QUAD_INDEX_ELEMENT_BYTES as u64
+        * TARGET_LIKE_INDEXED_QUAD_INDEX_COUNT as u64;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_FORMAT: &str =
     "DXGI_FORMAT_R16_UINT";
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VK_INDEX_TYPE: vk::IndexType =
-    vk::IndexType::UINT16;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_WIDTH_SELECTOR: u32 = 0;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_TOPOLOGY_SELECTOR: u32 = 0;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_U16: [u16; 6] =
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_WIDTH_SELECTOR: u32 = 0;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_TOPOLOGY_SELECTOR: u32 = 0;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_U16: [u16; 6] =
     [0, 2, 1, 1, 2, 3];
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_BYTES: [u8; 12] =
-    [0, 0, 2, 0, 1, 0, 1, 0, 2, 0, 3, 0];
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH: u64 =
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_BYTES: [u8;
+    12] = [0, 0, 2, 0, 1, 0, 1, 0, 2, 0, 3, 0];
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_HASH: u64 =
     native_vulkan_scene_layer_alpha_mask_copy_back_payload_hash(
-        &FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_BYTES,
+        &TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_BYTES,
     );
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_CENTER_POSITION_FLAG: u32 = 0x1;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_TEXEL_INSET_FLAG: u32 = 0x2;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_FLIP_V_FLAG: u32 = 0x4;
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_HALF_EXTENT_BITS: u32 =
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_CENTER_POSITION_FLAG: u32 =
+    0x1;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_FLAG: u32 = 0x2;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_FLIP_V_FLAG: u32 = 0x4;
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_HALF_EXTENT_BITS: u32 =
     0.5f32.to_bits();
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_TEXEL_INSET_BITS: u32 =
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_BITS: u32 =
     0.15000000596046448f32.to_bits();
-pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_ONE_BITS: u32 = 1.0f32.to_bits();
+pub(in crate::renderer::native_vulkan) const TARGET_LIKE_INDEXED_QUAD_ONE_BITS: u32 =
+    1.0f32.to_bits();
 
 const FNV1A64_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV1A64_PRIME: u64 = 0x100000001b3;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers
+{
+    pub vertex: vk::Buffer,
+    pub vertex_bytes: u64,
+    pub vertex_count: u32,
+    pub vertex_stride_bytes: u32,
+    pub vertex_payload_hash: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan
+{
+    pub raster_geometry: &'static str,
+    pub source_field: &'static str,
+    pub source_field_offset: u32,
+    pub render_state_ctor_vma: u64,
+    pub field_null_init_vma: u64,
+    pub draw_load_vma: u64,
+    pub draw_call_vma: u64,
+    pub blend_toggle_vma: u64,
+    pub blend_key_bit: u32,
+    pub full_alpha_mask_offset: u32,
+    pub intermediate_offset: u32,
+    pub wrapper_offset: u32,
+    pub wrapper_store_vma: u64,
+    pub vertex_layout: &'static str,
+    pub vertex_count: u32,
+    pub vertex_stride_bytes: u32,
+    pub vertex_bytes: u64,
+    pub vertex_payload_hash: u64,
+    pub draw_call: &'static str,
+    pub command_order: [&'static str; 2],
+}
+
+impl NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan {
+    pub(in crate::renderer::native_vulkan) fn from_raster_geometry_and_buffers(
+        raster_geometry: &'static str,
+        buffers: NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers,
+    ) -> Result<Self, String> {
+        if raster_geometry != FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY {
+            return Err(format!(
+                "scene layer alpha-mask copy-back command requires render-state-flattexture-copy-back geometry, got {raster_geometry}"
+            ));
+        }
+        if buffers.vertex == vk::Buffer::null() {
+            return Err(
+                "scene layer alpha-mask copy-back command requires resident render-state flattexture vertex buffer from render_state+0x48"
+                    .to_owned(),
+            );
+        }
+        if buffers.vertex_count < FLATTEXTURE_COPY_BACK_MIN_VERTEX_COUNT {
+            return Err(format!(
+                "scene layer alpha-mask copy-back render-state geometry has too few vertices: {}",
+                buffers.vertex_count
+            ));
+        }
+        if buffers.vertex_stride_bytes != FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES {
+            return Err(format!(
+                "scene layer alpha-mask copy-back render-state geometry requires flattexture stride {} bytes, got {}",
+                FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES, buffers.vertex_stride_bytes
+            ));
+        }
+        let required_vertex_bytes =
+            u64::from(buffers.vertex_count) * u64::from(buffers.vertex_stride_bytes);
+        if buffers.vertex_bytes < required_vertex_bytes {
+            return Err(format!(
+                "scene layer alpha-mask copy-back render-state vertex buffer too small: {} bytes for {} vertices at {} bytes",
+                buffers.vertex_bytes, buffers.vertex_count, buffers.vertex_stride_bytes
+            ));
+        }
+        Ok(Self {
+            raster_geometry,
+            source_field: FLATTEXTURE_COPY_BACK_SOURCE_FIELD,
+            source_field_offset: FLATTEXTURE_COPY_BACK_SOURCE_FIELD_OFFSET,
+            render_state_ctor_vma: FLATTEXTURE_COPY_BACK_RENDER_STATE_CTOR_VMA,
+            field_null_init_vma: FLATTEXTURE_COPY_BACK_FIELD_NULL_INIT_VMA,
+            draw_load_vma: FLATTEXTURE_COPY_BACK_DRAW_LOAD_VMA,
+            draw_call_vma: FLATTEXTURE_COPY_BACK_DRAW_CALL_VMA,
+            blend_toggle_vma: FLATTEXTURE_COPY_BACK_BLEND_TOGGLE_VMA,
+            blend_key_bit: FLATTEXTURE_COPY_BACK_BLEND_KEY_BIT,
+            full_alpha_mask_offset: FLATTEXTURE_COPY_BACK_FULL_ALPHA_MASK_OFFSET,
+            intermediate_offset: FLATTEXTURE_COPY_BACK_INTERMEDIATE_OFFSET,
+            wrapper_offset: FLATTEXTURE_COPY_BACK_WRAPPER_OFFSET,
+            wrapper_store_vma: FLATTEXTURE_COPY_BACK_WRAPPER_STORE_VMA,
+            vertex_layout: FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT,
+            vertex_count: buffers.vertex_count,
+            vertex_stride_bytes: buffers.vertex_stride_bytes,
+            vertex_bytes: buffers.vertex_bytes,
+            vertex_payload_hash: buffers.vertex_payload_hash,
+            draw_call: "vkCmdDraw",
+            command_order: [
+                "cmd_bind_render_state_flattexture_copy_back_vertex_buffer",
+                "cmd_draw_render_state_flattexture_copy_back",
+            ],
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetQuadInput
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadInput
 {
     pub position_extent: [f32; 2],
     pub texel_inset_denominator: [f32; 2],
@@ -69,14 +196,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetVertexPayload
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadVertexPayload
 {
-    pub bytes: [u8; FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES as usize],
+    pub bytes: [u8; TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES as usize],
     pub payload_hash: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadBuffers
 {
     pub vertex: vk::Buffer,
     pub index: vk::Buffer,
@@ -87,7 +214,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadPlan
 {
     pub raster_geometry: &'static str,
     pub helper_vma: u64,
@@ -118,86 +245,86 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub command_order: [&'static str; 3],
 }
 
-impl NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan {
+impl NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadPlan {
     pub(in crate::renderer::native_vulkan) fn from_raster_geometry_and_buffers(
         raster_geometry: &'static str,
-        buffers: NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers,
+        buffers: NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadBuffers,
     ) -> Result<Self, String> {
-        if raster_geometry != FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY {
+        if raster_geometry != TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY {
             return Err(format!(
-                "scene layer alpha-mask copy-back command requires target-like-flattexture geometry, got {raster_geometry}"
+                "scene layer alpha-mask target-like helper requires target-like-indexed-quad-helper geometry, got {raster_geometry}"
             ));
         }
         if buffers.vertex == vk::Buffer::null() || buffers.index == vk::Buffer::null() {
             return Err(
-                "scene layer alpha-mask copy-back command requires resident target-like flattexture vertex/index buffers"
+                "scene layer alpha-mask target-like helper requires resident vertex/index buffers"
                     .to_owned(),
             );
         }
-        if buffers.vertex_bytes < FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES {
+        if buffers.vertex_bytes < TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES {
             return Err(format!(
-                "scene layer alpha-mask copy-back target-like vertex buffer too small: {} bytes",
+                "scene layer alpha-mask target-like helper vertex buffer too small: {} bytes",
                 buffers.vertex_bytes
             ));
         }
-        if buffers.index_bytes < FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES {
+        if buffers.index_bytes < TARGET_LIKE_INDEXED_QUAD_REQUIRED_INDEX_BYTES {
             return Err(format!(
-                "scene layer alpha-mask copy-back target-like index buffer too small: {} bytes",
+                "scene layer alpha-mask target-like helper index buffer too small: {} bytes",
                 buffers.index_bytes
             ));
         }
-        if buffers.index_payload_hash != FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH {
+        if buffers.index_payload_hash != TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_HASH {
             return Err(format!(
-                "scene layer alpha-mask copy-back index payload hash mismatch: expected {:#x}, got {:#x}",
-                FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH, buffers.index_payload_hash
+                "scene layer alpha-mask target-like helper index payload hash mismatch: expected {:#x}, got {:#x}",
+                TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_HASH, buffers.index_payload_hash
             ));
         }
         Ok(Self {
             raster_geometry,
-            helper_vma: FLATTEXTURE_COPY_BACK_HELPER_VMA,
-            layout_key_helper_vma: FLATTEXTURE_COPY_BACK_LAYOUT_KEY_HELPER_VMA,
+            helper_vma: TARGET_LIKE_INDEXED_QUAD_HELPER_VMA,
+            layout_key_helper_vma: TARGET_LIKE_INDEXED_QUAD_LAYOUT_KEY_HELPER_VMA,
             vertex_layout: FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT,
-            vertex_attribute_ids: FLATTEXTURE_COPY_BACK_VERTEX_ATTRIBUTE_IDS,
-            vertex_layout_bitmask: FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT_BITMASK,
-            vertex_count: FLATTEXTURE_COPY_BACK_VERTEX_COUNT,
-            vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
-            position_attribute_bytes: FLATTEXTURE_COPY_BACK_POSITION_ATTRIBUTE_BYTES,
-            texcoord_attribute_bytes: FLATTEXTURE_COPY_BACK_TEXCOORD_ATTRIBUTE_BYTES,
+            vertex_attribute_ids: TARGET_LIKE_INDEXED_QUAD_VERTEX_ATTRIBUTE_IDS,
+            vertex_layout_bitmask: TARGET_LIKE_INDEXED_QUAD_VERTEX_LAYOUT_BITMASK,
+            vertex_count: TARGET_LIKE_INDEXED_QUAD_VERTEX_COUNT,
+            vertex_stride_bytes: TARGET_LIKE_INDEXED_QUAD_VERTEX_STRIDE_BYTES,
+            position_attribute_bytes: TARGET_LIKE_INDEXED_QUAD_POSITION_ATTRIBUTE_BYTES,
+            texcoord_attribute_bytes: TARGET_LIKE_INDEXED_QUAD_TEXCOORD_ATTRIBUTE_BYTES,
             vertex_bytes: buffers.vertex_bytes,
             vertex_payload_hash: buffers.vertex_payload_hash,
-            index_format: FLATTEXTURE_COPY_BACK_INDEX_FORMAT,
-            index_width_selector: FLATTEXTURE_COPY_BACK_INDEX_WIDTH_SELECTOR,
-            topology_selector: FLATTEXTURE_COPY_BACK_TOPOLOGY_SELECTOR,
-            index_element_bytes: FLATTEXTURE_COPY_BACK_INDEX_ELEMENT_BYTES,
-            index_count: FLATTEXTURE_COPY_BACK_INDEX_COUNT,
+            index_format: TARGET_LIKE_INDEXED_QUAD_INDEX_FORMAT,
+            index_width_selector: TARGET_LIKE_INDEXED_QUAD_INDEX_WIDTH_SELECTOR,
+            topology_selector: TARGET_LIKE_INDEXED_QUAD_TOPOLOGY_SELECTOR,
+            index_element_bytes: TARGET_LIKE_INDEXED_QUAD_INDEX_ELEMENT_BYTES,
+            index_count: TARGET_LIKE_INDEXED_QUAD_INDEX_COUNT,
             index_bytes: buffers.index_bytes,
-            index_payload_u16: FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_U16,
+            index_payload_u16: TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_U16,
             index_payload_hash: buffers.index_payload_hash,
-            center_position_flag: FLATTEXTURE_COPY_BACK_CENTER_POSITION_FLAG,
-            texel_inset_flag: FLATTEXTURE_COPY_BACK_TEXEL_INSET_FLAG,
-            flip_v_flag: FLATTEXTURE_COPY_BACK_FLIP_V_FLAG,
-            half_extent_bits: FLATTEXTURE_COPY_BACK_HALF_EXTENT_BITS,
-            texel_inset_bits: FLATTEXTURE_COPY_BACK_TEXEL_INSET_BITS,
-            one_bits: FLATTEXTURE_COPY_BACK_ONE_BITS,
+            center_position_flag: TARGET_LIKE_INDEXED_QUAD_CENTER_POSITION_FLAG,
+            texel_inset_flag: TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_FLAG,
+            flip_v_flag: TARGET_LIKE_INDEXED_QUAD_FLIP_V_FLAG,
+            half_extent_bits: TARGET_LIKE_INDEXED_QUAD_HALF_EXTENT_BITS,
+            texel_inset_bits: TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_BITS,
+            one_bits: TARGET_LIKE_INDEXED_QUAD_ONE_BITS,
             command_order: [
-                "cmd_bind_vertex_buffers",
-                "cmd_bind_index_buffer_r16_uint",
-                "cmd_draw_indexed",
+                "wrapper_plus_0x40_create_indexed_draw_target",
+                "cmd_bind_indexed_target_like_vertex_index_buffers",
+                "cmd_draw_indexed_target_like_helper",
             ],
         })
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_copy_back_vertex_payload_from_helper_inputs(
-    input: NativeVulkanSceneLayerAlphaMaskCopyBackTargetQuadInput,
-) -> Result<NativeVulkanSceneLayerAlphaMaskCopyBackTargetVertexPayload, String> {
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_target_like_indexed_quad_payload_from_helper_inputs(
+    input: NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadInput,
+) -> Result<NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadVertexPayload, String> {
     validate_finite_pair("position_extent", input.position_extent)?;
     validate_finite_pair("texel_inset_denominator", input.texel_inset_denominator)?;
     validate_finite_pair("texcoord_extent", input.texcoord_extent)?;
 
-    let centered = input.flags & FLATTEXTURE_COPY_BACK_CENTER_POSITION_FLAG != 0;
-    let texel_inset = input.flags & FLATTEXTURE_COPY_BACK_TEXEL_INSET_FLAG != 0;
-    let flip_v = input.flags & FLATTEXTURE_COPY_BACK_FLIP_V_FLAG != 0;
+    let centered = input.flags & TARGET_LIKE_INDEXED_QUAD_CENTER_POSITION_FLAG != 0;
+    let texel_inset = input.flags & TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_FLAG != 0;
+    let flip_v = input.flags & TARGET_LIKE_INDEXED_QUAD_FLIP_V_FLAG != 0;
 
     let (left, right, bottom, top) = if centered {
         let half_x = input.position_extent[0] * 0.5;
@@ -210,14 +337,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_c
     let (u0, v0_inset) = if texel_inset {
         if input.texel_inset_denominator[0] == 0.0 || input.texel_inset_denominator[1] == 0.0 {
             return Err(
-                "scene layer alpha-mask copy-back target-like vertex helper requires non-zero texel inset denominators when flag 0x2 is set"
+                "scene layer alpha-mask target-like helper requires non-zero texel inset denominators when flag 0x2 is set"
                     .to_owned(),
             );
         }
         (
-            f32::from_bits(FLATTEXTURE_COPY_BACK_TEXEL_INSET_BITS)
+            f32::from_bits(TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_BITS)
                 / input.texel_inset_denominator[0],
-            f32::from_bits(FLATTEXTURE_COPY_BACK_TEXEL_INSET_BITS)
+            f32::from_bits(TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_BITS)
                 / input.texel_inset_denominator[1],
         )
     } else {
@@ -237,9 +364,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_c
         [left, bottom, 0.0, u0, v1],
         [right, bottom, 0.0, u1, v1],
     ];
-    let mut bytes = [0u8; FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES as usize];
+    let mut bytes = [0u8; TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES as usize];
     for (vertex_index, vertex) in vertices.iter().enumerate() {
-        let base = vertex_index * FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES as usize;
+        let base = vertex_index * TARGET_LIKE_INDEXED_QUAD_VERTEX_STRIDE_BYTES as usize;
         for (component_index, component) in vertex.iter().enumerate() {
             let offset = base + component_index * std::mem::size_of::<f32>();
             bytes[offset..offset + std::mem::size_of::<f32>()]
@@ -247,10 +374,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_c
         }
     }
 
-    Ok(NativeVulkanSceneLayerAlphaMaskCopyBackTargetVertexPayload {
-        bytes,
-        payload_hash: native_vulkan_scene_layer_alpha_mask_copy_back_payload_hash(&bytes),
-    })
+    Ok(
+        NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadVertexPayload {
+            bytes,
+            payload_hash: native_vulkan_scene_layer_alpha_mask_copy_back_payload_hash(&bytes),
+        },
+    )
 }
 
 pub(in crate::renderer::native_vulkan) const fn native_vulkan_scene_layer_alpha_mask_copy_back_payload_hash(
@@ -270,7 +399,7 @@ fn validate_finite_pair(label: &'static str, values: [f32; 2]) -> Result<(), Str
     for (index, value) in values.into_iter().enumerate() {
         if !value.is_finite() {
             return Err(format!(
-                "scene layer alpha-mask copy-back target-like vertex helper got non-finite {label}[{index}]"
+                "scene layer alpha-mask target-like helper got non-finite {label}[{index}]"
             ));
         }
     }
@@ -283,38 +412,116 @@ mod tests {
     use vulkanalia::vk::Handle;
 
     #[test]
-    fn copy_back_geometry_models_recovered_layout_and_r16_index_payload() {
-        assert_eq!(FLATTEXTURE_COPY_BACK_HELPER_VMA, 0x1401ede30);
-        assert_eq!(FLATTEXTURE_COPY_BACK_LAYOUT_KEY_HELPER_VMA, 0x140098c30);
-        assert_eq!(FLATTEXTURE_COPY_BACK_VERTEX_ATTRIBUTE_IDS, [0, 7]);
-        assert_eq!(FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT_BITMASK, 0x9);
-        assert_eq!(FLATTEXTURE_COPY_BACK_POSITION_ATTRIBUTE_BYTES, 12);
-        assert_eq!(FLATTEXTURE_COPY_BACK_TEXCOORD_ATTRIBUTE_BYTES, 8);
-        assert_eq!(FLATTEXTURE_COPY_BACK_VERTEX_COUNT, 4);
-        assert_eq!(FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES, 20);
-        assert_eq!(FLATTEXTURE_COPY_BACK_INDEX_COUNT, 6);
-        assert_eq!(FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES, 80);
-        assert_eq!(FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES, 12);
-        assert_eq!(FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_U16, [0, 2, 1, 1, 2, 3]);
-        assert_eq!(FLATTEXTURE_COPY_BACK_VK_INDEX_TYPE, vk::IndexType::UINT16);
-        assert_eq!(FLATTEXTURE_COPY_BACK_INDEX_WIDTH_SELECTOR, 0);
-        assert_eq!(FLATTEXTURE_COPY_BACK_TOPOLOGY_SELECTOR, 0);
+    fn copy_back_geometry_models_render_state_shared_draw_object() {
+        let plan =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan::from_raster_geometry_and_buffers(
+                FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
+                render_state_geometry_buffers(),
+            )
+            .expect("copy-back render-state geometry plan");
+
+        assert_eq!(plan.raster_geometry, "render-state-flattexture-copy-back");
+        assert_eq!(plan.source_field, "render_state+0x48");
+        assert_eq!(plan.source_field_offset, 0x48);
+        assert_eq!(plan.render_state_ctor_vma, 0x14017c6d0);
+        assert_eq!(plan.field_null_init_vma, 0x14017c73f);
+        assert_eq!(plan.draw_load_vma, 0x14020da78);
+        assert_eq!(plan.draw_call_vma, 0x14020da7f);
+        assert_eq!(plan.blend_toggle_vma, 0x14020da40);
+        assert_eq!(plan.blend_key_bit, 0x100);
+        assert_eq!(plan.full_alpha_mask_offset, 0x1500);
+        assert_eq!(plan.intermediate_offset, 0x1508);
+        assert_eq!(plan.wrapper_offset, 0x1518);
+        assert_eq!(plan.wrapper_store_vma, 0x14017d01e);
+        assert_eq!(plan.vertex_layout, "a_Position.xyz+a_TexCoord.xy");
+        assert_eq!(plan.vertex_stride_bytes, 20);
+        assert_eq!(plan.draw_call, "vkCmdDraw");
         assert_eq!(
-            FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH,
+            plan.command_order,
+            [
+                "cmd_bind_render_state_flattexture_copy_back_vertex_buffer",
+                "cmd_draw_render_state_flattexture_copy_back"
+            ]
+        );
+    }
+
+    #[test]
+    fn copy_back_geometry_rejects_indexed_quad_helper_as_runtime_copy_back() {
+        let err =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan::from_raster_geometry_and_buffers(
+                TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY,
+                render_state_geometry_buffers(),
+            )
+            .expect_err("indexed helper must not be accepted as copy-back draw");
+
+        assert!(err.contains("requires render-state-flattexture-copy-back geometry"));
+    }
+
+    #[test]
+    fn copy_back_geometry_requires_resident_render_state_vertex_buffer() {
+        let mut buffers = render_state_geometry_buffers();
+        buffers.vertex = vk::Buffer::null();
+
+        let err =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan::from_raster_geometry_and_buffers(
+                FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
+                buffers,
+            )
+            .expect_err("missing render-state vertex buffer must fail");
+
+        assert!(err.contains("render_state+0x48"));
+    }
+
+    #[test]
+    fn copy_back_geometry_rejects_non_flattexture_stride() {
+        let mut buffers = render_state_geometry_buffers();
+        buffers.vertex_stride_bytes = 16;
+
+        let err =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan::from_raster_geometry_and_buffers(
+                FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
+                buffers,
+            )
+            .expect_err("wrong stride must fail");
+
+        assert!(err.contains("requires flattexture stride 20 bytes"));
+    }
+
+    #[test]
+    fn target_like_helper_models_recovered_layout_and_r16_index_payload() {
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_HELPER_VMA, 0x1401ede30);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_LAYOUT_KEY_HELPER_VMA, 0x140098c30);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_VERTEX_ATTRIBUTE_IDS, [0, 7]);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_VERTEX_LAYOUT_BITMASK, 0x9);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_POSITION_ATTRIBUTE_BYTES, 12);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_TEXCOORD_ATTRIBUTE_BYTES, 8);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_VERTEX_COUNT, 4);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_VERTEX_STRIDE_BYTES, 20);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_INDEX_COUNT, 6);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES, 80);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_REQUIRED_INDEX_BYTES, 12);
+        assert_eq!(
+            TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_U16,
+            [0, 2, 1, 1, 2, 3]
+        );
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_INDEX_WIDTH_SELECTOR, 0);
+        assert_eq!(TARGET_LIKE_INDEXED_QUAD_TOPOLOGY_SELECTOR, 0);
+        assert_eq!(
+            TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_HASH,
             native_vulkan_scene_layer_alpha_mask_copy_back_payload_hash(
-                &FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_BYTES,
+                &TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_BYTES,
             )
         );
     }
 
     #[test]
-    fn copy_back_geometry_plan_rejects_wrong_index_payload() {
-        let mut buffers = geometry_buffers();
+    fn target_like_helper_plan_rejects_wrong_index_payload() {
+        let mut buffers = target_like_helper_buffers();
         buffers.index_payload_hash = 0;
 
         let err =
-            NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan::from_raster_geometry_and_buffers(
-                FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
+            NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadPlan::from_raster_geometry_and_buffers(
+                TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY,
                 buffers,
             )
             .expect_err("wrong index payload hash must fail");
@@ -323,13 +530,13 @@ mod tests {
     }
 
     #[test]
-    fn copy_back_geometry_plan_reports_helper_layout_facts() {
+    fn target_like_helper_plan_reports_helper_layout_facts() {
         let plan =
-            NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryPlan::from_raster_geometry_and_buffers(
-                FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
-                geometry_buffers(),
+            NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadPlan::from_raster_geometry_and_buffers(
+                TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY,
+                target_like_helper_buffers(),
             )
-            .expect("copy-back geometry plan");
+            .expect("target-like helper geometry plan");
 
         assert_eq!(plan.helper_vma, 0x1401ede30);
         assert_eq!(plan.layout_key_helper_vma, 0x140098c30);
@@ -343,10 +550,10 @@ mod tests {
     }
 
     #[test]
-    fn copy_back_vertex_payload_matches_recovered_helper_formula_without_flags() {
+    fn target_like_helper_vertex_payload_matches_recovered_formula_without_flags() {
         let payload =
-            native_vulkan_scene_layer_alpha_mask_copy_back_vertex_payload_from_helper_inputs(
-                NativeVulkanSceneLayerAlphaMaskCopyBackTargetQuadInput {
+            native_vulkan_scene_layer_alpha_mask_target_like_indexed_quad_payload_from_helper_inputs(
+                NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadInput {
                     position_extent: [2.0, 4.0],
                     texel_inset_denominator: [64.0, 128.0],
                     texcoord_extent: [1.0, 1.0],
@@ -369,21 +576,21 @@ mod tests {
     }
 
     #[test]
-    fn copy_back_vertex_payload_matches_center_inset_and_v_flip_flags() {
+    fn target_like_helper_vertex_payload_matches_center_inset_and_v_flip_flags() {
         let payload =
-            native_vulkan_scene_layer_alpha_mask_copy_back_vertex_payload_from_helper_inputs(
-                NativeVulkanSceneLayerAlphaMaskCopyBackTargetQuadInput {
+            native_vulkan_scene_layer_alpha_mask_target_like_indexed_quad_payload_from_helper_inputs(
+                NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadInput {
                     position_extent: [10.0, 20.0],
                     texel_inset_denominator: [100.0, 50.0],
                     texcoord_extent: [0.8, 0.6],
-                    flags: FLATTEXTURE_COPY_BACK_CENTER_POSITION_FLAG
-                        | FLATTEXTURE_COPY_BACK_TEXEL_INSET_FLAG
-                        | FLATTEXTURE_COPY_BACK_FLIP_V_FLAG,
+                    flags: TARGET_LIKE_INDEXED_QUAD_CENTER_POSITION_FLAG
+                        | TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_FLAG
+                        | TARGET_LIKE_INDEXED_QUAD_FLIP_V_FLAG,
                 },
             )
             .expect("target-like vertex payload");
 
-        let texel = f32::from_bits(FLATTEXTURE_COPY_BACK_TEXEL_INSET_BITS);
+        let texel = f32::from_bits(TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_BITS);
         let u0 = texel / 100.0;
         let u1 = 0.8 - u0;
         let v1 = 1.0 - (0.6 - texel / 50.0);
@@ -397,33 +604,45 @@ mod tests {
     }
 
     #[test]
-    fn copy_back_vertex_payload_rejects_zero_texel_denominator_when_inset_enabled() {
-        let err = native_vulkan_scene_layer_alpha_mask_copy_back_vertex_payload_from_helper_inputs(
-            NativeVulkanSceneLayerAlphaMaskCopyBackTargetQuadInput {
-                position_extent: [1.0, 1.0],
-                texel_inset_denominator: [0.0, 1.0],
-                texcoord_extent: [1.0, 1.0],
-                flags: FLATTEXTURE_COPY_BACK_TEXEL_INSET_FLAG,
-            },
-        )
-        .expect_err("zero denominator must fail");
+    fn target_like_helper_vertex_payload_rejects_zero_texel_denominator_when_inset_enabled() {
+        let err =
+            native_vulkan_scene_layer_alpha_mask_target_like_indexed_quad_payload_from_helper_inputs(
+                NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadInput {
+                    position_extent: [1.0, 1.0],
+                    texel_inset_denominator: [0.0, 1.0],
+                    texcoord_extent: [1.0, 1.0],
+                    flags: TARGET_LIKE_INDEXED_QUAD_TEXEL_INSET_FLAG,
+                },
+            )
+            .expect_err("zero denominator must fail");
 
         assert!(err.contains("non-zero texel inset denominators"));
     }
 
-    fn geometry_buffers() -> NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers {
-        NativeVulkanSceneLayerAlphaMaskCopyBackTargetGeometryBuffers {
+    fn render_state_geometry_buffers()
+    -> NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
+        NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
+            vertex: vk::Buffer::from_raw(11),
+            vertex_bytes: 80,
+            vertex_count: 4,
+            vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
+            vertex_payload_hash: 100,
+        }
+    }
+
+    fn target_like_helper_buffers() -> NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadBuffers {
+        NativeVulkanSceneLayerAlphaMaskTargetLikeIndexedQuadBuffers {
             vertex: vk::Buffer::from_raw(11),
             index: vk::Buffer::from_raw(12),
-            vertex_bytes: FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES,
-            index_bytes: FLATTEXTURE_COPY_BACK_REQUIRED_INDEX_BYTES,
+            vertex_bytes: TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES,
+            index_bytes: TARGET_LIKE_INDEXED_QUAD_REQUIRED_INDEX_BYTES,
             vertex_payload_hash: 100,
-            index_payload_hash: FLATTEXTURE_COPY_BACK_INDEX_PAYLOAD_HASH,
+            index_payload_hash: TARGET_LIKE_INDEXED_QUAD_INDEX_PAYLOAD_HASH,
         }
     }
 
     fn payload_f32s(
-        payload: &[u8; FLATTEXTURE_COPY_BACK_REQUIRED_VERTEX_BYTES as usize],
+        payload: &[u8; TARGET_LIKE_INDEXED_QUAD_REQUIRED_VERTEX_BYTES as usize],
     ) -> [f32; 20] {
         let mut values = [0.0f32; 20];
         for (index, chunk) in payload.chunks_exact(std::mem::size_of::<f32>()).enumerate() {

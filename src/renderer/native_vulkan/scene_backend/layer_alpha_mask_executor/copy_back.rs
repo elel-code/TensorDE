@@ -119,7 +119,7 @@ fn copy_back_draw_from_command(
             "bind_g_Texture0_to_full_alpha_mask_intermediate",
             "set_g_Alpha_to_1",
             "toggle_wrapper_blend_key_0x100",
-            "draw_target_like_flattexture_copy_back",
+            "draw_render_state_flattexture_copy_back",
         ],
     })
 }
@@ -172,7 +172,7 @@ mod tests {
                 "bind_g_Texture0_to_full_alpha_mask_intermediate",
                 "set_g_Alpha_to_1",
                 "toggle_wrapper_blend_key_0x100",
-                "draw_target_like_flattexture_copy_back"
+                "draw_render_state_flattexture_copy_back"
             ]
         );
     }
