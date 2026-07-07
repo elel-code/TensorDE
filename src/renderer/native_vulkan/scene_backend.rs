@@ -21,6 +21,7 @@ pub mod material_uniforms;
 pub mod pass_command;
 pub mod pipeline;
 pub mod pipeline_factory;
+pub mod pipeline_prepare;
 pub mod pipeline_warmup;
 pub mod render_target;
 pub mod renderer_scene_render;

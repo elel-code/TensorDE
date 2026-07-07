@@ -309,6 +309,13 @@ impl NativeVulkanSceneFrameResources {
         })
     }
 
+    pub(in crate::renderer::native_vulkan) fn has_mesh_pipeline(
+        &self,
+        key: &NativeVulkanScenePipelineCacheKey,
+    ) -> bool {
+        self.pipelines.has_pipeline(key)
+    }
+
     pub(in crate::renderer::native_vulkan) fn cached_mesh_pipeline(
         &self,
         key: &NativeVulkanScenePipelineCacheKey,
@@ -442,6 +449,20 @@ mod tests {
 
         assert_eq!(binding.pipeline, vk::Pipeline::from_raw(11));
         assert_eq!(binding.pipeline_layout, vk::PipelineLayout::from_raw(12));
+    }
+
+    #[test]
+    fn frame_resources_reports_warmed_mesh_pipeline_presence() {
+        let mut frame_resources = NativeVulkanSceneFrameResources::new();
+        let key = pipeline_key();
+
+        assert!(!frame_resources.has_mesh_pipeline(&key));
+        frame_resources
+            .pipelines
+            .resolve_pipeline(key.clone(), |_| Ok(pipeline_resources(11, 12)))
+            .expect("warm pipeline");
+
+        assert!(frame_resources.has_mesh_pipeline(&key));
     }
 
     #[test]
