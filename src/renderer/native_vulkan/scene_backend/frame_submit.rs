@@ -25,7 +25,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSubmitPlan {
     pub frame_submission: NativeVulkanSceneFrameSubmission,
     pub wait_stage: &'static str,
     pub signal_stage: &'static str,
-    pub command_order: [&'static str; 1],
+    pub command_order: [&'static str; 2],
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_frame_submit_plan(
@@ -36,7 +36,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_frame_submit_plan(
         frame_submission: context.frame_submission,
         wait_stage: "color_attachment_output",
         signal_stage: "all_commands",
-        command_order: ["queue_submit2_scene_frame"],
+        command_order: ["reset_scene_frame_fence", "queue_submit2_scene_frame"],
     })
 }
 
@@ -67,6 +67,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_submit_scene_frame_comma
         .build();
 
     unsafe {
+        device
+            .reset_fences(&[context.in_flight_fence])
+            .map_err(|err| format!("vkResetFences(scene frame submit): {err:?}"))?;
         device
             .queue_submit2(queue, &[submit_info], context.in_flight_fence)
             .map_err(|err| format!("vkQueueSubmit2(scene frame): {err:?}"))?;
@@ -111,7 +114,10 @@ mod tests {
         );
         assert_eq!(plan.wait_stage, "color_attachment_output");
         assert_eq!(plan.signal_stage, "all_commands");
-        assert_eq!(plan.command_order, ["queue_submit2_scene_frame"]);
+        assert_eq!(
+            plan.command_order,
+            ["reset_scene_frame_fence", "queue_submit2_scene_frame"]
+        );
     }
 
     #[test]

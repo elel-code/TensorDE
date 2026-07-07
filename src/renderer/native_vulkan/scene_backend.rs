@@ -13,6 +13,7 @@ pub mod frame_command;
 pub mod frame_command_buffer;
 pub mod frame_completion;
 pub mod frame_present;
+pub mod frame_present_runtime;
 pub mod frame_resources;
 pub mod frame_slots;
 pub mod frame_submit;

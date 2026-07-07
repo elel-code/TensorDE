@@ -39,7 +39,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotPrepareP
     pub frame_slot: u32,
     pub had_in_flight_submission: bool,
     pub completed_submission: Option<NativeVulkanSceneFrameSubmission>,
-    pub command_order: [&'static str; 3],
+    pub command_order: [&'static str; 2],
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotResources {
@@ -49,6 +49,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotResource
     render_finished: Vec<vk::Semaphore>,
     in_flight: Vec<vk::Fence>,
     swapchain_image_views: Vec<vk::ImageView>,
+    swapchain_image_layouts: Vec<vk::ImageLayout>,
     completion_tracker: NativeVulkanSceneFrameCompletionTracker,
 }
 
@@ -118,6 +119,7 @@ impl NativeVulkanSceneFrameSlotResources {
                 render_finished: std::mem::take(&mut render_finished),
                 in_flight: std::mem::take(&mut in_flight),
                 swapchain_image_views: std::mem::take(&mut swapchain_image_views),
+                swapchain_image_layouts: vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()],
                 completion_tracker: NativeVulkanSceneFrameCompletionTracker::new(
                     swapchain_images.len() as u32,
                 )?,
@@ -172,6 +174,13 @@ impl NativeVulkanSceneFrameSlotResources {
         self.completion_tracker.complete_frame(submission)
     }
 
+    pub(in crate::renderer::native_vulkan) fn abort_frame_submission(
+        &mut self,
+        submission: NativeVulkanSceneFrameSubmission,
+    ) -> Result<(), String> {
+        self.completion_tracker.abort_frame(submission)
+    }
+
     pub(in crate::renderer::native_vulkan) fn prepare_frame_slot_plan(
         &self,
         frame_slot: u32,
@@ -184,7 +193,6 @@ impl NativeVulkanSceneFrameSlotResources {
             command_order: [
                 "wait_for_scene_frame_fence",
                 "complete_scene_frame_submission_if_in_flight",
-                "reset_scene_frame_fence",
             ],
         })
     }
@@ -205,11 +213,6 @@ impl NativeVulkanSceneFrameSlotResources {
         }
         if let Some(submission) = plan.completed_submission {
             self.complete_frame_submission(submission)?;
-        }
-        unsafe {
-            device
-                .reset_fences(&[fence])
-                .map_err(|err| format!("vkResetFences(scene frame slot {frame_slot}): {err:?}"))?;
         }
         Ok(plan)
     }
@@ -245,7 +248,6 @@ impl NativeVulkanSceneFrameSlotResources {
         swapchain_images: &[vk::Image],
         image_index: u32,
         extent: vk::Extent2D,
-        initial_layout: vk::ImageLayout,
     ) -> Result<NativeVulkanSceneSwapchainRenderTarget, String> {
         let index = image_index as usize;
         Ok(NativeVulkanSceneSwapchainRenderTarget {
@@ -256,9 +258,23 @@ impl NativeVulkanSceneFrameSlotResources {
                 format!("scene swapchain image view {image_index} is unavailable")
             })?,
             extent,
-            initial_layout,
+            initial_layout: *self.swapchain_image_layouts.get(index).ok_or_else(|| {
+                format!("scene swapchain image layout {image_index} is unavailable")
+            })?,
             final_layout: vk::ImageLayout::PRESENT_SRC_KHR,
         })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn mark_swapchain_image_presented(
+        &mut self,
+        image_index: u32,
+    ) -> Result<(), String> {
+        let layout = self
+            .swapchain_image_layouts
+            .get_mut(image_index as usize)
+            .ok_or_else(|| format!("scene swapchain image layout {image_index} is unavailable"))?;
+        *layout = vk::ImageLayout::PRESENT_SRC_KHR;
+        Ok(())
     }
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(self, device: &Device) {
@@ -408,14 +424,42 @@ mod tests {
                     width: 3840,
                     height: 2160,
                 },
-                vk::ImageLayout::UNDEFINED,
             )
             .expect("swapchain target");
 
         assert_eq!(target.image, vk::Image::from_raw(102));
         assert_eq!(target.image_view, vk::ImageView::from_raw(62));
         assert_eq!(target.extent.width, 3840);
+        assert_eq!(target.initial_layout, vk::ImageLayout::UNDEFINED);
         assert_eq!(target.final_layout, vk::ImageLayout::PRESENT_SRC_KHR);
+    }
+
+    #[test]
+    fn frame_slot_resources_track_swapchain_present_layout() {
+        let mut resources = test_resources();
+        let images = [vk::Image::from_raw(101), vk::Image::from_raw(102)];
+
+        resources
+            .mark_swapchain_image_presented(1)
+            .expect("mark presented");
+        let target = resources
+            .swapchain_target(
+                &images,
+                1,
+                vk::Extent2D {
+                    width: 3840,
+                    height: 2160,
+                },
+            )
+            .expect("swapchain target");
+
+        assert_eq!(target.initial_layout, vk::ImageLayout::PRESENT_SRC_KHR);
+        assert!(
+            resources
+                .mark_swapchain_image_presented(2)
+                .expect_err("missing image layout")
+                .contains("layout")
+        );
     }
 
     #[test]
@@ -440,6 +484,19 @@ mod tests {
     }
 
     #[test]
+    fn frame_slot_resources_abort_unsubmitted_frame() {
+        let mut resources = test_resources();
+
+        let first = resources.begin_frame_submission(1).expect("begin");
+        resources
+            .abort_frame_submission(first)
+            .expect("abort frame");
+        let second = resources.begin_frame_submission(1).expect("begin again");
+
+        assert_eq!(second, NativeVulkanSceneFrameSubmission::new(1, 2));
+    }
+
+    #[test]
     fn frame_slot_prepare_plan_exposes_completion_before_fence_reset() {
         let mut resources = test_resources();
 
@@ -452,8 +509,7 @@ mod tests {
             initial.command_order,
             [
                 "wait_for_scene_frame_fence",
-                "complete_scene_frame_submission_if_in_flight",
-                "reset_scene_frame_fence"
+                "complete_scene_frame_submission_if_in_flight"
             ]
         );
 
@@ -476,6 +532,7 @@ mod tests {
             render_finished: vec![vk::Semaphore::from_raw(41), vk::Semaphore::from_raw(42)],
             in_flight: vec![vk::Fence::from_raw(51), vk::Fence::from_raw(52)],
             swapchain_image_views: vec![vk::ImageView::from_raw(61), vk::ImageView::from_raw(62)],
+            swapchain_image_layouts: vec![vk::ImageLayout::UNDEFINED; 2],
             completion_tracker: NativeVulkanSceneFrameCompletionTracker::new(2).expect("tracker"),
         }
     }

@@ -121,6 +121,28 @@ impl NativeVulkanSceneFrameCompletionTracker {
         }
     }
 
+    pub(in crate::renderer::native_vulkan) fn abort_frame(
+        &mut self,
+        submission: NativeVulkanSceneFrameSubmission,
+    ) -> Result<(), String> {
+        let slot = self.slot_mut(submission.frame_slot)?;
+        match slot.last_submitted {
+            Some(submitted) if submitted == submission && slot.in_flight => {
+                slot.last_submitted = None;
+                slot.in_flight = false;
+                Ok(())
+            }
+            Some(submitted) => Err(format!(
+                "scene frame abort for slot {} reported submission {}, but active submitted state is {:?} with in_flight={}",
+                submission.frame_slot, submission.submission_index, submitted, slot.in_flight
+            )),
+            None => Err(format!(
+                "scene frame abort for slot {} has no submitted frame",
+                submission.frame_slot
+            )),
+        }
+    }
+
     pub(in crate::renderer::native_vulkan) fn slot_state(
         &self,
         frame_slot: u32,
@@ -260,5 +282,24 @@ mod tests {
             .expect("duplicate completion is idempotent");
         assert!(first_completion.newly_completed);
         assert!(!duplicate_completion.newly_completed);
+    }
+
+    #[test]
+    fn frame_completion_tracker_can_abort_unsubmitted_frame() {
+        let mut tracker = NativeVulkanSceneFrameCompletionTracker::new(1).expect("tracker");
+        let submitted = tracker.begin_frame(0).expect("begin slot 0");
+
+        tracker.abort_frame(submitted).expect("abort frame");
+        assert_eq!(tracker.in_flight_count(), 0);
+        assert_eq!(tracker.slot_state(0).unwrap().last_submitted, None);
+
+        let next = tracker.begin_frame(0).expect("begin next frame");
+        assert_eq!(next, NativeVulkanSceneFrameSubmission::new(0, 2));
+        assert!(
+            tracker
+                .abort_frame(submitted)
+                .expect_err("stale abort")
+                .contains("active submitted state")
+        );
     }
 }
