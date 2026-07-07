@@ -33,7 +33,9 @@ use super::graph_executor::{
     native_vulkan_record_scene_graph_frame_commands,
 };
 use super::layer_alpha_mask_executor::{
+    NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
@@ -55,8 +57,9 @@ pub(in crate::renderer::native_vulkan) type NativeVulkanSceneRuntimeFrameContext
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<'a> {
     pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
     pub layer_alpha_masks: NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    pub layer_alpha_mask_resource_binds: NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +119,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             )
         })?;
     }
+    let layer_alpha_mask_resource_binds = native_vulkan_plan_scene_layer_alpha_mask_resource_binds(
+        frame_resources,
+        &layer_alpha_masks,
+    )?;
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -130,11 +137,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
         layer_alpha_masks,
+        layer_alpha_mask_resource_binds,
         mesh,
         command_order: [
             "record_scene_effect_graph_runtime",
             "plan_scene_layer_alpha_mask_token_runtime",
             "require_warmed_layer_alpha_mask_pipelines",
+            "plan_layer_alpha_mask_resource_heap_binds",
             "record_scene_mesh_graph_runtime",
         ],
     })

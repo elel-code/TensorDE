@@ -42,6 +42,7 @@ use super::layer_alpha_mask_executor::{
 };
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::texture_images::NativeVulkanSceneTextureImageBinding;
+pub(in crate::renderer::native_vulkan) use bind_command::NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan;
 #[cfg(test)]
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskResourceSetBinding;
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskResourceSetKey;

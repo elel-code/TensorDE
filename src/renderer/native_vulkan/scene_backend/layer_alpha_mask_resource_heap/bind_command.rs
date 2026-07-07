@@ -38,6 +38,25 @@ pub struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
 }
 
 impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
+    pub(in crate::renderer::native_vulkan) fn from_bind_info(
+        bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
+    ) -> Self {
+        Self {
+            descriptor_set_index: bind_info.descriptor_set_index,
+            object: bind_info.object,
+            puppet: bind_info.puppet,
+            shader: bind_info.shader.clone(),
+            role: bind_info.role,
+            resource_set_index: bind_info.resource_set_index,
+            resource_set: bind_info.resource_set.clone(),
+            base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
+            resource_descriptor_count: bind_info.resource_descriptor_count,
+            texture_count: bind_info.texture_count,
+            shader_mappings: bind_info.shader_mappings.clone(),
+            command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
+        }
+    }
+
     pub(in crate::renderer::native_vulkan) fn from_descriptor_set_and_bind_info(
         descriptor_set_index: usize,
         descriptor_set: &NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
@@ -89,20 +108,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
                 bind_info.texture_count
             ));
         }
-        Ok(Self {
-            descriptor_set_index,
-            object: descriptor_set.object,
-            puppet: descriptor_set.puppet,
-            shader: descriptor_set.shader.to_owned(),
-            role: descriptor_set.role,
-            resource_set_index: bind_info.resource_set_index,
-            resource_set,
-            base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
-            resource_descriptor_count: bind_info.resource_descriptor_count,
-            texture_count: bind_info.texture_count,
-            shader_mappings: bind_info.shader_mappings.clone(),
-            command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
-        })
+        Ok(Self::from_bind_info(bind_info))
     }
 }
 
