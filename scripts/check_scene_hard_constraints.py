@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
+from re import Pattern
 
 
 DEFAULT_ROOTS = (
@@ -12,6 +14,7 @@ DEFAULT_ROOTS = (
     "README.zh-CN.md",
     "src",
     "docs",
+    "reverse-engineered",
     "scripts",
     "examples",
     "packaging",
@@ -20,21 +23,42 @@ DEFAULT_ROOTS = (
     "Cargo.toml",
 )
 
+SKIPPED_DIRS = {
+    ".git",
+    "__pycache__",
+    "target",
+    "artifacts",
+    "references",
+}
 
-def forbidden_terms() -> tuple[str, ...]:
+SKIPPED_SUFFIXES = {
+    ".dll",
+    ".exe",
+    ".lib",
+    ".o",
+    ".pdb",
+    ".png",
+    ".pyc",
+    ".so",
+    ".spv",
+    ".zip",
+}
+
+
+def forbidden_patterns() -> tuple[Pattern[str], ...]:
     low_a = "descriptor"
     low_b = "set"
-    cap_a = "Descriptor"
-    cap_b = "Set"
-    upper_a = "DESCRIPTOR"
-    upper_b = "SET"
+    camel_b = low_b.title()
     return (
-        low_a + " " + low_b,
-        low_a + "-" + low_b,
-        low_a + "_" + low_b,
-        cap_a + cap_b,
-        upper_a + "_" + upper_b,
+        re.compile(rf"\b{low_a}[\s_-]+{low_b}s?\b", re.IGNORECASE),
+        re.compile(rf"\b{low_a}{camel_b}s?\b", re.IGNORECASE),
     )
+
+
+def should_scan(path: Path) -> bool:
+    if any(part in SKIPPED_DIRS for part in path.parts):
+        return False
+    return path.suffix.lower() not in SKIPPED_SUFFIXES
 
 
 def iter_files(roots: tuple[str, ...]) -> list[Path]:
@@ -42,22 +66,23 @@ def iter_files(roots: tuple[str, ...]) -> list[Path]:
     for root in roots:
         root_path = Path(root)
         if root_path.is_file():
-            files.append(root_path)
+            if should_scan(root_path):
+                files.append(root_path)
             continue
         if not root_path.exists():
             raise SystemExit(f"missing constraint root: {root}")
-        files.extend(path for path in root_path.rglob("*") if path.is_file())
+        files.extend(path for path in root_path.rglob("*") if path.is_file() and should_scan(path))
     return sorted(files)
 
 
-def matching_lines(path: Path, terms: tuple[str, ...]) -> list[tuple[int, str]]:
+def matching_lines(path: Path, patterns: tuple[Pattern[str], ...]) -> list[tuple[int, str]]:
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
         text = path.read_text(encoding="utf-8", errors="ignore")
     matches: list[tuple[int, str]] = []
     for line_number, line in enumerate(text.splitlines(), start=1):
-        if any(term in line for term in terms):
+        if any(pattern.search(line) for pattern in patterns):
             matches.append((line_number, line.strip()))
     return matches
 
@@ -67,10 +92,10 @@ def main() -> int:
     parser.add_argument("roots", nargs="*", default=DEFAULT_ROOTS)
     args = parser.parse_args()
 
-    terms = forbidden_terms()
+    patterns = forbidden_patterns()
     failures: list[str] = []
     for path in iter_files(tuple(args.roots)):
-        for line_number, line in matching_lines(path, terms):
+        for line_number, line in matching_lines(path, patterns):
             failures.append(f"{path}:{line_number}: legacy binding token: {line}")
 
     if failures:
