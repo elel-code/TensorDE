@@ -14,6 +14,7 @@ use serde::Serialize;
 
 use crate::engine::scene_engine::WeShaderInterface;
 
+use super::effect_pipeline::NativeVulkanSceneEffectPipelineShaders;
 use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 
 const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -26,8 +27,24 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifactPat
     pub command_order: [&'static str; 3],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtifactPathPlan {
+    pub shader: String,
+    pub vertex_path: PathBuf,
+    pub fragment_path: PathBuf,
+    pub source_reference: String,
+    pub command_order: [&'static str; 4],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifacts {
+    pub shader: String,
+    pub vertex_spirv: Vec<u32>,
+    pub fragment_spirv: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtifacts {
     pub shader: String,
     pub vertex_spirv: Vec<u32>,
     pub fragment_spirv: Vec<u32>,
@@ -38,6 +55,17 @@ impl NativeVulkanSceneShaderArtifacts {
         &self,
     ) -> NativeVulkanSceneMeshPipelineShaders<'_> {
         NativeVulkanSceneMeshPipelineShaders {
+            vertex_spirv: &self.vertex_spirv,
+            fragment_spirv: &self.fragment_spirv,
+        }
+    }
+}
+
+impl NativeVulkanSceneEffectShaderArtifacts {
+    pub(in crate::renderer::native_vulkan) fn effect_pipeline_shaders(
+        &self,
+    ) -> NativeVulkanSceneEffectPipelineShaders<'_> {
+        NativeVulkanSceneEffectPipelineShaders {
             vertex_spirv: &self.vertex_spirv,
             fragment_spirv: &self.fragment_spirv,
         }
@@ -63,6 +91,28 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_shader_artifact_pa
             "resolve_we_shader_artifact_paths",
             "read_vertex_spirv",
             "read_fragment_spirv",
+        ],
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_shader_artifact_path_plan(
+    artifact_root: &Path,
+    shader: &str,
+) -> Result<NativeVulkanSceneEffectShaderArtifactPathPlan, String> {
+    if artifact_root.as_os_str().is_empty() {
+        return Err("scene effect shader artifact root cannot be empty".to_owned());
+    }
+    let shader_path = scene_effect_shader_artifact_relative_path(shader)?;
+    Ok(NativeVulkanSceneEffectShaderArtifactPathPlan {
+        shader: shader.to_owned(),
+        vertex_path: artifact_root.join(shader_path.with_extension("vert.spv")),
+        fragment_path: artifact_root.join(shader_path.with_extension("frag.spv")),
+        source_reference: format!("reverse-engineered/shaders/{}", shader_path.display()),
+        command_order: [
+            "resolve_we_effect_shader_artifact_paths",
+            "require_reverse_engineered_effect_shader_source",
+            "read_effect_vertex_spirv",
+            "read_effect_fragment_spirv",
         ],
     })
 }
@@ -97,6 +147,36 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_load_scene_shader_artifa
     })
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_load_scene_effect_shader_artifacts(
+    artifact_root: &Path,
+    shader: &str,
+) -> Result<NativeVulkanSceneEffectShaderArtifacts, String> {
+    let plan = native_vulkan_scene_effect_shader_artifact_path_plan(artifact_root, shader)?;
+    let vertex_bytes = std::fs::read(&plan.vertex_path).map_err(|err| {
+        format!(
+            "read scene effect vertex shader artifact {}: {err}",
+            plan.vertex_path.display()
+        )
+    })?;
+    let fragment_bytes = std::fs::read(&plan.fragment_path).map_err(|err| {
+        format!(
+            "read scene effect fragment shader artifact {}: {err}",
+            plan.fragment_path.display()
+        )
+    })?;
+    Ok(NativeVulkanSceneEffectShaderArtifacts {
+        shader: plan.shader,
+        vertex_spirv: native_vulkan_scene_spirv_words_from_bytes(
+            &vertex_bytes,
+            "scene effect vertex shader artifact",
+        )?,
+        fragment_spirv: native_vulkan_scene_spirv_words_from_bytes(
+            &fragment_bytes,
+            "scene effect fragment shader artifact",
+        )?,
+    })
+}
+
 fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
     let normalized = shader.strip_prefix("we/").unwrap_or(shader);
     if normalized.is_empty()
@@ -110,6 +190,25 @@ fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> 
         ));
     }
     Ok(PathBuf::from("we").join(normalized))
+}
+
+fn scene_effect_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
+    let Some(normalized) = shader.strip_prefix("effects/") else {
+        return Err(format!(
+            "scene effect shader artifact name '{shader}' must use the effects/ namespace"
+        ));
+    };
+    if normalized.is_empty()
+        || normalized.contains('\\')
+        || normalized
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!(
+            "scene effect shader artifact name '{shader}' cannot be mapped to a safe artifact path"
+        ));
+    }
+    Ok(PathBuf::from("effects").join(normalized))
 }
 
 fn native_vulkan_scene_spirv_words_from_bytes(
@@ -166,6 +265,38 @@ mod tests {
     }
 
     #[test]
+    fn effect_shader_artifact_plan_maps_effect_shader_to_stage_spirv_paths() {
+        let plan = native_vulkan_scene_effect_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "effects/iris",
+        )
+        .expect("effect artifact path plan");
+
+        assert_eq!(plan.shader, "effects/iris");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/effects/iris.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/effects/iris.frag.spv")
+        );
+        assert_eq!(
+            plan.source_reference,
+            "reverse-engineered/shaders/effects/iris"
+        );
+        assert_eq!(
+            plan.command_order,
+            [
+                "resolve_we_effect_shader_artifact_paths",
+                "require_reverse_engineered_effect_shader_source",
+                "read_effect_vertex_spirv",
+                "read_effect_fragment_spirv"
+            ]
+        );
+    }
+
+    #[test]
     fn shader_artifact_plan_rejects_unknown_or_unsafe_shader_names() {
         assert!(
             native_vulkan_scene_shader_artifact_path_plan(Path::new("artifacts"), "we/notreal")
@@ -175,6 +306,16 @@ mod tests {
         assert!(
             scene_shader_artifact_relative_path("../genericimage4")
                 .expect_err("unsafe shader path")
+                .contains("safe artifact path")
+        );
+        assert!(
+            native_vulkan_scene_effect_shader_artifact_path_plan(Path::new("artifacts"), "we/iris")
+                .expect_err("wrong namespace")
+                .contains("effects/ namespace")
+        );
+        assert!(
+            scene_effect_shader_artifact_relative_path("effects/../iris")
+                .expect_err("unsafe effect shader path")
                 .contains("safe artifact path")
         );
     }
@@ -210,6 +351,20 @@ mod tests {
         };
 
         let shaders = artifacts.mesh_pipeline_shaders();
+
+        assert_eq!(shaders.vertex_spirv, &[SPIRV_MAGIC, 1]);
+        assert_eq!(shaders.fragment_spirv, &[SPIRV_MAGIC, 2]);
+    }
+
+    #[test]
+    fn loaded_effect_shader_artifacts_borrow_as_pipeline_shader_slices() {
+        let artifacts = NativeVulkanSceneEffectShaderArtifacts {
+            shader: "effects/iris".to_owned(),
+            vertex_spirv: vec![SPIRV_MAGIC, 1],
+            fragment_spirv: vec![SPIRV_MAGIC, 2],
+        };
+
+        let shaders = artifacts.effect_pipeline_shaders();
 
         assert_eq!(shaders.vertex_spirv, &[SPIRV_MAGIC, 1]);
         assert_eq!(shaders.fragment_spirv, &[SPIRV_MAGIC, 2]);

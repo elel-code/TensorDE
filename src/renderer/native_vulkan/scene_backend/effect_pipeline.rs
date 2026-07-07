@@ -39,6 +39,12 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectRasterGeometr
     FullscreenTriangle,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineShaders<'a> {
+    pub vertex_spirv: &'a [u32],
+    pub fragment_spirv: &'a [u32],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineBindPlan<'a> {
     pub key: NativeVulkanSceneEffectPipelineKey<'a>,
