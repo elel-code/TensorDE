@@ -17,6 +17,10 @@ use crate::engine::scene_engine::{
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
+use super::material_uniforms::{
+    NativeVulkanSceneMaterialUniformCatalog, NativeVulkanSceneMaterialUniformSyncAction,
+    NativeVulkanSceneMaterialUniformUploadPlan,
+};
 use super::pipeline::{
     NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
     NativeVulkanScenePipelineStore,
@@ -47,6 +51,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     gpu_buffers: NativeVulkanSceneGpuBufferStore,
     texture_images: NativeVulkanSceneTextureImageStore,
     texture_heap: NativeVulkanSceneTextureHeapStore,
+    material_uniforms: NativeVulkanSceneMaterialUniformCatalog,
     pipelines: NativeVulkanScenePipelineStore,
 }
 
@@ -57,6 +62,7 @@ impl NativeVulkanSceneFrameResources {
             gpu_buffers: NativeVulkanSceneGpuBufferStore::default(),
             texture_images: NativeVulkanSceneTextureImageStore::default(),
             texture_heap: NativeVulkanSceneTextureHeapStore::default(),
+            material_uniforms: NativeVulkanSceneMaterialUniformCatalog::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
         }
     }
@@ -208,6 +214,32 @@ impl NativeVulkanSceneFrameResources {
         &self,
     ) -> &[NativeVulkanSceneTextureHeapSyncAction] {
         self.texture_heap.last_actions()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
+        &self,
+        graph: &SceneGraph,
+    ) -> Result<NativeVulkanSceneMaterialUniformUploadPlan, String> {
+        let frame_plan =
+            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(graph)?;
+        NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
+            .map_err(|err| err.to_string())
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sync_material_uniform_records(
+        &mut self,
+        graph: &SceneGraph,
+    ) -> Result<&[NativeVulkanSceneMaterialUniformSyncAction], String> {
+        let upload_plan = self.material_uniform_upload_plan(graph)?;
+        self.material_uniforms
+            .sync_upload_plan(&upload_plan)
+            .map_err(|err| err.to_string())
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_material_uniform_actions(
+        &self,
+    ) -> &[NativeVulkanSceneMaterialUniformSyncAction] {
+        self.material_uniforms.last_actions()
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_heap_draw_bind_info_for_set(

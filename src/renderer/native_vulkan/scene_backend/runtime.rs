@@ -47,18 +47,20 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     pub residency_command_count: usize,
+    pub material_uniform_action_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
     pub texture_image_action_count: usize,
     pub texture_heap_action_count: usize,
     pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 7],
+    pub command_order: [&'static str; 8],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
         residency_command_count: usize,
+        material_uniform_action_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
         texture_image_action_count: usize,
         texture_heap_action_count: usize,
@@ -68,6 +70,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     ) -> Self {
         Self {
             residency_command_count,
+            material_uniform_action_count,
             texture_descriptors,
             texture_image_action_count,
             texture_heap_action_count,
@@ -76,6 +79,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             frame,
             command_order: [
                 "sync_residency",
+                "sync_material_uniform_records",
                 "prepare_texture_descriptors",
                 "sync_texture_images",
                 "sync_texture_descriptor_heap",
@@ -100,6 +104,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     let residency_command_count = frame_resources.sync_residency_plan(&frame.residency).len();
+    let material_uniform_action_count = frame_resources
+        .sync_material_uniform_records(&frame.graph)?
+        .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
     let texture_image_action_count = frame_resources
         .sync_texture_images(
@@ -162,6 +169,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         residency_command_count,
+        material_uniform_action_count,
         texture_descriptors,
         texture_image_action_count,
         texture_heap_action_count,
@@ -256,6 +264,7 @@ mod tests {
 
         let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
             2,
+            1,
             descriptors,
             4,
             1,
@@ -268,6 +277,7 @@ mod tests {
             plan.command_order,
             [
                 "sync_residency",
+                "sync_material_uniform_records",
                 "prepare_texture_descriptors",
                 "sync_texture_images",
                 "sync_texture_descriptor_heap",
@@ -277,6 +287,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.residency_command_count, 2);
+        assert_eq!(plan.material_uniform_action_count, 1);
         assert_eq!(plan.texture_descriptors.binding_count, 1);
         assert_eq!(plan.texture_image_action_count, 4);
         assert_eq!(plan.texture_heap_action_count, 1);

@@ -21,6 +21,7 @@ pub mod rendering_server;
 pub mod resource;
 pub mod resource_gpu_layout;
 pub mod resource_residency;
+pub mod shader_uniforms;
 pub mod timeline;
 pub mod we;
 
@@ -42,13 +43,15 @@ pub use resource::{
     SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 pub use resource_gpu_layout::{
-    SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
-    SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
-    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
+    SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
+    SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_BONE_BYTES,
+    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
+    SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
 };
 pub use resource_residency::{
     SceneBufferResidency, SceneMeshResidency, ScenePuppetRigResidency, SceneResidentResource,
     SceneResourceResidencyPlan, SceneTextureResidency,
 };
+pub use shader_uniforms::{SceneGenericImage4MaterialUniformRecord, SceneShaderUniformFramePlan};
 pub use timeline::{SceneSampleClock, SceneTimelineSample};
 pub use we::WeShaderInterface;

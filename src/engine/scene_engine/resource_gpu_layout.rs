@@ -14,6 +14,7 @@ pub const SCENE_GPU_PUPPET_TRANSFORM_BYTES: u64 = 48;
 pub const SCENE_GPU_PUPPET_BONE_BYTES: u64 = 64;
 pub const SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES: u64 = 32;
 pub const SCENE_GPU_PUPPET_CLIP_FRAME_BYTES: u64 = SCENE_GPU_PUPPET_TRANSFORM_BYTES;
+pub const SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES: u64 = 48;
 
 pub fn scene_gpu_record_bytes(count: usize, record_bytes: u64) -> u64 {
     u64::try_from(count)

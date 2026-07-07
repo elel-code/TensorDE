@@ -10,6 +10,7 @@ pub mod draw_command;
 pub mod draw_list;
 pub mod frame_command;
 pub mod frame_resources;
+pub mod material_uniforms;
 pub mod pass_command;
 pub mod pipeline;
 pub mod pipeline_factory;
