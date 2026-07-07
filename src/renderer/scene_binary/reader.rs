@@ -14,8 +14,7 @@ use std::sync::Arc;
 use crate::core::scene::binary::{
     SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE, SCENE_BINARY_GEOMETRY_RECORD_SIZE,
     SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
     SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryError,
     SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord,
     SceneBinaryNodeRecord, SceneBinaryParticleEmitterRecord, SceneBinaryPuppetRecord,
@@ -140,6 +139,15 @@ impl BinarySceneReader {
         self.layout
             .chunk(kind)
             .map_or(0, |chunk| chunk.record_count as usize)
+    }
+
+    pub(super) fn layout_record_size(
+        &self,
+        kind: SceneBinaryChunkKind,
+    ) -> Result<usize, RendererPlanError> {
+        self.layout
+            .required_record_size(kind)
+            .map_err(binary_plan_error)
     }
 
     pub(super) fn chunk_payload(
@@ -333,7 +341,7 @@ impl BinarySceneReader {
         }
         let records = Arc::new(self.records(
             SceneBinaryChunkKind::NodeTable,
-            SCENE_BINARY_NODE_RECORD_SIZE,
+            self.layout_record_size(SceneBinaryChunkKind::NodeTable)?,
             decode_node_record,
         )?);
         self.node_records_cache = Some(Arc::clone(&records));
@@ -393,7 +401,7 @@ impl BinarySceneReader {
         }
         let records = Arc::new(self.records(
             SceneBinaryChunkKind::Puppet,
-            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            self.layout_record_size(SceneBinaryChunkKind::Puppet)?,
             decode_puppet_record,
         )?);
         self.puppet_records_cache = Some(Arc::clone(&records));

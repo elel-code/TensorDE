@@ -67,11 +67,12 @@ pub use self::puppet::{
     SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
     SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
     SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_RECORD_SIZE,
-    SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
-    SceneBinaryPuppetAttachmentRecord, SceneBinaryPuppetClipRecord,
-    SceneBinaryPuppetClippingBoneRecord, SceneBinaryPuppetClippingFrameKeyRecord,
-    SceneBinaryPuppetClippingRecord, SceneBinaryPuppetFrameRecord, SceneBinaryPuppetLayerRecord,
-    SceneBinaryPuppetRecord, SceneBinaryPuppetSkinBoneRecord, SceneBinaryPuppetSkinVertexRecord,
+    SCENE_BINARY_PUPPET_RECORD_SIZE_V12, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SceneBinaryPuppetAttachmentRecord,
+    SceneBinaryPuppetClipRecord, SceneBinaryPuppetClippingBoneRecord,
+    SceneBinaryPuppetClippingFrameKeyRecord, SceneBinaryPuppetClippingRecord,
+    SceneBinaryPuppetFrameRecord, SceneBinaryPuppetLayerRecord, SceneBinaryPuppetRecord,
+    SceneBinaryPuppetSkinBoneRecord, SceneBinaryPuppetSkinVertexRecord,
 };
 pub(crate) use self::puppet::{
     decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_clipping_bone_record,
@@ -82,17 +83,20 @@ pub(crate) use self::puppet::{
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
+pub const SCENE_BINARY_VERSION_V12: u16 = 12;
 pub const SCENE_BINARY_VERSION: u16 = 16;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
 pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
+pub const SCENE_BINARY_NODE_RECORD_SIZE_V12: usize = 116;
 pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 120;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
+pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12: usize = 56;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 68;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
@@ -192,6 +196,33 @@ impl SceneBinaryChunkKind {
         Self::DebugNames,
     ];
 
+    pub const REQUIRED_ORDER_V12: [Self; 24] = [
+        Self::ResourceTable,
+        Self::NodeTable,
+        Self::TransformTimeline,
+        Self::TransformKeyframes,
+        Self::Geometry,
+        Self::GeometryVertices,
+        Self::GeometryIndices,
+        Self::ParticleEmitter,
+        Self::TextureSlots,
+        Self::MaterialPass,
+        Self::EffectPass,
+        Self::EffectUvTransform,
+        Self::EffectParameter,
+        Self::FlutterState,
+        Self::Puppet,
+        Self::PuppetSkinBones,
+        Self::PuppetSkinVertices,
+        Self::PuppetAttachments,
+        Self::PuppetClips,
+        Self::PuppetFrames,
+        Self::PuppetLayers,
+        Self::RenderState,
+        Self::RetainedGpuState,
+        Self::DebugNames,
+    ];
+
     pub fn code(self) -> u32 {
         match self {
             Self::ResourceTable => u32::from_le_bytes(*b"REST"),
@@ -229,6 +260,55 @@ impl SceneBinaryChunkKind {
             .iter()
             .copied()
             .find(|kind| kind.code() == code)
+    }
+
+    pub fn required_order_for_version(version: u16) -> Option<&'static [Self]> {
+        match version {
+            SCENE_BINARY_VERSION_V12 => Some(&Self::REQUIRED_ORDER_V12),
+            SCENE_BINARY_VERSION => Some(&Self::REQUIRED_ORDER),
+            _ => None,
+        }
+    }
+
+    pub fn record_size_for_version(self, version: u16) -> Option<usize> {
+        Some(match self {
+            Self::ResourceTable => SCENE_BINARY_RESOURCE_RECORD_SIZE,
+            Self::NodeTable => match version {
+                SCENE_BINARY_VERSION_V12 => SCENE_BINARY_NODE_RECORD_SIZE_V12,
+                _ => SCENE_BINARY_NODE_RECORD_SIZE,
+            },
+            Self::TransformTimeline => SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+            Self::TransformKeyframes => SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+            Self::Geometry => SCENE_BINARY_GEOMETRY_RECORD_SIZE,
+            Self::GeometryVertices => SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE,
+            Self::GeometryIndices => SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE,
+            Self::ParticleEmitter => SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+            Self::TextureSlots => SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
+            Self::MaterialPass => SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            Self::EffectPass => match version {
+                SCENE_BINARY_VERSION_V12 => SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12,
+                _ => SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            },
+            Self::EffectUvTransform => SCENE_BINARY_EFFECT_UV_TRANSFORM_RECORD_SIZE,
+            Self::EffectParameter => SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
+            Self::FlutterState => SCENE_BINARY_FLUTTER_STATE_RECORD_SIZE,
+            Self::Puppet => match version {
+                SCENE_BINARY_VERSION_V12 => SCENE_BINARY_PUPPET_RECORD_SIZE_V12,
+                _ => SCENE_BINARY_PUPPET_RECORD_SIZE,
+            },
+            Self::PuppetSkinBones => SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
+            Self::PuppetSkinVertices => SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE,
+            Self::PuppetAttachments => SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+            Self::PuppetClips => SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+            Self::PuppetFrames => SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE,
+            Self::PuppetLayers => SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE,
+            Self::PuppetClipping => SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
+            Self::PuppetClippingBones => SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+            Self::PuppetClippingFrameKeys => SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE,
+            Self::RenderState => SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+            Self::RetainedGpuState => SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE,
+            Self::DebugNames => SCENE_BINARY_DEBUG_NAME_RECORD_SIZE,
+        })
     }
 
     pub fn label(self) -> &'static str {
@@ -348,6 +428,7 @@ impl SceneBinaryDocumentPayloads {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SceneBinaryLayoutPlan {
+    pub version: u16,
     pub feature_flags: u32,
     pub chunks: Vec<SceneBinaryChunkDescriptor>,
 }
@@ -355,6 +436,20 @@ pub struct SceneBinaryLayoutPlan {
 impl SceneBinaryLayoutPlan {
     pub fn chunk(&self, kind: SceneBinaryChunkKind) -> Option<&SceneBinaryChunkDescriptor> {
         self.chunks.iter().find(|chunk| chunk.kind == kind)
+    }
+
+    pub fn record_size(&self, kind: SceneBinaryChunkKind) -> Option<usize> {
+        kind.record_size_for_version(self.version)
+    }
+
+    pub fn required_record_size(
+        &self,
+        kind: SceneBinaryChunkKind,
+    ) -> Result<usize, SceneBinaryError> {
+        self.record_size(kind)
+            .ok_or(SceneBinaryError::UnsupportedVersion {
+                version: self.version,
+            })
     }
 
     pub fn resource_records<'a>(
@@ -376,7 +471,7 @@ impl SceneBinaryLayoutPlan {
         self.records(
             container,
             SceneBinaryChunkKind::NodeTable,
-            SCENE_BINARY_NODE_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::NodeTable)?,
             decode_node_record,
         )
     }
@@ -389,7 +484,7 @@ impl SceneBinaryLayoutPlan {
         self.record_at(
             container,
             SceneBinaryChunkKind::NodeTable,
-            SCENE_BINARY_NODE_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::NodeTable)?,
             record_index,
             decode_node_record,
         )
@@ -606,7 +701,7 @@ impl SceneBinaryLayoutPlan {
         self.records_range(
             container,
             SceneBinaryChunkKind::EffectPass,
-            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::EffectPass)?,
             material.first_effect_pass,
             material.effect_pass_count,
             decode_effect_pass_record,
@@ -646,7 +741,7 @@ impl SceneBinaryLayoutPlan {
         self.records(
             container,
             SceneBinaryChunkKind::EffectPass,
-            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::EffectPass)?,
             decode_effect_pass_record,
         )
     }
@@ -754,7 +849,7 @@ impl SceneBinaryLayoutPlan {
         self.records(
             container,
             SceneBinaryChunkKind::Puppet,
-            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::Puppet)?,
             decode_puppet_record,
         )
     }
@@ -767,7 +862,7 @@ impl SceneBinaryLayoutPlan {
         self.record_at(
             container,
             SceneBinaryChunkKind::Puppet,
-            SCENE_BINARY_PUPPET_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::Puppet)?,
             record_index,
             decode_puppet_record,
         )
@@ -3969,9 +4064,9 @@ pub fn decode_scene_binary_header_table(
         return Err(SceneBinaryError::BadMagic { actual: magic });
     }
     let version = read_u16(bytes, 4)?;
-    if version != SCENE_BINARY_VERSION {
+    let Some(required_order) = SceneBinaryChunkKind::required_order_for_version(version) else {
         return Err(SceneBinaryError::UnsupportedVersion { version });
-    }
+    };
     let endian = bytes[6];
     if endian != SCENE_BINARY_ENDIAN_LITTLE {
         return Err(SceneBinaryError::UnsupportedEndian { endian });
@@ -4019,14 +4114,15 @@ pub fn decode_scene_binary_header_table(
     for index in 0..chunk_count as usize {
         let descriptor_offset = table_start + index * SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE;
         let chunk = read_chunk_descriptor(bytes, descriptor_offset)?;
-        let expected = SceneBinaryChunkKind::REQUIRED_ORDER
-            .get(index)
-            .copied()
-            .ok_or(SceneBinaryError::InvalidChunkOrder {
-                index,
-                expected: SceneBinaryChunkKind::DebugNames,
-                actual: chunk.kind,
-            })?;
+        let expected =
+            required_order
+                .get(index)
+                .copied()
+                .ok_or(SceneBinaryError::InvalidChunkOrder {
+                    index,
+                    expected: SceneBinaryChunkKind::DebugNames,
+                    actual: chunk.kind,
+                })?;
         if chunk.kind != expected {
             return Err(SceneBinaryError::InvalidChunkOrder {
                 index,
@@ -4040,13 +4136,14 @@ pub fn decode_scene_binary_header_table(
         validate_chunk_bounds(container_len, alignment, table_end, chunks.last(), &chunk)?;
         chunks.push(chunk);
     }
-    if chunks.len() != SceneBinaryChunkKind::REQUIRED_ORDER.len() {
+    if chunks.len() != required_order.len() {
         return Err(SceneBinaryError::RequiredChunkCount {
-            expected: SceneBinaryChunkKind::REQUIRED_ORDER.len(),
+            expected: required_order.len(),
             actual: chunks.len(),
         });
     }
     Ok(SceneBinaryLayoutPlan {
+        version,
         feature_flags,
         chunks,
     })
@@ -4747,8 +4844,8 @@ pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, 
         font_family_name: read_u32(bytes, 104)?,
         font_resource_name: read_u32(bytes, 108)?,
         font_weight_name: read_u32(bytes, 112)?,
-        fit: read_u16(bytes, 116)?,
-        text_align: read_u16(bytes, 118)?,
+        fit: read_u16_or(bytes, 116, 1)?,
+        text_align: read_u16_or(bytes, 118, 0)?,
     })
 }
 
@@ -4845,12 +4942,12 @@ pub(crate) fn decode_effect_pass_record(
         effect_uv_transform_count: read_u32(bytes, 44)?,
         first_parameter: read_u32(bytes, 48)?,
         parameter_count: read_u32(bytes, 52)?,
-        kind: read_u16(bytes, 56)?,
-        evaluation_boundary: read_u16(bytes, 58)?,
-        depth_test: read_u16(bytes, 60)?,
-        depth_write: read_u16(bytes, 62)?,
-        cull_mode: read_u16(bytes, 64)?,
-        flags: read_u16(bytes, 66)?,
+        kind: read_u16_or(bytes, 56, 0)?,
+        evaluation_boundary: read_u16_or(bytes, 58, 0)?,
+        depth_test: read_u16_or(bytes, 60, 0)?,
+        depth_write: read_u16_or(bytes, 62, 0)?,
+        cull_mode: read_u16_or(bytes, 64, 0)?,
+        flags: read_u16_or(bytes, 66, 0)?,
     })
 }
 
@@ -5072,6 +5169,14 @@ fn read_u16(bytes: &[u8], offset: usize) -> Result<u16, SceneBinaryError> {
     Ok(u16::from_le_bytes([slice[0], slice[1]]))
 }
 
+fn read_u16_or(bytes: &[u8], offset: usize, default: u16) -> Result<u16, SceneBinaryError> {
+    if offset + 2 <= bytes.len() {
+        read_u16(bytes, offset)
+    } else {
+        Ok(default)
+    }
+}
+
 fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, SceneBinaryError> {
     let slice = bytes
         .get(offset..offset + 4)
@@ -5245,6 +5350,65 @@ mod tests {
     }
 
     #[test]
+    fn binary_container_decodes_version12_schema() {
+        let bytes = version12_empty_container();
+        let layout = decode_scene_binary_container(&bytes).expect("decode v12");
+
+        assert_eq!(layout.version, SCENE_BINARY_VERSION_V12);
+        assert_eq!(
+            layout.chunks.len(),
+            SceneBinaryChunkKind::REQUIRED_ORDER_V12.len()
+        );
+        assert!(layout.chunk(SceneBinaryChunkKind::PuppetClipping).is_none());
+        assert_eq!(
+            layout
+                .required_record_size(SceneBinaryChunkKind::NodeTable)
+                .unwrap(),
+            SCENE_BINARY_NODE_RECORD_SIZE_V12
+        );
+        assert_eq!(
+            layout
+                .required_record_size(SceneBinaryChunkKind::EffectPass)
+                .unwrap(),
+            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12
+        );
+        assert_eq!(
+            layout
+                .required_record_size(SceneBinaryChunkKind::Puppet)
+                .unwrap(),
+            SCENE_BINARY_PUPPET_RECORD_SIZE_V12
+        );
+    }
+
+    #[test]
+    fn version12_tail_decoders_default_removed_fields() {
+        let node =
+            decode_node_record(&vec![0; SCENE_BINARY_NODE_RECORD_SIZE_V12]).expect("v12 node");
+        assert_eq!(node.fit, 1);
+        assert_eq!(node.text_align, 0);
+
+        let effect = decode_effect_pass_record(&vec![0; SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12])
+            .expect("v12 effect pass");
+        assert_eq!(effect.kind, 0);
+        assert_eq!(effect.evaluation_boundary, 0);
+        assert_eq!(effect.depth_test, 0);
+        assert_eq!(effect.flags, 0);
+
+        let mut puppet_bytes = vec![0; SCENE_BINARY_PUPPET_RECORD_SIZE_V12];
+        write_u32_at(&mut puppet_bytes, 60, 31);
+        write_u32_at(&mut puppet_bytes, 64, 7);
+        let puppet = decode_puppet_record(&puppet_bytes).expect("v12 puppet");
+        assert_eq!(puppet.first_clipping_record, SCENE_BINARY_NONE_ID);
+        assert_eq!(puppet.clipping_record_count, 0);
+        assert_eq!(puppet.first_clipping_bone, SCENE_BINARY_NONE_ID);
+        assert_eq!(puppet.clipping_bone_count, 0);
+        assert_eq!(puppet.first_clipping_frame_key, SCENE_BINARY_NONE_ID);
+        assert_eq!(puppet.clipping_frame_key_count, 0);
+        assert_eq!(puppet.flags, 31);
+        assert_eq!(puppet.dirty_range_count, 7);
+    }
+
+    #[test]
     fn binary_container_rejects_missing_required_chunk_family() {
         let payloads = SceneBinaryChunkKind::REQUIRED_ORDER
             .into_iter()
@@ -5260,6 +5424,38 @@ mod tests {
             encode_scene_binary_container(0, &payloads),
             Err(SceneBinaryError::RequiredChunkCount { .. })
         ));
+    }
+
+    fn version12_empty_container() -> Vec<u8> {
+        let chunk_count = SceneBinaryChunkKind::REQUIRED_ORDER_V12.len() as u32;
+        let table_size = SCENE_BINARY_HEADER_SIZE
+            + SceneBinaryChunkKind::REQUIRED_ORDER_V12.len() * SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE;
+        let payload_offset = align_usize(table_size, usize::from(SCENE_BINARY_ALIGNMENT));
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&SCENE_BINARY_MAGIC);
+        bytes.extend_from_slice(&SCENE_BINARY_VERSION_V12.to_le_bytes());
+        bytes.push(SCENE_BINARY_ENDIAN_LITTLE);
+        bytes.push(SCENE_BINARY_ALIGNMENT);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&chunk_count.to_le_bytes());
+        bytes.extend_from_slice(&(SCENE_BINARY_HEADER_SIZE as u64).to_le_bytes());
+        for kind in SceneBinaryChunkKind::REQUIRED_ORDER_V12 {
+            write_chunk_descriptor(
+                &mut bytes,
+                &SceneBinaryChunkDescriptor {
+                    kind,
+                    record_count: 0,
+                    offset: payload_offset as u64,
+                    length: 0,
+                },
+            );
+        }
+        bytes.resize(payload_offset, 0);
+        bytes
+    }
+
+    fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
     }
 
     #[test]

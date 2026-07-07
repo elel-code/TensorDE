@@ -3,6 +3,7 @@ use super::{
     write_u32,
 };
 
+pub const SCENE_BINARY_PUPPET_RECORD_SIZE_V12: usize = 68;
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 92;
 pub const SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE: usize = 40;
@@ -282,6 +283,34 @@ impl SceneBinaryPuppetLayerRecord {
 pub(crate) fn decode_puppet_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryPuppetRecord, SceneBinaryError> {
+    if bytes.len() >= SCENE_BINARY_PUPPET_RECORD_SIZE {
+        return Ok(SceneBinaryPuppetRecord {
+            owner_name: read_u32(bytes, 0)?,
+            vertex_count: read_u32(bytes, 4)?,
+            index_count: read_u32(bytes, 8)?,
+            first_bone: read_u32(bytes, 12)?,
+            bone_count: read_u32(bytes, 16)?,
+            first_skin_vertex: read_u32(bytes, 20)?,
+            skin_vertex_count: read_u32(bytes, 24)?,
+            first_attachment: read_u32(bytes, 28)?,
+            attachment_count: read_u32(bytes, 32)?,
+            first_clip: read_u32(bytes, 36)?,
+            clip_count: read_u32(bytes, 40)?,
+            first_clip_frame: read_u32(bytes, 44)?,
+            clip_frame_count: read_u32(bytes, 48)?,
+            first_layer: read_u32(bytes, 52)?,
+            animation_layer_count: read_u32(bytes, 56)?,
+            first_clipping_record: read_u32(bytes, 60)?,
+            clipping_record_count: read_u32(bytes, 64)?,
+            first_clipping_bone: read_u32(bytes, 68)?,
+            clipping_bone_count: read_u32(bytes, 72)?,
+            first_clipping_frame_key: read_u32(bytes, 76)?,
+            clipping_frame_key_count: read_u32(bytes, 80)?,
+            flags: read_u32(bytes, 84)?,
+            dirty_range_count: read_u32(bytes, 88)?,
+        });
+    }
+
     Ok(SceneBinaryPuppetRecord {
         owner_name: read_u32(bytes, 0)?,
         vertex_count: read_u32(bytes, 4)?,
@@ -298,14 +327,14 @@ pub(crate) fn decode_puppet_record(
         clip_frame_count: read_u32(bytes, 48)?,
         first_layer: read_u32(bytes, 52)?,
         animation_layer_count: read_u32(bytes, 56)?,
-        first_clipping_record: read_u32(bytes, 60)?,
-        clipping_record_count: read_u32(bytes, 64)?,
-        first_clipping_bone: read_u32(bytes, 68)?,
-        clipping_bone_count: read_u32(bytes, 72)?,
-        first_clipping_frame_key: read_u32(bytes, 76)?,
-        clipping_frame_key_count: read_u32(bytes, 80)?,
-        flags: read_u32(bytes, 84)?,
-        dirty_range_count: read_u32(bytes, 88)?,
+        first_clipping_record: SCENE_BINARY_NONE_ID,
+        clipping_record_count: 0,
+        first_clipping_bone: SCENE_BINARY_NONE_ID,
+        clipping_bone_count: 0,
+        first_clipping_frame_key: SCENE_BINARY_NONE_ID,
+        clipping_frame_key_count: 0,
+        flags: read_u32(bytes, 60)?,
+        dirty_range_count: read_u32(bytes, 64)?,
     })
 }
 

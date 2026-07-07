@@ -15,9 +15,9 @@ use serde_json::Value;
 
 use crate::core::SceneNodeKind;
 use crate::core::scene::binary::{
-    SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryMaterialPassRecord,
-    SceneBinaryNodeRecord, decode_effect_pass_record, decode_texture_slot_record,
+    SCENE_BINARY_NONE_ID, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SceneBinaryChunkKind,
+    SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord, decode_effect_pass_record,
+    decode_texture_slot_record,
 };
 use crate::engine::scene_engine::ingest::gscn::{
     GscnGeometryFact, GscnMaterialFact, GscnMeshResourceFact, GscnObjectFact, GscnObjectKind,
@@ -328,7 +328,7 @@ fn gscn_effect_shader_name(
     {
         let passes = reader.record_range(
             SceneBinaryChunkKind::EffectPass,
-            SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+            reader.layout_record_size(SceneBinaryChunkKind::EffectPass)?,
             material.first_effect_pass,
             material.effect_pass_count,
             decode_effect_pass_record,

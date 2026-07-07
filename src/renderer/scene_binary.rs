@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::scene::binary::{
-    SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, SCENE_BINARY_EFFECT_UV_MAPPING_TEXTURE_RESOLUTION,
+    SCENE_BINARY_EFFECT_UV_MAPPING_TEXTURE_RESOLUTION,
     SCENE_BINARY_EFFECT_UV_TRANSFORM_RECORD_SIZE, SCENE_BINARY_NONE_ID,
     SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO, SCENE_BINARY_PARAMETER_ROLE_PASS_BIND,
     SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO, SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT,
@@ -963,7 +963,7 @@ fn binary_scene_image_effect_passes(
 ) -> Result<Vec<SceneRenderImageEffectPass>, RendererPlanError> {
     let passes = reader.record_range(
         SceneBinaryChunkKind::EffectPass,
-        SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
+        reader.layout_record_size(SceneBinaryChunkKind::EffectPass)?,
         material.first_effect_pass,
         material.effect_pass_count,
         decode_effect_pass_record,

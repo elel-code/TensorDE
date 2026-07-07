@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::core::SceneSize;
 use crate::core::scene::binary::{
-    SCENE_BINARY_DEBUG_NAME_RECORD_SIZE, SCENE_BINARY_NONE_ID, SCENE_BINARY_PUPPET_RECORD_SIZE,
+    SCENE_BINARY_DEBUG_NAME_RECORD_SIZE, SCENE_BINARY_NONE_ID,
     SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RESOURCE_RECORD_SIZE,
     SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryError,
     SceneBinaryResourceRecord, decode_debug_name_record, decode_puppet_record,
@@ -219,7 +219,7 @@ pub(super) fn binary_scene_puppet_animation_layer_count(
 ) -> Result<usize, RendererPlanError> {
     let records = reader.records(
         SceneBinaryChunkKind::Puppet,
-        SCENE_BINARY_PUPPET_RECORD_SIZE,
+        reader.layout_record_size(SceneBinaryChunkKind::Puppet)?,
         decode_puppet_record,
     )?;
     let mut count = 0usize;
