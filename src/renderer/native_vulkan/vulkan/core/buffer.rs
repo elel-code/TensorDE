@@ -34,6 +34,7 @@ pub struct NativeVulkanVulkanaliaBufferSnapshot {
     pub buffer_created: bool,
     pub memory_bound: bool,
     pub mapped: bool,
+    pub device_address_nonzero: bool,
     pub requested_bytes: u64,
     pub memory_size: u64,
     pub memory_alignment: u64,
@@ -48,6 +49,7 @@ pub struct NativeVulkanVulkanaliaBufferSnapshot {
 pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaBuffer {
     pub(in crate::renderer::native_vulkan) buffer: vk::Buffer,
     pub(in crate::renderer::native_vulkan) memory: vk::DeviceMemory,
+    pub(in crate::renderer::native_vulkan) device_address: vk::DeviceAddress,
     pub(in crate::renderer::native_vulkan) snapshot: NativeVulkanVulkanaliaBufferSnapshot,
 }
 
@@ -95,9 +97,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
             )
         })?;
 
+        let wants_device_address = usage.contains(vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS);
+        let mut allocate_flags = vk::MemoryAllocateFlagsInfo::builder()
+            .flags(vk::MemoryAllocateFlags::DEVICE_ADDRESS)
+            .build();
         let allocation_info = vk::MemoryAllocateInfo::builder()
             .allocation_size(memory_requirements.size)
             .memory_type_index(memory_type.index);
+        let allocation_info = if wants_device_address {
+            allocation_info.push_next(&mut allocate_flags)
+        } else {
+            allocation_info
+        };
         let memory = unsafe { device.allocate_memory(&allocation_info, None) }
             .map_err(|err| format!("vkAllocateMemory(vulkanalia {role}): {err:?}"))?;
 
@@ -138,15 +149,25 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
         } else {
             false
         };
+        let device_address = if wants_device_address {
+            let address_info = vk::BufferDeviceAddressInfo::builder()
+                .buffer(buffer)
+                .build();
+            unsafe { device.get_buffer_device_address(&address_info) }
+        } else {
+            0
+        };
 
         Ok(NativeVulkanVulkanaliaBuffer {
             buffer,
             memory,
+            device_address,
             snapshot: NativeVulkanVulkanaliaBufferSnapshot {
                 role,
                 buffer_created: true,
                 memory_bound: true,
                 mapped: false,
+                device_address_nonzero: device_address != 0,
                 requested_bytes: size,
                 memory_size: memory_requirements.size,
                 memory_alignment: memory_requirements.alignment,
@@ -400,6 +421,10 @@ fn buffer_usage_flag_labels(flags: vk::BufferUsageFlags) -> Vec<&'static str> {
         (
             vk::BufferUsageFlags::INDIRECT_BUFFER.bits(),
             "indirect-buffer",
+        ),
+        (
+            vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS.bits(),
+            "shader-device-address",
         ),
     ]
     .into_iter()

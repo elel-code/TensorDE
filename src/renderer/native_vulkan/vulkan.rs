@@ -65,8 +65,11 @@ pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSna
 #[allow(unused_imports)]
 pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
-    VulkanaliaDescriptorHeapImageSamplerResources,
+    NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput,
+    NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot,
+    VulkanaliaDescriptorHeapImageSamplerResources, VulkanaliaDescriptorHeapUniformBufferResources,
     native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_create_descriptor_heap_uniform_buffer_resources,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping,
     native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan,
@@ -74,8 +77,14 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image,
+    native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan,
+    native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_resource_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_resource_bind_info_for_buffer,
     native_vulkan_vulkanalia_destroy_descriptor_heap_image_sampler_resources,
+    native_vulkan_vulkanalia_destroy_descriptor_heap_uniform_buffer_resources,
     native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
+    native_vulkan_vulkanalia_write_descriptor_heap_uniform_buffer,
 };
 pub use device_probe::{
     NativeVulkanVulkanaliaDeviceProbeSnapshot, NativeVulkanVulkanaliaDeviceProbeTemplate,

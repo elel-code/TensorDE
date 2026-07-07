@@ -1,3 +1,12 @@
+//! Vulkan descriptor heap primitives.
+//!
+//! References:
+//! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
+//! - `reverse-engineered/docs/shader-conventions.md`
+//! - `references/godot/servers/rendering/rendering_device.h`
+//! - `references/godot/servers/rendering/renderer_rd/uniform_set_cache_rd.h`
+//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
+
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
@@ -22,6 +31,12 @@ const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
     pub image_count: usize,
+    pub properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
+    pub buffer_count: usize,
     pub properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
 }
 
@@ -87,6 +102,41 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot {
     pub primary_reference: &'static str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub descriptor_model: &'static str,
+    pub backend_ready: bool,
+    pub blocking_reason: Option<&'static str>,
+    pub buffer_count: usize,
+    pub resource_heap_alignment: u64,
+    pub buffer_descriptor_size: u64,
+    pub buffer_descriptor_stride: u64,
+    pub resource_heap_bytes: u64,
+    pub resource_heap_reserved_range_offset: u64,
+    pub resource_heap_reserved_range_size: u64,
+    pub buffer_descriptor_offsets: Vec<u64>,
+    pub max_resource_heap_size: u64,
+    pub command_order: Vec<&'static str>,
+    pub next_gate: &'static str,
+    pub primary_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferResourceSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub descriptor_model: &'static str,
+    pub resource_heap: NativeVulkanVulkanaliaDescriptorHeapBufferSnapshot,
+    pub resource_descriptor_written: bool,
+    pub shader_mapping_source: &'static str,
+    pub shader_resource_mask: &'static str,
+    pub command_order: Vec<&'static str>,
+    pub zero_copy_gate: &'static str,
+    pub primary_reference: &'static str,
+}
+
 pub(in crate::renderer::native_vulkan::vulkan) struct VulkanaliaDescriptorHeapBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
@@ -107,6 +157,14 @@ pub(in crate::renderer::native_vulkan) struct VulkanaliaDescriptorHeapImageSampl
         NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     pub(in crate::renderer::native_vulkan::vulkan) snapshot:
         NativeVulkanVulkanaliaDescriptorHeapImageSamplerResourceSnapshot,
+}
+
+pub(in crate::renderer::native_vulkan) struct VulkanaliaDescriptorHeapUniformBufferResources {
+    pub(in crate::renderer::native_vulkan::vulkan) resource_heap: VulkanaliaDescriptorHeapBuffer,
+    pub(in crate::renderer::native_vulkan::vulkan) plan:
+        NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot,
+    pub(in crate::renderer::native_vulkan::vulkan) snapshot:
+        NativeVulkanVulkanaliaDescriptorHeapUniformBufferResourceSnapshot,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_image_sampler_plan(
@@ -221,6 +279,74 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     }
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan(
+    input: NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput,
+) -> NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot {
+    let properties = input.properties;
+    let buffer_descriptor_stride = aligned_descriptor_stride(
+        properties.buffer_descriptor_size,
+        properties.buffer_descriptor_alignment,
+    );
+    let resource_descriptor_region_bytes = descriptor_heap_bytes(
+        input.buffer_count,
+        buffer_descriptor_stride,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_reserved_range_offset = align_up(
+        resource_descriptor_region_bytes,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_reserved_range_size = align_up(
+        properties.min_resource_heap_reserved_range,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_bytes =
+        resource_heap_reserved_range_offset.saturating_add(resource_heap_reserved_range_size);
+    let descriptor_sizes_ready =
+        properties.buffer_descriptor_size > 0 && buffer_descriptor_stride > 0;
+    let resource_heap_fits = properties.max_resource_heap_size == 0
+        || resource_heap_bytes <= properties.max_resource_heap_size;
+    let backend_ready = input.buffer_count > 0 && descriptor_sizes_ready && resource_heap_fits;
+    let blocking_reason = if input.buffer_count == 0 {
+        Some("no-uniform-buffers")
+    } else if !descriptor_sizes_ready {
+        Some("descriptor-heap-buffer-descriptor-size-unavailable")
+    } else if !resource_heap_fits {
+        Some("resource-heap-range-too-small")
+    } else {
+        None
+    };
+
+    NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot {
+        binding: "vulkanalia",
+        route: "descriptor-heap-uniform-buffer-plan",
+        descriptor_model: "VK_EXT_descriptor_heap",
+        backend_ready,
+        blocking_reason,
+        buffer_count: input.buffer_count,
+        resource_heap_alignment: properties.resource_heap_alignment,
+        buffer_descriptor_size: properties.buffer_descriptor_size,
+        buffer_descriptor_stride,
+        resource_heap_bytes,
+        resource_heap_reserved_range_offset,
+        resource_heap_reserved_range_size,
+        buffer_descriptor_offsets: descriptor_offsets(input.buffer_count, buffer_descriptor_stride),
+        max_resource_heap_size: properties.max_resource_heap_size,
+        command_order: if backend_ready {
+            vec![
+                "create_device_addressable_resource_heap_buffer",
+                "write_uniform_buffer_descriptors_into_resource_heap",
+                "cmd_bind_resource_heap_ext",
+                "draw_with_uniform_buffer_heap_mapping",
+            ]
+        } else {
+            vec!["wait_for_descriptor_heap_capabilities"]
+        },
+        next_gate: "bind confirmed constant-buffer records through descriptor heap resource offsets",
+        primary_reference: "VK_EXT_descriptor_heap uniform-buffer resource heap; WE dynamic constant-buffer commits must be lowered only after slot semantics are confirmed",
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descriptor_heap_image_sampler_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -278,6 +404,48 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descri
         },
         resource_heap,
         sampler_heap,
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_descriptor_heap_uniform_buffer_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    plan: &NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot,
+) -> Result<VulkanaliaDescriptorHeapUniformBufferResources, String> {
+    if !plan.backend_ready {
+        return Err(format!(
+            "descriptor heap uniform-buffer resources require ready plan: {:?}",
+            plan.blocking_reason
+        ));
+    }
+
+    let resource_heap = create_descriptor_heap_buffer(
+        device,
+        memory_properties,
+        "uniform-buffer-resource-heap",
+        plan.resource_heap_bytes,
+    )?;
+
+    Ok(VulkanaliaDescriptorHeapUniformBufferResources {
+        plan: plan.clone(),
+        snapshot: NativeVulkanVulkanaliaDescriptorHeapUniformBufferResourceSnapshot {
+            binding: "vulkanalia",
+            route: "descriptor-heap-uniform-buffer-retained-resource",
+            descriptor_model: "VK_EXT_descriptor_heap",
+            resource_heap: resource_heap.snapshot.clone(),
+            resource_descriptor_written: false,
+            shader_mapping_source: "heap-with-constant-offset",
+            shader_resource_mask: "uniform-buffer",
+            command_order: vec![
+                "create_device_addressable_resource_heap_buffer",
+                "write_uniform_buffer_resource_descriptors_ext",
+                "cmd_bind_resource_heap_ext",
+                "draw_with_descriptor_heap_uniform_mapping",
+            ],
+            zero_copy_gate: "uniform payload remains in a retained GPU buffer; descriptor heap only binds device address ranges",
+            primary_reference: plan.primary_reference,
+        },
+        resource_heap,
     })
 }
 
@@ -357,6 +525,64 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descrip
     Ok(())
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_uniform_buffer(
+    device: &Device,
+    resources: &mut VulkanaliaDescriptorHeapUniformBufferResources,
+    buffer_index: usize,
+    device_address: vk::DeviceAddress,
+    range: u64,
+) -> Result<(), String> {
+    if device_address == 0 {
+        return Err("descriptor heap uniform buffer requires non-zero device address".to_owned());
+    }
+    if range == 0 {
+        return Err("descriptor heap uniform buffer requires non-zero range".to_owned());
+    }
+    let resource_offset = *resources
+        .plan
+        .buffer_descriptor_offsets
+        .get(buffer_index)
+        .ok_or_else(|| {
+            format!("descriptor heap uniform buffer index {buffer_index} has no resource offset")
+        })?;
+    let descriptor_size = resources.plan.buffer_descriptor_size;
+    let address_range = vk::DeviceAddressRangeEXT::builder()
+        .address(device_address)
+        .size(range)
+        .build();
+    let resource_info = vk::ResourceDescriptorInfoEXT::builder()
+        .type_(vk::DescriptorType::UNIFORM_BUFFER)
+        .data(vk::ResourceDescriptorDataEXT {
+            address_range: &address_range,
+        })
+        .build();
+    let resource_range = heap_host_address_range(
+        &resources.resource_heap,
+        resource_offset,
+        descriptor_size,
+        "uniform-buffer-resource-heap",
+    )?;
+
+    unsafe {
+        device
+            .write_resource_descriptors_ext(&[resource_info], &[resource_range])
+            .map_err(|err| {
+                format!("vkWriteResourceDescriptorsEXT(vulkanalia uniform buffer): {err:?}")
+            })?;
+    }
+    flush_descriptor_heap_buffer(
+        device,
+        &resources.resource_heap,
+        resource_offset,
+        descriptor_size,
+    )?;
+
+    resources.snapshot.resource_descriptor_written = true;
+    resources.snapshot.zero_copy_gate =
+        "uniform buffer heap descriptor points at retained GPU uniform records";
+    Ok(())
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     image_index: usize,
@@ -373,8 +599,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     binding: u32,
     image_index: usize,
 ) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
-    let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index)?;
-    let sampler_heap_offset = descriptor_offset_u32(&plan.sampler_descriptor_offsets, image_index)?;
+    let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index, "image")?;
+    let sampler_heap_offset =
+        descriptor_offset_u32(&plan.sampler_descriptor_offsets, image_index, "sampler")?;
     let heap_array_stride = u32::try_from(plan.image_descriptor_stride)
         .map_err(|_| "descriptor heap image stride exceeds u32".to_owned())?;
     let sampler_heap_array_stride = u32::try_from(plan.sampler_descriptor_stride)
@@ -398,6 +625,37 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .build())
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_binding_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot,
+    binding: u32,
+    buffer_index: usize,
+) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+    let heap_offset = descriptor_offset_u32(
+        &plan.buffer_descriptor_offsets,
+        buffer_index,
+        "uniform-buffer",
+    )?;
+    let heap_array_stride = u32::try_from(plan.buffer_descriptor_stride)
+        .map_err(|_| "descriptor heap uniform-buffer stride exceeds u32".to_owned())?;
+    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
+        .heap_offset(heap_offset)
+        .heap_array_stride(heap_array_stride)
+        .sampler_heap_offset(0)
+        .sampler_heap_array_stride(0)
+        .build();
+
+    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
+        .descriptor_set(0)
+        .first_binding(binding)
+        .binding_count(1)
+        .resource_mask(vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER)
+        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
+        .source_data(vk::DescriptorMappingSourceDataEXT {
+            constant_offset: source,
+        })
+        .build())
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
 ) -> vk::BindHeapInfoEXT {
@@ -411,6 +669,41 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .reserved_range_offset(resources.plan.resource_heap_reserved_range_offset)
         .reserved_range_size(resources.plan.resource_heap_reserved_range_size)
         .build()
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_resource_bind_info(
+    resources: &VulkanaliaDescriptorHeapUniformBufferResources,
+) -> vk::BindHeapInfoEXT {
+    vk::BindHeapInfoEXT::builder()
+        .heap_range(
+            vk::DeviceAddressRangeEXT::builder()
+                .address(resources.resource_heap.device_address)
+                .size(resources.resource_heap.snapshot.requested_bytes)
+                .build(),
+        )
+        .reserved_range_offset(resources.plan.resource_heap_reserved_range_offset)
+        .reserved_range_size(resources.plan.resource_heap_reserved_range_size)
+        .build()
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_resource_bind_info_for_buffer(
+    resources: &VulkanaliaDescriptorHeapUniformBufferResources,
+    buffer_index: usize,
+) -> Result<vk::BindHeapInfoEXT, String> {
+    let descriptor_offset = *resources
+        .plan
+        .buffer_descriptor_offsets
+        .get(buffer_index)
+        .ok_or_else(|| {
+            format!("descriptor heap uniform buffer index {buffer_index} has no resource offset")
+        })?;
+    descriptor_heap_indexed_bind_info(
+        &resources.resource_heap,
+        resources.plan.resource_heap_reserved_range_offset,
+        resources.plan.resource_heap_reserved_range_size,
+        descriptor_offset,
+        "uniform-buffer-resource",
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info_for_image(
@@ -504,6 +797,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_descr
     resources: VulkanaliaDescriptorHeapImageSamplerResources,
 ) {
     native_vulkan_vulkanalia_destroy_descriptor_heap_buffer(device, resources.sampler_heap);
+    native_vulkan_vulkanalia_destroy_descriptor_heap_buffer(device, resources.resource_heap);
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_descriptor_heap_uniform_buffer_resources(
+    device: &Device,
+    resources: VulkanaliaDescriptorHeapUniformBufferResources,
+) {
     native_vulkan_vulkanalia_destroy_descriptor_heap_buffer(device, resources.resource_heap);
 }
 
@@ -690,10 +990,10 @@ fn flush_descriptor_heap_buffer(
         .map_err(|err| format!("vkFlushMappedMemoryRanges(vulkanalia descriptor heap): {err:?}"))
 }
 
-fn descriptor_offset_u32(offsets: &[u64], index: usize) -> Result<u32, String> {
+fn descriptor_offset_u32(offsets: &[u64], index: usize, role: &'static str) -> Result<u32, String> {
     let offset = *offsets
         .get(index)
-        .ok_or_else(|| format!("descriptor heap image index {index} has no offset"))?;
+        .ok_or_else(|| format!("descriptor heap {role} index {index} has no offset"))?;
     u32::try_from(offset).map_err(|_| format!("descriptor heap offset {offset} exceeds u32"))
 }
 
@@ -927,6 +1227,102 @@ mod tests {
         unsafe {
             assert_eq!(mapping.source_data.constant_offset.heap_offset, 32);
             assert_eq!(mapping.source_data.constant_offset.sampler_heap_offset, 16);
+        }
+    }
+
+    #[test]
+    fn uniform_buffer_plan_aligns_offsets_and_resource_heap_range() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan(
+            NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
+                buffer_count: 3,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 96,
+                    buffer_descriptor_size: 24,
+                    buffer_descriptor_alignment: 32,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(snapshot.descriptor_model, "VK_EXT_descriptor_heap");
+        assert_eq!(snapshot.buffer_descriptor_stride, 32);
+        assert_eq!(snapshot.resource_heap_reserved_range_offset, 128);
+        assert_eq!(snapshot.resource_heap_reserved_range_size, 128);
+        assert_eq!(snapshot.resource_heap_bytes, 256);
+        assert_eq!(snapshot.buffer_descriptor_offsets, vec![0, 32, 64]);
+        assert!(
+            snapshot
+                .command_order
+                .contains(&"write_uniform_buffer_descriptors_into_resource_heap")
+        );
+    }
+
+    #[test]
+    fn uniform_buffer_plan_blocks_when_buffer_descriptor_size_is_missing() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan(
+            NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
+                buffer_count: 1,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
+            },
+        );
+
+        assert!(!snapshot.backend_ready);
+        assert_eq!(
+            snapshot.blocking_reason,
+            Some("descriptor-heap-buffer-descriptor-size-unavailable")
+        );
+        assert_eq!(
+            snapshot.command_order,
+            vec!["wait_for_descriptor_heap_capabilities"]
+        );
+    }
+
+    #[test]
+    fn uniform_buffer_mapping_uses_constant_heap_offsets() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan(
+            NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
+                buffer_count: 2,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
+                    buffer_descriptor_size: 32,
+                    buffer_descriptor_alignment: 32,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        let mapping = native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_binding_mapping(
+            &snapshot, 3, 1,
+        )
+        .expect("mapping should fit u32 offsets");
+
+        assert_eq!(mapping.descriptor_set, 0);
+        assert_eq!(mapping.first_binding, 3);
+        assert_eq!(mapping.binding_count, 1);
+        assert_eq!(
+            mapping.resource_mask,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER
+        );
+        assert_eq!(
+            mapping.source,
+            vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET
+        );
+        unsafe {
+            assert_eq!(mapping.source_data.constant_offset.heap_offset, 32);
+            assert_eq!(mapping.source_data.constant_offset.heap_array_stride, 32);
+            assert_eq!(mapping.source_data.constant_offset.sampler_heap_offset, 0);
+            assert_eq!(
+                mapping
+                    .source_data
+                    .constant_offset
+                    .sampler_heap_array_stride,
+                0
+            );
         }
     }
 }
