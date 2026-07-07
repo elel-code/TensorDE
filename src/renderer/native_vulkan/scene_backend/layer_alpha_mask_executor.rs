@@ -21,6 +21,7 @@ mod copy_back_recording;
 mod copy_back_runtime;
 mod copy_back_target_graph;
 mod resource_binds;
+mod token_schedule;
 
 use crate::engine::scene_engine::{
     SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget, SceneLayerCompositorBlendKey,
@@ -41,6 +42,10 @@ pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
 pub(in crate::renderer::native_vulkan) use resource_binds::{
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
+};
+pub(in crate::renderer::native_vulkan) use token_schedule::{
+    NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
 
 const CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 1);

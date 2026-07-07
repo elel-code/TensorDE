@@ -35,10 +35,11 @@ use super::graph_executor::{
 use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
-    NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
+    native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
@@ -60,10 +61,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
     pub layer_alpha_masks: NativeVulkanSceneLayerAlphaMaskRuntimePlan,
     pub layer_alpha_mask_resource_binds: NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
+    pub layer_alpha_mask_token_schedule: NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +129,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         frame_resources,
         &layer_alpha_masks,
     )?;
+    let layer_alpha_mask_token_schedule = native_vulkan_plan_scene_layer_alpha_mask_token_schedule(
+        &layer_alpha_masks,
+        &layer_alpha_mask_resource_binds,
+    )?;
     let layer_alpha_mask_copy_back_commands =
         native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands(
             frame_resources,
@@ -147,6 +153,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         effects,
         layer_alpha_masks,
         layer_alpha_mask_resource_binds,
+        layer_alpha_mask_token_schedule,
         layer_alpha_mask_copy_back_commands,
         mesh,
         command_order: [
@@ -154,6 +161,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_scene_layer_alpha_mask_token_runtime",
             "require_warmed_layer_alpha_mask_pipelines",
             "plan_layer_alpha_mask_resource_heap_binds",
+            "plan_layer_alpha_mask_token_schedule",
             "plan_layer_alpha_mask_copy_back_command_list",
             "record_scene_mesh_graph_runtime",
         ],
