@@ -9,6 +9,8 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
+pub mod draw_family;
+pub mod effect_graph;
 pub mod frame;
 pub mod graph;
 pub mod graph_execution;
@@ -26,6 +28,14 @@ pub mod shader_uniforms;
 pub mod timeline;
 pub mod we;
 
+pub use draw_family::{
+    SceneGraphDrawFamily, SceneGraphDrawFamilyEntry, SceneGraphDrawFamilyPlan,
+    SceneGraphPassDrawFamilyPlan,
+};
+pub use effect_graph::{
+    SceneEffectGraphPlan, SceneEffectInput, SceneEffectPassPlan, SceneEffectShaderFamily,
+    SceneEffectTargetBinding,
+};
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
     SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneGraph,

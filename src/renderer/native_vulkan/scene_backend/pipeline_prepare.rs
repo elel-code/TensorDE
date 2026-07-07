@@ -12,8 +12,11 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::SceneGraph;
+use crate::engine::scene_engine::{SceneGraph, SceneGraphDrawFamilyPlan};
 
+use super::draw_family::{
+    NativeVulkanSceneDrawFamilyExecutorPlan, native_vulkan_require_scene_mesh_executor_families,
+};
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline_factory::{
     NativeVulkanSceneMeshPipelineLayoutSpec, NativeVulkanSceneMeshPipelineShaders,
@@ -22,6 +25,7 @@ use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelinePreparePlan {
+    pub draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
     pub target_format: String,
     pub target_formats: Vec<String>,
     pub target_format_count: usize,
@@ -32,7 +36,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelinePrepa
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
     pub descriptor_model: &'static str,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_prepare_scene_mesh_pipeline_cache(
@@ -70,6 +74,9 @@ where
     TargetFormat:
         FnMut(crate::engine::scene_engine::SceneGraphTarget) -> Result<vk::Format, String>,
 {
+    let draw_family_executor = native_vulkan_require_scene_mesh_executor_families(
+        &SceneGraphDrawFamilyPlan::from_graph(graph),
+    )?;
     let warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats(
         graph,
         target_format,
@@ -99,6 +106,7 @@ where
     }
 
     NativeVulkanSceneMeshPipelinePreparePlan::from_counts(
+        draw_family_executor,
         &warmup,
         created_pipeline_count,
         reused_pipeline_count,
@@ -110,6 +118,7 @@ where
 
 impl NativeVulkanSceneMeshPipelinePreparePlan {
     fn from_counts(
+        draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
         warmup: &NativeVulkanSceneMeshPipelineWarmupPlan,
         created_pipeline_count: usize,
         reused_pipeline_count: usize,
@@ -126,6 +135,7 @@ impl NativeVulkanSceneMeshPipelinePreparePlan {
             ));
         }
         Ok(Self {
+            draw_family_executor,
             target_format: format!("{:?}", warmup.target_format()),
             target_formats: warmup
                 .target_formats()
@@ -141,6 +151,7 @@ impl NativeVulkanSceneMeshPipelinePreparePlan {
             sampler_descriptor_count,
             descriptor_model,
             command_order: [
+                "select_scene_draw_family_executors",
                 "collect_unique_pipeline_keys",
                 "read_current_draw_resource_heap_plan",
                 "resolve_scene_mesh_pipeline_cache",
@@ -154,8 +165,8 @@ impl NativeVulkanSceneMeshPipelinePreparePlan {
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
-        SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphDrawFamilyPlan,
+        SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
         SceneGraphTarget, SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
 
@@ -172,6 +183,10 @@ mod tests {
         .expect("warmup");
 
         let plan = NativeVulkanSceneMeshPipelinePreparePlan::from_counts(
+            native_vulkan_require_scene_mesh_executor_families(
+                &SceneGraphDrawFamilyPlan::from_graph(&graph),
+            )
+            .expect("mesh family executor"),
             &warmup,
             1,
             1,
@@ -191,9 +206,11 @@ mod tests {
         assert_eq!(plan.resource_descriptor_count, 4);
         assert_eq!(plan.sampler_descriptor_count, 2);
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
+        assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);
         assert_eq!(
             plan.command_order,
             [
+                "select_scene_draw_family_executors",
                 "collect_unique_pipeline_keys",
                 "read_current_draw_resource_heap_plan",
                 "resolve_scene_mesh_pipeline_cache",
@@ -215,6 +232,10 @@ mod tests {
         .expect("warmup");
 
         let err = NativeVulkanSceneMeshPipelinePreparePlan::from_counts(
+            native_vulkan_require_scene_mesh_executor_families(
+                &SceneGraphDrawFamilyPlan::from_graph(&graph),
+            )
+            .expect("mesh family executor"),
             &warmup,
             0,
             0,
@@ -262,6 +283,10 @@ mod tests {
         .expect("warmup");
 
         let plan = NativeVulkanSceneMeshPipelinePreparePlan::from_counts(
+            native_vulkan_require_scene_mesh_executor_families(
+                &SceneGraphDrawFamilyPlan::from_graph(&graph),
+            )
+            .expect("mesh family executor"),
             &warmup,
             2,
             0,

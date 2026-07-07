@@ -7,6 +7,7 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
 pub mod draw_command;
+pub mod draw_family;
 pub mod draw_list;
 pub mod frame_acquire;
 pub mod frame_command;

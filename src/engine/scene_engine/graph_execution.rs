@@ -11,21 +11,25 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-use super::{SceneGraph, SceneGraphPass, SceneGraphTarget};
+use super::{SceneGraph, SceneGraphDrawFamilyPlan, SceneGraphPass, SceneGraphTarget};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SceneGraphExecutionPlan {
     pub pass_count: usize,
     pub target_count: usize,
     pub target_barrier_count: usize,
+    pub draw_family_plan: SceneGraphDrawFamilyPlan,
     pub indexed_graphics_draw_count: usize,
     pub non_indexed_draw_count: usize,
+    pub indexed_mesh_graphics_draw_count: usize,
+    pub quad_draw_count: usize,
+    pub particle_emitter_draw_count: usize,
     pub target_read_count: usize,
     pub swapchain_output_count: usize,
     pub passes: Vec<SceneGraphExecutionPass>,
     pub target_lifetimes: Vec<SceneGraphTargetLifetime>,
     pub target_barriers: Vec<SceneGraphTargetBarrier>,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -39,6 +43,9 @@ pub struct SceneGraphExecutionPass {
     pub draw_count: usize,
     pub indexed_graphics_draw_count: usize,
     pub non_indexed_draw_count: usize,
+    pub indexed_mesh_graphics_draw_count: usize,
+    pub quad_draw_count: usize,
+    pub particle_emitter_draw_count: usize,
     pub target_reads: Vec<SceneGraphTarget>,
     pub target_writes: Vec<SceneGraphTarget>,
 }
@@ -87,24 +94,21 @@ pub enum SceneGraphTargetBarrierReason {
 
 impl SceneGraphExecutionPlan {
     pub fn from_graph(graph: &SceneGraph) -> Self {
+        let draw_family_plan = SceneGraphDrawFamilyPlan::from_graph(graph);
         let mut passes = Vec::with_capacity(graph.passes.len());
         let mut target_lifetimes = BTreeMap::<SceneGraphTarget, SceneGraphTargetLifetime>::new();
         let mut last_use_by_target =
             BTreeMap::<SceneGraphTarget, (usize, SceneGraphTargetUsage)>::new();
         let mut target_barriers = Vec::new();
-        let mut indexed_graphics_draw_count = 0usize;
-        let mut non_indexed_draw_count = 0usize;
         let mut target_read_count = 0usize;
         let mut swapchain_output_count = 0usize;
         let mut draw_index_start = 0usize;
 
         for (pass_index, pass) in graph.passes.iter().enumerate() {
-            let execution_pass = scene_graph_execution_pass(pass_index, draw_index_start, pass);
+            let family_pass = &draw_family_plan.passes[pass_index];
+            let execution_pass =
+                scene_graph_execution_pass(pass_index, draw_index_start, pass, family_pass);
             draw_index_start = execution_pass.draw_index_end;
-            indexed_graphics_draw_count = indexed_graphics_draw_count
-                .saturating_add(execution_pass.indexed_graphics_draw_count);
-            non_indexed_draw_count =
-                non_indexed_draw_count.saturating_add(execution_pass.non_indexed_draw_count);
             target_read_count = target_read_count.saturating_add(execution_pass.target_reads.len());
             if pass.output == SceneGraphTarget::Swapchain {
                 swapchain_output_count = swapchain_output_count.saturating_add(1);
@@ -138,14 +142,19 @@ impl SceneGraphExecutionPlan {
             pass_count: graph.passes.len(),
             target_count: target_lifetimes.len(),
             target_barrier_count: target_barriers.len(),
-            indexed_graphics_draw_count,
-            non_indexed_draw_count,
+            indexed_graphics_draw_count: draw_family_plan.indexed_mesh_graphics_draw_count,
+            non_indexed_draw_count: draw_family_plan.unsupported_runtime_draw_count(),
+            indexed_mesh_graphics_draw_count: draw_family_plan.indexed_mesh_graphics_draw_count,
+            quad_draw_count: draw_family_plan.quad_draw_count,
+            particle_emitter_draw_count: draw_family_plan.particle_emitter_draw_count,
             target_read_count,
             swapchain_output_count,
             passes,
             target_lifetimes,
             target_barriers,
+            draw_family_plan,
             command_order: [
+                "classify_scene_graph_draw_families",
                 "collect_scene_graph_pass_target_uses",
                 "derive_scene_graph_target_lifetimes",
                 "derive_scene_graph_target_barriers",
@@ -159,17 +168,8 @@ fn scene_graph_execution_pass(
     pass_index: usize,
     draw_index_start: usize,
     pass: &SceneGraphPass,
+    family_pass: &super::SceneGraphPassDrawFamilyPlan,
 ) -> SceneGraphExecutionPass {
-    let mut indexed_graphics_draw_count = 0usize;
-    let mut non_indexed_draw_count = 0usize;
-    for draw in &pass.draws {
-        if draw.pipeline.is_indexed_mesh_graphics() {
-            indexed_graphics_draw_count = indexed_graphics_draw_count.saturating_add(1);
-        } else {
-            non_indexed_draw_count = non_indexed_draw_count.saturating_add(1);
-        }
-    }
-
     SceneGraphExecutionPass {
         pass_index,
         name: pass.name.clone(),
@@ -178,8 +178,13 @@ fn scene_graph_execution_pass(
         draw_index_start,
         draw_index_end: draw_index_start.saturating_add(pass.draws.len()),
         draw_count: pass.draws.len(),
-        indexed_graphics_draw_count,
-        non_indexed_draw_count,
+        indexed_graphics_draw_count: family_pass.indexed_mesh_graphics_draw_count,
+        non_indexed_draw_count: family_pass
+            .quad_draw_count
+            .saturating_add(family_pass.particle_emitter_draw_count),
+        indexed_mesh_graphics_draw_count: family_pass.indexed_mesh_graphics_draw_count,
+        quad_draw_count: family_pass.quad_draw_count,
+        particle_emitter_draw_count: family_pass.particle_emitter_draw_count,
         target_reads: pass.input.into_iter().collect(),
         target_writes: vec![pass.output],
     }
@@ -439,19 +444,28 @@ mod tests {
         let mut quad = mesh_draw(SceneObjectId(2));
         quad.pipeline = SceneGraphPipelineClass::Quad;
         quad.geometry = None;
+        let mut particle = mesh_draw(SceneObjectId(3));
+        particle.pipeline = SceneGraphPipelineClass::ParticleEmitter;
+        particle.geometry = None;
         let graph = SceneGraph {
             passes: vec![pass(
                 "scene-main",
                 None,
                 SceneGraphTarget::Swapchain,
-                vec![mesh_draw(SceneObjectId(1)), quad],
+                vec![mesh_draw(SceneObjectId(1)), quad, particle],
             )],
         };
 
         let plan = SceneGraphExecutionPlan::from_graph(&graph);
 
         assert_eq!(plan.indexed_graphics_draw_count, 1);
-        assert_eq!(plan.non_indexed_draw_count, 1);
+        assert_eq!(plan.indexed_mesh_graphics_draw_count, 1);
+        assert_eq!(plan.quad_draw_count, 1);
+        assert_eq!(plan.particle_emitter_draw_count, 1);
+        assert_eq!(plan.non_indexed_draw_count, 2);
+        assert_eq!(plan.draw_family_plan.unsupported_runtime_draw_count(), 2);
+        assert_eq!(plan.passes[0].quad_draw_count, 1);
+        assert_eq!(plan.passes[0].particle_emitter_draw_count, 1);
     }
 
     fn pass(

@@ -12,9 +12,12 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneResource};
+use crate::engine::scene_engine::{SceneFramePlan, SceneGraphDrawFamilyPlan, SceneResource};
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
+use super::draw_family::{
+    NativeVulkanSceneDrawFamilyExecutorPlan, native_vulkan_require_scene_mesh_executor_families,
+};
 use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
@@ -30,6 +33,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshResourcePrepa
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshResourcePreparePlan {
+    pub draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
     pub residency_command_count: usize,
     pub material_uniform_gpu_buffer_action_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
@@ -37,11 +41,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshResourcePrepa
     pub resource_heap_action_count: usize,
     pub texture_image_action_count: usize,
     pub gpu_buffer_action_count: usize,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 impl NativeVulkanSceneMeshResourcePreparePlan {
     pub(in crate::renderer::native_vulkan) fn from_parts(
+        draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
         residency_command_count: usize,
         material_uniform_gpu_buffer_action_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
@@ -51,6 +56,7 @@ impl NativeVulkanSceneMeshResourcePreparePlan {
         gpu_buffer_action_count: usize,
     ) -> Self {
         Self {
+            draw_family_executor,
             residency_command_count,
             material_uniform_gpu_buffer_action_count,
             texture_descriptors,
@@ -59,6 +65,7 @@ impl NativeVulkanSceneMeshResourcePreparePlan {
             texture_image_action_count,
             gpu_buffer_action_count,
             command_order: [
+                "select_scene_draw_family_executors",
                 "sync_residency",
                 "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
@@ -76,6 +83,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
     resources: &[SceneResource],
     frame: &SceneFramePlan,
 ) -> Result<NativeVulkanSceneMeshResourcePreparePlan, String> {
+    let draw_family_executor = native_vulkan_require_scene_mesh_executor_families(
+        &SceneGraphDrawFamilyPlan::from_graph(&frame.graph),
+    )?;
     let residency_command_count = frame_resources.sync_residency_plan(&frame.residency).len();
     let material_uniform_gpu_buffer_action_count = frame_resources
         .sync_material_uniform_gpu_buffers_recorded(
@@ -122,6 +132,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
         .len();
 
     Ok(NativeVulkanSceneMeshResourcePreparePlan::from_parts(
+        draw_family_executor,
         residency_command_count,
         material_uniform_gpu_buffer_action_count,
         texture_descriptors,
@@ -136,9 +147,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGraph, SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass,
-        SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey,
-        SceneObjectId, SceneResourceId,
+        SceneBlendContract, SceneGraph, SceneGraphDraw, SceneGraphDrawFamilyPlan, SceneGraphPass,
+        SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneGraphTarget, SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
     use crate::renderer::native_vulkan::scene_backend::material_uniforms::{
         NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
@@ -167,6 +178,10 @@ mod tests {
         .expect("resource heap frame plan");
 
         let plan = NativeVulkanSceneMeshResourcePreparePlan::from_parts(
+            native_vulkan_require_scene_mesh_executor_families(
+                &SceneGraphDrawFamilyPlan::from_graph(&graph),
+            )
+            .expect("mesh family executor"),
             2,
             3,
             texture_descriptors,
@@ -179,6 +194,7 @@ mod tests {
         assert_eq!(
             plan.command_order,
             [
+                "select_scene_draw_family_executors",
                 "sync_residency",
                 "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
@@ -187,6 +203,7 @@ mod tests {
                 "record_gpu_buffer_uploads"
             ]
         );
+        assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);
         assert_eq!(plan.residency_command_count, 2);
         assert_eq!(plan.material_uniform_gpu_buffer_action_count, 3);
         assert_eq!(plan.resource_heap_action_count, 4);

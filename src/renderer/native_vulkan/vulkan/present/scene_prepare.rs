@@ -57,7 +57,7 @@ pub struct NativeVulkanVulkanaliaScenePipelinePrepareSnapshot {
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
     pub descriptor_model: &'static str,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,7 +80,7 @@ pub struct NativeVulkanVulkanaliaSceneResourcePrepareSnapshot {
     pub descriptor_model: &'static str,
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[allow(clippy::too_many_arguments)]

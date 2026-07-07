@@ -18,6 +18,9 @@ use vulkanalia::vk;
 use crate::engine::scene_engine::{SceneFramePlan, SceneGraphExecutionPlan};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
+use super::draw_family::{
+    NativeVulkanSceneDrawFamilyExecutorPlan, native_vulkan_require_scene_mesh_executor_families,
+};
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::graph_executor::{
     NativeVulkanSceneGraphFrameCommandPlan, NativeVulkanSceneGraphRuntimeFrameContext,
@@ -38,23 +41,27 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     pub graph_execution: SceneGraphExecutionPlan,
+    pub draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 3],
+    pub command_order: [&'static str; 4],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
         graph_execution: SceneGraphExecutionPlan,
+        draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
     ) -> Self {
         Self {
             graph_execution,
+            draw_family_executor,
             pipeline_warmup,
             frame,
             command_order: [
                 "build_scene_graph_execution_plan",
+                "select_scene_draw_family_executors",
                 "require_warmed_mesh_pipelines",
                 "record_scene_graph_frame_commands",
             ],
@@ -68,6 +75,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     frame: &'a SceneFramePlan,
 ) -> Result<NativeVulkanSceneMeshRuntimeFramePlan<'a>, String> {
     let graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
+    let draw_family_executor =
+        native_vulkan_require_scene_mesh_executor_families(&graph_execution.draw_family_plan)?;
     let pipeline_warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats(
         &frame.graph,
         |target| context.target_formats.format(target),
@@ -96,6 +105,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         graph_execution,
+        draw_family_executor,
         pipeline_warmup,
         frame_plan,
     ))
@@ -110,8 +120,8 @@ mod tests {
     };
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphPass,
-        SceneGraphTarget, SceneMaterialKey, SceneObjectId,
+        SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphDrawFamilyPlan,
+        SceneGraphPass, SceneGraphTarget, SceneMaterialKey, SceneObjectId,
     };
 
     #[test]
@@ -138,7 +148,6 @@ mod tests {
             pass_count: 1,
             target_barrier_count: 0,
             target_format_count: 1,
-            pipeline_warmup: warmup.clone(),
             passes: vec![NativeVulkanSceneGraphPassCommandPlan {
                 target: SceneGraphTarget::Swapchain,
                 target_scope: NativeVulkanSceneRenderTargetScopePlan {
@@ -156,7 +165,6 @@ mod tests {
             target_barriers: Vec::new(),
             command_order: [
                 "resolve_scene_graph_target_formats",
-                "require_warmed_mesh_pipelines",
                 "record_graph_pass_render_targets",
                 "record_mesh_pass_draw_lists",
                 "record_scene_graph_target_barriers",
@@ -164,17 +172,27 @@ mod tests {
         };
 
         let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
-        let plan =
-            NativeVulkanSceneMeshRuntimeFramePlan::from_parts(graph_execution, warmup, frame);
+        let draw_family_executor = native_vulkan_require_scene_mesh_executor_families(
+            &SceneGraphDrawFamilyPlan::from_graph(&graph),
+        )
+        .expect("mesh family executor");
+        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
+            graph_execution,
+            draw_family_executor,
+            warmup,
+            frame,
+        );
 
         assert_eq!(
             plan.command_order,
             [
                 "build_scene_graph_execution_plan",
+                "select_scene_draw_family_executors",
                 "require_warmed_mesh_pipelines",
                 "record_scene_graph_frame_commands"
             ]
         );
+        assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass_count, 1);
         assert_eq!(plan.frame.passes[0].pass.draw_count, 1);

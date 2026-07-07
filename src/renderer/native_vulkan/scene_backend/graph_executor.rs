@@ -21,7 +21,6 @@ use super::pass_command::{
     NativeVulkanSceneMeshPassCommandPlan, native_vulkan_record_scene_mesh_pass_draw_commands,
 };
 use super::pipeline::NativeVulkanScenePipelineCacheKey;
-use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::{
     NativeVulkanSceneOffscreenRenderTarget, NativeVulkanSceneRenderTarget,
     NativeVulkanSceneRenderTargetScopePlan, NativeVulkanSceneSwapchainRenderTarget,
@@ -46,10 +45,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneGraphFrameCommand
     pub pass_count: usize,
     pub target_barrier_count: usize,
     pub target_format_count: usize,
-    pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub passes: Vec<NativeVulkanSceneGraphPassCommandPlan<'a>>,
     pub target_barriers: Vec<NativeVulkanSceneTargetBarrierPlan>,
-    pub command_order: [&'static str; 5],
+    pub command_order: [&'static str; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,18 +63,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
     frame: &'a SceneFramePlan,
     graph_execution: &SceneGraphExecutionPlan,
 ) -> Result<NativeVulkanSceneGraphFrameCommandPlan<'a>, String> {
-    let pipeline_warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats(
-        &frame.graph,
-        |target| context.target_formats.format(target),
-    )?;
-    for key in pipeline_warmup.cache_keys() {
-        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
-            format!(
-                "{err}; scene graph runtime requires pipeline warmup before present-frame recording"
-            )
-        })?;
-    }
-
     let mut passes = Vec::with_capacity(graph_execution.passes.len());
     let mut target_barriers = Vec::with_capacity(graph_execution.target_barriers.len());
     for execution_pass in &graph_execution.passes {
@@ -159,12 +145,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
         pass_count: passes.len(),
         target_barrier_count: target_barriers.len(),
         target_format_count: context.target_formats.target_format_count(),
-        pipeline_warmup,
         passes,
         target_barriers,
         command_order: [
             "resolve_scene_graph_target_formats",
-            "require_warmed_mesh_pipelines",
             "record_graph_pass_render_targets",
             "record_mesh_pass_draw_lists",
             "record_scene_graph_target_barriers",
