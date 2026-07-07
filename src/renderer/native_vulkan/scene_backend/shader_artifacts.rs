@@ -14,13 +14,14 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneEffectPassGraphPlan, SceneFramePlan, SceneGraph, SceneLayerCompositorPlan,
-    WeShaderInterface,
+    SceneEffectPassGraphPlan, SceneFramePlan, SceneGraph, SceneLayerCompositorOperation,
+    SceneLayerCompositorPlan, WeShaderInterface,
 };
 
 use super::effect_pipeline::{
     NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanSceneEffectPipelineShaders,
 };
+use super::layer_alpha_mask_executor::ALPHA_MASK_FLATTEXTURE_SHADER;
 use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 
 const SPIRV_MAGIC: u32 = 0x0723_0203;
@@ -67,7 +68,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtif
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtifactCatalogPlan {
     pub shader_count: usize,
     pub shaders: Vec<String>,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -186,6 +187,20 @@ impl NativeVulkanSceneEffectShaderArtifactCatalog {
         graph: &SceneEffectPassGraphPlan,
     ) -> Result<Self, String> {
         let shader_names = required_effect_shader_names(graph)?;
+        Self::from_shader_names(artifact_root, shader_names)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_effect_pass_graph_and_layer_compositor(
+        artifact_root: &Path,
+        graph: &SceneEffectPassGraphPlan,
+        layer_compositor: &SceneLayerCompositorPlan,
+    ) -> Result<Self, String> {
+        let shader_names =
+            required_effect_shader_names_with_layer_compositor(graph, Some(layer_compositor))?;
+        Self::from_shader_names(artifact_root, shader_names)
+    }
+
+    fn from_shader_names(artifact_root: &Path, shader_names: Vec<String>) -> Result<Self, String> {
         let mut shaders = BTreeMap::new();
         for shader in &shader_names {
             let artifacts =
@@ -198,6 +213,7 @@ impl NativeVulkanSceneEffectShaderArtifactCatalog {
                 shaders: shader_names,
                 command_order: [
                     "collect_effect_shader_names_from_pass_graph",
+                    "append_layer_alpha_mask_copy_back_shader_names",
                     "resolve_we_effect_shader_artifact_paths",
                     "read_unique_effect_vertex_spirv",
                     "read_unique_effect_fragment_spirv",
@@ -215,6 +231,7 @@ impl NativeVulkanSceneEffectShaderArtifactCatalog {
                 shaders: Vec::new(),
                 command_order: [
                     "collect_effect_shader_names_from_pass_graph",
+                    "append_layer_alpha_mask_copy_back_shader_names",
                     "resolve_we_effect_shader_artifact_paths",
                     "read_unique_effect_vertex_spirv",
                     "read_unique_effect_fragment_spirv",
@@ -356,6 +373,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_load_scene_effect_shader
 }
 
 fn required_effect_shader_names(graph: &SceneEffectPassGraphPlan) -> Result<Vec<String>, String> {
+    required_effect_shader_names_with_layer_compositor(graph, None)
+}
+
+fn required_effect_shader_names_with_layer_compositor(
+    graph: &SceneEffectPassGraphPlan,
+    layer_compositor: Option<&SceneLayerCompositorPlan>,
+) -> Result<Vec<String>, String> {
     let mut unique = BTreeSet::new();
     let mut shaders = Vec::new();
     for pass in &graph.passes {
@@ -375,7 +399,23 @@ fn required_effect_shader_names(graph: &SceneEffectPassGraphPlan) -> Result<Vec<
             shaders.push(shader.to_owned());
         }
     }
+    if let Some(layer_compositor) = layer_compositor
+        && layer_compositor_uses_flattexture_copy_back(layer_compositor)
+        && unique.insert(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned())
+    {
+        shaders.push(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned());
+    }
     Ok(shaders)
+}
+
+fn layer_compositor_uses_flattexture_copy_back(
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> bool {
+    layer_compositor.layers.iter().any(|layer| {
+        layer.commands.iter().any(|command| {
+            command.operation == SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask
+        })
+    })
 }
 
 fn required_scene_shader_names(
@@ -734,23 +774,11 @@ mod tests {
 
     #[test]
     fn effect_shader_catalog_plan_collects_unique_pass_shaders() {
-        use std::collections::BTreeMap;
-
-        use crate::engine::scene_engine::{
-            SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
-            SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneGraphTarget,
-            SceneObjectId, we::WeEffectKind,
-        };
-
-        let graph = SceneEffectPassGraphPlan {
-            material_pass_count: 3,
-            passes: vec![
-                effect_pass(0, "effects/iris"),
-                effect_pass(1, "effects/iris"),
-                effect_pass(2, "effects/blur_downsample4"),
-            ],
-            ..SceneEffectPassGraphPlan::empty()
-        };
+        let graph = effect_graph_with_shader_names(&[
+            "effects/iris",
+            "effects/iris",
+            "effects/blur_downsample4",
+        ]);
 
         let shaders = required_effect_shader_names(&graph).expect("shader names");
 
@@ -761,6 +789,54 @@ mod tests {
                 "effects/blur_downsample4".to_owned()
             ]
         );
+    }
+
+    #[test]
+    fn effect_shader_catalog_names_append_minimalalpha_for_layer_copy_back() {
+        use crate::engine::scene_engine::{
+            SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+            SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorLayer,
+            SceneLayerCompositorOperation, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+            SceneObjectId,
+        };
+
+        let graph = effect_graph_with_shader_names(&["effects/iris"]);
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.tokenized_layer_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(7),
+            route: SceneLayerCompositorRoute::DirectSwapchain,
+            uses_tokenized_subdraw: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
+                operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,
+                condition: SceneLayerCompositorCondition::Token2AfterIntermediateMask,
+                source: Some(SceneLayerCompositorTarget::FullAlphaMaskIntermediate),
+                target: SceneLayerCompositorTarget::FullAlphaMask,
+                blend_key: SceneLayerCompositorBlendKey::DestColorCopyBackBit0x100,
+            }],
+        }];
+
+        let shaders =
+            required_effect_shader_names_with_layer_compositor(&graph, Some(&layer_compositor))
+                .expect("shader names with alpha-mask copy-back");
+
+        assert_eq!(
+            shaders,
+            vec!["effects/iris".to_owned(), "util/minimalalpha".to_owned()]
+        );
+    }
+
+    fn effect_graph_with_shader_names(shaders: &[&str]) -> SceneEffectPassGraphPlan {
+        use std::collections::BTreeMap;
+
+        use crate::engine::scene_engine::{
+            SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+            SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneGraphTarget,
+            SceneObjectId, we::WeEffectKind,
+        };
 
         fn effect_pass(graph_pass_index: usize, shader: &str) -> SceneEffectPassGraphMaterialPass {
             SceneEffectPassGraphMaterialPass {
@@ -784,6 +860,16 @@ mod tests {
                 combos: BTreeMap::new(),
                 constants: BTreeMap::new(),
             }
+        }
+
+        SceneEffectPassGraphPlan {
+            material_pass_count: shaders.len(),
+            passes: shaders
+                .iter()
+                .enumerate()
+                .map(|(index, shader)| effect_pass(index, shader))
+                .collect(),
+            ..SceneEffectPassGraphPlan::empty()
         }
     }
 

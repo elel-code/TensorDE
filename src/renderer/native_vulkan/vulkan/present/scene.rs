@@ -251,9 +251,10 @@ fn with_vulkanalia_scene_present(
             &frame,
         )?;
         let effect_shader_catalog =
-            NativeVulkanSceneEffectShaderArtifactCatalog::from_effect_pass_graph(
+            NativeVulkanSceneEffectShaderArtifactCatalog::from_effect_pass_graph_and_layer_compositor(
                 &options.shader_artifact_root,
                 &frame.effect_pass_graph,
+                &frame.layer_compositor,
             )?;
 
         let slots = frame_slots

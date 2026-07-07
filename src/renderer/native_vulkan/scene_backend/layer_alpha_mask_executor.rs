@@ -27,6 +27,7 @@ use crate::engine::scene_engine::{
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout};
 use super::resource_heap::texture_set::scene_shader_texture_mapping;
+pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHADER;
 pub(in crate::renderer::native_vulkan) use resource_binds::{
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
