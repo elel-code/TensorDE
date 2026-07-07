@@ -40,6 +40,8 @@ pub struct NativeVulkanSceneMeshPassCommandPlan<'a> {
     pub name: &'a str,
     pub input: Option<SceneGraphTarget>,
     pub output: SceneGraphTarget,
+    pub draw_index_start: usize,
+    pub draw_index_end: usize,
     pub draw_count: usize,
     pub pipeline_bind_count: usize,
     pub resource_heap_bind_count: usize,
@@ -53,6 +55,7 @@ pub enum NativeVulkanSceneMeshPassCommand<'a> {
         name: &'a str,
         input: Option<SceneGraphTarget>,
         output: SceneGraphTarget,
+        draw_index_start: usize,
     },
     BindPipeline {
         bind: NativeVulkanScenePipelineBindPlan<'a>,
@@ -71,16 +74,26 @@ pub enum NativeVulkanSceneMeshPassCommand<'a> {
 impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
     pub fn from_record_bindings<F>(
         pass: &'a SceneGraphPass,
+        draw_index_start: usize,
         mut mesh_records: F,
     ) -> Result<Self, String>
     where
         F: FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBufferRecords, String>,
     {
+        let draw_index_end = draw_index_start
+            .checked_add(pass.draws.len())
+            .ok_or_else(|| {
+                format!(
+                    "scene mesh pass '{}' global draw range overflows usize",
+                    pass.name
+                )
+            })?;
         let mut commands = Vec::with_capacity(pass.draws.len().saturating_mul(2) + 2);
         commands.push(NativeVulkanSceneMeshPassCommand::BeginPass {
             name: pass.name.as_str(),
             input: pass.input,
             output: pass.output,
+            draw_index_start,
         });
 
         let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
@@ -119,6 +132,8 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
             name: pass.name.as_str(),
             input: pass.input,
             output: pass.output,
+            draw_index_start,
+            draw_index_end,
             draw_count: pass.draws.len(),
             pipeline_bind_count,
             resource_heap_bind_count: 0,
@@ -137,6 +152,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_d
     device: &Device,
     command_buffer: vk::CommandBuffer,
     pass: &'a SceneGraphPass,
+    draw_index_start: usize,
     mut pipeline_for_key: PipelineForKey,
     mut resource_heap_bind_for_draw: ResourceHeapBindForDraw,
     mut mesh_buffers: MeshBuffersForGeometry,
@@ -148,11 +164,20 @@ where
     MeshBuffersForGeometry:
         FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
 {
+    let draw_index_end = draw_index_start
+        .checked_add(pass.draws.len())
+        .ok_or_else(|| {
+            format!(
+                "scene mesh pass '{}' global draw range overflows usize",
+                pass.name
+            )
+        })?;
     let mut commands = Vec::with_capacity(pass.draws.len().saturating_mul(2) + 2);
     commands.push(NativeVulkanSceneMeshPassCommand::BeginPass {
         name: pass.name.as_str(),
         input: pass.input,
         output: pass.output,
+        draw_index_start,
     });
 
     let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
@@ -161,7 +186,10 @@ where
     let mut indexed_draw_count = 0usize;
     let mut last_resource_set_index = None::<usize>;
 
-    for (draw_index, draw) in pass.draws.iter().enumerate() {
+    for (local_draw_index, draw) in pass.draws.iter().enumerate() {
+        let draw_index = draw_index_start
+            .checked_add(local_draw_index)
+            .ok_or_else(|| format!("scene mesh pass '{}' draw index overflow", pass.name))?;
         let transition = draw_list_state.next_draw(&pass.name, draw)?;
         if transition.bind_pipeline {
             let pipeline = pipeline_for_key(transition.pipeline_key)?;
@@ -213,6 +241,8 @@ where
         name: pass.name.as_str(),
         input: pass.input,
         output: pass.output,
+        draw_index_start,
+        draw_index_end,
         draw_count: pass.draws.len(),
         pipeline_bind_count,
         resource_heap_bind_count,
@@ -241,9 +271,12 @@ mod tests {
             mesh_draw(SceneObjectId(2), SceneGeometryId(5), "we/genericimage4"),
         ]);
 
-        let plan = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
-            .expect("mesh pass plan");
+        let plan =
+            NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, 0, mesh_records)
+                .expect("mesh pass plan");
 
+        assert_eq!(plan.draw_index_start, 0);
+        assert_eq!(plan.draw_index_end, 2);
         assert_eq!(plan.draw_count, 2);
         assert_eq!(plan.pipeline_bind_count, 1);
         assert_eq!(plan.resource_heap_bind_count, 0);
@@ -277,8 +310,9 @@ mod tests {
             additive,
         ]);
 
-        let plan = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
-            .expect("mesh pass plan");
+        let plan =
+            NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, 0, mesh_records)
+                .expect("mesh pass plan");
 
         assert_eq!(plan.pipeline_bind_count, 2);
     }
@@ -290,9 +324,12 @@ mod tests {
         draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
         let pass = mesh_pass(vec![draw]);
 
-        let plan = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
-            .expect("puppet draw should remain in indexed mesh batch");
+        let plan =
+            NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, 3, mesh_records)
+                .expect("puppet draw should remain in indexed mesh batch");
 
+        assert_eq!(plan.draw_index_start, 3);
+        assert_eq!(plan.draw_index_end, 4);
         assert_eq!(plan.indexed_draw_count, 1);
         assert_eq!(plan.pipeline_bind_count, 1);
     }
@@ -303,8 +340,9 @@ mod tests {
         draw.pipeline = SceneGraphPipelineClass::Quad;
         let pass = mesh_pass(vec![draw]);
 
-        let err = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
-            .expect_err("quad draw must fail until quad executor exists");
+        let err =
+            NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, 0, mesh_records)
+                .expect_err("quad draw must fail until quad executor exists");
 
         assert!(err.contains("requires indexed mesh graphics pipeline"));
     }
@@ -317,7 +355,7 @@ mod tests {
             "we/genericimage4",
         )]);
 
-        let err = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, |_| {
+        let err = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, 0, |_| {
             Err("missing retained scene GPU buffer record".to_owned())
         })
         .expect_err("missing records must fail");

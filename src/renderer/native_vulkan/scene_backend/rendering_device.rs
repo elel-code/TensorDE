@@ -72,10 +72,13 @@ impl NativeVulkanRenderingDevice {
     pub fn mesh_pass_command_plan<'a>(
         &self,
         pass: &'a SceneGraphPass,
+        draw_index_start: usize,
     ) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String> {
-        NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(pass, |geometry| {
-            self.mesh_draw_buffer_records(geometry)
-        })
+        NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(
+            pass,
+            draw_index_start,
+            |geometry| self.mesh_draw_buffer_records(geometry),
+        )
     }
 
     pub fn sync_scene_gpu_uploads(
@@ -399,7 +402,7 @@ mod tests {
             ],
         };
         let pass_plan = device
-            .mesh_pass_command_plan(&pass)
+            .mesh_pass_command_plan(&pass, 0)
             .expect("mesh pass command plan after GPU upload sync");
         assert_eq!(pass_plan.pipeline_bind_count, 1);
         assert_eq!(pass_plan.indexed_draw_count, 2);

@@ -11,6 +11,7 @@
 
 pub mod frame;
 pub mod graph;
+pub mod graph_execution;
 pub mod ingest;
 pub mod material;
 pub mod object;
@@ -29,6 +30,10 @@ pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
     SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneGraph, SceneGraphDraw, SceneGraphPass,
     SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
+};
+pub use graph_execution::{
+    SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTargetBarrier,
+    SceneGraphTargetBarrierReason, SceneGraphTargetLifetime, SceneGraphTargetUsage,
 };
 pub use material::{
     SceneBlendContract, SceneCullMode, SceneDepthTest, SceneMaterialContract, SceneMaterialKey,

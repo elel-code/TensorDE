@@ -15,7 +15,7 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneGraph, SceneGraphPass, SceneGraphTarget};
+use crate::engine::scene_engine::{SceneFramePlan, SceneGraphExecutionPlan};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::frame_command::{
@@ -36,20 +36,24 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
+    pub graph_execution: SceneGraphExecutionPlan,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 2],
+    pub command_order: [&'static str; 3],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
+        graph_execution: SceneGraphExecutionPlan,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
     ) -> Self {
         Self {
+            graph_execution,
             pipeline_warmup,
             frame,
             command_order: [
+                "select_scene_graph_executor",
                 "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands",
             ],
@@ -62,7 +66,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     context: NativeVulkanSceneMeshRuntimeFrameContext<'_>,
     frame: &'a SceneFramePlan,
 ) -> Result<NativeVulkanSceneMeshRuntimeFramePlan<'a>, String> {
-    let pass = native_vulkan_scene_mesh_runtime_pass(&frame.graph)?;
+    let graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
+    let (pass, draw_index_start) = graph_execution.single_swapchain_indexed_pass(&frame.graph)?;
     let pipeline_warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
         &frame.graph,
         context.target_format,
@@ -82,6 +87,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         context.target,
         context.clear_color,
         pass,
+        draw_index_start,
         |key| {
             let cache_key =
                 NativeVulkanScenePipelineCacheKey::from_bind_key(key, context.target_format)?;
@@ -92,24 +98,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
+        graph_execution,
         pipeline_warmup,
         frame_plan,
     ))
-}
-
-fn native_vulkan_scene_mesh_runtime_pass(graph: &SceneGraph) -> Result<&SceneGraphPass, String> {
-    match graph.passes.as_slice() {
-        [pass] if pass.output == SceneGraphTarget::Swapchain => Ok(pass),
-        [pass] => Err(format!(
-            "scene mesh runtime requires one swapchain pass, got {:?}",
-            pass.output
-        )),
-        [] => Err("scene mesh runtime requires one scene graph pass".to_owned()),
-        passes => Err(format!(
-            "scene mesh runtime requires one scene graph pass, got {}",
-            passes.len()
-        )),
-    }
 }
 
 #[cfg(test)]
@@ -120,7 +112,8 @@ mod tests {
     };
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneMaterialKey, SceneObjectId,
+        SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphPass,
+        SceneGraphTarget, SceneMaterialKey, SceneObjectId,
     };
 
     #[test]
@@ -146,6 +139,8 @@ mod tests {
                 name: "scene-main",
                 input: None,
                 output: SceneGraphTarget::Swapchain,
+                draw_index_start: 0,
+                draw_index_end: 1,
                 draw_count: 1,
                 pipeline_bind_count: 1,
                 resource_heap_bind_count: 1,
@@ -154,14 +149,21 @@ mod tests {
             },
         );
 
-        let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(warmup, frame);
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+        let plan =
+            NativeVulkanSceneMeshRuntimeFramePlan::from_parts(graph_execution, warmup, frame);
 
         assert_eq!(
             plan.command_order,
             [
+                "select_scene_graph_executor",
                 "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands"
             ]
+        );
+        assert!(
+            plan.graph_execution
+                .supports_single_swapchain_indexed_runtime
         );
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);
@@ -170,19 +172,30 @@ mod tests {
     #[test]
     fn runtime_pass_requires_exactly_one_swapchain_pass() {
         let graph = mesh_graph(vec![mesh_draw(SceneObjectId(1))]);
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
 
-        let pass = native_vulkan_scene_mesh_runtime_pass(&graph).expect("scene-main pass");
+        let pass = graph_execution
+            .single_swapchain_indexed_pass(&graph)
+            .expect("scene-main pass");
 
-        assert_eq!(pass.name, "scene-main");
-        assert_eq!(pass.output, SceneGraphTarget::Swapchain);
+        assert_eq!(pass.1, 0);
+        assert_eq!(graph_execution.passes[0].draw_index_end, 1);
+        assert_eq!(pass.0.name, "scene-main");
+        assert_eq!(
+            pass.0.output,
+            crate::engine::scene_engine::SceneGraphTarget::Swapchain
+        );
     }
 
     #[test]
     fn runtime_pass_rejects_empty_graph() {
-        let err = native_vulkan_scene_mesh_runtime_pass(&SceneGraph::default())
+        let graph = crate::engine::scene_engine::SceneGraph::default();
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+        let err = graph_execution
+            .single_swapchain_indexed_pass(&graph)
             .expect_err("empty graph must fail");
 
-        assert!(err.contains("requires one scene graph pass"));
+        assert!(err.contains("graph executor"));
     }
 
     #[test]
@@ -193,11 +206,13 @@ mod tests {
                 mesh_pass("scene-second", SceneGraphTarget::Swapchain),
             ],
         };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
 
-        let err = native_vulkan_scene_mesh_runtime_pass(&graph)
+        let err = graph_execution
+            .single_swapchain_indexed_pass(&graph)
             .expect_err("multiple passes must fail until graph executor exists");
 
-        assert!(err.contains("got 2"));
+        assert!(err.contains("passes=2"));
     }
 
     #[test]
@@ -208,11 +223,13 @@ mod tests {
                 SceneGraphTarget::ImageLocalMain(0),
             )],
         };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
 
-        let err = native_vulkan_scene_mesh_runtime_pass(&graph)
+        let err = graph_execution
+            .single_swapchain_indexed_pass(&graph)
             .expect_err("offscreen target must fail until target executor exists");
 
-        assert!(err.contains("one swapchain pass"));
+        assert!(err.contains("swapchain_outputs=0"));
     }
 
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {

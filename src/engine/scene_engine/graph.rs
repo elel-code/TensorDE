@@ -12,7 +12,7 @@ use serde::Serialize;
 
 pub const SCENE_WE_MAX_SHADER_TEXTURE_SLOTS: u32 = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneGraphTarget {
     Swapchain,
     ImageLocalMain(u32),
