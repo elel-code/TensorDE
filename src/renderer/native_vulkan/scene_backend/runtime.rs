@@ -32,6 +32,10 @@ use super::graph_executor::{
     NativeVulkanSceneGraphFrameCommandPlan, NativeVulkanSceneGraphRuntimeFrameContext,
     native_vulkan_record_scene_graph_frame_commands,
 };
+use super::layer_alpha_mask_executor::{
+    NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
+};
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
 use super::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
@@ -50,8 +54,9 @@ pub(in crate::renderer::native_vulkan) type NativeVulkanSceneRuntimeFrameContext
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<'a> {
     pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
+    pub layer_alpha_masks: NativeVulkanSceneLayerAlphaMaskRuntimePlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 2],
+    pub command_order: [&'static str; 3],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -99,6 +104,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         },
         &frame.effect_pass_graph,
     )?;
+    let layer_alpha_masks = native_vulkan_plan_scene_layer_alpha_mask_runtime_frame(
+        frame_resources,
+        &frame.layer_compositor,
+        context.target.extent,
+    )?;
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -112,9 +122,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
     )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
+        layer_alpha_masks,
         mesh,
         command_order: [
             "record_scene_effect_graph_runtime",
+            "plan_scene_layer_alpha_mask_token_runtime",
             "record_scene_mesh_graph_runtime",
         ],
     })
