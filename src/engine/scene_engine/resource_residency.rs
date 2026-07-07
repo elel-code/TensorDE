@@ -317,6 +317,7 @@ mod tests {
             .active_sources
             .push(ScenePuppetClippingActiveSource {
                 source_name: "eye-right".to_owned(),
+                source_id: 0x1122_3344_5566_7788,
                 scalar_bits: 1.0f32.to_bits(),
                 source_scale: 6,
                 flags: 2,

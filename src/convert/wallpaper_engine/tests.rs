@@ -193,6 +193,7 @@ fn parses_mdmp_active_sources_from_mdl_owner_flags() {
         scene_parse_puppet_mdmp_active_sources(&bytes, &parsed_owner_flags).unwrap();
     assert_eq!(active_sources.len(), 1);
     assert_eq!(active_sources[0].source_name, "eye-right");
+    assert_eq!(active_sources[0].source_id, 0x1122_3344_5566_7788);
     assert_eq!(active_sources[0].scalar_bits, 0.5f32.to_bits());
     assert_eq!(active_sources[0].source_scale, 2);
     assert_eq!(active_sources[0].flags, 2);
@@ -238,6 +239,7 @@ fn parses_mdmp_owner_scalar_and_scale_even_when_owner_has_no_active_sources() {
         scene_parse_puppet_mdmp_active_sources(&bytes, &parsed_owner_flags).unwrap();
     assert_eq!(active_sources.len(), 1);
     assert_eq!(active_sources[0].source_name, "second-owner-source");
+    assert_eq!(active_sources[0].source_id, 0x8877_6655_4433_2211);
     assert_eq!(active_sources[0].scalar_bits, 0.75f32.to_bits());
     assert_eq!(active_sources[0].source_scale, 3);
     assert_eq!(active_sources[0].transform_index, 9);

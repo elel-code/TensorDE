@@ -2166,6 +2166,7 @@ mod tests {
                         "puppet_clipping_active_sources": [
                             {
                                 "source_name": "eye-right",
+                                "source_id": 1234605616436508552u64,
                                 "scalar_bits": 1065353216,
                                 "source_scale": 6,
                                 "flags": 2,
@@ -2213,6 +2214,10 @@ mod tests {
         assert_eq!(
             mesh.puppet_clipping_active_sources[0].source_name,
             "eye-right"
+        );
+        assert_eq!(
+            mesh.puppet_clipping_active_sources[0].source_id,
+            0x1122_3344_5566_7788
         );
 
         let engine_plan = scene_engine_plan_from_gscn_path_with_properties(scene_path, 0, None)

@@ -1731,6 +1731,7 @@ impl ScenePuppetClippingRecord {
 #[derive(Debug, Clone)]
 struct ScenePuppetClippingActiveSource {
     source_name: String,
+    source_id: u64,
     scalar_bits: u32,
     source_scale: u32,
     flags: u32,
@@ -1743,6 +1744,7 @@ impl ScenePuppetClippingActiveSource {
     fn to_value(&self) -> Value {
         json!({
             "source_name": self.source_name,
+            "source_id": self.source_id,
             "scalar_bits": self.scalar_bits,
             "source_scale": self.source_scale,
             "flags": self.flags,
@@ -5952,7 +5954,8 @@ fn scene_parse_puppet_mdmp_active_sources(
         }
         let flags = owner_flags.get(owner_index).copied().unwrap_or_default();
         for _ in 0..active_count {
-            scene_skip_bytes(bytes, &mut position, mdmp_end, 8, "MDMP active-source id")?;
+            let source_id =
+                scene_take_u64_le(bytes, &mut position, mdmp_end, "MDMP active-source id")?;
             let source_name =
                 scene_take_mdl_c_string(bytes, &mut position, mdmp_end, "MDMP source name")?;
             if source_name.is_empty() {
@@ -6006,6 +6009,7 @@ fn scene_parse_puppet_mdmp_active_sources(
             };
             sources.push(ScenePuppetClippingActiveSource {
                 source_name,
+                source_id,
                 scalar_bits,
                 source_scale: owner_source_scale,
                 flags: active_flags,
@@ -6458,6 +6462,24 @@ fn scene_take_u32_le(
     Ok(value)
 }
 
+fn scene_take_u64_le(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<u64, String> {
+    let start = *position;
+    let value = scene_read_u64_le_at(bytes, start)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is truncated."))?;
+    *position = start + 8;
+    if *position > end {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} extends outside its section."
+        ));
+    }
+    Ok(value)
+}
+
 fn scene_take_u16_le(
     bytes: &[u8],
     position: &mut usize,
@@ -6625,6 +6647,12 @@ fn scene_take_mdl_c_string(
 fn scene_read_u32_le_at(bytes: &[u8], offset: usize) -> Option<u32> {
     Some(u32::from_le_bytes(
         bytes.get(offset..offset + 4)?.try_into().ok()?,
+    ))
+}
+
+fn scene_read_u64_le_at(bytes: &[u8], offset: usize) -> Option<u64> {
+    Some(u64::from_le_bytes(
+        bytes.get(offset..offset + 8)?.try_into().ok()?,
     ))
 }
 

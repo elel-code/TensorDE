@@ -454,6 +454,7 @@ fn puppet_active_source_payload(
         SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
     )?);
     for (element, source) in clipping.active_sources.iter().enumerate() {
+        push_u64_words(&mut payload, source.source_id);
         push_u64_words(&mut payload, scene_stable_name_hash(&source.source_name));
         push_u32(&mut payload, source.scalar_bits);
         push_u32(&mut payload, source.source_scale);
@@ -475,7 +476,7 @@ fn puppet_active_source_payload(
             element,
             f64::from(source.parameter1),
         )?;
-        for _ in 0..8 {
+        for _ in 0..6 {
             push_u32(&mut payload, 0);
         }
     }
@@ -865,6 +866,7 @@ mod tests {
             }],
             vec![SceneMeshPuppetClippingActiveSource {
                 source_name: "eye-right".to_owned(),
+                source_id: 0x1122_3344_5566_7788,
                 scalar_bits: 1.0f32.to_bits(),
                 source_scale: 6,
                 flags: 2,
@@ -929,20 +931,25 @@ mod tests {
             NativeVulkanSceneGpuBufferRole::PuppetActiveSource
         );
         assert_eq!(active_source_upload.requirement.bytes, 64);
+        assert_eq!(read_u32(&active_source_upload.payload, 0), 0x5566_7788);
+        assert_eq!(read_u32(&active_source_upload.payload, 4), 0x1122_3344);
         assert_eq!(
-            read_u32(&active_source_upload.payload, 0),
+            read_u32(&active_source_upload.payload, 8),
             expected_hash as u32
         );
         assert_eq!(
-            read_u32(&active_source_upload.payload, 4),
+            read_u32(&active_source_upload.payload, 12),
             (expected_hash >> 32) as u32
         );
-        assert_eq!(read_u32(&active_source_upload.payload, 8), 1.0f32.to_bits());
-        assert_eq!(read_u32(&active_source_upload.payload, 12), 6);
-        assert_eq!(read_u32(&active_source_upload.payload, 16), 2);
-        assert_eq!(read_u32(&active_source_upload.payload, 20), 4);
-        assert_eq!(read_f32(&active_source_upload.payload, 24), -1.0);
-        assert_eq!(read_f32(&active_source_upload.payload, 28), 0.5);
+        assert_eq!(
+            read_u32(&active_source_upload.payload, 16),
+            1.0f32.to_bits()
+        );
+        assert_eq!(read_u32(&active_source_upload.payload, 20), 6);
+        assert_eq!(read_u32(&active_source_upload.payload, 24), 2);
+        assert_eq!(read_u32(&active_source_upload.payload, 28), 4);
+        assert_eq!(read_f32(&active_source_upload.payload, 32), -1.0);
+        assert_eq!(read_f32(&active_source_upload.payload, 36), 0.5);
     }
 
     #[test]

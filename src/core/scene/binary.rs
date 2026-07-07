@@ -3731,6 +3731,7 @@ impl SceneBinaryPayloadBuilder {
         self.puppet_active_sources.push_record(|out| {
             SceneBinaryPuppetActiveSourceRecord {
                 source_name,
+                source_id: source.source_id,
                 scalar_bits: source.scalar_bits,
                 source_scale: source.source_scale,
                 flags: source.flags,
@@ -6652,6 +6653,7 @@ mod tests {
                         "puppet_clipping_active_sources": [
                             {
                                 "source_name": "eye-right",
+                                "source_id": 1234605616436508552u64,
                                 "scalar_bits": 1065353216,
                                 "source_scale": 6,
                                 "flags": 2,
@@ -6860,6 +6862,7 @@ mod tests {
                 .expect("active source name"),
             Some("eye-right")
         );
+        assert_eq!(active_sources[0].source_id, 0x1122_3344_5566_7788);
         assert_eq!(active_sources[0].scalar_bits, 1.0f32.to_bits());
         assert_eq!(active_sources[0].source_scale, 6);
         assert_eq!(active_sources[0].flags, 2);

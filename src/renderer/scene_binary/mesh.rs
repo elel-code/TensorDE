@@ -443,6 +443,7 @@ pub(super) fn binary_scene_puppet_active_sources(
         };
         sources.push(SceneMeshPuppetClippingActiveSource {
             source_name: source_name.to_owned(),
+            source_id: record.source_id,
             scalar_bits: record.scalar_bits,
             source_scale: record.source_scale,
             flags: record.flags,

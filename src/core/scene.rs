@@ -3994,17 +3994,12 @@ impl SceneMeshPuppetClippingRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneMeshPuppetClippingActiveSource {
     pub source_name: String,
-    #[serde(default)]
+    pub source_id: u64,
     pub scalar_bits: u32,
-    #[serde(default)]
     pub source_scale: u32,
-    #[serde(default)]
     pub flags: u32,
-    #[serde(default)]
     pub transform_index: u32,
-    #[serde(default)]
     pub parameter0: f32,
-    #[serde(default)]
     pub parameter1: f32,
 }
 
@@ -5238,6 +5233,22 @@ mod tests {
         .unwrap();
 
         assert!(document.validate().is_err());
+    }
+
+    #[test]
+    fn puppet_clipping_active_source_requires_runtime_source_id() {
+        let err = serde_json::from_value::<SceneMeshPuppetClippingActiveSource>(json!({
+            "source_name": "eye-right",
+            "scalar_bits": 1065353216,
+            "source_scale": 6,
+            "flags": 2,
+            "transform_index": 4,
+            "parameter0": -1.0,
+            "parameter1": 0.5
+        }))
+        .expect_err("active source without record+0x00 source id must be rejected");
+
+        assert!(err.to_string().contains("source_id"));
     }
 
     #[test]

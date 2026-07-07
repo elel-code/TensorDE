@@ -1,6 +1,6 @@
 use super::{
-    SCENE_BINARY_NONE_ID, SceneBinaryError, ScenePuppetTransform, read_f32, read_u32, write_f32,
-    write_u32,
+    SCENE_BINARY_NONE_ID, SceneBinaryError, ScenePuppetTransform, read_f32, read_u32, read_u64,
+    write_f32, write_u32, write_u64,
 };
 
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE_V12: usize = 68;
@@ -14,7 +14,7 @@ pub const SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE: usize = 40;
 pub const SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE: usize = 8;
 pub const SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE: usize = 8;
-pub const SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE: usize = 32;
+pub const SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE: usize = 40;
 
 pub const SCENE_BINARY_PUPPET_FLAG_MESH: u32 = 1;
 pub const SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS: u32 = 1 << 1;
@@ -274,6 +274,7 @@ impl SceneBinaryPuppetClippingFrameKeyRecord {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneBinaryPuppetActiveSourceRecord {
     pub source_name: u32,
+    pub source_id: u64,
     pub scalar_bits: u32,
     pub source_scale: u32,
     pub flags: u32,
@@ -286,6 +287,7 @@ pub struct SceneBinaryPuppetActiveSourceRecord {
 impl SceneBinaryPuppetActiveSourceRecord {
     pub(super) fn encode(self, out: &mut Vec<u8>) {
         write_u32(out, self.source_name);
+        write_u64(out, self.source_id);
         write_u32(out, self.scalar_bits);
         write_u32(out, self.source_scale);
         write_u32(out, self.flags);
@@ -293,7 +295,7 @@ impl SceneBinaryPuppetActiveSourceRecord {
         write_f32(out, self.parameter0);
         write_f32(out, self.parameter1);
         write_u32(out, self.reserved);
-        debug_assert_eq!(SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE, 32);
+        debug_assert_eq!(SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE, 40);
     }
 }
 
@@ -539,13 +541,14 @@ pub(crate) fn decode_puppet_active_source_record(
 ) -> Result<SceneBinaryPuppetActiveSourceRecord, SceneBinaryError> {
     Ok(SceneBinaryPuppetActiveSourceRecord {
         source_name: read_u32(bytes, 0)?,
-        scalar_bits: read_u32(bytes, 4)?,
-        source_scale: read_u32(bytes, 8)?,
-        flags: read_u32(bytes, 12)?,
-        transform_index: read_u32(bytes, 16)?,
-        parameter0: read_f32(bytes, 20)?,
-        parameter1: read_f32(bytes, 24)?,
-        reserved: read_u32(bytes, 28)?,
+        source_id: read_u64(bytes, 4)?,
+        scalar_bits: read_u32(bytes, 12)?,
+        source_scale: read_u32(bytes, 16)?,
+        flags: read_u32(bytes, 20)?,
+        transform_index: read_u32(bytes, 24)?,
+        parameter0: read_f32(bytes, 28)?,
+        parameter1: read_f32(bytes, 32)?,
+        reserved: read_u32(bytes, 36)?,
     })
 }
 

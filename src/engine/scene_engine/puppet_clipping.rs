@@ -33,6 +33,7 @@ impl ScenePuppetClippingProgram {
                 .active_sources
                 .push(ScenePuppetClippingActiveSource {
                     source_name: source.source_name,
+                    source_id: source.source_id,
                     scalar_bits: source.scalar_bits,
                     source_scale: source.source_scale,
                     flags: source.flags,
@@ -112,6 +113,7 @@ pub struct ScenePuppetClippingRecord {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScenePuppetClippingActiveSource {
     pub source_name: String,
+    pub source_id: u64,
     pub scalar_bits: u32,
     pub source_scale: u32,
     pub flags: u32,
@@ -150,6 +152,7 @@ mod tests {
             }],
             vec![SourcePuppetClippingActiveSource {
                 source_name: "eye-right".to_owned(),
+                source_id: 0x1122_3344_5566_7788,
                 scalar_bits: 1.0f32.to_bits(),
                 source_scale: 6,
                 flags: 2,
