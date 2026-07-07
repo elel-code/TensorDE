@@ -22,7 +22,6 @@ pub struct SceneGraphExecutionPlan {
     pub non_indexed_draw_count: usize,
     pub target_read_count: usize,
     pub swapchain_output_count: usize,
-    pub supports_single_swapchain_indexed_runtime: bool,
     pub passes: Vec<SceneGraphExecutionPass>,
     pub target_lifetimes: Vec<SceneGraphTargetLifetime>,
     pub target_barriers: Vec<SceneGraphTargetBarrier>,
@@ -135,11 +134,6 @@ impl SceneGraphExecutionPlan {
         }
 
         let target_lifetimes = target_lifetimes.into_values().collect::<Vec<_>>();
-        let supports_single_swapchain_indexed_runtime = graph.passes.len() == 1
-            && swapchain_output_count == 1
-            && target_read_count == 0
-            && non_indexed_draw_count == 0
-            && target_barriers.is_empty();
         Self {
             pass_count: graph.passes.len(),
             target_count: target_lifetimes.len(),
@@ -148,7 +142,6 @@ impl SceneGraphExecutionPlan {
             non_indexed_draw_count,
             target_read_count,
             swapchain_output_count,
-            supports_single_swapchain_indexed_runtime,
             passes,
             target_lifetimes,
             target_barriers,
@@ -156,34 +149,9 @@ impl SceneGraphExecutionPlan {
                 "collect_scene_graph_pass_target_uses",
                 "derive_scene_graph_target_lifetimes",
                 "derive_scene_graph_target_barriers",
-                "select_scene_graph_executor",
+                "emit_scene_graph_execution_plan",
             ],
         }
-    }
-
-    pub fn single_swapchain_indexed_pass<'a>(
-        &self,
-        graph: &'a SceneGraph,
-    ) -> Result<(&'a SceneGraphPass, usize), String> {
-        if self.supports_single_swapchain_indexed_runtime {
-            let execution_pass = self
-                .passes
-                .first()
-                .ok_or_else(|| "scene graph execution plan has no pass".to_owned())?;
-            let graph_pass = graph
-                .passes
-                .get(execution_pass.pass_index)
-                .ok_or_else(|| "scene graph execution plan has no pass".to_owned());
-            return graph_pass.map(|pass| (pass, execution_pass.draw_index_start));
-        }
-        Err(format!(
-            "scene runtime requires graph executor: passes={}, target_reads={}, target_barriers={}, non_indexed_draws={}, swapchain_outputs={}",
-            self.pass_count,
-            self.target_read_count,
-            self.target_barrier_count,
-            self.non_indexed_draw_count,
-            self.swapchain_output_count
-        ))
     }
 }
 
@@ -306,7 +274,7 @@ mod tests {
     };
 
     #[test]
-    fn execution_plan_accepts_single_swapchain_indexed_pass() {
+    fn execution_plan_tracks_swapchain_indexed_pass() {
         let graph = SceneGraph {
             passes: vec![pass(
                 "scene-main",
@@ -318,7 +286,6 @@ mod tests {
 
         let plan = SceneGraphExecutionPlan::from_graph(&graph);
 
-        assert!(plan.supports_single_swapchain_indexed_runtime);
         assert_eq!(plan.pass_count, 1);
         assert_eq!(plan.target_count, 1);
         assert_eq!(plan.target_barrier_count, 0);
@@ -329,10 +296,9 @@ mod tests {
             plan.target_lifetimes[0].final_usage,
             SceneGraphTargetUsage::Present
         );
-        let (graph_pass, draw_index_start) = plan.single_swapchain_indexed_pass(&graph).unwrap();
-        assert_eq!(draw_index_start, 0);
+        assert_eq!(plan.passes[0].draw_index_start, 0);
         assert_eq!(plan.passes[0].draw_index_end, 1);
-        assert_eq!(graph_pass.name, "scene-main");
+        assert_eq!(plan.passes[0].name, "scene-main");
     }
 
     #[test]
@@ -356,7 +322,6 @@ mod tests {
 
         let plan = SceneGraphExecutionPlan::from_graph(&graph);
 
-        assert!(!plan.supports_single_swapchain_indexed_runtime);
         assert_eq!(plan.target_count, 2);
         assert_eq!(plan.target_barrier_count, 1);
         assert_eq!(plan.target_read_count, 1);
@@ -370,11 +335,6 @@ mod tests {
                 next_usage: SceneGraphTargetUsage::ShaderSampledRead,
                 reason: SceneGraphTargetBarrierReason::ReadAfterWrite,
             }
-        );
-        assert!(
-            plan.single_swapchain_indexed_pass(&graph)
-                .expect_err("multi-pass graph needs executor")
-                .contains("graph executor")
         );
     }
 
@@ -467,11 +427,10 @@ mod tests {
         let plan = SceneGraphExecutionPlan::from_graph(&graph);
 
         assert_eq!(plan.target_read_count, 1);
-        assert!(!plan.supports_single_swapchain_indexed_runtime);
-        assert!(
-            plan.single_swapchain_indexed_pass(&graph)
-                .expect_err("offscreen input needs graph executor")
-                .contains("target_reads=1")
+        assert_eq!(plan.pass_count, 1);
+        assert_eq!(
+            plan.passes[0].target_reads,
+            vec![SceneGraphTarget::ImageLocalMain(0)]
         );
     }
 
@@ -493,7 +452,6 @@ mod tests {
 
         assert_eq!(plan.indexed_graphics_draw_count, 1);
         assert_eq!(plan.non_indexed_draw_count, 1);
-        assert!(!plan.supports_single_swapchain_indexed_runtime);
     }
 
     fn pass(

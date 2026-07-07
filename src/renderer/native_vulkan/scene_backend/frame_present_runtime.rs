@@ -35,6 +35,7 @@ use super::runtime::{
     NativeVulkanSceneMeshRuntimeFrameContext, NativeVulkanSceneMeshRuntimeFramePlan,
     native_vulkan_record_scene_mesh_runtime_frame,
 };
+use super::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFrameContext<'a> {
     pub device: &'a Device,
@@ -42,7 +43,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFrameConte
     pub swapchain: vk::SwapchainKHR,
     pub swapchain_images: &'a [vk::Image],
     pub swapchain_extent: vk::Extent2D,
-    pub target_format: vk::Format,
+    pub target_formats: &'a NativeVulkanSceneGraphTargetFormatPlan,
     pub clear_color: Option<NativeVulkanClearColor>,
 }
 
@@ -176,7 +177,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
                 device: context.device,
                 command_buffer: slot_sync.command_buffer,
                 target,
-                target_format: context.target_format,
+                target_formats: context.target_formats,
                 clear_color: context.clear_color,
             },
             frame,
@@ -258,8 +259,8 @@ fn validate_scene_present_frame_context(
     if context.swapchain_extent.width == 0 || context.swapchain_extent.height == 0 {
         return Err("scene present frame requires non-zero swapchain extent".to_owned());
     }
-    if context.target_format == vk::Format::UNDEFINED {
-        return Err("scene present frame requires a defined target format".to_owned());
+    if !context.target_formats.contains_swapchain() {
+        return Err("scene present frame requires a swapchain target format entry".to_owned());
     }
     Ok(())
 }

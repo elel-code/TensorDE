@@ -120,6 +120,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_target_barr
     Ok(native_vulkan_scene_target_barrier_plan(barrier))
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_target_usage_layout(
+    usage: SceneGraphTargetUsage,
+) -> vk::ImageLayout {
+    native_vulkan_scene_target_usage_barrier(usage).layout
+}
+
 fn native_vulkan_scene_target_usage_barrier(
     usage: SceneGraphTargetUsage,
 ) -> NativeVulkanSceneTargetUsageBarrier {

@@ -12,6 +12,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
+use crate::engine::scene_engine::SceneGraphTarget;
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -38,23 +39,60 @@ pub struct NativeVulkanSceneSwapchainRenderTarget {
     pub final_layout: vk::ImageLayout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneOffscreenRenderTarget {
+    pub target: SceneGraphTarget,
+    pub image: vk::Image,
+    pub image_view: vk::ImageView,
+    pub extent: vk::Extent2D,
+    pub initial_layout: vk::ImageLayout,
+    pub final_layout: vk::ImageLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeVulkanSceneRenderTarget {
+    Swapchain(NativeVulkanSceneSwapchainRenderTarget),
+    Offscreen(NativeVulkanSceneOffscreenRenderTarget),
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_swapchain_render_target_scope_plan(
     target: NativeVulkanSceneSwapchainRenderTarget,
     clear_color: Option<NativeVulkanClearColor>,
 ) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
-    validate_scene_swapchain_render_target(target, clear_color)?;
+    native_vulkan_scene_render_target_scope_plan(
+        NativeVulkanSceneRenderTarget::Swapchain(target),
+        clear_color,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_render_target_scope_plan(
+    target: NativeVulkanSceneRenderTarget,
+    clear_color: Option<NativeVulkanClearColor>,
+) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
+    validate_scene_render_target(target, clear_color)?;
     Ok(NativeVulkanSceneRenderTargetScopePlan {
-        width: target.extent.width,
-        height: target.extent.height,
+        width: target.extent().width,
+        height: target.extent().height,
         load_op: match clear_color {
             Some(_) => NativeVulkanSceneRenderTargetLoadOp::Clear,
             None => NativeVulkanSceneRenderTargetLoadOp::Load,
         },
-        begin_command_order: [
-            "cmd_pipeline_barrier2_color_attachment",
-            "cmd_begin_rendering",
-        ],
-        end_command_order: ["cmd_end_rendering", "cmd_pipeline_barrier2_present"],
+        begin_command_order: if target.initial_layout() == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+        {
+            ["retain_color_attachment_layout", "cmd_begin_rendering"]
+        } else {
+            [
+                "cmd_pipeline_barrier2_color_attachment",
+                "cmd_begin_rendering",
+            ]
+        },
+        end_command_order: if target.final_layout() == vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL {
+            ["cmd_end_rendering", "retain_color_attachment_layout"]
+        } else if target.final_layout() == vk::ImageLayout::PRESENT_SRC_KHR {
+            ["cmd_end_rendering", "cmd_pipeline_barrier2_present"]
+        } else {
+            ["cmd_end_rendering", "cmd_pipeline_barrier2_target_final"]
+        },
     })
 }
 
@@ -64,36 +102,52 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_swapchain_r
     target: NativeVulkanSceneSwapchainRenderTarget,
     clear_color: Option<NativeVulkanClearColor>,
 ) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
-    let plan = native_vulkan_scene_swapchain_render_target_scope_plan(target, clear_color)?;
+    native_vulkan_record_scene_render_target_begin(
+        device,
+        command_buffer,
+        NativeVulkanSceneRenderTarget::Swapchain(target),
+        clear_color,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_render_target_begin(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    target: NativeVulkanSceneRenderTarget,
+    clear_color: Option<NativeVulkanClearColor>,
+) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
+    let plan = native_vulkan_scene_render_target_scope_plan(target, clear_color)?;
     unsafe {
-        let target_to_color = vk::ImageMemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-            .src_access_mask(vk::AccessFlags2::empty())
-            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .old_layout(target.initial_layout)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(target.image)
-            .subresource_range(scene_color_subresource_range())
-            .build();
-        let image_barriers = [target_to_color];
-        let dependency = vk::DependencyInfo::builder()
-            .image_memory_barriers(&image_barriers)
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        if target.initial_layout() != vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL {
+            let target_to_color = vk::ImageMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+                .src_access_mask(vk::AccessFlags2::empty())
+                .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .old_layout(target.initial_layout())
+                .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(target.image())
+                .subresource_range(scene_color_subresource_range())
+                .build();
+            let image_barriers = [target_to_color];
+            let dependency = vk::DependencyInfo::builder()
+                .image_memory_barriers(&image_barriers)
+                .build();
+            device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        }
 
         let clear_value = clear_color.map(|color| vk::ClearValue {
             color: vk::ClearColorValue {
                 float32: [color.r, color.g, color.b, color.a],
             },
         });
-        let color_attachment = scene_color_attachment(target.image_view, clear_value);
+        let color_attachment = scene_color_attachment(target.image_view(), clear_value);
         let color_attachments = [color_attachment];
         let render_area = vk::Rect2D::builder()
             .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(target.extent)
+            .extent(target.extent())
             .build();
         let rendering_info = vk::RenderingInfo::builder()
             .render_area(render_area)
@@ -111,51 +165,102 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_swapchain_r
     target: NativeVulkanSceneSwapchainRenderTarget,
     clear_color: Option<NativeVulkanClearColor>,
 ) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
-    let plan = native_vulkan_scene_swapchain_render_target_scope_plan(target, clear_color)?;
+    native_vulkan_record_scene_render_target_end(
+        device,
+        command_buffer,
+        NativeVulkanSceneRenderTarget::Swapchain(target),
+        clear_color,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_render_target_end(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    target: NativeVulkanSceneRenderTarget,
+    clear_color: Option<NativeVulkanClearColor>,
+) -> Result<NativeVulkanSceneRenderTargetScopePlan, String> {
+    let plan = native_vulkan_scene_render_target_scope_plan(target, clear_color)?;
     unsafe {
         device.cmd_end_rendering(command_buffer);
 
-        let color_to_final = vk::ImageMemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
-            .dst_access_mask(vk::AccessFlags2::empty())
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(target.final_layout)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(target.image)
-            .subresource_range(scene_color_subresource_range())
-            .build();
-        let image_barriers = [color_to_final];
-        let dependency = vk::DependencyInfo::builder()
-            .image_memory_barriers(&image_barriers)
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        if target.final_layout() != vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL {
+            let color_to_final = vk::ImageMemoryBarrier2::builder()
+                .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+                .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
+                .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
+                .dst_access_mask(vk::AccessFlags2::empty())
+                .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+                .new_layout(target.final_layout())
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(target.image())
+                .subresource_range(scene_color_subresource_range())
+                .build();
+            let image_barriers = [color_to_final];
+            let dependency = vk::DependencyInfo::builder()
+                .image_memory_barriers(&image_barriers)
+                .build();
+            device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        }
     }
     Ok(plan)
 }
 
-fn validate_scene_swapchain_render_target(
-    target: NativeVulkanSceneSwapchainRenderTarget,
+impl NativeVulkanSceneRenderTarget {
+    pub(in crate::renderer::native_vulkan) fn image(self) -> vk::Image {
+        match self {
+            Self::Swapchain(target) => target.image,
+            Self::Offscreen(target) => target.image,
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn image_view(self) -> vk::ImageView {
+        match self {
+            Self::Swapchain(target) => target.image_view,
+            Self::Offscreen(target) => target.image_view,
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn extent(self) -> vk::Extent2D {
+        match self {
+            Self::Swapchain(target) => target.extent,
+            Self::Offscreen(target) => target.extent,
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn initial_layout(self) -> vk::ImageLayout {
+        match self {
+            Self::Swapchain(target) => target.initial_layout,
+            Self::Offscreen(target) => target.initial_layout,
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn final_layout(self) -> vk::ImageLayout {
+        match self {
+            Self::Swapchain(target) => target.final_layout,
+            Self::Offscreen(target) => target.final_layout,
+        }
+    }
+}
+
+fn validate_scene_render_target(
+    target: NativeVulkanSceneRenderTarget,
     clear_color: Option<NativeVulkanClearColor>,
 ) -> Result<(), String> {
-    if target.image == vk::Image::null() {
-        return Err("scene swapchain render target requires a valid vk::Image".to_owned());
+    if target.image() == vk::Image::null() {
+        return Err("scene render target requires a valid vk::Image".to_owned());
     }
-    if target.image_view == vk::ImageView::null() {
-        return Err("scene swapchain render target requires a valid vk::ImageView".to_owned());
+    if target.image_view() == vk::ImageView::null() {
+        return Err("scene render target requires a valid vk::ImageView".to_owned());
     }
-    if target.extent.width == 0 || target.extent.height == 0 {
-        return Err("scene swapchain render target requires non-zero extent".to_owned());
+    if target.extent().width == 0 || target.extent().height == 0 {
+        return Err("scene render target requires non-zero extent".to_owned());
     }
-    if clear_color.is_none() && target.initial_layout == vk::ImageLayout::UNDEFINED {
-        return Err(
-            "scene swapchain render target cannot load from VK_IMAGE_LAYOUT_UNDEFINED".to_owned(),
-        );
+    if clear_color.is_none() && target.initial_layout() == vk::ImageLayout::UNDEFINED {
+        return Err("scene render target cannot load from VK_IMAGE_LAYOUT_UNDEFINED".to_owned());
     }
-    if target.final_layout == vk::ImageLayout::UNDEFINED {
-        return Err("scene swapchain render target final layout cannot be UNDEFINED".to_owned());
+    if target.final_layout() == vk::ImageLayout::UNDEFINED {
+        return Err("scene render target final layout cannot be UNDEFINED".to_owned());
     }
     Ok(())
 }
@@ -192,6 +297,7 @@ fn scene_color_subresource_range() -> vk::ImageSubresourceRange {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vulkanalia::vk::Handle;
 
     #[test]
     fn target_scope_plan_clears_undefined_swapchain_image() {

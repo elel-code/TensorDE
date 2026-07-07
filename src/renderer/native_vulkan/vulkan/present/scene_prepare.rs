@@ -11,7 +11,7 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneResource};
+use crate::engine::scene_engine::{SceneFramePlan, SceneGraphExecutionPlan, SceneResource};
 use crate::renderer::native_vulkan::scene_backend::frame_command_buffer::{
     native_vulkan_begin_scene_frame_command_buffer, native_vulkan_end_scene_frame_command_buffer,
 };
@@ -23,12 +23,14 @@ use crate::renderer::native_vulkan::scene_backend::frame_submit::{
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
-    NativeVulkanSceneMeshPipelinePreparePlan, native_vulkan_prepare_scene_mesh_pipeline_cache,
+    NativeVulkanSceneMeshPipelinePreparePlan,
+    native_vulkan_prepare_scene_mesh_pipeline_cache_with_target_formats,
 };
 use crate::renderer::native_vulkan::scene_backend::resource_prepare::{
     NativeVulkanSceneMeshResourcePrepareContext, NativeVulkanSceneMeshResourcePreparePlan,
     native_vulkan_record_scene_mesh_resource_prepare_frame,
 };
+use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -36,8 +38,11 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub resource_prepare: NativeVulkanVulkanaliaSceneResourcePrepareSnapshot,
     pub pipeline_prepare: NativeVulkanVulkanaliaScenePipelinePrepareSnapshot,
     pub prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
+    pub graph_target_format_count: usize,
+    pub offscreen_target_count: usize,
+    pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 5],
+    pub command_order: [&'static str; 6],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -88,7 +93,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     frame_resources: &mut NativeVulkanSceneFrameResources,
     resources: &[SceneResource],
     frame: &SceneFramePlan,
-    target_format: vk::Format,
+    graph_execution: &SceneGraphExecutionPlan,
+    target_formats: &NativeVulkanSceneGraphTargetFormatPlan,
+    swapchain_extent: vk::Extent2D,
     shaders: NativeVulkanSceneMeshPipelineShaders<'_>,
 ) -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
     let prepare_slot = 0u32;
@@ -133,12 +140,26 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 .map_err(|err| format!("vkWaitForFences(scene cold resource prepare): {err:?}"))?;
         }
         frame_slots.complete_frame_submission(frame_submission)?;
+        let offscreen_target_plan = frame_resources.offscreen_target_frame_plan(
+            graph_execution,
+            swapchain_extent,
+            |target| target_formats.format(target),
+        )?;
+        let offscreen_target_count = offscreen_target_plan.target_count;
+        let offscreen_target_action_count = frame_resources
+            .sync_offscreen_targets(
+                device,
+                memory_properties,
+                frame_submission,
+                &offscreen_target_plan,
+            )?
+            .len();
         let _ = frame_resources.release_completed_frame_resources(device, frame_submission);
-        let pipeline_prepare = native_vulkan_prepare_scene_mesh_pipeline_cache(
+        let pipeline_prepare = native_vulkan_prepare_scene_mesh_pipeline_cache_with_target_formats(
             device,
             frame_resources,
             &frame.graph,
-            target_format,
+            |target| target_formats.format(target),
             shaders,
         )?;
         Ok(NativeVulkanVulkanaliaScenePrepareSnapshot {
@@ -151,11 +172,15 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot::from_plan(
                 &prepare_submit,
             ),
+            graph_target_format_count: target_formats.target_format_count(),
+            offscreen_target_count,
+            offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
             command_order: [
                 "record_resource_prepare_command_buffer",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
+                "sync_retained_offscreen_targets",
                 "release_completed_prepare_staging",
                 "prepare_scene_mesh_pipeline_cache",
             ],

@@ -17,6 +17,7 @@ pub mod frame_present_runtime;
 pub mod frame_resources;
 pub mod frame_slots;
 pub mod frame_submit;
+pub mod graph_executor;
 pub mod material_uniforms;
 pub mod offscreen_targets;
 pub mod pass_command;
@@ -35,6 +36,7 @@ pub mod resource_upload;
 pub mod runtime;
 pub mod shader_artifacts;
 pub mod target_barriers;
+pub mod target_formats;
 pub mod texture_descriptors;
 pub mod texture_images;
 

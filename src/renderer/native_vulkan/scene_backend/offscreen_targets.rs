@@ -48,8 +48,8 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneOffscreenTargetSync
         record: NativeVulkanSceneOffscreenTargetRecord,
     },
     Replace {
-        old: NativeVulkanSceneOffscreenTargetRecord,
-        new: NativeVulkanSceneOffscreenTargetRecord,
+        retired: NativeVulkanSceneOffscreenTargetRecord,
+        replacement: NativeVulkanSceneOffscreenTargetRecord,
     },
     Release {
         record: NativeVulkanSceneOffscreenTargetRecord,
@@ -198,12 +198,12 @@ impl NativeVulkanSceneOffscreenTargetStore {
                     current_layout: vk::ImageLayout::UNDEFINED,
                 },
             ) {
-                Some(old_slot) => {
-                    self.defer_retirement(frame_submission, old_slot.image);
+                Some(retired_slot) => {
+                    self.defer_retirement(frame_submission, retired_slot.image);
                     self.last_actions
                         .push(NativeVulkanSceneOffscreenTargetSyncAction::Replace {
-                            old: old_slot.record,
-                            new: new_record,
+                            retired: retired_slot.record,
+                            replacement: new_record,
                         });
                 }
                 None => {

@@ -20,7 +20,7 @@ use vulkanalia::vk::{
     self, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
-use crate::engine::scene_engine::{RenderingServer, SceneEnginePlan};
+use crate::engine::scene_engine::{RenderingServer, SceneEnginePlan, SceneGraphExecutionPlan};
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::scene_backend::frame_present_runtime::{
     NativeVulkanScenePresentFrameContext, NativeVulkanScenePresentFrameOutcome,
@@ -30,6 +30,7 @@ use crate::renderer::native_vulkan::scene_backend::frame_resources::NativeVulkan
 use crate::renderer::native_vulkan::scene_backend::frame_slots::NativeVulkanSceneFrameSlotResources;
 use crate::renderer::native_vulkan::scene_backend::renderer_scene_render::NativeVulkanRendererSceneRender;
 use crate::renderer::native_vulkan::scene_backend::shader_artifacts::native_vulkan_load_scene_shader_artifacts;
+use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
 };
@@ -234,6 +235,11 @@ fn with_vulkanalia_scene_present(
         server.replace_scene(options.scene.resources, options.scene.objects);
         let renderer = NativeVulkanRendererSceneRender::new();
         let frame = server.draw(&renderer, frame_context);
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
+        let target_formats = NativeVulkanSceneGraphTargetFormatPlan::from_execution_plan(
+            &graph_execution,
+            swapchain_plan.format.format,
+        )?;
         let shader_artifacts = native_vulkan_load_scene_shader_artifacts(
             &options.shader_artifact_root,
             "we/genericimage4",
@@ -251,7 +257,9 @@ fn with_vulkanalia_scene_present(
             &mut frame_resources,
             server.resources(),
             &frame,
-            swapchain_plan.format.format,
+            &graph_execution,
+            &target_formats,
+            swapchain_plan.extent,
             shader_artifacts.mesh_pipeline_shaders(),
         )?;
 
@@ -273,7 +281,7 @@ fn with_vulkanalia_scene_present(
                     swapchain,
                     swapchain_images: &swapchain_images,
                     swapchain_extent: swapchain_plan.extent,
-                    target_format: swapchain_plan.format.format,
+                    target_formats: &target_formats,
                     clear_color: Some(options.clear_color),
                 },
                 &frame,
