@@ -122,6 +122,7 @@ pub use features::{
 pub(in crate::renderer::native_vulkan) use image::{
     NativeVulkanVulkanaliaImage, NativeVulkanVulkanaliaImageMipUpload,
     NativeVulkanVulkanaliaImageSnapshot, NativeVulkanVulkanaliaRecordedImageUpload,
+    native_vulkan_vulkanalia_create_color_attachment_sampled_image,
     native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
     native_vulkan_vulkanalia_destroy_image,
 };

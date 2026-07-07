@@ -12,8 +12,8 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneGeometryId, SceneGraph, ScenePuppetId, SceneResource,
-    SceneResourceId, SceneResourceResidencyPlan,
+    RenderingDeviceCommand, SceneGeometryId, SceneGraph, SceneGraphExecutionPlan, SceneGraphTarget,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
@@ -25,6 +25,10 @@ use super::material_uniforms::{
     NativeVulkanSceneMaterialUniformGpuBufferStore,
     NativeVulkanSceneMaterialUniformGpuBufferSyncAction, NativeVulkanSceneMaterialUniformKey,
     NativeVulkanSceneMaterialUniformUploadPlan,
+};
+use super::offscreen_targets::{
+    NativeVulkanSceneOffscreenTargetBinding, NativeVulkanSceneOffscreenTargetFramePlan,
+    NativeVulkanSceneOffscreenTargetStore, NativeVulkanSceneOffscreenTargetSyncAction,
 };
 use super::pipeline::{
     NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
@@ -54,6 +58,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     resource_storage: NativeVulkanSceneResourceStorage,
     gpu_buffers: NativeVulkanSceneGpuBufferStore,
     texture_images: NativeVulkanSceneTextureImageStore,
+    offscreen_targets: NativeVulkanSceneOffscreenTargetStore,
     resource_heap: NativeVulkanSceneResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
@@ -65,6 +70,7 @@ impl NativeVulkanSceneFrameResources {
             resource_storage: NativeVulkanSceneResourceStorage::default(),
             gpu_buffers: NativeVulkanSceneGpuBufferStore::default(),
             texture_images: NativeVulkanSceneTextureImageStore::default(),
+            offscreen_targets: NativeVulkanSceneOffscreenTargetStore::default(),
             resource_heap: NativeVulkanSceneResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
@@ -152,10 +158,14 @@ impl NativeVulkanSceneFrameResources {
         let material_uniform_buffers = self
             .material_uniform_buffers
             .release_completed_uploads(device, completed_submission);
+        let offscreen_targets = self
+            .offscreen_targets
+            .release_completed_targets(device, completed_submission);
         NativeVulkanSceneFrameResourceRelease {
             completed_submission,
             gpu_buffers,
             material_uniform_buffers,
+            offscreen_targets,
             texture_images: texture_release.images,
             texture_staging_buffers: texture_release.staging_buffers,
         }
@@ -172,6 +182,58 @@ impl NativeVulkanSceneFrameResources {
         resource: SceneResourceId,
     ) -> Result<NativeVulkanSceneTextureImageBinding, String> {
         self.texture_images.texture_binding(resource)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn offscreen_target_frame_plan<TargetFormat>(
+        &self,
+        execution: &SceneGraphExecutionPlan,
+        extent: vk::Extent2D,
+        target_format: TargetFormat,
+    ) -> Result<NativeVulkanSceneOffscreenTargetFramePlan, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
+        NativeVulkanSceneOffscreenTargetFramePlan::from_execution_plan(
+            execution,
+            extent,
+            target_format,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sync_offscreen_targets(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        frame_submission: NativeVulkanSceneFrameSubmission,
+        frame_plan: &NativeVulkanSceneOffscreenTargetFramePlan,
+    ) -> Result<&[NativeVulkanSceneOffscreenTargetSyncAction], String> {
+        self.offscreen_targets.sync_frame_plan(
+            device,
+            memory_properties,
+            frame_submission,
+            frame_plan,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn offscreen_target_binding(
+        &self,
+        target: SceneGraphTarget,
+    ) -> Result<NativeVulkanSceneOffscreenTargetBinding, String> {
+        self.offscreen_targets.target_binding(target)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn mark_offscreen_target_layout(
+        &mut self,
+        target: SceneGraphTarget,
+        layout: vk::ImageLayout,
+    ) -> Result<(), String> {
+        self.offscreen_targets.mark_target_layout(target, layout)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_offscreen_target_actions(
+        &self,
+    ) -> &[NativeVulkanSceneOffscreenTargetSyncAction] {
+        self.offscreen_targets.last_actions()
     }
 
     pub(in crate::renderer::native_vulkan) fn last_gpu_buffer_actions(
@@ -330,6 +392,7 @@ impl NativeVulkanSceneFrameResources {
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         self.resource_heap.destroy_all(device);
+        self.offscreen_targets.destroy_all(device);
         self.texture_images.destroy_all(device);
         self.material_uniform_buffers.destroy_all(device);
         self.gpu_buffers.destroy_all(device);
@@ -350,9 +413,10 @@ mod tests {
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
         RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw,
-        SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
-        SceneGraphTarget, SceneMaterialKey, SceneObjectId, SceneResource, SceneResourceId,
-        SceneResourceResidencyPlan, SceneTextureFormat,
+        SceneGraphExecutionPlan, SceneGraphPass, SceneGraphPipelineClass,
+        SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey,
+        SceneObjectId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
+        SceneTextureFormat,
     };
     use vulkanalia::vk;
 
@@ -407,6 +471,54 @@ mod tests {
             .expect_err("missing resident payload must fail");
 
         assert!(err.contains("missing resident scene GPU payload"));
+    }
+
+    #[test]
+    fn frame_resources_builds_offscreen_target_plan_from_graph_execution() {
+        let frame_resources = NativeVulkanSceneFrameResources::new();
+        let graph = SceneGraph {
+            passes: vec![
+                SceneGraphPass {
+                    name: "effect-main".to_owned(),
+                    input: None,
+                    output: SceneGraphTarget::EffectTarget(0),
+                    draws: vec![mesh_draw(
+                        SceneObjectId(1),
+                        SceneGeometryId(4),
+                        SceneResourceId(7),
+                    )],
+                },
+                SceneGraphPass {
+                    name: "scene-main".to_owned(),
+                    input: Some(SceneGraphTarget::EffectTarget(0)),
+                    output: SceneGraphTarget::Swapchain,
+                    draws: vec![mesh_draw(
+                        SceneObjectId(2),
+                        SceneGeometryId(5),
+                        SceneResourceId(8),
+                    )],
+                },
+            ],
+        };
+        let execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let plan = frame_resources
+            .offscreen_target_frame_plan(
+                &execution,
+                vk::Extent2D {
+                    width: 3840,
+                    height: 2160,
+                },
+                |target| match target {
+                    SceneGraphTarget::EffectTarget(0) => Ok(vk::Format::R16G16B16A16_SFLOAT),
+                    target => Err(format!("unexpected target {target:?}")),
+                },
+            )
+            .expect("offscreen target frame plan");
+
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(plan.targets[0].target, SceneGraphTarget::EffectTarget(0));
+        assert_eq!(plan.targets[0].width, 3840);
     }
 
     #[test]
@@ -529,6 +641,31 @@ mod tests {
             source_record: 12,
             vertices: vec![SceneMeshVertex::default(); 2],
             indices: vec![0, 1, 0],
+        }
+    }
+
+    fn mesh_draw(
+        object: SceneObjectId,
+        geometry: SceneGeometryId,
+        resource: SceneResourceId,
+    ) -> SceneGraphDraw {
+        SceneGraphDraw {
+            object,
+            pipeline: SceneGraphPipelineClass::Mesh,
+            material: SceneMaterialKey {
+                shader: "we/genericimage4".to_owned(),
+                blend: SceneBlendContract::TranslucentAlpha,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
+            },
+            geometry: Some(geometry),
+            puppet: None,
+            resources: vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource,
+            }],
+            index_count: 3,
         }
     }
 

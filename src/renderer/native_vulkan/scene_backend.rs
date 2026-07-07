@@ -18,6 +18,7 @@ pub mod frame_resources;
 pub mod frame_slots;
 pub mod frame_submit;
 pub mod material_uniforms;
+pub mod offscreen_targets;
 pub mod pass_command;
 pub mod pipeline;
 pub mod pipeline_factory;

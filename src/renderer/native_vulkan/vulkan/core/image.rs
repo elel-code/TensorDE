@@ -240,6 +240,126 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sample
     result
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_color_attachment_sampled_image(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    role: &'static str,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+) -> Result<NativeVulkanVulkanaliaImage, String> {
+    if format == vk::Format::UNDEFINED {
+        return Err(format!("{role} image requires a defined format"));
+    }
+    if width == 0 || height == 0 {
+        return Err(format!("{role} image requires non-zero extent"));
+    }
+
+    let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+    let extent = vk::Extent3D {
+        width,
+        height,
+        depth: 1,
+    };
+    let image_info = vk::ImageCreateInfo::builder()
+        .image_type(vk::ImageType::_2D)
+        .format(format)
+        .extent(extent)
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(usage)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    let image = unsafe { device.create_image(&image_info, None) }
+        .map_err(|err| format!("vkCreateImage(vulkanalia {role}): {err:?}"))?;
+
+    let result = (|| -> Result<NativeVulkanVulkanaliaImage, String> {
+        let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
+        let memory_type_candidates =
+            native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
+        let memory_type = image_memory_type(
+            &memory_type_candidates,
+            memory_requirements.memory_type_bits,
+        )
+        .ok_or_else(|| {
+            format!(
+                "{role} image has no matching memory type for bits 0x{:08x}",
+                memory_requirements.memory_type_bits
+            )
+        })?;
+        let memory_info = vk::MemoryAllocateInfo::builder()
+            .allocation_size(memory_requirements.size)
+            .memory_type_index(memory_type.index);
+        let memory = unsafe { device.allocate_memory(&memory_info, None) }
+            .map_err(|err| format!("vkAllocateMemory(vulkanalia {role}): {err:?}"))?;
+        if let Err(err) =
+            native_vulkan_vulkanalia_bind_image_memory2(device, image, memory, 0, role)
+        {
+            unsafe {
+                device.free_memory(memory, None);
+            }
+            return Err(err);
+        }
+
+        let view = match create_sampled_image_view(device, role, image, format, 1) {
+            Ok(view) => view,
+            Err(err) => {
+                unsafe {
+                    device.free_memory(memory, None);
+                }
+                return Err(err);
+            }
+        };
+        let sampler = match create_sampled_image_sampler(device, role, 1) {
+            Ok(sampler) => sampler,
+            Err(err) => {
+                unsafe {
+                    device.destroy_image_view(view, None);
+                    device.free_memory(memory, None);
+                }
+                return Err(err);
+            }
+        };
+
+        Ok(NativeVulkanVulkanaliaImage {
+            image,
+            memory,
+            view,
+            sampler,
+            snapshot: NativeVulkanVulkanaliaImageSnapshot {
+                role,
+                image_created: true,
+                memory_bound: true,
+                view_created: true,
+                sampler_created: true,
+                format: format!("{format:?}"),
+                extent: (width, height, 1),
+                mip_levels: 1,
+                payload_bytes: 0,
+                memory_size: memory_requirements.size,
+                memory_alignment: memory_requirements.alignment,
+                memory_type_bits: memory_requirements.memory_type_bits,
+                selected_memory_type_index: memory_type.index,
+                selected_memory_property_flags: memory_property_flag_labels(
+                    memory_type.property_flags_bits,
+                ),
+                usage_flags: image_usage_flag_labels(usage),
+                final_layout: "scene-graph-tracked",
+                payload_uploaded: false,
+            },
+        })
+    })();
+
+    if result.is_err() {
+        unsafe {
+            device.destroy_image(image, None);
+        }
+    }
+    result
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_image(
     device: &Device,
     image: NativeVulkanVulkanaliaImage,
