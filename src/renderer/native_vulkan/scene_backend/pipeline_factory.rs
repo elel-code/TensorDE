@@ -28,6 +28,9 @@ use super::pipeline::{
     NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResources,
     NativeVulkanScenePipelineVertexLayout,
 };
+use super::shader_module::{
+    native_vulkan_create_scene_shader_module, native_vulkan_validate_scene_spirv,
+};
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineShaders<'a> {
@@ -81,16 +84,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
     layout: NativeVulkanSceneMeshPipelineLayoutSpec<'_>,
 ) -> Result<NativeVulkanScenePipelineResources, String> {
     validate_scene_mesh_pipeline_key(key)?;
-    validate_spirv(shaders.vertex_spirv, "scene mesh vertex")?;
-    validate_spirv(shaders.fragment_spirv, "scene mesh fragment")?;
+    native_vulkan_validate_scene_spirv(shaders.vertex_spirv, "scene mesh vertex")?;
+    native_vulkan_validate_scene_spirv(shaders.fragment_spirv, "scene mesh fragment")?;
     validate_scene_mesh_descriptor_heap_pipeline_layout(layout.draw_resource_heap_plan, key)?;
 
     let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
-        let vertex_module =
-            create_scene_shader_module(device, shaders.vertex_spirv, "scene mesh vertex")?;
+        let vertex_module = native_vulkan_create_scene_shader_module(
+            device,
+            shaders.vertex_spirv,
+            "scene mesh vertex",
+        )?;
         let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
-            let fragment_module =
-                create_scene_shader_module(device, shaders.fragment_spirv, "scene mesh fragment")?;
+            let fragment_module = native_vulkan_create_scene_shader_module(
+                device,
+                shaders.fragment_spirv,
+                "scene mesh fragment",
+            )?;
             let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
                 let shader_entry = b"main\0";
                 let descriptor_heap_mappings =
@@ -484,26 +493,6 @@ fn scene_mesh_draw_resource_heap_texture_layout(
     ))
 }
 
-fn create_scene_shader_module(
-    device: &Device,
-    code: &[u32],
-    label: &'static str,
-) -> Result<vk::ShaderModule, String> {
-    validate_spirv(code, label)?;
-    let create_info = vk::ShaderModuleCreateInfo::builder()
-        .code(code)
-        .code_size(std::mem::size_of_val(code));
-    unsafe { device.create_shader_module(&create_info, None) }
-        .map_err(|err| format!("vkCreateShaderModule({label}): {err:?}"))
-}
-
-fn validate_spirv(code: &[u32], label: &'static str) -> Result<(), String> {
-    if code.first().copied() != Some(0x0723_0203) {
-        return Err(format!("{label} shader is not valid SPIR-V bytecode"));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -583,7 +572,7 @@ mod tests {
 
     #[test]
     fn mesh_pipeline_factory_rejects_invalid_spirv_before_device_work() {
-        let err = validate_spirv(&[0, 1, 2, 3], "scene mesh vertex")
+        let err = native_vulkan_validate_scene_spirv(&[0, 1, 2, 3], "scene mesh vertex")
             .expect_err("invalid SPIR-V must fail");
 
         assert!(err.contains("not valid SPIR-V bytecode"));

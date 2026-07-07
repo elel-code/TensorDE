@@ -1283,6 +1283,99 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .build())
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    binding: u32,
+    base_resource_descriptor_index: usize,
+    resource_descriptor_index: usize,
+    base_sampler_descriptor_index: usize,
+    sampler_descriptor_index: usize,
+) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        base_resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+    )?;
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+    )?;
+    let base_heap_offset = *plan
+        .resource_descriptor_offsets
+        .get(base_resource_descriptor_index)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image base resource descriptor index {base_resource_descriptor_index} has no resource offset"
+            )
+        })?;
+    let heap_offset = plan
+        .resource_descriptor_offsets
+        .get(resource_descriptor_index)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image descriptor index {resource_descriptor_index} has no resource offset"
+            )
+        })?
+        .checked_sub(base_heap_offset)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image descriptor index {resource_descriptor_index} precedes resource-set base {base_resource_descriptor_index}"
+            )
+        })?;
+    let base_sampler_heap_offset = *plan
+        .sampler_descriptor_offsets
+        .get(base_sampler_descriptor_index)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image base sampler descriptor index {base_sampler_descriptor_index} has no sampler offset"
+            )
+        })?;
+    let sampler_heap_offset = plan
+        .sampler_descriptor_offsets
+        .get(sampler_descriptor_index)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image sampler descriptor index {sampler_descriptor_index} has no sampler offset"
+            )
+        })?
+        .checked_sub(base_sampler_heap_offset)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap sampled-image sampler descriptor index {sampler_descriptor_index} precedes sampler-set base {base_sampler_descriptor_index}"
+            )
+        })?;
+    let heap_offset = u32::try_from(heap_offset).map_err(|_| {
+        "descriptor heap sampled-image relative image offset exceeds u32".to_owned()
+    })?;
+    let sampler_heap_offset = u32::try_from(sampler_heap_offset).map_err(|_| {
+        "descriptor heap sampled-image relative sampler offset exceeds u32".to_owned()
+    })?;
+    let heap_array_stride = u32::try_from(plan.image_descriptor_stride)
+        .map_err(|_| "descriptor heap sampled-image stride exceeds u32".to_owned())?;
+    let sampler_heap_array_stride = u32::try_from(plan.sampler_descriptor_stride)
+        .map_err(|_| "descriptor heap sampled-image sampler stride exceeds u32".to_owned())?;
+    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
+        .heap_offset(heap_offset)
+        .heap_array_stride(heap_array_stride)
+        .sampler_heap_offset(sampler_heap_offset)
+        .sampler_heap_array_stride(sampler_heap_array_stride)
+        .build();
+
+    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
+        .descriptor_set(0)
+        .first_binding(binding)
+        .binding_count(1)
+        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
+        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
+        .source_data(vk::DescriptorMappingSourceDataEXT {
+            constant_offset: source,
+        })
+        .build())
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
     resources: &VulkanaliaDescriptorHeapImageSamplerResources,
 ) -> vk::BindHeapInfoEXT {
