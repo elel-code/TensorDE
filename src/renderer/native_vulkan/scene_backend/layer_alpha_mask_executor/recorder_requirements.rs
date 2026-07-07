@@ -18,6 +18,7 @@ use crate::engine::scene_engine::{
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
+use super::producer_target_graph::NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan;
 use super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskBindRequirement,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
@@ -72,7 +73,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub heap_bind_count: usize,
     pub heap_bind_indices: Vec<usize>,
     pub producer_draw_index: Option<usize>,
+    pub producer_target_scope_index: Option<usize>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
+    pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
     pub target_mask: Option<SceneGraphTarget>,
     pub missing_we_facts: Vec<&'static str>,
@@ -93,6 +96,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     schedule: &NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
+    producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan, String> {
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan::empty());
@@ -136,6 +140,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             command,
             resource_binds,
             producer_draws,
+            producer_target_graph,
         )?);
     }
 
@@ -233,6 +238,7 @@ fn requirement_from_step(
     command: &super::NativeVulkanSceneLayerAlphaMaskCommandPlan,
     resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
+    producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirement, String> {
     match step.kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
@@ -244,6 +250,8 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -279,6 +287,16 @@ fn requirement_from_step(
                         step.command_index
                     )
                 })?;
+            let target_scope = producer_target_graph
+                .scopes
+                .iter()
+                .find(|scope| scope.producer_draw_index == producer.producer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask producer command {} has no producer target scope contract",
+                        step.command_index
+                    )
+                })?;
             Ok(base_requirement(
                 step,
                 command,
@@ -288,7 +306,9 @@ fn requirement_from_step(
                 Some("R8_UNORM"),
                 CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
                 Some(producer.producer_draw_index),
-                Some(producer.target_scope_load_op),
+                Some(target_scope.target_scope_index),
+                Some(target_scope.load_op),
+                Some(target_scope.requires_initialized_initial_layout),
                 None,
                 Some(target),
                 clippingmaskimage4_missing_we_facts(),
@@ -317,7 +337,9 @@ fn requirement_from_step(
                 Some("R8_UNORM"),
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
                 None,
+                None,
                 Some(NativeVulkanSceneRenderTargetLoadOp::Load),
+                Some(true),
                 Some(SceneGraphTarget::FullAlphaMaskIntermediate),
                 Some(SceneGraphTarget::FullAlphaMask),
                 Vec::new(),
@@ -345,6 +367,8 @@ fn requirement_from_step(
                 None,
                 None,
                 CLIPPINGTARGET_TEXTURE_SLOT_MASK,
+                None,
+                None,
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -375,7 +399,9 @@ fn base_requirement(
     target_format: Option<&'static str>,
     texture_slot_mask: u32,
     producer_draw_index: Option<usize>,
+    producer_target_scope_index: Option<usize>,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
+    requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
     target_mask: Option<SceneGraphTarget>,
     missing_we_facts: Vec<&'static str>,
@@ -401,7 +427,9 @@ fn base_requirement(
         heap_bind_count: step.matched_heap_bind_count,
         heap_bind_indices: step.matched_heap_bind_indices.clone(),
         producer_draw_index,
+        producer_target_scope_index,
         target_scope_load_op,
+        requires_initialized_initial_layout,
         source_mask,
         target_mask,
         missing_we_facts,

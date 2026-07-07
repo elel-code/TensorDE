@@ -417,7 +417,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         } else {
             vec!["wait_for_descriptor_heap_capabilities"]
         },
-        next_gate: "allocate retained descriptor heap buffers and replace scene/video per-resource descriptor pools with heap offsets",
+        next_gate: "allocate retained descriptor heap buffers and replace scene/video legacy pooled binding allocators with heap offsets",
         primary_reference: "VK_EXT_descriptor_heap device-addressable resource/sampler heaps; FFmpeg-style retained frame lifetime keeps descriptor writes tied to resource lifetime",
     }
 }

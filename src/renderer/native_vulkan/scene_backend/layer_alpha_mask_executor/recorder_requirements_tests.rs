@@ -1,5 +1,6 @@
 use super::super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan;
 use super::super::producer_draws::native_vulkan_plan_scene_layer_alpha_mask_producer_draws;
+use super::super::producer_target_graph::native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph;
 use super::super::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
 use super::super::token_schedule::native_vulkan_plan_scene_layer_alpha_mask_token_schedule;
 use super::super::{
@@ -30,12 +31,16 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &schedule,
     )
     .expect("producer draws");
+    let producer_target_graph =
+        native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph(&runtime, &producer_draws)
+            .expect("producer target graph");
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
         &resource_binds,
         &schedule,
         &producer_draws,
+        &producer_target_graph,
     )
     .expect("recorder requirements");
 
@@ -58,14 +63,24 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         Some(SceneGraphTarget::FullAlphaMask)
     );
     assert_eq!(plan.requirements[1].producer_draw_index, Some(0));
+    assert_eq!(plan.requirements[1].producer_target_scope_index, Some(0));
     assert_eq!(
         plan.requirements[1].target_scope_load_op,
         Some(NativeVulkanSceneRenderTargetLoadOp::Clear)
     );
+    assert_eq!(
+        plan.requirements[1].requires_initialized_initial_layout,
+        Some(false)
+    );
     assert_eq!(plan.requirements[2].producer_draw_index, Some(1));
+    assert_eq!(plan.requirements[2].producer_target_scope_index, Some(1));
     assert_eq!(
         plan.requirements[2].target_scope_load_op,
         Some(NativeVulkanSceneRenderTargetLoadOp::Load)
+    );
+    assert_eq!(
+        plan.requirements[2].requires_initialized_initial_layout,
+        Some(true)
     );
     assert!(
         plan.requirements[1]
@@ -109,12 +124,16 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &schedule,
     )
     .expect("producer draws");
+    let producer_target_graph =
+        native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph(&runtime, &producer_draws)
+            .expect("producer target graph");
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
         &resource_binds,
         &schedule,
         &producer_draws,
+        &producer_target_graph,
     )
     .expect_err("copy-back must require retained draw bind");
 
