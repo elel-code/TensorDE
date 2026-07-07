@@ -38,6 +38,7 @@ pub struct NativeVulkanScenePipelineBindPlan<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum NativeVulkanScenePipelineVertexLayout {
     SceneMeshV0,
+    FlatTexturePositionUv,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -231,6 +232,9 @@ fn scene_pipeline_vertex_layout(
         SceneGraphPipelineClass::Mesh | SceneGraphPipelineClass::PuppetSkinning => {
             debug_assert!(pipeline_class.uses_scene_mesh_vertex_layout());
             Ok(NativeVulkanScenePipelineVertexLayout::SceneMeshV0)
+        }
+        SceneGraphPipelineClass::LayerUtilityIndexed => {
+            Ok(NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv)
         }
         SceneGraphPipelineClass::Quad | SceneGraphPipelineClass::ParticleEmitter => Err(format!(
             "scene pipeline cache does not support {:?} pipeline yet",

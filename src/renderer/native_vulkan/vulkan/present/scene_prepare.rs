@@ -32,7 +32,10 @@ use crate::renderer::native_vulkan::scene_backend::frame_submit::{
     native_vulkan_submit_scene_prepare_commands2,
 };
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorPlan;
-use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::native_vulkan_plan_scene_layer_alpha_mask_runtime_frame;
+use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
+    native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
+    native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
+};
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
     native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys,
@@ -261,6 +264,18 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             &frame.layer_compositor,
             swapchain_extent,
         )?;
+        let layer_alpha_mask_resource_binds =
+            native_vulkan_plan_scene_layer_alpha_mask_resource_binds(
+                frame_resources,
+                &layer_alpha_mask_plan,
+            )?;
+        let mut layer_alpha_mask_pipeline_keys =
+            layer_alpha_mask_plan.pipeline_warmup.cache_keys().to_vec();
+        layer_alpha_mask_pipeline_keys.extend_from_slice(
+            layer_alpha_mask_resource_binds
+                .copy_back_pipelines
+                .cache_keys(),
+        );
         let pipeline_prepare =
             native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys(
                 device,
@@ -268,7 +283,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 &frame.graph,
                 |target| target_formats.format(target),
                 shader_catalog,
-                layer_alpha_mask_plan.pipeline_warmup.cache_keys(),
+                &layer_alpha_mask_pipeline_keys,
             )?;
         let effect_pipeline_prepare =
             native_vulkan_prepare_scene_effect_pipeline_cache_with_target_formats(

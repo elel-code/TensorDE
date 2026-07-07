@@ -30,6 +30,7 @@ pub enum SceneGraphPipelineClass {
     Quad,
     Mesh,
     PuppetSkinning,
+    LayerUtilityIndexed,
     ParticleEmitter,
 }
 
@@ -40,6 +41,10 @@ impl SceneGraphPipelineClass {
 
     pub const fn uses_scene_mesh_vertex_layout(self) -> bool {
         matches!(self, Self::Mesh | Self::PuppetSkinning)
+    }
+
+    pub const fn is_layer_utility_indexed(self) -> bool {
+        matches!(self, Self::LayerUtilityIndexed)
     }
 }
 

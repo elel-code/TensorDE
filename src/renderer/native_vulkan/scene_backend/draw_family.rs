@@ -16,6 +16,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneDrawFamilyExecuto
     pub draw_count: usize,
     pub indexed_mesh_graphics_draw_count: usize,
     pub quad_draw_count: usize,
+    pub layer_utility_indexed_draw_count: usize,
     pub particle_emitter_draw_count: usize,
     pub missing_executor_draw_count: usize,
     pub executor_model: &'static str,
@@ -30,6 +31,7 @@ impl NativeVulkanSceneDrawFamilyExecutorPlan {
             draw_count: plan.draw_count,
             indexed_mesh_graphics_draw_count: plan.indexed_mesh_graphics_draw_count,
             quad_draw_count: plan.quad_draw_count,
+            layer_utility_indexed_draw_count: plan.layer_utility_indexed_draw_count,
             particle_emitter_draw_count: plan.particle_emitter_draw_count,
             missing_executor_draw_count: plan.unsupported_runtime_draw_count(),
             executor_model: "godot_style_family_dispatch",
@@ -51,8 +53,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_require_scene_mesh_execu
     }
 
     Err(format!(
-        "scene graph contains draw families without a native Vulkan executor: quad={}, particle_emitter={}; refusing to downgrade them into the indexed mesh executor",
-        executor.quad_draw_count, executor.particle_emitter_draw_count
+        "scene graph contains draw families without a native Vulkan executor: quad={}, layer_utility_indexed={}, particle_emitter={}; refusing to downgrade them into the indexed mesh executor",
+        executor.quad_draw_count,
+        executor.layer_utility_indexed_draw_count,
+        executor.particle_emitter_draw_count
     ))
 }
 
@@ -85,7 +89,11 @@ mod tests {
         let graph = graph(vec![
             draw(SceneObjectId(1), SceneGraphPipelineClass::Mesh),
             draw(SceneObjectId(2), SceneGraphPipelineClass::Quad),
-            draw(SceneObjectId(3), SceneGraphPipelineClass::ParticleEmitter),
+            draw(
+                SceneObjectId(3),
+                SceneGraphPipelineClass::LayerUtilityIndexed,
+            ),
+            draw(SceneObjectId(4), SceneGraphPipelineClass::ParticleEmitter),
         ]);
         let family = SceneGraphDrawFamilyPlan::from_graph(&graph);
 
@@ -93,6 +101,7 @@ mod tests {
             .expect_err("quad and particle need explicit executors");
 
         assert!(err.contains("quad=1"));
+        assert!(err.contains("layer_utility_indexed=1"));
         assert!(err.contains("particle_emitter=1"));
         assert!(err.contains("refusing to downgrade"));
     }

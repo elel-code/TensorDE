@@ -15,6 +15,7 @@ use super::{SceneGraph, SceneGraphPipelineClass, SceneObjectId};
 pub enum SceneGraphDrawFamily {
     IndexedMeshGraphics,
     Quad,
+    LayerUtilityIndexed,
     ParticleEmitter,
 }
 
@@ -23,6 +24,7 @@ pub struct SceneGraphDrawFamilyPlan {
     pub draw_count: usize,
     pub indexed_mesh_graphics_draw_count: usize,
     pub quad_draw_count: usize,
+    pub layer_utility_indexed_draw_count: usize,
     pub particle_emitter_draw_count: usize,
     pub pass_count: usize,
     pub passes: Vec<SceneGraphPassDrawFamilyPlan>,
@@ -37,6 +39,7 @@ pub struct SceneGraphPassDrawFamilyPlan {
     pub draw_count: usize,
     pub indexed_mesh_graphics_draw_count: usize,
     pub quad_draw_count: usize,
+    pub layer_utility_indexed_draw_count: usize,
     pub particle_emitter_draw_count: usize,
     pub entries: Vec<SceneGraphDrawFamilyEntry>,
 }
@@ -54,6 +57,7 @@ impl SceneGraphPipelineClass {
         match self {
             Self::Mesh | Self::PuppetSkinning => SceneGraphDrawFamily::IndexedMeshGraphics,
             Self::Quad => SceneGraphDrawFamily::Quad,
+            Self::LayerUtilityIndexed => SceneGraphDrawFamily::LayerUtilityIndexed,
             Self::ParticleEmitter => SceneGraphDrawFamily::ParticleEmitter,
         }
     }
@@ -64,6 +68,7 @@ impl SceneGraphDrawFamilyPlan {
         let mut draw_index_start = 0usize;
         let mut indexed_mesh_graphics_draw_count = 0usize;
         let mut quad_draw_count = 0usize;
+        let mut layer_utility_indexed_draw_count = 0usize;
         let mut particle_emitter_draw_count = 0usize;
         let passes = graph
             .passes
@@ -76,6 +81,8 @@ impl SceneGraphDrawFamilyPlan {
                 indexed_mesh_graphics_draw_count = indexed_mesh_graphics_draw_count
                     .saturating_add(plan.indexed_mesh_graphics_draw_count);
                 quad_draw_count = quad_draw_count.saturating_add(plan.quad_draw_count);
+                layer_utility_indexed_draw_count = layer_utility_indexed_draw_count
+                    .saturating_add(plan.layer_utility_indexed_draw_count);
                 particle_emitter_draw_count =
                     particle_emitter_draw_count.saturating_add(plan.particle_emitter_draw_count);
                 plan
@@ -85,6 +92,7 @@ impl SceneGraphDrawFamilyPlan {
             draw_count: draw_index_start,
             indexed_mesh_graphics_draw_count,
             quad_draw_count,
+            layer_utility_indexed_draw_count,
             particle_emitter_draw_count,
             pass_count: passes.len(),
             passes,
@@ -98,6 +106,7 @@ impl SceneGraphDrawFamilyPlan {
 
     pub const fn unsupported_runtime_draw_count(&self) -> usize {
         self.quad_draw_count
+            .saturating_add(self.layer_utility_indexed_draw_count)
             .saturating_add(self.particle_emitter_draw_count)
     }
 }
@@ -106,6 +115,7 @@ impl SceneGraphPassDrawFamilyPlan {
     fn from_pass(pass_index: usize, draw_index_start: usize, pass: &super::SceneGraphPass) -> Self {
         let mut indexed_mesh_graphics_draw_count = 0usize;
         let mut quad_draw_count = 0usize;
+        let mut layer_utility_indexed_draw_count = 0usize;
         let mut particle_emitter_draw_count = 0usize;
         let entries = pass
             .draws
@@ -120,6 +130,10 @@ impl SceneGraphPassDrawFamilyPlan {
                     }
                     SceneGraphDrawFamily::Quad => {
                         quad_draw_count = quad_draw_count.saturating_add(1);
+                    }
+                    SceneGraphDrawFamily::LayerUtilityIndexed => {
+                        layer_utility_indexed_draw_count =
+                            layer_utility_indexed_draw_count.saturating_add(1);
                     }
                     SceneGraphDrawFamily::ParticleEmitter => {
                         particle_emitter_draw_count = particle_emitter_draw_count.saturating_add(1);
@@ -140,6 +154,7 @@ impl SceneGraphPassDrawFamilyPlan {
             draw_count: pass.draws.len(),
             indexed_mesh_graphics_draw_count,
             quad_draw_count,
+            layer_utility_indexed_draw_count,
             particle_emitter_draw_count,
             entries,
         }
@@ -164,18 +179,23 @@ mod tests {
                 ]),
                 pass(vec![
                     draw(SceneObjectId(3), SceneGraphPipelineClass::PuppetSkinning),
-                    draw(SceneObjectId(4), SceneGraphPipelineClass::ParticleEmitter),
+                    draw(
+                        SceneObjectId(4),
+                        SceneGraphPipelineClass::LayerUtilityIndexed,
+                    ),
+                    draw(SceneObjectId(5), SceneGraphPipelineClass::ParticleEmitter),
                 ]),
             ],
         };
 
         let plan = SceneGraphDrawFamilyPlan::from_graph(&graph);
 
-        assert_eq!(plan.draw_count, 4);
+        assert_eq!(plan.draw_count, 5);
         assert_eq!(plan.indexed_mesh_graphics_draw_count, 2);
         assert_eq!(plan.quad_draw_count, 1);
+        assert_eq!(plan.layer_utility_indexed_draw_count, 1);
         assert_eq!(plan.particle_emitter_draw_count, 1);
-        assert_eq!(plan.unsupported_runtime_draw_count(), 2);
+        assert_eq!(plan.unsupported_runtime_draw_count(), 3);
         assert_eq!(
             plan.passes
                 .iter()
@@ -194,7 +214,12 @@ mod tests {
                     SceneObjectId(3),
                     SceneGraphDrawFamily::IndexedMeshGraphics
                 ),
-                (3, SceneObjectId(4), SceneGraphDrawFamily::ParticleEmitter),
+                (
+                    3,
+                    SceneObjectId(4),
+                    SceneGraphDrawFamily::LayerUtilityIndexed
+                ),
+                (4, SceneObjectId(5), SceneGraphDrawFamily::ParticleEmitter),
             ]
         );
     }

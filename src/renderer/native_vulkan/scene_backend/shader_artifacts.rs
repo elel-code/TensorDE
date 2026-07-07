@@ -449,10 +449,18 @@ fn required_scene_shader_names(
     {
         shaders.push("we/clippingmaskimage4".to_owned());
     }
+    if layer_compositor_uses_flattexture_copy_back(layer_compositor)
+        && unique.insert(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned())
+    {
+        shaders.push(ALPHA_MASK_FLATTEXTURE_SHADER.to_owned());
+    }
     Ok(shaders)
 }
 
 fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
+    if shader == ALPHA_MASK_FLATTEXTURE_SHADER {
+        return Ok(PathBuf::from("minimalalpha"));
+    }
     let normalized = shader.strip_prefix("we/").unwrap_or(shader);
     if normalized.is_empty()
         || normalized.contains('\\')
@@ -592,6 +600,25 @@ mod tests {
     }
 
     #[test]
+    fn shader_artifact_plan_maps_minimalalpha_scene_utility_shader() {
+        let plan = native_vulkan_scene_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "util/minimalalpha",
+        )
+        .expect("minimalalpha scene utility artifact path plan");
+
+        assert_eq!(plan.shader, "util/minimalalpha");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/minimalalpha.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/minimalalpha.frag.spv")
+        );
+    }
+
+    #[test]
     fn scene_shader_catalog_names_include_layer_alpha_mask_shader() {
         let graph = scene_graph_with_shader("we/genericimage4");
         let mut layer_compositor = SceneLayerCompositorPlan::empty();
@@ -605,6 +632,47 @@ mod tests {
             vec![
                 "we/genericimage4".to_owned(),
                 "we/clippingmaskimage4".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn scene_shader_catalog_names_append_minimalalpha_for_copy_back() {
+        use crate::engine::scene_engine::{
+            SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+            SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorLayer,
+            SceneLayerCompositorOperation, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+            SceneObjectId,
+        };
+
+        let graph = scene_graph_with_shader("we/genericimage4");
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.tokenized_layer_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(7),
+            route: SceneLayerCompositorRoute::DirectSwapchain,
+            uses_tokenized_subdraw: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
+                operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,
+                condition: SceneLayerCompositorCondition::Token2AfterIntermediateMask,
+                source: Some(SceneLayerCompositorTarget::FullAlphaMaskIntermediate),
+                target: SceneLayerCompositorTarget::FullAlphaMask,
+                blend_key: SceneLayerCompositorBlendKey::DestColorCopyBackBit0x100,
+            }],
+        }];
+
+        let shaders = required_scene_shader_names(&graph, &layer_compositor)
+            .expect("scene shader name collection with copy-back");
+
+        assert_eq!(
+            shaders,
+            vec![
+                "we/genericimage4".to_owned(),
+                "we/clippingmaskimage4".to_owned(),
+                "util/minimalalpha".to_owned()
             ]
         );
     }

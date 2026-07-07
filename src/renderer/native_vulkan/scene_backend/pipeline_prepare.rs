@@ -89,11 +89,15 @@ where
             "scene mesh pipeline prepare requires current draw resource heap frame plan".to_owned()
         })?;
     let descriptor_heap_plan = resource_heap.descriptor_heap_plan.clone();
+    let layer_alpha_mask_descriptor_heap_plan = frame_resources
+        .current_layer_alpha_mask_resource_heap_frame_plan()
+        .map(|plan| plan.descriptor_heap_plan.clone());
     let resource_descriptor_count = resource_heap.resource_descriptor_count;
     let sampler_descriptor_count = resource_heap.sampler_descriptor_count;
     let descriptor_model = resource_heap.descriptor_model;
     let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
         draw_resource_heap_plan: &descriptor_heap_plan,
+        layer_alpha_mask_resource_heap_plan: layer_alpha_mask_descriptor_heap_plan.as_ref(),
     };
     let mut created_pipeline_count = 0usize;
     let mut reused_pipeline_count = 0usize;
@@ -170,11 +174,15 @@ where
             "scene mesh pipeline prepare requires current draw resource heap frame plan".to_owned()
         })?;
     let descriptor_heap_plan = resource_heap.descriptor_heap_plan.clone();
+    let layer_alpha_mask_descriptor_heap_plan = frame_resources
+        .current_layer_alpha_mask_resource_heap_frame_plan()
+        .map(|plan| plan.descriptor_heap_plan.clone());
     let resource_descriptor_count = resource_heap.resource_descriptor_count;
     let sampler_descriptor_count = resource_heap.sampler_descriptor_count;
     let descriptor_model = resource_heap.descriptor_model;
     let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
         draw_resource_heap_plan: &descriptor_heap_plan,
+        layer_alpha_mask_resource_heap_plan: layer_alpha_mask_descriptor_heap_plan.as_ref(),
     };
     let mut created_pipeline_count = 0usize;
     let mut reused_pipeline_count = 0usize;

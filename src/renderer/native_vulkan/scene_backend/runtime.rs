@@ -123,6 +123,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         frame_resources,
         &layer_alpha_masks,
     )?;
+    for key in layer_alpha_mask_resource_binds
+        .copy_back_pipelines
+        .cache_keys()
+    {
+        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
+            format!(
+                "{err}; scene layer alpha-mask runtime requires util/minimalalpha copy-back pipeline warmup before present-frame recording"
+            )
+        })?;
+    }
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {

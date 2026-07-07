@@ -11,8 +11,15 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
 use serde::Serialize;
+use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneGraphTarget, SceneLayerCompositorBlendKey, SceneObjectId};
+use crate::engine::scene_engine::{
+    SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget, SceneLayerCompositorBlendKey,
+    SceneMaterialRenderState, SceneObjectId,
+};
+use crate::renderer::native_vulkan::scene_backend::pipeline::{
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout,
+};
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorSource, NativeVulkanSceneTextureDescriptorVkFormat,
 };
@@ -26,9 +33,12 @@ use super::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBi
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
     pub pipeline_count: usize,
+    pub cache_key_count: usize,
     pub texture_slot_mask: u32,
     pub keys: Vec<NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan>,
     pub command_order: [&'static str; 5],
+    #[serde(skip)]
+    pub(in crate::renderer::native_vulkan) cache_keys: Vec<NativeVulkanScenePipelineCacheKey>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,6 +55,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub texture_slot: u32,
     pub texture_slot_mask: u32,
     pub texture_source: NativeVulkanSceneTextureDescriptorSource,
+    pub pipeline_class: SceneGraphPipelineClass,
+    pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
     pub blend_key: SceneLayerCompositorBlendKey,
     pub alpha_uniform: NativeVulkanSceneLayerAlphaMaskCopyBackAlphaUniform,
     pub resource_set_index: usize,
@@ -62,6 +74,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     copy_back_draw_binds: &[NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan],
 ) -> Result<NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan, String> {
     let mut keys = Vec::with_capacity(copy_back_draw_binds.len());
+    let mut cache_keys = Vec::with_capacity(copy_back_draw_binds.len());
     let mut texture_slot_mask = 0u32;
     for draw_bind in copy_back_draw_binds {
         let draw = copy_back_draws
@@ -74,6 +87,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             })?;
         validate_copy_back_draw_bind(draw, draw_bind)?;
         texture_slot_mask |= 1u32 << draw.texture_slot;
+        let cache_key = copy_back_pipeline_cache_key(draw)?;
         keys.push(NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan {
             copy_back_draw_index: draw_bind.copy_back_draw_index,
             command_index: draw.command_index,
@@ -86,6 +100,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             texture_slot: draw.texture_slot,
             texture_slot_mask: 1u32 << draw.texture_slot,
             texture_source: draw.texture_source,
+            pipeline_class: cache_key.pipeline_class,
+            vertex_layout: cache_key.vertex_layout,
             blend_key: draw.blend_key,
             alpha_uniform: draw.alpha_uniform,
             resource_set_index: draw_bind.resource_set_index,
@@ -111,10 +127,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
                 "preserve_g_Alpha_uniform_1",
             ],
         });
+        if !cache_keys.iter().any(|existing| existing == &cache_key) {
+            cache_keys.push(cache_key);
+        }
     }
 
     Ok(NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
         pipeline_count: keys.len(),
+        cache_key_count: cache_keys.len(),
         texture_slot_mask,
         keys,
         command_order: [
@@ -124,7 +144,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             "map_copy_back_texture_slots_to_descriptor_heap_offsets",
             "preserve_target_like_flattexture_draw_shape",
         ],
+        cache_keys,
     })
+}
+
+impl NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
+    pub(in crate::renderer::native_vulkan) fn cache_keys(
+        &self,
+    ) -> &[NativeVulkanScenePipelineCacheKey] {
+        &self.cache_keys
+    }
 }
 
 fn validate_copy_back_draw_bind(
@@ -162,6 +191,26 @@ fn validate_copy_back_draw_bind(
         ));
     }
     Ok(())
+}
+
+fn copy_back_pipeline_cache_key(
+    draw: &NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan,
+) -> Result<NativeVulkanScenePipelineCacheKey, String> {
+    if draw.target_format != NativeVulkanSceneTextureDescriptorVkFormat::R8Unorm {
+        return Err(format!(
+            "scene layer alpha-mask copy-back pipeline requires R8_UNORM target, got {:?}",
+            draw.target_format
+        ));
+    }
+    Ok(NativeVulkanScenePipelineCacheKey {
+        shader: draw.shader.to_owned(),
+        blend: SceneBlendContract::DestColorCopyBackBit0x100,
+        render_state: SceneMaterialRenderState::translucent_2d(),
+        pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
+        vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
+        target_format: vk::Format::R8_UNORM,
+        texture_slot_mask: 1u32 << draw.texture_slot,
+    })
 }
 
 #[cfg(test)]
@@ -227,12 +276,21 @@ mod tests {
                 .expect("copy-back pipeline plan");
 
         assert_eq!(plan.pipeline_count, 1);
+        assert_eq!(plan.cache_key_count, 1);
         assert_eq!(plan.texture_slot_mask, 1);
         let key = &plan.keys[0];
         assert_eq!(key.shader, "util/minimalalpha");
         assert_eq!(
             key.target_format,
             NativeVulkanSceneTextureDescriptorVkFormat::R8Unorm
+        );
+        assert_eq!(
+            key.pipeline_class,
+            SceneGraphPipelineClass::LayerUtilityIndexed
+        );
+        assert_eq!(
+            key.vertex_layout,
+            NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv
         );
         assert_eq!(key.raster_geometry, "target-like-flattexture");
         assert_eq!(key.base_resource_descriptor_index, 4);
@@ -243,5 +301,16 @@ mod tests {
             key.shader_mapping,
             "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-resource-set2-resource4-sampler4"
         );
+        assert_eq!(plan.cache_keys().len(), 1);
+        assert_eq!(plan.cache_keys()[0].shader, "util/minimalalpha");
+        assert_eq!(
+            plan.cache_keys()[0].blend,
+            SceneBlendContract::DestColorCopyBackBit0x100
+        );
+        assert_eq!(
+            plan.cache_keys()[0].vertex_layout,
+            NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv
+        );
+        assert_eq!(plan.cache_keys()[0].target_format, vk::Format::R8_UNORM);
     }
 }

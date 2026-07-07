@@ -15,6 +15,7 @@ pub enum SceneBlendContract {
     TranslucentAlpha,
     Additive,
     AlphaToCoverage,
+    DestColorCopyBackBit0x100,
     ShaderColorBlend(u32),
 }
 

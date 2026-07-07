@@ -8,6 +8,8 @@
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.frag`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.vert`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.frag`
 //! - `reverse-engineered/shaders/common_blending.h`
 //! - `reverse-engineered/shaders/effects/waterwaves.frag`
 //! - `reverse-engineered/shaders/effects/waterripple.frag`
@@ -111,6 +113,7 @@ impl WeShaderInterface {
         match shader {
             "we/genericimage4" | "genericimage4" => Some(&GENERICIMAGE4_INTERFACE),
             "we/clippingmaskimage4" | "clippingmaskimage4" => Some(&CLIPPINGMASKIMAGE4_INTERFACE),
+            "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
             _ => None,
         }
     }
@@ -505,6 +508,40 @@ pub static CLIPPINGMASKIMAGE4_INTERFACE: WeShaderInterface = WeShaderInterface {
     combos: CLIPPINGMASKIMAGE4_COMBOS,
 };
 
+pub static MINIMALALPHA_TEXTURES: &[WeShaderTextureSlot] = &[WeShaderTextureSlot {
+    slot: 0,
+    name: "g_Texture0",
+    stage: WeShaderStage::Fragment,
+    requirement: WeShaderTextureRequirement::Required,
+    reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.frag:4",
+}];
+
+pub static MINIMALALPHA_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.vert:3",
+    },
+    WeShaderUniform {
+        name: "g_Alpha",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Fragment,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.frag:3",
+    },
+];
+
+pub static MINIMALALPHA_COMBOS: &[WeShaderCombo] = &[];
+
+pub static MINIMALALPHA_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "util/minimalalpha",
+    textures: MINIMALALPHA_TEXTURES,
+    uniforms: MINIMALALPHA_UNIFORMS,
+    combos: MINIMALALPHA_COMBOS,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -562,6 +599,26 @@ mod tests {
                 .combos
                 .iter()
                 .any(|combo| combo.name == "ALPHATOCOVERAGE")
+        );
+    }
+
+    #[test]
+    fn minimalalpha_interface_tracks_flattexture_copy_back_slot_and_uniforms() {
+        let interface = WeShaderInterface::for_shader("util/minimalalpha").unwrap();
+
+        assert_eq!(interface.required_texture_slot_mask(), 0b1);
+        assert_eq!(interface.declared_texture_slot_mask(), 0b1);
+        assert_eq!(
+            interface
+                .texture_slot_mask_for_material("util/minimalalpha", 0b1)
+                .unwrap(),
+            0b1
+        );
+        assert!(
+            interface
+                .uniforms
+                .iter()
+                .any(|uniform| uniform.name == "g_Alpha")
         );
     }
 

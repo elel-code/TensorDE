@@ -234,6 +234,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             copy_back_draw_binds: Vec::new(),
             copy_back_pipelines: NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
                 pipeline_count: 0,
+                cache_key_count: 0,
                 texture_slot_mask: 0,
                 keys: Vec::new(),
                 command_order: [
@@ -243,6 +244,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
                     "map_copy_back_texture_slots_to_descriptor_heap_offsets",
                     "preserve_target_like_flattexture_draw_shape",
                 ],
+                cache_keys: Vec::new(),
             },
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
