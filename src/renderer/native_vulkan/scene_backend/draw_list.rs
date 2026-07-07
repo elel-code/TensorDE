@@ -124,7 +124,10 @@ mod tests {
             .expect("puppet draw must stay in indexed graphics batch");
 
         assert!(transition.bind_pipeline);
-        assert_eq!(transition.pipeline_key.pipeline_class, SceneGraphPipelineClass::PuppetSkinning);
+        assert_eq!(
+            transition.pipeline_key.pipeline_class,
+            SceneGraphPipelineClass::PuppetSkinning
+        );
     }
 
     #[test]

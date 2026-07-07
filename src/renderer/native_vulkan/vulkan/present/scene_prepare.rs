@@ -43,6 +43,8 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaScenePipelinePrepareSnapshot {
     pub target_format: String,
+    pub target_formats: Vec<String>,
+    pub target_format_count: usize,
     pub draw_count: usize,
     pub cache_key_count: usize,
     pub created_pipeline_count: usize,
@@ -171,6 +173,8 @@ impl NativeVulkanVulkanaliaScenePipelinePrepareSnapshot {
     fn from_plan(plan: &NativeVulkanSceneMeshPipelinePreparePlan) -> Self {
         Self {
             target_format: plan.target_format.clone(),
+            target_formats: plan.target_formats.clone(),
+            target_format_count: plan.target_format_count,
             draw_count: plan.draw_count,
             cache_key_count: plan.cache_key_count,
             created_pipeline_count: plan.created_pipeline_count,

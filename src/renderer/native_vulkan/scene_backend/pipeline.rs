@@ -225,8 +225,7 @@ fn scene_pipeline_vertex_layout(
             debug_assert!(pipeline_class.uses_scene_mesh_vertex_layout());
             Ok(NativeVulkanScenePipelineVertexLayout::SceneMeshV0)
         }
-        SceneGraphPipelineClass::Quad
-        | SceneGraphPipelineClass::ParticleEmitter => Err(format!(
+        SceneGraphPipelineClass::Quad | SceneGraphPipelineClass::ParticleEmitter => Err(format!(
             "scene pipeline cache does not support {:?} pipeline yet",
             pipeline_class
         )),
@@ -331,7 +330,10 @@ mod tests {
             NativeVulkanScenePipelineCacheKey::from_bind_key(key, vk::Format::B8G8R8A8_UNORM)
                 .expect("puppet graphics pipeline cache key");
 
-        assert_eq!(cache_key.pipeline_class, SceneGraphPipelineClass::PuppetSkinning);
+        assert_eq!(
+            cache_key.pipeline_class,
+            SceneGraphPipelineClass::PuppetSkinning
+        );
         assert_eq!(
             cache_key.vertex_layout,
             NativeVulkanScenePipelineVertexLayout::SceneMeshV0

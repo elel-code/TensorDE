@@ -16,10 +16,10 @@ use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipeli
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineWarmupPlan {
-    target_format: vk::Format,
     draw_count: usize,
+    target_formats: Vec<vk::Format>,
     cache_keys: Vec<NativeVulkanScenePipelineCacheKey>,
-    command_order: [&'static str; 2],
+    command_order: [&'static str; 3],
 }
 
 impl NativeVulkanSceneMeshPipelineWarmupPlan {
@@ -30,15 +30,35 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
         if target_format == vk::Format::UNDEFINED {
             return Err("scene mesh pipeline warmup requires defined target format".to_owned());
         }
+        Self::from_graph_with_target_formats(graph, |target| match target {
+            SceneGraphTarget::Swapchain => Ok(target_format),
+            target => Err(format!(
+                "scene mesh pipeline warmup requires explicit format for graph target {:?}",
+                target
+            )),
+        })
+    }
 
+    pub(in crate::renderer::native_vulkan) fn from_graph_with_target_formats<TargetFormat>(
+        graph: &SceneGraph,
+        mut target_format: TargetFormat,
+    ) -> Result<Self, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
         let mut cache_keys = Vec::new();
+        let mut target_formats = Vec::new();
         let mut draw_count = 0usize;
         for pass in &graph.passes {
-            if pass.output != SceneGraphTarget::Swapchain {
+            let pass_target_format = target_format(pass.output)?;
+            if pass_target_format == vk::Format::UNDEFINED {
                 return Err(format!(
-                    "scene mesh pipeline warmup requires swapchain output until offscreen target formats are explicit, got {:?}",
+                    "scene mesh pipeline warmup requires defined format for graph target {:?}",
                     pass.output
                 ));
+            }
+            if !target_formats.contains(&pass_target_format) {
+                target_formats.push(pass_target_format);
             }
 
             for draw in &pass.draws {
@@ -52,7 +72,7 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
                 draw_count += 1;
                 let key = NativeVulkanScenePipelineCacheKey::from_bind_key(
                     NativeVulkanScenePipelineKey::from_draw(draw)?,
-                    target_format,
+                    pass_target_format,
                 )?;
                 if !cache_keys.iter().any(|existing| existing == &key) {
                     cache_keys.push(key);
@@ -61,10 +81,11 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
         }
 
         Ok(Self {
-            target_format,
             draw_count,
+            target_formats,
             cache_keys,
             command_order: [
+                "resolve_graph_target_formats",
                 "collect_unique_pipeline_keys",
                 "require_warmed_pipeline_cache",
             ],
@@ -72,7 +93,14 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
     }
 
     pub(in crate::renderer::native_vulkan) fn target_format(&self) -> vk::Format {
-        self.target_format
+        self.target_formats
+            .first()
+            .copied()
+            .unwrap_or(vk::Format::UNDEFINED)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn target_formats(&self) -> &[vk::Format] {
+        &self.target_formats
     }
 
     pub(in crate::renderer::native_vulkan) fn draw_count(&self) -> usize {
@@ -85,7 +113,7 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
         &self.cache_keys
     }
 
-    pub(in crate::renderer::native_vulkan) fn command_order(&self) -> [&'static str; 2] {
+    pub(in crate::renderer::native_vulkan) fn command_order(&self) -> [&'static str; 3] {
         self.command_order
     }
 }
@@ -148,6 +176,7 @@ mod tests {
         assert_eq!(
             plan.command_order(),
             [
+                "resolve_graph_target_formats",
                 "collect_unique_pipeline_keys",
                 "require_warmed_pipeline_cache"
             ]
@@ -235,7 +264,59 @@ mod tests {
         )
         .expect_err("offscreen target format must be explicit");
 
-        assert!(err.contains("swapchain output"));
+        assert!(err.contains("explicit format for graph target"));
+    }
+
+    #[test]
+    fn warmup_plan_accepts_offscreen_target_with_explicit_format_resolver() {
+        let graph = SceneGraph {
+            passes: vec![
+                SceneGraphPass {
+                    name: "scene-offscreen".to_owned(),
+                    input: None,
+                    output: SceneGraphTarget::ImageLocalMain(0),
+                    draws: vec![mesh_draw(
+                        SceneObjectId(1),
+                        "we/genericimage4",
+                        SceneBlendContract::TranslucentAlpha,
+                    )],
+                },
+                SceneGraphPass {
+                    name: "scene-main".to_owned(),
+                    input: Some(SceneGraphTarget::ImageLocalMain(0)),
+                    output: SceneGraphTarget::Swapchain,
+                    draws: vec![mesh_draw(
+                        SceneObjectId(2),
+                        "we/genericimage4",
+                        SceneBlendContract::Additive,
+                    )],
+                },
+            ],
+        };
+
+        let plan = NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats(
+            &graph,
+            |target| match target {
+                SceneGraphTarget::ImageLocalMain(0) => Ok(vk::Format::R16G16B16A16_SFLOAT),
+                SceneGraphTarget::Swapchain => Ok(vk::Format::B8G8R8A8_UNORM),
+                target => Err(format!("unexpected target {target:?}")),
+            },
+        )
+        .expect("explicit target formats allow graph-wide pipeline warmup");
+
+        assert_eq!(plan.draw_count(), 2);
+        assert_eq!(
+            plan.target_formats(),
+            &[vk::Format::R16G16B16A16_SFLOAT, vk::Format::B8G8R8A8_UNORM]
+        );
+        assert_eq!(plan.cache_keys().len(), 2);
+        assert_eq!(
+            plan.cache_keys()
+                .iter()
+                .map(|key| key.target_format)
+                .collect::<Vec<_>>(),
+            vec![vk::Format::R16G16B16A16_SFLOAT, vk::Format::B8G8R8A8_UNORM]
+        );
     }
 
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {
