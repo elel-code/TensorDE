@@ -49,6 +49,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptor
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorSource {
     ResidentTexture(SceneResourceId),
     GraphTarget(SceneGraphTarget),
+    PreviousFramebuffer {
+        object: SceneObjectId,
+        effect_pass_index: usize,
+    },
+    Scene {
+        object: SceneObjectId,
+        effect_pass_index: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -60,6 +68,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorFo
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorVkFormat {
     R16G16B16A16Sfloat,
+    R16G16Sfloat,
     R8G8B8A8Unorm,
     B8G8R8A8Unorm,
     R16Sfloat,
@@ -79,6 +88,7 @@ impl NativeVulkanSceneTextureDescriptorVkFormat {
     ) -> Result<Self, String> {
         match format {
             vk::Format::R16G16B16A16_SFLOAT => Ok(Self::R16G16B16A16Sfloat),
+            vk::Format::R16G16_SFLOAT => Ok(Self::R16G16Sfloat),
             vk::Format::R8G8B8A8_UNORM => Ok(Self::R8G8B8A8Unorm),
             vk::Format::B8G8R8A8_UNORM => Ok(Self::B8G8R8A8Unorm),
             vk::Format::R16_SFLOAT => Ok(Self::R16Sfloat),
@@ -91,6 +101,7 @@ impl NativeVulkanSceneTextureDescriptorVkFormat {
     pub(in crate::renderer::native_vulkan) const fn to_vk_format(self) -> vk::Format {
         match self {
             Self::R16G16B16A16Sfloat => vk::Format::R16G16B16A16_SFLOAT,
+            Self::R16G16Sfloat => vk::Format::R16G16_SFLOAT,
             Self::R8G8B8A8Unorm => vk::Format::R8G8B8A8_UNORM,
             Self::B8G8R8A8Unorm => vk::Format::B8G8R8A8_UNORM,
             Self::R16Sfloat => vk::Format::R16_SFLOAT,

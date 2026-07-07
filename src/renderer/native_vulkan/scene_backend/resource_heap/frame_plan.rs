@@ -642,6 +642,11 @@ fn resolve_sampled_image_binding(
                 mip_count: 1,
             })
         }
+        NativeVulkanSceneTextureDescriptorSource::PreviousFramebuffer { .. }
+        | NativeVulkanSceneTextureDescriptorSource::Scene { .. } => Err(format!(
+            "scene draw resource heap cannot resolve effect-only sampled source {:?}",
+            descriptor.source
+        )),
     }
 }
 

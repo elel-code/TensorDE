@@ -12,11 +12,16 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneGeometryId, SceneGraph, SceneGraphExecutionPlan, SceneGraphTarget,
-    ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
+    RenderingDeviceCommand, SceneEffectPassGraphPlan, SceneGeometryId, SceneGraph,
+    SceneGraphExecutionPlan, SceneGraphTarget, SceneObjectId, ScenePuppetId, SceneResource,
+    SceneResourceId, SceneResourceResidencyPlan,
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
+use super::effect_descriptors::{
+    NativeVulkanSceneEffectExternalTextureDescriptor,
+    NativeVulkanSceneEffectTextureDescriptorFramePlan,
+};
 use super::frame_completion::{
     NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
 };
@@ -301,6 +306,29 @@ impl NativeVulkanSceneFrameResources {
         )
     }
 
+    pub(in crate::renderer::native_vulkan) fn effect_texture_descriptor_frame_plan(
+        &self,
+        graph: &SceneEffectPassGraphPlan,
+    ) -> Result<NativeVulkanSceneEffectTextureDescriptorFramePlan, String> {
+        NativeVulkanSceneEffectTextureDescriptorFramePlan::from_effect_pass_graph(
+            graph,
+            |resource| self.resource_storage.texture(resource).copied(),
+            |target| {
+                let binding = self.offscreen_target_binding(target)?;
+                Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                    target: binding.target,
+                    width: binding.width,
+                    height: binding.height,
+                    format: NativeVulkanSceneTextureDescriptorVkFormat::from_vk_format(
+                        binding.format,
+                    )?,
+                })
+            },
+            effect_previous_framebuffer_descriptor_required,
+            effect_scene_descriptor_required,
+        )
+    }
+
     pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
         &self,
         graph: &SceneGraph,
@@ -442,6 +470,24 @@ impl Default for NativeVulkanSceneFrameResources {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn effect_previous_framebuffer_descriptor_required(
+    object: SceneObjectId,
+    pass: usize,
+) -> Result<NativeVulkanSceneEffectExternalTextureDescriptor, String> {
+    Err(format!(
+        "scene effect pass {pass} for object {object:?} requires a previous-framebuffer sampled image resolver"
+    ))
+}
+
+fn effect_scene_descriptor_required(
+    object: SceneObjectId,
+    pass: usize,
+) -> Result<NativeVulkanSceneEffectExternalTextureDescriptor, String> {
+    Err(format!(
+        "scene effect pass {pass} for object {object:?} requires a scene sampled image resolver"
+    ))
 }
 
 #[cfg(test)]

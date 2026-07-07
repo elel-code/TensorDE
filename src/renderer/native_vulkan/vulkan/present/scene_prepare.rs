@@ -43,10 +43,11 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
+    pub effect_texture_descriptor_binding_count: usize,
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 7],
+    pub command_order: [&'static str; 8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -149,6 +150,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             resources,
             frame,
         )?;
+        let effect_texture_descriptor_binding_count = frame_resources
+            .effect_texture_descriptor_frame_plan(&frame.effect_pass_graph)?
+            .binding_count;
         native_vulkan_end_scene_frame_command_buffer(device, slot_sync.command_buffer)?;
         let prepare_submit = native_vulkan_submit_scene_prepare_commands2(
             device,
@@ -186,6 +190,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             ),
             graph_target_format_count: target_formats.target_format_count(),
             effect_target_count,
+            effect_texture_descriptor_binding_count,
             offscreen_target_count,
             offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
@@ -193,6 +198,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "derive_effect_target_requirements",
                 "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
+                "prepare_effect_texture_descriptors",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
                 "release_completed_prepare_staging",
