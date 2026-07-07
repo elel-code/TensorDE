@@ -232,12 +232,14 @@ impl NativeVulkanSceneResourceStorage {
 pub enum NativeVulkanSceneGpuBufferOwner {
     MeshGeometry(SceneGeometryId),
     PuppetRig(ScenePuppetId),
+    RenderStateUtility(NativeVulkanSceneRenderStateUtilityGeometry),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NativeVulkanSceneGpuBufferRole {
     MeshVertex,
     MeshIndex,
+    RenderStateFlatTextureVertex,
     PuppetBone,
     PuppetSkinVertex,
     PuppetClipFrame,
@@ -250,7 +252,9 @@ pub enum NativeVulkanSceneGpuBufferRole {
 impl NativeVulkanSceneGpuBufferRole {
     pub fn usage(self) -> NativeVulkanSceneGpuBufferUsage {
         match self {
-            Self::MeshVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
+            Self::MeshVertex | Self::RenderStateFlatTextureVertex => {
+                NativeVulkanSceneGpuBufferUsage::Vertex
+            }
             Self::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
             Self::PuppetBone
             | Self::PuppetSkinVertex
@@ -261,6 +265,11 @@ impl NativeVulkanSceneGpuBufferRole {
             | Self::PuppetActiveSource => NativeVulkanSceneGpuBufferUsage::Storage,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum NativeVulkanSceneRenderStateUtilityGeometry {
+    LayerAlphaMaskCopyBackState48,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

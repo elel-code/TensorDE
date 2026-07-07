@@ -28,6 +28,7 @@ use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
     NativeVulkanSceneGpuBufferRole, NativeVulkanSceneGpuBufferUsage,
+    NativeVulkanSceneRenderStateUtilityGeometry,
 };
 use super::resource_upload::{NativeVulkanSceneGpuBufferUpload, NativeVulkanSceneGpuUploadPlan};
 
@@ -79,6 +80,12 @@ pub struct NativeVulkanScenePuppetStorageBufferRecords {
     pub active_sources: Option<NativeVulkanSceneGpuBufferRecordBinding>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneRenderStateUtilityGeometryBufferRecords {
+    pub geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+    pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanSceneGpuBufferBinding {
     pub key: NativeVulkanSceneGpuBufferKey,
@@ -104,6 +111,12 @@ pub struct NativeVulkanScenePuppetStorageBuffers {
     pub clipping_bone_indices: Option<NativeVulkanSceneGpuBufferBinding>,
     pub clipping_frame_keys: Option<NativeVulkanSceneGpuBufferBinding>,
     pub active_sources: Option<NativeVulkanSceneGpuBufferBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneRenderStateUtilityGeometryBuffers {
+    pub geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+    pub vertex: NativeVulkanSceneGpuBufferBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -268,6 +281,19 @@ impl NativeVulkanSceneGpuBufferCatalog {
                 NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
             ),
         }
+    }
+
+    pub fn render_state_utility_geometry_buffer_records(
+        &self,
+        geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+    ) -> Result<NativeVulkanSceneRenderStateUtilityGeometryBufferRecords, String> {
+        Ok(NativeVulkanSceneRenderStateUtilityGeometryBufferRecords {
+            geometry,
+            vertex: self.required_record_binding(
+                NativeVulkanSceneGpuBufferOwner::RenderStateUtility(geometry),
+                NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
+            )?,
+        })
     }
 
     fn required_record_binding(
@@ -472,6 +498,19 @@ impl NativeVulkanSceneGpuBufferStore {
         }
     }
 
+    pub(in crate::renderer::native_vulkan) fn render_state_utility_geometry_buffers(
+        &self,
+        geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+    ) -> Result<NativeVulkanSceneRenderStateUtilityGeometryBuffers, String> {
+        Ok(NativeVulkanSceneRenderStateUtilityGeometryBuffers {
+            geometry,
+            vertex: self.required_buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::RenderStateUtility(geometry),
+                NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
+            )?,
+        })
+    }
+
     fn required_buffer_binding(
         &self,
         owner: NativeVulkanSceneGpuBufferOwner,
@@ -613,6 +652,9 @@ fn scene_gpu_buffer_role_name(requirement: NativeVulkanSceneGpuBufferRequirement
     match requirement.role {
         NativeVulkanSceneGpuBufferRole::MeshVertex => "scene-mesh-vertex-buffer",
         NativeVulkanSceneGpuBufferRole::MeshIndex => "scene-mesh-index-buffer",
+        NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex => {
+            "scene-render-state-flattexture-vertex-buffer"
+        }
         NativeVulkanSceneGpuBufferRole::PuppetBone => "scene-puppet-bone-storage-buffer",
         NativeVulkanSceneGpuBufferRole::PuppetSkinVertex => {
             "scene-puppet-skin-vertex-storage-buffer"
@@ -643,7 +685,7 @@ fn scene_stable_byte_hash(bytes: &[u8]) -> u64 {
 mod tests {
     use super::super::resource_storage::{
         NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
-        NativeVulkanSceneGpuBufferRole, NativeVulkanSceneGpuBufferUsage,
+        NativeVulkanSceneGpuBufferRole,
     };
     use super::*;
     use crate::engine::scene_engine::{SceneGeometryId, ScenePuppetId};
@@ -807,6 +849,34 @@ mod tests {
     }
 
     #[test]
+    fn catalog_exposes_render_state_utility_geometry_records_without_mesh_owner() {
+        let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
+        let plan = upload_plan(vec![render_state_utility_upload(
+            NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+            vec![1; 80],
+        )]);
+        catalog.sync_upload_plan(&plan).unwrap();
+
+        let utility = catalog
+            .render_state_utility_geometry_buffer_records(
+                NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+            )
+            .expect("render-state utility geometry records");
+
+        assert_eq!(
+            utility.vertex.key.owner,
+            NativeVulkanSceneGpuBufferOwner::RenderStateUtility(
+                NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+            )
+        );
+        assert_eq!(
+            utility.vertex.key.role,
+            NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex
+        );
+        assert_eq!(utility.vertex.bytes, 80);
+    }
+
+    #[test]
     fn catalog_requires_complete_mesh_draw_records() {
         let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
         let plan = upload_plan(vec![upload(
@@ -847,23 +917,7 @@ mod tests {
                 owner: NativeVulkanSceneGpuBufferOwner::MeshGeometry(geometry),
                 role,
                 bytes: payload.len() as u64,
-                usage: match role {
-                    NativeVulkanSceneGpuBufferRole::MeshVertex => {
-                        NativeVulkanSceneGpuBufferUsage::Vertex
-                    }
-                    NativeVulkanSceneGpuBufferRole::MeshIndex => {
-                        NativeVulkanSceneGpuBufferUsage::Index
-                    }
-                    NativeVulkanSceneGpuBufferRole::PuppetBone
-                    | NativeVulkanSceneGpuBufferRole::PuppetSkinVertex
-                    | NativeVulkanSceneGpuBufferRole::PuppetClipFrame
-                    | NativeVulkanSceneGpuBufferRole::PuppetClippingRecord
-                    | NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex
-                    | NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey
-                    | NativeVulkanSceneGpuBufferRole::PuppetActiveSource => {
-                        NativeVulkanSceneGpuBufferUsage::Storage
-                    }
-                },
+                usage: role.usage(),
             },
             payload,
         }
@@ -879,7 +933,22 @@ mod tests {
                 owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
                 role,
                 bytes: payload.len() as u64,
-                usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                usage: role.usage(),
+            },
+            payload,
+        }
+    }
+
+    fn render_state_utility_upload(
+        geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+        payload: Vec<u8>,
+    ) -> NativeVulkanSceneGpuBufferUpload {
+        NativeVulkanSceneGpuBufferUpload {
+            requirement: NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::RenderStateUtility(geometry),
+                role: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
+                bytes: payload.len() as u64,
+                usage: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex.usage(),
             },
             payload,
         }

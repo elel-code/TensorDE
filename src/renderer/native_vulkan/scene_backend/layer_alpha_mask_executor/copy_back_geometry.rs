@@ -12,6 +12,12 @@ use serde::Serialize;
 use vulkanalia::vk;
 use vulkanalia::vk::Handle;
 
+use super::super::resource_buffers::NativeVulkanSceneRenderStateUtilityGeometryBuffers;
+use super::super::resource_storage::{
+    NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRole,
+    NativeVulkanSceneRenderStateUtilityGeometry,
+};
+
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY: &str =
     "render-state-flattexture-copy-back";
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_SOURCE_FIELD: &str =
@@ -182,6 +188,50 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan {
                 "cmd_bind_render_state_flattexture_copy_back_vertex_buffer",
                 "cmd_draw_render_state_flattexture_copy_back",
             ],
+        })
+    }
+}
+
+impl NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
+    pub(in crate::renderer::native_vulkan) fn from_render_state_utility_geometry_buffers(
+        buffers: NativeVulkanSceneRenderStateUtilityGeometryBuffers,
+        vertex_count: u32,
+    ) -> Result<Self, String> {
+        if buffers.geometry
+            != NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48
+        {
+            return Err(format!(
+                "scene layer alpha-mask copy-back requires LayerAlphaMaskCopyBackState48 render-state utility geometry, got {:?}",
+                buffers.geometry
+            ));
+        }
+        let expected_key_owner =
+            NativeVulkanSceneGpuBufferOwner::RenderStateUtility(buffers.geometry);
+        if buffers.vertex.key.owner != expected_key_owner
+            || buffers.vertex.key.role
+                != NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex
+        {
+            return Err(format!(
+                "scene layer alpha-mask copy-back requires render-state utility flattexture vertex buffer for render_state+0x48, got {:?}",
+                buffers.vertex.key
+            ));
+        }
+        NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan::from_raster_geometry_and_buffers(
+            FLATTEXTURE_COPY_BACK_RASTER_GEOMETRY,
+            Self {
+                vertex: buffers.vertex.buffer,
+                vertex_bytes: buffers.vertex.bytes,
+                vertex_count,
+                vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
+                vertex_payload_hash: buffers.vertex.payload_hash,
+            },
+        )
+        .map(|plan| Self {
+            vertex: buffers.vertex.buffer,
+            vertex_bytes: plan.vertex_bytes,
+            vertex_count: plan.vertex_count,
+            vertex_stride_bytes: plan.vertex_stride_bytes,
+            vertex_payload_hash: plan.vertex_payload_hash,
         })
     }
 }
@@ -488,6 +538,39 @@ mod tests {
     }
 
     #[test]
+    fn copy_back_geometry_converts_render_state_utility_vertex_binding() {
+        let buffers =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers::from_render_state_utility_geometry_buffers(
+                render_state_utility_geometry_buffers(),
+                4,
+            )
+            .expect("render-state utility copy-back buffers");
+
+        assert_eq!(buffers.vertex, vk::Buffer::from_raw(44));
+        assert_eq!(buffers.vertex_bytes, 80);
+        assert_eq!(buffers.vertex_count, 4);
+        assert_eq!(buffers.vertex_stride_bytes, 20);
+        assert_eq!(buffers.vertex_payload_hash, 0x88);
+    }
+
+    #[test]
+    fn copy_back_geometry_rejects_mesh_buffer_as_render_state_utility() {
+        let mut buffers = render_state_utility_geometry_buffers();
+        buffers.vertex.key.owner = NativeVulkanSceneGpuBufferOwner::MeshGeometry(
+            crate::engine::scene_engine::SceneGeometryId(7),
+        );
+
+        let err =
+            NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers::from_render_state_utility_geometry_buffers(
+                buffers,
+                4,
+            )
+            .expect_err("mesh buffer cannot stand in for render-state utility geometry");
+
+        assert!(err.contains("render-state utility flattexture vertex buffer"));
+    }
+
+    #[test]
     fn target_like_helper_models_recovered_layout_and_r16_index_payload() {
         assert_eq!(TARGET_LIKE_INDEXED_QUAD_HELPER_VMA, 0x1401ede30);
         assert_eq!(TARGET_LIKE_INDEXED_QUAD_LAYOUT_KEY_HELPER_VMA, 0x140098c30);
@@ -627,6 +710,24 @@ mod tests {
             vertex_count: 4,
             vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
             vertex_payload_hash: 100,
+        }
+    }
+
+    fn render_state_utility_geometry_buffers() -> NativeVulkanSceneRenderStateUtilityGeometryBuffers
+    {
+        NativeVulkanSceneRenderStateUtilityGeometryBuffers {
+            geometry: NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+            vertex: crate::renderer::native_vulkan::scene_backend::resource_buffers::NativeVulkanSceneGpuBufferBinding {
+                key: crate::renderer::native_vulkan::scene_backend::resource_buffers::NativeVulkanSceneGpuBufferKey {
+                    owner: NativeVulkanSceneGpuBufferOwner::RenderStateUtility(
+                        NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+                    ),
+                    role: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
+                },
+                buffer: vk::Buffer::from_raw(44),
+                bytes: 80,
+                payload_hash: 0x88,
+            },
         }
     }
 

@@ -65,12 +65,15 @@ use super::pipeline_factory::{
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
+    NativeVulkanSceneRenderStateUtilityGeometryBuffers,
 };
 use super::resource_heap::{
     NativeVulkanSceneResourceHeapDrawBindInfo, NativeVulkanSceneResourceHeapFramePlan,
     NativeVulkanSceneResourceHeapStore, NativeVulkanSceneResourceHeapSyncAction,
 };
-use super::resource_storage::NativeVulkanSceneResourceStorage;
+use super::resource_storage::{
+    NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
+};
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::{
     NativeVulkanSceneTargetInputTextureDescriptor, NativeVulkanSceneTextureDescriptorFramePlan,
@@ -308,6 +311,14 @@ impl NativeVulkanSceneFrameResources {
         puppet: ScenePuppetId,
     ) -> NativeVulkanScenePuppetStorageBuffers {
         self.gpu_buffers.puppet_storage_buffers(puppet)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn render_state_utility_geometry_buffers(
+        &self,
+        geometry: NativeVulkanSceneRenderStateUtilityGeometry,
+    ) -> Result<NativeVulkanSceneRenderStateUtilityGeometryBuffers, String> {
+        self.gpu_buffers
+            .render_state_utility_geometry_buffers(geometry)
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_descriptor_frame_plan(
