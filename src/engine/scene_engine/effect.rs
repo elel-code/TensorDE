@@ -96,7 +96,7 @@ pub enum SceneEffectFboFormat {
     Other(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneEffectPassBlend {
     NormalReplace,
     TranslucentAlpha,

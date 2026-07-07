@@ -40,12 +40,11 @@ use super::effect_descriptors::{
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 use super::texture_images::NativeVulkanSceneTextureImageBinding;
-#[allow(unused_imports)]
 pub(in crate::renderer::native_vulkan) use bind_command::{
     NativeVulkanSceneEffectResourceHeapPassBindPlan,
     native_vulkan_record_scene_effect_resource_heap_pass_bind_command,
 };
-#[allow(unused_imports)]
+#[cfg(test)]
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneEffectTextureSetBinding;
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneEffectTextureSetKey;
 use key::{
