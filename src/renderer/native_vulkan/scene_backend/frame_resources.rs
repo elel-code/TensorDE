@@ -12,9 +12,10 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneEffectPassGraphPlan, SceneGenericImage4MaterialUniformRecord,
-    SceneGeometryId, SceneGraph, SceneGraphExecutionPlan, SceneGraphTarget, SceneObjectId,
-    ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
+    RenderingDeviceCommand, SceneEffectPassGraphPlan, SceneFramePlan,
+    SceneGenericImage4MaterialUniformRecord, SceneGeometryId, SceneGraph, SceneGraphExecutionPlan,
+    SceneGraphTarget, SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId,
+    SceneResourceResidencyPlan,
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
@@ -130,8 +131,9 @@ impl NativeVulkanSceneFrameResources {
     pub(in crate::renderer::native_vulkan) fn gpu_upload_plan(
         &self,
         resources: &[SceneResource],
+        frame: &SceneFramePlan,
     ) -> Result<NativeVulkanSceneGpuUploadPlan, String> {
-        NativeVulkanSceneGpuUploadPlan::from_resident_resources(&self.resource_storage, resources)
+        NativeVulkanSceneGpuUploadPlan::from_scene_frame(&self.resource_storage, resources, frame)
             .map_err(|err| err.to_string())
     }
 
@@ -142,8 +144,9 @@ impl NativeVulkanSceneFrameResources {
         command_buffer: vk::CommandBuffer,
         frame_submission: NativeVulkanSceneFrameSubmission,
         resources: &[SceneResource],
+        frame: &SceneFramePlan,
     ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
-        let upload_plan = self.gpu_upload_plan(resources)?;
+        let upload_plan = self.gpu_upload_plan(resources, frame)?;
         self.gpu_buffers.sync_upload_plan_recorded(
             device,
             memory_properties,
@@ -682,7 +685,8 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
-        RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw,
+        RenderingDeviceCommand, SceneBlendContract, SceneEffectPassGraphPlan,
+        SceneFinalCompositorPlan, SceneFramePlan, SceneGeometryId, SceneGraph, SceneGraphDraw,
         SceneGraphExecutionPlan, SceneGraphPass, SceneGraphPipelineClass,
         SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey,
         SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
@@ -707,7 +711,7 @@ mod tests {
 
         let commands = frame_resources.sync_residency_plan(&residency);
         let upload_plan = frame_resources
-            .gpu_upload_plan(&resources)
+            .gpu_upload_plan(&resources, &empty_frame())
             .expect("resident mesh upload plan");
 
         assert!(matches!(
@@ -746,7 +750,7 @@ mod tests {
         frame_resources.sync_residency_plan(&residency);
 
         let err = frame_resources
-            .gpu_upload_plan(&[])
+            .gpu_upload_plan(&[], &empty_frame())
             .expect_err("missing resident payload must fail");
 
         assert!(err.contains("missing resident scene GPU payload"));
@@ -983,6 +987,16 @@ mod tests {
             source_record: 12,
             vertices: vec![SceneMeshVertex::default(); 2],
             indices: vec![0, 1, 0],
+        }
+    }
+
+    fn empty_frame() -> SceneFramePlan {
+        SceneFramePlan {
+            residency: SceneResourceResidencyPlan::default(),
+            graph: SceneGraph { passes: Vec::new() },
+            effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            final_compositor: SceneFinalCompositorPlan::empty(),
+            layer_compositor: crate::engine::scene_engine::SceneLayerCompositorPlan::empty(),
         }
     }
 

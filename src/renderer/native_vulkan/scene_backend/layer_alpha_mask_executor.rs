@@ -28,6 +28,7 @@ mod copy_back_target_graph;
 mod producer_draws;
 mod producer_pipeline;
 mod producer_target_graph;
+mod producer_uniform;
 mod recorder_requirements;
 mod resource_binds;
 mod token_schedule;
@@ -65,6 +66,10 @@ pub(in crate::renderer::native_vulkan) use consumer_uniform::{
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms,
 };
 pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHADER;
+pub(in crate::renderer::native_vulkan) use copy_back_geometry::{
+    FLATTEXTURE_COPY_BACK_VERTEX_COUNT, FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
+    native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload,
+};
 pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
@@ -80,6 +85,10 @@ pub(in crate::renderer::native_vulkan) use producer_pipeline::{
 pub(in crate::renderer::native_vulkan) use producer_target_graph::{
     NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph,
+};
+pub(in crate::renderer::native_vulkan) use producer_uniform::{
+    NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_producer_uniforms,
 };
 pub(in crate::renderer::native_vulkan) use recorder_requirements::{
     NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,

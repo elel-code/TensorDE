@@ -21,13 +21,19 @@ use crate::engine::scene_engine::{
     SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
     SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
     SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES, SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
-    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, ScenePuppetClippingProgram, SceneResource,
-    scene_stable_name_hash,
+    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneFramePlan, SceneLayerCompositorEntry,
+    SceneLayerCompositorOperation, SceneLayerCompositorPlan, ScenePuppetClippingProgram,
+    SceneResource, scene_stable_name_hash,
 };
 
+use super::layer_alpha_mask_executor::{
+    FLATTEXTURE_COPY_BACK_VERTEX_COUNT, FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
+    native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload,
+};
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
-    NativeVulkanSceneGpuBufferRole, NativeVulkanSceneResourceStorage,
+    NativeVulkanSceneGpuBufferRole, NativeVulkanSceneRenderStateUtilityGeometry,
+    NativeVulkanSceneResourceStorage,
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -144,9 +150,10 @@ impl NativeVulkanSceneGpuUploadPlan {
         Ok(Self { uploads })
     }
 
-    pub fn from_resident_resources(
+    pub fn from_scene_frame(
         storage: &NativeVulkanSceneResourceStorage,
         resources: &[SceneResource],
+        frame: &SceneFramePlan,
     ) -> Result<Self, NativeVulkanSceneGpuUploadError> {
         let active = storage
             .gpu_buffer_requirements()
@@ -166,9 +173,26 @@ impl NativeVulkanSceneGpuUploadPlan {
             return Err(NativeVulkanSceneGpuUploadError::MissingResidentPayload { requirement });
         }
 
+        push_frame_render_state_utility_uploads(&mut resident_uploads, &frame.layer_compositor)?;
+
         Ok(Self {
             uploads: resident_uploads,
         })
+    }
+
+    #[cfg(test)]
+    fn from_resident_resources_for_test(
+        storage: &NativeVulkanSceneResourceStorage,
+        resources: &[SceneResource],
+    ) -> Result<Self, NativeVulkanSceneGpuUploadError> {
+        let frame = SceneFramePlan {
+            residency: Default::default(),
+            graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
+            effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
+            layer_compositor: SceneLayerCompositorPlan::empty(),
+        };
+        Self::from_scene_frame(storage, resources, &frame)
     }
 
     pub fn uploads(&self) -> &[NativeVulkanSceneGpuBufferUpload] {
@@ -483,6 +507,43 @@ fn puppet_active_source_payload(
     Ok(payload)
 }
 
+fn push_frame_render_state_utility_uploads(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    if !layer_compositor_uses_flattexture_copy_back(layer_compositor) {
+        return Ok(());
+    }
+
+    let owner = NativeVulkanSceneGpuBufferOwner::RenderStateUtility(
+        NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+    );
+    let role = NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex;
+    let payload =
+        native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload(false).bytes;
+    push_upload(
+        uploads,
+        owner,
+        role,
+        FLATTEXTURE_COPY_BACK_VERTEX_COUNT as usize,
+        u64::from(FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES),
+        payload.to_vec(),
+    )
+}
+
+fn layer_compositor_uses_flattexture_copy_back(
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> bool {
+    layer_compositor.layers.iter().any(|layer| {
+        layer.uses_tokenized_subdraw
+            && layer.commands.iter().any(|command| {
+                command.entry == SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed
+                    && command.operation
+                        == SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask
+            })
+    })
+}
+
 fn push_puppet_bone(
     payload: &mut Vec<u8>,
     owner: NativeVulkanSceneGpuBufferOwner,
@@ -733,14 +794,17 @@ fn checked_gpu_index(
 
 #[cfg(test)]
 mod tests {
+    use super::super::resource_storage::NativeVulkanSceneGpuBufferUsage;
     use super::*;
     use crate::core::scene::{
         SceneMeshPuppetClippingActiveSource, SceneMeshPuppetClippingRecord, SceneMeshSkin,
         ScenePuppetAnimationBone, ScenePuppetAnimationClip,
     };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingProgram, ScenePuppetId,
-        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
+        SceneGeometryId, SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+        SceneLayerCompositorCondition, SceneLayerCompositorLayer, SceneLayerCompositorRoute,
+        SceneLayerCompositorTarget, SceneMeshResidency, SceneObjectId, ScenePuppetClippingProgram,
+        ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -973,9 +1037,40 @@ mod tests {
         });
 
         let plan =
-            NativeVulkanSceneGpuUploadPlan::from_resident_resources(&storage, &resources).unwrap();
+            NativeVulkanSceneGpuUploadPlan::from_resident_resources_for_test(&storage, &resources)
+                .unwrap();
 
         assert_eq!(plan.uploads().len(), 2);
+    }
+
+    #[test]
+    fn frame_upload_plan_includes_closed_state48_copy_back_utility_geometry() {
+        let storage = NativeVulkanSceneResourceStorage::default();
+        let frame = copy_back_frame();
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_scene_frame(&storage, &[], &frame)
+            .expect("frame graph derived upload plan");
+
+        assert_eq!(plan.uploads().len(), 1);
+        let upload = &plan.uploads()[0];
+        assert_eq!(
+            upload.requirement,
+            NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::RenderStateUtility(
+                    NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
+                ),
+                role: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
+                bytes: u64::from(FLATTEXTURE_COPY_BACK_VERTEX_COUNT)
+                    * u64::from(FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES),
+                usage: NativeVulkanSceneGpuBufferUsage::Vertex,
+            }
+        );
+        assert_eq!(
+            upload.payload,
+            native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload(false)
+                .bytes
+                .to_vec()
+        );
     }
 
     #[test]
@@ -1006,7 +1101,7 @@ mod tests {
             })],
         });
 
-        let err = NativeVulkanSceneGpuUploadPlan::from_resident_resources(&storage, &[])
+        let err = NativeVulkanSceneGpuUploadPlan::from_resident_resources_for_test(&storage, &[])
             .expect_err("active storage without payload must fail");
 
         assert!(matches!(
@@ -1089,5 +1184,32 @@ mod tests {
 
     fn read_u32(bytes: &[u8], offset: usize) -> u32 {
         u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn copy_back_frame() -> SceneFramePlan {
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.tokenized_layer_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(7),
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
+                operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,
+                condition: SceneLayerCompositorCondition::Token2AfterIntermediateMask,
+                source: Some(SceneLayerCompositorTarget::FullAlphaMaskIntermediate),
+                target: SceneLayerCompositorTarget::FullAlphaMask,
+                blend_key: SceneLayerCompositorBlendKey::DestColorCopyBackBit0x100,
+            }],
+        }];
+        SceneFramePlan {
+            residency: SceneResourceResidencyPlan::default(),
+            graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
+            effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
+            layer_compositor,
+        }
     }
 }

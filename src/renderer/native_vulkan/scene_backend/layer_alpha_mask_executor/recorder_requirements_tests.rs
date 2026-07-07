@@ -1,7 +1,9 @@
 use super::super::consumer_draws::native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws;
 use super::super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan;
 use super::super::producer_draws::native_vulkan_plan_scene_layer_alpha_mask_producer_draws;
+use super::super::producer_pipeline::native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines;
 use super::super::producer_target_graph::native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph;
+use super::super::producer_uniform::native_vulkan_plan_scene_layer_alpha_mask_producer_uniforms;
 use super::super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan,
     NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan,
@@ -58,6 +60,16 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     let producer_target_graph =
         native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph(&runtime, &producer_draws)
             .expect("producer target graph");
+    let producer_pipelines = native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines(
+        &producer_draws,
+        &resource_binds,
+    )
+    .expect("producer pipelines");
+    let producer_uniforms = native_vulkan_plan_scene_layer_alpha_mask_producer_uniforms(
+        &producer_draws,
+        &producer_pipelines,
+    )
+    .expect("producer uniforms");
     let generated_consumer_draws =
         native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws(
             &runtime,
@@ -78,6 +90,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &schedule,
         &producer_draws,
         &producer_target_graph,
+        &producer_uniforms,
         &generated_consumer_draws,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
@@ -106,6 +119,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     );
     assert_eq!(plan.requirements[1].producer_draw_index, Some(0));
     assert_eq!(plan.requirements[1].producer_target_scope_index, Some(0));
+    assert_eq!(plan.requirements[1].producer_uniform_index, Some(0));
     assert_eq!(
         plan.requirements[1].target_scope_load_op,
         Some(NativeVulkanSceneRenderTargetLoadOp::Clear)
@@ -116,6 +130,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     );
     assert_eq!(plan.requirements[2].producer_draw_index, Some(1));
     assert_eq!(plan.requirements[2].producer_target_scope_index, Some(1));
+    assert_eq!(plan.requirements[2].producer_uniform_index, Some(1));
     assert_eq!(
         plan.requirements[2].target_scope_load_op,
         Some(NativeVulkanSceneRenderTargetLoadOp::Load)
@@ -129,6 +144,12 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .missing_we_facts
             .iter()
             .all(|fact| !fact.contains("clear_first"))
+    );
+    assert!(
+        plan.requirements[1]
+            .missing_we_facts
+            .iter()
+            .all(|fact| !fact.contains("g_RenderVar0"))
     );
     assert_eq!(plan.requirements[3].shader, Some("util/minimalalpha"));
     assert_eq!(
@@ -202,6 +223,16 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
     let producer_target_graph =
         native_vulkan_plan_scene_layer_alpha_mask_producer_target_graph(&runtime, &producer_draws)
             .expect("producer target graph");
+    let producer_pipelines = native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines(
+        &producer_draws,
+        &resource_binds,
+    )
+    .expect("producer pipelines");
+    let producer_uniforms = native_vulkan_plan_scene_layer_alpha_mask_producer_uniforms(
+        &producer_draws,
+        &producer_pipelines,
+    )
+    .expect("producer uniforms");
     let generated_consumer_draws =
         native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws(
             &runtime,
@@ -222,6 +253,7 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &schedule,
         &producer_draws,
         &producer_target_graph,
+        &producer_uniforms,
         &generated_consumer_draws,
         &generated_consumer_targets,
         &generated_consumer_pipelines,

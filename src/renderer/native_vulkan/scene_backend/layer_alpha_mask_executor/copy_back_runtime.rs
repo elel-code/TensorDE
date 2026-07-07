@@ -157,19 +157,19 @@ pub(super) fn render_state_copy_back_geometry_buffers(
         )
         .map_err(|err| {
             format!(
-                "{err}; scene layer alpha-mask copy-back requires retained render_state+0x48 utility geometry"
+                "{err}; scene layer alpha-mask copy-back requires retained state_body+0x48 utility geometry"
             )
         })?;
     if buffers.vertex.bytes % u64::from(FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES) != 0 {
         return Err(format!(
-            "scene layer alpha-mask copy-back render_state+0x48 vertex buffer size {} is not aligned to flattexture stride {}",
+            "scene layer alpha-mask copy-back state_body+0x48 vertex buffer size {} is not aligned to flattexture stride {}",
             buffers.vertex.bytes, FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES
         ));
     }
     let vertex_count = buffers.vertex.bytes / u64::from(FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES);
     let vertex_count = u32::try_from(vertex_count).map_err(|_| {
         format!(
-            "scene layer alpha-mask copy-back render_state+0x48 vertex count {vertex_count} exceeds u32"
+            "scene layer alpha-mask copy-back state_body+0x48 vertex count {vertex_count} exceeds u32"
         )
     })?;
     NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers::from_render_state_utility_geometry_buffers(
@@ -182,6 +182,10 @@ pub(super) fn render_state_copy_back_geometry_buffers(
 mod tests {
     use super::super::copy_back::NativeVulkanSceneLayerAlphaMaskCopyBackAlphaUniform;
     use super::super::copy_back::NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan;
+    use super::super::copy_back_geometry::{
+        FLATTEXTURE_COPY_BACK_VERTEX_BYTES, FLATTEXTURE_COPY_BACK_VERTEX_COUNT,
+        native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload,
+    };
     use super::super::copy_back_pipeline::native_vulkan_plan_scene_layer_alpha_mask_copy_back_pipelines;
     use super::super::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
     use super::*;
@@ -223,7 +227,7 @@ mod tests {
         assert_eq!(plan.resource_heap_bind_count, 1);
         assert_eq!(plan.direct_draw_count, 1);
         assert_eq!(plan.commands[0].command_index, 3);
-        assert_eq!(plan.commands[0].geometry.source_field, "render_state+0x48");
+        assert_eq!(plan.commands[0].geometry.source_field, "state_body+0x48");
         assert_eq!(
             plan.command_order,
             [
@@ -379,10 +383,12 @@ mod tests {
     fn geometry() -> NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
         NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
             vertex: vk::Buffer::from_raw(11),
-            vertex_bytes: 80,
-            vertex_count: 4,
+            vertex_bytes: FLATTEXTURE_COPY_BACK_VERTEX_BYTES,
+            vertex_count: FLATTEXTURE_COPY_BACK_VERTEX_COUNT,
             vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
-            vertex_payload_hash: 100,
+            vertex_payload_hash:
+                native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload(false)
+                    .payload_hash,
         }
     }
 }

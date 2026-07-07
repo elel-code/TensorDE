@@ -30,6 +30,10 @@ use super::consumer_uniform::{
 };
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
 use super::producer_target_graph::NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan;
+use super::producer_uniform::{
+    NativeVulkanSceneLayerAlphaMaskProducerUniformBindingPlan,
+    NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
+};
 use super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskBindRequirement,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
@@ -85,6 +89,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub heap_bind_indices: Vec<usize>,
     pub producer_draw_index: Option<usize>,
     pub producer_target_scope_index: Option<usize>,
+    pub producer_uniform_index: Option<usize>,
     pub generated_consumer_draw_index: Option<usize>,
     pub generated_consumer_uniform_index: Option<usize>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
@@ -110,6 +115,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     schedule: &NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
@@ -159,6 +165,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             resource_binds,
             producer_draws,
             producer_target_graph,
+            producer_uniforms,
             generated_consumer_draws,
             generated_consumer_targets,
             generated_consumer_pipelines,
@@ -262,6 +269,7 @@ fn requirement_from_step(
     resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
@@ -278,6 +286,7 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
@@ -327,6 +336,21 @@ fn requirement_from_step(
                         step.command_index
                     )
                 })?;
+            let producer_uniform = producer_uniforms
+                .uniform_for_producer_draw(producer.producer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask producer command {} has no clippingmaskimage4 uniform contract",
+                        step.command_index
+                    )
+                })?;
+            validate_producer_uniform_contract(
+                step.command_index,
+                producer,
+                target_scope.load_op,
+                target_scope.requires_initialized_initial_layout,
+                producer_uniform,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -337,6 +361,7 @@ fn requirement_from_step(
                 CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
                 Some(producer.producer_draw_index),
                 Some(target_scope.target_scope_index),
+                Some(producer_uniform.uniform_binding_index),
                 None,
                 None,
                 Some(target_scope.load_op),
@@ -353,6 +378,7 @@ fn requirement_from_step(
                     "bind_clippingmaskimage4_resource_heap",
                     "transition_alpha_mask_target_to_color_attachment",
                     "apply_0x14020d6a0_clear_policy",
+                    "apply_clippingmaskimage4_uniform_contract",
                     "record_layer_0x490_rt_method_8_mask_draw",
                     "retain_alpha_mask_target_layout",
                 ],
@@ -368,6 +394,7 @@ fn requirement_from_step(
                 Some(SceneGraphPipelineClass::LayerUtilityIndexed),
                 Some("R8_UNORM"),
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
+                None,
                 None,
                 None,
                 None,
@@ -463,6 +490,7 @@ fn requirement_from_step(
                 CLIPPINGTARGET_TEXTURE_SLOT_MASK,
                 None,
                 None,
+                None,
                 Some(consumer.consumer_draw_index),
                 Some(generated_uniform.uniform_binding_index),
                 None,
@@ -502,6 +530,7 @@ fn base_requirement(
     texture_slot_mask: u32,
     producer_draw_index: Option<usize>,
     producer_target_scope_index: Option<usize>,
+    producer_uniform_index: Option<usize>,
     generated_consumer_draw_index: Option<usize>,
     generated_consumer_uniform_index: Option<usize>,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
@@ -532,6 +561,7 @@ fn base_requirement(
         heap_bind_indices: step.matched_heap_bind_indices.clone(),
         producer_draw_index,
         producer_target_scope_index,
+        producer_uniform_index,
         generated_consumer_draw_index,
         generated_consumer_uniform_index,
         target_scope_load_op,
@@ -599,6 +629,54 @@ fn validate_producer_target(
             "scene layer alpha-mask producer command {command_index} has incompatible target {target:?} for {kind:?}"
         )),
     }
+}
+
+fn validate_producer_uniform_contract(
+    command_index: usize,
+    producer: &super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawPlan,
+    target_scope_load_op: NativeVulkanSceneRenderTargetLoadOp,
+    requires_initialized_initial_layout: bool,
+    producer_uniform: &NativeVulkanSceneLayerAlphaMaskProducerUniformBindingPlan,
+) -> Result<(), String> {
+    if producer_uniform.command_index != producer.command_index
+        || producer_uniform.producer_draw_index != producer.producer_draw_index
+        || producer_uniform.object != producer.object
+        || producer_uniform.target != producer.target
+        || producer_uniform.target_byte != producer.target_byte
+        || producer_uniform.clear_first != producer.clear_first
+        || producer_uniform.target_scope_load_op != target_scope_load_op
+    {
+        return Err(format!(
+            "scene layer alpha-mask producer command {command_index} uniform contract identity drifted"
+        ));
+    }
+    if producer_uniform.shader != "we/clippingmaskimage4"
+        || producer_uniform.texture_slot_mask != CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK
+        || producer_uniform.render_var0_uniform != "g_RenderVar0"
+        || producer_uniform.render_var0_component != "x"
+        || producer_uniform.render_var0_invert_flag_mask != 0x2
+        || producer_uniform.render_var0_formula != "r = mix(r, 1 - r, g_RenderVar0.x)"
+        || producer_uniform.clear_setter_vtable_offset != "0x118"
+        || producer_uniform.clear_emit_vtable_offset != "0x120"
+        || producer_uniform.slot5_morph_enable_condition != "MORPHING combo == 1"
+    {
+        return Err(format!(
+            "scene layer alpha-mask producer command {command_index} uniform contract drifted from 0x14020d6a0 shader/clear/morph facts"
+        ));
+    }
+    if producer_uniform.heap_bind_indices != producer.heap_bind_indices
+        || producer_uniform.pipeline_binding_count == 0
+    {
+        return Err(format!(
+            "scene layer alpha-mask producer command {command_index} uniform contract lost clippingmaskimage4 heap binding identity"
+        ));
+    }
+    if requires_initialized_initial_layout && producer_uniform.clear_first {
+        return Err(format!(
+            "scene layer alpha-mask producer command {command_index} uniform contract clear/load policy drifted"
+        ));
+    }
+    Ok(())
 }
 
 fn validate_copy_back_command(
@@ -753,8 +831,7 @@ fn requirement_for_step_kind(
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
     vec![
         "0x14020d6a0 subdraw entry -> layer+0x490 RT method [8] geometry binding",
-        "0x14020d6a0 g_RenderVar0.x / clear scalar uniform location",
-        "clippingmaskimage4 morph texture slot 5 enable condition",
+        "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
     ]
 }
 

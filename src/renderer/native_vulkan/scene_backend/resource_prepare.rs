@@ -131,6 +131,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
             context.command_buffer,
             context.frame_submission,
             resources,
+            frame,
         )?
         .len();
 

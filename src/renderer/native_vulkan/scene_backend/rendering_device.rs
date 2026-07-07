@@ -84,10 +84,12 @@ impl NativeVulkanRenderingDevice {
     pub fn sync_scene_gpu_uploads(
         &mut self,
         resources: &[SceneResource],
+        frame: &SceneFramePlan,
     ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
-        let upload_plan = NativeVulkanSceneGpuUploadPlan::from_resident_resources(
+        let upload_plan = NativeVulkanSceneGpuUploadPlan::from_scene_frame(
             &self.resource_storage,
             resources,
+            frame,
         )
         .map_err(|err| err.to_string())?;
         self.gpu_buffer_catalog
@@ -339,11 +341,24 @@ mod tests {
             indices: vec![0, 1, 0],
         }];
         let residency = SceneResourceResidencyPlan::from_resources(&resources);
+        let frame = SceneFramePlan {
+            residency: residency.clone(),
+            graph: SceneGraph { passes: Vec::new() },
+            effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            final_compositor: SceneFinalCompositorPlan::empty(),
+            layer_compositor: SceneLayerCompositorPlan::empty(),
+        };
         let mut device = NativeVulkanRenderingDevice::new();
         device.record_resource_residency(&residency);
 
-        let first = device.sync_scene_gpu_uploads(&resources).unwrap().to_vec();
-        let second = device.sync_scene_gpu_uploads(&resources).unwrap().to_vec();
+        let first = device
+            .sync_scene_gpu_uploads(&resources, &frame)
+            .unwrap()
+            .to_vec();
+        let second = device
+            .sync_scene_gpu_uploads(&resources, &frame)
+            .unwrap()
+            .to_vec();
 
         assert!(matches!(
             first.as_slice(),

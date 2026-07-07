@@ -853,7 +853,7 @@ mod tests {
         let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
         let plan = upload_plan(vec![render_state_utility_upload(
             NativeVulkanSceneRenderStateUtilityGeometry::LayerAlphaMaskCopyBackState48,
-            vec![1; 80],
+            vec![1; 60],
         )]);
         catalog.sync_upload_plan(&plan).unwrap();
 
@@ -873,7 +873,7 @@ mod tests {
             utility.vertex.key.role,
             NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex
         );
-        assert_eq!(utility.vertex.bytes, 80);
+        assert_eq!(utility.vertex.bytes, 60);
     }
 
     #[test]

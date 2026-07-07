@@ -230,8 +230,9 @@ mod tests {
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::copy_back::NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan;
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::copy_back_geometry::{
-        FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
-        TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY,
+        FLATTEXTURE_COPY_BACK_VERTEX_BYTES, FLATTEXTURE_COPY_BACK_VERTEX_COUNT,
+        FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES, TARGET_LIKE_INDEXED_QUAD_HELPER_RASTER_GEOMETRY,
+        native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
@@ -264,7 +265,7 @@ mod tests {
         assert_eq!(plan.resource_heap_bind_count, 1);
         assert_eq!(plan.direct_draw_count, 1);
         assert_eq!(plan.draw_call, "vkCmdDraw");
-        assert_eq!(plan.geometry.source_field, "render_state+0x48");
+        assert_eq!(plan.geometry.source_field, "state_body+0x48");
         assert_eq!(plan.geometry.draw_load_vma, 0x14020da78);
         assert_eq!(plan.geometry.draw_call_vma, 0x14020da7f);
         assert_eq!(plan.geometry.blend_toggle_vma, 0x14020da40);
@@ -309,7 +310,7 @@ mod tests {
             )
             .expect_err("missing geometry must fail");
 
-        assert!(err.contains("render_state+0x48"));
+        assert!(err.contains("state_body+0x48"));
     }
 
     #[test]
@@ -430,10 +431,12 @@ mod tests {
     fn geometry() -> NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
         NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers {
             vertex: vk::Buffer::from_raw(11),
-            vertex_bytes: 80,
-            vertex_count: 4,
+            vertex_bytes: FLATTEXTURE_COPY_BACK_VERTEX_BYTES,
+            vertex_count: FLATTEXTURE_COPY_BACK_VERTEX_COUNT,
             vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
-            vertex_payload_hash: 100,
+            vertex_payload_hash:
+                native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload(false)
+                    .payload_hash,
         }
     }
 }
