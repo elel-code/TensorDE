@@ -151,13 +151,15 @@ impl NativeVulkanSceneResourceHeapStore {
             .current
             .as_ref()
             .ok_or_else(|| "scene draw resource heap has no frame plan".to_owned())?;
-        let binding = current
-            .draw_bindings
-            .iter()
-            .find(|binding| binding.draw_index == draw_index)
-            .ok_or_else(|| {
-                format!("scene draw resource heap has no binding for draw {draw_index}")
-            })?;
+        let binding = current.draw_bindings.get(draw_index).ok_or_else(|| {
+            format!("scene draw resource heap has no binding for draw {draw_index}")
+        })?;
+        if binding.draw_index != draw_index {
+            return Err(format!(
+                "scene draw resource heap binding index mismatch: requested {}, stored {}",
+                draw_index, binding.draw_index
+            ));
+        }
         let resources = self
             .resources
             .as_ref()
@@ -170,6 +172,7 @@ impl NativeVulkanSceneResourceHeapStore {
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,
             texture_count: binding.texture_count,
+            shader_mappings: binding.shader_mappings.clone(),
             resource_bind:
                 native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
                     resources,

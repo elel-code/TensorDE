@@ -53,11 +53,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub resource_heap: NativeVulkanSceneResourceHeapFramePlan,
     pub resource_heap_action_count: usize,
     pub texture_image_action_count: usize,
-    pub texture_heap_action_count: usize,
     pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 9],
+    pub command_order: [&'static str; 8],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -68,7 +67,6 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         resource_heap: NativeVulkanSceneResourceHeapFramePlan,
         resource_heap_action_count: usize,
         texture_image_action_count: usize,
-        texture_heap_action_count: usize,
         gpu_buffer_action_count: usize,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
         frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
@@ -80,7 +78,6 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             resource_heap,
             resource_heap_action_count,
             texture_image_action_count,
-            texture_heap_action_count,
             gpu_buffer_action_count,
             pipeline_warmup,
             frame,
@@ -90,7 +87,6 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "prepare_texture_descriptors",
                 "record_texture_image_uploads",
                 "sync_draw_resource_heap",
-                "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands",
@@ -144,21 +140,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         .current_resource_heap_frame_plan()
         .ok_or_else(|| "scene mesh runtime missing draw resource heap frame plan".to_owned())?
         .clone();
-    let texture_heap_action_count = frame_resources
-        .sync_texture_descriptor_heap(
-            context.device,
-            context.memory_properties,
-            context.descriptor_heap_properties,
-            &texture_descriptors,
-        )?
-        .len();
-    let texture_descriptor_heap_plan = frame_resources
-        .current_texture_heap_frame_plan()
-        .ok_or_else(|| "scene mesh runtime missing texture descriptor heap frame plan".to_owned())?
-        .descriptor_heap_plan
-        .clone();
+    let draw_resource_heap_plan = resource_heap.descriptor_heap_plan.clone();
     let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
-        texture_descriptor_heap_plan: &texture_descriptor_heap_plan,
+        draw_resource_heap_plan: &draw_resource_heap_plan,
     };
     let gpu_buffer_action_count = frame_resources
         .sync_gpu_uploads_recorded(
@@ -190,7 +174,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
                 NativeVulkanScenePipelineCacheKey::from_bind_key(key, context.target_format)?;
             Ok(frame_resources.cached_mesh_pipeline(&cache_key)?.pipeline)
         },
-        |texture_set| frame_resources.texture_heap_draw_bind_info_for_set(texture_set),
+        |draw_index| frame_resources.resource_heap_draw_bind_info_for_draw(draw_index),
         |geometry| frame_resources.mesh_draw_buffers(geometry),
     )?;
 
@@ -201,7 +185,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         resource_heap,
         resource_heap_action_count,
         texture_image_action_count,
-        texture_heap_action_count,
         gpu_buffer_action_count,
         pipeline_warmup,
         frame_plan,
@@ -270,7 +253,7 @@ mod tests {
                 output: SceneGraphTarget::Swapchain,
                 draw_count: 1,
                 pipeline_bind_count: 1,
-                texture_heap_bind_count: 1,
+                resource_heap_bind_count: 1,
                 indexed_draw_count: 1,
                 commands: Vec::new(),
             },
@@ -330,7 +313,6 @@ mod tests {
             resource_heap,
             2,
             4,
-            1,
             3,
             warmup,
             frame,
@@ -344,7 +326,6 @@ mod tests {
                 "prepare_texture_descriptors",
                 "record_texture_image_uploads",
                 "sync_draw_resource_heap",
-                "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands"
@@ -356,7 +337,6 @@ mod tests {
         assert_eq!(plan.resource_heap.resource_descriptor_count, 2);
         assert_eq!(plan.resource_heap_action_count, 2);
         assert_eq!(plan.texture_image_action_count, 4);
-        assert_eq!(plan.texture_heap_action_count, 1);
         assert_eq!(plan.gpu_buffer_action_count, 3);
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass.draw_count, 1);

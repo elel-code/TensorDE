@@ -1,4 +1,4 @@
-//! WE shader texture-set keys for descriptor-heap draw binding.
+//! WE shader texture-set keys inside scene draw resource sets.
 //!
 //! References:
 //! - `reverse-engineered/docs/material-format.md`

@@ -11,20 +11,16 @@
 use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphPipelineClass};
 
 use super::pipeline::NativeVulkanScenePipelineKey;
-use super::texture_heap::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshDrawListTransition<'a> {
     pub pipeline_key: NativeVulkanScenePipelineKey<'a>,
     pub bind_pipeline: bool,
-    pub texture_set: Option<NativeVulkanSceneTextureSetKey>,
-    pub bind_texture_heap: bool,
 }
 
 #[derive(Debug, Default)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshDrawListState<'a> {
     last_pipeline_key: Option<NativeVulkanScenePipelineKey<'a>>,
-    last_texture_set: Option<Option<NativeVulkanSceneTextureSetKey>>,
 }
 
 impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
@@ -41,20 +37,13 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
         }
 
         let pipeline_key = NativeVulkanScenePipelineKey::from_draw(draw)?;
-        let texture_set_key = scene_mesh_draw_texture_set_key(draw)?;
-        let texture_set = (!texture_set_key.is_empty()).then_some(texture_set_key);
         let bind_pipeline = self.last_pipeline_key != Some(pipeline_key);
-        let bind_texture_heap =
-            texture_set.is_some() && self.last_texture_set != Some(texture_set.clone());
 
         self.last_pipeline_key = Some(pipeline_key);
-        self.last_texture_set = Some(texture_set.clone());
 
         Ok(NativeVulkanSceneMeshDrawListTransition {
             pipeline_key,
             bind_pipeline,
-            texture_set,
-            bind_texture_heap,
         })
     }
 }
@@ -68,7 +57,7 @@ mod tests {
     };
 
     #[test]
-    fn mesh_draw_list_keeps_we_order_but_skips_redundant_pipeline_and_heap_binds() {
+    fn mesh_draw_list_keeps_we_order_but_skips_redundant_pipeline_binds() {
         let mut additive_draw = mesh_draw(
             SceneObjectId(4),
             SceneGeometryId(7),
@@ -113,13 +102,9 @@ mod tests {
             .expect("fourth draw");
 
         assert!(first.bind_pipeline);
-        assert!(first.bind_texture_heap);
         assert!(!second.bind_pipeline);
-        assert!(!second.bind_texture_heap);
         assert!(!third.bind_pipeline);
-        assert!(third.bind_texture_heap);
         assert!(fourth.bind_pipeline);
-        assert!(!fourth.bind_texture_heap);
     }
 
     #[test]

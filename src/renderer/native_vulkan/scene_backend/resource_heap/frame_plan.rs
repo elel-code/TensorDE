@@ -29,10 +29,8 @@ use super::super::material_uniforms::{
 use super::super::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
 };
-use super::super::texture_heap::texture_set::{
-    NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key,
-};
 use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
+use super::texture_set::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
 
 const WE_GENERICIMAGE4_PS_MATERIAL_CONSTANT_BUFFER_SLOT: u32 = 3;
 
@@ -251,6 +249,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                     resource_set_to_slice.insert(resource_set_key.clone(), slice);
                     slice
                 };
+                let shader_mappings = draw_resource_set_shader_mappings(&texture_set);
                 draw_bindings.push(NativeVulkanSceneResourceHeapDrawBinding {
                     draw_index,
                     object: draw.object,
@@ -268,7 +267,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                     base_sampler_heap_offset: None,
                     resource_descriptor_count: slice.resource_descriptor_count,
                     texture_count: slice.texture_count,
-                    shader_mappings: draw_resource_set_shader_mappings(),
+                    shader_mappings,
                 });
                 draw_index = draw_index.saturating_add(1);
             }
@@ -597,8 +596,22 @@ fn scene_texture_vk_format(format: SceneTextureFormat) -> vk::Format {
     }
 }
 
-fn draw_resource_set_shader_mappings() -> Vec<String> {
-    vec![format!(
+fn draw_resource_set_shader_mappings(texture_set: &NativeVulkanSceneTextureSetKey) -> Vec<String> {
+    let mut mappings = vec![format!(
         "WE PSSetConstantBuffers(slot={WE_GENERICIMAGE4_PS_MATERIAL_CONSTANT_BUFFER_SLOT}) -> draw-resource-set-offset0"
-    )]
+    )];
+    mappings.extend(
+        texture_set
+            .bindings
+            .iter()
+            .enumerate()
+            .map(|(ordinal, binding)| {
+                format!(
+                    "{} -> draw-resource-set-offset{}",
+                    super::texture_set::scene_shader_texture_mapping(binding.slot),
+                    ordinal + 1
+                )
+            }),
+    );
+    mappings
 }

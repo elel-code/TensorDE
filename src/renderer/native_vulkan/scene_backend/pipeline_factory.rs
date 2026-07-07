@@ -19,8 +19,9 @@ use crate::engine::scene_engine::{
     WeShaderInterface,
 };
 use crate::renderer::native_vulkan::vulkan::{
-    NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
-    native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
+    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+    NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
 };
 
 use super::pipeline::{
@@ -36,8 +37,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineShade
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineLayoutSpec<'a> {
-    pub texture_descriptor_heap_plan:
-        &'a NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    pub draw_resource_heap_plan: &'a NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -83,7 +83,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
     validate_scene_mesh_pipeline_key(key)?;
     validate_spirv(shaders.vertex_spirv, "scene mesh vertex")?;
     validate_spirv(shaders.fragment_spirv, "scene mesh fragment")?;
-    validate_scene_mesh_descriptor_heap_pipeline_layout(layout.texture_descriptor_heap_plan, key)?;
+    validate_scene_mesh_descriptor_heap_pipeline_layout(layout.draw_resource_heap_plan, key)?;
 
     let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
         let vertex_module =
@@ -94,7 +94,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
             let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
                 let shader_entry = b"main\0";
                 let descriptor_heap_mappings =
-                    scene_mesh_descriptor_heap_mappings(layout.texture_descriptor_heap_plan, key)?;
+                    scene_mesh_descriptor_heap_mappings(layout.draw_resource_heap_plan, key)?;
                 let mut descriptor_heap_mapping_info =
                     vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
                         .mappings(&descriptor_heap_mappings)
@@ -334,25 +334,32 @@ fn scene_mesh_shader_resource_mapping_labels(
         .enumerate()
         .map(|(ordinal, slot)| {
             format!(
-                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> texture-set-offset{ordinal}"
+                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> draw-resource-set-texture-offset{}",
+                ordinal + 1
             )
         })
         .collect()
 }
 
 fn scene_mesh_descriptor_heap_mappings(
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
-    validate_scene_mesh_descriptor_heap_pipeline_layout(descriptor_heap_plan, key)?;
+    let Some(layout) = scene_mesh_draw_resource_heap_texture_layout(descriptor_heap_plan, key)?
+    else {
+        return Ok(Vec::new());
+    };
     scene_mesh_texture_slots(key.texture_slot_mask)
         .into_iter()
         .enumerate()
         .map(|(ordinal, slot)| {
-            native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
                 descriptor_heap_plan,
                 slot,
-                ordinal,
+                layout.base_resource_descriptor_index,
+                layout.base_resource_descriptor_index + 1 + ordinal,
+                layout.base_sampler_descriptor_index,
+                layout.base_sampler_descriptor_index + ordinal,
             )
         })
         .collect()
@@ -394,31 +401,87 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
 }
 
 fn validate_scene_mesh_descriptor_heap_pipeline_layout(
-    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<(), String> {
+    scene_mesh_draw_resource_heap_texture_layout(descriptor_heap_plan, key).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SceneMeshDrawResourceHeapTextureLayout {
+    base_resource_descriptor_index: usize,
+    base_sampler_descriptor_index: usize,
+}
+
+fn scene_mesh_draw_resource_heap_texture_layout(
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    key: &NativeVulkanScenePipelineCacheKey,
+) -> Result<Option<SceneMeshDrawResourceHeapTextureLayout>, String> {
     let texture_slot_count = key.texture_slot_mask.count_ones() as usize;
     if texture_slot_count == 0 {
-        return Ok(());
+        return Ok(None);
     }
     if !descriptor_heap_plan.backend_ready {
         return Err(format!(
-            "scene mesh pipeline requires ready texture descriptor heap mapping: {:?}",
+            "scene mesh pipeline requires ready draw resource heap mapping: {:?}",
             descriptor_heap_plan.blocking_reason
         ));
     }
-    if descriptor_heap_plan.image_count == 0 {
+    if descriptor_heap_plan.uniform_buffer_count == 0 {
         return Err(
-            "scene mesh pipeline requires at least one sampled texture descriptor".to_owned(),
+            "scene mesh pipeline requires a WE material uniform descriptor before sampled textures"
+                .to_owned(),
         );
     }
-    if descriptor_heap_plan.image_count < texture_slot_count {
+    if descriptor_heap_plan.sampled_image_count < texture_slot_count {
         return Err(format!(
-            "scene mesh pipeline shader '{}' requires {} WE texture mappings but descriptor heap has {} images",
-            key.shader, texture_slot_count, descriptor_heap_plan.image_count
+            "scene mesh pipeline shader '{}' requires {} WE texture mappings but draw resource heap has {} sampled images",
+            key.shader, texture_slot_count, descriptor_heap_plan.sampled_image_count
         ));
     }
-    Ok(())
+    if descriptor_heap_plan.sampler_count < texture_slot_count {
+        return Err(format!(
+            "scene mesh pipeline shader '{}' requires {} sampler mappings but draw resource heap has {} samplers",
+            key.shader, texture_slot_count, descriptor_heap_plan.sampler_count
+        ));
+    }
+
+    for base_resource_descriptor_index in 0..descriptor_heap_plan.resource_descriptor_kinds.len() {
+        if descriptor_heap_plan.resource_descriptor_kinds[base_resource_descriptor_index]
+            != NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
+        {
+            continue;
+        }
+        let texture_start = base_resource_descriptor_index + 1;
+        let texture_end = texture_start + texture_slot_count;
+        if texture_end > descriptor_heap_plan.resource_descriptor_kinds.len() {
+            continue;
+        }
+        if descriptor_heap_plan.resource_descriptor_kinds[texture_start..texture_end]
+            .iter()
+            .all(|kind| {
+                *kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
+            })
+        {
+            let base_sampler_descriptor_index = descriptor_heap_plan.resource_descriptor_kinds
+                [..base_resource_descriptor_index]
+                .iter()
+                .filter(|kind| {
+                    **kind
+                        == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
+                })
+                .count();
+            return Ok(Some(SceneMeshDrawResourceHeapTextureLayout {
+                base_resource_descriptor_index,
+                base_sampler_descriptor_index,
+            }));
+        }
+    }
+
+    Err(format!(
+        "scene mesh pipeline shader '{}' requires a draw resource-set slice shaped as WE material uniform + {} sampled textures",
+        key.shader, texture_slot_count
+    ))
 }
 
 fn create_scene_shader_module(
@@ -445,6 +508,12 @@ fn validate_spirv(code: &[u32], label: &'static str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::engine::scene_engine::SceneGraphPipelineClass;
+    use crate::renderer::native_vulkan::vulkan::{
+        NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+        NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput,
+        native_vulkan_vulkanalia_descriptor_heap_resource_plan,
+    };
 
     #[test]
     fn mesh_pipeline_plan_uses_scene_mesh_vertex_layout_and_dynamic_viewport() {
@@ -459,7 +528,7 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> texture-set-offset0".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned()
             ]
         );
         assert_eq!(plan.blend, "translucent-src-alpha-inv-src-alpha");
@@ -510,39 +579,20 @@ mod tests {
             texture_slot_mask: 1,
             ..pipeline_key()
         };
-        let err = validate_scene_mesh_descriptor_heap_pipeline_layout(
-            &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
-                binding: "vulkanalia",
-                route: "descriptor-heap-image-sampler-plan",
-                descriptor_model: "VK_EXT_descriptor_heap",
-                backend_ready: false,
-                blocking_reason: Some("no-sampled-images"),
-                image_count: 0,
-                resource_heap_alignment: 0,
-                sampler_heap_alignment: 0,
-                image_descriptor_size: 0,
-                sampler_descriptor_size: 0,
-                image_descriptor_stride: 0,
-                sampler_descriptor_stride: 0,
-                resource_heap_bytes: 0,
-                sampler_heap_bytes: 0,
-                resource_heap_reserved_range_offset: 0,
-                resource_heap_reserved_range_size: 0,
-                sampler_heap_reserved_range_offset: 0,
-                sampler_heap_reserved_range_size: 0,
-                image_descriptor_offsets: Vec::new(),
-                sampler_descriptor_offsets: Vec::new(),
-                max_resource_heap_size: 0,
-                max_sampler_heap_size: 0,
-                command_order: Vec::new(),
-                next_gate: "test",
-                primary_reference: "test",
+        let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 1,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default(),
             },
-            &key,
-        )
-        .expect_err("descriptor heap mapping must be ready");
+        );
+        let err = validate_scene_mesh_descriptor_heap_pipeline_layout(&descriptor_heap_plan, &key)
+            .expect_err("descriptor heap mapping must be ready");
 
-        assert!(err.contains("ready texture descriptor heap mapping"));
+        assert!(err.contains("ready draw resource heap mapping"));
     }
 
     #[test]
@@ -557,8 +607,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> texture-set-offset0".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding4.g_Texture4 -> texture-set-offset1".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding4.g_Texture4 -> draw-resource-set-texture-offset2".to_owned()
             ]
         );
     }

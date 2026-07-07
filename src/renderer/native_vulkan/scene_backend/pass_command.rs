@@ -30,9 +30,9 @@ use super::pipeline::{
 use super::resource_buffers::{
     NativeVulkanSceneMeshDrawBufferRecords, NativeVulkanSceneMeshDrawBuffers,
 };
-use super::texture_heap::{
-    NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureHeapDrawBindPlan,
-    NativeVulkanSceneTextureSetKey, native_vulkan_record_scene_texture_heap_draw_bind_command,
+use super::resource_heap::{
+    NativeVulkanSceneResourceHeapDrawBindInfo, NativeVulkanSceneResourceHeapDrawBindPlan,
+    native_vulkan_record_scene_resource_heap_draw_bind_command,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -42,7 +42,7 @@ pub struct NativeVulkanSceneMeshPassCommandPlan<'a> {
     pub output: SceneGraphTarget,
     pub draw_count: usize,
     pub pipeline_bind_count: usize,
-    pub texture_heap_bind_count: usize,
+    pub resource_heap_bind_count: usize,
     pub indexed_draw_count: usize,
     pub commands: Vec<NativeVulkanSceneMeshPassCommand<'a>>,
 }
@@ -57,8 +57,8 @@ pub enum NativeVulkanSceneMeshPassCommand<'a> {
     BindPipeline {
         bind: NativeVulkanScenePipelineBindPlan<'a>,
     },
-    BindTextureHeap {
-        bind: NativeVulkanSceneTextureHeapDrawBindPlan,
+    BindResourceHeap {
+        bind: NativeVulkanSceneResourceHeapDrawBindPlan,
     },
     DrawIndexed {
         object: SceneObjectId,
@@ -121,7 +121,7 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
             output: pass.output,
             draw_count: pass.draws.len(),
             pipeline_bind_count,
-            texture_heap_bind_count: 0,
+            resource_heap_bind_count: 0,
             indexed_draw_count,
             commands,
         })
@@ -131,22 +131,20 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_draw_commands<
     'a,
     PipelineForKey,
-    TextureHeapBindForResource,
+    ResourceHeapBindForDraw,
     MeshBuffersForGeometry,
 >(
     device: &Device,
     command_buffer: vk::CommandBuffer,
     pass: &'a SceneGraphPass,
     mut pipeline_for_key: PipelineForKey,
-    mut texture_heap_bind_for_resource: TextureHeapBindForResource,
+    mut resource_heap_bind_for_draw: ResourceHeapBindForDraw,
     mut mesh_buffers: MeshBuffersForGeometry,
 ) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String>
 where
     PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
-    TextureHeapBindForResource: FnMut(
-        &NativeVulkanSceneTextureSetKey,
-    )
-        -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
+    ResourceHeapBindForDraw:
+        FnMut(usize) -> Result<NativeVulkanSceneResourceHeapDrawBindInfo, String>,
     MeshBuffersForGeometry:
         FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
 {
@@ -159,10 +157,11 @@ where
 
     let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
     let mut pipeline_bind_count = 0usize;
-    let mut texture_heap_bind_count = 0usize;
+    let mut resource_heap_bind_count = 0usize;
     let mut indexed_draw_count = 0usize;
+    let mut last_resource_set_index = None::<usize>;
 
-    for draw in &pass.draws {
+    for (draw_index, draw) in pass.draws.iter().enumerate() {
         let transition = draw_list_state.next_draw(&pass.name, draw)?;
         if transition.bind_pipeline {
             let pipeline = pipeline_for_key(transition.pipeline_key)?;
@@ -176,22 +175,19 @@ where
             pipeline_bind_count += 1;
         }
 
-        if transition.bind_texture_heap {
-            let texture_set = transition.texture_set.as_ref().ok_or_else(|| {
-                format!(
-                    "scene mesh pass '{}' texture heap transition lost WE texture set for object {:?}",
-                    pass.name, draw.object
-                )
-            })?;
-            let bind_info = texture_heap_bind_for_resource(texture_set)?;
-            let bind = native_vulkan_record_scene_texture_heap_draw_bind_command(
+        let bind_info = resource_heap_bind_for_draw(draw_index)?;
+        if last_resource_set_index != Some(bind_info.resource_set_index) {
+            let resource_set_index = bind_info.resource_set_index;
+            let bind = native_vulkan_record_scene_resource_heap_draw_bind_command(
                 device,
                 command_buffer,
+                draw_index,
                 draw,
                 bind_info,
             )?;
-            commands.push(NativeVulkanSceneMeshPassCommand::BindTextureHeap { bind });
-            texture_heap_bind_count += 1;
+            commands.push(NativeVulkanSceneMeshPassCommand::BindResourceHeap { bind });
+            resource_heap_bind_count += 1;
+            last_resource_set_index = Some(resource_set_index);
         }
 
         let geometry = draw.geometry.ok_or_else(|| {
@@ -219,7 +215,7 @@ where
         output: pass.output,
         draw_count: pass.draws.len(),
         pipeline_bind_count,
-        texture_heap_bind_count,
+        resource_heap_bind_count,
         indexed_draw_count,
         commands,
     })
@@ -250,7 +246,7 @@ mod tests {
 
         assert_eq!(plan.draw_count, 2);
         assert_eq!(plan.pipeline_bind_count, 1);
-        assert_eq!(plan.texture_heap_bind_count, 0);
+        assert_eq!(plan.resource_heap_bind_count, 0);
         assert_eq!(plan.indexed_draw_count, 2);
         assert!(matches!(
             plan.commands.as_slice(),

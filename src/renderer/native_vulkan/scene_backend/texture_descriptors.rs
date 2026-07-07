@@ -18,7 +18,7 @@ use crate::engine::scene_engine::{
     SceneTextureFormat, SceneTextureResidency,
 };
 
-use super::texture_heap::texture_set::scene_shader_texture_mapping;
+use super::resource_heap::texture_set::scene_shader_texture_mapping;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptorFramePlan {

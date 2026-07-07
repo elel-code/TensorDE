@@ -13,8 +13,7 @@ use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
 use crate::engine::scene_engine::{SceneGraphDraw, SceneObjectId};
 
-use super::super::texture_heap::NativeVulkanSceneTextureSetKey;
-use super::super::texture_heap::scene_mesh_draw_texture_set_key;
+use super::texture_set::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
 
 #[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawBindInfo {
@@ -25,6 +24,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawB
     pub base_resource_descriptor_index: usize,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
+    pub shader_mappings: Vec<String>,
     pub resource_bind: vk::BindHeapInfoEXT,
     pub sampler_bind: Option<vk::BindHeapInfoEXT>,
 }
@@ -89,7 +89,7 @@ impl NativeVulkanSceneResourceHeapDrawBindPlan {
             object: draw.object,
             draw_index,
             resource_set_index: bind_info.resource_set_index,
-            shader_mappings: texture_set.shader_mappings(),
+            shader_mappings: bind_info.shader_mappings.clone(),
             texture_set,
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
             resource_descriptor_count: bind_info.resource_descriptor_count,
@@ -170,6 +170,7 @@ mod tests {
         base_resource_descriptor_index: usize,
     ) -> NativeVulkanSceneResourceHeapDrawBindInfo {
         let texture_count = texture_set.texture_count();
+        let shader_mappings = texture_set.shader_mappings();
         NativeVulkanSceneResourceHeapDrawBindInfo {
             draw_index,
             object: SceneObjectId(4),
@@ -178,6 +179,7 @@ mod tests {
             base_resource_descriptor_index,
             resource_descriptor_count: texture_count + 1,
             texture_count,
+            shader_mappings,
             resource_bind: vk::BindHeapInfoEXT::default(),
             sampler_bind: Some(vk::BindHeapInfoEXT::default()),
         }

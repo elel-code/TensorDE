@@ -10,12 +10,16 @@
 mod bind_command;
 mod frame_plan;
 mod store;
+pub(in crate::renderer::native_vulkan) mod texture_set;
 mod vk_descriptor;
 
 #[cfg(test)]
 mod tests;
 
-pub(in crate::renderer::native_vulkan) use bind_command::NativeVulkanSceneResourceHeapDrawBindInfo;
+pub(in crate::renderer::native_vulkan) use bind_command::{
+    NativeVulkanSceneResourceHeapDrawBindInfo, NativeVulkanSceneResourceHeapDrawBindPlan,
+    native_vulkan_record_scene_resource_heap_draw_bind_command,
+};
 pub(in crate::renderer::native_vulkan) use frame_plan::NativeVulkanSceneResourceHeapFramePlan;
 pub(in crate::renderer::native_vulkan) use store::{
     NativeVulkanSceneResourceHeapStore, NativeVulkanSceneResourceHeapSyncAction,

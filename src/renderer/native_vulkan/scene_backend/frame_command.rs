@@ -28,9 +28,7 @@ use super::render_target::{
     native_vulkan_record_scene_swapchain_render_target_end,
 };
 use super::resource_buffers::NativeVulkanSceneMeshDrawBuffers;
-use super::texture_heap::{
-    NativeVulkanSceneTextureHeapDrawBindInfo, NativeVulkanSceneTextureSetKey,
-};
+use super::resource_heap::NativeVulkanSceneResourceHeapDrawBindInfo;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneMeshFrameCommandPlan<'a> {
@@ -61,7 +59,7 @@ impl<'a> NativeVulkanSceneMeshFrameCommandPlan<'a> {
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_frame_commands<
     'a,
     PipelineForKey,
-    TextureHeapBindForResource,
+    ResourceHeapBindForDraw,
     MeshBuffersForGeometry,
 >(
     device: &Device,
@@ -70,15 +68,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_frame_
     clear_color: Option<NativeVulkanClearColor>,
     pass: &'a SceneGraphPass,
     pipeline_for_key: PipelineForKey,
-    texture_heap_bind_for_resource: TextureHeapBindForResource,
+    resource_heap_bind_for_draw: ResourceHeapBindForDraw,
     mesh_buffers: MeshBuffersForGeometry,
 ) -> Result<NativeVulkanSceneMeshFrameCommandPlan<'a>, String>
 where
     PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
-    TextureHeapBindForResource: FnMut(
-        &NativeVulkanSceneTextureSetKey,
-    )
-        -> Result<NativeVulkanSceneTextureHeapDrawBindInfo, String>,
+    ResourceHeapBindForDraw:
+        FnMut(usize) -> Result<NativeVulkanSceneResourceHeapDrawBindInfo, String>,
     MeshBuffersForGeometry:
         FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
 {
@@ -93,7 +89,7 @@ where
         command_buffer,
         pass,
         pipeline_for_key,
-        texture_heap_bind_for_resource,
+        resource_heap_bind_for_draw,
         mesh_buffers,
     )?;
     native_vulkan_record_scene_swapchain_render_target_end(
@@ -135,7 +131,7 @@ mod tests {
                 output: SceneGraphTarget::Swapchain,
                 draw_count: 2,
                 pipeline_bind_count: 1,
-                texture_heap_bind_count: 0,
+                resource_heap_bind_count: 0,
                 indexed_draw_count: 2,
                 commands: Vec::new(),
             },
@@ -175,7 +171,7 @@ mod tests {
                 output: SceneGraphTarget::Swapchain,
                 draw_count: 0,
                 pipeline_bind_count: 0,
-                texture_heap_bind_count: 0,
+                resource_heap_bind_count: 0,
                 indexed_draw_count: 0,
                 commands: Vec::new(),
             },
