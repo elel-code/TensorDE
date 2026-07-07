@@ -12,3 +12,4 @@
 artifacts/
 reverse-engineered/extracted/
 scripts/__pycache__/
+reverse-engineered/references/
