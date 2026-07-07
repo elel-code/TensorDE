@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use vulkanalia::vk;
 
+mod consumer_draws;
 mod copy_back;
 mod copy_back_command;
 mod copy_back_geometry;
@@ -38,6 +39,10 @@ use crate::engine::scene_engine::{
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout};
 use super::resource_heap::texture_set::scene_shader_texture_mapping;
+pub(in crate::renderer::native_vulkan) use consumer_draws::{
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
+};
 pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHADER;
 pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
