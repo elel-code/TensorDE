@@ -59,6 +59,7 @@ def forbidden_patterns() -> tuple[Pattern[str], ...]:
     set_upper = low_b.upper()
     pool_upper = pool_b.upper()
     return (
+        re.compile(rf"{legacy_binding_a}\s+{low_b}", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_a}[\s_-]+{low_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_a}{camel_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_b}[\s_-]+{low_b}s?\b", re.IGNORECASE),
