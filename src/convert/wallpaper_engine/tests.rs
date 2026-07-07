@@ -153,6 +153,133 @@ fn parses_eye_puppet_clipping_records_before_mdls() {
     );
     assert!(mesh.clipping_records[0].bones.contains(&42));
     assert!(mesh.clipping_records[0].bones.contains(&43));
+    assert!(mesh.clipping_active_sources.is_empty());
+}
+
+#[test]
+fn parses_mdmp_active_sources_from_mdl_owner_flags() {
+    let owner_flags = (1 << 10) | (1 << 11) | (1 << 12) | (1 << 13);
+    let mut bytes = Vec::new();
+    test_push_cstr(&mut bytes, "MDLV0023");
+    test_push_u32(&mut bytes, 0x0180_0009);
+    test_push_u32(&mut bytes, 1);
+    test_push_u32(&mut bytes, 1);
+    test_push_mdlv0023_owner(&mut bytes, "materials/test.json", owner_flags);
+
+    let mdmp_start = bytes.len();
+    bytes.extend_from_slice(b"MDMP0001\0");
+    let mdmp_end_field = bytes.len();
+    test_push_u32(&mut bytes, 0);
+    test_push_u16(&mut bytes, 1);
+    test_push_u32(&mut bytes, 0.5f32.to_bits());
+    test_push_u32(&mut bytes, 9);
+    bytes.extend_from_slice(&0x1122_3344_5566_7788u64.to_le_bytes());
+    test_push_cstr(&mut bytes, "eye-right");
+    test_push_block(&mut bytes, &[1; 12]);
+    test_push_block(&mut bytes, &[2; 12]);
+    test_push_block(&mut bytes, &[3; 12]);
+    test_push_block(&mut bytes, &[4; 4]);
+    test_push_u32(&mut bytes, 4);
+    test_push_u32(&mut bytes, 2);
+    test_push_f32(&mut bytes, -0.25);
+    test_push_f32(&mut bytes, 0.75);
+    let mdmp_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdmp_end_field..mdmp_end_field + 4].copy_from_slice(&mdmp_end.to_le_bytes());
+
+    let parsed_owner_flags = scene_parse_puppet_entry_owner_flags(&bytes, mdmp_start).unwrap();
+    assert_eq!(parsed_owner_flags, vec![owner_flags]);
+
+    let active_sources =
+        scene_parse_puppet_mdmp_active_sources(&bytes, &parsed_owner_flags).unwrap();
+    assert_eq!(active_sources.len(), 1);
+    assert_eq!(active_sources[0].source_name, "eye-right");
+    assert_eq!(active_sources[0].scalar_bits, 0.5f32.to_bits());
+    assert_eq!(active_sources[0].source_scale, 2);
+    assert_eq!(active_sources[0].flags, 2);
+    assert_eq!(active_sources[0].transform_index, 4);
+    assert_eq!(active_sources[0].parameter0, -0.25);
+    assert_eq!(active_sources[0].parameter1, 0.75);
+}
+
+#[test]
+fn parses_mdmp_owner_scalar_and_scale_even_when_owner_has_no_active_sources() {
+    let mut bytes = Vec::new();
+    test_push_cstr(&mut bytes, "MDLV0023");
+    test_push_u32(&mut bytes, 0x0180_0009);
+    test_push_u32(&mut bytes, 1);
+    test_push_u32(&mut bytes, 2);
+    test_push_mdlv0023_owner(&mut bytes, "materials/empty.json", 0);
+    test_push_mdlv0023_owner(&mut bytes, "materials/active.json", 1 << 13);
+
+    let mdmp_start = bytes.len();
+    bytes.extend_from_slice(b"MDMP0001\0");
+    let mdmp_end_field = bytes.len();
+    test_push_u32(&mut bytes, 0);
+    test_push_u16(&mut bytes, 0);
+    test_push_u32(&mut bytes, 1.25f32.to_bits());
+    test_push_u32(&mut bytes, 7);
+    test_push_u16(&mut bytes, 1);
+    test_push_u32(&mut bytes, 0.75f32.to_bits());
+    test_push_u32(&mut bytes, 3);
+    bytes.extend_from_slice(&0x8877_6655_4433_2211u64.to_le_bytes());
+    test_push_cstr(&mut bytes, "second-owner-source");
+    test_push_block(&mut bytes, &[1; 18]);
+    test_push_u32(&mut bytes, 9);
+    test_push_u32(&mut bytes, 2);
+    test_push_f32(&mut bytes, 1.5);
+    test_push_f32(&mut bytes, -0.5);
+    let mdmp_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdmp_end_field..mdmp_end_field + 4].copy_from_slice(&mdmp_end.to_le_bytes());
+
+    let parsed_owner_flags = scene_parse_puppet_entry_owner_flags(&bytes, mdmp_start).unwrap();
+    assert_eq!(parsed_owner_flags, vec![0, 1 << 13]);
+
+    let active_sources =
+        scene_parse_puppet_mdmp_active_sources(&bytes, &parsed_owner_flags).unwrap();
+    assert_eq!(active_sources.len(), 1);
+    assert_eq!(active_sources[0].source_name, "second-owner-source");
+    assert_eq!(active_sources[0].scalar_bits, 0.75f32.to_bits());
+    assert_eq!(active_sources[0].source_scale, 3);
+    assert_eq!(active_sources[0].transform_index, 9);
+    assert_eq!(active_sources[0].flags, 2);
+    assert_eq!(active_sources[0].parameter0, 1.5);
+    assert_eq!(active_sources[0].parameter1, -0.5);
+}
+
+fn test_push_mdlv0023_owner(bytes: &mut Vec<u8>, material: &str, owner_flags: u32) {
+    test_push_cstr(bytes, material);
+    test_push_u32(bytes, owner_flags);
+    for _ in 0..6 {
+        test_push_f32(bytes, 0.0);
+    }
+    test_push_u32(bytes, 9);
+    test_push_block(bytes, &[]);
+    test_push_block(bytes, &[]);
+    bytes.push(0);
+    bytes.push(0);
+    test_push_u32(bytes, 0);
+}
+
+fn test_push_u16(bytes: &mut Vec<u8>, value: u16) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn test_push_u32(bytes: &mut Vec<u8>, value: u32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn test_push_f32(bytes: &mut Vec<u8>, value: f32) {
+    bytes.extend_from_slice(&value.to_le_bytes());
+}
+
+fn test_push_cstr(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+}
+
+fn test_push_block(bytes: &mut Vec<u8>, value: &[u8]) {
+    test_push_u32(bytes, u32::try_from(value.len()).unwrap());
+    bytes.extend_from_slice(value);
 }
 
 #[test]

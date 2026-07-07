@@ -5456,6 +5456,11 @@ fn scene_parse_puppet_attachment_map(
         mesh.clips =
             scene_parse_puppet_animation_clips(bytes, mdls_end, bone_count).unwrap_or_default();
         mesh.clipping_records = scene_parse_puppet_clipping_records(bytes, mdls_offset, bone_count);
+        if scene_find_mdl_section(bytes, b"MDMP").is_some() {
+            let owner_flags = scene_parse_puppet_entry_owner_flags(bytes, mdls_offset)?;
+            mesh.clipping_active_sources =
+                scene_parse_puppet_mdmp_active_sources(bytes, &owner_flags)?;
+        }
     }
 
     let Some(mdat_offset) = scene_find_mdl_section_after(bytes, b"MDAT", mdls_end) else {
@@ -5796,6 +5801,266 @@ fn scene_puppet_clipping_record_lists(
     None
 }
 
+fn scene_parse_puppet_entry_owner_flags(bytes: &[u8], limit: usize) -> Result<Vec<u32>, String> {
+    let end = limit.min(bytes.len());
+    let mut position = 0;
+    let magic = scene_take_mdl_c_string(bytes, &mut position, end, "MDLV magic")?;
+    let Some(version) = magic
+        .strip_prefix("MDLV")
+        .and_then(|version| version.parse::<u32>().ok())
+    else {
+        return Ok(Vec::new());
+    };
+    let _global_flags = scene_take_u32_le(bytes, &mut position, end, "MDLV global flags")?;
+    let string_count = usize::try_from(scene_take_u32_le(
+        bytes,
+        &mut position,
+        end,
+        "MDLV owner string count",
+    )?)
+    .map_err(|_| "Wallpaper Engine puppet owner string count overflowed.".to_owned())?;
+    let entry_count = usize::try_from(scene_take_u32_le(
+        bytes,
+        &mut position,
+        end,
+        "MDLV entry-owner count",
+    )?)
+    .map_err(|_| "Wallpaper Engine puppet entry-owner count overflowed.".to_owned())?;
+    if string_count > 256 || entry_count > 4096 {
+        return Err("Wallpaper Engine puppet MDLV owner header is unreasonable.".to_owned());
+    }
+
+    let mut flags = Vec::with_capacity(entry_count);
+    for entry_index in 0..entry_count {
+        for _ in 0..string_count {
+            let _ = scene_take_mdl_c_string(bytes, &mut position, end, "MDLV owner string")?;
+        }
+        let owner_flags = if version >= 4 {
+            scene_take_u32_le(bytes, &mut position, end, "MDLV entry-owner flags")?
+        } else {
+            0
+        };
+        flags.push(owner_flags);
+        if owner_flags & 0x2 != 0 {
+            scene_skip_bytes(
+                bytes,
+                &mut position,
+                end,
+                4,
+                "MDLV entry-owner flags extension",
+            )?;
+        }
+        if version >= 17 {
+            scene_skip_bytes(bytes, &mut position, end, 24, "MDLV entry-owner bounds")?;
+        }
+        if version >= 15 {
+            scene_skip_bytes(
+                bytes,
+                &mut position,
+                end,
+                4,
+                "MDLV entry-owner source scale",
+            )?;
+        }
+        scene_skip_mdl_byte_block(bytes, &mut position, end, "MDLV entry-owner byte block A")?;
+        scene_skip_mdl_byte_block(bytes, &mut position, end, "MDLV entry-owner byte block B")?;
+        if version >= 21 {
+            if scene_take_u8(bytes, &mut position, end, "MDLV optional byte block flag A")? != 0 {
+                scene_skip_bytes(
+                    bytes,
+                    &mut position,
+                    end,
+                    4,
+                    "MDLV optional byte block A metadata",
+                )?;
+                scene_skip_mdl_byte_block(bytes, &mut position, end, "MDLV optional byte block A")?;
+            }
+            if scene_take_u8(bytes, &mut position, end, "MDLV optional byte block flag B")? != 0 {
+                scene_skip_mdl_byte_block(bytes, &mut position, end, "MDLV optional byte block B")?;
+            }
+        }
+        if version >= 23 {
+            let subdraw_count = usize::try_from(scene_take_u32_le(
+                bytes,
+                &mut position,
+                end,
+                "MDLV clipping subdraw count",
+            )?)
+            .map_err(|_| "Wallpaper Engine puppet subdraw count overflowed.".to_owned())?;
+            if subdraw_count > 1_000_000 {
+                return Err(format!(
+                    "Wallpaper Engine puppet entry-owner {entry_index} subdraw count {subdraw_count} is unreasonable."
+                ));
+            }
+            for _ in 0..subdraw_count {
+                scene_skip_bytes(bytes, &mut position, end, 8, "MDLV subdraw source id")?;
+                let _ = scene_take_mdl_c_string(bytes, &mut position, end, "MDLV subdraw mask")?;
+                scene_skip_bytes(bytes, &mut position, end, 4, "MDLV subdraw flags")?;
+                scene_skip_mdl_u32_list(
+                    bytes,
+                    &mut position,
+                    end,
+                    "MDLV subdraw first index list",
+                )?;
+                scene_skip_mdl_u32_list(
+                    bytes,
+                    &mut position,
+                    end,
+                    "MDLV subdraw second index list",
+                )?;
+            }
+        }
+    }
+    Ok(flags)
+}
+
+fn scene_parse_puppet_mdmp_active_sources(
+    bytes: &[u8],
+    owner_flags: &[u32],
+) -> Result<Vec<ScenePuppetClippingActiveSource>, String> {
+    let Some(mdmp_offset) = scene_find_mdl_section(bytes, b"MDMP") else {
+        return Ok(Vec::new());
+    };
+    let (mdmp_end, mut position) = scene_mdl_payload_end_start(bytes, mdmp_offset, "MDMP")?;
+    let owner_count = owner_flags.len();
+    let mut sources = Vec::new();
+    let mut owner_index = 0usize;
+    while position < mdmp_end {
+        if owner_count > 0 && owner_index >= owner_count {
+            return Err(
+                "Wallpaper Engine puppet MDMP has more entries than MDLV owners.".to_owned(),
+            );
+        }
+        let active_count = usize::from(scene_take_u16_le(
+            bytes,
+            &mut position,
+            mdmp_end,
+            "MDMP active-source count",
+        )?);
+        if active_count > 4096 {
+            return Err(format!(
+                "Wallpaper Engine puppet MDMP owner {owner_index} active-source count {active_count} is unreasonable."
+            ));
+        }
+        let scalar_bits =
+            scene_take_u32_le(bytes, &mut position, mdmp_end, "MDMP owner scalar bits")?;
+        let mut owner_source_scale =
+            scene_take_u32_le(bytes, &mut position, mdmp_end, "MDMP owner source scale")?;
+        if active_count == 0 {
+            owner_index += 1;
+            continue;
+        }
+        let flags = owner_flags.get(owner_index).copied().unwrap_or_default();
+        for _ in 0..active_count {
+            scene_skip_bytes(bytes, &mut position, mdmp_end, 8, "MDMP active-source id")?;
+            let source_name =
+                scene_take_mdl_c_string(bytes, &mut position, mdmp_end, "MDMP source name")?;
+            if source_name.is_empty() {
+                return Err("Wallpaper Engine puppet MDMP active-source name is empty.".to_owned());
+            }
+            let base_block_len =
+                scene_take_mdl_byte_block_len(bytes, &mut position, mdmp_end, "MDMP base block")?;
+            owner_source_scale =
+                scene_mdmp_effective_source_scale(owner_source_scale, base_block_len)?;
+            let required_six_byte_len = scene_mdmp_scaled_byte_len(owner_source_scale, 6)?;
+            if flags & (1 << 10) != 0 {
+                scene_take_mdmp_byte_block_with_len(
+                    bytes,
+                    &mut position,
+                    mdmp_end,
+                    required_six_byte_len,
+                    "MDMP optional block bit10",
+                )?;
+            }
+            if flags & (1 << 11) != 0 {
+                scene_take_mdmp_byte_block_with_len(
+                    bytes,
+                    &mut position,
+                    mdmp_end,
+                    required_six_byte_len,
+                    "MDMP optional block bit11",
+                )?;
+            }
+            if flags & (1 << 12) != 0 {
+                scene_take_mdmp_byte_block_with_len(
+                    bytes,
+                    &mut position,
+                    mdmp_end,
+                    scene_mdmp_scaled_byte_len(owner_source_scale, 2)?,
+                    "MDMP optional block bit12",
+                )?;
+            }
+            let (active_flags, transform_index, parameter0, parameter1) = if flags & (1 << 13) != 0
+            {
+                let transform_index =
+                    scene_take_u32_le(bytes, &mut position, mdmp_end, "MDMP transform index")?;
+                let active_flags =
+                    scene_take_u32_le(bytes, &mut position, mdmp_end, "MDMP source flags")?;
+                let parameter0 =
+                    scene_take_f32_f32(bytes, &mut position, mdmp_end, "MDMP parameter0")?;
+                let parameter1 =
+                    scene_take_f32_f32(bytes, &mut position, mdmp_end, "MDMP parameter1")?;
+                (active_flags, transform_index, parameter0, parameter1)
+            } else {
+                (0, 0, -1.0, 0.0)
+            };
+            sources.push(ScenePuppetClippingActiveSource {
+                source_name,
+                scalar_bits,
+                source_scale: owner_source_scale,
+                flags: active_flags,
+                transform_index,
+                parameter0,
+                parameter1,
+            });
+        }
+        owner_index += 1;
+    }
+    Ok(sources)
+}
+
+fn scene_mdmp_effective_source_scale(
+    source_scale: u32,
+    base_block_len: usize,
+) -> Result<u32, String> {
+    if base_block_len % 6 != 0 {
+        return Err(format!(
+            "Wallpaper Engine puppet MDMP base block length {base_block_len} is not divisible by 6."
+        ));
+    }
+    let block_scale = u32::try_from(base_block_len / 6)
+        .map_err(|_| "Wallpaper Engine puppet MDMP base block scale overflowed.".to_owned())?;
+    if source_scale < block_scale {
+        return Err(format!(
+            "Wallpaper Engine puppet MDMP source scale {source_scale} is smaller than base block scale {block_scale}."
+        ));
+    }
+    Ok(block_scale)
+}
+
+fn scene_mdmp_scaled_byte_len(scale: u32, multiplier: usize) -> Result<usize, String> {
+    usize::try_from(scale)
+        .ok()
+        .and_then(|scale| scale.checked_mul(multiplier))
+        .ok_or_else(|| "Wallpaper Engine puppet MDMP byte-block length overflowed.".to_owned())
+}
+
+fn scene_take_mdmp_byte_block_with_len(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    expected_len: usize,
+    field: &str,
+) -> Result<(), String> {
+    let actual_len = scene_take_mdl_byte_block_len(bytes, position, end, field)?;
+    if actual_len != expected_len {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} length {actual_len} did not match expected {expected_len}."
+        ));
+    }
+    Ok(())
+}
+
 fn scene_puppet_attachment_chain_position(
     bone_index: usize,
     bones: &[ScenePuppetBone],
@@ -6097,6 +6362,27 @@ fn scene_find_mdl_section_after(bytes: &[u8], section: &[u8; 4], offset: usize) 
         .map(|relative| offset + relative)
 }
 
+fn scene_mdl_payload_end_start(
+    bytes: &[u8],
+    section_offset: usize,
+    section_name: &str,
+) -> Result<(usize, usize), String> {
+    for metadata_offset in [section_offset + 9, section_offset + 8] {
+        let Some(end) = scene_read_u32_le_at(bytes, metadata_offset)
+            .and_then(|value| usize::try_from(value).ok())
+        else {
+            continue;
+        };
+        let start = metadata_offset + 4;
+        if start <= end && end <= bytes.len() {
+            return Ok((end, start));
+        }
+    }
+    Err(format!(
+        "Wallpaper Engine puppet {section_name} payload header is malformed."
+    ))
+}
+
 fn scene_mdl_section_end_count_start(
     bytes: &[u8],
     section_offset: usize,
@@ -6190,6 +6476,25 @@ fn scene_take_u16_le(
     Ok(value)
 }
 
+fn scene_take_u8(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<u8, String> {
+    let start = *position;
+    let value = *bytes
+        .get(start)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} is truncated."))?;
+    *position = start + 1;
+    if *position > end {
+        return Err(format!(
+            "Wallpaper Engine puppet {field} extends outside its section."
+        ));
+    }
+    Ok(value)
+}
+
 fn scene_take_f32_le(
     bytes: &[u8],
     position: &mut usize,
@@ -6209,6 +6514,15 @@ fn scene_take_f32_le(
         return Err(format!("Wallpaper Engine puppet {field} must be finite."));
     }
     Ok(value)
+}
+
+fn scene_take_f32_f32(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<f32, String> {
+    Ok(scene_take_f32_le(bytes, position, end, field)? as f32)
 }
 
 fn scene_take_mdl_matrix(
@@ -6250,6 +6564,42 @@ fn scene_skip_bytes(
     }
     *position = next;
     Ok(())
+}
+
+fn scene_take_mdl_byte_block_len(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<usize, String> {
+    let len = usize::try_from(scene_take_u32_le(bytes, position, end, field)?)
+        .map_err(|_| format!("Wallpaper Engine puppet {field} length overflowed."))?;
+    scene_skip_bytes(bytes, position, end, len, field)?;
+    Ok(len)
+}
+
+fn scene_skip_mdl_byte_block(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<(), String> {
+    let _ = scene_take_mdl_byte_block_len(bytes, position, end, field)?;
+    Ok(())
+}
+
+fn scene_skip_mdl_u32_list(
+    bytes: &[u8],
+    position: &mut usize,
+    end: usize,
+    field: &str,
+) -> Result<(), String> {
+    let count = usize::try_from(scene_take_u32_le(bytes, position, end, field)?)
+        .map_err(|_| format!("Wallpaper Engine puppet {field} count overflowed."))?;
+    let byte_count = count
+        .checked_mul(4)
+        .ok_or_else(|| format!("Wallpaper Engine puppet {field} byte count overflowed."))?;
+    scene_skip_bytes(bytes, position, end, byte_count, field)
 }
 
 fn scene_take_mdl_c_string(
