@@ -14,6 +14,10 @@ use crate::engine::scene_engine::{
     SceneLayerCompositorOperation, SceneLayerCompositorTarget, SceneObjectId, ScenePuppetId,
 };
 
+use super::copy_back::{
+    NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_copy_back_draws,
+};
 use super::{
     NativeVulkanSceneLayerAlphaMaskDescriptorSetRole, NativeVulkanSceneLayerAlphaMaskRuntimePlan,
 };
@@ -35,9 +39,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub draw_clipping_mask_command_bind_count: usize,
     pub generated_clippingtarget_command_bind_count: usize,
     pub copy_back_command_count: usize,
+    pub copy_back_draw_resource_count: usize,
     pub binds: Vec<NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan>,
     pub token_commands: Vec<NativeVulkanSceneLayerAlphaMaskTokenCommandResourceBindPlan>,
-    pub command_order: [&'static str; 6],
+    pub copy_back_draws: Vec<NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan>,
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -138,6 +144,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
                     == NativeVulkanSceneLayerAlphaMaskBindRequirement::FlatTextureCopyBackSeparateDrawResourceBind
             })
             .count();
+        let copy_back_draws = native_vulkan_plan_scene_layer_alpha_mask_copy_back_draws(runtime)?;
 
         Ok(Self {
             descriptor_set_count: binds.len(),
@@ -149,14 +156,17 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             draw_clipping_mask_command_bind_count,
             generated_clippingtarget_command_bind_count,
             copy_back_command_count,
+            copy_back_draw_resource_count: copy_back_draws.len(),
             binds,
             token_commands,
+            copy_back_draws,
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
                 "resolve_descriptor_set_bind_info",
                 "classify_clippingmaskimage4_or_clippingtarget_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
+                "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw",
             ],
         })
@@ -173,14 +183,17 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             draw_clipping_mask_command_bind_count: 0,
             generated_clippingtarget_command_bind_count: 0,
             copy_back_command_count: 0,
+            copy_back_draw_resource_count: 0,
             binds: Vec::new(),
             token_commands: Vec::new(),
+            copy_back_draws: Vec::new(),
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
                 "resolve_descriptor_set_bind_info",
                 "classify_clippingmaskimage4_or_clippingtarget_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
+                "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw",
             ],
         }
@@ -365,9 +378,9 @@ fn alpha_mask_operation_for_descriptor_role(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneLayerCompositorBlendKey, SceneLayerCompositorCommand, SceneLayerCompositorCondition,
-        SceneLayerCompositorEntry, SceneLayerCompositorLayer, SceneLayerCompositorPlan,
-        SceneLayerCompositorRoute, SceneResourceId,
+        SceneGraphTarget, SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+        SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorLayer,
+        SceneLayerCompositorPlan, SceneLayerCompositorRoute, SceneResourceId,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
         NativeVulkanSceneLayerAlphaMaskDescriptorSource,
@@ -377,6 +390,7 @@ mod tests {
         NativeVulkanSceneLayerAlphaMaskResourceSetBinding,
         NativeVulkanSceneLayerAlphaMaskResourceSetKey,
     };
+    use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
     use vulkanalia::vk;
     use vulkanalia::vk::HasBuilder;
 
@@ -415,6 +429,7 @@ mod tests {
         assert_eq!(plan.draw_clipping_mask_command_bind_count, 2);
         assert_eq!(plan.generated_clippingtarget_command_bind_count, 1);
         assert_eq!(plan.copy_back_command_count, 1);
+        assert_eq!(plan.copy_back_draw_resource_count, 1);
         assert_eq!(
             plan.binds[0].operation,
             SceneLayerCompositorOperation::DrawClippingMask
@@ -444,6 +459,13 @@ mod tests {
             plan.token_commands[4].matched_descriptor_set_indices,
             vec![1]
         );
+        assert_eq!(plan.copy_back_draws[0].shader, "util/minimalalpha");
+        assert_eq!(
+            plan.copy_back_draws[0].texture_source,
+            NativeVulkanSceneTextureDescriptorSource::GraphTarget(
+                SceneGraphTarget::FullAlphaMaskIntermediate
+            )
+        );
         assert_eq!(
             plan.command_order,
             [
@@ -452,6 +474,7 @@ mod tests {
                 "classify_clippingmaskimage4_or_clippingtarget_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
+                "lower_flattexture_copy_back_to_minimalalpha_draw_resource",
                 "preserve_flattexture_copy_back_as_blend_key_0x100_draw"
             ]
         );

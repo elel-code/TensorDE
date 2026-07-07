@@ -280,14 +280,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_shader_arti
         return Err("scene effect shader artifact root cannot be empty".to_owned());
     }
     let shader_path = scene_effect_shader_artifact_relative_path(shader)?;
+    let source_reference = scene_effect_shader_source_reference(shader, &shader_path)?;
     Ok(NativeVulkanSceneEffectShaderArtifactPathPlan {
         shader: shader.to_owned(),
         vertex_path: artifact_root.join(shader_path.with_extension("vert.spv")),
         fragment_path: artifact_root.join(shader_path.with_extension("frag.spv")),
-        source_reference: format!("reverse-engineered/shaders/{}", shader_path.display()),
+        source_reference,
         command_order: [
             "resolve_we_effect_shader_artifact_paths",
-            "require_reverse_engineered_effect_shader_source",
+            "resolve_we_shader_source_reference",
             "read_effect_vertex_spirv",
             "read_effect_fragment_spirv",
         ],
@@ -439,6 +440,22 @@ fn scene_effect_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, S
     Ok(shader_path)
 }
 
+fn scene_effect_shader_source_reference(
+    shader: &str,
+    shader_path: &Path,
+) -> Result<String, String> {
+    if shader == "util/minimalalpha" {
+        return Ok(
+            "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha"
+                .to_owned(),
+        );
+    }
+    Ok(format!(
+        "reverse-engineered/shaders/{}",
+        shader_path.display()
+    ))
+}
+
 fn safe_shader_artifact_relative_path(
     shader: &str,
     root: &str,
@@ -588,7 +605,7 @@ mod tests {
             plan.command_order,
             [
                 "resolve_we_effect_shader_artifact_paths",
-                "require_reverse_engineered_effect_shader_source",
+                "resolve_we_shader_source_reference",
                 "read_effect_vertex_spirv",
                 "read_effect_fragment_spirv"
             ]
@@ -615,6 +632,29 @@ mod tests {
         assert_eq!(
             plan.source_reference,
             "reverse-engineered/shaders/passthrough"
+        );
+    }
+
+    #[test]
+    fn effect_shader_artifact_plan_maps_util_minimalalpha_to_top_level_shader() {
+        let plan = native_vulkan_scene_effect_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "util/minimalalpha",
+        )
+        .expect("minimalalpha artifact path plan");
+
+        assert_eq!(plan.shader, "util/minimalalpha");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/minimalalpha.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/minimalalpha.frag.spv")
+        );
+        assert_eq!(
+            plan.source_reference,
+            "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha"
         );
     }
 

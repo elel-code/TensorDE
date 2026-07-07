@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 use vulkanalia::vk;
 
+mod copy_back;
 mod resource_binds;
 
 use crate::engine::scene_engine::{
