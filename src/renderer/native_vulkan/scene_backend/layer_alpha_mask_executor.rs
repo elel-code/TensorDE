@@ -35,6 +35,8 @@ pub(in crate::renderer::native_vulkan) use resource_binds::{
 const CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 1);
 const CLIPPINGMASKIMAGE4_MORPH_TEXTURE_SLOT: u32 = 5;
 const CLIPPINGTARGET_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 8);
+const FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK: u32 =
+    1u32 << copy_back::ALPHA_MASK_FLATTEXTURE_TEXTURE_SLOT;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRuntimePlan {
@@ -124,10 +126,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskDes
     pub descriptor_set_count: usize,
     pub clippingmaskimage4_descriptor_set_count: usize,
     pub generated_clippingtarget_descriptor_set_count: usize,
+    pub flattexture_copy_back_descriptor_set_count: usize,
     pub resident_texture_descriptor_count: usize,
     pub graph_target_descriptor_count: usize,
     pub entries: Vec<NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan>,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -145,6 +148,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskDes
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskDescriptorSetRole {
     ClippingMaskImage4 { clipping_record_index: u32 },
     GeneratedClippingTarget,
+    FlatTextureCopyBack,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -430,6 +434,25 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
                     ),
                 ],
             });
+
+            if layer.commands.iter().any(|command| {
+                command.operation == SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask
+            }) {
+                entries.push(NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+                    object: object.id,
+                    puppet,
+                    shader: copy_back::ALPHA_MASK_FLATTEXTURE_SHADER,
+                    role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack,
+                    slot_mask: FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
+                    optional_morph_slot: None,
+                    slots: vec![alpha_mask_slot(
+                        copy_back::ALPHA_MASK_FLATTEXTURE_TEXTURE_SLOT,
+                        NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                            SceneGraphTarget::FullAlphaMaskIntermediate,
+                        ),
+                    )],
+                });
+            }
         }
 
         let clippingmaskimage4_descriptor_set_count = entries
@@ -446,6 +469,12 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
             .filter(|entry| {
                 entry.role
                     == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget
+            })
+            .count();
+        let flattexture_copy_back_descriptor_set_count = entries
+            .iter()
+            .filter(|entry| {
+                entry.role == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack
             })
             .count();
         let resident_texture_descriptor_count = entries
@@ -474,6 +503,7 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
             descriptor_set_count: entries.len(),
             clippingmaskimage4_descriptor_set_count,
             generated_clippingtarget_descriptor_set_count,
+            flattexture_copy_back_descriptor_set_count,
             resident_texture_descriptor_count,
             graph_target_descriptor_count,
             entries,
@@ -483,6 +513,7 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
                 "bind_clippingmaskimage4_slots_0_1",
                 "preserve_clippingmaskimage4_optional_morph_slot_5",
                 "bind_generated_clippingtarget_slots_0_8",
+                "bind_flattexture_copy_back_slot_0_to_intermediate_mask",
                 "keep_alpha_mask_descriptors_separate_from_genericimage4_material_heap",
             ],
         })
@@ -494,6 +525,7 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
             descriptor_set_count: 0,
             clippingmaskimage4_descriptor_set_count: 0,
             generated_clippingtarget_descriptor_set_count: 0,
+            flattexture_copy_back_descriptor_set_count: 0,
             resident_texture_descriptor_count: 0,
             graph_target_descriptor_count: 0,
             entries: Vec::new(),
@@ -503,6 +535,7 @@ impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
                 "bind_clippingmaskimage4_slots_0_1",
                 "preserve_clippingmaskimage4_optional_morph_slot_5",
                 "bind_generated_clippingtarget_slots_0_8",
+                "bind_flattexture_copy_back_slot_0_to_intermediate_mask",
                 "keep_alpha_mask_descriptors_separate_from_genericimage4_material_heap",
             ],
         }
@@ -927,11 +960,12 @@ mod tests {
         )
         .expect("alpha-mask descriptor plan");
 
-        assert_eq!(plan.descriptor_set_count, 2);
+        assert_eq!(plan.descriptor_set_count, 3);
         assert_eq!(plan.clippingmaskimage4_descriptor_set_count, 1);
         assert_eq!(plan.generated_clippingtarget_descriptor_set_count, 1);
+        assert_eq!(plan.flattexture_copy_back_descriptor_set_count, 1);
         assert_eq!(plan.resident_texture_descriptor_count, 3);
-        assert_eq!(plan.graph_target_descriptor_count, 1);
+        assert_eq!(plan.graph_target_descriptor_count, 2);
         let mask_generator = &plan.entries[0];
         assert_eq!(mask_generator.shader, "we/clippingmaskimage4");
         assert_eq!(
@@ -968,6 +1002,23 @@ mod tests {
         assert_eq!(
             generated_target.slots[1].shader_mapping,
             "set0.binding8.g_Texture8"
+        );
+        let copy_back = &plan.entries[2];
+        assert_eq!(copy_back.shader, "util/minimalalpha");
+        assert_eq!(
+            copy_back.role,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack
+        );
+        assert_eq!(copy_back.slot_mask, FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK);
+        assert_eq!(
+            copy_back.slots[0].source,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                SceneGraphTarget::FullAlphaMaskIntermediate
+            )
+        );
+        assert_eq!(
+            copy_back.slots[0].shader_mapping,
+            "set0.binding0.g_Texture0"
         );
     }
 
