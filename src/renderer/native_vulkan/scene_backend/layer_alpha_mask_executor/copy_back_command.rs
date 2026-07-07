@@ -18,7 +18,7 @@ use crate::engine::scene_engine::{SceneGraphTarget, SceneLayerCompositorBlendKey
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo;
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorVkFormat;
 
-use super::NativeVulkanSceneLayerAlphaMaskDescriptorSetRole;
+use super::NativeVulkanSceneLayerAlphaMaskTextureBindRole;
 use super::copy_back_geometry::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers,
     NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan,
@@ -34,6 +34,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub target: SceneGraphTarget,
     pub target_format: NativeVulkanSceneTextureDescriptorVkFormat,
     pub blend_key: SceneLayerCompositorBlendKey,
+    pub heap_bind_index: usize,
     pub resource_set_index: usize,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
@@ -66,6 +67,7 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan {
             target: pipeline.target,
             target_format: pipeline.target_format,
             blend_key: pipeline.blend_key,
+            heap_bind_index: bind_info.heap_bind_index,
             resource_set_index: pipeline.resource_set_index,
             base_resource_descriptor_index: pipeline.base_resource_descriptor_index,
             base_sampler_descriptor_index: pipeline.base_sampler_descriptor_index,
@@ -168,7 +170,7 @@ fn validate_copy_back_heap_bind_for_command(
     pipeline: &NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan,
     bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
 ) -> Result<(), String> {
-    if bind_info.role != NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack {
+    if bind_info.role != NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack {
         return Err(format!(
             "scene layer alpha-mask copy-back command requires FlatTextureCopyBack heap bind, got {:?}",
             bind_info.role
@@ -184,6 +186,12 @@ fn validate_copy_back_heap_bind_for_command(
         return Err(format!(
             "scene layer alpha-mask copy-back command shader mismatch: pipeline {}, heap {}",
             pipeline.shader, bind_info.shader
+        ));
+    }
+    if bind_info.heap_bind_index != pipeline.heap_bind_index {
+        return Err(format!(
+            "scene layer alpha-mask copy-back command heap-bind mismatch: pipeline {}, heap {}",
+            pipeline.heap_bind_index, bind_info.heap_bind_index
         ));
     }
     if bind_info.resource_set_index != pipeline.resource_set_index {
@@ -248,6 +256,7 @@ mod tests {
         assert_eq!(plan.shader, "util/minimalalpha");
         assert_eq!(plan.source, SceneGraphTarget::FullAlphaMaskIntermediate);
         assert_eq!(plan.target, SceneGraphTarget::FullAlphaMask);
+        assert_eq!(plan.heap_bind_index, 2);
         assert_eq!(plan.resource_set_index, 2);
         assert_eq!(plan.base_resource_descriptor_index, 4);
         assert_eq!(plan.base_sampler_descriptor_index, 4);
@@ -371,7 +380,7 @@ mod tests {
                 SceneGraphTarget::FullAlphaMaskIntermediate,
             ),
             bind_index: 2,
-            descriptor_set_index: 2,
+            heap_bind_index: 2,
             resource_set_index: 2,
             base_resource_descriptor_index: 4,
             base_sampler_descriptor_index: 4,
@@ -389,11 +398,11 @@ mod tests {
         base_sampler_descriptor_index: usize,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
         NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-            descriptor_set_index: 2,
+            heap_bind_index: 2,
             object: SceneObjectId(77),
             puppet: ScenePuppetId(5),
             shader: "util/minimalalpha".to_owned(),
-            role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack,
+            role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack,
             resource_set_index: 2,
             resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey {
                 shader: "util/minimalalpha".to_owned(),

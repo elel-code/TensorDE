@@ -6,24 +6,24 @@ use crate::engine::scene_engine::{
     SceneGraphTarget, SceneObjectId, ScenePuppetId, SceneResourceId,
 };
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
     NativeVulkanSceneLayerAlphaMaskDescriptorSource, NativeVulkanSceneLayerAlphaMaskSlotBinding,
+    NativeVulkanSceneLayerAlphaMaskTextureBindRole,
 };
 
 #[test]
 fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     let descriptors = NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
         tokenized_layer_count: 1,
-        descriptor_set_count: 3,
-        clippingmaskimage4_descriptor_set_count: 1,
-        generated_clippingtarget_descriptor_set_count: 1,
-        flattexture_copy_back_descriptor_set_count: 1,
+        heap_bind_count: 3,
+        clippingmaskimage4_heap_bind_count: 1,
+        generated_clippingtarget_heap_bind_count: 1,
+        flattexture_copy_back_heap_bind_count: 1,
         resident_texture_descriptor_count: 3,
         graph_target_descriptor_count: 2,
         entries: vec![
-            clipping_descriptor_set(),
-            generated_target_descriptor_set(),
-            copy_back_descriptor_set(),
+            clipping_texture_bind(),
+            generated_target_texture_bind(),
+            copy_back_texture_bind(),
         ],
         command_order: [
             "resolve_tokenized_layer_object_source_texture",
@@ -44,7 +44,7 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     )
     .expect("alpha-mask resource heap plan");
 
-    assert_eq!(plan.descriptor_set_count, 3);
+    assert_eq!(plan.heap_bind_count, 3);
     assert_eq!(plan.resource_set_count, 3);
     assert_eq!(plan.resource_descriptor_count, 5);
     assert_eq!(plan.sampler_descriptor_count, 5);
@@ -58,21 +58,21 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     assert_eq!(plan.entries[4].shader, "util/minimalalpha");
     assert_eq!(plan.entries[4].slot, 0);
     assert_eq!(plan.entries[4].image_handle, 700);
-    assert_eq!(plan.descriptor_set_bindings[0].descriptor_set_index, 0);
-    assert_eq!(plan.descriptor_set_bindings[0].resource_set_index, 0);
-    assert_eq!(plan.descriptor_set_bindings[1].descriptor_set_index, 1);
-    assert_eq!(plan.descriptor_set_bindings[1].resource_set_index, 1);
-    assert_eq!(plan.descriptor_set_bindings[2].descriptor_set_index, 2);
-    assert_eq!(plan.descriptor_set_bindings[2].resource_set_index, 2);
+    assert_eq!(plan.heap_bindings[0].heap_bind_index, 0);
+    assert_eq!(plan.heap_bindings[0].resource_set_index, 0);
+    assert_eq!(plan.heap_bindings[1].heap_bind_index, 1);
+    assert_eq!(plan.heap_bindings[1].resource_set_index, 1);
+    assert_eq!(plan.heap_bindings[2].heap_bind_index, 2);
+    assert_eq!(plan.heap_bindings[2].resource_set_index, 2);
     assert_eq!(
-        plan.descriptor_set_bindings[1].shader_mappings,
+        plan.heap_bindings[1].shader_mappings,
         vec![
             "set0.binding0.g_Texture0 -> alpha-mask-resource-set-offset0".to_owned(),
             "set0.binding8.g_Texture8 -> alpha-mask-resource-set-offset1".to_owned(),
         ]
     );
     assert_eq!(
-        plan.descriptor_set_bindings[2].shader_mappings,
+        plan.heap_bindings[2].shader_mappings,
         vec!["set0.binding0.g_Texture0 -> alpha-mask-resource-set-offset0".to_owned()]
     );
     assert_eq!(plan.bindings[3].view, vk::ImageView::from_raw(601));
@@ -82,20 +82,20 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
 }
 
 #[test]
-fn alpha_mask_resource_heap_plan_dedupes_identical_descriptor_sets() {
-    let mut second = clipping_descriptor_set();
-    second.role = NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+fn alpha_mask_resource_heap_plan_dedupes_identical_texture_binds() {
+    let mut second = clipping_texture_bind();
+    second.role = NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
         clipping_record_index: 1,
     };
     let descriptors = NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
         tokenized_layer_count: 1,
-        descriptor_set_count: 2,
-        clippingmaskimage4_descriptor_set_count: 2,
-        generated_clippingtarget_descriptor_set_count: 0,
-        flattexture_copy_back_descriptor_set_count: 0,
+        heap_bind_count: 2,
+        clippingmaskimage4_heap_bind_count: 2,
+        generated_clippingtarget_heap_bind_count: 0,
+        flattexture_copy_back_heap_bind_count: 0,
         resident_texture_descriptor_count: 4,
         graph_target_descriptor_count: 0,
-        entries: vec![clipping_descriptor_set(), second],
+        entries: vec![clipping_texture_bind(), second],
         command_order: [
             "resolve_tokenized_layer_object_source_texture",
             "resolve_puppet_clipping_record_mask_texture",
@@ -117,25 +117,22 @@ fn alpha_mask_resource_heap_plan_dedupes_identical_descriptor_sets() {
 
     assert_eq!(plan.resource_set_count, 1);
     assert_eq!(plan.resource_descriptor_count, 2);
-    assert_eq!(plan.descriptor_set_bindings[0].resource_set_index, 0);
-    assert_eq!(plan.descriptor_set_bindings[1].resource_set_index, 0);
-    assert_ne!(
-        plan.descriptor_set_bindings[0].role,
-        plan.descriptor_set_bindings[1].role
-    );
+    assert_eq!(plan.heap_bindings[0].resource_set_index, 0);
+    assert_eq!(plan.heap_bindings[1].resource_set_index, 0);
+    assert_ne!(plan.heap_bindings[0].role, plan.heap_bindings[1].role);
 }
 
 #[test]
 fn alpha_mask_resource_heap_plan_rejects_non_r8_full_mask_target() {
     let descriptors = NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
         tokenized_layer_count: 1,
-        descriptor_set_count: 1,
-        clippingmaskimage4_descriptor_set_count: 0,
-        generated_clippingtarget_descriptor_set_count: 1,
-        flattexture_copy_back_descriptor_set_count: 0,
+        heap_bind_count: 1,
+        clippingmaskimage4_heap_bind_count: 0,
+        generated_clippingtarget_heap_bind_count: 1,
+        flattexture_copy_back_heap_bind_count: 0,
         resident_texture_descriptor_count: 1,
         graph_target_descriptor_count: 1,
-        entries: vec![generated_target_descriptor_set()],
+        entries: vec![generated_target_texture_bind()],
         command_order: [
             "resolve_tokenized_layer_object_source_texture",
             "resolve_puppet_clipping_record_mask_texture",
@@ -158,12 +155,12 @@ fn alpha_mask_resource_heap_plan_rejects_non_r8_full_mask_target() {
     assert!(err.contains("must be R8_UNORM"));
 }
 
-fn clipping_descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+fn clipping_texture_bind() -> NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
+    NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
         object: SceneObjectId(77),
         puppet: ScenePuppetId(5),
         shader: "we/clippingmaskimage4",
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
             clipping_record_index: 0,
         },
         slot_mask: 0b11,
@@ -185,12 +182,12 @@ fn clipping_descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan
     }
 }
 
-fn generated_target_descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+fn generated_target_texture_bind() -> NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
+    NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
         object: SceneObjectId(77),
         puppet: ScenePuppetId(5),
         shader: "we/genericimage4",
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
         slot_mask: (1 << 0) | (1 << 8),
         optional_morph_slot: None,
         slots: vec![
@@ -210,12 +207,12 @@ fn generated_target_descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescripto
     }
 }
 
-fn copy_back_descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+fn copy_back_texture_bind() -> NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
+    NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
         object: SceneObjectId(77),
         puppet: ScenePuppetId(5),
         shader: "util/minimalalpha",
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack,
         slot_mask: 1 << 0,
         optional_morph_slot: None,
         slots: vec![slot(

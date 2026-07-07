@@ -427,10 +427,10 @@ impl NativeVulkanSceneFrameResources {
 
     pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_resource_heap_bind_info(
         &self,
-        descriptor_set_index: usize,
+        heap_bind_index: usize,
     ) -> Result<NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo, String> {
         self.layer_alpha_mask_resource_heap
-            .bind_info_for_descriptor_set(descriptor_set_index)
+            .bind_info_for_heap_bind(heap_bind_index)
     }
 
     pub(in crate::renderer::native_vulkan) fn last_layer_alpha_mask_resource_heap_actions(

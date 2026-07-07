@@ -11,9 +11,8 @@ use serde::Serialize;
 use crate::engine::scene_engine::SCENE_WE_MAX_SHADER_TEXTURE_SLOTS;
 
 use super::super::layer_alpha_mask_executor::{
-    NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
-    NativeVulkanSceneLayerAlphaMaskDescriptorSource, NativeVulkanSceneLayerAlphaMaskSlotBinding,
+    NativeVulkanSceneLayerAlphaMaskDescriptorPlan, NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+    NativeVulkanSceneLayerAlphaMaskSlotBinding, NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -28,25 +27,25 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
 }
 
-pub(super) fn alpha_mask_slots_by_descriptor_set(
+pub(super) fn alpha_mask_slots_by_texture_bind(
     descriptors: &NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
 ) -> Result<Vec<Vec<NativeVulkanSceneLayerAlphaMaskSlotBinding>>, String> {
     let mut by_set = Vec::with_capacity(descriptors.entries.len());
-    for descriptor_set in &descriptors.entries {
-        let mut slots = descriptor_set.slots.clone();
+    for texture_bind in &descriptors.entries {
+        let mut slots = texture_bind.slots.clone();
         slots.sort_by_key(|slot| slot.slot);
-        validate_alpha_mask_slots(descriptor_set, &slots)?;
+        validate_alpha_mask_slots(texture_bind, &slots)?;
         by_set.push(slots);
     }
     Ok(by_set)
 }
 
-pub(super) fn alpha_mask_descriptor_set_key(
-    descriptor_set: &NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
+pub(super) fn alpha_mask_texture_bind_resource_set(
+    texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskResourceSetKey, String> {
-    let mut slots = descriptor_set.slots.clone();
+    let mut slots = texture_bind.slots.clone();
     slots.sort_by_key(|slot| slot.slot);
-    validate_alpha_mask_slots(descriptor_set, &slots)?;
+    validate_alpha_mask_slots(texture_bind, &slots)?;
     let bindings = slots
         .iter()
         .map(|slot| NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
@@ -55,7 +54,7 @@ pub(super) fn alpha_mask_descriptor_set_key(
         })
         .collect::<Vec<_>>();
     Ok(NativeVulkanSceneLayerAlphaMaskResourceSetKey {
-        shader: descriptor_set.shader.to_owned(),
+        shader: texture_bind.shader.to_owned(),
         bindings,
     })
 }
@@ -82,30 +81,30 @@ pub(super) fn binding_shader_mapping(slot: u32) -> String {
 }
 
 fn validate_alpha_mask_slots(
-    descriptor_set: &NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
+    texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
     slots: &[NativeVulkanSceneLayerAlphaMaskSlotBinding],
 ) -> Result<(), String> {
-    if descriptor_set.shader.is_empty() {
+    if texture_bind.shader.is_empty() {
         return Err(format!(
-            "scene layer alpha-mask descriptor set for object {:?} has empty shader",
-            descriptor_set.object
+            "scene layer alpha-mask heap bind for object {:?} has empty shader",
+            texture_bind.object
         ));
     }
     let mut used_slots = BTreeSet::new();
     for slot in slots {
         if slot.slot >= SCENE_WE_MAX_SHADER_TEXTURE_SLOTS {
             return Err(format!(
-                "scene layer alpha-mask descriptor set for object {:?} shader {} texture slot {} exceeds WE slot mask width {}",
-                descriptor_set.object,
-                descriptor_set.shader,
+                "scene layer alpha-mask heap bind for object {:?} shader {} texture slot {} exceeds WE slot mask width {}",
+                texture_bind.object,
+                texture_bind.shader,
                 slot.slot,
                 SCENE_WE_MAX_SHADER_TEXTURE_SLOTS
             ));
         }
         if !used_slots.insert(slot.slot) {
             return Err(format!(
-                "scene layer alpha-mask descriptor set for object {:?} shader {} binds texture slot {} more than once",
-                descriptor_set.object, descriptor_set.shader, slot.slot
+                "scene layer alpha-mask heap bind for object {:?} shader {} binds texture slot {} more than once",
+                texture_bind.object, texture_bind.shader, slot.slot
             ));
         }
     }

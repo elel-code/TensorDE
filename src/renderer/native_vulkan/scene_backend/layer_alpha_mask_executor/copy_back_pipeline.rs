@@ -60,6 +60,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
     pub blend_key: SceneLayerCompositorBlendKey,
     pub alpha_uniform: NativeVulkanSceneLayerAlphaMaskCopyBackAlphaUniform,
+    pub heap_bind_index: usize,
     pub resource_set_index: usize,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
@@ -105,6 +106,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             vertex_layout: cache_key.vertex_layout,
             blend_key: draw.blend_key,
             alpha_uniform: draw.alpha_uniform,
+            heap_bind_index: draw_bind.heap_bind_index,
             resource_set_index: draw_bind.resource_set_index,
             base_resource_descriptor_index: draw_bind.base_resource_descriptor_index,
             base_sampler_descriptor_index: draw_bind.base_sampler_descriptor_index,
@@ -260,7 +262,7 @@ mod tests {
                 SceneGraphTarget::FullAlphaMaskIntermediate,
             ),
             bind_index: 2,
-            descriptor_set_index: 2,
+            heap_bind_index: 2,
             resource_set_index: 2,
             base_resource_descriptor_index: 4,
             base_sampler_descriptor_index: 4,
@@ -294,6 +296,7 @@ mod tests {
             NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv
         );
         assert_eq!(key.raster_geometry, "render-state-flattexture-copy-back");
+        assert_eq!(key.heap_bind_index, 2);
         assert_eq!(key.base_resource_descriptor_index, 4);
         assert_eq!(key.base_sampler_descriptor_index, 4);
         assert_eq!(key.resource_descriptor_index, 4);

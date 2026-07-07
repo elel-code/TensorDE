@@ -19,10 +19,12 @@ use crate::engine::scene_engine::{
     WeShaderInterface,
 };
 use crate::renderer::native_vulkan::vulkan::{
+    NativeVulkanDescriptorHeapShaderBindingMapping,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 
 use super::pipeline::{
@@ -110,9 +112,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
                 let descriptor_heap_mappings =
                     scene_pipeline_descriptor_heap_mappings(layout, key)?;
                 let mut descriptor_heap_mapping_info =
-                    vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-                        .mappings(&descriptor_heap_mappings)
-                        .build();
+                    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+                        &descriptor_heap_mappings,
+                    )?;
                 let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
                     .stage(vk::ShaderStageFlags::FRAGMENT)
                     .module(fragment_module)
@@ -120,9 +122,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
                 let fragment_stage = if descriptor_heap_mappings.is_empty() {
                     fragment_stage_builder.build()
                 } else {
-                    fragment_stage_builder
-                        .push_next(&mut descriptor_heap_mapping_info)
-                        .build()
+                    let mut fragment_stage = fragment_stage_builder.build();
+                    fragment_stage.next =
+                        &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
+                    fragment_stage
                 };
                 let stages = [
                     vk::PipelineShaderStageCreateInfo::builder()
@@ -438,7 +441,7 @@ fn scene_mesh_shader_resource_mapping_labels(
 fn scene_pipeline_descriptor_heap_mappings(
     layout: NativeVulkanSceneMeshPipelineLayoutSpec<'_>,
     key: &NativeVulkanScenePipelineCacheKey,
-) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
+) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
     if key.pipeline_class.is_layer_utility_indexed() {
         let alpha_mask_plan = layout.layer_alpha_mask_resource_heap_plan.ok_or_else(|| {
             format!(
@@ -454,7 +457,7 @@ fn scene_pipeline_descriptor_heap_mappings(
 fn scene_mesh_descriptor_heap_mappings(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
-) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
+) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
     let Some(layout) = scene_mesh_draw_resource_heap_texture_layout(descriptor_heap_plan, key)?
     else {
         return Ok(Vec::new());
@@ -478,7 +481,7 @@ fn scene_mesh_descriptor_heap_mappings(
 fn scene_layer_utility_descriptor_heap_mappings(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
-) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
+) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
     let Some(layout) = scene_layer_utility_resource_heap_texture_layout(descriptor_heap_plan, key)?
     else {
         return Ok(Vec::new());

@@ -7,6 +7,10 @@
 //! - `references/godot/servers/rendering/renderer_rd/uniform_set_cache_rd.h`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
+use std::ffi::c_void;
+use std::marker::PhantomData;
+use std::ptr;
+
 use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands, HasBuilder};
@@ -27,6 +31,71 @@ const HOST_VISIBLE_COHERENT_DEVICE_LOCAL_MEMORY_FLAG_BITS: u32 =
 const HOST_VISIBLE_COHERENT_MEMORY_FLAG_BITS: u32 =
     vk::MemoryPropertyFlags::HOST_VISIBLE.bits() | vk::MemoryPropertyFlags::HOST_COHERENT.bits();
 const HOST_VISIBLE_MEMORY_FLAG_BITS: u32 = vk::MemoryPropertyFlags::HOST_VISIBLE.bits();
+const SHADER_HEAP_BINDING_MAPPING_STYPE: i32 = 1000135005;
+const SHADER_HEAP_BINDING_MAPPING_INFO_STYPE: i32 = 1000135006;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanDescriptorHeapShaderBindingMapping {
+    s_type: vk::StructureType,
+    next: *const c_void,
+    pub heap_table: u32,
+    pub first_binding: u32,
+    pub binding_count: u32,
+    pub resource_mask: vk::SpirvResourceTypeFlagsEXT,
+    pub source: vk::DescriptorMappingSourceEXT,
+    pub source_data: vk::DescriptorMappingSourceDataEXT,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanDescriptorHeapShaderBindingMappingInfo<'a>
+{
+    s_type: vk::StructureType,
+    next: *const c_void,
+    mapping_count: u32,
+    mappings: *const NativeVulkanDescriptorHeapShaderBindingMapping,
+    _marker: PhantomData<&'a [NativeVulkanDescriptorHeapShaderBindingMapping]>,
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+    mappings: &[NativeVulkanDescriptorHeapShaderBindingMapping],
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMappingInfo<'_>, String> {
+    let mapping_count = u32::try_from(mappings.len())
+        .map_err(|_| "descriptor heap shader binding mapping count exceeds u32".to_owned())?;
+    Ok(NativeVulkanDescriptorHeapShaderBindingMappingInfo {
+        s_type: native_vulkan_vulkanalia_descriptor_heap_structure_type(
+            SHADER_HEAP_BINDING_MAPPING_INFO_STYPE,
+        ),
+        next: ptr::null(),
+        mapping_count,
+        mappings: mappings.as_ptr(),
+        _marker: PhantomData,
+    })
+}
+
+fn native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+    first_binding: u32,
+    resource_mask: vk::SpirvResourceTypeFlagsEXT,
+    source_data: vk::DescriptorMappingSourceDataEXT,
+) -> NativeVulkanDescriptorHeapShaderBindingMapping {
+    NativeVulkanDescriptorHeapShaderBindingMapping {
+        s_type: native_vulkan_vulkanalia_descriptor_heap_structure_type(
+            SHADER_HEAP_BINDING_MAPPING_STYPE,
+        ),
+        next: ptr::null(),
+        heap_table: 0,
+        first_binding,
+        binding_count: 1,
+        resource_mask,
+        source: vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET,
+        source_data,
+    }
+}
+
+fn native_vulkan_vulkanalia_descriptor_heap_structure_type(value: i32) -> vk::StructureType {
+    unsafe { std::mem::transmute::<i32, vk::StructureType>(value) }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput {
@@ -1042,7 +1111,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descrip
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     image_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping(
         plan,
         0,
@@ -1054,7 +1123,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     plan: &NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     binding: u32,
     image_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     let heap_offset = descriptor_offset_u32(&plan.image_descriptor_offsets, image_index, "image")?;
     let sampler_heap_offset =
         descriptor_offset_u32(&plan.sampler_descriptor_offsets, image_index, "sampler")?;
@@ -1069,23 +1138,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(sampler_heap_array_stride)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_binding_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot,
     binding: u32,
     buffer_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     let heap_offset = descriptor_offset_u32(
         &plan.buffer_descriptor_offsets,
         buffer_index,
@@ -1100,23 +1168,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(0)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_uniform_buffer_binding_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     binding: u32,
     resource_descriptor_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     validate_mixed_plan_descriptor_kind(
         plan,
         resource_descriptor_index,
@@ -1136,16 +1203,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(0)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_combined_image_sampler_binding_mapping(
@@ -1153,7 +1219,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     binding: u32,
     resource_descriptor_index: usize,
     sampler_descriptor_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     validate_mixed_plan_descriptor_kind(
         plan,
         resource_descriptor_index,
@@ -1180,16 +1246,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(sampler_heap_array_stride)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
@@ -1199,7 +1264,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
     sampler_descriptor_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     validate_mixed_plan_descriptor_kind(
         plan,
         base_resource_descriptor_index,
@@ -1271,16 +1336,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(sampler_heap_array_stride)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping(
@@ -1290,7 +1354,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
     sampler_descriptor_index: usize,
-) -> Result<vk::DescriptorSetAndBindingMappingEXT, String> {
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
     validate_mixed_plan_descriptor_kind(
         plan,
         base_resource_descriptor_index,
@@ -1364,16 +1428,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .sampler_heap_array_stride(sampler_heap_array_stride)
         .build();
 
-    Ok(vk::DescriptorSetAndBindingMappingEXT::builder()
-        .descriptor_set(0)
-        .first_binding(binding)
-        .binding_count(1)
-        .resource_mask(vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE)
-        .source(vk::DescriptorMappingSourceEXT::HEAP_WITH_CONSTANT_OFFSET)
-        .source_data(vk::DescriptorMappingSourceDataEXT {
-            constant_offset: source,
-        })
-        .build())
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_bind_info(
@@ -2121,7 +2184,7 @@ mod tests {
             native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_mapping(&snapshot, 1)
                 .expect("mapping should fit u32 offsets");
 
-        assert_eq!(mapping.descriptor_set, 0);
+        assert_eq!(mapping.heap_table, 0);
         assert_eq!(mapping.first_binding, 0);
         assert_eq!(mapping.binding_count, 1);
         assert_eq!(
@@ -2209,7 +2272,7 @@ mod tests {
         )
         .expect("mapping should fit u32 offsets");
 
-        assert_eq!(mapping.descriptor_set, 0);
+        assert_eq!(mapping.heap_table, 0);
         assert_eq!(mapping.first_binding, 3);
         assert_eq!(mapping.binding_count, 1);
         assert_eq!(

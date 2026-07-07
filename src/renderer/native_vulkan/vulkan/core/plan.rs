@@ -151,7 +151,7 @@ pub fn native_vulkan_backend_plan() -> NativeVulkanBackendPlan {
             "route H.264/H.265/AV1 through FFmpeg Vulkan hwdecode on the Vulkanalia-provided device",
             "keep direct present timing telemetry on the native Vulkan main path",
             "enable maintenance7/8/9/10 on the present device when feature bits are available",
-            "keep descriptor_sets=0 and descriptor_heap_only=true in video evidence",
+            "keep legacy_bind_groups=0 and descriptor_heap_only=true in video evidence",
         ],
     }
 }
@@ -296,7 +296,7 @@ mod tests {
         assert!(
             plan.runtime_gates
                 .iter()
-                .any(|gate| gate.contains("descriptor_sets=0"))
+                .any(|gate| gate.contains("legacy_bind_groups=0"))
         );
     }
 }

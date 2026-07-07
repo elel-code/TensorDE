@@ -191,7 +191,7 @@ fn with_vulkanalia_scene_present(
             present_device.device.destroy_device(None);
         }
         return Err(
-            "scene present requires VK_EXT_descriptor_heap; descriptor-set fallback is forbidden"
+            "scene present requires VK_EXT_descriptor_heap; legacy binding fallback is forbidden"
                 .to_owned(),
         );
     }

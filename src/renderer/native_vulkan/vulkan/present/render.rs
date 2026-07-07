@@ -15,6 +15,7 @@ use super::descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
+    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 pub(in crate::renderer::native_vulkan::vulkan) use super::present_timing::VulkanaliaPresentTimingConfig as VulkanaliaDecodedImagePresentTimingConfig;
 #[cfg(feature = "native-vulkan-video")]
@@ -72,7 +73,7 @@ pub struct NativeVulkanVulkanaliaDecodedImagePresentPipelineSnapshot {
     pub primitive_topology: &'static str,
     pub vertex_shader_model: &'static str,
     pub fragment_shader_model: &'static str,
-    pub descriptor_sets: u32,
+    pub legacy_bind_groups: u32,
     pub descriptor_model: &'static str,
     pub descriptor_heap_mapping_enabled: bool,
     pub descriptor_heap_plane_sampler_enabled: bool,
@@ -365,23 +366,28 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                 let descriptor_heap_mappings =
                     [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
                 let mut descriptor_heap_mapping_info =
-                    vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-                        .mappings(&descriptor_heap_mappings)
-                        .build();
-                let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+                    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+                        &descriptor_heap_mappings,
+                    )?;
+                let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
                     .stage(vk::ShaderStageFlags::FRAGMENT)
                     .module(fragment_module)
                     .name(shader_entry);
-                if descriptor_heap_mapping_enabled {
-                    fragment_stage = fragment_stage.push_next(&mut descriptor_heap_mapping_info);
-                }
+                let fragment_stage = if descriptor_heap_mapping_enabled {
+                    let mut fragment_stage = fragment_stage_builder.build();
+                    fragment_stage.next =
+                        &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
+                    fragment_stage
+                } else {
+                    fragment_stage_builder.build()
+                };
                 let stages = [
                     vk::PipelineShaderStageCreateInfo::builder()
                         .stage(vk::ShaderStageFlags::VERTEX)
                         .module(vertex_module)
                         .name(shader_entry)
                         .build(),
-                    fragment_stage.build(),
+                    fragment_stage,
                 ];
                 let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
                 let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
@@ -497,7 +503,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_vulkanalia_creat
                         primitive_topology: "fullscreen-triangle",
                         vertex_shader_model: "gl_VertexIndex fullscreen triangle",
                         fragment_shader_model: "two retained plane sampler2DArray descriptors with instance-index layer selection",
-                        descriptor_sets: 0,
+                        legacy_bind_groups: 0,
                         descriptor_model: "VK_EXT_descriptor_heap",
                         descriptor_heap_mapping_enabled,
                         descriptor_heap_plane_sampler_enabled,
@@ -578,21 +584,22 @@ fn native_vulkan_vulkanalia_create_decoded_image_scene_video_layer_pipeline_reso
                     let descriptor_heap_mappings =
                         [y_descriptor_heap_mapping, uv_descriptor_heap_mapping];
                     let mut descriptor_heap_mapping_info =
-                        vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-                            .mappings(&descriptor_heap_mappings)
-                            .build();
-                    let fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
+                        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+                            &descriptor_heap_mappings,
+                        )?;
+                    let mut fragment_stage = vk::PipelineShaderStageCreateInfo::builder()
                         .stage(vk::ShaderStageFlags::FRAGMENT)
                         .module(fragment_module)
                         .name(shader_entry)
-                        .push_next(&mut descriptor_heap_mapping_info);
+                        .build();
+                    fragment_stage.next = &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
                     let stages = [
                         vk::PipelineShaderStageCreateInfo::builder()
                             .stage(vk::ShaderStageFlags::VERTEX)
                             .module(vertex_module)
                             .name(shader_entry)
                             .build(),
-                        fragment_stage.build(),
+                        fragment_stage,
                     ];
                     let binding = vk::VertexInputBindingDescription::builder()
                         .binding(0)

@@ -25,7 +25,7 @@ use super::{
     NativeVulkanSceneLayerAlphaMaskResourceHeapEntry,
     NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan,
 };
-use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorSetRole;
+use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskTextureBindRole;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskResourceHeapSyncAction {
@@ -46,11 +46,11 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskResou
 
 #[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-    pub descriptor_set_index: usize,
+    pub heap_bind_index: usize,
     pub object: SceneObjectId,
     pub puppet: ScenePuppetId,
     pub shader: String,
-    pub role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub resource_set_index: usize,
     pub resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
     pub base_resource_descriptor_index: usize,
@@ -168,21 +168,21 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapStore {
         self.current.as_ref()
     }
 
-    pub(in crate::renderer::native_vulkan) fn bind_info_for_descriptor_set(
+    pub(in crate::renderer::native_vulkan) fn bind_info_for_heap_bind(
         &self,
-        descriptor_set_index: usize,
+        heap_bind_index: usize,
     ) -> Result<NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo, String> {
         let current = self
             .current
             .as_ref()
             .ok_or_else(|| "scene layer alpha-mask resource heap has no frame plan".to_owned())?;
         let binding = current
-            .descriptor_set_bindings
+            .heap_bindings
             .iter()
-            .find(|binding| binding.descriptor_set_index == descriptor_set_index)
+            .find(|binding| binding.heap_bind_index == heap_bind_index)
             .ok_or_else(|| {
                 format!(
-                    "scene layer alpha-mask resource heap has no binding for descriptor set {descriptor_set_index}"
+                    "scene layer alpha-mask resource heap has no binding for heap bind {heap_bind_index}"
                 )
             })?;
         let resources = self
@@ -190,7 +190,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapStore {
             .as_ref()
             .ok_or_else(|| "scene layer alpha-mask resource heap is not resident".to_owned())?;
         Ok(NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-            descriptor_set_index,
+            heap_bind_index,
             object: binding.object,
             puppet: binding.puppet,
             shader: binding.shader.clone(),

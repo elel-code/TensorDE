@@ -23,7 +23,7 @@ use super::copy_back_pipeline::{
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_pipelines,
 };
 use super::{
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole, NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTextureBindRole,
 };
 use crate::renderer::native_vulkan::scene_backend::frame_resources::NativeVulkanSceneFrameResources;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
@@ -35,7 +35,7 @@ use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVu
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan
 {
-    pub descriptor_set_count: usize,
+    pub heap_bind_count: usize,
     pub resource_heap_bind_count: usize,
     pub clippingmaskimage4_bind_count: usize,
     pub generated_clippingtarget_bind_count: usize,
@@ -58,11 +58,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan
 {
-    pub descriptor_set_index: usize,
+    pub heap_bind_index: usize,
     pub object: SceneObjectId,
     pub puppet: ScenePuppetId,
     pub shader: String,
-    pub role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub operation: SceneLayerCompositorOperation,
     pub bind: NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan,
 }
@@ -77,7 +77,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTok
     pub source: Option<SceneLayerCompositorTarget>,
     pub requirement: NativeVulkanSceneLayerAlphaMaskBindRequirement,
     pub matched_bind_count: usize,
-    pub matched_descriptor_set_indices: Vec<usize>,
+    pub matched_heap_bind_indices: Vec<usize>,
     pub command_order: Vec<&'static str>,
 }
 
@@ -91,7 +91,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub texture_slot: u32,
     pub texture_source: NativeVulkanSceneTextureDescriptorSource,
     pub bind_index: usize,
-    pub descriptor_set_index: usize,
+    pub heap_bind_index: usize,
     pub resource_set_index: usize,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
@@ -119,23 +119,23 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             .map(|bind_info| {
                 let operation = alpha_mask_operation_for_descriptor_role(bind_info.role);
                 match bind_info.role {
-                    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                    NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                         ..
                     } => {
                         clippingmaskimage4_bind_count =
                             clippingmaskimage4_bind_count.saturating_add(1)
                     }
-                    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget => {
+                    NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget => {
                         generated_clippingtarget_bind_count =
                             generated_clippingtarget_bind_count.saturating_add(1)
                     }
-                    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack => {
+                    NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack => {
                         flattexture_copy_back_bind_count =
                             flattexture_copy_back_bind_count.saturating_add(1)
                     }
                 }
                 NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan {
-                    descriptor_set_index: bind_info.descriptor_set_index,
+                    heap_bind_index: bind_info.heap_bind_index,
                     object: bind_info.object,
                     puppet: bind_info.puppet,
                     shader: bind_info.shader.clone(),
@@ -183,7 +183,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
         )?;
 
         Ok(Self {
-            descriptor_set_count: binds.len(),
+            heap_bind_count: binds.len(),
             resource_heap_bind_count: binds.len(),
             clippingmaskimage4_bind_count,
             generated_clippingtarget_bind_count,
@@ -202,7 +202,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             copy_back_pipelines,
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
-                "resolve_descriptor_set_bind_info",
+                "resolve_texture_bind_bind_info",
                 "classify_alpha_mask_descriptor_heap_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
@@ -216,7 +216,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
 
     fn empty() -> Self {
         Self {
-            descriptor_set_count: 0,
+            heap_bind_count: 0,
             resource_heap_bind_count: 0,
             clippingmaskimage4_bind_count: 0,
             generated_clippingtarget_bind_count: 0,
@@ -248,7 +248,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan {
             },
             command_order: [
                 "read_current_alpha_mask_resource_heap_plan",
-                "resolve_descriptor_set_bind_info",
+                "resolve_texture_bind_bind_info",
                 "classify_alpha_mask_descriptor_heap_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
@@ -268,26 +268,25 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan::empty());
     }
-    let descriptor_set_indices = frame_resources
+    let heap_bind_indices = frame_resources
         .current_layer_alpha_mask_resource_heap_frame_plan()
         .ok_or_else(|| {
             "scene layer alpha-mask runtime requires cold-prepared alpha-mask resource heap"
                 .to_owned()
         })?
-        .descriptor_set_bindings
+        .heap_bindings
         .iter()
-        .map(|binding| binding.descriptor_set_index)
+        .map(|binding| binding.heap_bind_index)
         .collect::<Vec<_>>();
-    if descriptor_set_indices.is_empty() {
+    if heap_bind_indices.is_empty() {
         return Err(
-            "scene layer alpha-mask runtime has tokenized layers but no alpha-mask descriptor sets"
+            "scene layer alpha-mask runtime has tokenized layers but no alpha-mask heap binds"
                 .to_owned(),
         );
     }
-    let mut bind_infos = Vec::with_capacity(descriptor_set_indices.len());
-    for descriptor_set_index in descriptor_set_indices {
-        bind_infos
-            .push(frame_resources.layer_alpha_mask_resource_heap_bind_info(descriptor_set_index)?);
+    let mut bind_infos = Vec::with_capacity(heap_bind_indices.len());
+    for heap_bind_index in heap_bind_indices {
+        bind_infos.push(frame_resources.layer_alpha_mask_resource_heap_bind_info(heap_bind_index)?);
     }
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan::from_runtime_and_bind_infos(
         runtime, bind_infos,
@@ -304,14 +303,14 @@ fn token_command_bind_plans(
         .enumerate()
         .map(|(command_index, command)| {
             let requirement = bind_requirement_for_operation(command.operation)?;
-            let matched_descriptor_set_indices =
-                matched_descriptor_set_indices(command.object, requirement, binds);
+            let matched_heap_bind_indices =
+                matched_heap_bind_indices(command.object, requirement, binds);
             validate_token_command_bind_matches(
                 command_index,
                 command.object,
                 command.operation,
                 requirement,
-                &matched_descriptor_set_indices,
+                &matched_heap_bind_indices,
             )?;
             let mut command_order = vec!["read_layer_alpha_mask_token_command"];
             match requirement {
@@ -335,8 +334,8 @@ fn token_command_bind_plans(
                 target: command.target,
                 source: command.source,
                 requirement,
-                matched_bind_count: matched_descriptor_set_indices.len(),
-                matched_descriptor_set_indices,
+                matched_bind_count: matched_heap_bind_indices.len(),
+                matched_heap_bind_indices,
                 command_order,
             })
         })
@@ -365,7 +364,7 @@ fn bind_requirement_for_operation(
     }
 }
 
-fn matched_descriptor_set_indices(
+fn matched_heap_bind_indices(
     object: SceneObjectId,
     requirement: NativeVulkanSceneLayerAlphaMaskBindRequirement,
     binds: &[NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan],
@@ -376,18 +375,18 @@ fn matched_descriptor_set_indices(
         .filter(|bind| match requirement {
             NativeVulkanSceneLayerAlphaMaskBindRequirement::ClippingMaskImage4 => matches!(
                 bind.role,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 { .. }
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 { .. }
             ),
             NativeVulkanSceneLayerAlphaMaskBindRequirement::GeneratedClippingTarget => {
                 bind.role
-                    == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget
+                    == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget
             }
             NativeVulkanSceneLayerAlphaMaskBindRequirement::FlatTextureCopyBackSeparateDrawResourceBind => {
-                bind.role == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack
+                bind.role == NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack
             }
             NativeVulkanSceneLayerAlphaMaskBindRequirement::TokenProgramNoResourceBind => false,
         })
-        .map(|bind| bind.descriptor_set_index)
+        .map(|bind| bind.heap_bind_index)
         .collect()
 }
 
@@ -396,11 +395,11 @@ fn validate_token_command_bind_matches(
     object: SceneObjectId,
     operation: SceneLayerCompositorOperation,
     requirement: NativeVulkanSceneLayerAlphaMaskBindRequirement,
-    matched_descriptor_set_indices: &[usize],
+    matched_heap_bind_indices: &[usize],
 ) -> Result<(), String> {
     match requirement {
         NativeVulkanSceneLayerAlphaMaskBindRequirement::ClippingMaskImage4 => {
-            if matched_descriptor_set_indices.is_empty() {
+            if matched_heap_bind_indices.is_empty() {
                 return Err(format!(
                     "scene layer alpha-mask command {command_index} object {object:?} {:?} requires at least one clippingmaskimage4 descriptor heap bind",
                     operation
@@ -408,20 +407,20 @@ fn validate_token_command_bind_matches(
             }
         }
         NativeVulkanSceneLayerAlphaMaskBindRequirement::GeneratedClippingTarget => {
-            if matched_descriptor_set_indices.len() != 1 {
+            if matched_heap_bind_indices.len() != 1 {
                 return Err(format!(
                     "scene layer alpha-mask command {command_index} object {object:?} {:?} requires exactly one generated CLIPPINGTARGET descriptor heap bind, got {}",
                     operation,
-                    matched_descriptor_set_indices.len()
+                    matched_heap_bind_indices.len()
                 ));
             }
         }
         NativeVulkanSceneLayerAlphaMaskBindRequirement::FlatTextureCopyBackSeparateDrawResourceBind => {
-            if matched_descriptor_set_indices.len() != 1 {
+            if matched_heap_bind_indices.len() != 1 {
                 return Err(format!(
                     "scene layer alpha-mask command {command_index} object {object:?} {:?} requires exactly one flattexture copy-back descriptor heap bind, got {}",
                     operation,
-                    matched_descriptor_set_indices.len()
+                    matched_heap_bind_indices.len()
                 ));
             }
         }
@@ -444,7 +443,7 @@ fn copy_back_draw_bind_plans(
                 .filter(|(_, bind)| {
                     bind.object == draw.object
                         && bind.role
-                            == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack
+                            == NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack
                 })
                 .collect::<Vec<_>>();
             if matching_binds.len() != 1 {
@@ -470,7 +469,7 @@ fn copy_back_draw_bind_plans(
                 texture_slot: draw.texture_slot,
                 texture_source: draw.texture_source,
                 bind_index,
-                descriptor_set_index: bind.descriptor_set_index,
+                heap_bind_index: bind.heap_bind_index,
                 resource_set_index: bind.bind.resource_set_index,
                 base_resource_descriptor_index: bind.bind.base_resource_descriptor_index,
                 base_sampler_descriptor_index: bind.bind.base_sampler_descriptor_index,
@@ -486,16 +485,16 @@ fn copy_back_draw_bind_plans(
 }
 
 fn alpha_mask_operation_for_descriptor_role(
-    role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
 ) -> SceneLayerCompositorOperation {
     match role {
-        NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 { .. } => {
+        NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 { .. } => {
             SceneLayerCompositorOperation::DrawClippingMask
         }
-        NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget => {
+        NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget => {
             SceneLayerCompositorOperation::DrawGeneratedClippingTarget
         }
-        NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack => {
+        NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack => {
             SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask
         }
     }
@@ -527,7 +526,7 @@ mod tests {
         let bind_infos = vec![
             alpha_mask_bind_info(
                 0,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                     clipping_record_index: 0,
                 },
                 "we/clippingmaskimage4",
@@ -535,13 +534,13 @@ mod tests {
             ),
             alpha_mask_bind_info(
                 1,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget,
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
                 "we/genericimage4",
                 vec![(0, SceneResourceId(9))],
             ),
             alpha_mask_bind_info_from_sources(
                 2,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack,
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack,
                 "util/minimalalpha",
                 vec![(
                     0,
@@ -558,7 +557,7 @@ mod tests {
             )
             .expect("resource bind runtime plan");
 
-        assert_eq!(plan.descriptor_set_count, 3);
+        assert_eq!(plan.heap_bind_count, 3);
         assert_eq!(plan.resource_heap_bind_count, 3);
         assert_eq!(plan.clippingmaskimage4_bind_count, 1);
         assert_eq!(plan.generated_clippingtarget_bind_count, 1);
@@ -587,26 +586,17 @@ mod tests {
             plan.token_commands[1].requirement,
             NativeVulkanSceneLayerAlphaMaskBindRequirement::ClippingMaskImage4
         );
-        assert_eq!(
-            plan.token_commands[1].matched_descriptor_set_indices,
-            vec![0]
-        );
+        assert_eq!(plan.token_commands[1].matched_heap_bind_indices, vec![0]);
         assert_eq!(
             plan.token_commands[3].requirement,
             NativeVulkanSceneLayerAlphaMaskBindRequirement::FlatTextureCopyBackSeparateDrawResourceBind
         );
-        assert_eq!(
-            plan.token_commands[3].matched_descriptor_set_indices,
-            vec![2]
-        );
+        assert_eq!(plan.token_commands[3].matched_heap_bind_indices, vec![2]);
         assert_eq!(
             plan.token_commands[4].requirement,
             NativeVulkanSceneLayerAlphaMaskBindRequirement::GeneratedClippingTarget
         );
-        assert_eq!(
-            plan.token_commands[4].matched_descriptor_set_indices,
-            vec![1]
-        );
+        assert_eq!(plan.token_commands[4].matched_heap_bind_indices, vec![1]);
         assert_eq!(plan.copy_back_draws[0].shader, "util/minimalalpha");
         assert_eq!(
             plan.copy_back_draws[0].texture_source,
@@ -617,7 +607,7 @@ mod tests {
         assert_eq!(plan.copy_back_draw_binds[0].copy_back_draw_index, 0);
         assert_eq!(plan.copy_back_draw_binds[0].command_index, 3);
         assert_eq!(plan.copy_back_draw_binds[0].bind_index, 2);
-        assert_eq!(plan.copy_back_draw_binds[0].descriptor_set_index, 2);
+        assert_eq!(plan.copy_back_draw_binds[0].heap_bind_index, 2);
         assert_eq!(plan.copy_back_draw_binds[0].resource_set_index, 2);
         assert_eq!(
             plan.copy_back_draw_binds[0].base_resource_descriptor_index,
@@ -654,7 +644,7 @@ mod tests {
             plan.command_order,
             [
                 "read_current_alpha_mask_resource_heap_plan",
-                "resolve_descriptor_set_bind_info",
+                "resolve_texture_bind_bind_info",
                 "classify_alpha_mask_descriptor_heap_bind",
                 "match_resource_binds_to_token_commands",
                 "require_heap_bind_for_tokenized_mask_draws",
@@ -672,7 +662,7 @@ mod tests {
         let bind_infos = vec![
             alpha_mask_bind_info(
                 0,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                     clipping_record_index: 0,
                 },
                 "we/clippingmaskimage4",
@@ -680,7 +670,7 @@ mod tests {
             ),
             alpha_mask_bind_info_from_sources(
                 1,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::FlatTextureCopyBack,
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack,
                 "util/minimalalpha",
                 vec![(
                     0,
@@ -706,7 +696,7 @@ mod tests {
         let bind_infos = vec![
             alpha_mask_bind_info(
                 0,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                     clipping_record_index: 0,
                 },
                 "we/clippingmaskimage4",
@@ -714,7 +704,7 @@ mod tests {
             ),
             alpha_mask_bind_info(
                 1,
-                NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget,
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
                 "we/genericimage4",
                 vec![(0, SceneResourceId(9))],
             ),
@@ -834,8 +824,8 @@ mod tests {
     }
 
     fn alpha_mask_bind_info(
-        descriptor_set_index: usize,
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+        heap_bind_index: usize,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
         shader: &'static str,
         textures: Vec<(u32, SceneResourceId)>,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
@@ -853,12 +843,12 @@ mod tests {
                 )
                 .collect(),
         };
-        alpha_mask_bind_info_for_resource_set(descriptor_set_index, role, shader, resource_set)
+        alpha_mask_bind_info_for_resource_set(heap_bind_index, role, shader, resource_set)
     }
 
     fn alpha_mask_bind_info_from_sources(
-        descriptor_set_index: usize,
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+        heap_bind_index: usize,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
         shader: &'static str,
         textures: Vec<(u32, NativeVulkanSceneLayerAlphaMaskDescriptorSource)>,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
@@ -874,12 +864,12 @@ mod tests {
                 )
                 .collect(),
         };
-        alpha_mask_bind_info_for_resource_set(descriptor_set_index, role, shader, resource_set)
+        alpha_mask_bind_info_for_resource_set(heap_bind_index, role, shader, resource_set)
     }
 
     fn alpha_mask_bind_info_for_resource_set(
-        descriptor_set_index: usize,
-        role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+        heap_bind_index: usize,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
         shader: &'static str,
         resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
@@ -896,15 +886,15 @@ mod tests {
             })
             .collect();
         NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-            descriptor_set_index,
+            heap_bind_index,
             object: SceneObjectId(77),
             puppet: ScenePuppetId(5),
             shader: shader.to_owned(),
             role,
-            resource_set_index: descriptor_set_index,
+            resource_set_index: heap_bind_index,
             resource_set,
-            base_resource_descriptor_index: descriptor_set_index.saturating_mul(2),
-            base_sampler_descriptor_index: descriptor_set_index.saturating_mul(2),
+            base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
+            base_sampler_descriptor_index: heap_bind_index.saturating_mul(2),
             resource_descriptor_count: texture_count,
             texture_count,
             shader_mappings,

@@ -18,9 +18,11 @@ use crate::engine::scene_engine::{
     SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
 };
 use crate::renderer::native_vulkan::vulkan::{
+    NativeVulkanDescriptorHeapShaderBindingMapping,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 
 use super::effect_pipeline::{
@@ -96,9 +98,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_effect_pipe
                 let descriptor_heap_mappings =
                     scene_effect_descriptor_heap_mappings(layout.effect_resource_heap_plan, key)?;
                 let mut descriptor_heap_mapping_info =
-                    vk::ShaderDescriptorSetAndBindingMappingInfoEXT::builder()
-                        .mappings(&descriptor_heap_mappings)
-                        .build();
+                    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+                        &descriptor_heap_mappings,
+                    )?;
                 let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
                     .stage(vk::ShaderStageFlags::FRAGMENT)
                     .module(fragment_module)
@@ -106,9 +108,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_effect_pipe
                 let fragment_stage = if descriptor_heap_mappings.is_empty() {
                     fragment_stage_builder.build()
                 } else {
-                    fragment_stage_builder
-                        .push_next(&mut descriptor_heap_mapping_info)
-                        .build()
+                    let mut fragment_stage = fragment_stage_builder.build();
+                    fragment_stage.next =
+                        &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
+                    fragment_stage
                 };
                 let stages = [
                     vk::PipelineShaderStageCreateInfo::builder()
@@ -284,7 +287,7 @@ fn scene_effect_resource_heap_texture_layout(
 fn scene_effect_descriptor_heap_mappings(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanSceneEffectPipelineKey<'_>,
-) -> Result<Vec<vk::DescriptorSetAndBindingMappingEXT>, String> {
+) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
     let Some(layout) = scene_effect_resource_heap_texture_layout(descriptor_heap_plan, key)? else {
         return Ok(Vec::new());
     };

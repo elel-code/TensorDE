@@ -64,7 +64,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub effect_resource_set_count: usize,
     pub effect_resource_descriptor_count: usize,
     pub effect_sampler_descriptor_count: usize,
-    pub layer_alpha_mask_descriptor_set_count: usize,
+    pub layer_alpha_mask_heap_bind_count: usize,
     pub layer_alpha_mask_resource_heap_action_count: usize,
     pub layer_alpha_mask_resource_set_count: usize,
     pub layer_alpha_mask_resource_descriptor_count: usize,
@@ -201,8 +201,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 objects,
                 &frame.layer_compositor,
             )?;
-        let layer_alpha_mask_descriptor_set_count =
-            layer_alpha_mask_descriptors.descriptor_set_count;
+        let layer_alpha_mask_heap_bind_count = layer_alpha_mask_descriptors.heap_bind_count;
         let layer_alpha_mask_resource_heap_action_count = frame_resources
             .sync_layer_alpha_mask_resource_heap(
                 device,
@@ -325,7 +324,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             effect_resource_set_count,
             effect_resource_descriptor_count,
             effect_sampler_descriptor_count,
-            layer_alpha_mask_descriptor_set_count,
+            layer_alpha_mask_heap_bind_count,
             layer_alpha_mask_resource_heap_action_count,
             layer_alpha_mask_resource_set_count,
             layer_alpha_mask_resource_descriptor_count,

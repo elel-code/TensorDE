@@ -214,7 +214,7 @@ fn native_vulkan_vulkanalia_create_decoded_image_present_sampler_resources_from_
     }
     if !descriptor_heap_enabled {
         return Err(
-            "decoded image present requires VK_EXT_descriptor_heap; descriptor-set path is disabled"
+            "decoded image present requires VK_EXT_descriptor_heap; legacy binding path is disabled"
                 .to_owned(),
         );
     }

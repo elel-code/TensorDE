@@ -13,20 +13,21 @@ use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
 use crate::engine::scene_engine::{SceneObjectId, ScenePuppetId};
 
-use super::key::{NativeVulkanSceneLayerAlphaMaskResourceSetKey, alpha_mask_descriptor_set_key};
+use super::key::{
+    NativeVulkanSceneLayerAlphaMaskResourceSetKey, alpha_mask_texture_bind_resource_set,
+};
 use super::store::NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
-    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    NativeVulkanSceneLayerAlphaMaskTextureBindPlan, NativeVulkanSceneLayerAlphaMaskTextureBindRole,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
-    pub(in crate::renderer::native_vulkan) descriptor_set_index: usize,
+    pub(in crate::renderer::native_vulkan) heap_bind_index: usize,
     pub(in crate::renderer::native_vulkan) object: SceneObjectId,
     pub(in crate::renderer::native_vulkan) puppet: ScenePuppetId,
     pub(in crate::renderer::native_vulkan) shader: String,
-    pub(in crate::renderer::native_vulkan) role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    pub(in crate::renderer::native_vulkan) role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub(in crate::renderer::native_vulkan) resource_set_index: usize,
     pub(in crate::renderer::native_vulkan) resource_set:
         NativeVulkanSceneLayerAlphaMaskResourceSetKey,
@@ -43,7 +44,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
         bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
     ) -> Self {
         Self {
-            descriptor_set_index: bind_info.descriptor_set_index,
+            heap_bind_index: bind_info.heap_bind_index,
             object: bind_info.object,
             puppet: bind_info.puppet,
             shader: bind_info.shader.clone(),
@@ -59,53 +60,53 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
         }
     }
 
-    pub(in crate::renderer::native_vulkan) fn from_descriptor_set_and_bind_info(
-        descriptor_set_index: usize,
-        descriptor_set: &NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
+    pub(in crate::renderer::native_vulkan) fn from_texture_bind_and_bind_info(
+        heap_bind_index: usize,
+        texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
         bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
     ) -> Result<Self, String> {
-        let resource_set = alpha_mask_descriptor_set_key(descriptor_set)?;
-        if descriptor_set_index != bind_info.descriptor_set_index {
+        let resource_set = alpha_mask_texture_bind_resource_set(texture_bind)?;
+        if heap_bind_index != bind_info.heap_bind_index {
             return Err(format!(
-                "scene layer alpha-mask resource heap bind descriptor-set mismatch: descriptor {}, heap {}",
-                descriptor_set_index, bind_info.descriptor_set_index
+                "scene layer alpha-mask resource heap bind heap-bind mismatch: descriptor {}, heap {}",
+                heap_bind_index, bind_info.heap_bind_index
             ));
         }
-        if descriptor_set.object != bind_info.object {
+        if texture_bind.object != bind_info.object {
             return Err(format!(
                 "scene layer alpha-mask resource heap bind object mismatch: descriptor {:?}, heap {:?}",
-                descriptor_set.object, bind_info.object
+                texture_bind.object, bind_info.object
             ));
         }
-        if descriptor_set.puppet != bind_info.puppet {
+        if texture_bind.puppet != bind_info.puppet {
             return Err(format!(
                 "scene layer alpha-mask resource heap bind puppet mismatch for object {:?}: descriptor {:?}, heap {:?}",
-                descriptor_set.object, descriptor_set.puppet, bind_info.puppet
+                texture_bind.object, texture_bind.puppet, bind_info.puppet
             ));
         }
-        if descriptor_set.shader != bind_info.shader {
+        if texture_bind.shader != bind_info.shader {
             return Err(format!(
                 "scene layer alpha-mask resource heap bind shader mismatch for object {:?}: descriptor {}, heap {}",
-                descriptor_set.object, descriptor_set.shader, bind_info.shader
+                texture_bind.object, texture_bind.shader, bind_info.shader
             ));
         }
-        if descriptor_set.role != bind_info.role {
+        if texture_bind.role != bind_info.role {
             return Err(format!(
                 "scene layer alpha-mask resource heap bind role mismatch for object {:?}: descriptor {:?}, heap {:?}",
-                descriptor_set.object, descriptor_set.role, bind_info.role
+                texture_bind.object, texture_bind.role, bind_info.role
             ));
         }
         if resource_set != bind_info.resource_set {
             return Err(format!(
-                "scene layer alpha-mask resource heap bind resource-set mismatch for descriptor set {} object {:?}: descriptor {:?}, heap {:?}",
-                descriptor_set_index, descriptor_set.object, resource_set, bind_info.resource_set
+                "scene layer alpha-mask resource heap bind resource-set mismatch for heap bind {} object {:?}: descriptor {:?}, heap {:?}",
+                heap_bind_index, texture_bind.object, resource_set, bind_info.resource_set
             ));
         }
         if resource_set.bindings.len() != bind_info.texture_count {
             return Err(format!(
-                "scene layer alpha-mask resource heap bind texture count mismatch for descriptor set {} object {:?}: descriptor {}, heap {}",
-                descriptor_set_index,
-                descriptor_set.object,
+                "scene layer alpha-mask resource heap bind texture count mismatch for heap bind {} object {:?}: descriptor {}, heap {}",
+                heap_bind_index,
+                texture_bind.object,
                 resource_set.bindings.len(),
                 bind_info.texture_count
             ));
@@ -117,14 +118,14 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha_mask_resource_heap_bind_command(
     device: &Device,
     command_buffer: vk::CommandBuffer,
-    descriptor_set_index: usize,
-    descriptor_set: &NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan,
+    heap_bind_index: usize,
+    texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
     bind_info: NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan, String> {
     let plan =
-        NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_descriptor_set_and_bind_info(
-            descriptor_set_index,
-            descriptor_set,
+        NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_texture_bind_and_bind_info(
+            heap_bind_index,
+            texture_bind,
             &bind_info,
         )?;
     unsafe {
@@ -145,9 +146,9 @@ mod tests {
 
     #[test]
     fn alpha_mask_resource_heap_bind_plan_tracks_resource_set_identity() {
-        let descriptor_set = descriptor_set();
+        let texture_bind = texture_bind();
         let resource_set =
-            alpha_mask_descriptor_set_key(&descriptor_set).expect("alpha mask resource set");
+            alpha_mask_texture_bind_resource_set(&texture_bind).expect("alpha mask resource set");
         let bind_info = bind_info(
             0,
             SceneObjectId(77),
@@ -159,14 +160,14 @@ mod tests {
         );
 
         let plan =
-            NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_descriptor_set_and_bind_info(
+            NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_texture_bind_and_bind_info(
                 0,
-                &descriptor_set,
+                &texture_bind,
                 &bind_info,
             )
             .expect("alpha mask bind plan");
 
-        assert_eq!(plan.descriptor_set_index, 0);
+        assert_eq!(plan.heap_bind_index, 0);
         assert_eq!(plan.object, SceneObjectId(77));
         assert_eq!(plan.puppet, ScenePuppetId(5));
         assert_eq!(plan.resource_set_index, 11);
@@ -182,7 +183,7 @@ mod tests {
 
     #[test]
     fn alpha_mask_resource_heap_bind_plan_rejects_resource_set_mismatch() {
-        let descriptor_set = descriptor_set();
+        let texture_bind = texture_bind();
         let bind_info = bind_info(
             0,
             SceneObjectId(77),
@@ -204,9 +205,9 @@ mod tests {
         );
 
         let err =
-            NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_descriptor_set_and_bind_info(
+            NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_texture_bind_and_bind_info(
                 0,
-                &descriptor_set,
+                &texture_bind,
                 &bind_info,
             )
             .expect_err("resource set mismatch must fail");
@@ -214,12 +215,12 @@ mod tests {
         assert!(err.contains("resource-set mismatch"));
     }
 
-    fn descriptor_set() -> NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
-        NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+    fn texture_bind() -> NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
+        NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
             object: SceneObjectId(77),
             puppet: ScenePuppetId(5),
             shader: "we/clippingmaskimage4",
-            role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+            role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                 clipping_record_index: 0,
             },
             slot_mask: 0b11,
@@ -244,7 +245,7 @@ mod tests {
     }
 
     fn bind_info(
-        descriptor_set_index: usize,
+        heap_bind_index: usize,
         object: SceneObjectId,
         puppet: ScenePuppetId,
         resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
@@ -265,11 +266,11 @@ mod tests {
             })
             .collect();
         NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-            descriptor_set_index,
+            heap_bind_index,
             object,
             puppet,
             shader: "we/clippingmaskimage4".to_owned(),
-            role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+            role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
                 clipping_record_index: 0,
             },
             resource_set_index,

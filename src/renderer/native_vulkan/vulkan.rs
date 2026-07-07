@@ -67,6 +67,7 @@ pub(in crate::renderer::native_vulkan) use buffer::{
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
 #[allow(unused_imports)]
 pub(in crate::renderer::native_vulkan) use descriptor_heap::{
+    NativeVulkanDescriptorHeapShaderBindingMapping,
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanInput,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput,
@@ -94,6 +95,7 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_resource_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info_for_image,
+    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
     native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_plan,
     native_vulkan_vulkanalia_descriptor_heap_uniform_buffer_resource_bind_info,
