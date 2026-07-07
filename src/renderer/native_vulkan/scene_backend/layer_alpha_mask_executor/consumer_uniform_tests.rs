@@ -102,15 +102,16 @@ fn runtime_commands(
         target_scope_count: commands.len(),
         pipeline_bind_count: commands.len(),
         resource_heap_bind_count: commands.len(),
+        rt_method_8_bridge_count: commands.len(),
         rt_method_8_indexed_draw_count: commands.len(),
         commands,
         command_order: [
             "require_warmed_genericimage4_clippingtarget_pipelines",
             "resolve_generated_clippingtarget_heap_binds",
             "join_generated_draw_target_pipeline_contracts",
+            "join_rt_method_8_bridge_plan",
             "preserve_token1_effective_alpha_formula",
             "build_generated_consumer_command_plan",
-            "defer_geometry_and_uniform_recording_to_rt_method_8_recorder",
         ],
     }
 }
@@ -148,7 +149,10 @@ fn command() -> NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
         ],
         material_source: "local generated material variant +0x428",
         blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",
-        geometry_source: "[layer+0x490].vtable+0x40 generated material draw geometry",
+        geometry_source: "0x14020b15e local/generated vertex/index arrays for [layer+0x490] RT method [8]",
+        rt_method8_bridge_index: 0,
+        rt_method8_call_site: "0x14020908c",
+        rt_method8_method_vma: "0x1400eacd0",
         effective_alpha_formula: "src.a * FullAlphaMask.r with translucent src-alpha/inv-src-alpha blend",
         pipeline_bind_count: 1,
         resource_heap_bind_count: 1,
@@ -160,10 +164,10 @@ fn command() -> NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
             "resolve_generated_clippingtarget_resource_heap_bind",
             "resolve_layer_0x490_current_color_target_scope",
             "preserve_generated_material_0x428_and_blend_0x1f0",
+            "validate_rt_method_8_bridge_call_site",
             "bind_generated_clippingtarget_pipeline_variant",
             "bind_generated_clippingtarget_resource_heap_ext",
-            "bind_layer_0x490_rt_method_8_geometry",
-            "record_layer_0x490_generated_indexed_draw",
+            "record_rt_method_8_indexed_vector_draw",
         ],
     }
 }

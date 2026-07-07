@@ -17,6 +17,7 @@ use super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
 };
+use super::rt_method8::{LAYER_490_RT_METHOD8_OFFSET, LAYER_490_RT_METHOD8_RECEIVER_LABEL};
 use super::token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     NativeVulkanSceneLayerAlphaMaskTokenScheduleStep,
@@ -177,8 +178,8 @@ fn generated_consumer_binding(
             operation: SceneLayerCompositorOperation::DrawGeneratedClippingTarget,
             source_mask: SceneGraphTarget::FullAlphaMask,
             target: SceneLayerCompositorTarget::LayerTarget490,
-            target_receiver: "[layer+0x490]",
-            draw_receiver_vtable_offset: "0x40",
+            target_receiver: LAYER_490_RT_METHOD8_RECEIVER_LABEL,
+            draw_receiver_vtable_offset: LAYER_490_RT_METHOD8_OFFSET,
             shader: GENERATED_CLIPPINGTARGET_SHADER,
             texture_slot_mask: CLIPPINGTARGET_TEXTURE_SLOT_MASK,
             required_texture_slots: GENERATED_CLIPPINGTARGET_REQUIRED_TEXTURE_SLOTS,
@@ -201,7 +202,7 @@ fn generated_consumer_binding(
                 "validate_slot0_source_and_slot8_full_alpha_mask",
                 "preserve_subdraw_blend_byte_to_generated_material_0x1f0",
                 "preserve_layer_0x490_rt_method_8_draw_receiver",
-                "defer_uniform_and_geometry_lowering_to_generated_consumer_recorder",
+                "lower_receiver_to_rt_method_8_bridge_plan",
             ],
         },
     )

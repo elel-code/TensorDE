@@ -20,6 +20,7 @@ use super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskBindRequirement,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
 };
+use super::rt_method8::{LAYER_490_RT_METHOD8_OFFSET, LAYER_490_RT_METHOD8_RECEIVER_LABEL};
 use super::token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     NativeVulkanSceneLayerAlphaMaskTokenScheduleStep,
@@ -137,8 +138,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             heap_bind_indices: step.matched_heap_bind_indices.clone(),
             subdraw_mask_texture_field_offset: "0x38",
             subdraw_invert_flag: "0x44 bit 0x2",
-            draw_receiver: "[layer+0x490]",
-            draw_receiver_vtable_offset: "0x40",
+            draw_receiver: LAYER_490_RT_METHOD8_RECEIVER_LABEL,
+            draw_receiver_vtable_offset: LAYER_490_RT_METHOD8_OFFSET,
             reference_points: [
                 "reverse-engineered/docs/exe/clipping-pipeline.md: 0x14020d6bc target byte",
                 "reverse-engineered/docs/exe/clipping-pipeline.md: token 1/token 2 clear_first behavior",

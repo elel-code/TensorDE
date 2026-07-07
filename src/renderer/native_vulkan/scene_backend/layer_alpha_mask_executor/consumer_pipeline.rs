@@ -28,6 +28,7 @@ use super::consumer_target::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
 };
+use super::rt_method8::LAYER_490_RT_METHOD8_GEOMETRY_SOURCE;
 
 const GENERATED_CLIPPINGTARGET_SHADER_COMBOS: [(&str, u32); 2] =
     [("CLIPPINGTARGET", 1), ("CLIPPINGUVS", 1)];
@@ -103,14 +104,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
                         height: 1,
                         pipeline_class,
                         vertex_layout: generated_consumer_vertex_layout(pipeline_class)?,
-                        geometry_source: "[layer+0x490].vtable+0x40 generated material draw geometry",
+                        geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
                         command_order: [
                             "resolve_layer_0x490_rt_draw_receiver",
                             "keep_color_target_separate_from_layer_receiver",
                             "read_current_layer_color_target_format",
                             "validate_generated_consumer_color_attachment_format",
                             "select_scene_mesh_vertex_layout_for_layer_0x490",
-                            "defer_exact_subdraw_geometry_to_token_recorder",
+                            "preserve_0x14020b15e_geometry_creation_site",
                         ],
                     },
                 )
@@ -273,7 +274,7 @@ fn generated_consumer_pipeline_binding(
             shader_mappings: consumer.shader_mappings.clone(),
             material_source: consumer.generated_material_source,
             blend_byte_source: consumer.blend_byte_source,
-            geometry_source: "[layer+0x490].vtable+0x40 generated material draw geometry",
+            geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
             command_order: [
                 "read_generated_clippingtarget_draw_contract",
                 "require_clippinguvs_and_clippingtarget_shader_combos",

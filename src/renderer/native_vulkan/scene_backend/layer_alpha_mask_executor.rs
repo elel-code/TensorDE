@@ -31,6 +31,7 @@ mod producer_target_graph;
 mod producer_uniform;
 mod recorder_requirements;
 mod resource_binds;
+mod rt_method8;
 mod token_schedule;
 
 use crate::engine::scene_engine::{
@@ -97,6 +98,10 @@ pub(in crate::renderer::native_vulkan) use recorder_requirements::{
 pub(in crate::renderer::native_vulkan) use resource_binds::{
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
+};
+pub(in crate::renderer::native_vulkan) use rt_method8::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges,
 };
 pub(in crate::renderer::native_vulkan) use token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,

@@ -23,6 +23,7 @@ use super::super::{
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges,
 };
 use super::*;
 use crate::engine::scene_engine::{SceneLayerCompositorBlendKey, ScenePuppetId, SceneResourceId};
@@ -77,12 +78,21 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             &schedule,
         )
         .expect("generated consumer draws");
+    let rt_method8_bridges = native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges(
+        &runtime,
+        &producer_draws,
+        &generated_consumer_draws,
+    )
+    .expect("RT method [8] bridges");
     let (
         generated_consumer_targets,
         generated_consumer_pipelines,
         generated_consumer_commands,
         generated_consumer_uniforms,
-    ) = generated_consumer_target_pipeline_command_uniform_plans(&generated_consumer_draws);
+    ) = generated_consumer_target_pipeline_command_uniform_plans(
+        &generated_consumer_draws,
+        &rt_method8_bridges,
+    );
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -92,6 +102,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &producer_target_graph,
         &producer_uniforms,
         &generated_consumer_draws,
+        &rt_method8_bridges,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
@@ -120,6 +131,14 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     assert_eq!(plan.requirements[1].producer_draw_index, Some(0));
     assert_eq!(plan.requirements[1].producer_target_scope_index, Some(0));
     assert_eq!(plan.requirements[1].producer_uniform_index, Some(0));
+    assert_eq!(
+        plan.requirements[1].rt_method8_call_site,
+        Some("0x14020d83e")
+    );
+    assert_eq!(
+        plan.requirements[1].rt_method8_method_vma,
+        Some("0x1400eacd0")
+    );
     assert_eq!(
         plan.requirements[1].target_scope_load_op,
         Some(NativeVulkanSceneRenderTargetLoadOp::Clear)
@@ -161,6 +180,10 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     assert_eq!(
         plan.requirements[4].generated_consumer_uniform_index,
         Some(0)
+    );
+    assert_eq!(
+        plan.requirements[4].rt_method8_call_site,
+        Some("0x14020908c")
     );
     assert_eq!(
         plan.requirements[4].source_mask,
@@ -240,12 +263,21 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
             &schedule,
         )
         .expect("generated consumer draws");
+    let rt_method8_bridges = native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges(
+        &runtime,
+        &producer_draws,
+        &generated_consumer_draws,
+    )
+    .expect("RT method [8] bridges");
     let (
         generated_consumer_targets,
         generated_consumer_pipelines,
         generated_consumer_commands,
         generated_consumer_uniforms,
-    ) = generated_consumer_target_pipeline_command_uniform_plans(&generated_consumer_draws);
+    ) = generated_consumer_target_pipeline_command_uniform_plans(
+        &generated_consumer_draws,
+        &rt_method8_bridges,
+    );
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -255,6 +287,7 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &producer_target_graph,
         &producer_uniforms,
         &generated_consumer_draws,
+        &rt_method8_bridges,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
@@ -267,6 +300,7 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
 
 fn generated_consumer_target_pipeline_command_uniform_plans(
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    rt_method8_bridges: &super::super::rt_method8::NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
 ) -> (
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
@@ -299,6 +333,7 @@ fn generated_consumer_target_pipeline_command_uniform_plans(
             generated_consumer_draws,
             &targets,
             &pipelines,
+            rt_method8_bridges,
             |heap_bind_index| Ok(generated_consumer_bind_info(heap_bind_index)),
             pipelines.cache_keys().len(),
         )
@@ -821,6 +856,9 @@ fn command(
             }
             SceneLayerCompositorOperation::TokenProgramDispatch => {
                 SceneLayerCompositorEntry::TokenizedCompositeEntry52
+            }
+            SceneLayerCompositorOperation::DrawGeneratedClippingTarget => {
+                SceneLayerCompositorEntry::TokenizedCompositeWithMaterialEntry53
             }
             _ => SceneLayerCompositorEntry::AlphaMaskHelper20d6a0,
         },

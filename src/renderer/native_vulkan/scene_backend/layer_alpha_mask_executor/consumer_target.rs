@@ -19,6 +19,7 @@ use crate::renderer::native_vulkan::scene_backend::pipeline::NativeVulkanScenePi
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorVkFormat;
 
 use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
+use super::rt_method8::LAYER_490_RT_METHOD8_GEOMETRY_SOURCE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskLayerTargetBinding {
@@ -171,14 +172,14 @@ fn consumer_target_binding(
             height: binding.height,
             pipeline_class: binding.pipeline_class,
             vertex_layout,
-            geometry_source: "[layer+0x490].vtable+0x40 RT method [8] subdraw/indexed geometry receiver",
+            geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
             command_order: [
                 "resolve_layer_0x490_rt_draw_receiver",
                 "keep_color_target_separate_from_layer_receiver",
                 "read_current_layer_color_target_format",
                 "validate_generated_consumer_color_attachment_format",
                 "select_scene_mesh_vertex_layout_for_layer_0x490",
-                "defer_exact_subdraw_geometry_to_token_recorder",
+                "preserve_0x14020b15e_geometry_creation_site",
             ],
         },
     )

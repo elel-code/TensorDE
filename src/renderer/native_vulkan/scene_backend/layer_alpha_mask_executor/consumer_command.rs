@@ -32,6 +32,11 @@ use super::consumer_target::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
 };
+use super::rt_method8::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan
@@ -42,6 +47,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub target_scope_count: usize,
     pub pipeline_bind_count: usize,
     pub resource_heap_bind_count: usize,
+    pub rt_method_8_bridge_count: usize,
     pub rt_method_8_indexed_draw_count: usize,
     pub commands: Vec<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan>,
     pub command_order: [&'static str; 6],
@@ -78,6 +84,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub material_source: &'static str,
     pub blend_byte_source: &'static str,
     pub geometry_source: &'static str,
+    pub rt_method8_bridge_index: usize,
+    pub rt_method8_call_site: &'static str,
+    pub rt_method8_method_vma: &'static str,
     pub effective_alpha_formula: &'static str,
     pub pipeline_bind_count: usize,
     pub resource_heap_bind_count: usize,
@@ -92,6 +101,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan {
         consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
         targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
         pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+        rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
         mut bind_info_for_heap_bind: impl FnMut(
             usize,
         ) -> Result<
@@ -115,6 +125,14 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan {
                 targets.consumer_draw_count,
                 pipelines.pipeline_binding_count,
                 pipelines.consumer_draw_count
+            ));
+        }
+        if rt_method8_bridges.generated_consumer_bridge_count != consumer_draws.consumer_draw_count
+        {
+            return Err(format!(
+                "scene layer alpha-mask generated consumer command-list expected {} RT method [8] generated bridges, got {}",
+                consumer_draws.consumer_draw_count,
+                rt_method8_bridges.generated_consumer_bridge_count
             ));
         }
 
@@ -145,8 +163,16 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan {
                         draw.command_index, draw.heap_bind_index
                     )
                 })?;
+            let bridge = rt_method8_bridges
+                .bridge_for_generated_consumer_draw(draw.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no RT method [8] bridge",
+                        draw.command_index
+                    )
+                })?;
             commands.push(NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan::from_draw_target_pipeline_and_heap(
-                draw, target, pipeline, &bind_info,
+                draw, target, pipeline, bridge, &bind_info,
             )?);
         }
 
@@ -170,6 +196,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan {
             target_scope_count: commands.len(),
             pipeline_bind_count,
             resource_heap_bind_count,
+            rt_method_8_bridge_count: rt_method8_bridges.generated_consumer_bridge_count,
             rt_method_8_indexed_draw_count,
             commands,
             command_order: generated_consumer_runtime_command_order(),
@@ -184,6 +211,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan {
             target_scope_count: 0,
             pipeline_bind_count: 0,
             resource_heap_bind_count: 0,
+            rt_method_8_bridge_count: 0,
             rt_method_8_indexed_draw_count: 0,
             commands: Vec::new(),
             command_order: generated_consumer_runtime_command_order(),
@@ -205,9 +233,11 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
         draw: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
         target: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetBindingPlan,
         pipeline: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan,
+        bridge: &NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
         bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
     ) -> Result<Self, String> {
         validate_draw_target_pipeline_identity(draw, target, pipeline)?;
+        validate_rt_method8_bridge(draw, bridge)?;
         validate_generated_consumer_heap_bind(draw, pipeline, bind_info)?;
         Ok(Self {
             consumer_draw_index: draw.consumer_draw_index,
@@ -241,22 +271,25 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
             shader_mappings: pipeline.shader_mappings.clone(),
             material_source: pipeline.material_source,
             blend_byte_source: pipeline.blend_byte_source,
-            geometry_source: target.geometry_source,
+            geometry_source: bridge.geometry_source,
+            rt_method8_bridge_index: bridge.bridge_index,
+            rt_method8_call_site: bridge.call_site,
+            rt_method8_method_vma: bridge.method_vma,
             effective_alpha_formula: "src.a * FullAlphaMask.r with translucent src-alpha/inv-src-alpha blend",
             pipeline_bind_count: 1,
             resource_heap_bind_count: 1,
             target_bind_count: 1,
             rt_method_8_indexed_draw_count: 1,
-            draw_call: "[layer+0x490].vtable+0x40",
+            draw_call: bridge.draw_call,
             command_order: [
                 "require_warmed_genericimage4_clippingtarget_pipeline_variant",
                 "resolve_generated_clippingtarget_resource_heap_bind",
                 "resolve_layer_0x490_current_color_target_scope",
                 "preserve_generated_material_0x428_and_blend_0x1f0",
+                "validate_rt_method_8_bridge_call_site",
                 "bind_generated_clippingtarget_pipeline_variant",
                 "bind_generated_clippingtarget_resource_heap_ext",
-                "bind_layer_0x490_rt_method_8_geometry",
-                "record_layer_0x490_generated_indexed_draw",
+                "record_rt_method_8_indexed_vector_draw",
             ],
         })
     }
@@ -267,6 +300,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan, String> {
     if consumer_draws.bindings.is_empty() {
         return Ok(NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan::empty());
@@ -282,6 +316,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
         consumer_draws,
         targets,
         pipelines,
+        rt_method8_bridges,
         |heap_bind_index| frame_resources.layer_alpha_mask_resource_heap_bind_info(heap_bind_index),
         pipelines.cache_keys().len(),
     )
@@ -353,6 +388,29 @@ fn validate_draw_target_pipeline_identity(
         return Err(format!(
             "scene layer alpha-mask generated consumer command {} requires mesh/subdraw pipeline class, got {:?}",
             draw.command_index, target.pipeline_class
+        ));
+    }
+    Ok(())
+}
+
+fn validate_rt_method8_bridge(
+    draw: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
+    bridge: &NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+) -> Result<(), String> {
+    if bridge.purpose
+        != NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose::GeneratedClippingTargetConsumer
+        || bridge.generated_consumer_draw_index != Some(draw.consumer_draw_index)
+        || bridge.command_index != draw.command_index
+        || bridge.object != draw.object
+        || bridge.receiver != SceneLayerCompositorTarget::LayerTarget490
+        || !bridge.is_indexed_vector_draw
+        || bridge.is_raw_shader_resource_bind
+        || bridge.call_site.is_empty()
+        || bridge.method_vma != "0x1400eacd0"
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} requires a closed [layer+0x490] RT method [8] bridge",
+            draw.command_index
         ));
     }
     Ok(())
@@ -461,9 +519,9 @@ fn generated_consumer_runtime_command_order() -> [&'static str; 6] {
         "require_warmed_genericimage4_clippingtarget_pipelines",
         "resolve_generated_clippingtarget_heap_binds",
         "join_generated_draw_target_pipeline_contracts",
+        "join_rt_method_8_bridge_plan",
         "preserve_token1_effective_alpha_formula",
         "build_generated_consumer_command_plan",
-        "defer_geometry_and_uniform_recording_to_rt_method_8_recorder",
     ]
 }
 

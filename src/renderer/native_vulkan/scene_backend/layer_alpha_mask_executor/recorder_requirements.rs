@@ -39,6 +39,11 @@ use super::resource_binds::{
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskTokenCommandResourceBindPlan,
 };
+use super::rt_method8::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose,
+};
 use super::token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
@@ -92,6 +97,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub producer_uniform_index: Option<usize>,
     pub generated_consumer_draw_index: Option<usize>,
     pub generated_consumer_uniform_index: Option<usize>,
+    pub rt_method8_bridge_index: Option<usize>,
+    pub rt_method8_call_site: Option<&'static str>,
+    pub rt_method8_method_vma: Option<&'static str>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
@@ -117,6 +125,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -167,6 +176,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             producer_target_graph,
             producer_uniforms,
             generated_consumer_draws,
+            rt_method8_bridges,
             generated_consumer_targets,
             generated_consumer_pipelines,
             generated_consumer_commands,
@@ -271,6 +281,7 @@ fn requirement_from_step(
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
     producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -286,6 +297,9 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -351,6 +365,19 @@ fn requirement_from_step(
                 target_scope.requires_initialized_initial_layout,
                 producer_uniform,
             )?;
+            let rt_method8_bridge = rt_method8_bridges
+                .bridge_for_producer_draw(producer.producer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask producer command {} has no [layer+0x490] RT method [8] bridge",
+                        step.command_index
+                    )
+                })?;
+            validate_rt_method8_bridge(
+                step.command_index,
+                rt_method8_bridge,
+                NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose::ClippingMaskImage4Producer,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -364,6 +391,9 @@ fn requirement_from_step(
                 Some(producer_uniform.uniform_binding_index),
                 None,
                 None,
+                Some(rt_method8_bridge.bridge_index),
+                Some(rt_method8_bridge.call_site),
+                Some(rt_method8_bridge.method_vma),
                 Some(target_scope.load_op),
                 Some(target_scope.requires_initialized_initial_layout),
                 None,
@@ -394,6 +424,9 @@ fn requirement_from_step(
                 Some(SceneGraphPipelineClass::LayerUtilityIndexed),
                 Some("R8_UNORM"),
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
+                None,
+                None,
+                None,
                 None,
                 None,
                 None,
@@ -480,6 +513,19 @@ fn requirement_from_step(
                 generated_command,
                 generated_uniform,
             )?;
+            let rt_method8_bridge = rt_method8_bridges
+                .bridge_for_generated_consumer_draw(consumer.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no [layer+0x490] RT method [8] bridge",
+                        step.command_index
+                    )
+                })?;
+            validate_rt_method8_bridge(
+                step.command_index,
+                rt_method8_bridge,
+                NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose::GeneratedClippingTargetConsumer,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -493,6 +539,9 @@ fn requirement_from_step(
                 None,
                 Some(consumer.consumer_draw_index),
                 Some(generated_uniform.uniform_binding_index),
+                Some(rt_method8_bridge.bridge_index),
+                Some(rt_method8_bridge.call_site),
+                Some(rt_method8_bridge.method_vma),
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -533,6 +582,9 @@ fn base_requirement(
     producer_uniform_index: Option<usize>,
     generated_consumer_draw_index: Option<usize>,
     generated_consumer_uniform_index: Option<usize>,
+    rt_method8_bridge_index: Option<usize>,
+    rt_method8_call_site: Option<&'static str>,
+    rt_method8_method_vma: Option<&'static str>,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
@@ -564,6 +616,9 @@ fn base_requirement(
         producer_uniform_index,
         generated_consumer_draw_index,
         generated_consumer_uniform_index,
+        rt_method8_bridge_index,
+        rt_method8_call_site,
+        rt_method8_method_vma,
         target_scope_load_op,
         requires_initialized_initial_layout,
         source_mask,
@@ -808,6 +863,28 @@ fn validate_generated_consumer_uniform_contract(
     Ok(())
 }
 
+fn validate_rt_method8_bridge(
+    command_index: usize,
+    bridge: &NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+    purpose: NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose,
+) -> Result<(), String> {
+    if bridge.command_index != command_index
+        || bridge.purpose != purpose
+        || bridge.receiver != SceneLayerCompositorTarget::LayerTarget490
+        || bridge.method_vma != "0x1400eacd0"
+        || bridge.method_offset != "0x40"
+        || bridge.method_index != 8
+        || bridge.call_site.is_empty()
+        || !bridge.is_indexed_vector_draw
+        || bridge.is_raw_shader_resource_bind
+    {
+        return Err(format!(
+            "scene layer alpha-mask command {command_index} requires a closed [layer+0x490] RT method [8] indexed draw bridge"
+        ));
+    }
+    Ok(())
+}
+
 fn requirement_for_step_kind(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
 ) -> NativeVulkanSceneLayerAlphaMaskBindRequirement {
@@ -830,13 +907,15 @@ fn requirement_for_step_kind(
 
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "0x14020d6a0 subdraw entry -> layer+0x490 RT method [8] geometry binding",
+        "0x14020b15e local/generated vertex/index payload bytes and retained buffer binding for [layer+0x490] RT method [8]",
         "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
     ]
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
-    vec!["generated draw geometry payload/buffer binding for [layer+0x490].vtable+0x40"]
+    vec![
+        "0x14020b15e generated CLIPPINGTARGET vertex/index payload bytes and retained buffer binding for [layer+0x490] RT method [8]",
+    ]
 }
 
 fn recorder_requirement_command_order() -> [&'static str; 6] {

@@ -49,7 +49,8 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
-    NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan, NativeVulkanSceneLayerAlphaMaskRuntimePlan,
+    NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
@@ -62,6 +63,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_producer_uniforms,
     native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
@@ -93,6 +95,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_producer_uniforms: NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     pub layer_alpha_mask_generated_consumer_draws:
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
+    pub layer_alpha_mask_rt_method8_bridges: NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     pub layer_alpha_mask_generated_consumer_targets:
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     pub layer_alpha_mask_generated_consumer_pipelines:
@@ -106,7 +109,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 17],
+    pub command_order: [&'static str; 18],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +210,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_resource_binds,
             &layer_alpha_mask_token_schedule,
         )?;
+    let layer_alpha_mask_rt_method8_bridges =
+        native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges(
+            &layer_alpha_masks,
+            &layer_alpha_mask_producer_draws,
+            &layer_alpha_mask_generated_consumer_draws,
+        )?;
     let layer_alpha_mask_generated_consumer_targets =
         native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
             &layer_alpha_mask_generated_consumer_draws,
@@ -239,6 +248,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_generated_consumer_draws,
             &layer_alpha_mask_generated_consumer_targets,
             &layer_alpha_mask_generated_consumer_pipelines,
+            &layer_alpha_mask_rt_method8_bridges,
         )?;
     let layer_alpha_mask_generated_consumer_uniforms =
         native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_uniforms(
@@ -253,6 +263,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_producer_target_graph,
             &layer_alpha_mask_producer_uniforms,
             &layer_alpha_mask_generated_consumer_draws,
+            &layer_alpha_mask_rt_method8_bridges,
             &layer_alpha_mask_generated_consumer_targets,
             &layer_alpha_mask_generated_consumer_pipelines,
             &layer_alpha_mask_generated_consumer_commands,
@@ -284,6 +295,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_producer_target_graph,
         layer_alpha_mask_producer_uniforms,
         layer_alpha_mask_generated_consumer_draws,
+        layer_alpha_mask_rt_method8_bridges,
         layer_alpha_mask_generated_consumer_targets,
         layer_alpha_mask_generated_consumer_pipelines,
         layer_alpha_mask_generated_consumer_commands,
@@ -302,6 +314,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_producer_target_graph",
             "plan_layer_alpha_mask_producer_uniforms",
             "plan_layer_alpha_mask_generated_consumer_draws",
+            "plan_layer_alpha_mask_rt_method8_bridges",
             "plan_layer_alpha_mask_generated_consumer_targets",
             "plan_layer_alpha_mask_generated_consumer_pipelines",
             "plan_layer_alpha_mask_generated_consumer_commands",
