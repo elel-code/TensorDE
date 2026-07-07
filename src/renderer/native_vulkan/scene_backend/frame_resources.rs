@@ -121,22 +121,27 @@ impl NativeVulkanSceneFrameResources {
         )
     }
 
-    pub(in crate::renderer::native_vulkan) fn sync_texture_images(
+    pub(in crate::renderer::native_vulkan) fn sync_texture_images_recorded(
         &mut self,
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
+        command_buffer: vk::CommandBuffer,
         resources: &[SceneResource],
     ) -> Result<&[NativeVulkanSceneTextureImageSyncAction], String> {
         let upload_plan = self.texture_upload_plan(resources)?;
-        self.texture_images.sync_upload_plan(
+        self.texture_images.sync_upload_plan_recorded(
             device,
             memory_properties,
-            command_pool,
-            queue,
+            command_buffer,
             upload_plan,
         )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn release_completed_texture_uploads(
+        &mut self,
+        device: &Device,
+    ) -> usize {
+        self.texture_images.release_completed_uploads(device)
     }
 
     pub(in crate::renderer::native_vulkan) fn last_texture_image_actions(

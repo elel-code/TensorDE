@@ -10,8 +10,8 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
 use super::buffer::{
-    NativeVulkanVulkanaliaBufferMemoryPreference, native_vulkan_vulkanalia_create_buffer,
-    native_vulkan_vulkanalia_destroy_buffer,
+    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
+    native_vulkan_vulkanalia_create_buffer, native_vulkan_vulkanalia_destroy_buffer,
 };
 use super::memory::native_vulkan_vulkanalia_bind_image_memory2;
 use super::video_session::{
@@ -60,11 +60,18 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaImage {
 
 unsafe impl Send for NativeVulkanVulkanaliaImage {}
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sampled_image_with_staging_upload(
+pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaRecordedImageUpload {
+    pub(in crate::renderer::native_vulkan) image: NativeVulkanVulkanaliaImage,
+    pub(in crate::renderer::native_vulkan) staging: NativeVulkanVulkanaliaBuffer,
+    pub(in crate::renderer::native_vulkan) copy_recorded: bool,
+}
+
+unsafe impl Send for NativeVulkanVulkanaliaRecordedImageUpload {}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
     role: &'static str,
     format: vk::Format,
     width: u32,
@@ -72,7 +79,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sample
     mip_levels: u32,
     payload: &[u8],
     mip_uploads: &[NativeVulkanVulkanaliaImageMipUpload],
-) -> Result<NativeVulkanVulkanaliaImage, String> {
+) -> Result<NativeVulkanVulkanaliaRecordedImageUpload, String> {
     if width == 0 || height == 0 {
         return Err(format!("{role} sampled image requires non-zero extent"));
     }
@@ -109,7 +116,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sample
     let image = unsafe { device.create_image(&image_info, None) }
         .map_err(|err| format!("vkCreateImage(vulkanalia {role}): {err:?}"))?;
 
-    let result = (|| -> Result<NativeVulkanVulkanaliaImage, String> {
+    let result = (|| -> Result<NativeVulkanVulkanaliaRecordedImageUpload, String> {
         let memory_requirements = unsafe { device.get_image_memory_requirements(image) };
         let memory_type_candidates =
             native_vulkan_vulkanalia_memory_type_candidates(memory_properties);
@@ -137,63 +144,91 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sample
             return Err(err);
         }
 
-        if let Err(err) = upload_sampled_image_payload(
+        let staging = match native_vulkan_vulkanalia_create_buffer(
             device,
             memory_properties,
-            command_pool,
-            queue,
+            "scene-texture-recorded-staging-upload",
+            payload.len() as u64,
+            vk::BufferUsageFlags::TRANSFER_SRC,
+            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+            Some(payload),
+        ) {
+            Ok(staging) => staging,
+            Err(err) => {
+                unsafe {
+                    device.free_memory(memory, None);
+                }
+                return Err(err);
+            }
+        };
+
+        if let Err(err) = record_sampled_image_payload_upload(
+            device,
+            command_buffer,
             role,
+            &staging,
             image,
-            payload,
             mip_uploads,
         ) {
+            native_vulkan_vulkanalia_destroy_buffer(device, staging);
             unsafe {
                 device.free_memory(memory, None);
             }
             return Err(err);
         }
 
-        let view =
-            create_sampled_image_view(device, role, image, format, mip_levels).map_err(|err| {
+        let view = match create_sampled_image_view(device, role, image, format, mip_levels) {
+            Ok(view) => view,
+            Err(err) => {
+                native_vulkan_vulkanalia_destroy_buffer(device, staging);
                 unsafe {
                     device.free_memory(memory, None);
                 }
-                err
-            })?;
-        let sampler = create_sampled_image_sampler(device, role, mip_levels).map_err(|err| {
-            unsafe {
-                device.destroy_image_view(view, None);
-                device.free_memory(memory, None);
+                return Err(err);
             }
-            err
-        })?;
+        };
+        let sampler = match create_sampled_image_sampler(device, role, mip_levels) {
+            Ok(sampler) => sampler,
+            Err(err) => {
+                native_vulkan_vulkanalia_destroy_buffer(device, staging);
+                unsafe {
+                    device.destroy_image_view(view, None);
+                    device.free_memory(memory, None);
+                }
+                return Err(err);
+            }
+        };
 
-        Ok(NativeVulkanVulkanaliaImage {
-            image,
-            memory,
-            view,
-            sampler,
-            snapshot: NativeVulkanVulkanaliaImageSnapshot {
-                role,
-                image_created: true,
-                memory_bound: true,
-                view_created: true,
-                sampler_created: true,
-                format: format!("{format:?}"),
-                extent: (width, height, 1),
-                mip_levels,
-                payload_bytes: payload.len() as u64,
-                memory_size: memory_requirements.size,
-                memory_alignment: memory_requirements.alignment,
-                memory_type_bits: memory_requirements.memory_type_bits,
-                selected_memory_type_index: memory_type.index,
-                selected_memory_property_flags: memory_property_flag_labels(
-                    memory_type.property_flags_bits,
-                ),
-                usage_flags: image_usage_flag_labels(usage),
-                final_layout: "shader-read-only-optimal",
-                payload_uploaded: true,
+        Ok(NativeVulkanVulkanaliaRecordedImageUpload {
+            image: NativeVulkanVulkanaliaImage {
+                image,
+                memory,
+                view,
+                sampler,
+                snapshot: NativeVulkanVulkanaliaImageSnapshot {
+                    role,
+                    image_created: true,
+                    memory_bound: true,
+                    view_created: true,
+                    sampler_created: true,
+                    format: format!("{format:?}"),
+                    extent: (width, height, 1),
+                    mip_levels,
+                    payload_bytes: payload.len() as u64,
+                    memory_size: memory_requirements.size,
+                    memory_alignment: memory_requirements.alignment,
+                    memory_type_bits: memory_requirements.memory_type_bits,
+                    selected_memory_type_index: memory_type.index,
+                    selected_memory_property_flags: memory_property_flag_labels(
+                        memory_type.property_flags_bits,
+                    ),
+                    usage_flags: image_usage_flag_labels(usage),
+                    final_layout: "shader-read-only-optimal",
+                    payload_uploaded: true,
+                },
             },
+            staging,
+            copy_recorded: true,
         })
     })();
 
@@ -217,162 +252,93 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_image
     }
 }
 
-fn upload_sampled_image_payload(
+fn record_sampled_image_payload_upload(
     device: &Device,
-    memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
     role: &'static str,
+    staging: &NativeVulkanVulkanaliaBuffer,
     image: vk::Image,
-    payload: &[u8],
     mip_uploads: &[NativeVulkanVulkanaliaImageMipUpload],
 ) -> Result<(), String> {
-    let staging = native_vulkan_vulkanalia_create_buffer(
-        device,
-        memory_properties,
-        "scene-texture-staging-upload",
-        payload.len() as u64,
-        vk::BufferUsageFlags::TRANSFER_SRC,
-        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
-        Some(payload),
-    )?;
-    let mut staging = Some(staging);
-    let mut command_buffers = Vec::new();
-    let mut fence = vk::Fence::null();
+    if mip_uploads.is_empty() {
+        return Err(format!(
+            "{role} recorded texture upload requires at least one mip"
+        ));
+    }
 
-    let result = (|| -> Result<(), String> {
-        let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
-            .map_err(|err| {
-                format!("vkAllocateCommandBuffers(vulkanalia {role} texture upload): {err:?}")
-            })?;
-        let command_buffer = command_buffers.first().copied().ok_or_else(|| {
-            format!("vkAllocateCommandBuffers(vulkanalia {role} texture upload) returned none")
-        })?;
-        let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    let transfer_barrier = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+        .src_access_mask(vk::AccessFlags2::empty())
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(color_subresource_range(mip_uploads.len() as u32))
+        .build();
+    let transfer_barriers = [transfer_barrier];
+    let transfer_dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(&transfer_barriers)
+        .build();
 
-        unsafe {
-            device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .map_err(|err| {
-                    format!("vkBeginCommandBuffer(vulkanalia {role} texture upload): {err:?}")
-                })?;
-            let transfer_barrier = vk::ImageMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
-                .src_access_mask(vk::AccessFlags2::empty())
-                .dst_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
-                .dst_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(color_subresource_range(mip_uploads.len() as u32))
-                .build();
-            let transfer_dependency = vk::DependencyInfo::builder()
-                .image_memory_barriers(&[transfer_barrier])
-                .build();
-            device.cmd_pipeline_barrier2(command_buffer, &transfer_dependency);
-
-            let copies = mip_uploads
-                .iter()
-                .enumerate()
-                .map(|(level, mip)| {
-                    vk::BufferImageCopy::builder()
-                        .buffer_offset(mip.buffer_offset)
-                        .buffer_row_length(0)
-                        .buffer_image_height(0)
-                        .image_subresource(
-                            vk::ImageSubresourceLayers::builder()
-                                .aspect_mask(vk::ImageAspectFlags::COLOR)
-                                .mip_level(level as u32)
-                                .base_array_layer(0)
-                                .layer_count(1)
-                                .build(),
-                        )
-                        .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
-                        .image_extent(vk::Extent3D {
-                            width: mip.width,
-                            height: mip.height,
-                            depth: 1,
-                        })
-                        .build()
+    let copies = mip_uploads
+        .iter()
+        .enumerate()
+        .map(|(level, mip)| {
+            vk::BufferImageCopy::builder()
+                .buffer_offset(mip.buffer_offset)
+                .buffer_row_length(0)
+                .buffer_image_height(0)
+                .image_subresource(
+                    vk::ImageSubresourceLayers::builder()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .mip_level(level as u32)
+                        .base_array_layer(0)
+                        .layer_count(1)
+                        .build(),
+                )
+                .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                .image_extent(vk::Extent3D {
+                    width: mip.width,
+                    height: mip.height,
+                    depth: 1,
                 })
-                .collect::<Vec<_>>();
-            let staging_buffer = staging
-                .as_ref()
-                .ok_or_else(|| format!("vulkanalia {role} texture upload lost staging buffer"))?
-                .buffer;
-            device.cmd_copy_buffer_to_image(
-                command_buffer,
-                staging_buffer,
-                image,
-                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-                &copies,
-            );
+                .build()
+        })
+        .collect::<Vec<_>>();
 
-            let shader_barrier = vk::ImageMemoryBarrier2::builder()
-                .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
-                .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
-                .dst_stage_mask(vk::PipelineStageFlags2::FRAGMENT_SHADER)
-                .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
-                .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
-                .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(color_subresource_range(mip_uploads.len() as u32))
-                .build();
-            let shader_dependency = vk::DependencyInfo::builder()
-                .image_memory_barriers(&[shader_barrier])
-                .build();
-            device.cmd_pipeline_barrier2(command_buffer, &shader_dependency);
-
-            device.end_command_buffer(command_buffer).map_err(|err| {
-                format!("vkEndCommandBuffer(vulkanalia {role} texture upload): {err:?}")
-            })?;
-            let fence_info = vk::FenceCreateInfo::builder();
-            fence = device.create_fence(&fence_info, None).map_err(|err| {
-                format!("vkCreateFence(vulkanalia {role} texture upload): {err:?}")
-            })?;
-            let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
-                .command_buffer(command_buffer)
-                .build();
-            let command_buffer_infos = [command_buffer_info];
-            let submit_info = vk::SubmitInfo2::builder()
-                .command_buffer_infos(&command_buffer_infos)
-                .build();
-            device
-                .queue_submit2(queue, &[submit_info], fence)
-                .map_err(|err| {
-                    format!("vkQueueSubmit2(vulkanalia {role} texture upload): {err:?}")
-                })?;
-            device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .map_err(|err| {
-                    format!("vkWaitForFences(vulkanalia {role} texture upload): {err:?}")
-                })?;
-        }
-
-        Ok(())
-    })();
+    let shader_barrier = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .dst_stage_mask(vk::PipelineStageFlags2::ALL_GRAPHICS)
+        .dst_access_mask(vk::AccessFlags2::SHADER_SAMPLED_READ)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(color_subresource_range(mip_uploads.len() as u32))
+        .build();
+    let shader_barriers = [shader_barrier];
+    let shader_dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(&shader_barriers)
+        .build();
 
     unsafe {
-        if fence != vk::Fence::null() {
-            device.destroy_fence(fence, None);
-        }
-        if !command_buffers.is_empty() {
-            device.free_command_buffers(command_pool, &command_buffers);
-        }
+        device.cmd_pipeline_barrier2(command_buffer, &transfer_dependency);
+        device.cmd_copy_buffer_to_image(
+            command_buffer,
+            staging.buffer,
+            image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &copies,
+        );
+        device.cmd_pipeline_barrier2(command_buffer, &shader_dependency);
     }
-    if let Some(staging) = staging.take() {
-        native_vulkan_vulkanalia_destroy_buffer(device, staging);
-    }
-    result
+
+    Ok(())
 }
 
 fn create_sampled_image_view(

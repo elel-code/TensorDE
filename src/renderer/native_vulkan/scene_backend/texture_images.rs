@@ -19,9 +19,10 @@ use crate::engine::scene_engine::{
     SceneResource, SceneResourceId, SceneTextureFormat, SceneTextureResidency,
 };
 use crate::renderer::native_vulkan::vulkan::{
-    NativeVulkanVulkanaliaImage, NativeVulkanVulkanaliaImageMipUpload,
-    native_vulkan_vulkanalia_create_sampled_image_with_staging_upload,
-    native_vulkan_vulkanalia_destroy_image,
+    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaImage,
+    NativeVulkanVulkanaliaImageMipUpload, NativeVulkanVulkanaliaRecordedImageUpload,
+    native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
+    native_vulkan_vulkanalia_destroy_buffer, native_vulkan_vulkanalia_destroy_image,
 };
 
 use super::resource_storage::NativeVulkanSceneResourceStorage;
@@ -208,6 +209,8 @@ impl NativeVulkanSceneTextureImageCatalog {
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureImageStore {
     images: BTreeMap<SceneResourceId, NativeVulkanSceneTextureImageSlot>,
+    pending_image_retirements: Vec<NativeVulkanVulkanaliaImage>,
+    pending_staging_retirements: Vec<NativeVulkanVulkanaliaBuffer>,
     last_actions: Vec<NativeVulkanSceneTextureImageSyncAction>,
 }
 
@@ -215,16 +218,17 @@ impl NativeVulkanSceneTextureImageStore {
     pub(in crate::renderer::native_vulkan) fn new() -> Self {
         Self {
             images: BTreeMap::new(),
+            pending_image_retirements: Vec::new(),
+            pending_staging_retirements: Vec::new(),
             last_actions: Vec::new(),
         }
     }
 
-    pub(in crate::renderer::native_vulkan) fn sync_upload_plan(
+    pub(in crate::renderer::native_vulkan) fn sync_upload_plan_recorded(
         &mut self,
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
+        command_buffer: vk::CommandBuffer,
         upload_plan: NativeVulkanSceneTextureUploadPlan,
     ) -> Result<&[NativeVulkanSceneTextureImageSyncAction], String> {
         let uploads = texture_upload_map(upload_plan.into_uploads())?;
@@ -239,7 +243,7 @@ impl NativeVulkanSceneTextureImageStore {
             .collect::<Vec<_>>();
         for resource in stale {
             if let Some(slot) = self.images.remove(&resource) {
-                native_vulkan_vulkanalia_destroy_image(device, slot.image);
+                self.defer_image_retirement(slot.image);
                 self.last_actions
                     .push(NativeVulkanSceneTextureImageSyncAction::Release {
                         record: slot.record,
@@ -260,19 +264,20 @@ impl NativeVulkanSceneTextureImageStore {
             }
 
             let texture_payload = read_gtex_texture_payload(&upload)?;
-            let image = native_vulkan_vulkanalia_create_sampled_image_with_staging_upload(
-                device,
-                memory_properties,
-                command_pool,
-                queue,
-                "scene-texture-image",
-                scene_texture_vk_format(upload.requirement.format),
-                upload.requirement.width,
-                upload.requirement.height,
-                upload.requirement.mip_count,
-                &texture_payload.payload,
-                &texture_payload.mips,
-            )?;
+            let recorded_upload =
+                native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload(
+                    device,
+                    memory_properties,
+                    command_buffer,
+                    "scene-texture-image",
+                    scene_texture_vk_format(upload.requirement.format),
+                    upload.requirement.width,
+                    upload.requirement.height,
+                    upload.requirement.mip_count,
+                    &texture_payload.payload,
+                    &texture_payload.mips,
+                )?;
+            let image = self.finish_recorded_upload(recorded_upload);
 
             match self.images.insert(
                 resource,
@@ -282,7 +287,7 @@ impl NativeVulkanSceneTextureImageStore {
                 },
             ) {
                 Some(old_slot) => {
-                    native_vulkan_vulkanalia_destroy_image(device, old_slot.image);
+                    self.defer_image_retirement(old_slot.image);
                     self.last_actions
                         .push(NativeVulkanSceneTextureImageSyncAction::Replace {
                             old: old_slot.record,
@@ -299,6 +304,21 @@ impl NativeVulkanSceneTextureImageStore {
         }
 
         Ok(&self.last_actions)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn release_completed_uploads(
+        &mut self,
+        device: &Device,
+    ) -> usize {
+        let retired_count =
+            self.pending_image_retirements.len() + self.pending_staging_retirements.len();
+        for image in std::mem::take(&mut self.pending_image_retirements) {
+            native_vulkan_vulkanalia_destroy_image(device, image);
+        }
+        for staging in std::mem::take(&mut self.pending_staging_retirements) {
+            native_vulkan_vulkanalia_destroy_buffer(device, staging);
+        }
+        retired_count
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_binding(
@@ -331,7 +351,29 @@ impl NativeVulkanSceneTextureImageStore {
         for (_, slot) in std::mem::take(&mut self.images) {
             native_vulkan_vulkanalia_destroy_image(device, slot.image);
         }
+        for image in std::mem::take(&mut self.pending_image_retirements) {
+            native_vulkan_vulkanalia_destroy_image(device, image);
+        }
+        for staging in std::mem::take(&mut self.pending_staging_retirements) {
+            native_vulkan_vulkanalia_destroy_buffer(device, staging);
+        }
         self.last_actions.clear();
+    }
+
+    fn finish_recorded_upload(
+        &mut self,
+        recorded_upload: NativeVulkanVulkanaliaRecordedImageUpload,
+    ) -> NativeVulkanVulkanaliaImage {
+        self.defer_staging_retirement(recorded_upload.staging);
+        recorded_upload.image
+    }
+
+    fn defer_image_retirement(&mut self, image: NativeVulkanVulkanaliaImage) {
+        self.pending_image_retirements.push(image);
+    }
+
+    fn defer_staging_retirement(&mut self, staging: NativeVulkanVulkanaliaBuffer) {
+        self.pending_staging_retirements.push(staging);
     }
 }
 

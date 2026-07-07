@@ -103,8 +103,8 @@ pub use features::{
 #[allow(unused_imports)]
 pub(in crate::renderer::native_vulkan) use image::{
     NativeVulkanVulkanaliaImage, NativeVulkanVulkanaliaImageMipUpload,
-    NativeVulkanVulkanaliaImageSnapshot,
-    native_vulkan_vulkanalia_create_sampled_image_with_staging_upload,
+    NativeVulkanVulkanaliaImageSnapshot, NativeVulkanVulkanaliaRecordedImageUpload,
+    native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
     native_vulkan_vulkanalia_destroy_image,
 };
 pub use plan::{NativeVulkanBackendPlan, native_vulkan_backend_plan};

@@ -34,8 +34,6 @@ use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameContext<'a> {
     pub device: &'a Device,
     pub memory_properties: &'a vk::PhysicalDeviceMemoryProperties,
-    pub command_pool: vk::CommandPool,
-    pub queue: vk::Queue,
     pub descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     pub command_buffer: vk::CommandBuffer,
     pub target: NativeVulkanSceneSwapchainRenderTarget,
@@ -81,7 +79,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "sync_residency",
                 "sync_material_uniform_records",
                 "prepare_texture_descriptors",
-                "sync_texture_images",
+                "record_texture_image_uploads",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
@@ -109,11 +107,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
     let texture_image_action_count = frame_resources
-        .sync_texture_images(
+        .sync_texture_images_recorded(
             context.device,
             context.memory_properties,
-            context.command_pool,
-            context.queue,
+            context.command_buffer,
             resources,
         )?
         .len();
@@ -278,7 +275,7 @@ mod tests {
                 "sync_residency",
                 "sync_material_uniform_records",
                 "prepare_texture_descriptors",
-                "sync_texture_images",
+                "record_texture_image_uploads",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
