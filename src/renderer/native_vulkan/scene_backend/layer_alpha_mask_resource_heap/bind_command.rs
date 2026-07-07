@@ -31,6 +31,7 @@ pub struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
     pub(in crate::renderer::native_vulkan) resource_set:
         NativeVulkanSceneLayerAlphaMaskResourceSetKey,
     pub(in crate::renderer::native_vulkan) base_resource_descriptor_index: usize,
+    pub(in crate::renderer::native_vulkan) base_sampler_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) resource_descriptor_count: usize,
     pub(in crate::renderer::native_vulkan) texture_count: usize,
     pub(in crate::renderer::native_vulkan) shader_mappings: Vec<String>,
@@ -50,6 +51,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
             resource_set_index: bind_info.resource_set_index,
             resource_set: bind_info.resource_set.clone(),
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
+            base_sampler_descriptor_index: bind_info.base_sampler_descriptor_index,
             resource_descriptor_count: bind_info.resource_descriptor_count,
             texture_count: bind_info.texture_count,
             shader_mappings: bind_info.shader_mappings.clone(),
@@ -146,7 +148,15 @@ mod tests {
         let descriptor_set = descriptor_set();
         let resource_set =
             alpha_mask_descriptor_set_key(&descriptor_set).expect("alpha mask resource set");
-        let bind_info = bind_info(0, SceneObjectId(77), ScenePuppetId(5), resource_set, 11, 3);
+        let bind_info = bind_info(
+            0,
+            SceneObjectId(77),
+            ScenePuppetId(5),
+            resource_set,
+            11,
+            3,
+            5,
+        );
 
         let plan =
             NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan::from_descriptor_set_and_bind_info(
@@ -161,6 +171,7 @@ mod tests {
         assert_eq!(plan.puppet, ScenePuppetId(5));
         assert_eq!(plan.resource_set_index, 11);
         assert_eq!(plan.base_resource_descriptor_index, 3);
+        assert_eq!(plan.base_sampler_descriptor_index, 5);
         assert_eq!(plan.resource_descriptor_count, 2);
         assert_eq!(plan.texture_count, 2);
         assert_eq!(
@@ -189,6 +200,7 @@ mod tests {
             },
             11,
             3,
+            5,
         );
 
         let err =
@@ -238,6 +250,7 @@ mod tests {
         resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
         resource_set_index: usize,
         base_resource_descriptor_index: usize,
+        base_sampler_descriptor_index: usize,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
         let texture_count = resource_set.bindings.len();
         let shader_mappings = resource_set
@@ -262,6 +275,7 @@ mod tests {
             resource_set_index,
             resource_set,
             base_resource_descriptor_index,
+            base_sampler_descriptor_index,
             resource_descriptor_count: texture_count,
             texture_count,
             shader_mappings,

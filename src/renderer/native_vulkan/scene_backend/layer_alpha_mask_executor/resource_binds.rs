@@ -88,6 +88,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub bind_index: usize,
     pub descriptor_set_index: usize,
     pub resource_set_index: usize,
+    pub base_resource_descriptor_index: usize,
+    pub base_sampler_descriptor_index: usize,
     pub command_order: [&'static str; 4],
 }
 
@@ -444,6 +446,8 @@ fn copy_back_draw_bind_plans(
                 bind_index,
                 descriptor_set_index: bind.descriptor_set_index,
                 resource_set_index: bind.bind.resource_set_index,
+                base_resource_descriptor_index: bind.bind.base_resource_descriptor_index,
+                base_sampler_descriptor_index: bind.bind.base_sampler_descriptor_index,
                 command_order: [
                     "read_flattexture_copy_back_draw_resource",
                     "select_flattexture_copy_back_heap_bind",
@@ -589,6 +593,14 @@ mod tests {
         assert_eq!(plan.copy_back_draw_binds[0].bind_index, 2);
         assert_eq!(plan.copy_back_draw_binds[0].descriptor_set_index, 2);
         assert_eq!(plan.copy_back_draw_binds[0].resource_set_index, 2);
+        assert_eq!(
+            plan.copy_back_draw_binds[0].base_resource_descriptor_index,
+            4
+        );
+        assert_eq!(
+            plan.copy_back_draw_binds[0].base_sampler_descriptor_index,
+            4
+        );
         assert_eq!(plan.copy_back_draw_binds[0].shader, "util/minimalalpha");
         assert_eq!(
             plan.copy_back_draw_binds[0].texture_source,
@@ -858,6 +870,7 @@ mod tests {
             resource_set_index: descriptor_set_index,
             resource_set,
             base_resource_descriptor_index: descriptor_set_index.saturating_mul(2),
+            base_sampler_descriptor_index: descriptor_set_index.saturating_mul(2),
             resource_descriptor_count: texture_count,
             texture_count,
             shader_mappings,
