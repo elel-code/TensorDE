@@ -363,6 +363,7 @@ mod tests {
                         ),
                 }],
             },
+            material: None,
             base_resource_descriptor_index,
             base_sampler_descriptor_index,
             resource_descriptor_count: 1,

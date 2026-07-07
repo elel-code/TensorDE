@@ -57,6 +57,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub alpha_mask_sample: &'static str,
     pub alpha_apply_formula: &'static str,
     pub effective_alpha_formula: &'static str,
+    pub material_uniform_buffer_handle: u64,
+    pub material_uniform_device_address: u64,
+    pub material_uniform_bytes: u64,
+    pub material_uniform_payload_hash: u64,
     pub active_clipping_max_count: u32,
     pub active_clipping_count_state_offset: u32,
     pub active_clipping_raw_dword_state_offset: u32,
@@ -150,6 +154,10 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformBindingPlan {
             alpha_mask_sample: "texSample2D(g_Texture8, screenUV).r",
             alpha_apply_formula: "gl_FragColor.a *= texSample2D(g_Texture8, screenUV).r",
             effective_alpha_formula: command.effective_alpha_formula,
+            material_uniform_buffer_handle: command.material_uniform_buffer_handle,
+            material_uniform_device_address: command.material_uniform_device_address,
+            material_uniform_bytes: command.material_uniform_bytes,
+            material_uniform_payload_hash: command.material_uniform_payload_hash,
             active_clipping_max_count: ACTIVE_CLIPPING_MAX_COUNT,
             active_clipping_count_state_offset: ACTIVE_CLIPPING_COUNT_STATE_OFFSET,
             active_clipping_raw_dword_state_offset: ACTIVE_CLIPPING_RAW_DWORD_STATE_OFFSET,
@@ -161,7 +169,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformBindingPlan {
                 ACTIVE_CLIPPING_OPTIONAL_FLOAT_STATE_OFFSET,
             active_clipping_bitset_layer_aux_offset: ACTIVE_CLIPPING_BITSET_LAYER_AUX_OFFSET,
             active_clipping_weight_layer_aux_offset: ACTIVE_CLIPPING_WEIGHT_LAYER_AUX_OFFSET,
-            gpu_uniform_upload_status: "pending retained generated-material uniform buffer write from +0x428 state",
+            gpu_uniform_upload_status: "retained generated-material uniform buffer resolved from +0x428 state",
             reference_points: [
                 "reverse-engineered/docs/exe/clipping-pipeline.md: genericimage4 CLIPPINGUVS projected screen UV formula",
                 "reverse-engineered/docs/exe/clipping-pipeline.md: CLIPPINGTARGET consumes g_Texture8 red channel",
@@ -174,7 +182,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformBindingPlan {
                 "pin_active_clipping_state_offsets",
                 "preserve_generated_material_0x428_uniform_source",
                 "preserve_token1_effective_alpha_formula",
-                "defer_retained_uniform_buffer_write_to_recorder",
+                "bind_retained_generated_material_uniform_buffer",
                 "expose_uniform_contract_to_recorder_requirements",
             ],
         })
@@ -210,9 +218,18 @@ fn validate_generated_consumer_command_for_uniforms(
             command.command_index
         ));
     }
-    if command.texture_count != 2 || command.resource_descriptor_count < 2 {
+    if command.texture_count != 2 || command.resource_descriptor_count < 3 {
         return Err(format!(
-            "scene layer alpha-mask generated consumer uniform contract command {} requires slot0 source and slot8 FullAlphaMask sampled images",
+            "scene layer alpha-mask generated consumer uniform contract command {} requires material uniform plus slot0 source and slot8 FullAlphaMask sampled images",
+            command.command_index
+        ));
+    }
+    if command.material_uniform_buffer_handle == 0
+        || command.material_uniform_device_address == 0
+        || command.material_uniform_bytes == 0
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer uniform contract command {} requires retained generated material uniform buffer",
             command.command_index
         ));
     }
@@ -226,7 +243,7 @@ fn generated_consumer_uniform_command_order() -> [&'static str; 6] {
         "pin_projected_screen_uv_shader_formula",
         "pin_active_clipping_uniform_state_offsets",
         "preserve_generated_material_0x428_uniform_source",
-        "defer_retained_uniform_buffer_write_to_recorder",
+        "bind_retained_generated_material_uniform_buffer",
     ]
 }
 

@@ -30,14 +30,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskHea
 pub(super) fn alpha_mask_slots_by_texture_bind(
     descriptors: &NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
 ) -> Result<Vec<Vec<NativeVulkanSceneLayerAlphaMaskSlotBinding>>, String> {
-    let mut by_set = Vec::with_capacity(descriptors.entries.len());
+    let mut by_heap_bind = Vec::with_capacity(descriptors.entries.len());
     for texture_bind in &descriptors.entries {
         let mut slots = texture_bind.slots.clone();
         slots.sort_by_key(|slot| slot.slot);
         validate_alpha_mask_slots(texture_bind, &slots)?;
-        by_set.push(slots);
+        by_heap_bind.push(slots);
     }
-    Ok(by_set)
+    Ok(by_heap_bind)
 }
 
 pub(super) fn alpha_mask_texture_bind_heap_slice(
@@ -61,19 +61,28 @@ pub(super) fn alpha_mask_texture_bind_heap_slice(
 
 pub(super) fn alpha_mask_heap_slice_shader_mappings(
     heap_slice: &NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    has_material_uniform: bool,
 ) -> Vec<String> {
-    heap_slice
-        .bindings
-        .iter()
-        .enumerate()
-        .map(|(ordinal, binding)| {
-            format!(
-                "{} -> alpha-mask-heap-slice-offset{}",
-                binding_shader_mapping(binding.slot),
-                ordinal
-            )
-        })
-        .collect()
+    let mut mappings = Vec::new();
+    if has_material_uniform {
+        mappings
+            .push("WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned());
+    }
+    let texture_offset = usize::from(has_material_uniform);
+    mappings.extend(
+        heap_slice
+            .bindings
+            .iter()
+            .enumerate()
+            .map(|(ordinal, binding)| {
+                format!(
+                    "{} -> alpha-mask-heap-slice-offset{}",
+                    binding_shader_mapping(binding.slot),
+                    ordinal + texture_offset
+                )
+            }),
+    );
+    mappings
 }
 
 pub(super) fn binding_shader_mapping(slot: u32) -> String {

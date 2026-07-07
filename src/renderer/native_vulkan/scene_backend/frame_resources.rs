@@ -12,9 +12,9 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneEffectPassGraphPlan, SceneGeometryId, SceneGraph,
-    SceneGraphExecutionPlan, SceneGraphTarget, SceneObjectId, ScenePuppetId, SceneResource,
-    SceneResourceId, SceneResourceResidencyPlan,
+    RenderingDeviceCommand, SceneEffectPassGraphPlan, SceneGenericImage4MaterialUniformRecord,
+    SceneGeometryId, SceneGraph, SceneGraphExecutionPlan, SceneGraphTarget, SceneObjectId,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
 };
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
@@ -412,6 +412,7 @@ impl NativeVulkanSceneFrameResources {
         let frame_plan = NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan::from_descriptors(
             descriptors,
             descriptor_heap_properties,
+            |key| self.material_uniform_buffers.material_uniform_buffer(key),
             |resource| self.texture_images.texture_binding(resource),
             |target| self.offscreen_targets.target_binding(target),
         )?;
@@ -449,6 +450,36 @@ impl NativeVulkanSceneFrameResources {
             .map_err(|err| err.to_string())
     }
 
+    pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan_with_alpha_mask(
+        &self,
+        graph: &SceneGraph,
+        alpha_mask_descriptors: &NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
+    ) -> Result<NativeVulkanSceneMaterialUniformUploadPlan, String> {
+        let frame_plan =
+            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(graph)?;
+        let mut records = frame_plan.genericimage4_material_records;
+        for texture_bind in &alpha_mask_descriptors.entries {
+            if texture_bind.role
+                == super::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget
+            {
+                if texture_bind.shader != "we/genericimage4" {
+                    return Err(format!(
+                        "scene alpha-mask generated material uniform requires we/genericimage4, got {}",
+                        texture_bind.shader
+                    ));
+                }
+                records.push(SceneGenericImage4MaterialUniformRecord::genericimage4_defaults(
+                    records.len(),
+                    texture_bind.object,
+                    texture_bind.shader.to_owned(),
+                    texture_bind.slot_mask,
+                ));
+            }
+        }
+        NativeVulkanSceneMaterialUniformUploadPlan::from_genericimage4_material_records(&records)
+            .map_err(|err| err.to_string())
+    }
+
     pub(in crate::renderer::native_vulkan) fn sync_material_uniform_gpu_buffers_recorded(
         &mut self,
         device: &Device,
@@ -456,8 +487,14 @@ impl NativeVulkanSceneFrameResources {
         command_buffer: vk::CommandBuffer,
         frame_submission: NativeVulkanSceneFrameSubmission,
         graph: &SceneGraph,
+        alpha_mask_descriptors: Option<&NativeVulkanSceneLayerAlphaMaskDescriptorPlan>,
     ) -> Result<&[NativeVulkanSceneMaterialUniformGpuBufferSyncAction], String> {
-        let upload_plan = self.material_uniform_upload_plan(graph)?;
+        let upload_plan = match alpha_mask_descriptors {
+            Some(descriptors) => {
+                self.material_uniform_upload_plan_with_alpha_mask(graph, descriptors)?
+            }
+            None => self.material_uniform_upload_plan(graph)?,
+        };
         self.material_uniform_buffers.sync_upload_plan_recorded(
             device,
             memory_properties,
@@ -648,8 +685,14 @@ mod tests {
         RenderingDeviceCommand, SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw,
         SceneGraphExecutionPlan, SceneGraphPass, SceneGraphPipelineClass,
         SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey,
-        SceneObjectId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
+        SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
         SceneTextureFormat,
+    };
+    use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
+        NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
+        NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+        NativeVulkanSceneLayerAlphaMaskSlotBinding, NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
+        NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
         NativeVulkanSceneTextureDescriptorFormat, NativeVulkanSceneTextureDescriptorSource,
@@ -707,6 +750,64 @@ mod tests {
             .expect_err("missing resident payload must fail");
 
         assert!(err.contains("missing resident scene GPU payload"));
+    }
+
+    #[test]
+    fn material_uniform_upload_plan_includes_generated_clippingtarget_material() {
+        let frame_resources = NativeVulkanSceneFrameResources::new();
+        let graph = SceneGraph { passes: Vec::new() };
+        let descriptors = NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
+            tokenized_layer_count: 1,
+            heap_bind_count: 1,
+            clippingmaskimage4_heap_bind_count: 0,
+            generated_clippingtarget_heap_bind_count: 1,
+            flattexture_copy_back_heap_bind_count: 0,
+            resident_texture_descriptor_count: 1,
+            graph_target_descriptor_count: 1,
+            entries: vec![NativeVulkanSceneLayerAlphaMaskTextureBindPlan {
+                object: SceneObjectId(77),
+                puppet: ScenePuppetId(5),
+                shader: "we/genericimage4",
+                role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
+                slot_mask: (1 << 0) | (1 << 8),
+                optional_morph_slot: None,
+                slots: vec![
+                    NativeVulkanSceneLayerAlphaMaskSlotBinding {
+                        slot: 0,
+                        source: NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                            SceneResourceId(9),
+                        ),
+                        shader_mapping: "we.texture_slot0.g_Texture0".to_owned(),
+                    },
+                    NativeVulkanSceneLayerAlphaMaskSlotBinding {
+                        slot: 8,
+                        source: NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                            SceneGraphTarget::FullAlphaMask,
+                        ),
+                        shader_mapping: "we.texture_slot8.g_Texture8".to_owned(),
+                    },
+                ],
+            }],
+            command_order: [
+                "resolve_tokenized_layer_object_source_texture",
+                "resolve_puppet_clipping_record_mask_texture",
+                "bind_clippingmaskimage4_slots_0_1",
+                "preserve_clippingmaskimage4_optional_morph_slot_5",
+                "bind_generated_clippingtarget_slots_0_8",
+                "bind_flattexture_copy_back_slot_0_to_intermediate_mask",
+                "keep_alpha_mask_descriptors_separate_from_genericimage4_material_heap",
+            ],
+        };
+
+        let plan = frame_resources
+            .material_uniform_upload_plan_with_alpha_mask(&graph, &descriptors)
+            .expect("generated material uniform upload plan");
+
+        assert_eq!(plan.record_count, 1);
+        let upload = &plan.uploads()[0];
+        assert_eq!(upload.key.object, SceneObjectId(77));
+        assert_eq!(upload.key.shader, "we/genericimage4");
+        assert_eq!(upload.payload.len(), 48);
     }
 
     #[test]

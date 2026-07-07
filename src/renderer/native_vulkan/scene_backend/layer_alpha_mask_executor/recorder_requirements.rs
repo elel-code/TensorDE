@@ -719,9 +719,12 @@ fn validate_generated_consumer_uniform_contract(
         || generated_uniform.alpha_apply_formula
             != "gl_FragColor.a *= texSample2D(g_Texture8, screenUV).r"
         || generated_uniform.active_clipping_max_count != 0x0b
+        || generated_uniform.material_uniform_buffer_handle == 0
+        || generated_uniform.material_uniform_device_address == 0
+        || generated_uniform.material_uniform_bytes == 0
     {
         return Err(format!(
-            "scene layer alpha-mask generated consumer command {command_index} uniform contract drifted from WE screen-UV/active-clipping facts"
+            "scene layer alpha-mask generated consumer command {command_index} uniform contract drifted from WE screen-UV/active-clipping/material facts"
         ));
     }
     Ok(())
@@ -756,10 +759,7 @@ fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
-    vec![
-        "generated material +0x428 retained uniform-buffer allocation/write binding",
-        "generated draw geometry payload/buffer binding for [layer+0x490].vtable+0x40",
-    ]
+    vec!["generated draw geometry payload/buffer binding for [layer+0x490].vtable+0x40"]
 }
 
 fn recorder_requirement_command_order() -> [&'static str; 6] {

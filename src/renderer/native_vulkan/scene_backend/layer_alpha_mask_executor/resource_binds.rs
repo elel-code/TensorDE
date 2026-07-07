@@ -515,7 +515,9 @@ mod tests {
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
         NativeVulkanSceneLayerAlphaMaskHeapSliceBinding,
         NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+        NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
     };
+    use crate::renderer::native_vulkan::scene_backend::material_uniforms::NativeVulkanSceneMaterialUniformKey;
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
     use vulkanalia::vk;
     use vulkanalia::vk::HasBuilder;
@@ -874,17 +876,40 @@ mod tests {
         heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
         let texture_count = heap_slice.bindings.len();
-        let shader_mappings = heap_slice
-            .bindings
-            .iter()
-            .enumerate()
-            .map(|(ordinal, binding)| {
-                let slot = binding.slot;
-                format!(
-                    "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
-                )
-            })
-            .collect();
+        let material = (role
+            == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget)
+            .then(|| NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding {
+                key: NativeVulkanSceneMaterialUniformKey {
+                    object: SceneObjectId(77),
+                    shader: shader.to_owned(),
+                },
+                buffer_handle: 0x4200 + heap_bind_index as u64,
+                device_address: 0x4280 + heap_bind_index as u64,
+                record_index: heap_bind_index,
+                bytes: 48,
+                payload_hash: 0x1000 + heap_bind_index as u64,
+            });
+        let has_material = material.is_some();
+        let mut shader_mappings = Vec::new();
+        if has_material {
+            shader_mappings.push(
+                "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned(),
+            );
+        }
+        let texture_offset = usize::from(has_material);
+        shader_mappings.extend(
+            heap_slice
+                .bindings
+                .iter()
+                .enumerate()
+                .map(|(ordinal, binding)| {
+                    let slot = binding.slot;
+                    format!(
+                        "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{}",
+                        ordinal + texture_offset
+                    )
+                }),
+        );
         NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
             heap_bind_index,
             object: SceneObjectId(77),
@@ -893,9 +918,10 @@ mod tests {
             role,
             heap_slice_index: heap_bind_index,
             heap_slice,
+            material,
             base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
             base_sampler_descriptor_index: heap_bind_index.saturating_mul(2),
-            resource_descriptor_count: texture_count,
+            resource_descriptor_count: texture_count + usize::from(has_material),
             texture_count,
             shader_mappings,
             resource_bind: vk::BindHeapInfoEXT::builder().build(),

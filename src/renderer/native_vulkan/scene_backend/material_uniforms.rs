@@ -62,11 +62,17 @@ impl NativeVulkanSceneMaterialUniformUploadPlan {
     pub(in crate::renderer::native_vulkan) fn from_shader_uniform_frame_plan(
         plan: &SceneShaderUniformFramePlan,
     ) -> Result<Self, NativeVulkanSceneMaterialUniformError> {
+        Self::from_genericimage4_material_records(&plan.genericimage4_material_records)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_genericimage4_material_records(
+        records: &[SceneGenericImage4MaterialUniformRecord],
+    ) -> Result<Self, NativeVulkanSceneMaterialUniformError> {
         let mut uploads_by_key = BTreeMap::<
             NativeVulkanSceneMaterialUniformKey,
             NativeVulkanSceneMaterialUniformUpload,
         >::new();
-        for record in &plan.genericimage4_material_records {
+        for record in records {
             let upload = genericimage4_material_upload(record)?;
             match uploads_by_key.get(&upload.key) {
                 Some(existing) if existing.payload == upload.payload => {}

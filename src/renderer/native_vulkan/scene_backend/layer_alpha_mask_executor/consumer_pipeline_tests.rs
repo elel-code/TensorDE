@@ -34,6 +34,10 @@ fn generated_consumer_pipeline_derives_clippingtarget_shader_variant_key() {
         NativeVulkanScenePipelineVertexLayout::SceneMeshV0
     );
     assert_eq!(binding.heap_bind_index, 4);
+    assert_eq!(binding.resource_descriptor_count, 3);
+    assert_eq!(binding.texture_count, 2);
+    assert_eq!(binding.material_uniform_buffer_handle, 0x4204);
+    assert_eq!(binding.material_uniform_device_address, 0x4284);
     assert_eq!(
         binding.material_source,
         "local generated material variant +0x428"
@@ -127,13 +131,18 @@ fn consumer_binding(
         heap_slice_index: heap_bind_index,
         base_resource_descriptor_index: heap_bind_index * 2,
         base_sampler_descriptor_index: heap_bind_index * 2 + 16,
-        resource_descriptor_count: 2,
+        resource_descriptor_count: 3,
         texture_count: 2,
+        material_uniform_buffer_handle: 0x4200 + heap_bind_index as u64,
+        material_uniform_device_address: 0x4280 + heap_bind_index as u64,
+        material_uniform_bytes: 48,
+        material_uniform_payload_hash: 0x1234 + heap_bind_index as u64,
         blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",
         generated_material_source: "local generated material variant +0x428",
         shader_mappings: vec![
-            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset2".to_owned(),
         ],
         command_order: [
             "read_generated_clippingtarget_token_step",

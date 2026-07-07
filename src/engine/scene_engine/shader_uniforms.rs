@@ -41,7 +41,7 @@ impl SceneShaderUniformFramePlan {
                     draw.shader_texture_slot_mask_with_pass_input(pass.input)?;
                 if interface.shader == "we/genericimage4" {
                     genericimage4_material_records.push(
-                        SceneGenericImage4MaterialUniformRecord::from_draw(
+                        SceneGenericImage4MaterialUniformRecord::genericimage4_defaults(
                             genericimage4_material_records.len(),
                             draw.object,
                             draw.material.shader.clone(),
@@ -79,7 +79,7 @@ pub struct SceneGenericImage4MaterialUniformRecord {
 }
 
 impl SceneGenericImage4MaterialUniformRecord {
-    fn from_draw(
+    pub fn genericimage4_defaults(
         record_index: usize,
         object: SceneObjectId,
         shader: String,

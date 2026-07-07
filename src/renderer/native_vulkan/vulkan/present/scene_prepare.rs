@@ -187,6 +187,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 &offscreen_target_plan,
             )?
             .len();
+        let layer_alpha_mask_descriptors =
+            NativeVulkanSceneLayerAlphaMaskDescriptorPlan::from_scene(
+                resources,
+                objects,
+                &frame.layer_compositor,
+            )?;
         native_vulkan_begin_scene_frame_command_buffer(device, slot_sync.command_buffer)?;
         let resource_prepare = native_vulkan_record_scene_mesh_resource_prepare_frame(
             frame_resources,
@@ -199,13 +205,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             },
             resources,
             frame,
+            Some(&layer_alpha_mask_descriptors),
         )?;
-        let layer_alpha_mask_descriptors =
-            NativeVulkanSceneLayerAlphaMaskDescriptorPlan::from_scene(
-                resources,
-                objects,
-                &frame.layer_compositor,
-            )?;
         let layer_alpha_mask_heap_bind_count = layer_alpha_mask_descriptors.heap_bind_count;
         let layer_alpha_mask_resource_heap_action_count = frame_resources
             .sync_layer_alpha_mask_resource_heap(

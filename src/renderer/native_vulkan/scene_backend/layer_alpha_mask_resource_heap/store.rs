@@ -22,6 +22,7 @@ use crate::renderer::native_vulkan::vulkan::{
 use super::key::NativeVulkanSceneLayerAlphaMaskHeapSliceKey;
 use super::vk_descriptor::write_scene_layer_alpha_mask_resource_heap_descriptors;
 use super::{
+    NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
     NativeVulkanSceneLayerAlphaMaskResourceHeapEntry,
     NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan,
 };
@@ -53,6 +54,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub heap_slice_index: usize,
     pub heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    pub material: Option<NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding>,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_count: usize,
@@ -106,6 +108,8 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapStore {
         if self.resources.is_some()
             && let Some(current) = &self.current
             && current.entries == frame_plan.entries
+            && current.material_uniforms == frame_plan.material_uniforms
+            && current.heap_bindings == frame_plan.heap_bindings
             && current.descriptor_heap_plan == frame_plan.descriptor_heap_plan
         {
             self.last_actions.push(
@@ -197,6 +201,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapStore {
             role: binding.role,
             heap_slice_index: binding.heap_slice_index,
             heap_slice: binding.heap_slice.clone(),
+            material: binding.material.clone(),
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             base_sampler_descriptor_index: binding.base_sampler_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,

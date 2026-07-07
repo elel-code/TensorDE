@@ -38,6 +38,9 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskDescriptorPlan, NativeVulkanSceneLayerAlphaMaskDescriptorSource,
     NativeVulkanSceneLayerAlphaMaskTextureBindPlan, NativeVulkanSceneLayerAlphaMaskTextureBindRole,
 };
+use super::material_uniforms::{
+    NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
+};
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::texture_images::NativeVulkanSceneTextureImageBinding;
 pub(in crate::renderer::native_vulkan) use bind_command::NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan;
@@ -64,7 +67,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub heap_slice_count: usize,
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
+    pub material_uniform_count: usize,
     pub descriptor_model: &'static str,
+    pub material_uniforms: Vec<NativeVulkanSceneLayerAlphaMaskMaterialUniformHeapEntry>,
     pub entries: Vec<NativeVulkanSceneLayerAlphaMaskResourceHeapEntry>,
     pub heap_bindings: Vec<NativeVulkanSceneLayerAlphaMaskResourceHeapBindSlice>,
     pub descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -99,6 +104,33 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskMaterialUniformHeapEntry
+{
+    pub heap_bind_index: usize,
+    pub heap_slice_index: usize,
+    pub descriptor_index: usize,
+    pub descriptor_kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+    pub resource_heap_offset: u64,
+    pub object: SceneObjectId,
+    pub puppet: ScenePuppetId,
+    pub shader: String,
+    pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
+    pub material: NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
+    pub shader_mapping: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding
+{
+    pub key: NativeVulkanSceneMaterialUniformKey,
+    pub buffer_handle: u64,
+    pub device_address: u64,
+    pub record_index: usize,
+    pub bytes: u64,
+    pub payload_hash: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindSlice {
     pub heap_bind_index: usize,
     pub object: SceneObjectId,
@@ -107,6 +139,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub heap_slice_index: usize,
     pub heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    pub material: Option<NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding>,
     pub base_resource_descriptor_index: usize,
     pub base_resource_heap_offset: u64,
     pub base_sampler_descriptor_index: usize,
@@ -117,17 +150,24 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding {
-    pub descriptor_index: usize,
-    pub sampler_descriptor_index: usize,
-    pub source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
-    pub image: vk::Image,
-    pub view: vk::ImageView,
-    pub sampler: vk::Sampler,
-    pub format: vk::Format,
-    pub width: u32,
-    pub height: u32,
-    pub mip_count: u32,
+pub(super) enum NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding {
+    UniformBuffer {
+        descriptor_index: usize,
+        device_address: vk::DeviceAddress,
+        bytes: u64,
+    },
+    SampledImage {
+        descriptor_index: usize,
+        sampler_descriptor_index: usize,
+        source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+        image: vk::Image,
+        view: vk::ImageView,
+        sampler: vk::Sampler,
+        format: vk::Format,
+        width: u32,
+        height: u32,
+        mip_count: u32,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -154,10 +194,34 @@ struct PendingLayerAlphaMaskResourceHeapEntry {
     sampled_image: NativeVulkanSceneLayerAlphaMaskResolvedSampledImageBinding,
 }
 
+#[derive(Debug, Clone)]
+struct PendingLayerAlphaMaskMaterialUniformHeapEntry {
+    heap_bind_index: usize,
+    heap_slice_index: usize,
+    descriptor_index: usize,
+    object: SceneObjectId,
+    puppet: ScenePuppetId,
+    shader: String,
+    role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
+    material: NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LayerAlphaMaskHeapSliceDedupeKey {
+    heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    material: Option<NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding>,
+}
+
 impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
     pub(in crate::renderer::native_vulkan) fn from_descriptors(
         descriptors: &NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
         descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+        material_uniform_buffer: impl Fn(
+            &NativeVulkanSceneMaterialUniformKey,
+        ) -> Result<
+            NativeVulkanSceneMaterialUniformGpuBufferBinding,
+            String,
+        >,
         texture_image_binding: impl Fn(
             SceneResourceId,
         ) -> Result<NativeVulkanSceneTextureImageBinding, String>,
@@ -166,12 +230,13 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
         )
             -> Result<NativeVulkanSceneOffscreenTargetBinding, String>,
     ) -> Result<Self, String> {
-        let slots_by_set = alpha_mask_slots_by_texture_bind(descriptors)?;
+        let slots_by_heap_bind = alpha_mask_slots_by_texture_bind(descriptors)?;
         let mut heap_slice_lookup = BTreeMap::<
-            NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+            LayerAlphaMaskHeapSliceDedupeKey,
             NativeVulkanSceneLayerAlphaMaskHeapSliceLayout,
         >::new();
         let mut descriptor_kinds = Vec::new();
+        let mut pending_material_uniforms = Vec::new();
         let mut pending_entries = Vec::new();
         let mut descriptor_bindings = Vec::new();
         let mut heap_bindings = Vec::new();
@@ -179,13 +244,32 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
 
         for (heap_bind_index, texture_bind) in descriptors.entries.iter().enumerate() {
             let heap_slice = alpha_mask_texture_bind_heap_slice(texture_bind)?;
-            let slice = if let Some(slice) = heap_slice_lookup.get(&heap_slice).copied() {
+            let material = layer_alpha_mask_generated_material_binding(
+                texture_bind,
+                &material_uniform_buffer,
+            )?;
+            let dedupe_key = LayerAlphaMaskHeapSliceDedupeKey {
+                heap_slice: heap_slice.clone(),
+                material: material.clone(),
+            };
+            let slice = if let Some(slice) = heap_slice_lookup.get(&dedupe_key).copied() {
                 slice
             } else {
                 let heap_slice_index = heap_slice_lookup.len();
                 let base_resource_descriptor_index = descriptor_kinds.len();
                 let base_sampler_descriptor_index = sampler_descriptor_count;
-                for slot in &slots_by_set[heap_bind_index] {
+                if let Some(material) = &material {
+                    push_layer_alpha_mask_material_descriptor(
+                        &mut descriptor_kinds,
+                        &mut pending_material_uniforms,
+                        &mut descriptor_bindings,
+                        heap_slice_index,
+                        heap_bind_index,
+                        texture_bind,
+                        material.clone(),
+                    );
+                }
+                for slot in &slots_by_heap_bind[heap_bind_index] {
                     let sampled_image = resolve_alpha_mask_sampled_image_binding(
                         slot.source,
                         &texture_image_binding,
@@ -214,7 +298,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                         .saturating_sub(base_resource_descriptor_index),
                     texture_count: texture_bind.slots.len(),
                 };
-                heap_slice_lookup.insert(heap_slice.clone(), slice);
+                heap_slice_lookup.insert(dedupe_key, slice);
                 slice
             };
             heap_bindings.push(NativeVulkanSceneLayerAlphaMaskResourceHeapBindSlice {
@@ -224,8 +308,12 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                 shader: texture_bind.shader.to_owned(),
                 role: texture_bind.role,
                 heap_slice_index: slice.heap_slice_index,
-                shader_mappings: alpha_mask_heap_slice_shader_mappings(&heap_slice),
+                shader_mappings: alpha_mask_heap_slice_shader_mappings(
+                    &heap_slice,
+                    material.is_some(),
+                ),
                 heap_slice,
+                material,
                 base_resource_descriptor_index: slice.base_resource_descriptor_index,
                 base_resource_heap_offset: 0,
                 base_sampler_descriptor_index: slice.base_sampler_descriptor_index,
@@ -242,13 +330,19 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                 properties: descriptor_heap_properties,
             },
         );
-        if !pending_entries.is_empty() && !descriptor_heap_plan.backend_ready {
+        if !descriptor_heap_plan.resource_descriptor_offsets.is_empty()
+            && !descriptor_heap_plan.backend_ready
+        {
             return Err(format!(
-                "scene layer alpha-mask resource heap requires a ready VK_EXT_descriptor_heap sampled-image resource plan: {:?}",
+                "scene layer alpha-mask resource heap requires a ready VK_EXT_descriptor_heap mixed resource plan: {:?}",
                 descriptor_heap_plan.blocking_reason
             ));
         }
 
+        let material_uniforms = finalize_layer_alpha_mask_material_uniform_entries(
+            pending_material_uniforms,
+            &descriptor_heap_plan,
+        )?;
         let entries = finalize_layer_alpha_mask_entries(pending_entries, &descriptor_heap_plan)?;
         for binding in &mut heap_bindings {
             binding.base_resource_heap_offset = *descriptor_heap_plan
@@ -274,9 +368,11 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
         Ok(Self {
             heap_bind_count: descriptors.heap_bind_count,
             heap_slice_count: heap_slice_lookup.len(),
-            resource_descriptor_count: entries.len(),
+            resource_descriptor_count: descriptor_heap_plan.resource_descriptor_offsets.len(),
             sampler_descriptor_count,
+            material_uniform_count: material_uniforms.len(),
             descriptor_model: "VK_EXT_descriptor_heap",
+            material_uniforms,
             entries,
             heap_bindings,
             descriptor_heap_plan,
@@ -290,6 +386,99 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
             bindings: descriptor_bindings,
         })
     }
+}
+
+fn layer_alpha_mask_generated_material_binding(
+    texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
+    material_uniform_buffer: &impl Fn(
+        &NativeVulkanSceneMaterialUniformKey,
+    ) -> Result<
+        NativeVulkanSceneMaterialUniformGpuBufferBinding,
+        String,
+    >,
+) -> Result<Option<NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding>, String> {
+    if texture_bind.role != NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget
+    {
+        return Ok(None);
+    }
+    let material_key = NativeVulkanSceneMaterialUniformKey {
+        object: texture_bind.object,
+        shader: texture_bind.shader.to_owned(),
+    };
+    let material = material_uniform_buffer(&material_key)?;
+    validate_alpha_mask_generated_material_binding(&material_key, &material)?;
+    Ok(Some(
+        NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding {
+            key: material.key,
+            buffer_handle: material.buffer.as_raw(),
+            device_address: material.device_address,
+            record_index: material.record_index,
+            bytes: material.bytes,
+            payload_hash: material.payload_hash,
+        },
+    ))
+}
+
+fn validate_alpha_mask_generated_material_binding(
+    requested: &NativeVulkanSceneMaterialUniformKey,
+    binding: &NativeVulkanSceneMaterialUniformGpuBufferBinding,
+) -> Result<(), String> {
+    if &binding.key != requested {
+        return Err(format!(
+            "scene layer alpha-mask generated material uniform resolver returned {:?} for requested {:?}",
+            binding.key, requested
+        ));
+    }
+    if binding.buffer.as_raw() == 0 {
+        return Err(format!(
+            "scene layer alpha-mask generated material uniform {:?} has null GPU buffer",
+            requested
+        ));
+    }
+    if binding.device_address == 0 {
+        return Err(format!(
+            "scene layer alpha-mask generated material uniform {:?} has zero device address",
+            requested
+        ));
+    }
+    if binding.bytes == 0 {
+        return Err(format!(
+            "scene layer alpha-mask generated material uniform {:?} has zero byte range",
+            requested
+        ));
+    }
+    Ok(())
+}
+
+fn push_layer_alpha_mask_material_descriptor(
+    descriptor_kinds: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
+    pending_material_uniforms: &mut Vec<PendingLayerAlphaMaskMaterialUniformHeapEntry>,
+    descriptor_bindings: &mut Vec<NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding>,
+    heap_slice_index: usize,
+    heap_bind_index: usize,
+    texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
+    material: NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
+) {
+    let descriptor_index = descriptor_kinds.len();
+    descriptor_kinds
+        .push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer);
+    descriptor_bindings.push(
+        NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding::UniformBuffer {
+            descriptor_index,
+            device_address: material.device_address,
+            bytes: material.bytes,
+        },
+    );
+    pending_material_uniforms.push(PendingLayerAlphaMaskMaterialUniformHeapEntry {
+        heap_bind_index,
+        heap_slice_index,
+        descriptor_index,
+        object: texture_bind.object,
+        puppet: texture_bind.puppet,
+        shader: texture_bind.shader.to_owned(),
+        role: texture_bind.role,
+        material,
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -308,7 +497,7 @@ fn push_layer_alpha_mask_texture_descriptor(
     let descriptor_index = descriptor_kinds.len();
     descriptor_kinds.push(NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage);
     descriptor_bindings.push(
-        NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding {
+        NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding::SampledImage {
             descriptor_index,
             sampler_descriptor_index,
             source: texture.source,
@@ -384,6 +573,39 @@ fn finalize_layer_alpha_mask_entries(
                 height: entry.sampled_image.height,
                 mip_count: entry.sampled_image.mip_count,
                 shader_mapping: entry.shader_mapping,
+            })
+        })
+        .collect()
+}
+
+fn finalize_layer_alpha_mask_material_uniform_entries(
+    pending_entries: Vec<PendingLayerAlphaMaskMaterialUniformHeapEntry>,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+) -> Result<Vec<NativeVulkanSceneLayerAlphaMaskMaterialUniformHeapEntry>, String> {
+    pending_entries
+        .into_iter()
+        .map(|entry| {
+            let resource_heap_offset = *descriptor_heap_plan
+                .resource_descriptor_offsets
+                .get(entry.descriptor_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask material uniform descriptor {} missing resource offset",
+                        entry.descriptor_index
+                    )
+                })?;
+            Ok(NativeVulkanSceneLayerAlphaMaskMaterialUniformHeapEntry {
+                heap_bind_index: entry.heap_bind_index,
+                heap_slice_index: entry.heap_slice_index,
+                descriptor_index: entry.descriptor_index,
+                descriptor_kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                resource_heap_offset,
+                object: entry.object,
+                puppet: entry.puppet,
+                shader: entry.shader,
+                role: entry.role,
+                material: entry.material,
+                shader_mapping: "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0",
             })
         })
         .collect()

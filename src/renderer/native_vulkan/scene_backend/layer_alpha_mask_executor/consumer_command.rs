@@ -70,6 +70,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
+    pub material_uniform_buffer_handle: u64,
+    pub material_uniform_device_address: u64,
+    pub material_uniform_bytes: u64,
+    pub material_uniform_payload_hash: u64,
     pub shader_mappings: Vec<String>,
     pub material_source: &'static str,
     pub blend_byte_source: &'static str,
@@ -230,6 +234,10 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
             base_sampler_descriptor_index: pipeline.base_sampler_descriptor_index,
             resource_descriptor_count: pipeline.resource_descriptor_count,
             texture_count: pipeline.texture_count,
+            material_uniform_buffer_handle: pipeline.material_uniform_buffer_handle,
+            material_uniform_device_address: pipeline.material_uniform_device_address,
+            material_uniform_bytes: pipeline.material_uniform_bytes,
+            material_uniform_payload_hash: pipeline.material_uniform_payload_hash,
             shader_mappings: pipeline.shader_mappings.clone(),
             material_source: pipeline.material_source,
             blend_byte_source: pipeline.blend_byte_source,
@@ -408,14 +416,33 @@ fn validate_generated_consumer_heap_bind(
             draw.command_index
         ));
     }
+    if bind_info.material.is_none() {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} requires generated material uniform buffer",
+            draw.command_index
+        ));
+    }
     if bind_info.texture_count != 2
         || draw.texture_count != 2
         || pipeline.texture_count != 2
-        || bind_info.resource_descriptor_count < 2
+        || bind_info.resource_descriptor_count < 3
     {
         return Err(format!(
-            "scene layer alpha-mask generated consumer command {} requires slot0 source + slot8 FullAlphaMask sampled images, got heap textures={} resources={}",
+            "scene layer alpha-mask generated consumer command {} requires material uniform + slot0 source + slot8 FullAlphaMask sampled images, got heap textures={} resources={}",
             draw.command_index, bind_info.texture_count, bind_info.resource_descriptor_count
+        ));
+    }
+    if let Some(material) = &bind_info.material
+        && (material.buffer_handle != draw.material_uniform_buffer_handle
+            || material.device_address != draw.material_uniform_device_address
+            || material.payload_hash != draw.material_uniform_payload_hash
+            || material.buffer_handle != pipeline.material_uniform_buffer_handle
+            || material.device_address != pipeline.material_uniform_device_address
+            || material.payload_hash != pipeline.material_uniform_payload_hash)
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} material uniform binding drifted",
+            draw.command_index
         ));
     }
     if bind_info.shader_mappings != draw.shader_mappings

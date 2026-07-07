@@ -267,6 +267,7 @@ fn bind(
             },
             heap_slice_index: heap_bind_index,
             heap_slice,
+            material: None,
             base_resource_descriptor_index: 4 + heap_bind_index,
             base_sampler_descriptor_index: 8 + heap_bind_index,
             resource_descriptor_count: slots.len(),

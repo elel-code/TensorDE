@@ -20,6 +20,7 @@ use super::draw_family::{
 };
 use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::frame_resources::NativeVulkanSceneFrameResources;
+use super::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorPlan;
 use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
@@ -82,6 +83,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
     context: NativeVulkanSceneMeshResourcePrepareContext<'_>,
     resources: &[SceneResource],
     frame: &SceneFramePlan,
+    layer_alpha_mask_descriptors: Option<&NativeVulkanSceneLayerAlphaMaskDescriptorPlan>,
 ) -> Result<NativeVulkanSceneMeshResourcePreparePlan, String> {
     let draw_family_executor = native_vulkan_require_scene_mesh_executor_families(
         &SceneGraphDrawFamilyPlan::from_graph(&frame.graph),
@@ -94,6 +96,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_resour
             context.command_buffer,
             context.frame_submission,
             &frame.graph,
+            layer_alpha_mask_descriptors,
         )?
         .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;

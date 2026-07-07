@@ -12,9 +12,13 @@ use vulkanalia::vk::{self, HasBuilder};
 use crate::renderer::native_vulkan::vulkan::{
     VulkanaliaDescriptorHeapResourceResources,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler,
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer,
 };
 
-use super::NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan;
+use super::{
+    NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding,
+    NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan,
+};
 
 pub(super) fn write_scene_layer_alpha_mask_resource_heap_descriptors(
     device: &Device,
@@ -22,21 +26,42 @@ pub(super) fn write_scene_layer_alpha_mask_resource_heap_descriptors(
     frame_plan: &NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan,
 ) -> Result<(), String> {
     for binding in &frame_plan.bindings {
-        let view_info = layer_alpha_mask_resource_heap_image_view_create_info(
-            binding.image,
-            binding.format,
-            binding.mip_count,
-        );
-        let sampler_info = layer_alpha_mask_resource_heap_sampler_create_info(binding.mip_count);
-        native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
-            device,
-            resources,
-            binding.descriptor_index,
-            binding.sampler_descriptor_index,
-            &view_info,
-            vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-            &sampler_info,
-        )?;
+        match *binding {
+            NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding::UniformBuffer {
+                descriptor_index,
+                device_address,
+                bytes,
+            } => {
+                native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer(
+                    device,
+                    resources,
+                    descriptor_index,
+                    device_address,
+                    bytes,
+                )?;
+            }
+            NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding::SampledImage {
+                descriptor_index,
+                sampler_descriptor_index,
+                image,
+                format,
+                mip_count,
+                ..
+            } => {
+                let view_info =
+                    layer_alpha_mask_resource_heap_image_view_create_info(image, format, mip_count);
+                let sampler_info = layer_alpha_mask_resource_heap_sampler_create_info(mip_count);
+                native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
+                    device,
+                    resources,
+                    descriptor_index,
+                    sampler_descriptor_index,
+                    &view_info,
+                    vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                    &sampler_info,
+                )?;
+            }
+        }
     }
     Ok(())
 }

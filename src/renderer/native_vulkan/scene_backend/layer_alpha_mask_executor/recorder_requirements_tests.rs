@@ -26,9 +26,11 @@ use super::*;
 use crate::engine::scene_engine::{SceneLayerCompositorBlendKey, ScenePuppetId, SceneResourceId};
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
     NativeVulkanSceneLayerAlphaMaskHeapSliceBinding, NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
     NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
     NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan,
 };
+use crate::renderer::native_vulkan::scene_backend::material_uniforms::NativeVulkanSceneMaterialUniformKey;
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 use vulkanalia::vk;
@@ -175,8 +177,9 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         plan.requirements[4]
             .missing_we_facts
             .iter()
-            .any(|fact| fact.contains("+0x428"))
+            .all(|fact| !fact.contains("+0x428"))
     );
+    assert_eq!(plan.requirements[4].missing_we_facts.len(), 1);
 }
 
 #[test]
@@ -584,15 +587,32 @@ fn alpha_mask_heap_bind(
             },
         )
         .collect::<Vec<_>>();
-    let shader_mappings = slots
-        .iter()
-        .enumerate()
-        .map(|(ordinal, (slot, _))| {
-            format!(
-                "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
-            )
-        })
-        .collect::<Vec<_>>();
+    let material = (role
+        == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget)
+        .then(|| NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding {
+            key: NativeVulkanSceneMaterialUniformKey {
+                object,
+                shader: shader.to_owned(),
+            },
+            buffer_handle: 0x4200 + heap_bind_index as u64,
+            device_address: 0x4280 + heap_bind_index as u64,
+            record_index: heap_bind_index,
+            bytes: 48,
+            payload_hash: 0x1000 + heap_bind_index as u64,
+        });
+    let has_material = material.is_some();
+    let mut shader_mappings = Vec::new();
+    if has_material {
+        shader_mappings
+            .push("WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned());
+    }
+    let texture_offset = usize::from(has_material);
+    shader_mappings.extend(slots.iter().enumerate().map(|(ordinal, (slot, _))| {
+        format!(
+            "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{}",
+            ordinal + texture_offset
+        )
+    }));
 
     NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan {
         heap_bind_index,
@@ -612,9 +632,10 @@ fn alpha_mask_heap_bind(
                 shader: shader.to_owned(),
                 bindings: heap_slice_bindings,
             },
+            material,
             base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
             base_sampler_descriptor_index: heap_bind_index.saturating_mul(2) + 16,
-            resource_descriptor_count: slots.len(),
+            resource_descriptor_count: slots.len() + usize::from(has_material),
             texture_count: slots.len(),
             shader_mappings,
             command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
@@ -649,13 +670,25 @@ fn generated_consumer_bind_info(
         role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
         heap_slice_index: heap_bind_index,
         heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey { shader, bindings },
+        material: Some(NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding {
+            key: NativeVulkanSceneMaterialUniformKey {
+                object,
+                shader: "we/genericimage4".to_owned(),
+            },
+            buffer_handle: 0x4200 + heap_bind_index as u64,
+            device_address: 0x4280 + heap_bind_index as u64,
+            record_index: heap_bind_index,
+            bytes: 48,
+            payload_hash: 0x1000 + heap_bind_index as u64,
+        }),
         base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
         base_sampler_descriptor_index: heap_bind_index.saturating_mul(2) + 16,
-        resource_descriptor_count: 2,
+        resource_descriptor_count: 3,
         texture_count: 2,
         shader_mappings: vec![
-            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset2".to_owned(),
         ],
         resource_bind: vk::BindHeapInfoEXT::builder().build(),
         sampler_bind: vk::BindHeapInfoEXT::builder().build(),

@@ -62,6 +62,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
+    pub material_uniform_buffer_handle: u64,
+    pub material_uniform_device_address: u64,
+    pub material_uniform_bytes: u64,
+    pub material_uniform_payload_hash: u64,
     pub blend_byte_source: &'static str,
     pub generated_material_source: &'static str,
     pub shader_mappings: Vec<String>,
@@ -159,6 +163,12 @@ fn generated_consumer_binding(
     bind: &NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan, String> {
     validate_generated_consumer_heap_bind(step.command_index, step.object, bind)?;
+    let material = bind.bind.material.as_ref().ok_or_else(|| {
+        format!(
+            "scene layer alpha-mask generated consumer command {} requires generated material uniform buffer",
+            step.command_index
+        )
+    })?;
     Ok(
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan {
             consumer_draw_index,
@@ -178,6 +188,10 @@ fn generated_consumer_binding(
             base_sampler_descriptor_index: bind.bind.base_sampler_descriptor_index,
             resource_descriptor_count: bind.bind.resource_descriptor_count,
             texture_count: bind.bind.texture_count,
+            material_uniform_buffer_handle: material.buffer_handle,
+            material_uniform_device_address: material.device_address,
+            material_uniform_bytes: material.bytes,
+            material_uniform_payload_hash: material.payload_hash,
             blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",
             generated_material_source: "local generated material variant +0x428",
             shader_mappings: bind.bind.shader_mappings.clone(),
@@ -267,10 +281,15 @@ fn validate_generated_consumer_heap_bind(
             bind.role
         ));
     }
-    if bind.bind.texture_count != 2 || bind.bind.resource_descriptor_count != 2 {
+    if bind.bind.texture_count != 2 || bind.bind.resource_descriptor_count < 3 {
         return Err(format!(
-            "scene layer alpha-mask generated consumer command {command_index} requires slot0/slot8 texture-only heap bind, got textures={} resources={}",
+            "scene layer alpha-mask generated consumer command {command_index} requires material uniform plus slot0/slot8 heap bind, got textures={} resources={}",
             bind.bind.texture_count, bind.bind.resource_descriptor_count
+        ));
+    }
+    if bind.bind.material.is_none() {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {command_index} requires generated material uniform buffer"
         ));
     }
     let mut slots = bind

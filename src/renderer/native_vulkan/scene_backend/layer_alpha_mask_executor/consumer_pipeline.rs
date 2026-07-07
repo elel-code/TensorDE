@@ -66,6 +66,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
+    pub material_uniform_buffer_handle: u64,
+    pub material_uniform_device_address: u64,
+    pub material_uniform_bytes: u64,
+    pub material_uniform_payload_hash: u64,
     pub shader_mappings: Vec<String>,
     pub material_source: &'static str,
     pub blend_byte_source: &'static str,
@@ -262,6 +266,10 @@ fn generated_consumer_pipeline_binding(
             base_sampler_descriptor_index: consumer.base_sampler_descriptor_index,
             resource_descriptor_count: consumer.resource_descriptor_count,
             texture_count: consumer.texture_count,
+            material_uniform_buffer_handle: consumer.material_uniform_buffer_handle,
+            material_uniform_device_address: consumer.material_uniform_device_address,
+            material_uniform_bytes: consumer.material_uniform_bytes,
+            material_uniform_payload_hash: consumer.material_uniform_payload_hash,
             shader_mappings: consumer.shader_mappings.clone(),
             material_source: consumer.generated_material_source,
             blend_byte_source: consumer.blend_byte_source,
@@ -303,10 +311,19 @@ fn validate_generated_consumer_draw_for_pipeline(
             consumer.texture_slot_mask, consumer.required_texture_slots
         ));
     }
-    if consumer.texture_count != 2 || consumer.resource_descriptor_count != 2 {
+    if consumer.texture_count != 2 || consumer.resource_descriptor_count < 3 {
         return Err(format!(
-            "scene layer alpha-mask generated consumer pipeline requires two sampled images, got textures={} resources={}",
+            "scene layer alpha-mask generated consumer pipeline requires generated material uniform plus two sampled images, got textures={} resources={}",
             consumer.texture_count, consumer.resource_descriptor_count
+        ));
+    }
+    if consumer.material_uniform_buffer_handle == 0
+        || consumer.material_uniform_device_address == 0
+        || consumer.material_uniform_bytes == 0
+    {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer pipeline requires retained generated material uniform buffer for command {}",
+            consumer.command_index
         ));
     }
     Ok(())

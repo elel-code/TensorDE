@@ -52,6 +52,14 @@ fn generated_consumer_uniform_plan_pins_screen_uv_and_active_clipping_upload() {
     assert_eq!(binding.active_clipping_optional_float_state_offset, 0x1390);
     assert_eq!(binding.active_clipping_bitset_layer_aux_offset, 0x0398);
     assert_eq!(binding.active_clipping_weight_layer_aux_offset, 0x03a0);
+    assert_eq!(binding.material_uniform_buffer_handle, 0x4200);
+    assert_eq!(binding.material_uniform_device_address, 0x4280);
+    assert_eq!(binding.material_uniform_bytes, 48);
+    assert_eq!(binding.material_uniform_payload_hash, 0x1234);
+    assert_eq!(
+        binding.gpu_uniform_upload_status,
+        "retained generated-material uniform buffer resolved from +0x428 state"
+    );
     assert!(
         binding
             .reference_points
@@ -127,11 +135,16 @@ fn command() -> NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
         heap_slice_index: 4,
         base_resource_descriptor_index: 8,
         base_sampler_descriptor_index: 24,
-        resource_descriptor_count: 2,
+        resource_descriptor_count: 3,
         texture_count: 2,
+        material_uniform_buffer_handle: 0x4200,
+        material_uniform_device_address: 0x4280,
+        material_uniform_bytes: 48,
+        material_uniform_payload_hash: 0x1234,
         shader_mappings: vec![
-            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset2".to_owned(),
         ],
         material_source: "local generated material variant +0x428",
         blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",

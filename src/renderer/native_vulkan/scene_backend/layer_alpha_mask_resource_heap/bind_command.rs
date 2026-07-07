@@ -13,6 +13,7 @@ use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
 use crate::engine::scene_engine::{SceneObjectId, ScenePuppetId};
 
+use super::NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding;
 use super::key::{NativeVulkanSceneLayerAlphaMaskHeapSliceKey, alpha_mask_texture_bind_heap_slice};
 use super::store::NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
@@ -28,6 +29,8 @@ pub struct NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
     pub(in crate::renderer::native_vulkan) role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
     pub(in crate::renderer::native_vulkan) heap_slice_index: usize,
     pub(in crate::renderer::native_vulkan) heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    pub(in crate::renderer::native_vulkan) material:
+        Option<NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding>,
     pub(in crate::renderer::native_vulkan) base_resource_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) base_sampler_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) resource_descriptor_count: usize,
@@ -48,6 +51,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan {
             role: bind_info.role,
             heap_slice_index: bind_info.heap_slice_index,
             heap_slice: bind_info.heap_slice.clone(),
+            material: bind_info.material.clone(),
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
             base_sampler_descriptor_index: bind_info.base_sampler_descriptor_index,
             resource_descriptor_count: bind_info.resource_descriptor_count,
@@ -264,6 +268,7 @@ mod tests {
             },
             heap_slice_index,
             heap_slice,
+            material: None,
             base_resource_descriptor_index,
             base_sampler_descriptor_index,
             resource_descriptor_count: texture_count,

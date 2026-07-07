@@ -15,7 +15,9 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::co
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::consumer_target::NativeVulkanSceneLayerAlphaMaskLayerTargetBinding;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
     NativeVulkanSceneLayerAlphaMaskHeapSliceBinding, NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding,
 };
+use crate::renderer::native_vulkan::scene_backend::material_uniforms::NativeVulkanSceneMaterialUniformKey;
 use vulkanalia::vk;
 use vulkanalia::vk::HasBuilder;
 
@@ -72,6 +74,10 @@ fn generated_consumer_command_plan_joins_pipeline_heap_target_and_draw_contracts
     assert_eq!(command.target_format_label, "B8G8R8A8_UNORM");
     assert_eq!(command.heap_bind_index, 4);
     assert_eq!(command.heap_slice_index, 4);
+    assert_eq!(command.resource_descriptor_count, 3);
+    assert_eq!(command.texture_count, 2);
+    assert_eq!(command.material_uniform_buffer_handle, 0x4204);
+    assert_eq!(command.material_uniform_device_address, 0x4284);
     assert_eq!(
         command.material_source,
         "local generated material variant +0x428"
@@ -208,8 +214,12 @@ fn consumer_binding() -> NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBin
         heap_slice_index: 4,
         base_resource_descriptor_index: 8,
         base_sampler_descriptor_index: 24,
-        resource_descriptor_count: 2,
+        resource_descriptor_count: 3,
         texture_count: 2,
+        material_uniform_buffer_handle: 0x4204,
+        material_uniform_device_address: 0x4284,
+        material_uniform_bytes: 48,
+        material_uniform_payload_hash: 0x1238,
         blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",
         generated_material_source: "local generated material variant +0x428",
         shader_mappings: shader_mappings(),
@@ -251,9 +261,27 @@ fn bind_info(
                 },
             ],
         },
+        material: (role == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget)
+            .then(|| NativeVulkanSceneLayerAlphaMaskMaterialUniformBinding {
+                key: NativeVulkanSceneMaterialUniformKey {
+                    object: SceneObjectId(77),
+                    shader: "we/genericimage4".to_owned(),
+                },
+                buffer_handle: 0x4204,
+                device_address: 0x4284,
+                record_index: 4,
+                bytes: 48,
+                payload_hash: 0x1238,
+            }),
         base_resource_descriptor_index: 8,
         base_sampler_descriptor_index: 24,
-        resource_descriptor_count: 2,
+        resource_descriptor_count: if role
+            == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget
+        {
+            3
+        } else {
+            2
+        },
         texture_count: 2,
         shader_mappings: shader_mappings(),
         resource_bind: vk::BindHeapInfoEXT::builder().build(),
@@ -263,7 +291,8 @@ fn bind_info(
 
 fn shader_mappings() -> Vec<String> {
     vec![
-        "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-        "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+        "WE PSSetConstantBuffers(slot=3) -> alpha-mask-heap-slice-offset0".to_owned(),
+        "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset1".to_owned(),
+        "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset2".to_owned(),
     ]
 }
