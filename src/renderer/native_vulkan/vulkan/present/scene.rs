@@ -267,6 +267,7 @@ fn with_vulkanalia_scene_present(
             slots,
             &mut frame_resources,
             server.resources(),
+            server.objects(),
             &frame,
             &graph_execution,
             &frame.effect_pass_graph,

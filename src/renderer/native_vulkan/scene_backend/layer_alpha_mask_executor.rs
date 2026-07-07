@@ -147,7 +147,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskSlo
     pub shader_mapping: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskDescriptorSource {
     ResidentTexture(SceneResourceId),
     GraphTarget(SceneGraphTarget),

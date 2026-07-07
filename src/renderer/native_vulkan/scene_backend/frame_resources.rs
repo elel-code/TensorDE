@@ -36,6 +36,13 @@ use super::effect_resource_heap::{
 use super::frame_completion::{
     NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
 };
+use super::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorPlan;
+use super::layer_alpha_mask_resource_heap::{
+    NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
+    NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan,
+    NativeVulkanSceneLayerAlphaMaskResourceHeapStore,
+    NativeVulkanSceneLayerAlphaMaskResourceHeapSyncAction,
+};
 use super::material_uniforms::{
     NativeVulkanSceneMaterialUniformGpuBufferBinding,
     NativeVulkanSceneMaterialUniformGpuBufferStore,
@@ -81,6 +88,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     offscreen_targets: NativeVulkanSceneOffscreenTargetStore,
     resource_heap: NativeVulkanSceneResourceHeapStore,
     effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore,
+    layer_alpha_mask_resource_heap: NativeVulkanSceneLayerAlphaMaskResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
     effect_pipelines: NativeVulkanSceneEffectPipelineStore,
@@ -95,6 +103,8 @@ impl NativeVulkanSceneFrameResources {
             offscreen_targets: NativeVulkanSceneOffscreenTargetStore::default(),
             resource_heap: NativeVulkanSceneResourceHeapStore::default(),
             effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore::default(),
+            layer_alpha_mask_resource_heap:
+                NativeVulkanSceneLayerAlphaMaskResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
             effect_pipelines: NativeVulkanSceneEffectPipelineStore::default(),
@@ -381,6 +391,43 @@ impl NativeVulkanSceneFrameResources {
         self.effect_resource_heap.last_actions()
     }
 
+    pub(in crate::renderer::native_vulkan) fn sync_layer_alpha_mask_resource_heap(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        descriptors: &NativeVulkanSceneLayerAlphaMaskDescriptorPlan,
+        descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    ) -> Result<&[NativeVulkanSceneLayerAlphaMaskResourceHeapSyncAction], String> {
+        let frame_plan = NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan::from_descriptors(
+            descriptors,
+            descriptor_heap_properties,
+            |resource| self.texture_images.texture_binding(resource),
+            |target| self.offscreen_targets.target_binding(target),
+        )?;
+        self.layer_alpha_mask_resource_heap
+            .sync_frame_plan(device, memory_properties, frame_plan)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn current_layer_alpha_mask_resource_heap_frame_plan(
+        &self,
+    ) -> Option<&NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan> {
+        self.layer_alpha_mask_resource_heap.current_frame_plan()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_resource_heap_bind_info(
+        &self,
+        descriptor_set_index: usize,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo, String> {
+        self.layer_alpha_mask_resource_heap
+            .bind_info_for_descriptor_set(descriptor_set_index)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_layer_alpha_mask_resource_heap_actions(
+        &self,
+    ) -> &[NativeVulkanSceneLayerAlphaMaskResourceHeapSyncAction] {
+        self.layer_alpha_mask_resource_heap.last_actions()
+    }
+
     pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
         &self,
         graph: &SceneGraph,
@@ -546,6 +593,7 @@ impl NativeVulkanSceneFrameResources {
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         self.effect_pipelines.destroy_all(device);
+        self.layer_alpha_mask_resource_heap.destroy_all(device);
         self.effect_resource_heap.destroy_all(device);
         self.resource_heap.destroy_all(device);
         self.offscreen_targets.destroy_all(device);

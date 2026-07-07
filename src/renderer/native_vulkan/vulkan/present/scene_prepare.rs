@@ -15,7 +15,7 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget,
-    SceneResource,
+    SceneObject, SceneResource,
 };
 use crate::renderer::native_vulkan::scene_backend::effect_pipeline_prepare::{
     NativeVulkanSceneEffectPipelinePreparePlan,
@@ -31,6 +31,7 @@ use crate::renderer::native_vulkan::scene_backend::frame_submit::{
     NativeVulkanScenePrepareSubmitContext, NativeVulkanScenePrepareSubmitPlan,
     native_vulkan_submit_scene_prepare_commands2,
 };
+use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskDescriptorPlan;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::native_vulkan_plan_scene_layer_alpha_mask_runtime_frame;
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
@@ -60,10 +61,15 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub effect_resource_set_count: usize,
     pub effect_resource_descriptor_count: usize,
     pub effect_sampler_descriptor_count: usize,
+    pub layer_alpha_mask_descriptor_set_count: usize,
+    pub layer_alpha_mask_resource_heap_action_count: usize,
+    pub layer_alpha_mask_resource_set_count: usize,
+    pub layer_alpha_mask_resource_descriptor_count: usize,
+    pub layer_alpha_mask_sampler_descriptor_count: usize,
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 10],
+    pub command_order: [&'static str; 12],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -128,6 +134,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     frame_slots: &mut NativeVulkanSceneFrameSlotResources,
     frame_resources: &mut NativeVulkanSceneFrameResources,
     resources: &[SceneResource],
+    objects: &[SceneObject],
     frame: &SceneFramePlan,
     graph_execution: &SceneGraphExecutionPlan,
     post_effect_graph: &SceneEffectPassGraphPlan,
@@ -185,6 +192,33 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             resources,
             frame,
         )?;
+        let layer_alpha_mask_descriptors =
+            NativeVulkanSceneLayerAlphaMaskDescriptorPlan::from_scene(
+                resources,
+                objects,
+                &frame.layer_compositor,
+            )?;
+        let layer_alpha_mask_descriptor_set_count =
+            layer_alpha_mask_descriptors.descriptor_set_count;
+        let layer_alpha_mask_resource_heap_action_count = frame_resources
+            .sync_layer_alpha_mask_resource_heap(
+                device,
+                memory_properties,
+                &layer_alpha_mask_descriptors,
+                descriptor_heap_properties,
+            )?
+            .len();
+        let layer_alpha_mask_resource_heap = frame_resources
+            .current_layer_alpha_mask_resource_heap_frame_plan()
+            .ok_or_else(|| {
+                "scene prepare missing layer alpha-mask resource heap frame plan after sync"
+                    .to_owned()
+            })?;
+        let layer_alpha_mask_resource_set_count = layer_alpha_mask_resource_heap.resource_set_count;
+        let layer_alpha_mask_resource_descriptor_count =
+            layer_alpha_mask_resource_heap.resource_descriptor_count;
+        let layer_alpha_mask_sampler_descriptor_count =
+            layer_alpha_mask_resource_heap.sampler_descriptor_count;
         let effect_texture_descriptors =
             frame_resources.effect_texture_descriptor_frame_plan(post_effect_graph)?;
         let effect_texture_descriptor_binding_count = effect_texture_descriptors.binding_count;
@@ -276,6 +310,11 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             effect_resource_set_count,
             effect_resource_descriptor_count,
             effect_sampler_descriptor_count,
+            layer_alpha_mask_descriptor_set_count,
+            layer_alpha_mask_resource_heap_action_count,
+            layer_alpha_mask_resource_set_count,
+            layer_alpha_mask_resource_descriptor_count,
+            layer_alpha_mask_sampler_descriptor_count,
             offscreen_target_count,
             offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
@@ -283,6 +322,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "derive_effect_target_requirements",
                 "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
+                "prepare_layer_alpha_mask_descriptors",
+                "sync_layer_alpha_mask_resource_heap",
                 "prepare_effect_texture_descriptors",
                 "sync_effect_resource_heap",
                 "queue_submit2_scene_prepare",
