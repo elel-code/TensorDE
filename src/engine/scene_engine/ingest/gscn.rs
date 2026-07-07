@@ -12,8 +12,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use crate::core::scene::{
-    SceneMeshPuppetClippingRecord, SceneMeshSkin, SceneMeshVertex, ScenePuppetAnimationClip,
-    ScenePuppetAnimationLayer,
+    SceneMeshPuppetClippingActiveSource, SceneMeshPuppetClippingRecord, SceneMeshSkin,
+    SceneMeshVertex, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
 };
 
 use super::super::{
@@ -72,6 +72,7 @@ pub struct GscnPuppetResourceFact {
     pub clips: Vec<ScenePuppetAnimationClip>,
     pub layers: Vec<ScenePuppetAnimationLayer>,
     pub clipping_records: Vec<SceneMeshPuppetClippingRecord>,
+    pub clipping_active_sources: Vec<SceneMeshPuppetClippingActiveSource>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -300,6 +301,7 @@ fn engine_resources(
                     layers: fact.layers,
                     clipping: ScenePuppetClippingProgram::from_source_records(
                         fact.clipping_records,
+                        fact.clipping_active_sources,
                     ),
                 })
             }),
@@ -516,6 +518,15 @@ mod tests {
                     initial_phase: 0.0,
                 }],
                 clipping_records: Vec::new(),
+                clipping_active_sources: vec![SceneMeshPuppetClippingActiveSource {
+                    source_name: "eye-right".to_owned(),
+                    scalar_bits: 1.0f32.to_bits(),
+                    source_scale: 6,
+                    flags: 2,
+                    transform_index: 4,
+                    parameter0: -1.0,
+                    parameter1: 0.5,
+                }],
             }],
             objects: vec![
                 GscnObjectFact {
@@ -590,7 +601,11 @@ mod tests {
         assert_eq!(vertices.len(), 4);
         assert_eq!(indices.len(), 6);
         let SceneResource::PuppetRig {
-            id, clips, layers, ..
+            id,
+            clips,
+            layers,
+            clipping,
+            ..
         } = &plan.resources[2]
         else {
             panic!("expected puppet rig resource");
@@ -598,6 +613,7 @@ mod tests {
         assert_eq!(*id, ScenePuppetId(0));
         assert_eq!(clips.len(), 1);
         assert_eq!(layers.len(), 1);
+        assert_eq!(clipping.active_sources.len(), 1);
         assert_eq!(plan.objects[0].source, Some(SceneResourceId(77)));
         assert_eq!(
             plan.objects[0].geometry,

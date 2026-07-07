@@ -301,8 +301,8 @@ mod tests {
 
     #[test]
     fn residency_plan_counts_puppet_clipping_gpu_buffers() {
-        let mut clipping =
-            ScenePuppetClippingProgram::from_source_records(vec![SceneMeshPuppetClippingRecord {
+        let mut clipping = ScenePuppetClippingProgram::from_source_records(
+            vec![SceneMeshPuppetClippingRecord {
                 source_name: Some("eye-right".to_owned()),
                 mask: "masks/clipping_mask_eye".to_owned(),
                 mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
@@ -310,7 +310,9 @@ mod tests {
                 flags: 1,
                 bones: vec![42, 43],
                 frame_keys: vec![0, 1, 2],
-            }]);
+            }],
+            Vec::new(),
+        );
         clipping
             .active_sources
             .push(ScenePuppetClippingActiveSource {

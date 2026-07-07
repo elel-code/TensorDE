@@ -4,7 +4,7 @@ use super::{
 };
 
 pub const SCENE_BINARY_PUPPET_RECORD_SIZE_V12: usize = 68;
-pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 92;
+pub const SCENE_BINARY_PUPPET_RECORD_SIZE: usize = 100;
 pub const SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE: usize = 40;
 pub const SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE: usize = 40;
@@ -14,6 +14,7 @@ pub const SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE: usize = 40;
 pub const SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE: usize = 8;
 pub const SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE: usize = 8;
+pub const SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE: usize = 32;
 
 pub const SCENE_BINARY_PUPPET_FLAG_MESH: u32 = 1;
 pub const SCENE_BINARY_PUPPET_FLAG_ANIMATION_LAYERS: u32 = 1 << 1;
@@ -49,6 +50,8 @@ pub struct SceneBinaryPuppetRecord {
     pub clipping_bone_count: u32,
     pub first_clipping_frame_key: u32,
     pub clipping_frame_key_count: u32,
+    pub first_active_source: u32,
+    pub active_source_count: u32,
     pub flags: u32,
     pub dirty_range_count: u32,
 }
@@ -76,9 +79,11 @@ impl SceneBinaryPuppetRecord {
         write_u32(out, self.clipping_bone_count);
         write_u32(out, self.first_clipping_frame_key);
         write_u32(out, self.clipping_frame_key_count);
+        write_u32(out, self.first_active_source);
+        write_u32(out, self.active_source_count);
         write_u32(out, self.flags);
         write_u32(out, self.dirty_range_count);
-        debug_assert_eq!(SCENE_BINARY_PUPPET_RECORD_SIZE, 92);
+        debug_assert_eq!(SCENE_BINARY_PUPPET_RECORD_SIZE, 100);
     }
 }
 
@@ -266,6 +271,32 @@ impl SceneBinaryPuppetClippingFrameKeyRecord {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SceneBinaryPuppetActiveSourceRecord {
+    pub source_name: u32,
+    pub scalar_bits: u32,
+    pub source_scale: u32,
+    pub flags: u32,
+    pub transform_index: u32,
+    pub parameter0: f32,
+    pub parameter1: f32,
+    pub reserved: u32,
+}
+
+impl SceneBinaryPuppetActiveSourceRecord {
+    pub(super) fn encode(self, out: &mut Vec<u8>) {
+        write_u32(out, self.source_name);
+        write_u32(out, self.scalar_bits);
+        write_u32(out, self.source_scale);
+        write_u32(out, self.flags);
+        write_u32(out, self.transform_index);
+        write_f32(out, self.parameter0);
+        write_f32(out, self.parameter1);
+        write_u32(out, self.reserved);
+        debug_assert_eq!(SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE, 32);
+    }
+}
+
 impl SceneBinaryPuppetLayerRecord {
     pub(super) fn encode(self, out: &mut Vec<u8>) {
         write_u32(out, self.owner_name);
@@ -306,6 +337,38 @@ pub(crate) fn decode_puppet_record(
             clipping_bone_count: read_u32(bytes, 72)?,
             first_clipping_frame_key: read_u32(bytes, 76)?,
             clipping_frame_key_count: read_u32(bytes, 80)?,
+            first_active_source: read_u32(bytes, 84)?,
+            active_source_count: read_u32(bytes, 88)?,
+            flags: read_u32(bytes, 92)?,
+            dirty_range_count: read_u32(bytes, 96)?,
+        });
+    }
+
+    if bytes.len() >= 92 {
+        return Ok(SceneBinaryPuppetRecord {
+            owner_name: read_u32(bytes, 0)?,
+            vertex_count: read_u32(bytes, 4)?,
+            index_count: read_u32(bytes, 8)?,
+            first_bone: read_u32(bytes, 12)?,
+            bone_count: read_u32(bytes, 16)?,
+            first_skin_vertex: read_u32(bytes, 20)?,
+            skin_vertex_count: read_u32(bytes, 24)?,
+            first_attachment: read_u32(bytes, 28)?,
+            attachment_count: read_u32(bytes, 32)?,
+            first_clip: read_u32(bytes, 36)?,
+            clip_count: read_u32(bytes, 40)?,
+            first_clip_frame: read_u32(bytes, 44)?,
+            clip_frame_count: read_u32(bytes, 48)?,
+            first_layer: read_u32(bytes, 52)?,
+            animation_layer_count: read_u32(bytes, 56)?,
+            first_clipping_record: read_u32(bytes, 60)?,
+            clipping_record_count: read_u32(bytes, 64)?,
+            first_clipping_bone: read_u32(bytes, 68)?,
+            clipping_bone_count: read_u32(bytes, 72)?,
+            first_clipping_frame_key: read_u32(bytes, 76)?,
+            clipping_frame_key_count: read_u32(bytes, 80)?,
+            first_active_source: SCENE_BINARY_NONE_ID,
+            active_source_count: 0,
             flags: read_u32(bytes, 84)?,
             dirty_range_count: read_u32(bytes, 88)?,
         });
@@ -333,6 +396,8 @@ pub(crate) fn decode_puppet_record(
         clipping_bone_count: 0,
         first_clipping_frame_key: SCENE_BINARY_NONE_ID,
         clipping_frame_key_count: 0,
+        first_active_source: SCENE_BINARY_NONE_ID,
+        active_source_count: 0,
         flags: read_u32(bytes, 60)?,
         dirty_range_count: read_u32(bytes, 64)?,
     })
@@ -466,6 +531,21 @@ pub(crate) fn decode_puppet_clipping_frame_key_record(
     Ok(SceneBinaryPuppetClippingFrameKeyRecord {
         owner_name: read_u32(bytes, 0)?,
         frame_key: read_u32(bytes, 4)?,
+    })
+}
+
+pub(crate) fn decode_puppet_active_source_record(
+    bytes: &[u8],
+) -> Result<SceneBinaryPuppetActiveSourceRecord, SceneBinaryError> {
+    Ok(SceneBinaryPuppetActiveSourceRecord {
+        source_name: read_u32(bytes, 0)?,
+        scalar_bits: read_u32(bytes, 4)?,
+        source_scale: read_u32(bytes, 8)?,
+        flags: read_u32(bytes, 12)?,
+        transform_index: read_u32(bytes, 16)?,
+        parameter0: read_f32(bytes, 20)?,
+        parameter1: read_f32(bytes, 24)?,
+        reserved: read_u32(bytes, 28)?,
     })
 }
 

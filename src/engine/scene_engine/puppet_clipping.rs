@@ -9,7 +9,10 @@
 
 use serde::Serialize;
 
-use crate::core::scene::SceneMeshPuppetClippingRecord as SourcePuppetClippingRecord;
+use crate::core::scene::{
+    SceneMeshPuppetClippingActiveSource as SourcePuppetClippingActiveSource,
+    SceneMeshPuppetClippingRecord as SourcePuppetClippingRecord,
+};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ScenePuppetClippingProgram {
@@ -20,8 +23,24 @@ pub struct ScenePuppetClippingProgram {
 }
 
 impl ScenePuppetClippingProgram {
-    pub fn from_source_records(records: Vec<SourcePuppetClippingRecord>) -> Self {
+    pub fn from_source_records(
+        records: Vec<SourcePuppetClippingRecord>,
+        active_sources: Vec<SourcePuppetClippingActiveSource>,
+    ) -> Self {
         let mut program = Self::default();
+        for source in active_sources {
+            program
+                .active_sources
+                .push(ScenePuppetClippingActiveSource {
+                    source_name: source.source_name,
+                    scalar_bits: source.scalar_bits,
+                    source_scale: source.source_scale,
+                    flags: source.flags,
+                    transform_index: source.transform_index,
+                    parameter0: source.parameter0,
+                    parameter1: source.parameter1,
+                });
+        }
         for record in records {
             program.push_source_record(record);
         }
@@ -50,6 +69,12 @@ impl ScenePuppetClippingProgram {
             .as_deref()
             .map(scene_stable_name_hash)
             .unwrap_or_default();
+        let active_source_index = record.source_name.as_deref().and_then(|source_name| {
+            self.active_sources
+                .iter()
+                .position(|source| source.source_name == source_name)
+                .map(saturating_u32)
+        });
 
         self.records.push(ScenePuppetClippingRecord {
             source_name: record.source_name,
@@ -62,7 +87,7 @@ impl ScenePuppetClippingProgram {
             bone_count,
             first_frame_key,
             frame_key_count,
-            active_source_index: None,
+            active_source_index,
             mask_texture_index: None,
         });
     }
@@ -113,8 +138,8 @@ mod tests {
 
     #[test]
     fn clipping_program_flattens_source_records_for_gpu_storage() {
-        let program =
-            ScenePuppetClippingProgram::from_source_records(vec![SourcePuppetClippingRecord {
+        let program = ScenePuppetClippingProgram::from_source_records(
+            vec![SourcePuppetClippingRecord {
                 source_name: Some("eye-right".to_owned()),
                 mask: "masks/clipping_mask_eye".to_owned(),
                 mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
@@ -122,11 +147,23 @@ mod tests {
                 flags: 1,
                 bones: vec![42, 43],
                 frame_keys: vec![0, 1, 2],
-            }]);
+            }],
+            vec![SourcePuppetClippingActiveSource {
+                source_name: "eye-right".to_owned(),
+                scalar_bits: 1.0f32.to_bits(),
+                source_scale: 6,
+                flags: 2,
+                transform_index: 4,
+                parameter0: -1.0,
+                parameter1: 0.5,
+            }],
+        );
 
         assert_eq!(program.records.len(), 1);
         assert_eq!(program.bone_indices, vec![42, 43]);
         assert_eq!(program.frame_keys, vec![0, 1, 2]);
+        assert_eq!(program.active_sources.len(), 1);
+        assert_eq!(program.records[0].active_source_index, Some(0));
         assert_eq!(program.records[0].source_name.as_deref(), Some("eye-right"));
         assert_eq!(program.records[0].first_bone, 0);
         assert_eq!(program.records[0].bone_count, 2);

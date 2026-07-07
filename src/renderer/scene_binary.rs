@@ -1727,9 +1727,14 @@ mod tests {
         let scene_path = assets.join("scene.gscn");
         fs::write(&scene_path, bytes).expect("write gscn");
 
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
-                .expect("binary scene plan");
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path.clone(),
+            None,
+            0,
+            None,
+        )
+        .expect("binary scene plan");
         fs::remove_dir_all(root).expect("remove test dir");
 
         assert_eq!(plan.layers.len(), 1);
@@ -1854,9 +1859,14 @@ mod tests {
         let scene_path = assets.join("scene.gscn");
         fs::write(&scene_path, bytes).expect("write gscn");
 
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
-                .expect("binary scene plan");
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path.clone(),
+            None,
+            0,
+            None,
+        )
+        .expect("binary scene plan");
         fs::remove_dir_all(root).expect("remove test dir");
 
         assert_eq!(plan.layers.len(), 1);
@@ -2043,9 +2053,14 @@ mod tests {
         let scene_path = assets.join("scene.gscn");
         fs::write(&scene_path, bytes).expect("write gscn");
 
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
-                .expect("binary scene plan");
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path.clone(),
+            None,
+            0,
+            None,
+        )
+        .expect("binary scene plan");
 
         assert_eq!(plan.layers.len(), 1);
         let layer = &plan.layers[0];
@@ -2139,11 +2154,23 @@ mod tests {
                         },
                         "puppet_clipping_records": [
                             {
+                                "source_name": "eye-right",
                                 "mask": "masks/clipping_mask_eye",
                                 "duration_frames": 1680,
                                 "flags": 1,
                                 "bones": [1],
                                 "frame_keys": [0, 1, 2]
+                            }
+                        ],
+                        "puppet_clipping_active_sources": [
+                            {
+                                "source_name": "eye-right",
+                                "scalar_bits": 1065353216,
+                                "source_scale": 6,
+                                "flags": 2,
+                                "transform_index": 4,
+                                "parameter0": -1.0,
+                                "parameter1": 0.5
                             }
                         ]
                     }
@@ -2158,13 +2185,21 @@ mod tests {
         let scene_path = assets.join("scene.gscn");
         fs::write(&scene_path, bytes).expect("write gscn");
 
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("HDMI-A-1".to_owned(), scene_path, None, 0, None)
-                .expect("binary scene plan");
-        fs::remove_dir_all(root).expect("remove test dir");
+        let plan = scene_wallpaper_plan_from_gscn_path(
+            "HDMI-A-1".to_owned(),
+            scene_path.clone(),
+            None,
+            0,
+            None,
+        )
+        .expect("binary scene plan");
 
         let mesh = plan.layers[0].mesh.as_ref().expect("mesh");
         assert_eq!(mesh.puppet_clipping_records.len(), 1);
+        assert_eq!(
+            mesh.puppet_clipping_records[0].source_name.as_deref(),
+            Some("eye-right")
+        );
         assert_eq!(
             mesh.puppet_clipping_records[0].mask,
             "masks/clipping_mask_eye"
@@ -2173,6 +2208,25 @@ mod tests {
         assert_eq!(mesh.puppet_clipping_records[0].flags, 1);
         assert_eq!(mesh.puppet_clipping_records[0].bones, vec![1]);
         assert_eq!(mesh.puppet_clipping_records[0].frame_keys, vec![0, 1, 2]);
+        assert_eq!(mesh.puppet_clipping_active_sources.len(), 1);
+        assert_eq!(
+            mesh.puppet_clipping_active_sources[0].source_name,
+            "eye-right"
+        );
+
+        let engine_plan = scene_engine_plan_from_gscn_path_with_properties(scene_path, 0, None)
+            .expect("scene engine plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+        let puppet = engine_plan
+            .resources
+            .iter()
+            .find_map(|resource| match resource {
+                SceneResource::PuppetRig { clipping, .. } => Some(clipping),
+                _ => None,
+            })
+            .expect("puppet rig");
+        assert_eq!(puppet.active_sources.len(), 1);
+        assert_eq!(puppet.records[0].active_source_index, Some(0));
     }
 
     #[test]

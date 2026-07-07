@@ -35,8 +35,8 @@ use super::facts::{
 };
 use super::mesh::{
     binary_scene_geometry_is_mesh_payload, binary_scene_mesh_vertices_indices,
-    binary_scene_puppet_clipping_records, binary_scene_puppet_clips, binary_scene_puppet_layers,
-    binary_scene_puppet_skin,
+    binary_scene_puppet_active_sources, binary_scene_puppet_clipping_records,
+    binary_scene_puppet_clips, binary_scene_puppet_layers, binary_scene_puppet_skin,
 };
 use super::reader::BinarySceneReader;
 use super::topology::{
@@ -143,12 +143,18 @@ fn gscn_mesh_and_puppet_resources(
         } else {
             Vec::new()
         };
+        let clipping_active_sources = if puppet.active_source_count > 0 && skin.is_some() {
+            binary_scene_puppet_active_sources(reader, names, puppet)?
+        } else {
+            Vec::new()
+        };
         puppet_resources.push(GscnPuppetResourceFact {
             source_record: renderable.node.puppet_index,
             skin,
             clips: binary_scene_puppet_clips(reader, puppet)?,
             layers: binary_scene_puppet_layers(reader, puppet)?,
             clipping_records,
+            clipping_active_sources,
         });
     }
 

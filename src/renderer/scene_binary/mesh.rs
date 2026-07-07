@@ -14,23 +14,25 @@ use crate::core::scene::binary::{
     SCENE_BINARY_GEOMETRY_INDEX_RECORD_SIZE, SCENE_BINARY_GEOMETRY_PRIMITIVE_MESH,
     SCENE_BINARY_GEOMETRY_VERTEX_LAYOUT_MESH_XY_UV_OPACITY,
     SCENE_BINARY_GEOMETRY_VERTEX_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING,
-    SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE, SCENE_BINARY_PUPPET_ATTACHMENT_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIP_FLAG_LOOPING, SCENE_BINARY_PUPPET_CLIP_RECORD_SIZE,
+    SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
     SCENE_BINARY_PUPPET_CLIPPING_FRAME_KEY_RECORD_SIZE, SCENE_BINARY_PUPPET_CLIPPING_RECORD_SIZE,
     SCENE_BINARY_PUPPET_FRAME_RECORD_SIZE, SCENE_BINARY_PUPPET_LAYER_FLAG_ADDITIVE,
     SCENE_BINARY_PUPPET_LAYER_FLAG_LOCK_TRANSFORMS, SCENE_BINARY_PUPPET_LAYER_FLAG_VISIBLE,
     SCENE_BINARY_PUPPET_LAYER_RECORD_SIZE, SCENE_BINARY_PUPPET_SKIN_BONE_RECORD_SIZE,
     SCENE_BINARY_PUPPET_SKIN_VERTEX_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryGeometryRecord,
     SceneBinaryPuppetRecord, decode_geometry_index_record, decode_geometry_vertex_record,
-    decode_puppet_attachment_record, decode_puppet_clip_record, decode_puppet_clipping_bone_record,
-    decode_puppet_clipping_frame_key_record, decode_puppet_clipping_record,
-    decode_puppet_frame_record, decode_puppet_layer_record, decode_puppet_skin_bone_record,
-    decode_puppet_skin_vertex_record,
+    decode_puppet_active_source_record, decode_puppet_attachment_record, decode_puppet_clip_record,
+    decode_puppet_clipping_bone_record, decode_puppet_clipping_frame_key_record,
+    decode_puppet_clipping_record, decode_puppet_frame_record, decode_puppet_layer_record,
+    decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
 };
 use crate::core::scene::{
-    SceneMesh, SceneMeshPuppetClippingRecord, SceneMeshSkin, SceneMeshSkinAttachment,
-    SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex, ScenePuppetAnimationBone,
-    ScenePuppetAnimationClip, ScenePuppetAnimationLayer, ScenePuppetAttachmentDelta,
+    SceneMesh, SceneMeshPuppetClippingActiveSource, SceneMeshPuppetClippingRecord, SceneMeshSkin,
+    SceneMeshSkinAttachment, SceneMeshSkinBone, SceneMeshSkinVertex, SceneMeshVertex,
+    ScenePuppetAnimationBone, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
+    ScenePuppetAttachmentDelta,
 };
 use crate::renderer::RendererPlanError;
 
@@ -118,6 +120,7 @@ fn binary_scene_base_mesh_cached(
         skin: None,
         puppet_clips: Vec::new(),
         puppet_clipping_records: Vec::new(),
+        puppet_clipping_active_sources: Vec::new(),
     };
     if puppet_index != SCENE_BINARY_NONE_ID {
         let puppet = reader.puppet_record_cached(puppet_index)?;
@@ -131,6 +134,10 @@ fn binary_scene_base_mesh_cached(
         if puppet.clipping_record_count > 0 && mesh.skin.is_some() {
             mesh.puppet_clipping_records =
                 binary_scene_puppet_clipping_records(reader, names, puppet)?;
+        }
+        if puppet.active_source_count > 0 && mesh.skin.is_some() {
+            mesh.puppet_clipping_active_sources =
+                binary_scene_puppet_active_sources(reader, names, puppet)?;
         }
     }
 
@@ -201,6 +208,7 @@ fn binary_scene_puppet_attachment_mesh_cached(
         skin: Some(binary_scene_puppet_skin(reader, names, puppet, false)?),
         puppet_clips: Vec::new(),
         puppet_clipping_records: Vec::new(),
+        puppet_clipping_active_sources: Vec::new(),
     });
     reader
         .puppet_attachment_mesh_cache
@@ -414,6 +422,36 @@ pub(super) fn binary_scene_puppet_clipping_records(
         });
     }
     Ok(records)
+}
+
+pub(super) fn binary_scene_puppet_active_sources(
+    reader: &mut BinarySceneReader,
+    names: &BinarySceneNames,
+    puppet: SceneBinaryPuppetRecord,
+) -> Result<Vec<SceneMeshPuppetClippingActiveSource>, RendererPlanError> {
+    let records = reader.record_range(
+        SceneBinaryChunkKind::PuppetActiveSources,
+        SCENE_BINARY_PUPPET_ACTIVE_SOURCE_RECORD_SIZE,
+        puppet.first_active_source,
+        puppet.active_source_count,
+        decode_puppet_active_source_record,
+    )?;
+    let mut sources = Vec::with_capacity(records.len());
+    for record in records {
+        let Some(source_name) = binary_name(names, record.source_name) else {
+            continue;
+        };
+        sources.push(SceneMeshPuppetClippingActiveSource {
+            source_name: source_name.to_owned(),
+            scalar_bits: record.scalar_bits,
+            source_scale: record.source_scale,
+            flags: record.flags,
+            transform_index: record.transform_index,
+            parameter0: record.parameter0,
+            parameter1: record.parameter1,
+        });
+    }
+    Ok(sources)
 }
 
 fn binary_scene_puppet_clipping_mask_resource(

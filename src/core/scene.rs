@@ -3544,6 +3544,8 @@ pub struct SceneMesh {
     pub puppet_clips: Vec<ScenePuppetAnimationClip>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub puppet_clipping_records: Vec<SceneMeshPuppetClippingRecord>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub puppet_clipping_active_sources: Vec<SceneMeshPuppetClippingActiveSource>,
 }
 
 impl SceneMesh {
@@ -3596,6 +3598,16 @@ impl SceneMesh {
                 record.validate(node_id, index, skin.bones.len())?;
             }
         }
+        if !self.puppet_clipping_active_sources.is_empty() {
+            if self.skin.is_none() {
+                return Err(SceneError::invalid(format!(
+                    "scene node {node_id:?} mesh has puppet clipping active sources without skin"
+                )));
+            }
+            for (index, source) in self.puppet_clipping_active_sources.iter().enumerate() {
+                source.validate(node_id, index)?;
+            }
+        }
         Ok(())
     }
 
@@ -3612,6 +3624,7 @@ impl SceneMesh {
             skin: self.skin.clone(),
             puppet_clips: Vec::new(),
             puppet_clipping_records: self.puppet_clipping_records.clone(),
+            puppet_clipping_active_sources: self.puppet_clipping_active_sources.clone(),
         })
     }
 
@@ -3968,6 +3981,38 @@ impl SceneMeshPuppetClippingRecord {
                     "scene node {node_id:?} mesh puppet clipping record {index} bone {bone} is outside the bone array"
                 )));
             }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SceneMeshPuppetClippingActiveSource {
+    pub source_name: String,
+    #[serde(default)]
+    pub scalar_bits: u32,
+    #[serde(default)]
+    pub source_scale: u32,
+    #[serde(default)]
+    pub flags: u32,
+    #[serde(default)]
+    pub transform_index: u32,
+    #[serde(default)]
+    pub parameter0: f32,
+    #[serde(default)]
+    pub parameter1: f32,
+}
+
+impl SceneMeshPuppetClippingActiveSource {
+    fn validate(&self, node_id: &str, index: usize) -> Result<(), SceneError> {
+        validate_required_text(
+            "scene mesh puppet clipping active source name",
+            &self.source_name,
+        )?;
+        if !self.parameter0.is_finite() || !self.parameter1.is_finite() {
+            return Err(SceneError::invalid(format!(
+                "scene node {node_id:?} mesh puppet clipping active source {index} parameters must be finite"
+            )));
         }
         Ok(())
     }

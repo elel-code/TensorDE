@@ -1638,6 +1638,7 @@ struct ScenePuppetMesh {
     skin: Option<ScenePuppetSkin>,
     clips: Vec<ScenePuppetAnimationClip>,
     clipping_records: Vec<ScenePuppetClippingRecord>,
+    clipping_active_sources: Vec<ScenePuppetClippingActiveSource>,
 }
 
 impl ScenePuppetMesh {
@@ -1681,6 +1682,17 @@ impl ScenePuppetMesh {
                 ),
             );
         }
+        if !self.clipping_active_sources.is_empty() {
+            mesh.insert(
+                "puppet_clipping_active_sources".to_owned(),
+                Value::Array(
+                    self.clipping_active_sources
+                        .iter()
+                        .map(ScenePuppetClippingActiveSource::to_value)
+                        .collect(),
+                ),
+            );
+        }
         Value::Object(mesh)
     }
 }
@@ -1713,6 +1725,31 @@ impl ScenePuppetClippingRecord {
             );
         }
         value
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenePuppetClippingActiveSource {
+    source_name: String,
+    scalar_bits: u32,
+    source_scale: u32,
+    flags: u32,
+    transform_index: u32,
+    parameter0: f32,
+    parameter1: f32,
+}
+
+impl ScenePuppetClippingActiveSource {
+    fn to_value(&self) -> Value {
+        json!({
+            "source_name": self.source_name,
+            "scalar_bits": self.scalar_bits,
+            "source_scale": self.source_scale,
+            "flags": self.flags,
+            "transform_index": self.transform_index,
+            "parameter0": self.parameter0,
+            "parameter1": self.parameter1
+        })
     }
 }
 
@@ -5214,6 +5251,21 @@ fn scene_insert_puppet_model_conversion(
                     "wallpaper-engine-puppet-clipping-records",
                 );
             }
+            if !mesh.clipping_active_sources.is_empty() {
+                model.insert(
+                    "puppet_clipping_active_sources".to_owned(),
+                    Value::Array(
+                        mesh.clipping_active_sources
+                            .iter()
+                            .map(ScenePuppetClippingActiveSource::to_value)
+                            .collect(),
+                    ),
+                );
+                push_unique(
+                    &mut context.converted_features,
+                    "wallpaper-engine-puppet-clipping-active-sources",
+                );
+            }
             push_unique(
                 &mut context.converted_features,
                 "wallpaper-engine-puppet-mesh-lowering",
@@ -5619,6 +5671,7 @@ fn scene_puppet_mesh_from_block(
         skin: None,
         clips: Vec::new(),
         clipping_records: Vec::new(),
+        clipping_active_sources: Vec::new(),
     })
 }
 

@@ -734,13 +734,12 @@ fn checked_gpu_index(
 mod tests {
     use super::*;
     use crate::core::scene::{
-        SceneMeshPuppetClippingRecord, SceneMeshSkin, ScenePuppetAnimationBone,
-        ScenePuppetAnimationClip,
+        SceneMeshPuppetClippingActiveSource, SceneMeshPuppetClippingRecord, SceneMeshSkin,
+        ScenePuppetAnimationBone, ScenePuppetAnimationClip,
     };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingActiveSource,
-        ScenePuppetClippingProgram, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource,
-        SceneResourceResidencyPlan,
+        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingProgram, ScenePuppetId,
+        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -854,8 +853,8 @@ mod tests {
 
     #[test]
     fn upload_plan_packs_puppet_clipping_program_storage_records() {
-        let mut clipping =
-            ScenePuppetClippingProgram::from_source_records(vec![SceneMeshPuppetClippingRecord {
+        let clipping = ScenePuppetClippingProgram::from_source_records(
+            vec![SceneMeshPuppetClippingRecord {
                 source_name: Some("eye-right".to_owned()),
                 mask: "masks/clipping_mask_eye".to_owned(),
                 mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
@@ -863,10 +862,8 @@ mod tests {
                 flags: 3,
                 bones: vec![42, 43],
                 frame_keys: vec![0, 1, 2],
-            }]);
-        clipping
-            .active_sources
-            .push(ScenePuppetClippingActiveSource {
+            }],
+            vec![SceneMeshPuppetClippingActiveSource {
                 source_name: "eye-right".to_owned(),
                 scalar_bits: 1.0f32.to_bits(),
                 source_scale: 6,
@@ -874,7 +871,8 @@ mod tests {
                 transform_index: 4,
                 parameter0: -1.0,
                 parameter1: 0.5,
-            });
+            }],
+        );
         let resources = vec![SceneResource::PuppetRig {
             id: ScenePuppetId(8),
             source_record: 3,
@@ -905,7 +903,7 @@ mod tests {
         assert_eq!(read_u32(&record_upload.payload, 20), 2);
         assert_eq!(read_u32(&record_upload.payload, 24), 0);
         assert_eq!(read_u32(&record_upload.payload, 28), 3);
-        assert_eq!(read_u32(&record_upload.payload, 32), SCENE_GPU_PARENT_NONE);
+        assert_eq!(read_u32(&record_upload.payload, 32), 0);
         assert_eq!(read_u32(&record_upload.payload, 36), SCENE_GPU_PARENT_NONE);
 
         let bone_upload = &plan.uploads()[1];
