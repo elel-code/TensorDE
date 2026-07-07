@@ -30,6 +30,7 @@ use super::pipeline_factory::{
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
+use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameContext<'a> {
@@ -49,12 +50,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub residency_command_count: usize,
     pub material_uniform_action_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
+    pub resource_heap: NativeVulkanSceneResourceHeapFramePlan,
     pub texture_image_action_count: usize,
     pub texture_heap_action_count: usize,
     pub gpu_buffer_action_count: usize,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
     pub frame: NativeVulkanSceneMeshFrameCommandPlan<'a>,
-    pub command_order: [&'static str; 8],
+    pub command_order: [&'static str; 9],
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -62,6 +64,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         residency_command_count: usize,
         material_uniform_action_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
+        resource_heap: NativeVulkanSceneResourceHeapFramePlan,
         texture_image_action_count: usize,
         texture_heap_action_count: usize,
         gpu_buffer_action_count: usize,
@@ -72,6 +75,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             residency_command_count,
             material_uniform_action_count,
             texture_descriptors,
+            resource_heap,
             texture_image_action_count,
             texture_heap_action_count,
             gpu_buffer_action_count,
@@ -81,6 +85,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "sync_residency",
                 "sync_material_uniform_records",
                 "prepare_texture_descriptors",
+                "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
@@ -108,6 +113,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         .sync_material_uniform_records(&frame.graph)?
         .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
+    let resource_heap = frame_resources.resource_heap_frame_plan(
+        &frame.graph,
+        &texture_descriptors,
+        context.descriptor_heap_properties,
+    )?;
     let texture_image_action_count = frame_resources
         .sync_texture_images_recorded(
             context.device,
@@ -171,6 +181,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         residency_command_count,
         material_uniform_action_count,
         texture_descriptors,
+        resource_heap,
         texture_image_action_count,
         texture_heap_action_count,
         gpu_buffer_action_count,
@@ -262,11 +273,41 @@ mod tests {
                 "bind_descriptor_heap_texture_mapping",
             ],
         };
+        let material_uniforms =
+            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(&graph)
+                .and_then(|plan| {
+                    super::super::material_uniforms::NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&plan)
+                        .map_err(|err| err.to_string())
+                })
+                .expect("material uniform plan");
+        let resource_heap =
+            super::super::resource_heap::NativeVulkanSceneResourceHeapFramePlan::from_graph(
+                &graph,
+                &material_uniforms,
+                &descriptors,
+                NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 32,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 96,
+                    max_sampler_heap_size: 4096,
+                    min_sampler_heap_reserved_range: 48,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    sampler_descriptor_size: 12,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            )
+            .expect("draw resource heap plan");
 
         let plan = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
             2,
             1,
             descriptors,
+            resource_heap,
             4,
             1,
             3,
@@ -280,6 +321,7 @@ mod tests {
                 "sync_residency",
                 "sync_material_uniform_records",
                 "prepare_texture_descriptors",
+                "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
                 "sync_texture_descriptor_heap",
                 "record_gpu_buffer_uploads",
@@ -290,6 +332,7 @@ mod tests {
         assert_eq!(plan.residency_command_count, 2);
         assert_eq!(plan.material_uniform_action_count, 1);
         assert_eq!(plan.texture_descriptors.binding_count, 1);
+        assert_eq!(plan.resource_heap.resource_descriptor_count, 2);
         assert_eq!(plan.texture_image_action_count, 4);
         assert_eq!(plan.texture_heap_action_count, 1);
         assert_eq!(plan.gpu_buffer_action_count, 3);

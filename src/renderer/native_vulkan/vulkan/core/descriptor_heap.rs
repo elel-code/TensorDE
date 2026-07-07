@@ -40,6 +40,19 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
     pub properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind {
+    SampledImage,
+    UniformBuffer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+    pub resource_descriptors: Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
+    pub sampler_count: usize,
+    pub properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot {
     pub binding: &'static str,
@@ -118,6 +131,41 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanSnapshot {
     pub resource_heap_reserved_range_size: u64,
     pub buffer_descriptor_offsets: Vec<u64>,
     pub max_resource_heap_size: u64,
+    pub command_order: Vec<&'static str>,
+    pub next_gate: &'static str,
+    pub primary_reference: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub descriptor_model: &'static str,
+    pub backend_ready: bool,
+    pub blocking_reason: Option<&'static str>,
+    pub resource_descriptor_count: usize,
+    pub sampled_image_count: usize,
+    pub uniform_buffer_count: usize,
+    pub sampler_count: usize,
+    pub resource_descriptor_kinds: Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
+    pub resource_descriptor_offsets: Vec<u64>,
+    pub sampler_descriptor_offsets: Vec<u64>,
+    pub resource_heap_alignment: u64,
+    pub sampler_heap_alignment: u64,
+    pub image_descriptor_size: u64,
+    pub image_descriptor_stride: u64,
+    pub buffer_descriptor_size: u64,
+    pub buffer_descriptor_stride: u64,
+    pub sampler_descriptor_size: u64,
+    pub sampler_descriptor_stride: u64,
+    pub resource_heap_bytes: u64,
+    pub sampler_heap_bytes: u64,
+    pub resource_heap_reserved_range_offset: u64,
+    pub resource_heap_reserved_range_size: u64,
+    pub sampler_heap_reserved_range_offset: u64,
+    pub sampler_heap_reserved_range_size: u64,
+    pub max_resource_heap_size: u64,
+    pub max_sampler_heap_size: u64,
     pub command_order: Vec<&'static str>,
     pub next_gate: &'static str,
     pub primary_reference: &'static str,
@@ -344,6 +392,174 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         },
         next_gate: "bind confirmed constant-buffer records through descriptor heap resource offsets",
         primary_reference: "VK_EXT_descriptor_heap uniform-buffer resource heap; WE dynamic constant-buffer commits must be lowered only after slot semantics are confirmed",
+    }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+    input: NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput,
+) -> NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
+    let properties = input.properties;
+    let image_descriptor_stride = aligned_descriptor_stride(
+        properties.image_descriptor_size,
+        properties.image_descriptor_alignment,
+    );
+    let buffer_descriptor_stride = aligned_descriptor_stride(
+        properties.buffer_descriptor_size,
+        properties.buffer_descriptor_alignment,
+    );
+    let sampler_descriptor_stride = aligned_descriptor_stride(
+        properties.sampler_descriptor_size,
+        properties.sampler_descriptor_alignment,
+    );
+
+    let sampled_image_count = input
+        .resource_descriptors
+        .iter()
+        .filter(|kind| {
+            **kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
+        })
+        .count();
+    let uniform_buffer_count = input
+        .resource_descriptors
+        .iter()
+        .filter(|kind| {
+            **kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
+        })
+        .count();
+    let resource_descriptor_offsets = mixed_resource_descriptor_offsets(
+        &input.resource_descriptors,
+        properties.image_descriptor_alignment,
+        image_descriptor_stride,
+        properties.buffer_descriptor_alignment,
+        buffer_descriptor_stride,
+    );
+    let resource_descriptor_region_bytes =
+        resource_descriptor_offsets
+            .last()
+            .copied()
+            .map_or(0, |last_offset| {
+                let last_kind = input.resource_descriptors.last().copied().unwrap_or(
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                );
+                last_offset.saturating_add(resource_descriptor_stride_for_kind(
+                    last_kind,
+                    image_descriptor_stride,
+                    buffer_descriptor_stride,
+                ))
+            });
+    let resource_heap_reserved_range_offset = align_up(
+        resource_descriptor_region_bytes,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_reserved_range_size = align_up(
+        properties.min_resource_heap_reserved_range,
+        properties.resource_heap_alignment,
+    );
+    let resource_heap_bytes =
+        resource_heap_reserved_range_offset.saturating_add(resource_heap_reserved_range_size);
+
+    let sampler_descriptor_region_bytes = descriptor_heap_bytes(
+        input.sampler_count,
+        sampler_descriptor_stride,
+        properties.sampler_heap_alignment,
+    );
+    let sampler_heap_reserved_range_offset = align_up(
+        sampler_descriptor_region_bytes,
+        properties.sampler_heap_alignment,
+    );
+    let sampler_heap_reserved_range_size = align_up(
+        properties.min_sampler_heap_reserved_range,
+        properties.sampler_heap_alignment,
+    );
+    let sampler_heap_bytes =
+        sampler_heap_reserved_range_offset.saturating_add(sampler_heap_reserved_range_size);
+
+    let resource_descriptor_sizes_ready =
+        input.resource_descriptors.iter().all(|kind| match kind {
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
+                properties.image_descriptor_size > 0 && image_descriptor_stride > 0
+            }
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
+                properties.buffer_descriptor_size > 0 && buffer_descriptor_stride > 0
+            }
+        });
+    let sampler_descriptor_sizes_ready = input.sampler_count == 0
+        || (properties.sampler_descriptor_size > 0 && sampler_descriptor_stride > 0);
+    let resource_heap_fits = properties.max_resource_heap_size == 0
+        || resource_heap_bytes <= properties.max_resource_heap_size;
+    let sampler_heap_fits = properties.max_sampler_heap_size == 0
+        || sampler_heap_bytes <= properties.max_sampler_heap_size;
+    let sampler_count_matches_images = input.sampler_count == sampled_image_count;
+    let backend_ready = !input.resource_descriptors.is_empty()
+        && resource_descriptor_sizes_ready
+        && sampler_descriptor_sizes_ready
+        && resource_heap_fits
+        && sampler_heap_fits
+        && sampler_count_matches_images;
+    let blocking_reason = if input.resource_descriptors.is_empty() {
+        Some("no-resource-descriptors")
+    } else if !sampler_count_matches_images {
+        Some("sampler-count-must-match-sampled-image-count")
+    } else if !resource_descriptor_sizes_ready {
+        Some("descriptor-heap-resource-descriptor-sizes-unavailable")
+    } else if !sampler_descriptor_sizes_ready {
+        Some("descriptor-heap-sampler-descriptor-size-unavailable")
+    } else if !resource_heap_fits {
+        Some("resource-heap-range-too-small")
+    } else if !sampler_heap_fits {
+        Some("sampler-heap-range-too-small")
+    } else {
+        None
+    };
+
+    NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
+        binding: "vulkanalia",
+        route: "descriptor-heap-mixed-resource-plan",
+        descriptor_model: "VK_EXT_descriptor_heap",
+        backend_ready,
+        blocking_reason,
+        resource_descriptor_count: input.resource_descriptors.len(),
+        sampled_image_count,
+        uniform_buffer_count,
+        sampler_count: input.sampler_count,
+        resource_descriptor_kinds: input.resource_descriptors,
+        resource_descriptor_offsets,
+        sampler_descriptor_offsets: descriptor_offsets(
+            input.sampler_count,
+            sampler_descriptor_stride,
+        ),
+        resource_heap_alignment: properties.resource_heap_alignment,
+        sampler_heap_alignment: properties.sampler_heap_alignment,
+        image_descriptor_size: properties.image_descriptor_size,
+        image_descriptor_stride,
+        buffer_descriptor_size: properties.buffer_descriptor_size,
+        buffer_descriptor_stride,
+        sampler_descriptor_size: properties.sampler_descriptor_size,
+        sampler_descriptor_stride,
+        resource_heap_bytes,
+        sampler_heap_bytes,
+        resource_heap_reserved_range_offset,
+        resource_heap_reserved_range_size,
+        sampler_heap_reserved_range_offset,
+        sampler_heap_reserved_range_size,
+        max_resource_heap_size: properties.max_resource_heap_size,
+        max_sampler_heap_size: properties.max_sampler_heap_size,
+        command_order: if backend_ready {
+            vec![
+                "pack_draw_resource_set_slices",
+                "create_device_addressable_resource_heap_buffer",
+                "create_device_addressable_sampler_heap_buffer",
+                "write_uniform_buffer_descriptors_into_resource_heap",
+                "write_image_descriptors_into_same_resource_heap",
+                "write_sampler_descriptors_into_sampler_heap",
+                "cmd_bind_resource_heap_ext_once_per_draw_resource_set",
+                "cmd_bind_sampler_heap_ext_once_per_draw_resource_set",
+            ]
+        } else {
+            vec!["wait_for_descriptor_heap_capabilities"]
+        },
+        next_gate: "replace texture-only scene heap with draw resource-set slices containing WE constant buffers and textures",
+        primary_reference: "VK_EXT_descriptor_heap mixed resource heap; WE PSSetConstantBuffers(slot=3) and g_TextureN sampled images must share the draw resource binding set",
     }
 }
 
@@ -1071,6 +1287,63 @@ fn descriptor_heap_bytes(count: usize, stride: u64, heap_alignment: u64) -> u64 
     align_up((count as u64).saturating_mul(stride), heap_alignment)
 }
 
+fn mixed_resource_descriptor_offsets(
+    resource_descriptors: &[NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind],
+    image_descriptor_alignment: u64,
+    image_descriptor_stride: u64,
+    buffer_descriptor_alignment: u64,
+    buffer_descriptor_stride: u64,
+) -> Vec<u64> {
+    let mut cursor = 0u64;
+    let mut offsets = Vec::with_capacity(resource_descriptors.len());
+    for kind in resource_descriptors {
+        let alignment = resource_descriptor_alignment_for_kind(
+            *kind,
+            image_descriptor_alignment,
+            buffer_descriptor_alignment,
+        );
+        let stride = resource_descriptor_stride_for_kind(
+            *kind,
+            image_descriptor_stride,
+            buffer_descriptor_stride,
+        );
+        cursor = align_up(cursor, alignment);
+        offsets.push(cursor);
+        cursor = cursor.saturating_add(stride);
+    }
+    offsets
+}
+
+fn resource_descriptor_alignment_for_kind(
+    kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+    image_descriptor_alignment: u64,
+    buffer_descriptor_alignment: u64,
+) -> u64 {
+    match kind {
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
+            image_descriptor_alignment
+        }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
+            buffer_descriptor_alignment
+        }
+    }
+}
+
+fn resource_descriptor_stride_for_kind(
+    kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
+    image_descriptor_stride: u64,
+    buffer_descriptor_stride: u64,
+) -> u64 {
+    match kind {
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage => {
+            image_descriptor_stride
+        }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
+            buffer_descriptor_stride
+        }
+    }
+}
+
 fn aligned_descriptor_stride(descriptor_size: u64, descriptor_alignment: u64) -> u64 {
     align_up(descriptor_size, descriptor_alignment)
 }
@@ -1324,5 +1597,92 @@ mod tests {
                 0
             );
         }
+    }
+
+    #[test]
+    fn mixed_resource_plan_co_packs_uniform_buffers_and_sampled_images() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 3,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 32,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 96,
+                    max_sampler_heap_size: 4096,
+                    min_sampler_heap_reserved_range: 48,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    sampler_descriptor_size: 12,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert!(snapshot.backend_ready);
+        assert_eq!(snapshot.sampled_image_count, 3);
+        assert_eq!(snapshot.uniform_buffer_count, 2);
+        assert_eq!(
+            snapshot.resource_descriptor_offsets,
+            vec![0, 32, 64, 96, 128]
+        );
+        assert_eq!(snapshot.sampler_descriptor_offsets, vec![0, 16, 32]);
+        assert_eq!(snapshot.resource_heap_reserved_range_offset, 192);
+        assert_eq!(snapshot.resource_heap_reserved_range_size, 128);
+        assert_eq!(snapshot.sampler_heap_reserved_range_offset, 64);
+        assert_eq!(snapshot.sampler_heap_reserved_range_size, 64);
+        assert!(
+            snapshot
+                .command_order
+                .contains(&"write_uniform_buffer_descriptors_into_resource_heap")
+        );
+        assert!(
+            snapshot
+                .command_order
+                .contains(&"write_image_descriptors_into_same_resource_heap")
+        );
+    }
+
+    #[test]
+    fn mixed_resource_plan_requires_sampler_per_sampled_image() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 0,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 64,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
+                    max_sampler_heap_size: 4096,
+                    image_descriptor_size: 32,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 32,
+                    buffer_descriptor_alignment: 32,
+                    sampler_descriptor_size: 16,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert!(!snapshot.backend_ready);
+        assert_eq!(
+            snapshot.blocking_reason,
+            Some("sampler-count-must-match-sampled-image-count")
+        );
     }
 }

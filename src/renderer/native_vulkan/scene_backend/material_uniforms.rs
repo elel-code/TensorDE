@@ -54,10 +54,25 @@ impl NativeVulkanSceneMaterialUniformUploadPlan {
     pub(in crate::renderer::native_vulkan) fn from_shader_uniform_frame_plan(
         plan: &SceneShaderUniformFramePlan,
     ) -> Result<Self, NativeVulkanSceneMaterialUniformError> {
-        let mut uploads = Vec::with_capacity(plan.genericimage4_material_records.len());
+        let mut uploads_by_key = BTreeMap::<
+            NativeVulkanSceneMaterialUniformKey,
+            NativeVulkanSceneMaterialUniformUpload,
+        >::new();
         for record in &plan.genericimage4_material_records {
-            uploads.push(genericimage4_material_upload(record)?);
+            let upload = genericimage4_material_upload(record)?;
+            match uploads_by_key.get(&upload.key) {
+                Some(existing) if existing.payload == upload.payload => {}
+                Some(_) => {
+                    return Err(NativeVulkanSceneMaterialUniformError::DuplicateUploadKey {
+                        key: upload.key,
+                    });
+                }
+                None => {
+                    uploads_by_key.insert(upload.key.clone(), upload);
+                }
+            }
         }
+        let uploads = uploads_by_key.into_values().collect::<Vec<_>>();
         Ok(Self {
             record_count: uploads.len(),
             total_bytes: u64::try_from(uploads.len())
@@ -391,6 +406,22 @@ mod tests {
             [NativeVulkanSceneMaterialUniformSyncAction::Replace { .. }]
         ));
         assert_eq!(catalog.records().len(), 1);
+    }
+
+    #[test]
+    fn material_uniform_plan_dedupes_identical_object_shader_records() {
+        let mut graph = graph();
+        let duplicate = graph.passes[0].draws[0].clone();
+        graph.passes[0].draws.push(duplicate);
+        let frame_plan = SceneShaderUniformFramePlan::from_graph(&graph).unwrap();
+
+        let upload_plan =
+            NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
+                .unwrap();
+
+        assert_eq!(frame_plan.genericimage4_material_record_count, 2);
+        assert_eq!(upload_plan.record_count, 1);
+        assert_eq!(upload_plan.uploads().len(), 1);
     }
 
     #[test]

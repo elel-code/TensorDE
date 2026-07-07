@@ -36,6 +36,7 @@ use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
 };
+use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
@@ -256,6 +257,21 @@ impl NativeVulkanSceneFrameResources {
         self.material_uniforms
             .sync_upload_plan(&upload_plan)
             .map_err(|err| err.to_string())
+    }
+
+    pub(in crate::renderer::native_vulkan) fn resource_heap_frame_plan(
+        &self,
+        graph: &SceneGraph,
+        texture_descriptors: &NativeVulkanSceneTextureDescriptorFramePlan,
+        descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    ) -> Result<NativeVulkanSceneResourceHeapFramePlan, String> {
+        let material_uniforms = self.material_uniform_upload_plan(graph)?;
+        NativeVulkanSceneResourceHeapFramePlan::from_graph(
+            graph,
+            &material_uniforms,
+            texture_descriptors,
+            descriptor_heap_properties,
+        )
     }
 
     pub(in crate::renderer::native_vulkan) fn last_material_uniform_actions(
