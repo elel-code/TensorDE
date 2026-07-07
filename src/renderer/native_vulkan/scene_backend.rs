@@ -30,6 +30,7 @@ pub mod resource_heap;
 pub mod resource_storage;
 pub mod resource_upload;
 pub mod runtime;
+pub mod shader_artifacts;
 pub mod texture_descriptors;
 pub mod texture_images;
 

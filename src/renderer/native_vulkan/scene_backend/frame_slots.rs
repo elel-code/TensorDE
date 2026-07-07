@@ -39,6 +39,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotPrepareP
     pub frame_slot: u32,
     pub had_in_flight_submission: bool,
     pub completed_submission: Option<NativeVulkanSceneFrameSubmission>,
+    pub fence_poll_status: &'static str,
     pub command_order: [&'static str; 2],
 }
 
@@ -190,31 +191,35 @@ impl NativeVulkanSceneFrameSlotResources {
             frame_slot,
             had_in_flight_submission: state.in_flight,
             completed_submission: state.in_flight.then_some(state.last_submitted).flatten(),
+            fence_poll_status: "signaled",
             command_order: [
-                "wait_for_scene_frame_fence",
+                "poll_scene_frame_fence",
                 "complete_scene_frame_submission_if_in_flight",
             ],
         })
     }
 
-    pub(in crate::renderer::native_vulkan) fn prepare_frame_slot(
+    pub(in crate::renderer::native_vulkan) fn try_prepare_frame_slot(
         &mut self,
         device: &Device,
         frame_slot: u32,
-    ) -> Result<NativeVulkanSceneFrameSlotPreparePlan, String> {
+    ) -> Result<Option<NativeVulkanSceneFrameSlotPreparePlan>, String> {
         let plan = self.prepare_frame_slot_plan(frame_slot)?;
         let fence = self.slot_sync(frame_slot)?.in_flight_fence;
-        unsafe {
-            device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .map_err(|err| {
-                    format!("vkWaitForFences(scene frame slot {frame_slot}): {err:?}")
-                })?;
+        let status = unsafe { device.get_fence_status(fence) }
+            .map_err(|err| format!("vkGetFenceStatus(scene frame slot {frame_slot}): {err:?}"))?;
+        if status == vk::SuccessCode::NOT_READY {
+            return Ok(None);
+        }
+        if status != vk::SuccessCode::SUCCESS {
+            return Err(format!(
+                "vkGetFenceStatus(scene frame slot {frame_slot}) returned unexpected status {status:?}"
+            ));
         }
         if let Some(submission) = plan.completed_submission {
             self.complete_frame_submission(submission)?;
         }
-        Ok(plan)
+        Ok(Some(plan))
     }
 
     pub(in crate::renderer::native_vulkan) fn slot_sync(
@@ -508,10 +513,11 @@ mod tests {
         assert_eq!(
             initial.command_order,
             [
-                "wait_for_scene_frame_fence",
+                "poll_scene_frame_fence",
                 "complete_scene_frame_submission_if_in_flight"
             ]
         );
+        assert_eq!(initial.fence_poll_status, "signaled");
 
         let submitted = resources.begin_frame_submission(1).expect("begin");
         let in_flight = resources

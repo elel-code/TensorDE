@@ -25,9 +25,7 @@ use super::frame_command::{
 use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::NativeVulkanScenePipelineCacheKey;
-use super::pipeline_factory::{
-    NativeVulkanSceneMeshPipelineLayoutSpec, NativeVulkanSceneMeshPipelineShaders,
-};
+use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
 use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
@@ -88,7 +86,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "record_texture_image_uploads",
                 "sync_draw_resource_heap",
                 "record_gpu_buffer_uploads",
-                "warm_mesh_pipelines",
+                "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands",
             ],
         }
@@ -140,10 +138,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         .current_resource_heap_frame_plan()
         .ok_or_else(|| "scene mesh runtime missing draw resource heap frame plan".to_owned())?
         .clone();
-    let draw_resource_heap_plan = resource_heap.descriptor_heap_plan.clone();
-    let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
-        draw_resource_heap_plan: &draw_resource_heap_plan,
-    };
     let gpu_buffer_action_count = frame_resources
         .sync_gpu_uploads_recorded(
             context.device,
@@ -154,13 +148,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         )?
         .len();
 
-    for key in pipeline_warmup.cache_keys().iter().cloned() {
-        frame_resources.resolve_mesh_pipeline(
-            context.device,
-            key,
-            context.shaders,
-            pipeline_layout,
-        )?;
+    for key in pipeline_warmup.cache_keys() {
+        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
+            format!(
+                "{err}; scene mesh runtime requires pipeline warmup before present-frame recording"
+            )
+        })?;
     }
 
     let frame_plan = native_vulkan_record_scene_mesh_frame_commands(
@@ -327,7 +320,7 @@ mod tests {
                 "record_texture_image_uploads",
                 "sync_draw_resource_heap",
                 "record_gpu_buffer_uploads",
-                "warm_mesh_pipelines",
+                "require_warmed_mesh_pipelines",
                 "record_mesh_frame_commands"
             ]
         );

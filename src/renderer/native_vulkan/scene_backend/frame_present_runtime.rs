@@ -90,7 +90,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
     validate_scene_present_frame_context(&context)?;
     let frame_slot =
         native_vulkan_scene_present_frame_slot(frame_index, frame_slots.frame_slot_count())?;
-    let slot_prepare = frame_slots.prepare_frame_slot(context.device, frame_slot)?;
+    let slot_prepare = frame_slots
+        .try_prepare_frame_slot(context.device, frame_slot)?
+        .ok_or_else(|| {
+            format!(
+                "scene frame slot {frame_slot} would block; previous submission is still in flight"
+            )
+        })?;
     let completed_resource_release = slot_prepare.completed_submission.map(|submission| {
         frame_resources.release_completed_frame_resources(context.device, submission)
     });

@@ -74,7 +74,7 @@ impl NativeVulkanSceneFrameCompletionTracker {
     ) -> Result<NativeVulkanSceneFrameSubmission, String> {
         if self.slot(frame_slot)?.in_flight {
             return Err(format!(
-                "scene frame slot {frame_slot} is still in flight; wait for its fence/timeline before recording a replacement frame"
+                "scene frame slot {frame_slot} is still in flight; poll its fence/timeline before recording a replacement frame"
             ));
         }
 

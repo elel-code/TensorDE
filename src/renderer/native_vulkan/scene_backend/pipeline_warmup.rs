@@ -64,7 +64,10 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
             target_format,
             draw_count,
             cache_keys,
-            command_order: ["collect_unique_pipeline_keys", "resolve_pipeline_cache"],
+            command_order: [
+                "collect_unique_pipeline_keys",
+                "require_warmed_pipeline_cache",
+            ],
         })
     }
 
@@ -143,7 +146,10 @@ mod tests {
         );
         assert_eq!(
             plan.command_order(),
-            ["collect_unique_pipeline_keys", "resolve_pipeline_cache"]
+            [
+                "collect_unique_pipeline_keys",
+                "require_warmed_pipeline_cache"
+            ]
         );
     }
 
