@@ -30,6 +30,7 @@ impl NativeVulkanSceneFrameSubmission {
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResourceRelease {
     pub completed_submission: NativeVulkanSceneFrameSubmission,
     pub gpu_buffers: usize,
+    pub material_uniform_buffers: usize,
     pub texture_images: usize,
     pub texture_staging_buffers: usize,
 }
@@ -37,6 +38,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResourceRele
 impl NativeVulkanSceneFrameResourceRelease {
     pub(in crate::renderer::native_vulkan) fn total_retirements(self) -> usize {
         self.gpu_buffers
+            .saturating_add(self.material_uniform_buffers)
             .saturating_add(self.texture_images)
             .saturating_add(self.texture_staging_buffers)
     }
@@ -61,10 +63,11 @@ mod tests {
         let release = NativeVulkanSceneFrameResourceRelease {
             completed_submission: NativeVulkanSceneFrameSubmission::new(2, 12),
             gpu_buffers: 3,
+            material_uniform_buffers: 11,
             texture_images: 5,
             texture_staging_buffers: 7,
         };
 
-        assert_eq!(release.total_retirements(), 15);
+        assert_eq!(release.total_retirements(), 26);
     }
 }

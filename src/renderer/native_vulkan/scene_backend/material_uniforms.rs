@@ -8,6 +8,8 @@
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
+mod gpu_buffer;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt;
@@ -17,6 +19,12 @@ use serde::Serialize;
 use crate::engine::scene_engine::{
     SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SceneGenericImage4MaterialUniformRecord,
     SceneObjectId, SceneShaderUniformFramePlan, WE_VEC4_BYTES, WeVec4,
+};
+
+pub(in crate::renderer::native_vulkan) use gpu_buffer::{
+    NativeVulkanSceneMaterialUniformGpuBufferBinding,
+    NativeVulkanSceneMaterialUniformGpuBufferStore,
+    NativeVulkanSceneMaterialUniformGpuBufferSyncAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]

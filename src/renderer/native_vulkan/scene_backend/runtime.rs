@@ -48,7 +48,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     pub residency_command_count: usize,
-    pub material_uniform_action_count: usize,
+    pub material_uniform_gpu_buffer_action_count: usize,
     pub texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
     pub resource_heap: NativeVulkanSceneResourceHeapFramePlan,
     pub texture_image_action_count: usize,
@@ -62,7 +62,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     fn from_parts(
         residency_command_count: usize,
-        material_uniform_action_count: usize,
+        material_uniform_gpu_buffer_action_count: usize,
         texture_descriptors: NativeVulkanSceneTextureDescriptorFramePlan,
         resource_heap: NativeVulkanSceneResourceHeapFramePlan,
         texture_image_action_count: usize,
@@ -73,7 +73,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
     ) -> Self {
         Self {
             residency_command_count,
-            material_uniform_action_count,
+            material_uniform_gpu_buffer_action_count,
             texture_descriptors,
             resource_heap,
             texture_image_action_count,
@@ -83,7 +83,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             frame,
             command_order: [
                 "sync_residency",
-                "sync_material_uniform_records",
+                "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
                 "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
@@ -109,8 +109,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     let residency_command_count = frame_resources.sync_residency_plan(&frame.residency).len();
-    let material_uniform_action_count = frame_resources
-        .sync_material_uniform_records(&frame.graph)?
+    let material_uniform_gpu_buffer_action_count = frame_resources
+        .sync_material_uniform_gpu_buffers_recorded(
+            context.device,
+            context.memory_properties,
+            context.command_buffer,
+            context.frame_submission,
+            &frame.graph,
+        )?
         .len();
     let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
     let resource_heap = frame_resources.resource_heap_frame_plan(
@@ -179,7 +185,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         residency_command_count,
-        material_uniform_action_count,
+        material_uniform_gpu_buffer_action_count,
         texture_descriptors,
         resource_heap,
         texture_image_action_count,
@@ -207,6 +213,12 @@ fn native_vulkan_scene_mesh_runtime_pass(graph: &SceneGraph) -> Result<&SceneGra
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use super::super::material_uniforms::{
+        NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
+        NativeVulkanSceneMaterialUniformUploadPlan,
+    };
     use super::super::pass_command::NativeVulkanSceneMeshPassCommandPlan;
     use super::super::render_target::{
         NativeVulkanSceneRenderTargetLoadOp, NativeVulkanSceneRenderTargetScopePlan,
@@ -218,6 +230,7 @@ mod tests {
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneMaterialKey, SceneObjectId,
     };
+    use vulkanalia::vk::Handle;
 
     #[test]
     fn runtime_frame_plan_preserves_godot_style_execution_order() {
@@ -273,17 +286,10 @@ mod tests {
                 "bind_descriptor_heap_texture_mapping",
             ],
         };
-        let material_uniforms =
-            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(&graph)
-                .and_then(|plan| {
-                    super::super::material_uniforms::NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&plan)
-                        .map_err(|err| err.to_string())
-                })
-                .expect("material uniform plan");
+        let material_bindings = material_bindings(&graph);
         let resource_heap =
             super::super::resource_heap::NativeVulkanSceneResourceHeapFramePlan::from_graph(
                 &graph,
-                &material_uniforms,
                 &descriptors,
                 NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
                     resource_heap_alignment: 64,
@@ -300,6 +306,7 @@ mod tests {
                     sampler_descriptor_alignment: 16,
                     ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
                 },
+                |key| material_binding(&material_bindings, key),
             )
             .expect("draw resource heap plan");
 
@@ -319,7 +326,7 @@ mod tests {
             plan.command_order,
             [
                 "sync_residency",
-                "sync_material_uniform_records",
+                "record_material_uniform_buffer_uploads",
                 "prepare_texture_descriptors",
                 "prepare_draw_resource_heap",
                 "record_texture_image_uploads",
@@ -330,7 +337,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.residency_command_count, 2);
-        assert_eq!(plan.material_uniform_action_count, 1);
+        assert_eq!(plan.material_uniform_gpu_buffer_action_count, 1);
         assert_eq!(plan.texture_descriptors.binding_count, 1);
         assert_eq!(plan.resource_heap.resource_descriptor_count, 2);
         assert_eq!(plan.texture_image_action_count, 4);
@@ -429,5 +436,54 @@ mod tests {
             }],
             index_count: 6,
         }
+    }
+
+    fn material_bindings(
+        graph: &SceneGraph,
+    ) -> BTreeMap<
+        NativeVulkanSceneMaterialUniformKey,
+        NativeVulkanSceneMaterialUniformGpuBufferBinding,
+    > {
+        let frame_plan =
+            crate::engine::scene_engine::SceneShaderUniformFramePlan::from_graph(graph)
+                .expect("shader uniform frame plan");
+        NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
+            .expect("material uniform plan")
+            .uploads()
+            .iter()
+            .enumerate()
+            .map(|(index, upload)| {
+                (
+                    upload.key.clone(),
+                    NativeVulkanSceneMaterialUniformGpuBufferBinding {
+                        key: upload.key.clone(),
+                        buffer: vk::Buffer::from_raw(0x2000 + index as u64),
+                        device_address: 0x0200_0000 + (index as u64 * 0x100),
+                        record_index: upload.record_index,
+                        bytes: upload.payload.len() as u64,
+                        payload_hash: stable_hash(&upload.payload),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    fn material_binding(
+        bindings: &BTreeMap<
+            NativeVulkanSceneMaterialUniformKey,
+            NativeVulkanSceneMaterialUniformGpuBufferBinding,
+        >,
+        key: &NativeVulkanSceneMaterialUniformKey,
+    ) -> Result<NativeVulkanSceneMaterialUniformGpuBufferBinding, String> {
+        bindings
+            .get(key)
+            .cloned()
+            .ok_or_else(|| format!("missing fake material uniform binding for {key:?}"))
+    }
+
+    fn stable_hash(bytes: &[u8]) -> u64 {
+        bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        })
     }
 }

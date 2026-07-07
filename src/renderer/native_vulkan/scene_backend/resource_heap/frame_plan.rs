@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use vulkanalia::vk::Handle;
 
 use crate::engine::scene_engine::{SceneGraph, SceneObjectId, SceneResourceId};
 use crate::renderer::native_vulkan::vulkan::{
@@ -23,8 +24,7 @@ use crate::renderer::native_vulkan::vulkan::{
 };
 
 use super::super::material_uniforms::{
-    NativeVulkanSceneMaterialUniformKey, NativeVulkanSceneMaterialUniformUpload,
-    NativeVulkanSceneMaterialUniformUploadPlan,
+    NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
 };
 use super::super::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
@@ -66,6 +66,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapEntry
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneResourceHeapEntryRole {
     WePsMaterialConstantsSlot3 {
         material: NativeVulkanSceneMaterialUniformKey,
+        buffer_handle: u64,
+        device_address: u64,
         record_index: usize,
         bytes: u64,
         payload_hash: u64,
@@ -84,7 +86,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawB
     pub object: SceneObjectId,
     pub resource_set_index: usize,
     pub material: NativeVulkanSceneMaterialUniformKey,
+    pub material_buffer_handle: u64,
+    pub material_device_address: u64,
     pub material_record_index: usize,
+    pub material_bytes: u64,
     pub material_payload_hash: u64,
     pub texture_set: NativeVulkanSceneTextureSetKey,
     pub base_resource_descriptor_index: usize,
@@ -97,6 +102,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawB
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct NativeVulkanSceneResourceSetKey {
     material: NativeVulkanSceneMaterialUniformKey,
+    material_buffer_handle: u64,
+    material_device_address: u64,
+    material_bytes: u64,
     material_payload_hash: u64,
     texture_set: NativeVulkanSceneTextureSetKey,
 }
@@ -122,12 +130,16 @@ struct PendingResourceHeapEntry {
 impl NativeVulkanSceneResourceHeapFramePlan {
     pub(in crate::renderer::native_vulkan) fn from_graph(
         graph: &SceneGraph,
-        material_uniforms: &NativeVulkanSceneMaterialUniformUploadPlan,
         texture_descriptors: &NativeVulkanSceneTextureDescriptorFramePlan,
         descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+        material_uniform_buffer: impl Fn(
+            &NativeVulkanSceneMaterialUniformKey,
+        ) -> Result<
+            NativeVulkanSceneMaterialUniformGpuBufferBinding,
+            String,
+        >,
     ) -> Result<Self, String> {
         let textures_by_draw = texture_descriptors_by_draw(texture_descriptors)?;
-        let material_by_key = material_uploads_by_key(material_uniforms.uploads())?;
         let mut resource_set_to_slice =
             BTreeMap::<NativeVulkanSceneResourceSetKey, NativeVulkanSceneResourceSetSlice>::new();
         let mut descriptor_kinds = Vec::new();
@@ -142,16 +154,15 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                     object: draw.object,
                     shader: draw.material.shader.clone(),
                 };
-                let material = material_by_key.get(&material_key).ok_or_else(|| {
-                    format!(
-                        "scene resource heap missing WE material uniform record for object {:?} shader '{}'",
-                        draw.object, draw.material.shader
-                    )
-                })?;
+                let material = material_uniform_buffer(&material_key)?;
+                validate_material_binding(&material_key, &material)?;
                 let texture_set = scene_mesh_draw_texture_set_key(draw)?;
                 let resource_set_key = NativeVulkanSceneResourceSetKey {
                     material: material_key.clone(),
-                    material_payload_hash: scene_stable_byte_hash(&material.payload),
+                    material_buffer_handle: material.buffer.as_raw(),
+                    material_device_address: material.device_address,
+                    material_bytes: material.bytes,
+                    material_payload_hash: material.payload_hash,
                     texture_set: texture_set.clone(),
                 };
                 let slice = if let Some(slice) =
@@ -167,7 +178,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                         resource_set_index,
                         draw_index,
                         draw.object,
-                        material,
+                        &material,
                     );
                     for descriptor in textures_by_draw
                             .get(draw_index)
@@ -204,8 +215,11 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                     object: draw.object,
                     resource_set_index: slice.resource_set_index,
                     material: material_key,
+                    material_buffer_handle: material.buffer.as_raw(),
+                    material_device_address: material.device_address,
                     material_record_index: material.record_index,
-                    material_payload_hash: scene_stable_byte_hash(&material.payload),
+                    material_bytes: material.bytes,
+                    material_payload_hash: material.payload_hash,
                     texture_set,
                     base_resource_descriptor_index: slice.base_resource_descriptor_index,
                     base_resource_heap_offset: 0,
@@ -277,7 +291,7 @@ fn push_material_descriptor(
     resource_set_index: usize,
     draw_index: usize,
     object: SceneObjectId,
-    material: &NativeVulkanSceneMaterialUniformUpload,
+    material: &NativeVulkanSceneMaterialUniformGpuBufferBinding,
 ) {
     let descriptor_index = descriptor_kinds.len();
     descriptor_kinds
@@ -291,9 +305,11 @@ fn push_material_descriptor(
         object,
         role: NativeVulkanSceneResourceHeapEntryRole::WePsMaterialConstantsSlot3 {
             material: material.key.clone(),
+            buffer_handle: material.buffer.as_raw(),
+            device_address: material.device_address,
             record_index: material.record_index,
-            bytes: material.payload.len() as u64,
-            payload_hash: scene_stable_byte_hash(&material.payload),
+            bytes: material.bytes,
+            payload_hash: material.payload_hash,
             shader_mapping: "WE PSSetConstantBuffers(slot=3)",
         },
     });
@@ -389,32 +405,39 @@ fn texture_descriptors_by_draw(
     Ok(by_draw)
 }
 
-fn material_uploads_by_key(
-    uploads: &[NativeVulkanSceneMaterialUniformUpload],
-) -> Result<
-    BTreeMap<NativeVulkanSceneMaterialUniformKey, &NativeVulkanSceneMaterialUniformUpload>,
-    String,
-> {
-    let mut by_key = BTreeMap::new();
-    for upload in uploads {
-        if by_key.insert(upload.key.clone(), upload).is_some() {
-            return Err(format!(
-                "duplicate scene material uniform upload key {:?}",
-                upload.key
-            ));
-        }
+fn validate_material_binding(
+    requested: &NativeVulkanSceneMaterialUniformKey,
+    binding: &NativeVulkanSceneMaterialUniformGpuBufferBinding,
+) -> Result<(), String> {
+    if &binding.key != requested {
+        return Err(format!(
+            "scene resource heap material uniform resolver returned {:?} for requested {:?}",
+            binding.key, requested
+        ));
     }
-    Ok(by_key)
+    if binding.buffer.as_raw() == 0 {
+        return Err(format!(
+            "scene resource heap material uniform {:?} has null GPU buffer",
+            requested
+        ));
+    }
+    if binding.device_address == 0 {
+        return Err(format!(
+            "scene resource heap material uniform {:?} has zero device address",
+            requested
+        ));
+    }
+    if binding.bytes == 0 {
+        return Err(format!(
+            "scene resource heap material uniform {:?} has zero byte range",
+            requested
+        ));
+    }
+    Ok(())
 }
 
 fn draw_resource_set_shader_mappings() -> Vec<String> {
     vec![format!(
         "WE PSSetConstantBuffers(slot={WE_GENERICIMAGE4_PS_MATERIAL_CONSTANT_BUFFER_SLOT}) -> draw-resource-set-offset0"
     )]
-}
-
-fn scene_stable_byte_hash(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
-    })
 }

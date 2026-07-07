@@ -1,4 +1,9 @@
-use super::super::material_uniforms::NativeVulkanSceneMaterialUniformUploadPlan;
+use std::collections::BTreeMap;
+
+use super::super::material_uniforms::{
+    NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
+    NativeVulkanSceneMaterialUniformUploadPlan,
+};
 use super::super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 use super::frame_plan::{
     NativeVulkanSceneResourceHeapEntryRole, NativeVulkanSceneResourceHeapFramePlan,
@@ -13,6 +18,8 @@ use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
 };
+use vulkanalia::vk;
+use vulkanalia::vk::Handle;
 
 #[test]
 fn resource_heap_plan_places_material_uniform_before_textures() {
@@ -31,14 +38,14 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
             },
         ],
     )]);
-    let material_plan = material_plan(&graph);
+    let material_bindings = material_bindings(&graph);
     let texture_plan = texture_plan(&graph);
 
     let plan = NativeVulkanSceneResourceHeapFramePlan::from_graph(
         &graph,
-        &material_plan,
         &texture_plan,
         descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
     )
     .expect("resource heap frame plan");
 
@@ -96,14 +103,14 @@ fn resource_heap_plan_dedupes_identical_draw_resource_sets() {
             }],
         ),
     ]);
-    let material_plan = material_plan(&graph);
+    let material_bindings = material_bindings(&graph);
     let texture_plan = texture_plan(&graph);
 
     let plan = NativeVulkanSceneResourceHeapFramePlan::from_graph(
         &graph,
-        &material_plan,
         &texture_plan,
         descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
     )
     .expect("resource heap frame plan");
 
@@ -124,24 +131,114 @@ fn resource_heap_plan_rejects_mismatched_draw_count() {
             resource: SceneResourceId(3),
         }],
     )]);
-    let material_plan = material_plan(&graph);
+    let material_bindings = material_bindings(&graph);
     let mut texture_plan = texture_plan(&graph);
     texture_plan.draw_count = 0;
 
     let err = NativeVulkanSceneResourceHeapFramePlan::from_graph(
         &graph,
-        &material_plan,
         &texture_plan,
         descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
     )
     .expect_err("draw count mismatch must fail");
 
     assert!(err.contains("exceeds draw count"));
 }
 
-fn material_plan(graph: &SceneGraph) -> NativeVulkanSceneMaterialUniformUploadPlan {
+#[test]
+fn resource_heap_plan_requires_retained_material_uniform_gpu_binding() {
+    let graph = mesh_graph(vec![mesh_draw(
+        SceneObjectId(7),
+        vec![SceneGraphResourceBinding {
+            slot: 0,
+            role: SceneGraphResourceRole::shader_texture(0),
+            resource: SceneResourceId(3),
+        }],
+    )]);
+    let texture_plan = texture_plan(&graph);
+
+    let err = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+        &graph,
+        &texture_plan,
+        descriptor_heap_properties(),
+        |key| {
+            Err(format!(
+                "missing retained scene material uniform GPU buffer for {key:?}"
+            ))
+        },
+    )
+    .expect_err("missing retained material uniform GPU binding must fail");
+
+    assert!(err.contains("missing retained scene material uniform GPU buffer"));
+}
+
+#[test]
+fn resource_heap_plan_rejects_zero_material_uniform_device_address() {
+    let graph = mesh_graph(vec![mesh_draw(
+        SceneObjectId(7),
+        vec![SceneGraphResourceBinding {
+            slot: 0,
+            role: SceneGraphResourceRole::shader_texture(0),
+            resource: SceneResourceId(3),
+        }],
+    )]);
+    let mut material_bindings = material_bindings(&graph);
+    material_bindings
+        .values_mut()
+        .next()
+        .expect("fake material binding")
+        .device_address = 0;
+    let texture_plan = texture_plan(&graph);
+
+    let err = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+        &graph,
+        &texture_plan,
+        descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
+    )
+    .expect_err("zero material uniform device address must fail");
+
+    assert!(err.contains("zero device address"));
+}
+
+fn material_bindings(
+    graph: &SceneGraph,
+) -> BTreeMap<NativeVulkanSceneMaterialUniformKey, NativeVulkanSceneMaterialUniformGpuBufferBinding>
+{
     let frame_plan = SceneShaderUniformFramePlan::from_graph(graph).unwrap();
-    NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan).unwrap()
+    NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
+        .unwrap()
+        .uploads()
+        .iter()
+        .enumerate()
+        .map(|(index, upload)| {
+            (
+                upload.key.clone(),
+                NativeVulkanSceneMaterialUniformGpuBufferBinding {
+                    key: upload.key.clone(),
+                    buffer: vk::Buffer::from_raw(0x1000 + index as u64),
+                    device_address: 0x0100_0000 + (index as u64 * 0x100),
+                    record_index: upload.record_index,
+                    bytes: upload.payload.len() as u64,
+                    payload_hash: stable_hash(&upload.payload),
+                },
+            )
+        })
+        .collect()
+}
+
+fn material_binding(
+    bindings: &BTreeMap<
+        NativeVulkanSceneMaterialUniformKey,
+        NativeVulkanSceneMaterialUniformGpuBufferBinding,
+    >,
+    key: &NativeVulkanSceneMaterialUniformKey,
+) -> Result<NativeVulkanSceneMaterialUniformGpuBufferBinding, String> {
+    bindings
+        .get(key)
+        .cloned()
+        .ok_or_else(|| format!("missing fake material uniform binding for {key:?}"))
 }
 
 fn texture_plan(graph: &SceneGraph) -> NativeVulkanSceneTextureDescriptorFramePlan {
@@ -201,4 +298,10 @@ fn mesh_draw(object: SceneObjectId, resources: Vec<SceneGraphResourceBinding>) -
         resources,
         index_count: 6,
     }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
+        (hash ^ u64::from(*byte)).wrapping_mul(0x0000_0100_0000_01b3)
+    })
 }
