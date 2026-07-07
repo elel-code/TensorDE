@@ -39,6 +39,24 @@ pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_INTERMEDIATE_
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_OFFSET: u32 = 0x1518;
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_STORE_VMA: u64 =
     0x14017d01e;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_BUILDER_VMA: u64 =
+    0x140261250;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_VMA: u64 =
+    0x1402614c0;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_NON_INDEXED_CREATE_VMA:
+    u64 = 0x14009a780;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_WRAPPER_INDEXED_CREATE_VMA: u64 =
+    0x14009a880;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_CREATE_CALL_VMA:
+    u64 = 0x140261395;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_CALL_VMA:
+    u64 = 0x140261606;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_CREATE_RESULT_STORE_VMA:
+    u64 = 0x14026139c;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_RESULT_STORE_VMA:
+    u64 = 0x14026160d;
+pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_BUILDER_OUTPUT_FIELD_OFFSET:
+    u32 = 0;
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT: &str =
     "a_Position.xyz+a_TexCoord.xy";
 pub(in crate::renderer::native_vulkan) const FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES: u32 = 20;
@@ -119,6 +137,15 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub intermediate_offset: u32,
     pub wrapper_offset: u32,
     pub wrapper_store_vma: u64,
+    pub non_indexed_builder_vma: u64,
+    pub non_indexed_refresh_vma: u64,
+    pub wrapper_non_indexed_create_vma: u64,
+    pub wrapper_indexed_create_vma: u64,
+    pub non_indexed_create_call_vma: u64,
+    pub non_indexed_refresh_call_vma: u64,
+    pub non_indexed_create_result_store_vma: u64,
+    pub non_indexed_refresh_result_store_vma: u64,
+    pub builder_output_field_offset: u32,
     pub vertex_layout: &'static str,
     pub vertex_count: u32,
     pub vertex_stride_bytes: u32,
@@ -178,6 +205,17 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryPlan {
             intermediate_offset: FLATTEXTURE_COPY_BACK_INTERMEDIATE_OFFSET,
             wrapper_offset: FLATTEXTURE_COPY_BACK_WRAPPER_OFFSET,
             wrapper_store_vma: FLATTEXTURE_COPY_BACK_WRAPPER_STORE_VMA,
+            non_indexed_builder_vma: FLATTEXTURE_COPY_BACK_NON_INDEXED_BUILDER_VMA,
+            non_indexed_refresh_vma: FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_VMA,
+            wrapper_non_indexed_create_vma: FLATTEXTURE_COPY_BACK_WRAPPER_NON_INDEXED_CREATE_VMA,
+            wrapper_indexed_create_vma: FLATTEXTURE_COPY_BACK_WRAPPER_INDEXED_CREATE_VMA,
+            non_indexed_create_call_vma: FLATTEXTURE_COPY_BACK_NON_INDEXED_CREATE_CALL_VMA,
+            non_indexed_refresh_call_vma: FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_CALL_VMA,
+            non_indexed_create_result_store_vma:
+                FLATTEXTURE_COPY_BACK_NON_INDEXED_CREATE_RESULT_STORE_VMA,
+            non_indexed_refresh_result_store_vma:
+                FLATTEXTURE_COPY_BACK_NON_INDEXED_REFRESH_RESULT_STORE_VMA,
+            builder_output_field_offset: FLATTEXTURE_COPY_BACK_BUILDER_OUTPUT_FIELD_OFFSET,
             vertex_layout: FLATTEXTURE_COPY_BACK_VERTEX_LAYOUT,
             vertex_count: buffers.vertex_count,
             vertex_stride_bytes: buffers.vertex_stride_bytes,
@@ -483,6 +521,15 @@ mod tests {
         assert_eq!(plan.intermediate_offset, 0x1508);
         assert_eq!(plan.wrapper_offset, 0x1518);
         assert_eq!(plan.wrapper_store_vma, 0x14017d01e);
+        assert_eq!(plan.non_indexed_builder_vma, 0x140261250);
+        assert_eq!(plan.non_indexed_refresh_vma, 0x1402614c0);
+        assert_eq!(plan.wrapper_non_indexed_create_vma, 0x14009a780);
+        assert_eq!(plan.wrapper_indexed_create_vma, 0x14009a880);
+        assert_eq!(plan.non_indexed_create_call_vma, 0x140261395);
+        assert_eq!(plan.non_indexed_refresh_call_vma, 0x140261606);
+        assert_eq!(plan.non_indexed_create_result_store_vma, 0x14026139c);
+        assert_eq!(plan.non_indexed_refresh_result_store_vma, 0x14026160d);
+        assert_eq!(plan.builder_output_field_offset, 0);
         assert_eq!(plan.vertex_layout, "a_Position.xyz+a_TexCoord.xy");
         assert_eq!(plan.vertex_stride_bytes, 20);
         assert_eq!(plan.draw_call, "vkCmdDraw");
