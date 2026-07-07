@@ -1,4 +1,5 @@
 use super::super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan;
+use super::super::producer_draws::native_vulkan_plan_scene_layer_alpha_mask_producer_draws;
 use super::super::resource_binds::NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan;
 use super::super::token_schedule::native_vulkan_plan_scene_layer_alpha_mask_token_schedule;
 use super::super::{
@@ -7,6 +8,7 @@ use super::super::{
 };
 use super::*;
 use crate::engine::scene_engine::SceneLayerCompositorBlendKey;
+use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
 #[test]
@@ -22,11 +24,18 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     let schedule =
         native_vulkan_plan_scene_layer_alpha_mask_token_schedule(&runtime, &resource_binds)
             .expect("token schedule");
+    let producer_draws = native_vulkan_plan_scene_layer_alpha_mask_producer_draws(
+        &runtime,
+        &resource_binds,
+        &schedule,
+    )
+    .expect("producer draws");
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
         &resource_binds,
         &schedule,
+        &producer_draws,
     )
     .expect("recorder requirements");
 
@@ -47,6 +56,22 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
     assert_eq!(
         plan.requirements[1].target_mask,
         Some(SceneGraphTarget::FullAlphaMask)
+    );
+    assert_eq!(plan.requirements[1].producer_draw_index, Some(0));
+    assert_eq!(
+        plan.requirements[1].target_scope_load_op,
+        Some(NativeVulkanSceneRenderTargetLoadOp::Clear)
+    );
+    assert_eq!(plan.requirements[2].producer_draw_index, Some(1));
+    assert_eq!(
+        plan.requirements[2].target_scope_load_op,
+        Some(NativeVulkanSceneRenderTargetLoadOp::Load)
+    );
+    assert!(
+        plan.requirements[1]
+            .missing_we_facts
+            .iter()
+            .all(|fact| !fact.contains("clear_first"))
     );
     assert_eq!(plan.requirements[3].shader, Some("util/minimalalpha"));
     assert_eq!(
@@ -78,11 +103,18 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
     let schedule =
         native_vulkan_plan_scene_layer_alpha_mask_token_schedule(&runtime, &resource_binds)
             .expect("token schedule");
+    let producer_draws = native_vulkan_plan_scene_layer_alpha_mask_producer_draws(
+        &runtime,
+        &resource_binds,
+        &schedule,
+    )
+    .expect("producer draws");
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
         &resource_binds,
         &schedule,
+        &producer_draws,
     )
     .expect_err("copy-back must require retained draw bind");
 
@@ -287,9 +319,18 @@ fn token_program() -> NativeVulkanSceneLayerAlphaMaskCommandPlan {
 }
 
 fn draw_mask(target: SceneLayerCompositorTarget) -> NativeVulkanSceneLayerAlphaMaskCommandPlan {
+    let condition = match target {
+        SceneLayerCompositorTarget::FullAlphaMask => {
+            SceneLayerCompositorCondition::Token1OrToken2FirstPair
+        }
+        SceneLayerCompositorTarget::FullAlphaMaskIntermediate => {
+            SceneLayerCompositorCondition::Token2IntermediatePairOrFinalMask
+        }
+        _ => unreachable!("test only uses alpha-mask targets"),
+    };
     command(
         SceneLayerCompositorOperation::DrawClippingMask,
-        SceneLayerCompositorCondition::Token1OrToken2FirstPair,
+        condition,
         None,
         target,
         NativeVulkanSceneLayerAlphaMaskAccess::AlphaMaskAttachmentWrite,

@@ -20,6 +20,7 @@ mod copy_back_pipeline;
 mod copy_back_recording;
 mod copy_back_runtime;
 mod copy_back_target_graph;
+mod producer_draws;
 mod recorder_requirements;
 mod resource_binds;
 mod token_schedule;
@@ -39,6 +40,10 @@ pub(in crate::renderer::native_vulkan) use copy_back::ALPHA_MASK_FLATTEXTURE_SHA
 pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
+};
+pub(in crate::renderer::native_vulkan) use producer_draws::{
+    NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_producer_draws,
 };
 pub(in crate::renderer::native_vulkan) use recorder_requirements::{
     NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
