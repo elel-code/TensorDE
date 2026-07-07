@@ -31,6 +31,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTok
     pub intermediate_mask_producer_count: usize,
     pub copy_back_after_intermediate_count: usize,
     pub generated_target_consumer_count: usize,
+    pub recorder_ready_step_count: usize,
+    pub missing_recorder_step_count: usize,
+    pub clippingmaskimage4_pending_recorder_count: usize,
+    pub generated_clippingtarget_pending_recorder_count: usize,
     pub steps: Vec<NativeVulkanSceneLayerAlphaMaskTokenScheduleStep>,
     pub command_order: [&'static str; 6],
 }
@@ -44,6 +48,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTok
     pub target: SceneLayerCompositorTarget,
     pub kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
     pub matched_heap_bind_count: usize,
+    pub matched_heap_bind_indices: Vec<usize>,
+    pub recording_status: NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
     pub full_mask_ready_after: bool,
     pub intermediate_mask_ready_after: bool,
     pub command_order: Vec<&'static str>,
@@ -56,6 +62,14 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskToken
     IntermediateMaskProducer,
     IntermediateCopyBackToFullMask,
     GeneratedClippingTargetConsumer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus {
+    TokenProgramNoDraw,
+    PendingClippingMaskImage4ProducerRecorder,
+    ReadyFlatTextureCopyBackGraphNode,
+    PendingGeneratedClippingTargetRecorder,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,6 +111,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
         let kind = schedule_step_kind(command_index, command, state)?;
         let matched_heap_bind_count = bind.matched_bind_count;
         validate_bind_readiness(command_index, kind, matched_heap_bind_count)?;
+        let recording_status = recording_status_for_kind(kind);
         steps.push(NativeVulkanSceneLayerAlphaMaskTokenScheduleStep {
             command_index,
             object: command.object,
@@ -105,9 +120,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             target: command.target,
             kind,
             matched_heap_bind_count,
+            matched_heap_bind_indices: bind.matched_heap_bind_indices.clone(),
+            recording_status,
             full_mask_ready_after: state.full_mask_ready,
             intermediate_mask_ready_after: state.intermediate_mask_ready,
-            command_order: schedule_step_command_order(kind),
+            command_order: schedule_step_command_order(kind, recording_status),
         });
     }
 
@@ -124,6 +141,10 @@ impl NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan {
             intermediate_mask_producer_count: 0,
             copy_back_after_intermediate_count: 0,
             generated_target_consumer_count: 0,
+            recorder_ready_step_count: 0,
+            missing_recorder_step_count: 0,
+            clippingmaskimage4_pending_recorder_count: 0,
+            generated_clippingtarget_pending_recorder_count: 0,
             steps: Vec::new(),
             command_order: [
                 "read_alpha_mask_token_stream",
@@ -173,6 +194,40 @@ impl NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan {
                 .filter(|step| {
                     step.kind
                         == NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::GeneratedClippingTargetConsumer
+                })
+                .count(),
+            recorder_ready_step_count: steps
+                .iter()
+                .filter(|step| {
+                    matches!(
+                        step.recording_status,
+                        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::TokenProgramNoDraw
+                            | NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::ReadyFlatTextureCopyBackGraphNode
+                    )
+                })
+                .count(),
+            missing_recorder_step_count: steps
+                .iter()
+                .filter(|step| {
+                    matches!(
+                        step.recording_status,
+                        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingClippingMaskImage4ProducerRecorder
+                            | NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingGeneratedClippingTargetRecorder
+                    )
+                })
+                .count(),
+            clippingmaskimage4_pending_recorder_count: steps
+                .iter()
+                .filter(|step| {
+                    step.recording_status
+                        == NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingClippingMaskImage4ProducerRecorder
+                })
+                .count(),
+            generated_clippingtarget_pending_recorder_count: steps
+                .iter()
+                .filter(|step| {
+                    step.recording_status
+                        == NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingGeneratedClippingTargetRecorder
                 })
                 .count(),
             steps,
@@ -311,6 +366,7 @@ fn validate_bind_readiness(
 
 fn schedule_step_command_order(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
+    recording_status: NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
 ) -> Vec<&'static str> {
     match kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => vec![
@@ -319,12 +375,12 @@ fn schedule_step_command_order(
         ],
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::FullMaskProducer => vec![
             "bind_clippingmaskimage4_heap",
-            "record_full_alpha_mask_producer",
+            pending_or_recording_label(recording_status),
             "mark_full_alpha_mask_ready",
         ],
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateMaskProducer => vec![
             "bind_clippingmaskimage4_heap",
-            "record_intermediate_alpha_mask_producer",
+            pending_or_recording_label(recording_status),
             "mark_intermediate_alpha_mask_ready",
         ],
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateCopyBackToFullMask => {
@@ -338,8 +394,47 @@ fn schedule_step_command_order(
             vec![
                 "require_full_alpha_mask_ready",
                 "bind_generated_clippingtarget_heap",
-                "record_generated_clippingtarget_consumer",
+                pending_or_recording_label(recording_status),
             ]
+        }
+    }
+}
+
+fn recording_status_for_kind(
+    kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
+) -> NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus {
+    match kind {
+        NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
+            NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::TokenProgramNoDraw
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::FullMaskProducer
+        | NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateMaskProducer => {
+            NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingClippingMaskImage4ProducerRecorder
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateCopyBackToFullMask => {
+            NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::ReadyFlatTextureCopyBackGraphNode
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::GeneratedClippingTargetConsumer => {
+            NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingGeneratedClippingTargetRecorder
+        }
+    }
+}
+
+fn pending_or_recording_label(
+    recording_status: NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
+) -> &'static str {
+    match recording_status {
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingClippingMaskImage4ProducerRecorder => {
+            "pending_clippingmaskimage4_producer_recorder"
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::PendingGeneratedClippingTargetRecorder => {
+            "pending_generated_clippingtarget_recorder"
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::ReadyFlatTextureCopyBackGraphNode => {
+            "record_flattexture_copy_back_graph_node"
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::TokenProgramNoDraw => {
+            "dispatch_we_token_program"
         }
     }
 }
@@ -379,10 +474,19 @@ mod tests {
         assert_eq!(schedule.intermediate_mask_producer_count, 1);
         assert_eq!(schedule.copy_back_after_intermediate_count, 1);
         assert_eq!(schedule.generated_target_consumer_count, 1);
+        assert_eq!(schedule.recorder_ready_step_count, 2);
+        assert_eq!(schedule.missing_recorder_step_count, 3);
+        assert_eq!(schedule.clippingmaskimage4_pending_recorder_count, 2);
+        assert_eq!(schedule.generated_clippingtarget_pending_recorder_count, 1);
         assert_eq!(
             schedule.steps[3].kind,
             NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateCopyBackToFullMask
         );
+        assert_eq!(
+            schedule.steps[3].recording_status,
+            NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus::ReadyFlatTextureCopyBackGraphNode
+        );
+        assert_eq!(schedule.steps[3].matched_heap_bind_indices, vec![3]);
         assert!(schedule.steps[3].full_mask_ready_after);
         assert_eq!(
             schedule.steps[4].kind,
