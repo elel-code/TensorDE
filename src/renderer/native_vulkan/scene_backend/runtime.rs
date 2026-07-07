@@ -29,6 +29,10 @@ use super::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
 use super::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
+use super::resource_prepare::{
+    NativeVulkanSceneMeshResourcePrepareContext,
+    native_vulkan_record_scene_mesh_resource_prepare_frame,
+};
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameContext<'a> {
@@ -105,48 +109,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         context.target_format,
     )?;
 
-    let residency_command_count = frame_resources.sync_residency_plan(&frame.residency).len();
-    let material_uniform_gpu_buffer_action_count = frame_resources
-        .sync_material_uniform_gpu_buffers_recorded(
-            context.device,
-            context.memory_properties,
-            context.command_buffer,
-            context.frame_submission,
-            &frame.graph,
-        )?
-        .len();
-    let texture_descriptors = frame_resources.texture_descriptor_frame_plan(&frame.graph)?;
-    let texture_image_action_count = frame_resources
-        .sync_texture_images_recorded(
-            context.device,
-            context.memory_properties,
-            context.command_buffer,
-            context.frame_submission,
-            resources,
-        )?
-        .len();
-    let resource_heap_action_count = frame_resources
-        .sync_draw_resource_heap(
-            context.device,
-            context.memory_properties,
-            &frame.graph,
-            &texture_descriptors,
-            context.descriptor_heap_properties,
-        )?
-        .len();
-    let resource_heap = frame_resources
-        .current_resource_heap_frame_plan()
-        .ok_or_else(|| "scene mesh runtime missing draw resource heap frame plan".to_owned())?
-        .clone();
-    let gpu_buffer_action_count = frame_resources
-        .sync_gpu_uploads_recorded(
-            context.device,
-            context.memory_properties,
-            context.command_buffer,
-            context.frame_submission,
-            resources,
-        )?
-        .len();
+    let resource_prepare = native_vulkan_record_scene_mesh_resource_prepare_frame(
+        frame_resources,
+        NativeVulkanSceneMeshResourcePrepareContext {
+            device: context.device,
+            memory_properties: context.memory_properties,
+            descriptor_heap_properties: context.descriptor_heap_properties,
+            command_buffer: context.command_buffer,
+            frame_submission: context.frame_submission,
+        },
+        resources,
+        frame,
+    )?;
 
     for key in pipeline_warmup.cache_keys() {
         frame_resources.cached_mesh_pipeline(key).map_err(|err| {
@@ -172,13 +146,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     )?;
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
-        residency_command_count,
-        material_uniform_gpu_buffer_action_count,
-        texture_descriptors,
-        resource_heap,
-        resource_heap_action_count,
-        texture_image_action_count,
-        gpu_buffer_action_count,
+        resource_prepare.residency_command_count,
+        resource_prepare.material_uniform_gpu_buffer_action_count,
+        resource_prepare.texture_descriptors,
+        resource_prepare.resource_heap,
+        resource_prepare.resource_heap_action_count,
+        resource_prepare.texture_image_action_count,
+        resource_prepare.gpu_buffer_action_count,
         pipeline_warmup,
         frame_plan,
     ))

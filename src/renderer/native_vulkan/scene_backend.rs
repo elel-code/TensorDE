@@ -28,6 +28,7 @@ pub mod renderer_scene_render;
 pub mod rendering_device;
 pub mod resource_buffers;
 pub mod resource_heap;
+pub mod resource_prepare;
 pub mod resource_storage;
 pub mod resource_upload;
 pub mod runtime;
