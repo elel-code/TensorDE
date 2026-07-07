@@ -4,9 +4,14 @@
 //! - `reverse-engineered/docs/effect-format.md`
 //! - `references/godot/servers/rendering/renderer_rd/uniform_set_cache_rd.h`
 
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 
-use crate::engine::scene_engine::SceneGraphResourceRole;
+use crate::engine::scene_engine::{
+    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneEffectPassGraphInputSource,
+    SceneEffectPassGraphMaterialPass, SceneGraphResourceRole,
+};
 
 use super::super::effect_descriptors::{
     NativeVulkanSceneEffectTextureDescriptorBinding,
@@ -59,6 +64,101 @@ pub(super) fn effect_texture_set_key(
         })
         .collect::<Vec<_>>();
     NativeVulkanSceneEffectTextureSetKey { bindings }
+}
+
+pub(super) fn effect_pass_texture_set_key(
+    pass: &SceneEffectPassGraphMaterialPass,
+) -> Result<NativeVulkanSceneEffectTextureSetKey, String> {
+    let mut used_slots = BTreeSet::new();
+    let mut bindings = Vec::new();
+    if let Some(source) = pass.source.as_ref() {
+        push_effect_pass_texture_set_binding(
+            pass,
+            &mut used_slots,
+            &mut bindings,
+            source.slot,
+            &source.source,
+        )?;
+    }
+    for input in &pass.input_bindings {
+        push_effect_pass_texture_set_binding(
+            pass,
+            &mut used_slots,
+            &mut bindings,
+            input.slot,
+            &input.source,
+        )?;
+    }
+    for resource in &pass.texture_resources {
+        push_effect_texture_set_slot(pass, &mut used_slots, resource.slot)?;
+        bindings.push(NativeVulkanSceneEffectTextureSetBinding {
+            slot: resource.slot,
+            role: SceneGraphResourceRole::shader_texture(resource.slot),
+            source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(resource.resource),
+        });
+    }
+    bindings.sort_by_key(|binding| binding.slot);
+    Ok(NativeVulkanSceneEffectTextureSetKey { bindings })
+}
+
+fn push_effect_pass_texture_set_binding(
+    pass: &SceneEffectPassGraphMaterialPass,
+    used_slots: &mut BTreeSet<u32>,
+    bindings: &mut Vec<NativeVulkanSceneEffectTextureSetBinding>,
+    slot: u32,
+    source: &SceneEffectPassGraphInputSource,
+) -> Result<(), String> {
+    push_effect_texture_set_slot(pass, used_slots, slot)?;
+    bindings.push(NativeVulkanSceneEffectTextureSetBinding {
+        slot,
+        role: SceneGraphResourceRole::shader_texture(slot),
+        source: effect_pass_input_descriptor_source(pass, source),
+    });
+    Ok(())
+}
+
+fn push_effect_texture_set_slot(
+    pass: &SceneEffectPassGraphMaterialPass,
+    used_slots: &mut BTreeSet<u32>,
+    slot: u32,
+) -> Result<(), String> {
+    if slot >= SCENE_WE_MAX_SHADER_TEXTURE_SLOTS {
+        return Err(format!(
+            "scene effect pass {} for object {:?} texture slot {} exceeds WE slot mask width {}",
+            pass.pass_index, pass.object, slot, SCENE_WE_MAX_SHADER_TEXTURE_SLOTS
+        ));
+    }
+    if !used_slots.insert(slot) {
+        return Err(format!(
+            "scene effect pass {} for object {:?} binds texture slot {} more than once",
+            pass.pass_index, pass.object, slot
+        ));
+    }
+    Ok(())
+}
+
+fn effect_pass_input_descriptor_source(
+    pass: &SceneEffectPassGraphMaterialPass,
+    source: &SceneEffectPassGraphInputSource,
+) -> NativeVulkanSceneTextureDescriptorSource {
+    match *source {
+        SceneEffectPassGraphInputSource::ObjectSourceTexture(resource) => {
+            NativeVulkanSceneTextureDescriptorSource::ResidentTexture(resource)
+        }
+        SceneEffectPassGraphInputSource::GraphTarget(target) => {
+            NativeVulkanSceneTextureDescriptorSource::GraphTarget(target)
+        }
+        SceneEffectPassGraphInputSource::PreviousFramebuffer => {
+            NativeVulkanSceneTextureDescriptorSource::PreviousFramebuffer {
+                object: pass.object,
+                effect_pass_index: pass.graph_pass_index,
+            }
+        }
+        SceneEffectPassGraphInputSource::Scene => NativeVulkanSceneTextureDescriptorSource::Scene {
+            object: pass.object,
+            effect_pass_index: pass.graph_pass_index,
+        },
+    }
 }
 
 pub(super) fn effect_resource_set_shader_mappings(
