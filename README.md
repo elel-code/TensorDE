@@ -9,7 +9,7 @@ Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。�
 
 ## 当前原则
 
-- 不保留旧 GStreamer display-sink、decoded-frame CPU copy、descriptor-set fallback。
+- 不保留旧 GStreamer display-sink、decoded-frame CPU copy、旧式 Vulkan 绑定表 fallback。
 - scene runtime、binary ingest、draw-pass/effect graph、旧 shader wrapper 和旧 smoke 脚本已删除。
 - 0 兼容旧代码和旧字段；不接受 CPU compatibility renderer、mesh blocker、隐藏 fallback、
   样本特化修复或临时补丁。
