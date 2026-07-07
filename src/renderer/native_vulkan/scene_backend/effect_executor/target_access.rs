@@ -230,10 +230,15 @@ pub(super) fn effect_pass_render_target(
 ) -> Result<SceneGraphTarget, String> {
     match pass.output {
         SceneEffectPassGraphOutput::GraphTarget(target) => Ok(target),
-        SceneEffectPassGraphOutput::ObjectFinal(object) => Err(format!(
-            "scene effect runtime pass {} for object {:?} outputs ObjectFinal({object:?}) and requires the object-final compositor target resolver",
-            pass.pass_index, pass.object
-        )),
+        SceneEffectPassGraphOutput::ObjectFinal(object) => {
+            if object != pass.object {
+                return Err(format!(
+                    "scene effect runtime pass {} for object {:?} has mismatched ObjectFinal({object:?}) output",
+                    pass.pass_index, pass.object
+                ));
+            }
+            Ok(SceneGraphTarget::ObjectFinal(object))
+        }
     }
 }
 

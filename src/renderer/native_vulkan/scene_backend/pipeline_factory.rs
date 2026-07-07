@@ -55,6 +55,7 @@ pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub depth_test: &'static str,
     pub depth_write: bool,
     pub cull_mode: &'static str,
+    pub alpha_write: &'static str,
     pub dynamic_rendering_scope: &'static str,
 }
 
@@ -73,6 +74,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         depth_test: scene_depth_test_label(key.render_state.depth_test),
         depth_write: key.render_state.depth_write,
         cull_mode: scene_cull_mode_label(key.render_state.cull_mode),
+        alpha_write: scene_alpha_write_label(key.render_state.alpha_write),
         dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
 }
@@ -149,9 +151,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
                     .build();
                 let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
                     .rasterization_samples(vk::SampleCountFlags::_1)
+                    .alpha_to_coverage_enable(key.blend == SceneBlendContract::AlphaToCoverage)
                     .build();
                 let depth_stencil = scene_mesh_depth_stencil_state(key);
-                let color_attachment = scene_mesh_color_blend_attachment(key.blend);
+                let color_attachment = scene_mesh_color_blend_attachment(
+                    key.blend,
+                    key.render_state.alpha_write.writes_alpha(),
+                );
                 let color_attachments = [color_attachment];
                 let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
                     .attachments(&color_attachments)
@@ -254,13 +260,10 @@ fn scene_mesh_depth_stencil_state(
 
 fn scene_mesh_color_blend_attachment(
     blend: SceneBlendContract,
+    write_alpha: bool,
 ) -> vk::PipelineColorBlendAttachmentState {
-    let base = vk::PipelineColorBlendAttachmentState::builder().color_write_mask(
-        vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
-    );
+    let base = vk::PipelineColorBlendAttachmentState::builder()
+        .color_write_mask(scene_color_write_mask(write_alpha));
     match blend {
         SceneBlendContract::NormalReplace
         | SceneBlendContract::AlphaToCoverage
@@ -293,6 +296,25 @@ fn scene_pipeline_blend_label(blend: SceneBlendContract) -> &'static str {
         SceneBlendContract::Additive => "additive-src-alpha-one",
         SceneBlendContract::AlphaToCoverage => "alpha-to-coverage-one-zero",
         SceneBlendContract::ShaderColorBlend(_) => "shader-color-blend-one-zero",
+    }
+}
+
+fn scene_color_write_mask(write_alpha: bool) -> vk::ColorComponentFlags {
+    let rgb = vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B;
+    if write_alpha {
+        rgb | vk::ColorComponentFlags::A
+    } else {
+        rgb
+    }
+}
+
+fn scene_alpha_write_label(
+    alpha_write: crate::engine::scene_engine::SceneAlphaWriteMode,
+) -> &'static str {
+    match alpha_write {
+        crate::engine::scene_engine::SceneAlphaWriteMode::Default => "default-rgb-only",
+        crate::engine::scene_engine::SceneAlphaWriteMode::Enabled => "enabled-rgba",
+        crate::engine::scene_engine::SceneAlphaWriteMode::Disabled => "disabled-rgb-only",
     }
 }
 

@@ -13,10 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use super::{
-    SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneCullMode, SceneDepthTest, SceneEffectCommand,
-    SceneEffectConstantValue, SceneEffectFboBinding, SceneEffectFboFormat, SceneEffectImageRef,
-    SceneEffectPassBlend, SceneEffectTextureResourceBinding, SceneGraphTarget, SceneObject,
-    SceneObjectEffectProgram, SceneObjectId, SceneResourceId, we::WeEffectKind,
+    SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneAlphaWriteMode, SceneCullMode, SceneDepthTest,
+    SceneEffectCommand, SceneEffectConstantValue, SceneEffectFboBinding, SceneEffectFboFormat,
+    SceneEffectImageRef, SceneEffectPassBlend, SceneEffectTextureResourceBinding, SceneGraphTarget,
+    SceneObject, SceneObjectEffectProgram, SceneObjectId, SceneResourceId, we::WeEffectKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -63,6 +63,7 @@ pub struct SceneEffectPassGraphMaterialPass {
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
     pub texture_resources: Vec<SceneEffectTextureResourceBinding>,
     pub combos: BTreeMap<String, i64>,
     pub constants: BTreeMap<String, SceneEffectConstantValue>,
@@ -296,6 +297,7 @@ fn effect_material_pass_graph(
         depth_test: pass.depth_test,
         depth_write: pass.depth_write,
         cull_mode: pass.cull_mode,
+        alpha_write: pass.alpha_write,
         texture_resources: pass.texture_resources.clone(),
         combos: pass.combos.clone(),
         constants: pass.constants.clone(),
@@ -457,6 +459,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                         texture_resources: Vec::new(),
                         binds: BTreeMap::new(),
                         combos: BTreeMap::new(),
@@ -510,6 +513,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                         texture_resources: Vec::new(),
                         binds: BTreeMap::from([(
                             1,
@@ -586,6 +590,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                         texture_resources: Vec::new(),
                         binds: BTreeMap::new(),
                         combos: BTreeMap::new(),
@@ -609,6 +614,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                         texture_resources: Vec::new(),
                         binds: BTreeMap::new(),
                         combos: BTreeMap::new(),
@@ -655,6 +661,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                         texture_resources: Vec::new(),
                         binds: BTreeMap::new(),
                         combos: BTreeMap::new(),

@@ -101,9 +101,15 @@ fn effect_pass_render_target(
 ) -> Result<SceneGraphTarget, String> {
     match output {
         SceneEffectPassGraphOutput::GraphTarget(target) => Ok(*target),
-        SceneEffectPassGraphOutput::ObjectFinal(object_final) => Err(format!(
-            "scene effect pipeline warmup pass {pass_index} for object {object:?} outputs ObjectFinal({object_final:?}) and requires the object-final composite target resolver"
-        )),
+        SceneEffectPassGraphOutput::ObjectFinal(object_final) => {
+            if *object_final != object {
+                return Err(format!(
+                    "scene effect pipeline warmup pass {pass_index} object {:?} has mismatched ObjectFinal({object_final:?}) output",
+                    object
+                ));
+            }
+            Ok(SceneGraphTarget::ObjectFinal(*object_final))
+        }
     }
 }
 
@@ -113,10 +119,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::engine::scene_engine::{
-        SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphInputBinding,
-        SceneEffectPassGraphInputSource, SceneEffectPassGraphMaterialPass,
-        SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneObjectId,
-        SceneResourceId, we::WeEffectKind,
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+        SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput,
+        SceneEffectTextureResourceBinding, SceneObjectId, SceneResourceId, we::WeEffectKind,
     };
 
     #[test]
@@ -165,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_warmup_rejects_object_final_without_resolver() {
+    fn effect_warmup_resolves_object_final_to_retained_target() {
         let mut effect_pass = pass(
             0,
             "effects/iris",
@@ -175,14 +181,22 @@ mod tests {
         effect_pass.output = SceneEffectPassGraphOutput::ObjectFinal(SceneObjectId(7));
         let graph = graph(vec![effect_pass]);
 
-        let err =
+        let plan =
             NativeVulkanSceneEffectPipelineWarmupPlan::from_effect_pass_graph_with_target_formats(
                 &graph,
-                |_| Ok(vk::Format::R16G16B16A16_SFLOAT),
+                |target| match target {
+                    SceneGraphTarget::ObjectFinal(SceneObjectId(7)) => {
+                        Ok(vk::Format::B8G8R8A8_UNORM)
+                    }
+                    target => Err(format!("unexpected target {target:?}")),
+                },
             )
-            .expect_err("object final must fail");
+            .expect("object final warmup");
 
-        assert!(err.contains("object-final composite target resolver"));
+        assert_eq!(
+            plan.cache_keys()[0].target_format,
+            vk::Format::B8G8R8A8_UNORM
+        );
     }
 
     fn graph(passes: Vec<SceneEffectPassGraphMaterialPass>) -> SceneEffectPassGraphPlan {
@@ -232,6 +246,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             texture_resources,
             combos: BTreeMap::new(),
             constants: BTreeMap::new(),

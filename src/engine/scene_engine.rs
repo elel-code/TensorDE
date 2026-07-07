@@ -61,8 +61,8 @@ pub use graph_execution::{
     SceneGraphTargetBarrierReason, SceneGraphTargetLifetime, SceneGraphTargetUsage,
 };
 pub use material::{
-    SceneBlendContract, SceneCullMode, SceneDepthTest, SceneMaterialContract, SceneMaterialKey,
-    SceneMaterialRenderState,
+    SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneDepthTest, SceneMaterialContract,
+    SceneMaterialKey, SceneMaterialRenderState,
 };
 pub use object::{SceneObject, SceneObjectGeometry, SceneObjectId};
 pub use plan::SceneEnginePlan;

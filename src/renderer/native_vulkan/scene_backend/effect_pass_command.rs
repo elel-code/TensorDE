@@ -225,10 +225,15 @@ fn effect_pass_render_target(
 ) -> Result<SceneGraphTarget, String> {
     match pass.output {
         SceneEffectPassGraphOutput::GraphTarget(target) => Ok(target),
-        SceneEffectPassGraphOutput::ObjectFinal(object) => Err(format!(
-            "scene effect pass {} for object {:?} outputs ObjectFinal({object:?}) and requires the object-final composite target resolver before Vulkan recording",
-            pass.pass_index, pass.object
-        )),
+        SceneEffectPassGraphOutput::ObjectFinal(object) => {
+            if object != pass.object {
+                return Err(format!(
+                    "scene effect pass {} for object {:?} has mismatched ObjectFinal({object:?}) output",
+                    pass.pass_index, pass.object
+                ));
+            }
+            Ok(SceneGraphTarget::ObjectFinal(object))
+        }
     }
 }
 
@@ -238,9 +243,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::engine::scene_engine::{
-        SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphInputBinding,
-        SceneEffectPassGraphInputSource, SceneEffectTextureResourceBinding, SceneGraphResourceRole,
-        SceneResourceId, we::WeEffectKind,
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+        SceneEffectTextureResourceBinding, SceneGraphResourceRole, SceneResourceId,
+        we::WeEffectKind,
     };
     use crate::renderer::native_vulkan::scene_backend::effect_resource_heap::{
         NativeVulkanSceneEffectTextureSetBinding, NativeVulkanSceneEffectTextureSetKey,
@@ -298,18 +304,18 @@ mod tests {
     }
 
     #[test]
-    fn effect_pass_plan_rejects_object_final_until_composite_target_exists() {
+    fn effect_pass_plan_resolves_object_final_to_retained_target() {
         let pass = effect_pass(SceneEffectPassGraphOutput::ObjectFinal(SceneObjectId(7)));
         let bind_info = pass_bind_info();
 
-        let err = NativeVulkanSceneEffectPassCommandPlan::from_pass_bindings(
+        let plan = NativeVulkanSceneEffectPassCommandPlan::from_pass_bindings(
             &pass,
             vk::Format::R16G16B16A16_SFLOAT,
             &bind_info,
         )
-        .expect_err("object final resolver is required");
+        .expect("object final pass command");
 
-        assert!(err.contains("requires the object-final composite target resolver"));
+        assert_eq!(plan.output, SceneGraphTarget::ObjectFinal(SceneObjectId(7)));
     }
 
     fn effect_pass(output: SceneEffectPassGraphOutput) -> SceneEffectPassGraphMaterialPass {
@@ -335,6 +341,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             texture_resources: vec![SceneEffectTextureResourceBinding {
                 slot: 2,
                 resource: SceneResourceId(12),

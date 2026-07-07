@@ -17,10 +17,10 @@ use crate::core::scene::{
 };
 
 use super::super::{
-    SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan, SceneGeometryId,
-    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram,
-    SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource,
-    SceneResourceId, SceneTextureFormat,
+    SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan,
+    SceneGeometryId, SceneMaterialContract, SceneMaterialRenderState, SceneObject,
+    SceneObjectEffectProgram, SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 use crate::engine::scene_engine::SceneEffectProgram;
 
@@ -126,6 +126,7 @@ pub struct GscnMaterialFact {
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
 }
 
 impl GscnSceneFacts {
@@ -393,6 +394,7 @@ fn engine_material(kind: GscnObjectKind, material: GscnMaterialFact) -> SceneMat
             depth_test: material.depth_test,
             depth_write: material.depth_write,
             cull_mode: material.cull_mode,
+            alpha_write: material.alpha_write,
         },
     }
 }
@@ -549,6 +551,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                     },
                     source_resource_index: Some(0),
                     effects: Vec::new(),
@@ -563,6 +566,7 @@ mod tests {
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
                     },
                     source_resource_index: Some(1),
                     effects: Vec::new(),

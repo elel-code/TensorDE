@@ -23,7 +23,9 @@ use crate::engine::scene_engine::ingest::gscn::{
     GscnGeometryFact, GscnMaterialFact, GscnMeshResourceFact, GscnObjectFact, GscnObjectKind,
     GscnPuppetResourceFact, GscnResourceFact, GscnSceneCounts, GscnSceneFacts,
 };
-use crate::engine::scene_engine::{SceneCullMode, SceneDepthTest, SceneEnginePlan};
+use crate::engine::scene_engine::{
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEnginePlan,
+};
 use crate::renderer::RendererPlanError;
 
 use super::BINARY_TEXTURE_ROLE_BASE_COLOR;
@@ -313,6 +315,9 @@ fn gscn_material_fact(
         cull_mode: material
             .map(|material| gscn_cull_mode(material.cull_mode))
             .unwrap_or(SceneCullMode::None),
+        alpha_write: material
+            .map(|material| gscn_alpha_write(material.alpha_write))
+            .unwrap_or(SceneAlphaWriteMode::Default),
     })
 }
 
@@ -333,6 +338,14 @@ fn gscn_cull_mode(code: u16) -> SceneCullMode {
         2 => SceneCullMode::Back,
         3 => SceneCullMode::Front,
         _ => SceneCullMode::None,
+    }
+}
+
+fn gscn_alpha_write(code: u16) -> SceneAlphaWriteMode {
+    match code {
+        1 => SceneAlphaWriteMode::Enabled,
+        2 => SceneAlphaWriteMode::Disabled,
+        _ => SceneAlphaWriteMode::Default,
     }
 }
 

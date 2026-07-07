@@ -43,10 +43,24 @@ pub enum SceneCullMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum SceneAlphaWriteMode {
+    Default,
+    Enabled,
+    Disabled,
+}
+
+impl SceneAlphaWriteMode {
+    pub const fn writes_alpha(self) -> bool {
+        matches!(self, Self::Enabled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneMaterialRenderState {
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
 }
 
 impl SceneMaterialRenderState {
@@ -55,6 +69,7 @@ impl SceneMaterialRenderState {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
         }
     }
 }

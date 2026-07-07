@@ -2280,6 +2280,8 @@ pub struct SceneEffectPass {
     #[serde(default)]
     pub cullmode: Option<String>,
     #[serde(default)]
+    pub alphawriting: Option<String>,
+    #[serde(default)]
     pub textures: Vec<Option<String>>,
     #[serde(default)]
     pub texture_resources: Vec<Option<String>>,
@@ -2304,6 +2306,7 @@ impl SceneEffectPass {
             ("depthtest", self.depthtest.as_deref()),
             ("depthwrite", self.depthwrite.as_deref()),
             ("cullmode", self.cullmode.as_deref()),
+            ("alphawriting", self.alphawriting.as_deref()),
         ] {
             if let Some(value) = value
                 && value.trim().is_empty()
@@ -3072,6 +3075,7 @@ fn scene_image_effect_passes_for_node<'a>(
                 depthtest: pass.depthtest.clone(),
                 depthwrite: pass.depthwrite.clone(),
                 cullmode: pass.cullmode.clone(),
+                alphawriting: pass.alphawriting.clone(),
                 texture_slots,
                 effect_uv_transform: pass.effect_uv_transform,
                 combos: pass.combos.clone(),
@@ -3206,6 +3210,7 @@ pub struct SceneImageEffectPass {
     pub depthtest: Option<String>,
     pub depthwrite: Option<String>,
     pub cullmode: Option<String>,
+    pub alphawriting: Option<String>,
     pub texture_slots: Vec<SceneTextureSlot>,
     pub effect_uv_transform: Option<SceneEffectUvTransform>,
     pub combos: BTreeMap<String, i64>,

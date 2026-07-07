@@ -85,7 +85,7 @@ use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
 pub const SCENE_BINARY_VERSION_V12: u16 = 12;
-pub const SCENE_BINARY_VERSION: u16 = 17;
+pub const SCENE_BINARY_VERSION: u16 = 18;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
@@ -96,9 +96,9 @@ pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 120;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 56;
+pub const SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE: usize = 58;
 pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12: usize = 56;
-pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 68;
+pub const SCENE_BINARY_EFFECT_PASS_RECORD_SIZE: usize = 70;
 pub const SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE: usize = 48;
 pub const SCENE_BINARY_RENDER_STATE_RECORD_SIZE: usize = 32;
 pub const SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE: usize = 24;
@@ -1547,6 +1547,7 @@ pub struct SceneBinaryMaterialPassRecord {
     pub depth_test: u16,
     pub depth_write: u16,
     pub cull_mode: u16,
+    pub alpha_write: u16,
     pub flags: u16,
 }
 
@@ -1569,8 +1570,9 @@ impl SceneBinaryMaterialPassRecord {
         write_u16(out, self.depth_test);
         write_u16(out, self.depth_write);
         write_u16(out, self.cull_mode);
+        write_u16(out, self.alpha_write);
         write_u16(out, self.flags);
-        debug_assert_eq!(SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, 56);
+        debug_assert_eq!(SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, 58);
     }
 }
 
@@ -1595,6 +1597,7 @@ pub struct SceneBinaryEffectPassRecord {
     pub depth_test: u16,
     pub depth_write: u16,
     pub cull_mode: u16,
+    pub alpha_write: u16,
     pub flags: u16,
 }
 
@@ -1619,8 +1622,9 @@ impl SceneBinaryEffectPassRecord {
         write_u16(out, self.depth_test);
         write_u16(out, self.depth_write);
         write_u16(out, self.cull_mode);
+        write_u16(out, self.alpha_write);
         write_u16(out, self.flags);
-        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 68);
+        debug_assert_eq!(SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, 70);
     }
 }
 
@@ -2359,6 +2363,7 @@ struct SceneBinaryMaterialState<'a> {
     depth_test: u16,
     depth_write: u16,
     cull_mode: u16,
+    alpha_write: u16,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2368,6 +2373,7 @@ struct SceneBinaryMaterialPassSource<'a> {
     depthtest: Option<&'a str>,
     depthwrite: Option<&'a str>,
     cullmode: Option<&'a str>,
+    alphawriting: Option<&'a str>,
 }
 
 impl<'a> SceneBinaryMaterialState<'a> {
@@ -2414,6 +2420,7 @@ impl<'a> SceneBinaryMaterialState<'a> {
             depth_test: material_flag_code(material_source.and_then(|source| source.depthtest)),
             depth_write: material_flag_code(material_source.and_then(|source| source.depthwrite)),
             cull_mode: cull_mode_code(material_source.and_then(|source| source.cullmode)),
+            alpha_write: material_flag_code(material_source.and_then(|source| source.alphawriting)),
         }
     }
 
@@ -2446,6 +2453,7 @@ fn scene_binary_base_material_pass_source(
         depthtest: pass.get("depthtest").and_then(serde_json::Value::as_str),
         depthwrite: pass.get("depthwrite").and_then(serde_json::Value::as_str),
         cullmode: pass.get("cullmode").and_then(serde_json::Value::as_str),
+        alphawriting: pass.get("alphawriting").and_then(serde_json::Value::as_str),
     })
 }
 
@@ -2458,6 +2466,7 @@ fn scene_binary_effect_material_pass_source(
         depthtest: pass.depthtest.as_deref(),
         depthwrite: pass.depthwrite.as_deref(),
         cullmode: pass.cullmode.as_deref(),
+        alphawriting: pass.alphawriting.as_deref(),
     }
 }
 
@@ -2648,6 +2657,7 @@ impl SceneBinaryPayloadBuilder {
                     depth_test: material_state.depth_test,
                     depth_write: material_state.depth_write,
                     cull_mode: material_state.cull_mode,
+                    alpha_write: material_state.alpha_write,
                     flags: material_flags(
                         node,
                         effective_visible,
@@ -2918,6 +2928,7 @@ impl SceneBinaryPayloadBuilder {
                 depth_test: material_flag_code(pass.and_then(|pass| pass.depthtest.as_deref())),
                 depth_write: material_flag_code(pass.and_then(|pass| pass.depthwrite.as_deref())),
                 cull_mode: cull_mode_code(pass.and_then(|pass| pass.cullmode.as_deref())),
+                alpha_write: material_flag_code(pass.and_then(|pass| pass.alphawriting.as_deref())),
                 flags: effect_flags(effect, pass),
             }
             .encode(out)
@@ -4479,6 +4490,7 @@ fn effect_flags(effect: &SceneEffect, pass: Option<&SceneEffectPass>) -> u16 {
         | (u16::from(effect.visible.is_some()) << 2)
         | (u16::from(pass.and_then(|pass| pass.shader.as_ref()).is_some()) << 3)
         | (u16::from(pass.and_then(|pass| pass.blending.as_ref()).is_some()) << 4)
+        | (u16::from(pass.and_then(|pass| pass.alphawriting.as_ref()).is_some()) << 5)
 }
 
 fn render_state_flags(document: &SceneDocument) -> u32 {
@@ -5001,7 +5013,8 @@ pub(crate) fn decode_material_pass_record(
         depth_test: read_u16(bytes, 48)?,
         depth_write: read_u16(bytes, 50)?,
         cull_mode: read_u16(bytes, 52)?,
-        flags: read_u16(bytes, 54)?,
+        alpha_write: read_u16(bytes, 54)?,
+        flags: read_u16(bytes, 56)?,
     })
 }
 
@@ -5028,7 +5041,8 @@ pub(crate) fn decode_effect_pass_record(
         depth_test: read_u16_or(bytes, 60, 0)?,
         depth_write: read_u16_or(bytes, 62, 0)?,
         cull_mode: read_u16_or(bytes, 64, 0)?,
-        flags: read_u16_or(bytes, 66, 0)?,
+        alpha_write: read_u16_or(bytes, 66, 0)?,
+        flags: read_u16_or(bytes, 68, 0)?,
     })
 }
 
@@ -5595,6 +5609,7 @@ mod tests {
                         depthtest: Some("false".to_owned()),
                         depthwrite: Some("false".to_owned()),
                         cullmode: Some("none".to_owned()),
+                        alphawriting: Some("enabled".to_owned()),
                         textures: vec![Some("g_Texture0".to_owned())],
                         texture_resources: vec![Some("image".to_owned())],
                         combos: BTreeMap::from([("WIND_MODE".to_owned(), 2)]),
@@ -5865,6 +5880,10 @@ mod tests {
         assert_eq!(materials[0].depth_test, material_flag_code(Some("false")));
         assert_eq!(materials[0].depth_write, material_flag_code(Some("false")));
         assert_eq!(materials[0].cull_mode, cull_mode_code(Some("none")));
+        assert_eq!(
+            materials[0].alpha_write,
+            material_flag_code(Some("enabled"))
+        );
         assert_eq!(materials[0].effect_kind_flags, 1 << (8 - 1));
         assert_ne!(materials[0].pipeline_key, 0);
         let material_effect_passes = layout
@@ -5943,6 +5962,10 @@ mod tests {
             material_flag_code(Some("false"))
         );
         assert_eq!(effect_passes[0].cull_mode, cull_mode_code(Some("none")));
+        assert_eq!(
+            effect_passes[0].alpha_write,
+            material_flag_code(Some("enabled"))
+        );
         let effect_texture_slots = layout
             .effect_texture_slot_records(&bytes, effect_passes[0])
             .expect("effect texture slot range")

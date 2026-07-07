@@ -1029,6 +1029,7 @@ fn binary_scene_image_effect_pass(
         depthtest: binary_scene_material_flag(pass.depth_test),
         depthwrite: binary_scene_material_flag(pass.depth_write),
         cullmode: binary_scene_cull_mode(pass.cull_mode),
+        alphawriting: binary_scene_material_flag(pass.alpha_write),
         texture_slots: binary_scene_texture_slots(texture_slots, resources, |_| true)?,
         effect_uv_transform: transforms
             .into_iter()

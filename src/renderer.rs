@@ -165,6 +165,8 @@ pub struct SceneRenderImageEffectPass {
     pub depthwrite: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cullmode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alphawriting: Option<String>,
     #[serde(default)]
     pub texture_slots: Vec<SceneRenderTextureSlot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

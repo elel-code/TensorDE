@@ -47,6 +47,9 @@ impl NativeVulkanSceneGraphTargetFormatPlan {
         for lifetime in &execution.target_lifetimes {
             let (format, source) = match lifetime.target {
                 SceneGraphTarget::Swapchain => (swapchain_format, "swapchain_surface_format"),
+                SceneGraphTarget::ObjectFinal(_) => {
+                    (swapchain_format, "object_final_surface_format")
+                }
                 SceneGraphTarget::ImageLocalMain(_)
                 | SceneGraphTarget::ImageLocalSub(_)
                 | SceneGraphTarget::EffectTarget(_) => (

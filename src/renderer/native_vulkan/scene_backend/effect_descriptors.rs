@@ -375,9 +375,10 @@ mod tests {
 
     use super::*;
     use crate::engine::scene_engine::{
-        SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphInputBinding,
-        SceneEffectPassGraphInputSource, SceneEffectPassGraphOutput,
-        SceneEffectTextureResourceBinding, SceneResourceId, SceneTextureFormat, we::WeEffectKind,
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+        SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneResourceId,
+        SceneTextureFormat, we::WeEffectKind,
     };
 
     #[test]
@@ -568,6 +569,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             texture_resources,
             combos: BTreeMap::new(),
             constants: BTreeMap::new(),

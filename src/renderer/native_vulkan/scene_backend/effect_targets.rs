@@ -13,7 +13,8 @@ use serde::Serialize;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneEffectFboFormat, SceneEffectPassGraphPlan, SceneGraphTarget, SceneObjectId,
+    SceneEffectFboFormat, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneGraphTarget,
+    SceneObjectId,
 };
 
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetRequirement;
@@ -56,8 +57,8 @@ impl NativeVulkanSceneEffectTargetPlan {
             return Err("scene effect target plan requires defined swapchain format".to_owned());
         }
 
-        let mut entries = Vec::with_capacity(graph.targets.len());
-        let mut requirements = Vec::with_capacity(graph.targets.len());
+        let mut entries = Vec::with_capacity(graph.targets.len() + graph.passes.len());
+        let mut requirements = Vec::with_capacity(graph.targets.len() + graph.passes.len());
         for target in &graph.targets {
             let format = target.format.as_ref().ok_or_else(|| {
                 format!(
@@ -85,6 +86,18 @@ impl NativeVulkanSceneEffectTargetPlan {
                 scale: target.scale,
                 unique: target.unique,
             });
+        }
+        for pass in &graph.passes {
+            if let SceneEffectPassGraphOutput::ObjectFinal(object) = pass.output {
+                push_object_final_target_requirement(
+                    &mut entries,
+                    &mut requirements,
+                    object,
+                    pass.program_index,
+                    extent,
+                    swapchain_format,
+                );
+            }
         }
 
         Ok(Self {
@@ -118,6 +131,41 @@ impl NativeVulkanSceneEffectTargetPlan {
             .map(|requirement| requirement.format)
             .ok_or_else(|| format!("scene effect target plan has no format for {target:?}"))
     }
+}
+
+fn push_object_final_target_requirement(
+    entries: &mut Vec<NativeVulkanSceneEffectTargetEntry>,
+    requirements: &mut Vec<NativeVulkanSceneOffscreenTargetRequirement>,
+    object: SceneObjectId,
+    program_index: usize,
+    extent: vk::Extent2D,
+    swapchain_format: vk::Format,
+) {
+    let target = SceneGraphTarget::ObjectFinal(object);
+    if requirements
+        .iter()
+        .any(|requirement| requirement.target == target)
+    {
+        return;
+    }
+    requirements.push(NativeVulkanSceneOffscreenTargetRequirement {
+        target,
+        format: swapchain_format,
+        width: extent.width,
+        height: extent.height,
+    });
+    entries.push(NativeVulkanSceneEffectTargetEntry {
+        target,
+        object,
+        program_index,
+        name: format!("object-final-{}", object.0),
+        format: vulkan_format_label(swapchain_format),
+        format_source: "object_final_surface_format",
+        width: extent.width,
+        height: extent.height,
+        scale: 1.0,
+        unique: true,
+    });
 }
 
 fn effect_fbo_vk_format(
@@ -166,7 +214,9 @@ fn vulkan_format_label(format: vk::Format) -> &'static str {
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneEffectPassGraphPlan, SceneEffectPassGraphTarget, SceneObjectId,
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
+        SceneEffectPassGraphTarget, SceneObjectId, we::WeEffectKind,
     };
 
     #[test]
@@ -256,6 +306,35 @@ mod tests {
     }
 
     #[test]
+    fn effect_target_plan_allocates_object_final_targets() {
+        let graph = SceneEffectPassGraphPlan {
+            material_pass_count: 1,
+            passes: vec![object_final_pass(SceneObjectId(42))],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+
+        let plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
+            &graph,
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("object final effect target plan");
+
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(
+            plan.entries[0].target,
+            SceneGraphTarget::ObjectFinal(SceneObjectId(42))
+        );
+        assert_eq!(plan.entries[0].format_source, "object_final_surface_format");
+        assert_eq!(plan.entries[0].width, 3840);
+        assert_eq!(plan.entries[0].height, 2160);
+        assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
+    }
+
+    #[test]
     fn effect_target_plan_rejects_unknown_format() {
         let graph = graph(vec![target(
             "_rt_Vendor",
@@ -299,6 +378,30 @@ mod tests {
             format: Some(format),
             scale,
             unique: false,
+        }
+    }
+
+    fn object_final_pass(object: SceneObjectId) -> SceneEffectPassGraphMaterialPass {
+        SceneEffectPassGraphMaterialPass {
+            graph_command_index: 0,
+            graph_pass_index: 0,
+            object,
+            program_index: 0,
+            pass_index: 0,
+            effect_file: "effects/iris/effect.json".to_owned(),
+            effect: WeEffectKind::Iris,
+            shader: Some("effects/iris".to_owned()),
+            source: None,
+            input_bindings: Vec::new(),
+            output: SceneEffectPassGraphOutput::ObjectFinal(object),
+            blend: SceneEffectPassBlend::NormalReplace,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
+            texture_resources: Vec::new(),
+            combos: Default::default(),
+            constants: Default::default(),
         }
     }
 }

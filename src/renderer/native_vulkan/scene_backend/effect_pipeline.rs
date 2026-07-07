@@ -15,8 +15,8 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
-    SceneEffectPassGraphMaterialPass, SceneObjectId, we::WeEffectKind,
+    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneAlphaWriteMode, SceneCullMode, SceneDepthTest,
+    SceneEffectPassBlend, SceneEffectPassGraphMaterialPass, SceneObjectId, we::WeEffectKind,
 };
 
 use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapPassBindPlan;
@@ -30,6 +30,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineKey
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
     #[serde(skip)]
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
@@ -55,6 +56,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineCac
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
     pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
@@ -116,6 +118,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
             depth_test: pass.depth_test,
             depth_write: pass.depth_write,
             cull_mode: pass.cull_mode,
+            alpha_write: pass.alpha_write,
             target_format,
             texture_slot_mask: effect_pass_texture_slot_mask(pass)?,
             raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
@@ -163,6 +166,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             depth_test: key.depth_test,
             depth_write: key.depth_write,
             cull_mode: key.cull_mode,
+            alpha_write: key.alpha_write,
             target_format: key.target_format,
             texture_slot_mask: key.texture_slot_mask,
             raster_geometry: key.raster_geometry,
@@ -179,6 +183,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             depth_test: self.depth_test,
             depth_write: self.depth_write,
             cull_mode: self.cull_mode,
+            alpha_write: self.alpha_write,
             target_format: self.target_format,
             texture_slot_mask: self.texture_slot_mask,
             raster_geometry: self.raster_geometry,
@@ -494,6 +499,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             texture_resources: vec![SceneEffectTextureResourceBinding {
                 slot: 2,
                 resource: SceneResourceId(13),

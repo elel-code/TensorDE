@@ -483,8 +483,9 @@ mod tests {
         use std::collections::BTreeMap;
 
         use crate::engine::scene_engine::{
-            SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphMaterialPass,
-            SceneEffectPassGraphOutput, SceneGraphTarget, SceneObjectId, we::WeEffectKind,
+            SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+            SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneGraphTarget,
+            SceneObjectId, we::WeEffectKind,
         };
 
         let graph = SceneEffectPassGraphPlan {
@@ -524,6 +525,7 @@ mod tests {
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
+                alpha_write: SceneAlphaWriteMode::Default,
                 texture_resources: Vec::new(),
                 combos: BTreeMap::new(),
                 constants: BTreeMap::new(),

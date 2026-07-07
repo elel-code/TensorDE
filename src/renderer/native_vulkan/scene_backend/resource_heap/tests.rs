@@ -420,6 +420,7 @@ fn target_binding_ordinal(target: SceneGraphTarget) -> u64 {
         SceneGraphTarget::ImageLocalSub(index) => 0x200 + u64::from(index),
         SceneGraphTarget::NamedFbo(index) => 0x300 + u64::from(index),
         SceneGraphTarget::EffectTarget(index) => 0x400 + u64::from(index),
+        SceneGraphTarget::ObjectFinal(object) => 0x500 + u64::from(object.0),
     }
 }
 

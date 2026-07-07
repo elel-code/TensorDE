@@ -14,7 +14,9 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneCullMode, SceneDepthTest, SceneEffectPassBlend};
+use crate::engine::scene_engine::{
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
@@ -44,6 +46,7 @@ pub struct NativeVulkanSceneEffectPipelineCreatePlan {
     pub depth_test: &'static str,
     pub depth_write: bool,
     pub cull_mode: &'static str,
+    pub alpha_write: &'static str,
     pub dynamic_rendering_scope: &'static str,
 }
 
@@ -62,6 +65,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_pipeline_cr
         depth_test: scene_depth_test_label(key.depth_test),
         depth_write: key.depth_write,
         cull_mode: scene_cull_mode_label(key.cull_mode),
+        alpha_write: scene_alpha_write_label(key.alpha_write),
         dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
 }
@@ -131,9 +135,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_effect_pipe
                     .build();
                 let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
                     .rasterization_samples(vk::SampleCountFlags::_1)
+                    .alpha_to_coverage_enable(key.blend == SceneEffectPassBlend::AlphaToCoverage)
                     .build();
                 let depth_stencil = scene_effect_depth_stencil_state(key);
-                let color_attachment = scene_effect_color_blend_attachment(key.blend);
+                let color_attachment =
+                    scene_effect_color_blend_attachment(key.blend, key.alpha_write.writes_alpha());
                 let color_attachments = [color_attachment];
                 let color_blend = vk::PipelineColorBlendStateCreateInfo::builder()
                     .attachments(&color_attachments)
@@ -330,15 +336,13 @@ fn scene_effect_depth_stencil_state(
 
 fn scene_effect_color_blend_attachment(
     blend: SceneEffectPassBlend,
+    write_alpha: bool,
 ) -> vk::PipelineColorBlendAttachmentState {
-    let base = vk::PipelineColorBlendAttachmentState::builder().color_write_mask(
-        vk::ColorComponentFlags::R
-            | vk::ColorComponentFlags::G
-            | vk::ColorComponentFlags::B
-            | vk::ColorComponentFlags::A,
-    );
+    let base = vk::PipelineColorBlendAttachmentState::builder()
+        .color_write_mask(scene_color_write_mask(write_alpha));
     match blend {
         SceneEffectPassBlend::NormalReplace
+        | SceneEffectPassBlend::AlphaToCoverage
         | SceneEffectPassBlend::Disabled
         | SceneEffectPassBlend::Unknown => base.blend_enable(false).build(),
         SceneEffectPassBlend::TranslucentAlpha => base
@@ -367,8 +371,26 @@ fn scene_effect_blend_label(blend: SceneEffectPassBlend) -> &'static str {
         SceneEffectPassBlend::NormalReplace => "normal-replace-one-zero",
         SceneEffectPassBlend::TranslucentAlpha => "translucent-src-alpha-inv-src-alpha",
         SceneEffectPassBlend::Additive => "additive-src-alpha-one",
+        SceneEffectPassBlend::AlphaToCoverage => "alpha-to-coverage-one-zero",
         SceneEffectPassBlend::Disabled => "disabled-one-zero",
         SceneEffectPassBlend::Unknown => "unknown",
+    }
+}
+
+fn scene_color_write_mask(write_alpha: bool) -> vk::ColorComponentFlags {
+    let rgb = vk::ColorComponentFlags::R | vk::ColorComponentFlags::G | vk::ColorComponentFlags::B;
+    if write_alpha {
+        rgb | vk::ColorComponentFlags::A
+    } else {
+        rgb
+    }
+}
+
+fn scene_alpha_write_label(alpha_write: SceneAlphaWriteMode) -> &'static str {
+    match alpha_write {
+        SceneAlphaWriteMode::Default => "default-rgb-only",
+        SceneAlphaWriteMode::Enabled => "enabled-rgba",
+        SceneAlphaWriteMode::Disabled => "disabled-rgb-only",
     }
 }
 
@@ -492,6 +514,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             target_format: vk::Format::R16G16B16A16_SFLOAT,
             texture_slot_mask: 0b101,
             raster_geometry: super::super::effect_pipeline::NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,

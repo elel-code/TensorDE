@@ -98,10 +98,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::engine::scene_engine::{
-        SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphInputBinding,
-        SceneEffectPassGraphInputSource, SceneEffectPassGraphOutput,
-        SceneEffectTextureResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
-        SceneResourceId, we::WeEffectKind,
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+        SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneGraphResourceRole,
+        SceneGraphTarget, SceneResourceId, we::WeEffectKind,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
@@ -192,6 +192,7 @@ mod tests {
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
             texture_resources: vec![SceneEffectTextureResourceBinding {
                 slot: 2,
                 resource: SceneResourceId(12),

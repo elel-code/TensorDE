@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 
 use super::{
-    SceneCullMode, SceneDepthTest, SceneGraphTarget, SceneObjectId, SceneResourceId,
-    we::WeEffectKind,
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneGraphTarget, SceneObjectId,
+    SceneResourceId, we::WeEffectKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -50,6 +50,7 @@ pub struct SceneEffectMaterialPass {
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
+    pub alpha_write: SceneAlphaWriteMode,
     pub texture_resources: Vec<SceneEffectTextureResourceBinding>,
     pub binds: BTreeMap<u32, SceneEffectImageRef>,
     pub combos: BTreeMap<String, i64>,
@@ -109,6 +110,7 @@ pub enum SceneEffectPassBlend {
     NormalReplace,
     TranslucentAlpha,
     Additive,
+    AlphaToCoverage,
     Disabled,
     Unknown,
 }
@@ -185,6 +187,7 @@ impl SceneEffectPassBlend {
             "normal" | "replace" => Self::NormalReplace,
             "alpha" | "translucent" | "alphablend" => Self::TranslucentAlpha,
             "add" | "additive" => Self::Additive,
+            "alphatocoverage" | "alpha-to-coverage" => Self::AlphaToCoverage,
             "disabled" | "none" | "off" => Self::Disabled,
             _ => Self::Unknown,
         }
@@ -232,6 +235,26 @@ mod tests {
     }
 
     #[test]
+    fn effect_pass_blend_maps_we_low_modes() {
+        assert_eq!(
+            SceneEffectPassBlend::from_we_name(Some("normal")),
+            SceneEffectPassBlend::NormalReplace
+        );
+        assert_eq!(
+            SceneEffectPassBlend::from_we_name(Some("translucent")),
+            SceneEffectPassBlend::TranslucentAlpha
+        );
+        assert_eq!(
+            SceneEffectPassBlend::from_we_name(Some("additive")),
+            SceneEffectPassBlend::Additive
+        );
+        assert_eq!(
+            SceneEffectPassBlend::from_we_name(Some("alphatocoverage")),
+            SceneEffectPassBlend::AlphaToCoverage
+        );
+    }
+
+    #[test]
     fn effect_program_counts_material_copy_and_swap_commands() {
         let program = SceneEffectProgram {
             effect_file: "effects/fluidsimulation/effect.json".to_owned(),
@@ -249,6 +272,7 @@ mod tests {
                     depth_test: SceneDepthTest::Disabled,
                     depth_write: false,
                     cull_mode: SceneCullMode::None,
+                    alpha_write: SceneAlphaWriteMode::Default,
                     texture_resources: Vec::new(),
                     binds: BTreeMap::new(),
                     combos: BTreeMap::new(),

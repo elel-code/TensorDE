@@ -22,10 +22,10 @@ use crate::core::scene::binary::{
 };
 use crate::engine::scene_engine::we::WeEffectKind;
 use crate::engine::scene_engine::{
-    SceneCullMode, SceneDepthTest, SceneEffectCommand, SceneEffectConstantValue,
-    SceneEffectCopyCommand, SceneEffectFboBinding, SceneEffectFboFormat, SceneEffectImageRef,
-    SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectProgram, SceneEffectSwapCommand,
-    SceneEffectTextureResourceBinding, SceneGraphTarget, SceneResourceId,
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectCommand,
+    SceneEffectConstantValue, SceneEffectCopyCommand, SceneEffectFboBinding, SceneEffectFboFormat,
+    SceneEffectImageRef, SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectProgram,
+    SceneEffectSwapCommand, SceneEffectTextureResourceBinding, SceneGraphTarget, SceneResourceId,
 };
 use crate::renderer::RendererPlanError;
 
@@ -272,6 +272,7 @@ fn gscn_effect_command(
         depth_test: gscn_depth_test(pass.depth_test),
         depth_write: gscn_depth_write(pass.depth_write),
         cull_mode: gscn_cull_mode(pass.cull_mode),
+        alpha_write: gscn_alpha_write(pass.alpha_write),
         texture_resources: gscn_effect_texture_resources(reader, resources, pass)?,
         binds: parameters.binds,
         combos: parameters.combos,
@@ -428,5 +429,13 @@ fn gscn_cull_mode(code: u16) -> SceneCullMode {
         2 => SceneCullMode::Back,
         3 => SceneCullMode::Front,
         _ => SceneCullMode::None,
+    }
+}
+
+fn gscn_alpha_write(code: u16) -> SceneAlphaWriteMode {
+    match code {
+        1 => SceneAlphaWriteMode::Enabled,
+        2 => SceneAlphaWriteMode::Disabled,
+        _ => SceneAlphaWriteMode::Default,
     }
 }

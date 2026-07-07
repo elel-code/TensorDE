@@ -905,6 +905,7 @@ mod tests {
             depthtest: None,
             depthwrite: None,
             cullmode: None,
+            alphawriting: None,
             texture_slots: vec![SceneRenderTextureSlot {
                 slot: 1,
                 source: PathBuf::from("/tmp/eye-mask.gtex"),
@@ -1018,6 +1019,7 @@ mod tests {
             depthtest: None,
             depthwrite: None,
             cullmode: None,
+            alphawriting: None,
             texture_slots: Vec::new(),
             effect_uv_transform: Some(SceneEffectUvTransform {
                 mapping: Default::default(),

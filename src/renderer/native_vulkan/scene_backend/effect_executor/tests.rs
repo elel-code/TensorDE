@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::engine::scene_engine::{
-    SceneCullMode, SceneDepthTest, SceneEffectPassBlend, SceneEffectPassGraphCopy,
-    SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+    SceneEffectPassGraphCopy, SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
     SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
     SceneEffectPassGraphSwap, SceneEffectTextureResourceBinding, SceneGraphTarget, SceneObjectId,
     SceneResourceId, we::WeEffectKind,
@@ -93,6 +93,7 @@ fn pass(graph_command_index: usize, graph_pass_index: usize) -> SceneEffectPassG
         depth_test: SceneDepthTest::Disabled,
         depth_write: false,
         cull_mode: SceneCullMode::None,
+        alpha_write: SceneAlphaWriteMode::Default,
         texture_resources: vec![SceneEffectTextureResourceBinding {
             slot: 1,
             resource: SceneResourceId(10),

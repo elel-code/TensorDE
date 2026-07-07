@@ -20,6 +20,7 @@ pub enum SceneGraphTarget {
     ImageLocalSub(u32),
     NamedFbo(u32),
     EffectTarget(u32),
+    ObjectFinal(SceneObjectId),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
