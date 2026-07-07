@@ -48,7 +48,10 @@ use super::resource_heap::{
 };
 use super::resource_storage::NativeVulkanSceneResourceStorage;
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
-use super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
+use super::texture_descriptors::{
+    NativeVulkanSceneTargetInputTextureDescriptor, NativeVulkanSceneTextureDescriptorFramePlan,
+    NativeVulkanSceneTextureDescriptorVkFormat,
+};
 use super::texture_images::{
     NativeVulkanSceneTextureImageBinding, NativeVulkanSceneTextureImageStore,
     NativeVulkanSceneTextureImageSyncAction, NativeVulkanSceneTextureUploadPlan,
@@ -260,9 +263,21 @@ impl NativeVulkanSceneFrameResources {
         &self,
         graph: &SceneGraph,
     ) -> Result<NativeVulkanSceneTextureDescriptorFramePlan, String> {
-        NativeVulkanSceneTextureDescriptorFramePlan::from_graph(graph, |resource| {
-            self.resource_storage.texture(resource).copied()
-        })
+        NativeVulkanSceneTextureDescriptorFramePlan::from_graph_with_target_inputs(
+            graph,
+            |resource| self.resource_storage.texture(resource).copied(),
+            |target| {
+                let binding = self.offscreen_target_binding(target)?;
+                Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                    target: binding.target,
+                    width: binding.width,
+                    height: binding.height,
+                    format: NativeVulkanSceneTextureDescriptorVkFormat::from_vk_format(
+                        binding.format,
+                    )?,
+                })
+            },
+        )
     }
 
     pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
@@ -312,6 +327,7 @@ impl NativeVulkanSceneFrameResources {
             descriptor_heap_properties,
             |key| self.material_uniform_gpu_buffer(key),
             |resource| self.texture_image_binding(resource),
+            |target| self.offscreen_target_binding(target),
         )
     }
 
@@ -329,6 +345,7 @@ impl NativeVulkanSceneFrameResources {
             descriptor_heap_properties,
             |key| self.material_uniform_buffers.material_uniform_buffer(key),
             |resource| self.texture_images.texture_binding(resource),
+            |target| self.offscreen_targets.target_binding(target),
         )?;
         self.resource_heap
             .sync_frame_plan(device, memory_properties, frame_plan)
@@ -417,6 +434,9 @@ mod tests {
         SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey,
         SceneObjectId, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
         SceneTextureFormat,
+    };
+    use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
+        NativeVulkanSceneTextureDescriptorFormat, NativeVulkanSceneTextureDescriptorSource,
     };
     use vulkanalia::vk;
 
@@ -600,11 +620,16 @@ mod tests {
             .expect("texture descriptor frame plan");
 
         assert_eq!(plan.binding_count, 1);
-        assert_eq!(plan.bindings[0].resource, SceneResourceId(7));
-        assert_eq!(plan.bindings[0].width, Some(512));
+        assert_eq!(
+            plan.bindings[0].source,
+            NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(7))
+        );
+        assert_eq!(plan.bindings[0].width, 512);
         assert_eq!(
             plan.bindings[0].format,
-            Some(SceneTextureFormat::Bc7UnormBlock)
+            NativeVulkanSceneTextureDescriptorFormat::SceneTexture(
+                SceneTextureFormat::Bc7UnormBlock
+            )
         );
         assert_eq!(plan.bindings[0].payload_bytes, Some(131_072));
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");

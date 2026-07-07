@@ -14,7 +14,9 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use vulkanalia::vk::{self, Handle};
 
-use crate::engine::scene_engine::{SceneGraph, SceneObjectId, SceneResourceId, SceneTextureFormat};
+use crate::engine::scene_engine::{
+    SceneGraph, SceneGraphTarget, SceneObjectId, SceneResourceId, SceneTextureFormat,
+};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
@@ -26,11 +28,15 @@ use crate::renderer::native_vulkan::vulkan::{
 use super::super::material_uniforms::{
     NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
 };
+use super::super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::super::texture_descriptors::{
-    NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
+    NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFormat,
+    NativeVulkanSceneTextureDescriptorFramePlan, NativeVulkanSceneTextureDescriptorSource,
 };
 use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
-use super::texture_set::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
+use super::texture_set::{
+    NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key_with_pass_input,
+};
 
 const WE_GENERICIMAGE4_PS_MATERIAL_CONSTANT_BUFFER_SLOT: u32 = 3;
 
@@ -75,7 +81,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneResourceHeapEntryRo
         shader_mapping: &'static str,
     },
     WeSampledTexture {
-        resource: SceneResourceId,
+        source: NativeVulkanSceneTextureDescriptorSource,
         slot: u32,
         image_handle: u64,
         view_handle: u64,
@@ -119,7 +125,7 @@ pub(super) enum NativeVulkanSceneResourceHeapDescriptorBinding {
     SampledImage {
         descriptor_index: usize,
         sampler_descriptor_index: usize,
-        resource: SceneResourceId,
+        source: NativeVulkanSceneTextureDescriptorSource,
         image: vk::Image,
         format: vk::Format,
         width: u32,
@@ -158,6 +164,18 @@ struct PendingResourceHeapEntry {
     role: NativeVulkanSceneResourceHeapEntryRole,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanSceneResolvedSampledImageBinding {
+    source: NativeVulkanSceneTextureDescriptorSource,
+    image: vk::Image,
+    view: vk::ImageView,
+    sampler: vk::Sampler,
+    format: vk::Format,
+    width: u32,
+    height: u32,
+    mip_count: u32,
+}
+
 impl NativeVulkanSceneResourceHeapFramePlan {
     pub(in crate::renderer::native_vulkan) fn from_graph(
         graph: &SceneGraph,
@@ -172,6 +190,10 @@ impl NativeVulkanSceneResourceHeapFramePlan {
         texture_image_binding: impl Fn(
             SceneResourceId,
         ) -> Result<NativeVulkanSceneTextureImageBinding, String>,
+        target_image_binding: impl Fn(
+            SceneGraphTarget,
+        )
+            -> Result<NativeVulkanSceneOffscreenTargetBinding, String>,
     ) -> Result<Self, String> {
         let textures_by_draw = texture_descriptors_by_draw(texture_descriptors)?;
         let mut resource_set_to_slice =
@@ -191,7 +213,8 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                 };
                 let material = material_uniform_buffer(&material_key)?;
                 validate_material_binding(&material_key, &material)?;
-                let texture_set = scene_mesh_draw_texture_set_key(draw)?;
+                let texture_set =
+                    scene_mesh_draw_texture_set_key_with_pass_input(draw, pass.input)?;
                 let resource_set_key = NativeVulkanSceneResourceSetKey {
                     material: material_key.clone(),
                     material_buffer_handle: material.buffer.as_raw(),
@@ -225,6 +248,11 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                         &material,
                     );
                     for descriptor in draw_textures.iter() {
+                        let sampled_image = resolve_sampled_image_binding(
+                            descriptor,
+                            &texture_image_binding,
+                            &target_image_binding,
+                        )?;
                         push_texture_descriptor(
                             &mut descriptor_kinds,
                             &mut pending_entries,
@@ -232,7 +260,7 @@ impl NativeVulkanSceneResourceHeapFramePlan {
                             resource_set_index,
                             draw_index,
                             *descriptor,
-                            texture_image_binding(descriptor.resource)?,
+                            sampled_image,
                             sampler_descriptor_count,
                         )?;
                         sampler_descriptor_count = sampler_descriptor_count.saturating_add(1);
@@ -388,7 +416,7 @@ fn push_texture_descriptor(
     resource_set_index: usize,
     draw_index: usize,
     descriptor: &NativeVulkanSceneTextureDescriptorBinding,
-    texture: NativeVulkanSceneTextureImageBinding,
+    texture: NativeVulkanSceneResolvedSampledImageBinding,
     sampler_descriptor_index: usize,
 ) -> Result<(), String> {
     validate_texture_binding(descriptor, texture)?;
@@ -398,7 +426,7 @@ fn push_texture_descriptor(
         NativeVulkanSceneResourceHeapDescriptorBinding::SampledImage {
             descriptor_index,
             sampler_descriptor_index,
-            resource: texture.resource,
+            source: texture.source,
             image: texture.image,
             format: texture.format,
             width: texture.width,
@@ -414,7 +442,7 @@ fn push_texture_descriptor(
         draw_index,
         object: descriptor.object,
         role: NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture {
-            resource: descriptor.resource,
+            source: descriptor.source,
             slot: descriptor.slot,
             image_handle: texture.image.as_raw(),
             view_handle: texture.view.as_raw(),
@@ -527,62 +555,102 @@ fn validate_material_binding(
 
 fn validate_texture_binding(
     descriptor: &NativeVulkanSceneTextureDescriptorBinding,
-    binding: NativeVulkanSceneTextureImageBinding,
+    binding: NativeVulkanSceneResolvedSampledImageBinding,
 ) -> Result<(), String> {
-    if descriptor.resource != binding.resource {
+    if descriptor.source != binding.source {
         return Err(format!(
             "scene resource heap texture resolver returned {:?} for descriptor {:?}",
-            binding.resource, descriptor.resource
+            binding.source, descriptor.source
         ));
     }
-    validate_optional_descriptor_u32(
-        descriptor.width,
-        binding.width,
-        descriptor.resource,
-        "width",
-    )?;
-    validate_optional_descriptor_u32(
+    validate_descriptor_u32(descriptor.width, binding.width, descriptor.source, "width")?;
+    validate_descriptor_u32(
         descriptor.height,
         binding.height,
-        descriptor.resource,
+        descriptor.source,
         "height",
     )?;
-    validate_optional_descriptor_u32(
+    validate_descriptor_u32(
         descriptor.mip_count,
         binding.mip_count,
-        descriptor.resource,
+        descriptor.source,
         "mip count",
     )?;
-    let descriptor_format = descriptor.format.ok_or_else(|| {
+    let expected_format = descriptor_vk_format(&descriptor.format).ok_or_else(|| {
         format!(
-            "scene resource heap texture {:?} descriptor missing native format",
-            descriptor.resource
+            "scene resource heap texture {:?} descriptor format {:?} cannot map to vk::Format",
+            descriptor.source, descriptor.format
         )
     })?;
-    let expected_format = scene_texture_vk_format(descriptor_format);
     if expected_format != binding.format {
         return Err(format!(
             "scene resource heap texture {:?} descriptor format {:?} does not match retained image {:?}",
-            descriptor.resource, expected_format, binding.format
+            descriptor.source, expected_format, binding.format
         ));
     }
     Ok(())
 }
 
-fn validate_optional_descriptor_u32(
-    descriptor_value: Option<u32>,
+fn validate_descriptor_u32(
+    descriptor_value: u32,
     binding_value: u32,
-    resource: SceneResourceId,
+    source: NativeVulkanSceneTextureDescriptorSource,
     label: &'static str,
 ) -> Result<(), String> {
-    match descriptor_value {
-        Some(value) if value == binding_value => Ok(()),
-        Some(value) => Err(format!(
-            "scene resource heap texture {resource:?} descriptor {label} {value} does not match retained image {binding_value}"
-        )),
-        None => Err(format!(
-            "scene resource heap texture {resource:?} descriptor missing {label}"
-        )),
+    if descriptor_value == binding_value {
+        Ok(())
+    } else {
+        Err(format!(
+            "scene resource heap texture {source:?} descriptor {label} {descriptor_value} does not match retained image {binding_value}"
+        ))
+    }
+}
+
+fn resolve_sampled_image_binding(
+    descriptor: &NativeVulkanSceneTextureDescriptorBinding,
+    texture_image_binding: &impl Fn(
+        SceneResourceId,
+    ) -> Result<NativeVulkanSceneTextureImageBinding, String>,
+    target_image_binding: &impl Fn(
+        SceneGraphTarget,
+    ) -> Result<NativeVulkanSceneOffscreenTargetBinding, String>,
+) -> Result<NativeVulkanSceneResolvedSampledImageBinding, String> {
+    match descriptor.source {
+        NativeVulkanSceneTextureDescriptorSource::ResidentTexture(resource) => {
+            let binding = texture_image_binding(resource)?;
+            Ok(NativeVulkanSceneResolvedSampledImageBinding {
+                source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(binding.resource),
+                image: binding.image,
+                view: binding.view,
+                sampler: binding.sampler,
+                format: binding.format,
+                width: binding.width,
+                height: binding.height,
+                mip_count: binding.mip_count,
+            })
+        }
+        NativeVulkanSceneTextureDescriptorSource::GraphTarget(target) => {
+            let binding = target_image_binding(target)?;
+            Ok(NativeVulkanSceneResolvedSampledImageBinding {
+                source: NativeVulkanSceneTextureDescriptorSource::GraphTarget(binding.target),
+                image: binding.image,
+                view: binding.view,
+                sampler: binding.sampler,
+                format: binding.format,
+                width: binding.width,
+                height: binding.height,
+                mip_count: 1,
+            })
+        }
+    }
+}
+
+fn descriptor_vk_format(format: &NativeVulkanSceneTextureDescriptorFormat) -> Option<vk::Format> {
+    match format {
+        NativeVulkanSceneTextureDescriptorFormat::SceneTexture(format) => {
+            Some(scene_texture_vk_format(*format))
+        }
+        NativeVulkanSceneTextureDescriptorFormat::VkFormat(format) => Some(format.to_vk_format()),
     }
 }
 

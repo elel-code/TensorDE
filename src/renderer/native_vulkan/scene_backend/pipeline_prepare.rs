@@ -244,7 +244,10 @@ mod tests {
                     name: "scene-main".to_owned(),
                     input: Some(SceneGraphTarget::ImageLocalMain(0)),
                     output: SceneGraphTarget::Swapchain,
-                    draws: vec![mesh_draw(SceneObjectId(2), SceneBlendContract::Additive)],
+                    draws: vec![mesh_draw_without_resources(
+                        SceneObjectId(2),
+                        SceneBlendContract::Additive,
+                    )],
                 },
             ],
         };
@@ -308,5 +311,14 @@ mod tests {
             }],
             index_count: 6,
         }
+    }
+
+    fn mesh_draw_without_resources(
+        object: SceneObjectId,
+        blend: SceneBlendContract,
+    ) -> SceneGraphDraw {
+        let mut draw = mesh_draw(object, blend);
+        draw.resources.clear();
+        draw
     }
 }

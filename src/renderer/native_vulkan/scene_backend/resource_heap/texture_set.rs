@@ -9,7 +9,10 @@
 
 use serde::Serialize;
 
-use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphResourceRole, SceneResourceId};
+use crate::engine::scene_engine::{
+    SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneGraphDraw, SceneGraphResourceRole, SceneGraphTarget,
+    SceneResourceId,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureSetKey {
@@ -20,7 +23,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureSetKey {
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureSetBinding {
     pub slot: u32,
     pub role: SceneGraphResourceRole,
-    pub resource: SceneResourceId,
+    pub source: NativeVulkanSceneTextureSetSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureSetSource {
+    ResidentTexture(SceneResourceId),
+    GraphTarget(SceneGraphTarget),
 }
 
 impl NativeVulkanSceneTextureSetKey {
@@ -49,16 +58,30 @@ impl NativeVulkanSceneTextureSetKey {
 pub(in crate::renderer::native_vulkan) fn scene_mesh_draw_texture_set_key(
     draw: &SceneGraphDraw,
 ) -> Result<NativeVulkanSceneTextureSetKey, String> {
-    let _ = draw.shader_texture_slot_mask()?;
+    scene_mesh_draw_texture_set_key_with_pass_input(draw, None)
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_mesh_draw_texture_set_key_with_pass_input(
+    draw: &SceneGraphDraw,
+    pass_input: Option<SceneGraphTarget>,
+) -> Result<NativeVulkanSceneTextureSetKey, String> {
+    let _ = draw.shader_texture_slot_mask_with_pass_input(pass_input)?;
     let mut bindings = draw
         .resources
         .iter()
         .map(|binding| NativeVulkanSceneTextureSetBinding {
             slot: binding.slot,
             role: binding.role,
-            resource: binding.resource,
+            source: NativeVulkanSceneTextureSetSource::ResidentTexture(binding.resource),
         })
         .collect::<Vec<_>>();
+    if let Some(target) = pass_input {
+        bindings.push(NativeVulkanSceneTextureSetBinding {
+            slot: SCENE_WE_PASS_INPUT_TEXTURE_SLOT,
+            role: SceneGraphResourceRole::shader_texture(SCENE_WE_PASS_INPUT_TEXTURE_SLOT),
+            source: NativeVulkanSceneTextureSetSource::GraphTarget(target),
+        });
+    }
     bindings.sort_by_key(|binding| binding.slot);
     Ok(NativeVulkanSceneTextureSetKey { bindings })
 }
@@ -96,6 +119,10 @@ mod tests {
         assert_eq!(key.bindings[1].slot, 4);
         assert_eq!(key.slot_mask(), 0b1_0001);
         assert_eq!(
+            key.bindings[0].source,
+            NativeVulkanSceneTextureSetSource::ResidentTexture(SceneResourceId(10))
+        );
+        assert_eq!(
             key.shader_mappings(),
             vec![
                 "set0.binding0.g_Texture0".to_owned(),
@@ -115,6 +142,30 @@ mod tests {
         let err = scene_mesh_draw_texture_set_key(&draw).expect_err("mismatch must fail");
 
         assert!(err.contains("does not match WE g_Texture0"));
+    }
+
+    #[test]
+    fn texture_set_key_adds_pass_input_as_texture0_graph_target() {
+        let mut draw = mesh_draw(Vec::new());
+        draw.resources.clear();
+
+        let key = scene_mesh_draw_texture_set_key_with_pass_input(
+            &draw,
+            Some(SceneGraphTarget::EffectTarget(0)),
+        )
+        .expect("pass input texture set");
+
+        assert_eq!(key.slot_mask(), 1);
+        assert_eq!(
+            key.bindings,
+            vec![NativeVulkanSceneTextureSetBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                source: NativeVulkanSceneTextureSetSource::GraphTarget(
+                    SceneGraphTarget::EffectTarget(0)
+                ),
+            }]
+        );
     }
 
     fn mesh_draw(resources: Vec<SceneGraphResourceBinding>) -> SceneGraphDraw {

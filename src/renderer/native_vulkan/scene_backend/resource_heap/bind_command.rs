@@ -11,9 +11,11 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
-use crate::engine::scene_engine::{SceneGraphDraw, SceneObjectId};
+use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphTarget, SceneObjectId};
 
-use super::texture_set::{NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key};
+use super::texture_set::{
+    NativeVulkanSceneTextureSetKey, scene_mesh_draw_texture_set_key_with_pass_input,
+};
 
 #[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawBindInfo {
@@ -45,10 +47,11 @@ pub struct NativeVulkanSceneResourceHeapDrawBindPlan {
 impl NativeVulkanSceneResourceHeapDrawBindPlan {
     pub(in crate::renderer::native_vulkan) fn from_draw_and_bind_info(
         draw_index: usize,
+        pass_input: Option<SceneGraphTarget>,
         draw: &SceneGraphDraw,
         bind_info: &NativeVulkanSceneResourceHeapDrawBindInfo,
     ) -> Result<Self, String> {
-        let texture_set = scene_mesh_draw_texture_set_key(draw)?;
+        let texture_set = scene_mesh_draw_texture_set_key_with_pass_input(draw, pass_input)?;
         if texture_set != bind_info.texture_set {
             return Err(format!(
                 "scene draw resource heap bind texture-set mismatch for object {:?}: draw {:?}, heap {:?}",
@@ -103,11 +106,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_resource_he
     device: &Device,
     command_buffer: vk::CommandBuffer,
     draw_index: usize,
+    pass_input: Option<SceneGraphTarget>,
     draw: &SceneGraphDraw,
     bind_info: NativeVulkanSceneResourceHeapDrawBindInfo,
 ) -> Result<NativeVulkanSceneResourceHeapDrawBindPlan, String> {
     let plan = NativeVulkanSceneResourceHeapDrawBindPlan::from_draw_and_bind_info(
-        draw_index, draw, &bind_info,
+        draw_index, pass_input, draw, &bind_info,
     )?;
     unsafe {
         device.cmd_bind_resource_heap_ext(command_buffer, &bind_info.resource_bind);
@@ -129,11 +133,12 @@ mod tests {
     #[test]
     fn resource_heap_draw_bind_plan_tracks_resource_set_identity() {
         let draw = mesh_draw(SceneResourceId(7));
-        let texture_set = scene_mesh_draw_texture_set_key(&draw).expect("texture set");
+        let texture_set =
+            scene_mesh_draw_texture_set_key_with_pass_input(&draw, None).expect("texture set");
         let bind_info = draw_bind_info(3, texture_set, 11, 2);
 
         let plan = NativeVulkanSceneResourceHeapDrawBindPlan::from_draw_and_bind_info(
-            3, &draw, &bind_info,
+            3, None, &draw, &bind_info,
         )
         .expect("draw resource heap bind plan");
 
@@ -152,11 +157,12 @@ mod tests {
     #[test]
     fn resource_heap_draw_bind_plan_rejects_draw_index_mismatch() {
         let draw = mesh_draw(SceneResourceId(7));
-        let texture_set = scene_mesh_draw_texture_set_key(&draw).expect("texture set");
+        let texture_set =
+            scene_mesh_draw_texture_set_key_with_pass_input(&draw, None).expect("texture set");
         let bind_info = draw_bind_info(2, texture_set, 11, 2);
 
         let err = NativeVulkanSceneResourceHeapDrawBindPlan::from_draw_and_bind_info(
-            3, &draw, &bind_info,
+            3, None, &draw, &bind_info,
         )
         .expect_err("draw index mismatch must fail");
 

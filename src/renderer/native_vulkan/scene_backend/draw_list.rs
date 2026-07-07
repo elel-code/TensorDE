@@ -8,7 +8,7 @@
 //! - `references/godot/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
-use crate::engine::scene_engine::SceneGraphDraw;
+use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphTarget};
 
 use super::pipeline::NativeVulkanScenePipelineKey;
 
@@ -27,6 +27,7 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
     pub fn next_draw(
         &mut self,
         pass_name: &str,
+        pass_input: Option<SceneGraphTarget>,
         draw: &'a SceneGraphDraw,
     ) -> Result<NativeVulkanSceneMeshDrawListTransition<'a>, String> {
         if !draw.pipeline.is_indexed_mesh_graphics() {
@@ -36,7 +37,8 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
             ));
         }
 
-        let pipeline_key = NativeVulkanScenePipelineKey::from_draw(draw)?;
+        let pipeline_key =
+            NativeVulkanScenePipelineKey::from_draw_with_pass_input(draw, pass_input)?;
         let bind_pipeline = self.last_pipeline_key != Some(pipeline_key);
 
         self.last_pipeline_key = Some(pipeline_key);
@@ -89,16 +91,16 @@ mod tests {
         let mut state = NativeVulkanSceneMeshDrawListState::default();
 
         let first = state
-            .next_draw("scene-main", &draws[0])
+            .next_draw("scene-main", None, &draws[0])
             .expect("first draw");
         let second = state
-            .next_draw("scene-main", &draws[1])
+            .next_draw("scene-main", None, &draws[1])
             .expect("second draw");
         let third = state
-            .next_draw("scene-main", &draws[2])
+            .next_draw("scene-main", None, &draws[2])
             .expect("third draw");
         let fourth = state
-            .next_draw("scene-main", &draws[3])
+            .next_draw("scene-main", None, &draws[3])
             .expect("fourth draw");
 
         assert!(first.bind_pipeline);
@@ -120,7 +122,7 @@ mod tests {
         let mut state = NativeVulkanSceneMeshDrawListState::default();
 
         let transition = state
-            .next_draw("scene-main", &draw)
+            .next_draw("scene-main", None, &draw)
             .expect("puppet draw must stay in indexed graphics batch");
 
         assert!(transition.bind_pipeline);
@@ -142,7 +144,7 @@ mod tests {
         let mut state = NativeVulkanSceneMeshDrawListState::default();
 
         let err = state
-            .next_draw("scene-main", &draw)
+            .next_draw("scene-main", None, &draw)
             .expect_err("non-indexed draw must fail");
 
         assert!(err.contains("requires indexed mesh graphics pipeline"));

@@ -71,7 +71,7 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
 
                 draw_count += 1;
                 let key = NativeVulkanScenePipelineCacheKey::from_bind_key(
-                    NativeVulkanScenePipelineKey::from_draw(draw)?,
+                    NativeVulkanScenePipelineKey::from_draw_with_pass_input(draw, pass.input)?,
                     pass_target_format,
                 )?;
                 if !cache_keys.iter().any(|existing| existing == &key) {
@@ -285,7 +285,7 @@ mod tests {
                     name: "scene-main".to_owned(),
                     input: Some(SceneGraphTarget::ImageLocalMain(0)),
                     output: SceneGraphTarget::Swapchain,
-                    draws: vec![mesh_draw(
+                    draws: vec![mesh_draw_without_resources(
                         SceneObjectId(2),
                         "we/genericimage4",
                         SceneBlendContract::Additive,
@@ -349,5 +349,15 @@ mod tests {
             }],
             index_count: 6,
         }
+    }
+
+    fn mesh_draw_without_resources(
+        object: SceneObjectId,
+        shader: &str,
+        blend: SceneBlendContract,
+    ) -> SceneGraphDraw {
+        let mut draw = mesh_draw(object, shader, blend);
+        draw.resources.clear();
+        draw
     }
 }

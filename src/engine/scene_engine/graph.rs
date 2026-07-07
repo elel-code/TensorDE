@@ -11,6 +11,7 @@ use super::{SceneGeometryId, SceneMaterialKey, SceneObjectId, ScenePuppetId, Sce
 use serde::Serialize;
 
 pub const SCENE_WE_MAX_SHADER_TEXTURE_SLOTS: u32 = 32;
+pub const SCENE_WE_PASS_INPUT_TEXTURE_SLOT: u32 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneGraphTarget {
@@ -76,6 +77,13 @@ pub struct SceneGraphDraw {
 
 impl SceneGraphDraw {
     pub fn shader_texture_slot_mask(&self) -> Result<u32, String> {
+        self.shader_texture_slot_mask_with_pass_input(None)
+    }
+
+    pub fn shader_texture_slot_mask_with_pass_input(
+        &self,
+        pass_input: Option<SceneGraphTarget>,
+    ) -> Result<u32, String> {
         let mut mask = 0u32;
         for binding in &self.resources {
             if binding.slot >= SCENE_WE_MAX_SHADER_TEXTURE_SLOTS {
@@ -96,6 +104,16 @@ impl SceneGraphDraw {
                 return Err(format!(
                     "scene draw {:?} has duplicate WE g_Texture{} binding",
                     self.object, binding.slot
+                ));
+            }
+            mask |= bit;
+        }
+        if let Some(input) = pass_input {
+            let bit = 1u32 << SCENE_WE_PASS_INPUT_TEXTURE_SLOT;
+            if mask & bit != 0 {
+                return Err(format!(
+                    "scene draw {:?} pass input {:?} collides with WE g_Texture{} binding",
+                    self.object, input, SCENE_WE_PASS_INPUT_TEXTURE_SLOT
                 ));
             }
             mask |= bit;

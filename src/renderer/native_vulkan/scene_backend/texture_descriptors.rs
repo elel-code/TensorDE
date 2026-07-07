@@ -12,10 +12,11 @@
 use std::collections::BTreeSet;
 
 use serde::Serialize;
+use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneGraph, SceneGraphResourceRole, SceneObjectId, SceneResourceId, SceneTextureFormat,
-    SceneTextureResidency,
+    SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneGraph, SceneGraphResourceRole, SceneGraphTarget,
+    SceneObjectId, SceneResourceId, SceneTextureFormat, SceneTextureResidency,
 };
 
 use super::resource_heap::texture_set::scene_shader_texture_mapping;
@@ -35,22 +36,98 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTextureDescriptor
     pub object: SceneObjectId,
     pub slot: u32,
     pub role: SceneGraphResourceRole,
-    pub resource: SceneResourceId,
-    pub width: Option<u32>,
-    pub height: Option<u32>,
-    pub format: Option<SceneTextureFormat>,
-    pub mip_count: Option<u32>,
+    pub source: NativeVulkanSceneTextureDescriptorSource,
+    pub width: u32,
+    pub height: u32,
+    pub format: NativeVulkanSceneTextureDescriptorFormat,
+    pub mip_count: u32,
     pub payload_bytes: Option<u64>,
     pub shader_mapping: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorSource {
+    ResidentTexture(SceneResourceId),
+    GraphTarget(SceneGraphTarget),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorFormat {
+    SceneTexture(SceneTextureFormat),
+    VkFormat(NativeVulkanSceneTextureDescriptorVkFormat),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorVkFormat {
+    R16G16B16A16Sfloat,
+    R8G8B8A8Unorm,
+    B8G8R8A8Unorm,
+    R16Sfloat,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneTargetInputTextureDescriptor {
+    pub target: SceneGraphTarget,
+    pub width: u32,
+    pub height: u32,
+    pub format: NativeVulkanSceneTextureDescriptorVkFormat,
+}
+
+impl NativeVulkanSceneTextureDescriptorVkFormat {
+    pub(in crate::renderer::native_vulkan) fn from_vk_format(
+        format: vk::Format,
+    ) -> Result<Self, String> {
+        match format {
+            vk::Format::R16G16B16A16_SFLOAT => Ok(Self::R16G16B16A16Sfloat),
+            vk::Format::R8G8B8A8_UNORM => Ok(Self::R8G8B8A8Unorm),
+            vk::Format::B8G8R8A8_UNORM => Ok(Self::B8G8R8A8Unorm),
+            vk::Format::R16_SFLOAT => Ok(Self::R16Sfloat),
+            format => Err(format!(
+                "scene texture descriptor cannot represent graph target vk::Format {format:?}"
+            )),
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) const fn to_vk_format(self) -> vk::Format {
+        match self {
+            Self::R16G16B16A16Sfloat => vk::Format::R16G16B16A16_SFLOAT,
+            Self::R8G8B8A8Unorm => vk::Format::R8G8B8A8_UNORM,
+            Self::B8G8R8A8Unorm => vk::Format::B8G8R8A8_UNORM,
+            Self::R16Sfloat => vk::Format::R16_SFLOAT,
+        }
+    }
 }
 
 impl NativeVulkanSceneTextureDescriptorFramePlan {
     pub(in crate::renderer::native_vulkan) fn from_graph<TextureResidency>(
         graph: &SceneGraph,
-        mut texture_residency: TextureResidency,
+        texture_residency: TextureResidency,
     ) -> Result<Self, String>
     where
         TextureResidency: FnMut(SceneResourceId) -> Option<SceneTextureResidency>,
+    {
+        Self::from_graph_with_target_inputs(graph, texture_residency, |target| {
+            Err(format!(
+                "scene texture descriptor plan requires retained graph target input {:?}",
+                target
+            ))
+        })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_graph_with_target_inputs<
+        TextureResidency,
+        TargetInput,
+    >(
+        graph: &SceneGraph,
+        mut texture_residency: TextureResidency,
+        mut target_input: TargetInput,
+    ) -> Result<Self, String>
+    where
+        TextureResidency: FnMut(SceneResourceId) -> Option<SceneTextureResidency>,
+        TargetInput: FnMut(
+            SceneGraphTarget,
+        )
+            -> Result<NativeVulkanSceneTargetInputTextureDescriptor, String>,
     {
         let mut bindings = Vec::new();
         let mut draw_index = 0usize;
@@ -64,8 +141,9 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                     ));
                 }
 
-                let _ = draw.shader_texture_slot_mask()?;
+                let _ = draw.shader_texture_slot_mask_with_pass_input(pass.input)?;
                 let mut used_slots = BTreeSet::new();
+                let mut draw_bindings = Vec::new();
                 for resource in &draw.resources {
                     let texture_index = resource.role.shader_texture_index();
                     if texture_index != resource.slot {
@@ -87,20 +165,59 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
                             resource.resource, draw.object
                         )
                     })?;
-                    bindings.push(NativeVulkanSceneTextureDescriptorBinding {
+                    let texture = resident_texture_descriptor(resource.resource, texture)?;
+                    draw_bindings.push(NativeVulkanSceneTextureDescriptorBinding {
                         draw_index,
                         object: draw.object,
                         slot: resource.slot,
                         role: resource.role,
-                        resource: resource.resource,
+                        source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(
+                            resource.resource,
+                        ),
                         width: texture.width,
                         height: texture.height,
-                        format: texture.format,
+                        format: NativeVulkanSceneTextureDescriptorFormat::SceneTexture(
+                            texture.format,
+                        ),
                         mip_count: texture.mip_count,
-                        payload_bytes: texture.payload_bytes,
+                        payload_bytes: Some(texture.payload_bytes),
                         shader_mapping: scene_shader_texture_mapping(resource.slot),
                     });
                 }
+                if let Some(target) = pass.input {
+                    if !used_slots.insert(SCENE_WE_PASS_INPUT_TEXTURE_SLOT) {
+                        return Err(format!(
+                            "scene texture descriptor plan pass input {:?} collides with WE g_Texture{} for object {:?}",
+                            target, SCENE_WE_PASS_INPUT_TEXTURE_SLOT, draw.object
+                        ));
+                    }
+                    let input = target_input(target)?;
+                    if input.target != target {
+                        return Err(format!(
+                            "scene texture descriptor plan target resolver returned {:?} for requested {:?}",
+                            input.target, target
+                        ));
+                    }
+                    draw_bindings.push(NativeVulkanSceneTextureDescriptorBinding {
+                        draw_index,
+                        object: draw.object,
+                        slot: SCENE_WE_PASS_INPUT_TEXTURE_SLOT,
+                        role: SceneGraphResourceRole::shader_texture(
+                            SCENE_WE_PASS_INPUT_TEXTURE_SLOT,
+                        ),
+                        source: NativeVulkanSceneTextureDescriptorSource::GraphTarget(target),
+                        width: input.width,
+                        height: input.height,
+                        format: NativeVulkanSceneTextureDescriptorFormat::VkFormat(input.format),
+                        mip_count: 1,
+                        payload_bytes: None,
+                        shader_mapping: scene_shader_texture_mapping(
+                            SCENE_WE_PASS_INPUT_TEXTURE_SLOT,
+                        ),
+                    });
+                }
+                draw_bindings.sort_by_key(|binding| binding.slot);
+                bindings.extend(draw_bindings);
                 draw_index += 1;
             }
         }
@@ -116,6 +233,54 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
             ],
         })
     }
+}
+
+struct ResidentTextureDescriptor {
+    width: u32,
+    height: u32,
+    format: SceneTextureFormat,
+    mip_count: u32,
+    payload_bytes: u64,
+}
+
+fn resident_texture_descriptor(
+    resource: SceneResourceId,
+    texture: SceneTextureResidency,
+) -> Result<ResidentTextureDescriptor, String> {
+    let width = texture
+        .width
+        .ok_or_else(|| format!("scene texture descriptor {:?} missing width", resource))?;
+    let height = texture
+        .height
+        .ok_or_else(|| format!("scene texture descriptor {:?} missing height", resource))?;
+    let format = texture.format.ok_or_else(|| {
+        format!(
+            "scene texture descriptor {:?} missing native format",
+            resource
+        )
+    })?;
+    let mip_count = texture
+        .mip_count
+        .ok_or_else(|| format!("scene texture descriptor {:?} missing mip count", resource))?;
+    let payload_bytes = texture.payload_bytes.ok_or_else(|| {
+        format!(
+            "scene texture descriptor {:?} missing payload byte count",
+            resource
+        )
+    })?;
+    if width == 0 || height == 0 || mip_count == 0 {
+        return Err(format!(
+            "scene texture descriptor {:?} has invalid metadata {width}x{height} mips={mip_count}",
+            resource
+        ));
+    }
+    Ok(ResidentTextureDescriptor {
+        width,
+        height,
+        format,
+        mip_count,
+        payload_bytes,
+    })
 }
 
 #[cfg(test)]
@@ -163,12 +328,17 @@ mod tests {
         assert_eq!(plan.descriptor_model, "VK_EXT_descriptor_heap");
         assert_eq!(plan.bindings[0].draw_index, 0);
         assert_eq!(plan.bindings[0].object, SceneObjectId(7));
-        assert_eq!(plan.bindings[0].resource, SceneResourceId(3));
+        assert_eq!(
+            plan.bindings[0].source,
+            NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(3))
+        );
         assert_eq!(
             plan.bindings[0].format,
-            Some(SceneTextureFormat::R8G8B8A8Unorm)
+            NativeVulkanSceneTextureDescriptorFormat::SceneTexture(
+                SceneTextureFormat::R8G8B8A8Unorm
+            )
         );
-        assert_eq!(plan.bindings[0].mip_count, Some(10));
+        assert_eq!(plan.bindings[0].mip_count, 10);
         assert_eq!(plan.bindings[0].payload_bytes, Some(2_796_204));
         assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.g_Texture0");
         assert_eq!(plan.bindings[1].slot, 4);
@@ -264,6 +434,98 @@ mod tests {
         assert_eq!(plan.draw_count, 1);
         assert_eq!(plan.binding_count, 1);
         assert_eq!(plan.bindings[0].object, SceneObjectId(7));
+    }
+
+    #[test]
+    fn texture_descriptor_plan_binds_pass_input_target_as_texture0() {
+        let mut draw = mesh_draw(SceneObjectId(7), Vec::new());
+        draw.resources.clear();
+        let graph = SceneGraph {
+            passes: vec![SceneGraphPass {
+                name: "effect-resolve".to_owned(),
+                input: Some(SceneGraphTarget::EffectTarget(0)),
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![draw],
+            }],
+        };
+
+        let plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph_with_target_inputs(
+            &graph,
+            |_| None,
+            |target| {
+                Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                    target,
+                    width: 3840,
+                    height: 2160,
+                    format: NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat,
+                })
+            },
+        )
+        .expect("target input descriptor plan");
+
+        assert_eq!(plan.draw_count, 1);
+        assert_eq!(plan.binding_count, 1);
+        assert_eq!(plan.bindings[0].slot, 0);
+        assert_eq!(
+            plan.bindings[0].source,
+            NativeVulkanSceneTextureDescriptorSource::GraphTarget(SceneGraphTarget::EffectTarget(
+                0
+            ))
+        );
+        assert_eq!(plan.bindings[0].width, 3840);
+        assert_eq!(plan.bindings[0].height, 2160);
+        assert_eq!(
+            plan.bindings[0].format,
+            NativeVulkanSceneTextureDescriptorFormat::VkFormat(
+                NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat
+            )
+        );
+        assert_eq!(plan.bindings[0].mip_count, 1);
+        assert_eq!(plan.bindings[0].payload_bytes, None);
+    }
+
+    #[test]
+    fn texture_descriptor_plan_rejects_pass_input_texture0_collision() {
+        let graph = SceneGraph {
+            passes: vec![SceneGraphPass {
+                name: "effect-resolve".to_owned(),
+                input: Some(SceneGraphTarget::EffectTarget(0)),
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![mesh_draw(
+                    SceneObjectId(7),
+                    vec![SceneGraphResourceBinding {
+                        slot: 0,
+                        role: SceneGraphResourceRole::shader_texture(0),
+                        resource: SceneResourceId(3),
+                    }],
+                )],
+            }],
+        };
+
+        let err = NativeVulkanSceneTextureDescriptorFramePlan::from_graph_with_target_inputs(
+            &graph,
+            |resource| {
+                Some(SceneTextureResidency {
+                    id: resource,
+                    width: Some(1024),
+                    height: Some(512),
+                    format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+                    mip_count: Some(10),
+                    payload_bytes: Some(2_796_204),
+                })
+            },
+            |target| {
+                Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                    target,
+                    width: 3840,
+                    height: 2160,
+                    format: NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat,
+                })
+            },
+        )
+        .expect_err("target input collides with draw texture0");
+
+        assert!(err.contains("collides with WE g_Texture0"));
     }
 
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {

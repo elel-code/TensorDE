@@ -143,9 +143,11 @@ mod tests {
     use crate::renderer::native_vulkan::scene_backend::material_uniforms::{
         NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
     };
+    use crate::renderer::native_vulkan::scene_backend::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
     use crate::renderer::native_vulkan::scene_backend::resource_heap::NativeVulkanSceneResourceHeapFramePlan;
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
-        NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFramePlan,
+        NativeVulkanSceneTextureDescriptorBinding, NativeVulkanSceneTextureDescriptorFormat,
+        NativeVulkanSceneTextureDescriptorFramePlan, NativeVulkanSceneTextureDescriptorSource,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_images::NativeVulkanSceneTextureImageBinding;
     use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
@@ -160,6 +162,7 @@ mod tests {
             descriptor_heap_properties(),
             material_binding,
             texture_binding,
+            target_binding,
         )
         .expect("resource heap frame plan");
 
@@ -228,11 +231,15 @@ mod tests {
                 object: SceneObjectId(1),
                 slot: 0,
                 role: SceneGraphResourceRole::shader_texture(0),
-                resource: SceneResourceId(7),
-                width: Some(64),
-                height: Some(64),
-                format: Some(crate::engine::scene_engine::SceneTextureFormat::R8G8B8A8Unorm),
-                mip_count: Some(1),
+                source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(
+                    7,
+                )),
+                width: 64,
+                height: 64,
+                format: NativeVulkanSceneTextureDescriptorFormat::SceneTexture(
+                    crate::engine::scene_engine::SceneTextureFormat::R8G8B8A8Unorm,
+                ),
+                mip_count: 1,
                 payload_bytes: Some(16_384),
                 shader_mapping: "set0.binding0.g_Texture0".to_owned(),
             }],
@@ -288,5 +295,11 @@ mod tests {
             height: 64,
             mip_count: 1,
         })
+    }
+
+    fn target_binding(
+        target: SceneGraphTarget,
+    ) -> Result<NativeVulkanSceneOffscreenTargetBinding, String> {
+        Err(format!("unexpected graph target input {target:?}"))
     }
 }

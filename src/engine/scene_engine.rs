@@ -28,8 +28,9 @@ pub mod we;
 
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
-    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneGraph, SceneGraphDraw, SceneGraphPass,
-    SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
+    SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneGraph,
+    SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding,
+    SceneGraphResourceRole, SceneGraphTarget,
 };
 pub use graph_execution::{
     SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTargetBarrier,

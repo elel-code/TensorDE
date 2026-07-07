@@ -110,6 +110,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     let slot_sync = frame_slots.slot_sync(prepare_slot)?;
     let mut submitted_to_queue = false;
     let result = (|| -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
+        let offscreen_target_plan = frame_resources.offscreen_target_frame_plan(
+            graph_execution,
+            swapchain_extent,
+            |target| target_formats.format(target),
+        )?;
+        let offscreen_target_count = offscreen_target_plan.target_count;
+        let offscreen_target_action_count = frame_resources
+            .sync_offscreen_targets(
+                device,
+                memory_properties,
+                frame_submission,
+                &offscreen_target_plan,
+            )?
+            .len();
         native_vulkan_begin_scene_frame_command_buffer(device, slot_sync.command_buffer)?;
         let resource_prepare = native_vulkan_record_scene_mesh_resource_prepare_frame(
             frame_resources,
@@ -140,20 +154,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 .map_err(|err| format!("vkWaitForFences(scene cold resource prepare): {err:?}"))?;
         }
         frame_slots.complete_frame_submission(frame_submission)?;
-        let offscreen_target_plan = frame_resources.offscreen_target_frame_plan(
-            graph_execution,
-            swapchain_extent,
-            |target| target_formats.format(target),
-        )?;
-        let offscreen_target_count = offscreen_target_plan.target_count;
-        let offscreen_target_action_count = frame_resources
-            .sync_offscreen_targets(
-                device,
-                memory_properties,
-                frame_submission,
-                &offscreen_target_plan,
-            )?
-            .len();
         let _ = frame_resources.release_completed_frame_resources(device, frame_submission);
         let pipeline_prepare = native_vulkan_prepare_scene_mesh_pipeline_cache_with_target_formats(
             device,
@@ -177,10 +177,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
             command_order: [
+                "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
-                "sync_retained_offscreen_targets",
                 "release_completed_prepare_staging",
                 "prepare_scene_mesh_pipeline_cache",
             ],

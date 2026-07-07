@@ -101,7 +101,7 @@ impl<'a> NativeVulkanSceneMeshPassCommandPlan<'a> {
         let mut indexed_draw_count = 0usize;
 
         for draw in &pass.draws {
-            let transition = draw_list_state.next_draw(&pass.name, draw)?;
+            let transition = draw_list_state.next_draw(&pass.name, pass.input, draw)?;
             if transition.bind_pipeline {
                 commands.push(NativeVulkanSceneMeshPassCommand::BindPipeline {
                     bind: NativeVulkanScenePipelineBindPlan::from_key(transition.pipeline_key),
@@ -190,7 +190,7 @@ where
         let draw_index = draw_index_start
             .checked_add(local_draw_index)
             .ok_or_else(|| format!("scene mesh pass '{}' draw index overflow", pass.name))?;
-        let transition = draw_list_state.next_draw(&pass.name, draw)?;
+        let transition = draw_list_state.next_draw(&pass.name, pass.input, draw)?;
         if transition.bind_pipeline {
             let pipeline = pipeline_for_key(transition.pipeline_key)?;
             let bind = native_vulkan_record_scene_pipeline_bind_command(
@@ -210,6 +210,7 @@ where
                 device,
                 command_buffer,
                 draw_index,
+                pass.input,
                 draw,
                 bind_info,
             )?;

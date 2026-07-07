@@ -37,7 +37,8 @@ impl SceneShaderUniformFramePlan {
                             draw.material.shader
                         )
                     })?;
-                let texture_slot_mask = draw.shader_texture_slot_mask()?;
+                let texture_slot_mask =
+                    draw.shader_texture_slot_mask_with_pass_input(pass.input)?;
                 if interface.shader == "we/genericimage4" {
                     genericimage4_material_records.push(
                         SceneGenericImage4MaterialUniformRecord::from_draw(
@@ -151,6 +152,41 @@ mod tests {
             .expect_err("genericimage4 requires g_Texture0");
 
         assert!(err.contains("requires texture slots"));
+    }
+
+    #[test]
+    fn shader_uniform_plan_uses_pass_input_as_genericimage4_texture0() {
+        let mut draw = genericimage4_draw(SceneObjectId(7), SceneResourceId(3));
+        draw.resources.clear();
+        let graph = SceneGraph {
+            passes: vec![SceneGraphPass {
+                name: "effect-resolve".to_owned(),
+                input: Some(SceneGraphTarget::EffectTarget(0)),
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![draw],
+            }],
+        };
+
+        let plan = SceneShaderUniformFramePlan::from_graph(&graph).unwrap();
+
+        assert_eq!(plan.genericimage4_material_records[0].texture_slot_mask, 1);
+    }
+
+    #[test]
+    fn shader_uniform_plan_rejects_pass_input_texture0_collision() {
+        let graph = SceneGraph {
+            passes: vec![SceneGraphPass {
+                name: "effect-resolve".to_owned(),
+                input: Some(SceneGraphTarget::EffectTarget(0)),
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![genericimage4_draw(SceneObjectId(7), SceneResourceId(3))],
+            }],
+        };
+
+        let err = SceneShaderUniformFramePlan::from_graph(&graph)
+            .expect_err("pass input and draw texture0 collide");
+
+        assert!(err.contains("collides with WE g_Texture0"));
     }
 
     fn genericimage4_draw(object: SceneObjectId, texture: SceneResourceId) -> SceneGraphDraw {

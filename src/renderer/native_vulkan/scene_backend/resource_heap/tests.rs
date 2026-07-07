@@ -4,7 +4,11 @@ use super::super::material_uniforms::{
     NativeVulkanSceneMaterialUniformGpuBufferBinding, NativeVulkanSceneMaterialUniformKey,
     NativeVulkanSceneMaterialUniformUploadPlan,
 };
-use super::super::texture_descriptors::NativeVulkanSceneTextureDescriptorFramePlan;
+use super::super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
+use super::super::texture_descriptors::{
+    NativeVulkanSceneTargetInputTextureDescriptor, NativeVulkanSceneTextureDescriptorFramePlan,
+    NativeVulkanSceneTextureDescriptorSource, NativeVulkanSceneTextureDescriptorVkFormat,
+};
 use super::super::texture_images::NativeVulkanSceneTextureImageBinding;
 use super::frame_plan::{
     NativeVulkanSceneResourceHeapEntryRole, NativeVulkanSceneResourceHeapFramePlan,
@@ -48,6 +52,7 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
         texture_binding,
+        target_binding,
     )
     .expect("resource heap frame plan");
 
@@ -120,6 +125,7 @@ fn resource_heap_plan_dedupes_identical_draw_resource_sets() {
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
         texture_binding,
+        target_binding,
     )
     .expect("resource heap frame plan");
 
@@ -150,6 +156,7 @@ fn resource_heap_plan_rejects_mismatched_draw_count() {
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
         texture_binding,
+        target_binding,
     )
     .expect_err("draw count mismatch must fail");
 
@@ -178,6 +185,7 @@ fn resource_heap_plan_requires_retained_material_uniform_gpu_binding() {
             ))
         },
         texture_binding,
+        target_binding,
     )
     .expect_err("missing retained material uniform GPU binding must fail");
 
@@ -208,6 +216,7 @@ fn resource_heap_plan_rejects_zero_material_uniform_device_address() {
         descriptor_heap_properties(),
         |key| material_binding(&material_bindings, key),
         texture_binding,
+        target_binding,
     )
     .expect_err("zero material uniform device address must fail");
 
@@ -237,10 +246,88 @@ fn resource_heap_plan_rejects_texture_image_metadata_mismatch() {
             binding.width = 2048;
             Ok(binding)
         },
+        target_binding,
     )
     .expect_err("texture metadata mismatch must fail");
 
     assert!(err.contains("descriptor width"));
+}
+
+#[test]
+fn resource_heap_plan_binds_graph_target_input_as_sampled_image() {
+    let graph = SceneGraph {
+        passes: vec![
+            SceneGraphPass {
+                name: "effect-write".to_owned(),
+                input: None,
+                output: SceneGraphTarget::EffectTarget(0),
+                draws: vec![mesh_draw(
+                    SceneObjectId(7),
+                    vec![SceneGraphResourceBinding {
+                        slot: 0,
+                        role: SceneGraphResourceRole::shader_texture(0),
+                        resource: SceneResourceId(3),
+                    }],
+                )],
+            },
+            SceneGraphPass {
+                name: "effect-resolve".to_owned(),
+                input: Some(SceneGraphTarget::EffectTarget(0)),
+                output: SceneGraphTarget::Swapchain,
+                draws: vec![mesh_draw(SceneObjectId(8), Vec::new())],
+            },
+        ],
+    };
+    let material_bindings = material_bindings(&graph);
+    let texture_plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph_with_target_inputs(
+        &graph,
+        |resource| {
+            Some(SceneTextureResidency {
+                id: resource,
+                width: Some(1024),
+                height: Some(512),
+                format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+                mip_count: Some(10),
+                payload_bytes: Some(2_796_204),
+            })
+        },
+        |target| {
+            Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                target,
+                width: 3840,
+                height: 2160,
+                format: NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat,
+            })
+        },
+    )
+    .expect("target input texture descriptor plan");
+
+    let plan = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+        &graph,
+        &texture_plan,
+        descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
+        texture_binding,
+        target_binding,
+    )
+    .expect("resource heap frame plan with target input");
+
+    assert_eq!(plan.draw_count, 2);
+    assert_eq!(plan.resource_set_count, 2);
+    assert_eq!(plan.resource_descriptor_count, 4);
+    assert_eq!(plan.sampler_descriptor_count, 2);
+    assert_eq!(plan.draw_bindings[1].texture_count, 1);
+    assert!(matches!(
+        plan.entries[3].role,
+        NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture {
+            source: NativeVulkanSceneTextureDescriptorSource::GraphTarget(
+                SceneGraphTarget::EffectTarget(0)
+            ),
+            slot: 0,
+            image_handle,
+            ..
+        } if image_handle == 0x9400
+    ));
 }
 
 fn material_bindings(
@@ -309,6 +396,31 @@ fn texture_binding(
         height: 512,
         mip_count: 10,
     })
+}
+
+fn target_binding(
+    target: SceneGraphTarget,
+) -> Result<NativeVulkanSceneOffscreenTargetBinding, String> {
+    Ok(NativeVulkanSceneOffscreenTargetBinding {
+        target,
+        image: vk::Image::from_raw(0x9000 + target_binding_ordinal(target)),
+        view: vk::ImageView::from_raw(0xa000 + target_binding_ordinal(target)),
+        sampler: vk::Sampler::from_raw(0xb000 + target_binding_ordinal(target)),
+        format: vk::Format::R16G16B16A16_SFLOAT,
+        width: 3840,
+        height: 2160,
+        current_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+    })
+}
+
+fn target_binding_ordinal(target: SceneGraphTarget) -> u64 {
+    match target {
+        SceneGraphTarget::Swapchain => 0,
+        SceneGraphTarget::ImageLocalMain(index) => 0x100 + u64::from(index),
+        SceneGraphTarget::ImageLocalSub(index) => 0x200 + u64::from(index),
+        SceneGraphTarget::NamedFbo(index) => 0x300 + u64::from(index),
+        SceneGraphTarget::EffectTarget(index) => 0x400 + u64::from(index),
+    }
 }
 
 fn descriptor_heap_properties() -> NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {

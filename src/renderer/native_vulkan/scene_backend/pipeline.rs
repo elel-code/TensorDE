@@ -79,6 +79,13 @@ pub enum NativeVulkanScenePipelineCacheAction {
 
 impl<'a> NativeVulkanScenePipelineKey<'a> {
     pub fn from_draw(draw: &'a SceneGraphDraw) -> Result<Self, String> {
+        Self::from_draw_with_pass_input(draw, None)
+    }
+
+    pub fn from_draw_with_pass_input(
+        draw: &'a SceneGraphDraw,
+        pass_input: Option<crate::engine::scene_engine::SceneGraphTarget>,
+    ) -> Result<Self, String> {
         if draw.material.shader.is_empty() {
             return Err("scene pipeline key requires a non-empty WE shader name".to_owned());
         }
@@ -87,7 +94,7 @@ impl<'a> NativeVulkanScenePipelineKey<'a> {
             blend: draw.material.blend,
             render_state: draw.material.render_state,
             pipeline_class: draw.pipeline,
-            texture_slot_mask: draw.shader_texture_slot_mask()?,
+            texture_slot_mask: draw.shader_texture_slot_mask_with_pass_input(pass_input)?,
         })
     }
 }
