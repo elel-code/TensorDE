@@ -90,7 +90,7 @@ impl SceneGraphDraw {
             }
             mask |= bit;
         }
-        Ok(mask)
+        self.material.shader_texture_slot_mask(mask)
     }
 }
 

@@ -17,9 +17,9 @@ use crate::core::scene::{
 };
 
 use super::super::{
-    SceneBlendContract, SceneEnginePlan, SceneGeometryId, SceneMaterialContract, SceneObject,
-    SceneObjectGeometry, SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId,
-    SceneTextureFormat,
+    SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan, SceneGeometryId,
+    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectGeometry,
+    SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -119,8 +119,9 @@ pub enum GscnGeometryFact {
 pub struct GscnMaterialFact {
     pub shader: Option<String>,
     pub blend_code: Option<u16>,
-    pub writes_depth: bool,
-    pub tests_depth: bool,
+    pub depth_test: SceneDepthTest,
+    pub depth_write: bool,
+    pub cull_mode: SceneCullMode,
 }
 
 impl GscnSceneFacts {
@@ -366,8 +367,11 @@ fn engine_material(kind: GscnObjectKind, material: GscnMaterialFact) -> SceneMat
             .blend_code
             .map(we_material_blend_contract)
             .unwrap_or(SceneBlendContract::TranslucentAlpha),
-        writes_depth: material.writes_depth,
-        tests_depth: material.tests_depth,
+        render_state: SceneMaterialRenderState {
+            depth_test: material.depth_test,
+            depth_write: material.depth_write,
+            cull_mode: material.cull_mode,
+        },
     }
 }
 
@@ -386,6 +390,7 @@ fn default_shader_name(kind: GscnObjectKind) -> &'static str {
 fn we_material_blend_contract(code: u16) -> SceneBlendContract {
     match code {
         2 => SceneBlendContract::Additive,
+        3 => SceneBlendContract::AlphaToCoverage,
         6 => SceneBlendContract::NormalReplace,
         8 => SceneBlendContract::ShaderColorBlend(28),
         _ => SceneBlendContract::TranslucentAlpha,
@@ -477,8 +482,9 @@ mod tests {
                     material: GscnMaterialFact {
                         shader: None,
                         blend_code: Some(8),
-                        writes_depth: false,
-                        tests_depth: false,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
                     },
                     source_resource_index: Some(0),
                 },
@@ -489,8 +495,9 @@ mod tests {
                     material: GscnMaterialFact {
                         shader: None,
                         blend_code: Some(6),
-                        writes_depth: false,
-                        tests_depth: false,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
                     },
                     source_resource_index: Some(1),
                 },

@@ -19,11 +19,11 @@ use crate::core::scene::binary::{
     SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryMaterialPassRecord,
     SceneBinaryNodeRecord, decode_effect_pass_record, decode_texture_slot_record,
 };
-use crate::engine::scene_engine::SceneEnginePlan;
 use crate::engine::scene_engine::ingest::gscn::{
     GscnGeometryFact, GscnMaterialFact, GscnMeshResourceFact, GscnObjectFact, GscnObjectKind,
     GscnPuppetResourceFact, GscnResourceFact, GscnSceneCounts, GscnSceneFacts,
 };
+use crate::engine::scene_engine::{SceneCullMode, SceneDepthTest, SceneEnginePlan};
 use crate::renderer::RendererPlanError;
 
 use super::BINARY_TEXTURE_ROLE_BASE_COLOR;
@@ -286,9 +286,36 @@ fn gscn_material_fact(
     Ok(GscnMaterialFact {
         shader: gscn_effect_shader_name(reader, names, material)?,
         blend_code: material.map(|material| material.blend_mode),
-        writes_depth: false,
-        tests_depth: false,
+        depth_test: material
+            .map(|material| gscn_depth_test(material.depth_test))
+            .unwrap_or(SceneDepthTest::Disabled),
+        depth_write: material
+            .map(|material| gscn_depth_write(material.depth_write))
+            .unwrap_or(false),
+        cull_mode: material
+            .map(|material| gscn_cull_mode(material.cull_mode))
+            .unwrap_or(SceneCullMode::None),
     })
+}
+
+fn gscn_depth_test(code: u16) -> SceneDepthTest {
+    match code {
+        1 => SceneDepthTest::LessEqual,
+        2 => SceneDepthTest::Disabled,
+        _ => SceneDepthTest::Disabled,
+    }
+}
+
+fn gscn_depth_write(code: u16) -> bool {
+    matches!(code, 1)
+}
+
+fn gscn_cull_mode(code: u16) -> SceneCullMode {
+    match code {
+        2 => SceneCullMode::Back,
+        3 => SceneCullMode::Front,
+        _ => SceneCullMode::None,
+    }
 }
 
 fn gscn_effect_shader_name(

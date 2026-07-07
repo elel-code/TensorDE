@@ -14,7 +14,10 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SCENE_GPU_MESH_VERTEX_BYTES, SceneBlendContract};
+use crate::engine::scene_engine::{
+    SCENE_GPU_MESH_VERTEX_BYTES, SceneBlendContract, SceneCullMode, SceneDepthTest,
+    WeShaderInterface,
+};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_combined_image_sampler_binding_mapping,
@@ -46,8 +49,9 @@ pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub dynamic_states: [&'static str; 2],
     pub shader_resource_mappings: Vec<String>,
     pub blend: &'static str,
-    pub depth_test: bool,
+    pub depth_test: &'static str,
     pub depth_write: bool,
+    pub cull_mode: &'static str,
     pub dynamic_rendering_scope: &'static str,
 }
 
@@ -63,8 +67,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         dynamic_states: ["viewport", "scissor"],
         shader_resource_mappings: scene_mesh_shader_resource_mapping_labels(key),
         blend: scene_pipeline_blend_label(key.blend),
-        depth_test: key.tests_depth,
-        depth_write: key.writes_depth,
+        depth_test: scene_depth_test_label(key.render_state.depth_test),
+        depth_write: key.render_state.depth_write,
+        cull_mode: scene_cull_mode_label(key.render_state.cull_mode),
         dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
 }
@@ -129,7 +134,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_mesh_pipeli
                     .build();
                 let rasterization = vk::PipelineRasterizationStateCreateInfo::builder()
                     .polygon_mode(vk::PolygonMode::FILL)
-                    .cull_mode(vk::CullModeFlags::NONE)
+                    .cull_mode(scene_mesh_cull_mode(key.render_state.cull_mode))
                     .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
                     .line_width(1.0)
                     .build();
@@ -232,9 +237,9 @@ fn scene_mesh_depth_stencil_state(
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> vk::PipelineDepthStencilStateCreateInfo {
     vk::PipelineDepthStencilStateCreateInfo::builder()
-        .depth_test_enable(key.tests_depth)
-        .depth_write_enable(key.writes_depth)
-        .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
+        .depth_test_enable(key.render_state.depth_test.enabled())
+        .depth_write_enable(key.render_state.depth_write)
+        .depth_compare_op(scene_depth_compare_op(key.render_state.depth_test))
         .build()
 }
 
@@ -248,9 +253,9 @@ fn scene_mesh_color_blend_attachment(
             | vk::ColorComponentFlags::A,
     );
     match blend {
-        SceneBlendContract::NormalReplace | SceneBlendContract::ShaderColorBlend(_) => {
-            base.blend_enable(false).build()
-        }
+        SceneBlendContract::NormalReplace
+        | SceneBlendContract::AlphaToCoverage
+        | SceneBlendContract::ShaderColorBlend(_) => base.blend_enable(false).build(),
         SceneBlendContract::TranslucentAlpha => base
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
@@ -277,7 +282,47 @@ fn scene_pipeline_blend_label(blend: SceneBlendContract) -> &'static str {
         SceneBlendContract::NormalReplace => "normal-replace-one-zero",
         SceneBlendContract::TranslucentAlpha => "translucent-src-alpha-inv-src-alpha",
         SceneBlendContract::Additive => "additive-src-alpha-one",
+        SceneBlendContract::AlphaToCoverage => "alpha-to-coverage-one-zero",
         SceneBlendContract::ShaderColorBlend(_) => "shader-color-blend-one-zero",
+    }
+}
+
+fn scene_depth_test_label(depth_test: SceneDepthTest) -> &'static str {
+    match depth_test {
+        SceneDepthTest::Disabled => "disabled",
+        SceneDepthTest::Less => "less",
+        SceneDepthTest::LessEqual => "lessequal",
+        SceneDepthTest::Equal => "equal",
+        SceneDepthTest::NotEqual => "notequal",
+        SceneDepthTest::Greater => "greater",
+        SceneDepthTest::Never => "never",
+    }
+}
+
+fn scene_cull_mode_label(cull_mode: SceneCullMode) -> &'static str {
+    match cull_mode {
+        SceneCullMode::None => "nocull",
+        SceneCullMode::Front => "front",
+        SceneCullMode::Back => "back",
+    }
+}
+
+fn scene_depth_compare_op(depth_test: SceneDepthTest) -> vk::CompareOp {
+    match depth_test {
+        SceneDepthTest::Disabled | SceneDepthTest::LessEqual => vk::CompareOp::LESS_OR_EQUAL,
+        SceneDepthTest::Less => vk::CompareOp::LESS,
+        SceneDepthTest::Equal => vk::CompareOp::EQUAL,
+        SceneDepthTest::NotEqual => vk::CompareOp::NOT_EQUAL,
+        SceneDepthTest::Greater => vk::CompareOp::GREATER,
+        SceneDepthTest::Never => vk::CompareOp::NEVER,
+    }
+}
+
+fn scene_mesh_cull_mode(cull_mode: SceneCullMode) -> vk::CullModeFlags {
+    match cull_mode {
+        SceneCullMode::None => vk::CullModeFlags::NONE,
+        SceneCullMode::Front => vk::CullModeFlags::FRONT,
+        SceneCullMode::Back => vk::CullModeFlags::BACK,
     }
 }
 
@@ -338,6 +383,13 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
     if key.target_format == vk::Format::UNDEFINED {
         return Err("scene mesh pipeline requires defined target format".to_owned());
     }
+    let interface = WeShaderInterface::for_shader(&key.shader).ok_or_else(|| {
+        format!(
+            "scene mesh pipeline references unknown WE shader '{}'",
+            key.shader
+        )
+    })?;
+    let _ = interface.texture_slot_mask_for_material(&key.shader, key.texture_slot_mask)?;
     Ok(())
 }
 
@@ -404,8 +456,16 @@ mod tests {
             ["location0.xy", "location1.uv", "location2.opacity"]
         );
         assert_eq!(plan.dynamic_states, ["viewport", "scissor"]);
-        assert_eq!(plan.shader_resource_mappings, Vec::<String>::new());
+        assert_eq!(
+            plan.shader_resource_mappings,
+            vec![
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> texture-set-offset0".to_owned()
+            ]
+        );
         assert_eq!(plan.blend, "translucent-src-alpha-inv-src-alpha");
+        assert_eq!(plan.depth_test, "disabled");
+        assert_eq!(plan.depth_write, false);
+        assert_eq!(plan.cull_mode, "nocull");
         assert_eq!(
             plan.dynamic_rendering_scope,
             "dynamic-rendering-no-render-pass"
@@ -507,12 +567,11 @@ mod tests {
         NativeVulkanScenePipelineCacheKey {
             shader: "we/genericimage4".to_owned(),
             blend: SceneBlendContract::TranslucentAlpha,
-            writes_depth: false,
-            tests_depth: false,
+            render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
             target_format: vk::Format::B8G8R8A8_UNORM,
-            texture_slot_mask: 0,
+            texture_slot_mask: 1,
         }
     }
 }

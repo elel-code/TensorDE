@@ -16,14 +16,15 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneBlendContract, SceneGraphDraw, SceneGraphPipelineClass};
+use crate::engine::scene_engine::{
+    SceneBlendContract, SceneGraphDraw, SceneGraphPipelineClass, SceneMaterialRenderState,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct NativeVulkanScenePipelineKey<'a> {
     pub shader: &'a str,
     pub blend: SceneBlendContract,
-    pub writes_depth: bool,
-    pub tests_depth: bool,
+    pub render_state: SceneMaterialRenderState,
     pub pipeline_class: SceneGraphPipelineClass,
     pub texture_slot_mask: u32,
 }
@@ -43,8 +44,7 @@ pub enum NativeVulkanScenePipelineVertexLayout {
 pub struct NativeVulkanScenePipelineCacheKey {
     pub shader: String,
     pub blend: SceneBlendContract,
-    pub writes_depth: bool,
-    pub tests_depth: bool,
+    pub render_state: SceneMaterialRenderState,
     pub pipeline_class: SceneGraphPipelineClass,
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
     pub target_format: vk::Format,
@@ -85,8 +85,7 @@ impl<'a> NativeVulkanScenePipelineKey<'a> {
         Ok(Self {
             shader: draw.material.shader.as_str(),
             blend: draw.material.blend,
-            writes_depth: draw.material.writes_depth,
-            tests_depth: draw.material.tests_depth,
+            render_state: draw.material.render_state,
             pipeline_class: draw.pipeline,
             texture_slot_mask: draw.shader_texture_slot_mask()?,
         })
@@ -104,8 +103,7 @@ impl NativeVulkanScenePipelineCacheKey {
         Ok(Self {
             shader: key.shader.to_owned(),
             blend: key.blend,
-            writes_depth: key.writes_depth,
-            tests_depth: key.tests_depth,
+            render_state: key.render_state,
             pipeline_class: key.pipeline_class,
             vertex_layout: scene_pipeline_vertex_layout(key.pipeline_class)?,
             target_format,
@@ -282,7 +280,7 @@ mod tests {
         assert_eq!(key.shader.as_ptr(), draw.material.shader.as_ptr());
         assert_eq!(key.blend, SceneBlendContract::TranslucentAlpha);
         assert_eq!(key.pipeline_class, SceneGraphPipelineClass::Mesh);
-        assert_eq!(key.texture_slot_mask, 0);
+        assert_eq!(key.texture_slot_mask, 1);
     }
 
     #[test]
@@ -306,7 +304,7 @@ mod tests {
 
         assert_eq!(cache_key.shader, "we/genericimage4");
         assert_eq!(cache_key.target_format, vk::Format::B8G8R8A8_UNORM);
-        assert_eq!(cache_key.texture_slot_mask, 0);
+        assert_eq!(cache_key.texture_slot_mask, 1);
         assert_eq!(
             cache_key.vertex_layout,
             NativeVulkanScenePipelineVertexLayout::SceneMeshV0
@@ -468,7 +466,14 @@ mod tests {
     }
 
     fn mesh_draw(shader: &str) -> SceneGraphDraw {
-        mesh_draw_with_resources(shader, Vec::new())
+        mesh_draw_with_resources(
+            shader,
+            vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource: SceneResourceId(7),
+            }],
+        )
     }
 
     fn mesh_draw_with_resources(
@@ -481,8 +486,8 @@ mod tests {
             material: SceneMaterialKey {
                 shader: shader.to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(4)),
             puppet: None,

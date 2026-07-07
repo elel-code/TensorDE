@@ -16,5 +16,8 @@ pub mod target;
 pub use effect::{WeEffectKind, WeEffectOutputContract};
 pub use image_graph::{WeImageGraph, WeImageGraphStep};
 pub use pass::{WePassBlendMove, WePassRole};
-pub use shader::WeShaderContract;
+pub use shader::{
+    WeShaderCombo, WeShaderContract, WeShaderInterface, WeShaderStage, WeShaderTextureRequirement,
+    WeShaderTextureSlot, WeShaderUniform, WeShaderUniformKind,
+};
 pub use target::WeTarget;

@@ -29,7 +29,10 @@ pub use graph::{
     SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneGraph, SceneGraphDraw, SceneGraphPass,
     SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
 };
-pub use material::{SceneBlendContract, SceneMaterialContract, SceneMaterialKey};
+pub use material::{
+    SceneBlendContract, SceneCullMode, SceneDepthTest, SceneMaterialContract, SceneMaterialKey,
+    SceneMaterialRenderState,
+};
 pub use object::{SceneObject, SceneObjectGeometry, SceneObjectId};
 pub use plan::SceneEnginePlan;
 pub use renderer_scene_render::RendererSceneRender;
@@ -48,3 +51,4 @@ pub use resource_residency::{
     SceneResourceResidencyPlan, SceneTextureResidency,
 };
 pub use timeline::{SceneSampleClock, SceneTimelineSample};
+pub use we::WeShaderInterface;

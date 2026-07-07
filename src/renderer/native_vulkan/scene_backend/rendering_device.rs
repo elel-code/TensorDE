@@ -180,8 +180,8 @@ mod tests {
                     material: SceneMaterialKey {
                         shader: "we/genericimage4".to_owned(),
                         blend: SceneBlendContract::TranslucentAlpha,
-                        writes_depth: false,
-                        tests_depth: false,
+                        render_state:
+                            crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
                     },
                     geometry: Some(SceneGeometryId(2)),
                     puppet: None,
@@ -228,8 +228,7 @@ mod tests {
                         material: SceneMaterialKey {
                             shader: "we/genericimage4".to_owned(),
                             blend: SceneBlendContract::TranslucentAlpha,
-                            writes_depth: false,
-                            tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
                         },
                         geometry: Some(SceneGeometryId(2)),
                         puppet: None,
@@ -286,8 +285,7 @@ mod tests {
                         material: SceneMaterialKey {
                             shader: "we/genericimage4".to_owned(),
                             blend: SceneBlendContract::TranslucentAlpha,
-                            writes_depth: false,
-                            tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
                         },
                         geometry: Some(SceneGeometryId(2)),
                         puppet: None,
@@ -363,8 +361,8 @@ mod tests {
             material: SceneMaterialKey {
                 shader: "we/genericimage4".to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(2)),
             puppet: None,

@@ -92,8 +92,8 @@ mod tests {
     use super::super::pipeline::NativeVulkanScenePipelineVertexLayout;
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphPass, SceneMaterialKey,
-        SceneObjectId,
+        SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
+        SceneGraphResourceBinding, SceneGraphResourceRole, SceneMaterialKey, SceneObjectId,
     };
 
     #[test]
@@ -111,7 +111,7 @@ mod tests {
             ),
             mesh_draw(
                 SceneObjectId(3),
-                "we/additive",
+                "we/genericimage4",
                 SceneBlendContract::Additive,
             ),
             mesh_draw(
@@ -131,7 +131,7 @@ mod tests {
         assert_eq!(plan.draw_count(), 4);
         assert_eq!(plan.cache_keys().len(), 2);
         assert_eq!(plan.cache_keys()[0].shader, "we/genericimage4");
-        assert_eq!(plan.cache_keys()[1].shader, "we/additive");
+        assert_eq!(plan.cache_keys()[1].shader, "we/genericimage4");
         assert_eq!(
             plan.cache_keys()[0].blend,
             SceneBlendContract::TranslucentAlpha
@@ -225,12 +225,16 @@ mod tests {
             material: SceneMaterialKey {
                 shader: shader.to_owned(),
                 blend,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(object.0)),
             puppet: None,
-            resources: Vec::new(),
+            resources: vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource: crate::engine::scene_engine::SceneResourceId(object.0),
+            }],
             index_count: 6,
         }
     }

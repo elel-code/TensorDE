@@ -274,9 +274,11 @@ mod tests {
 
     #[test]
     fn mesh_pass_plan_rebinds_when_pipeline_key_changes() {
+        let mut additive = mesh_draw(SceneObjectId(2), SceneGeometryId(5), "we/genericimage4");
+        additive.material.blend = SceneBlendContract::Additive;
         let pass = mesh_pass(vec![
             mesh_draw(SceneObjectId(1), SceneGeometryId(4), "we/genericimage4"),
-            mesh_draw(SceneObjectId(2), SceneGeometryId(5), "we/additive"),
+            additive,
         ]);
 
         let plan = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
@@ -329,12 +331,16 @@ mod tests {
             material: SceneMaterialKey {
                 shader: shader.to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(geometry),
             puppet: None,
-            resources: Vec::<SceneGraphResourceBinding>::new(),
+            resources: vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: crate::engine::scene_engine::SceneGraphResourceRole::shader_texture(0),
+                resource: crate::engine::scene_engine::SceneResourceId(object.0),
+            }],
             index_count: 6,
         }
     }

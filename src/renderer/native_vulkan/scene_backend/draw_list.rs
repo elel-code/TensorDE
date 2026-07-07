@@ -69,6 +69,13 @@ mod tests {
 
     #[test]
     fn mesh_draw_list_keeps_we_order_but_skips_redundant_pipeline_and_heap_binds() {
+        let mut additive_draw = mesh_draw(
+            SceneObjectId(4),
+            SceneGeometryId(7),
+            "we/genericimage4",
+            Some(SceneResourceId(8)),
+        );
+        additive_draw.material.blend = SceneBlendContract::Additive;
         let draws = [
             mesh_draw(
                 SceneObjectId(1),
@@ -88,12 +95,7 @@ mod tests {
                 "we/genericimage4",
                 Some(SceneResourceId(8)),
             ),
-            mesh_draw(
-                SceneObjectId(4),
-                SceneGeometryId(7),
-                "we/additive",
-                Some(SceneResourceId(8)),
-            ),
+            additive_draw,
         ];
         let mut state = NativeVulkanSceneMeshDrawListState::default();
 
@@ -150,8 +152,8 @@ mod tests {
             material: SceneMaterialKey {
                 shader: shader.to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(geometry),
             puppet: None,

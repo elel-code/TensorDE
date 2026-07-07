@@ -360,12 +360,16 @@ mod tests {
             material: SceneMaterialKey {
                 shader: "we/genericimage4".to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(object.0)),
             puppet: None,
-            resources: Vec::new(),
+            resources: vec![crate::engine::scene_engine::SceneGraphResourceBinding {
+                slot: 0,
+                role: crate::engine::scene_engine::SceneGraphResourceRole::shader_texture(0),
+                resource: crate::engine::scene_engine::SceneResourceId(object.0),
+            }],
             index_count: 6,
         }
     }

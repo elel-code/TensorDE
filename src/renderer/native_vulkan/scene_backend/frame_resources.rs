@@ -443,8 +443,8 @@ mod tests {
                     material: SceneMaterialKey {
                         shader: "we/genericimage4".to_owned(),
                         blend: SceneBlendContract::TranslucentAlpha,
-                        writes_depth: false,
-                        tests_depth: false,
+                        render_state:
+                            crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
                     },
                     geometry: Some(SceneGeometryId(4)),
                     puppet: None,
@@ -463,13 +463,12 @@ mod tests {
         NativeVulkanScenePipelineCacheKey {
             shader: "we/genericimage4".to_owned(),
             blend: SceneBlendContract::TranslucentAlpha,
-            writes_depth: false,
-            tests_depth: false,
+            render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout:
                 super::super::pipeline::NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
             target_format: vk::Format::B8G8R8A8_UNORM,
-            texture_slot_mask: 0,
+            texture_slot_mask: 1,
         }
     }
 

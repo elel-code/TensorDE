@@ -183,15 +183,13 @@ mod tests {
     }
 
     #[test]
-    fn texture_descriptor_plan_allows_mesh_draw_without_texture_binding() {
+    fn texture_descriptor_plan_rejects_genericimage4_without_required_texture0() {
         let graph = mesh_graph(vec![mesh_draw(SceneObjectId(7), Vec::new())]);
 
-        let plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |_| None)
-            .expect("texture-free mesh descriptor frame plan");
+        let err = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |_| None)
+            .expect_err("genericimage4 requires g_Texture0");
 
-        assert_eq!(plan.draw_count, 1);
-        assert_eq!(plan.binding_count, 0);
-        assert!(plan.bindings.is_empty());
+        assert!(err.contains("requires texture slots"));
     }
 
     #[test]
@@ -258,8 +256,8 @@ mod tests {
             material: SceneMaterialKey {
                 shader: "we/genericimage4".to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(object.0)),
             puppet: None,

@@ -7,28 +7,76 @@
 
 use serde::Serialize;
 
+use super::we::WeShaderInterface;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneBlendContract {
     NormalReplace,
     TranslucentAlpha,
     Additive,
+    AlphaToCoverage,
     ShaderColorBlend(u32),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum SceneDepthTest {
+    Disabled,
+    Less,
+    LessEqual,
+    Equal,
+    NotEqual,
+    Greater,
+    Never,
+}
+
+impl SceneDepthTest {
+    pub const fn enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum SceneCullMode {
+    None,
+    Front,
+    Back,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub struct SceneMaterialRenderState {
+    pub depth_test: SceneDepthTest,
+    pub depth_write: bool,
+    pub cull_mode: SceneCullMode,
+}
+
+impl SceneMaterialRenderState {
+    pub const fn translucent_2d() -> Self {
+        Self {
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+        }
+    }
+}
+
+impl Default for SceneMaterialRenderState {
+    fn default() -> Self {
+        Self::translucent_2d()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneMaterialKey {
     pub shader: String,
     pub blend: SceneBlendContract,
-    pub writes_depth: bool,
-    pub tests_depth: bool,
+    pub render_state: SceneMaterialRenderState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SceneMaterialContract {
     pub shader: String,
     pub blend: SceneBlendContract,
-    pub writes_depth: bool,
-    pub tests_depth: bool,
+    pub render_state: SceneMaterialRenderState,
 }
 
 impl SceneMaterialContract {
@@ -36,8 +84,7 @@ impl SceneMaterialContract {
         SceneMaterialKey {
             shader: self.shader.clone(),
             blend: self.blend,
-            writes_depth: self.writes_depth,
-            tests_depth: self.tests_depth,
+            render_state: self.render_state,
         }
     }
 
@@ -45,8 +92,19 @@ impl SceneMaterialContract {
         Self {
             shader: shader.into(),
             blend: SceneBlendContract::TranslucentAlpha,
-            writes_depth: false,
-            tests_depth: false,
+            render_state: SceneMaterialRenderState::translucent_2d(),
         }
+    }
+}
+
+impl SceneMaterialKey {
+    pub fn shader_texture_slot_mask(&self, resource_slot_mask: u32) -> Result<u32, String> {
+        let interface = WeShaderInterface::for_shader(&self.shader).ok_or_else(|| {
+            format!(
+                "scene material references unknown WE shader '{}'",
+                self.shader
+            )
+        })?;
+        interface.texture_slot_mask_for_material(&self.shader, resource_slot_mask)
     }
 }

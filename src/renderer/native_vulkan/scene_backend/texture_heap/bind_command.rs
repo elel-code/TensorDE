@@ -132,7 +132,7 @@ mod tests {
     }
 
     #[test]
-    fn texture_heap_draw_bind_plan_rejects_missing_texture_set() {
+    fn texture_heap_draw_bind_plan_rejects_missing_shader_required_texture_set() {
         let draw = mesh_draw(Vec::new());
         let texture_set = NativeVulkanSceneTextureSetKey {
             bindings: Vec::new(),
@@ -144,7 +144,7 @@ mod tests {
         )
         .expect_err("missing texture set must fail");
 
-        assert!(err.contains("requires a WE texture set"));
+        assert!(err.contains("requires texture slots"));
     }
 
     #[test]
@@ -191,8 +191,8 @@ mod tests {
             material: SceneMaterialKey {
                 shader: "we/genericimage4".to_owned(),
                 blend: SceneBlendContract::TranslucentAlpha,
-                writes_depth: false,
-                tests_depth: false,
+                render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(
+                ),
             },
             geometry: Some(SceneGeometryId(8)),
             puppet: None,
