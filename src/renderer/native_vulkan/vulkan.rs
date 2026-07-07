@@ -18,6 +18,8 @@ use self::core::profiles;
 use self::present::clear as present_clear;
 use self::present::render as render_present;
 use self::present::render_descriptors as render_present_descriptors;
+use self::present::scene as scene_present;
+use self::present::scene_prepare;
 use self::present::swapchain;
 use self::video::bitstream_buffer as video_bitstream_buffer;
 use self::video::decode_submit as video_decode_submit;
@@ -138,6 +140,15 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
 pub use render_present_descriptors::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
+pub use scene_prepare::{
+    NativeVulkanVulkanaliaScenePipelinePrepareSnapshot, NativeVulkanVulkanaliaScenePrepareSnapshot,
+    NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
+    NativeVulkanVulkanaliaSceneResourcePrepareSnapshot,
+};
+pub use scene_present::{
+    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
+    run_native_vulkan_vulkanalia_scene_present,
+};
 #[allow(unused_imports)]
 pub use swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -194,15 +205,6 @@ pub use video_present_device::{
 };
 pub use video_present_handoff::NativeVulkanVulkanaliaDecodedPresentHandoffSnapshot;
 #[cfg(feature = "native-vulkan-video")]
-pub(in crate::renderer::native_vulkan) use video_present_runtime::{
-    NativeVulkanFfmpegVulkanHwSceneVideoPresentOptions,
-    NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceOptions,
-    run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present,
-    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
-    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
-    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
-};
-#[cfg(feature = "native-vulkan-video")]
 pub use video_present_runtime::{
     NativeVulkanFfmpegVulkanHwSceneVideoPresentSnapshot,
     NativeVulkanFfmpegVulkanHwSceneVideoPresentSourceSnapshot,
@@ -222,6 +224,13 @@ pub use video_present_runtime::{
     NativeVulkanVulkanaliaAv1RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH264RetainedVideoPresentDecodeSnapshot,
     NativeVulkanVulkanaliaH265RetainedVideoPresentDecodeSnapshot,
+};
+#[cfg(feature = "native-vulkan-video")]
+pub(in crate::renderer::native_vulkan) use video_present_runtime::{
+    NativeVulkanVulkanaliaSceneVideoOverlayInput,
+    run_native_vulkan_vulkanalia_av1_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h264_streaming_video_present_decode_with_scene_video_overlay,
+    run_native_vulkan_vulkanalia_h265_streaming_video_present_decode_with_scene_video_overlay,
 };
 #[allow(unused_imports)]
 pub use video_profile_probe::{

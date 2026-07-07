@@ -130,6 +130,7 @@ use video::codec_reference;
 use audio::policy as audio_policy;
 use present::clear_runtime as clear_present_runtime;
 use present::render_item;
+use present::scene_runtime as scene_present_runtime;
 use present::static_image_runtime as static_image_present_runtime;
 use video::codec as video_codec;
 use video::codec_snapshots;
@@ -160,6 +161,7 @@ pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContra
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 pub use scene_backend::{NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice};
+pub use scene_present_runtime::{default_scene_shader_artifact_root, run_scene};
 pub use static_image_present_runtime::{run_static_image, run_static_image_vulkanalia};
 pub use video_codec::NativeVulkanVideoSessionCodec;
 #[cfg(feature = "native-vulkan-video")]

@@ -62,6 +62,28 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFramePlan<
     pub command_order: [&'static str; 9],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanScenePresentFrameSkipReason {
+    FrameSlotsPending,
+    SwapchainImageNotReady,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFrameSkipPlan {
+    pub frame_index: u64,
+    pub preferred_frame_slot: u32,
+    pub frame_slot: Option<u32>,
+    pub completed_resource_release: Option<NativeVulkanSceneFrameResourceRelease>,
+    pub reason: NativeVulkanScenePresentFrameSkipReason,
+    pub command_order: [&'static str; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanScenePresentFrameOutcome<'a> {
+    Presented(NativeVulkanScenePresentFramePlan<'a>),
+    Skipped(NativeVulkanScenePresentFrameSkipPlan),
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_present_frame_slot(
     frame_index: u64,
     frame_slot_count: usize,
@@ -81,17 +103,29 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: NativeVulkanScenePresentFrameContext<'_>,
     frame: &'a SceneFramePlan,
-) -> Result<NativeVulkanScenePresentFramePlan<'a>, String> {
+) -> Result<NativeVulkanScenePresentFrameOutcome<'a>, String> {
     validate_scene_present_frame_context(&context)?;
-    let frame_slot =
+    let preferred_frame_slot =
         native_vulkan_scene_present_frame_slot(frame_index, frame_slots.frame_slot_count())?;
-    let slot_prepare = frame_slots
-        .try_prepare_frame_slot(context.device, frame_slot)?
-        .ok_or_else(|| {
-            format!(
-                "scene frame slot {frame_slot} would block; previous submission is still in flight"
-            )
-        })?;
+    let Some(slot_prepare) =
+        frame_slots.try_prepare_latest_ready_frame_slot(context.device, preferred_frame_slot)?
+    else {
+        return Ok(NativeVulkanScenePresentFrameOutcome::Skipped(
+            NativeVulkanScenePresentFrameSkipPlan {
+                frame_index,
+                preferred_frame_slot,
+                frame_slot: None,
+                completed_resource_release: None,
+                reason: NativeVulkanScenePresentFrameSkipReason::FrameSlotsPending,
+                command_order: [
+                    "scan_latest_ready_scene_frame_slot",
+                    "skip_scene_frame_all_slots_pending",
+                    "do_not_record_mesh_effect_commands",
+                ],
+            },
+        ));
+    };
+    let frame_slot = slot_prepare.frame_slot;
     let completed_resource_release = slot_prepare.completed_submission.map(|submission| {
         frame_resources.release_completed_frame_resources(context.device, submission)
     });
@@ -99,8 +133,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
     let slot_sync = frame_slots.slot_sync(frame_slot)?;
     let mut submitted_to_queue = false;
 
-    let result = (|| -> Result<NativeVulkanScenePresentFramePlan<'a>, String> {
-        let acquire = native_vulkan_try_acquire_scene_frame_image(
+    let result = (|| -> Result<NativeVulkanScenePresentFrameOutcome<'a>, String> {
+        let Some(acquire) = native_vulkan_try_acquire_scene_frame_image(
             context.device,
             super::frame_acquire::NativeVulkanSceneFrameAcquireContext {
                 swapchain: context.swapchain,
@@ -108,7 +142,25 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
                 timeout_ns: NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS,
             },
         )?
-        .ok_or_else(|| "scene frame acquire would block; no swapchain image is ready".to_owned())?;
+        else {
+            frame_slots.abort_frame_submission(frame_submission)?;
+            let _ =
+                frame_resources.release_completed_frame_resources(context.device, frame_submission);
+            return Ok(NativeVulkanScenePresentFrameOutcome::Skipped(
+                NativeVulkanScenePresentFrameSkipPlan {
+                    frame_index,
+                    preferred_frame_slot,
+                    frame_slot: Some(frame_slot),
+                    completed_resource_release,
+                    reason: NativeVulkanScenePresentFrameSkipReason::SwapchainImageNotReady,
+                    command_order: [
+                        "scan_latest_ready_scene_frame_slot",
+                        "try_acquire_next_image_khr_scene_frame",
+                        "skip_scene_frame_no_swapchain_image",
+                    ],
+                },
+            ));
+        };
         let target = frame_slots.swapchain_target(
             context.swapchain_images,
             acquire.image_index,
@@ -155,30 +207,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
             },
         )?;
 
-        Ok(NativeVulkanScenePresentFramePlan {
-            frame_index,
-            frame_slot,
-            image_index: acquire.image_index,
-            completed_resource_release,
-            slot_prepare,
-            acquire: acquire.plan,
-            command_buffer_begin,
-            runtime_frame,
-            command_buffer_end,
-            submit,
-            present,
-            command_order: [
-                "prepare_scene_frame_slot",
-                "try_acquire_next_image_khr_scene_frame",
-                "begin_command_buffer_scene_frame",
-                "record_scene_mesh_runtime_frame",
-                "end_command_buffer_scene_frame",
-                "reset_scene_frame_fence",
-                "queue_submit2_scene_frame",
-                "mark_swapchain_image_presented",
-                "queue_present_khr_scene_frame",
-            ],
-        })
+        Ok(NativeVulkanScenePresentFrameOutcome::Presented(
+            NativeVulkanScenePresentFramePlan {
+                frame_index,
+                frame_slot,
+                image_index: acquire.image_index,
+                completed_resource_release,
+                slot_prepare,
+                acquire: acquire.plan,
+                command_buffer_begin,
+                runtime_frame,
+                command_buffer_end,
+                submit,
+                present,
+                command_order: [
+                    "prepare_scene_frame_slot",
+                    "try_acquire_next_image_khr_scene_frame",
+                    "begin_command_buffer_scene_frame",
+                    "record_scene_mesh_runtime_frame",
+                    "end_command_buffer_scene_frame",
+                    "reset_scene_frame_fence",
+                    "queue_submit2_scene_frame",
+                    "mark_swapchain_image_presented",
+                    "queue_present_khr_scene_frame",
+                ],
+            },
+        ))
     })();
 
     if result.is_err() && !submitted_to_queue {

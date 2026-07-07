@@ -2,11 +2,6 @@
 use gilder::core::{FitMode, ScenePathFillRule};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
-#[cfg(all(feature = "native-vulkan-renderer", feature = "native-vulkan-video"))]
-use gilder::renderer::native_vulkan::{
-    NativeVulkanAudioOutputMode, NativeVulkanVideoSessionSmokeOptions,
-    native_vulkan_resolve_ffmpeg_video_session_codec, native_vulkan_video_run_route,
-};
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::scene_engine_plan_from_gscn_path_with_properties;
 #[cfg(feature = "native-vulkan-renderer")]
@@ -135,9 +130,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
         NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
-        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
-        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_static_image,
-        wallpaper_type_support_matrix,
+        default_scene_shader_artifact_root, native_vulkan_video_duration_playback_frames,
+        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
+        run_scene, run_static_image, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
@@ -171,33 +166,33 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
     let mut fit = FitMode::Cover;
-    let mut fit_set = false;
+    let mut _fit_set = false;
     let mut background = None::<String>;
-    let mut scene_color = None::<String>;
-    let mut scene_text = None::<String>;
-    let mut scene_text_color = None::<String>;
-    let mut scene_text_font_size = None::<f64>;
-    let mut scene_path_data = None::<String>;
-    let mut scene_path_fill_rule = ScenePathFillRule::default();
-    let mut scene_stroke_color = None::<String>;
-    let mut scene_stroke_width = None::<f64>;
+    let mut _scene_color = None::<String>;
+    let mut _scene_text = None::<String>;
+    let mut _scene_text_color = None::<String>;
+    let mut _scene_text_font_size = None::<f64>;
+    let mut _scene_path_data = None::<String>;
+    let mut _scene_path_fill_rule = ScenePathFillRule::default();
+    let mut _scene_stroke_color = None::<String>;
+    let mut _scene_stroke_width = None::<f64>;
     let mut scene_video_layer = false;
-    let mut scene_root = None::<PathBuf>;
+    let mut _scene_root = None::<PathBuf>;
     let mut scene_properties = BTreeMap::<String, Value>::new();
     let mut scene_snapshot_time_ms = 0u64;
+    let mut scene_shader_artifact_root = default_scene_shader_artifact_root();
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
-    #[cfg(not(feature = "native-vulkan-video"))]
-    let audio_clock_probe_requested = false;
+    #[cfg(feature = "native-vulkan-video")]
     let mut audio_output_policy = NativeVulkanAudioOutputPolicy::Plan;
     let mut allow_foreground_layer = false;
     let mut video_session_options = NativeVulkanVideoSessionSmokeOptions::default();
     let mut vulkanalia_create_empty_session_parameters = false;
     let mut vulkanalia_create_session_parameters = false;
     let mut ready_prefix_playback_frames = 0u32;
-    let mut video_width_set = false;
-    let mut video_height_set = false;
+    let mut _video_width_set = false;
+    let mut _video_height_set = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -315,7 +310,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
                 options.clear_color = parse_color(&value)?;
                 if value.starts_with('#') {
-                    scene_color = Some(value);
+                    _scene_color = Some(value);
                 }
             }
             "--source" => {
@@ -330,16 +325,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--fit" => {
                 let value = args.next().ok_or("--fit requires a value")?;
                 fit = parse_fit_mode(&value)?;
-                fit_set = true;
+                _fit_set = true;
             }
             "--background" => {
                 background = Some(args.next().ok_or("--background requires #rrggbb")?);
             }
             "--text" => {
-                scene_text = Some(args.next().ok_or("--text requires a value")?);
+                _scene_text = Some(args.next().ok_or("--text requires a value")?);
             }
             "--text-color" => {
-                scene_text_color = Some(args.next().ok_or("--text-color requires #rrggbb")?);
+                _scene_text_color = Some(args.next().ok_or("--text-color requires #rrggbb")?);
             }
             "--font-size" => {
                 let font_size = args
@@ -350,20 +345,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if !font_size.is_finite() || font_size <= 0.0 {
                     return Err("--font-size must be finite and greater than zero".into());
                 }
-                scene_text_font_size = Some(font_size);
+                _scene_text_font_size = Some(font_size);
             }
             "--path-data" => {
-                scene_path_data = Some(args.next().ok_or("--path-data requires SVG path data")?);
+                _scene_path_data = Some(args.next().ok_or("--path-data requires SVG path data")?);
             }
             "--path-fill-rule" => {
-                scene_path_fill_rule = parse_scene_path_fill_rule(
+                _scene_path_fill_rule = parse_scene_path_fill_rule(
                     &args
                         .next()
                         .ok_or("--path-fill-rule requires nonzero or evenodd")?,
                 )?;
             }
             "--stroke-color" => {
-                scene_stroke_color = Some(args.next().ok_or("--stroke-color requires #rrggbb")?);
+                _scene_stroke_color = Some(args.next().ok_or("--stroke-color requires #rrggbb")?);
             }
             "--stroke-width" => {
                 let stroke_width = args
@@ -374,7 +369,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 if !stroke_width.is_finite() || stroke_width <= 0.0 {
                     return Err("--stroke-width must be finite and greater than zero".into());
                 }
-                scene_stroke_width = Some(stroke_width);
+                _scene_stroke_width = Some(stroke_width);
             }
             "--scene-time-ms" | "--snapshot-time-ms" => {
                 scene_snapshot_time_ms = args
@@ -384,9 +379,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .ok_or("--scene-time-ms requires milliseconds")?;
             }
             "--scene-root" => {
-                scene_root = Some(PathBuf::from(
+                _scene_root = Some(PathBuf::from(
                     args.next().ok_or("--scene-root requires PATH")?,
                 ));
+            }
+            "--scene-shader-artifact-root" => {
+                scene_shader_artifact_root = args
+                    .next()
+                    .ok_or("--scene-shader-artifact-root requires PATH")?
+                    .into();
             }
             "--scene-property" => {
                 let value = args.next().ok_or("--scene-property requires KEY=VALUE")?;
@@ -409,7 +410,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--audio-output" => {
                 let value = args.next().ok_or("--audio-output requires a value")?;
-                audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
+                #[cfg(feature = "native-vulkan-video")]
+                {
+                    audio_output_policy = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
+                }
+                #[cfg(not(feature = "native-vulkan-video"))]
+                {
+                    let _ = NativeVulkanAudioOutputPolicy::parse_cli(&value)?;
+                }
             }
             "--decoder" => {
                 let value = args.next().ok_or("--decoder requires a value")?;
@@ -425,7 +433,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--width requires pixels")?;
-                video_width_set = true;
+                _video_width_set = true;
             }
             "--height" => {
                 video_session_options.height = args
@@ -433,7 +441,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     .map(|value| value.parse::<u32>())
                     .transpose()?
                     .ok_or("--height requires pixels")?;
-                video_height_set = true;
+                _video_height_set = true;
             }
             "--bitstream-samples" => {
                 video_session_options.bitstream_extract_max_samples = args
@@ -508,9 +516,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    #[cfg(not(feature = "native-vulkan-video"))]
-    let _ = (video_width_set, video_height_set);
-
     let report = match mode {
         NativeVulkanCliMode::All => {
             json!({ "capabilities": capabilities(), "backend_contract": backend_contract() })
@@ -674,36 +679,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_snapshot_time_ms,
                 Some(&scene_properties),
             )?;
-            let _ = (
+            json!(run_scene(
                 options,
                 duration,
-                scene_root,
-                fit,
-                fit_set,
-                background,
-                scene_color,
-                scene_path_data,
-                scene_path_fill_rule,
-                scene_stroke_color,
-                scene_stroke_width,
-                scene_text,
-                scene_text_color,
-                scene_text_font_size,
-                video_session_options,
-                video_width_set,
-                video_height_set,
-                ready_prefix_playback_frames,
-                duration_playback_frames,
-                audio_clock_probe_requested,
-                audio_output_policy,
-                _muted,
-            );
-            return Err(format!(
-                "--run-scene new scene present runtime is not connected yet; engine plan is available for {} objects and {} resources",
-                plan.objects.len(),
-                plan.resources.len()
-            )
-            .into());
+                scene_shader_artifact_root,
+                plan
+            )?)
         }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
@@ -1053,7 +1034,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --scene-runtime-snapshot builds a new engine snapshot from --source <scene.gscn> and exits before presenting.\n\
---run-scene accepts only --source <scene.gscn> on the new scene-engine path; Vulkan scene present runtime connection is still explicit work.\n\
+--run-scene accepts only --source <scene.gscn> on the new scene-engine path and presents through the new Vulkan scene runtime.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
@@ -1061,7 +1042,7 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
          [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
          [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
-         [--scene-time-ms MS] [--scene-property KEY=VALUE]\n\
+         [--scene-time-ms MS] [--scene-property KEY=VALUE] [--scene-shader-artifact-root PATH]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\

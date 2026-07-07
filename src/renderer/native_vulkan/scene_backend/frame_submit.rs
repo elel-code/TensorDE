@@ -20,8 +20,23 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSubmitContex
     pub in_flight_fence: vk::Fence,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePrepareSubmitContext {
+    pub frame_submission: NativeVulkanSceneFrameSubmission,
+    pub command_buffer: vk::CommandBuffer,
+    pub in_flight_fence: vk::Fence,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSubmitPlan {
+    pub frame_submission: NativeVulkanSceneFrameSubmission,
+    pub wait_stage: &'static str,
+    pub signal_stage: &'static str,
+    pub command_order: [&'static str; 2],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePrepareSubmitPlan {
     pub frame_submission: NativeVulkanSceneFrameSubmission,
     pub wait_stage: &'static str,
     pub signal_stage: &'static str,
@@ -37,6 +52,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_frame_submit_plan(
         wait_stage: "color_attachment_output",
         signal_stage: "all_commands",
         command_order: ["reset_scene_frame_fence", "queue_submit2_scene_frame"],
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_prepare_submit_plan(
+    context: NativeVulkanScenePrepareSubmitContext,
+) -> Result<NativeVulkanScenePrepareSubmitPlan, String> {
+    validate_scene_prepare_submit_context(context)?;
+    Ok(NativeVulkanScenePrepareSubmitPlan {
+        frame_submission: context.frame_submission,
+        wait_stage: "none",
+        signal_stage: "fence_only",
+        command_order: ["reset_scene_prepare_fence", "queue_submit2_scene_prepare"],
     })
 }
 
@@ -78,6 +105,32 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_submit_scene_frame_comma
     Ok(plan)
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_submit_scene_prepare_commands2(
+    device: &Device,
+    queue: vk::Queue,
+    context: NativeVulkanScenePrepareSubmitContext,
+) -> Result<NativeVulkanScenePrepareSubmitPlan, String> {
+    let plan = native_vulkan_scene_prepare_submit_plan(context)?;
+    let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
+        .command_buffer(context.command_buffer)
+        .build();
+    let command_buffer_infos = [command_buffer_info];
+    let submit_info = vk::SubmitInfo2::builder()
+        .command_buffer_infos(&command_buffer_infos)
+        .build();
+
+    unsafe {
+        device
+            .reset_fences(&[context.in_flight_fence])
+            .map_err(|err| format!("vkResetFences(scene prepare submit): {err:?}"))?;
+        device
+            .queue_submit2(queue, &[submit_info], context.in_flight_fence)
+            .map_err(|err| format!("vkQueueSubmit2(scene prepare): {err:?}"))?;
+    }
+
+    Ok(plan)
+}
+
 fn validate_scene_frame_submit_context(
     context: NativeVulkanSceneFrameSubmitContext,
 ) -> Result<(), String> {
@@ -95,6 +148,21 @@ fn validate_scene_frame_submit_context(
     }
     if context.in_flight_fence == vk::Fence::null() {
         return Err("scene frame submit requires a valid in-flight fence".to_owned());
+    }
+    Ok(())
+}
+
+fn validate_scene_prepare_submit_context(
+    context: NativeVulkanScenePrepareSubmitContext,
+) -> Result<(), String> {
+    if context.frame_submission.submission_index == 0 {
+        return Err("scene prepare submit requires a non-zero submission index".to_owned());
+    }
+    if context.command_buffer == vk::CommandBuffer::null() {
+        return Err("scene prepare submit requires a valid command buffer".to_owned());
+    }
+    if context.in_flight_fence == vk::Fence::null() {
+        return Err("scene prepare submit requires a valid in-flight fence".to_owned());
     }
     Ok(())
 }
@@ -167,6 +235,42 @@ mod tests {
         );
     }
 
+    #[test]
+    fn scene_prepare_submit_plan_has_no_swapchain_semaphore_waits() {
+        let plan = native_vulkan_scene_prepare_submit_plan(prepare_context())
+            .expect("prepare submit plan");
+
+        assert_eq!(
+            plan.frame_submission,
+            NativeVulkanSceneFrameSubmission::new(0, 7)
+        );
+        assert_eq!(plan.wait_stage, "none");
+        assert_eq!(plan.signal_stage, "fence_only");
+        assert_eq!(
+            plan.command_order,
+            ["reset_scene_prepare_fence", "queue_submit2_scene_prepare"]
+        );
+    }
+
+    #[test]
+    fn scene_prepare_submit_plan_rejects_null_vulkan_handles() {
+        let mut context = prepare_context();
+        context.command_buffer = vk::CommandBuffer::null();
+        assert!(
+            native_vulkan_scene_prepare_submit_plan(context)
+                .expect_err("null command buffer")
+                .contains("command buffer")
+        );
+
+        let mut context = prepare_context();
+        context.in_flight_fence = vk::Fence::null();
+        assert!(
+            native_vulkan_scene_prepare_submit_plan(context)
+                .expect_err("null fence")
+                .contains("in-flight fence")
+        );
+    }
+
     fn submit_context() -> NativeVulkanSceneFrameSubmitContext {
         NativeVulkanSceneFrameSubmitContext {
             frame_submission: NativeVulkanSceneFrameSubmission::new(2, 9),
@@ -174,6 +278,14 @@ mod tests {
             image_available: vk::Semaphore::from_raw(12),
             render_finished: vk::Semaphore::from_raw(13),
             in_flight_fence: vk::Fence::from_raw(14),
+        }
+    }
+
+    fn prepare_context() -> NativeVulkanScenePrepareSubmitContext {
+        NativeVulkanScenePrepareSubmitContext {
+            frame_submission: NativeVulkanSceneFrameSubmission::new(0, 7),
+            command_buffer: vk::CommandBuffer::from_raw(21),
+            in_flight_fence: vk::Fence::from_raw(22),
         }
     }
 }

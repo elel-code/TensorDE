@@ -42,14 +42,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_frame_acquire_plan
     })
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_acquire_scene_frame_image(
-    device: &Device,
-    context: NativeVulkanSceneFrameAcquireContext,
-) -> Result<NativeVulkanSceneFrameAcquireResult, String> {
-    native_vulkan_try_acquire_scene_frame_image(device, context)?
-        .ok_or_else(|| "scene frame acquire would block; no swapchain image is ready".to_owned())
-}
-
 pub(in crate::renderer::native_vulkan) fn native_vulkan_try_acquire_scene_frame_image(
     device: &Device,
     context: NativeVulkanSceneFrameAcquireContext,
@@ -74,14 +66,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_try_acquire_scene_frame_
                 plan,
             }))
         }
-        NativeVulkanSceneFrameAcquireStatus::WouldBlock => Ok(None),
+        NativeVulkanSceneFrameAcquireStatus::NotReady => Ok(None),
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeVulkanSceneFrameAcquireStatus {
     Ready,
-    WouldBlock,
+    NotReady,
 }
 
 fn native_vulkan_scene_frame_acquire_status(
@@ -90,7 +82,7 @@ fn native_vulkan_scene_frame_acquire_status(
     if status == vk::Result::SUCCESS || status == vk::Result::SUBOPTIMAL_KHR {
         Ok(NativeVulkanSceneFrameAcquireStatus::Ready)
     } else if status == vk::Result::NOT_READY || status == vk::Result::TIMEOUT {
-        Ok(NativeVulkanSceneFrameAcquireStatus::WouldBlock)
+        Ok(NativeVulkanSceneFrameAcquireStatus::NotReady)
     } else {
         Err(format!("vkAcquireNextImageKHR(scene frame): {status:?}"))
     }
@@ -139,11 +131,11 @@ mod tests {
         );
         assert_eq!(
             native_vulkan_scene_frame_acquire_status(vk::Result::NOT_READY).unwrap(),
-            NativeVulkanSceneFrameAcquireStatus::WouldBlock
+            NativeVulkanSceneFrameAcquireStatus::NotReady
         );
         assert_eq!(
             native_vulkan_scene_frame_acquire_status(vk::Result::TIMEOUT).unwrap(),
-            NativeVulkanSceneFrameAcquireStatus::WouldBlock
+            NativeVulkanSceneFrameAcquireStatus::NotReady
         );
     }
 

@@ -1,6 +1,8 @@
 pub(in crate::renderer::native_vulkan::vulkan) mod clear;
 pub(in crate::renderer::native_vulkan::vulkan) mod render;
 pub(in crate::renderer::native_vulkan::vulkan) mod render_descriptors;
+pub(in crate::renderer::native_vulkan::vulkan) mod scene;
+pub(in crate::renderer::native_vulkan::vulkan) mod scene_prepare;
 pub(in crate::renderer::native_vulkan::vulkan) mod swapchain;
 pub(in crate::renderer::native_vulkan::vulkan) mod timing;
 

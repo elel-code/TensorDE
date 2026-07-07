@@ -3045,7 +3045,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_scene_video_present_on_device(
                     if let Some(scene_video_overlay) = scene_video_overlay.as_mut() {
                         scene_video_overlay.frame_draw(
                             &context.device,
-                            present_frame_slot,
+                            present_frame_slot as u32,
                             overlay_elapsed_ms,
                             swapchain_extent,
                         )?
@@ -4008,7 +4008,7 @@ fn run_multi_video_decode_present_sequence(
                     {
                         scene_video_overlay.frame_draw(
                             &context.device,
-                            present_frame_slot,
+                            present_frame_slot as u32,
                             overlay_elapsed_ms,
                             swapchain_extent,
                         )?

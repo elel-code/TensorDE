@@ -43,6 +43,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotPrepareP
     pub command_order: [&'static str; 2],
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneFrameSlotPrepareResult {
+    Ready(NativeVulkanSceneFrameSlotPreparePlan),
+    Pending(NativeVulkanSceneFrameSlotPreparePlan),
+}
+
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameSlotResources {
     command_pool: vk::CommandPool,
     command_buffers: Vec<vk::CommandBuffer>,
@@ -191,7 +197,7 @@ impl NativeVulkanSceneFrameSlotResources {
             frame_slot,
             had_in_flight_submission: state.in_flight,
             completed_submission: state.in_flight.then_some(state.last_submitted).flatten(),
-            fence_poll_status: "signaled",
+            fence_poll_status: "not-polled",
             command_order: [
                 "poll_scene_frame_fence",
                 "complete_scene_frame_submission_if_in_flight",
@@ -199,27 +205,60 @@ impl NativeVulkanSceneFrameSlotResources {
         })
     }
 
-    pub(in crate::renderer::native_vulkan) fn try_prepare_frame_slot(
+    pub(in crate::renderer::native_vulkan) fn try_prepare_frame_slot_status(
         &mut self,
         device: &Device,
         frame_slot: u32,
-    ) -> Result<Option<NativeVulkanSceneFrameSlotPreparePlan>, String> {
-        let plan = self.prepare_frame_slot_plan(frame_slot)?;
+    ) -> Result<NativeVulkanSceneFrameSlotPrepareResult, String> {
+        let mut plan = self.prepare_frame_slot_plan(frame_slot)?;
         let fence = self.slot_sync(frame_slot)?.in_flight_fence;
         let status = unsafe { device.get_fence_status(fence) }
             .map_err(|err| format!("vkGetFenceStatus(scene frame slot {frame_slot}): {err:?}"))?;
         if status == vk::SuccessCode::NOT_READY {
-            return Ok(None);
+            plan.fence_poll_status = "pending";
+            return Ok(NativeVulkanSceneFrameSlotPrepareResult::Pending(plan));
         }
         if status != vk::SuccessCode::SUCCESS {
             return Err(format!(
                 "vkGetFenceStatus(scene frame slot {frame_slot}) returned unexpected status {status:?}"
             ));
         }
+        plan.fence_poll_status = "ready";
         if let Some(submission) = plan.completed_submission {
             self.complete_frame_submission(submission)?;
         }
-        Ok(Some(plan))
+        Ok(NativeVulkanSceneFrameSlotPrepareResult::Ready(plan))
+    }
+
+    pub(in crate::renderer::native_vulkan) fn try_prepare_frame_slot(
+        &mut self,
+        device: &Device,
+        frame_slot: u32,
+    ) -> Result<Option<NativeVulkanSceneFrameSlotPreparePlan>, String> {
+        match self.try_prepare_frame_slot_status(device, frame_slot)? {
+            NativeVulkanSceneFrameSlotPrepareResult::Ready(plan) => Ok(Some(plan)),
+            NativeVulkanSceneFrameSlotPrepareResult::Pending(_) => Ok(None),
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn try_prepare_latest_ready_frame_slot(
+        &mut self,
+        device: &Device,
+        preferred_frame_slot: u32,
+    ) -> Result<Option<NativeVulkanSceneFrameSlotPreparePlan>, String> {
+        let frame_slot_count = self.frame_slot_count();
+        if frame_slot_count == 0 {
+            return Err(
+                "scene frame slot latest-ready scan requires at least one frame slot".to_owned(),
+            );
+        }
+        for frame_slot in scene_frame_slot_scan_order(preferred_frame_slot, frame_slot_count)? {
+            match self.try_prepare_frame_slot_status(device, frame_slot)? {
+                NativeVulkanSceneFrameSlotPrepareResult::Ready(plan) => return Ok(Some(plan)),
+                NativeVulkanSceneFrameSlotPrepareResult::Pending(_) => {}
+            }
+        }
+        Ok(None)
     }
 
     pub(in crate::renderer::native_vulkan) fn slot_sync(
@@ -293,6 +332,21 @@ impl NativeVulkanSceneFrameSlotResources {
             self.in_flight,
         );
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_frame_slot_scan_order(
+    preferred_frame_slot: u32,
+    frame_slot_count: usize,
+) -> Result<Vec<u32>, String> {
+    if frame_slot_count == 0 {
+        return Err("scene frame slot scan order requires at least one frame slot".to_owned());
+    }
+    let preferred = preferred_frame_slot as usize % frame_slot_count;
+    let mut slots = Vec::with_capacity(frame_slot_count);
+    for offset in 0..frame_slot_count {
+        slots.push(((preferred + offset) % frame_slot_count) as u32);
+    }
+    Ok(slots)
 }
 
 fn create_scene_swapchain_image_views(
@@ -517,7 +571,7 @@ mod tests {
                 "complete_scene_frame_submission_if_in_flight"
             ]
         );
-        assert_eq!(initial.fence_poll_status, "signaled");
+        assert_eq!(initial.fence_poll_status, "not-polled");
 
         let submitted = resources.begin_frame_submission(1).expect("begin");
         let in_flight = resources
@@ -525,6 +579,18 @@ mod tests {
             .expect("in-flight prepare plan");
         assert!(in_flight.had_in_flight_submission);
         assert_eq!(in_flight.completed_submission, Some(submitted));
+    }
+
+    #[test]
+    fn frame_slot_scan_order_wraps_from_preferred_slot() {
+        assert_eq!(scene_frame_slot_scan_order(0, 3).unwrap(), vec![0, 1, 2]);
+        assert_eq!(scene_frame_slot_scan_order(1, 3).unwrap(), vec![1, 2, 0]);
+        assert_eq!(scene_frame_slot_scan_order(5, 3).unwrap(), vec![2, 0, 1]);
+        assert!(
+            scene_frame_slot_scan_order(0, 0)
+                .expect_err("empty slots")
+                .contains("at least one frame slot")
+        );
     }
 
     fn test_resources() -> NativeVulkanSceneFrameSlotResources {

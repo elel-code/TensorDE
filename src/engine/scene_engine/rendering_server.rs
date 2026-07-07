@@ -36,6 +36,14 @@ impl RenderingServer {
         self.objects = objects;
     }
 
+    pub fn resources(&self) -> &[SceneResource] {
+        &self.resources
+    }
+
+    pub fn objects(&self) -> &[SceneObject] {
+        &self.objects
+    }
+
     pub fn draw<R: RendererSceneRender>(
         &self,
         renderer: &R,
