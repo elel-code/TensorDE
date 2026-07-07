@@ -29,7 +29,9 @@ use crate::renderer::native_vulkan::scene_backend::frame_present_runtime::{
 use crate::renderer::native_vulkan::scene_backend::frame_resources::NativeVulkanSceneFrameResources;
 use crate::renderer::native_vulkan::scene_backend::frame_slots::NativeVulkanSceneFrameSlotResources;
 use crate::renderer::native_vulkan::scene_backend::renderer_scene_render::NativeVulkanRendererSceneRender;
-use crate::renderer::native_vulkan::scene_backend::shader_artifacts::native_vulkan_load_scene_shader_artifacts;
+use crate::renderer::native_vulkan::scene_backend::shader_artifacts::{
+    NativeVulkanSceneEffectShaderArtifactCatalog, native_vulkan_load_scene_shader_artifacts,
+};
 use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_wayland::{
     NativeWaylandHost, NativeWaylandHostOptions, NativeWaylandSurfaceHandles,
@@ -248,6 +250,11 @@ fn with_vulkanalia_scene_present(
             &options.shader_artifact_root,
             "we/genericimage4",
         )?;
+        let effect_shader_catalog =
+            NativeVulkanSceneEffectShaderArtifactCatalog::from_effect_pass_graph(
+                &options.shader_artifact_root,
+                &frame.effect_pass_graph,
+            )?;
 
         let slots = frame_slots
             .as_mut()
@@ -265,6 +272,7 @@ fn with_vulkanalia_scene_present(
             &target_formats,
             swapchain_plan.extent,
             shader_artifacts.mesh_pipeline_shaders(),
+            &effect_shader_catalog,
         )?;
 
         let started_at = Instant::now();

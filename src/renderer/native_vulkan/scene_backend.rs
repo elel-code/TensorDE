@@ -13,6 +13,8 @@ pub mod effect_descriptors;
 pub mod effect_pass_command;
 pub mod effect_pipeline;
 pub mod effect_pipeline_factory;
+pub mod effect_pipeline_prepare;
+pub mod effect_pipeline_warmup;
 pub mod effect_resource_heap;
 pub mod effect_targets;
 pub mod frame_acquire;

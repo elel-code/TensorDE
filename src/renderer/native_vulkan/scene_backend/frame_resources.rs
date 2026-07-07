@@ -22,6 +22,13 @@ use super::effect_descriptors::{
     NativeVulkanSceneEffectExternalTextureDescriptor,
     NativeVulkanSceneEffectTextureDescriptorFramePlan,
 };
+use super::effect_pipeline::{
+    NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanSceneEffectPipelineShaders,
+    NativeVulkanSceneEffectPipelineStore,
+};
+use super::effect_pipeline_factory::{
+    NativeVulkanSceneEffectPipelineLayoutSpec, native_vulkan_create_scene_effect_pipeline_resources,
+};
 use super::effect_resource_heap::{
     NativeVulkanSceneEffectResourceHeapFramePlan, NativeVulkanSceneEffectResourceHeapPassBindInfo,
     NativeVulkanSceneEffectResourceHeapStore, NativeVulkanSceneEffectResourceHeapSyncAction,
@@ -76,6 +83,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
+    effect_pipelines: NativeVulkanSceneEffectPipelineStore,
 }
 
 impl NativeVulkanSceneFrameResources {
@@ -89,6 +97,7 @@ impl NativeVulkanSceneFrameResources {
             effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
+            effect_pipelines: NativeVulkanSceneEffectPipelineStore::default(),
         }
     }
 
@@ -499,7 +508,44 @@ impl NativeVulkanSceneFrameResources {
         })
     }
 
+    pub(in crate::renderer::native_vulkan) fn resolve_effect_pipeline(
+        &mut self,
+        device: &Device,
+        key: NativeVulkanSceneEffectPipelineCacheKey,
+        shaders: NativeVulkanSceneEffectPipelineShaders<'_>,
+        layout: NativeVulkanSceneEffectPipelineLayoutSpec<'_>,
+    ) -> Result<NativeVulkanScenePipelineBinding, String> {
+        self.effect_pipelines.resolve_pipeline(key, |key| {
+            native_vulkan_create_scene_effect_pipeline_resources(
+                device,
+                &key.as_bind_key(),
+                shaders,
+                layout,
+            )
+        })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn has_effect_pipeline(
+        &self,
+        key: &NativeVulkanSceneEffectPipelineCacheKey,
+    ) -> bool {
+        self.effect_pipelines.has_pipeline(key)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn cached_effect_pipeline(
+        &self,
+        key: &NativeVulkanSceneEffectPipelineCacheKey,
+    ) -> Result<NativeVulkanScenePipelineBinding, String> {
+        self.effect_pipelines.cached_pipeline(key).ok_or_else(|| {
+            format!(
+                "missing warmed scene effect pipeline for shader '{}' format {:?}",
+                key.shader, key.target_format
+            )
+        })
+    }
+
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
+        self.effect_pipelines.destroy_all(device);
         self.effect_resource_heap.destroy_all(device);
         self.resource_heap.destroy_all(device);
         self.offscreen_targets.destroy_all(device);

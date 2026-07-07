@@ -10,6 +10,7 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
 use serde::Serialize;
+use std::collections::{BTreeMap, BTreeSet};
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
@@ -19,6 +20,7 @@ use crate::engine::scene_engine::{
 };
 
 use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapPassBindPlan;
+use super::pipeline::{NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineResources};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineKey<'a> {
@@ -45,6 +47,33 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineSha
     pub fragment_spirv: &'a [u32],
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineCacheKey {
+    pub shader: String,
+    pub effect: WeEffectKind,
+    pub blend: SceneEffectPassBlend,
+    pub depth_test: SceneDepthTest,
+    pub depth_write: bool,
+    pub cull_mode: SceneCullMode,
+    pub target_format: vk::Format,
+    pub texture_slot_mask: u32,
+    pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectPipelineCacheAction {
+    Create {
+        shader: String,
+        target_format: String,
+        raster_geometry: NativeVulkanSceneEffectRasterGeometry,
+    },
+    Reuse {
+        shader: String,
+        target_format: String,
+        raster_geometry: NativeVulkanSceneEffectRasterGeometry,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineBindPlan<'a> {
     pub key: NativeVulkanSceneEffectPipelineKey<'a>,
@@ -52,10 +81,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineBin
 }
 
 impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
-    pub(in crate::renderer::native_vulkan) fn from_pass_and_resource_heap(
+    pub(in crate::renderer::native_vulkan) fn from_pass_and_target_format(
         pass: &'a SceneEffectPassGraphMaterialPass,
         target_format: vk::Format,
-        resource_heap: &NativeVulkanSceneEffectResourceHeapPassBindPlan,
     ) -> Result<Self, String> {
         let shader = pass.shader.as_deref().ok_or_else(|| {
             format!(
@@ -81,6 +109,24 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.pass_index, pass.object
             ));
         }
+        Ok(Self {
+            shader,
+            effect: pass.effect,
+            blend: pass.blend,
+            depth_test: pass.depth_test,
+            depth_write: pass.depth_write,
+            cull_mode: pass.cull_mode,
+            target_format,
+            texture_slot_mask: effect_pass_texture_slot_mask(pass)?,
+            raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
+        })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_pass_and_resource_heap(
+        pass: &'a SceneEffectPassGraphMaterialPass,
+        target_format: vk::Format,
+        resource_heap: &NativeVulkanSceneEffectResourceHeapPassBindPlan,
+    ) -> Result<Self, String> {
         if pass.graph_pass_index != resource_heap.effect_pass_index {
             return Err(format!(
                 "scene effect pipeline/resource heap pass mismatch for object {:?}: pass {}, heap {}",
@@ -93,21 +139,50 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.object, resource_heap.object
             ));
         }
-        Ok(Self {
-            shader,
-            effect: pass.effect,
-            blend: pass.blend,
-            depth_test: pass.depth_test,
-            depth_write: pass.depth_write,
-            cull_mode: pass.cull_mode,
-            target_format,
-            texture_slot_mask: effect_resource_heap_texture_slot_mask(
-                pass.object,
-                pass.pass_index,
-                resource_heap,
-            )?,
-            raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
-        })
+        let key = Self::from_pass_and_target_format(pass, target_format)?;
+        let resource_heap_mask =
+            effect_resource_heap_texture_slot_mask(pass.object, pass.pass_index, resource_heap)?;
+        if key.texture_slot_mask != resource_heap_mask {
+            return Err(format!(
+                "scene effect pipeline/resource heap texture slot mask mismatch for pass {} object {:?}: pass {:#x}, heap {:#x}",
+                pass.pass_index, pass.object, key.texture_slot_mask, resource_heap_mask
+            ));
+        }
+        Ok(key)
+    }
+}
+
+impl NativeVulkanSceneEffectPipelineCacheKey {
+    pub(in crate::renderer::native_vulkan) fn from_bind_key(
+        key: NativeVulkanSceneEffectPipelineKey<'_>,
+    ) -> Self {
+        Self {
+            shader: key.shader.to_owned(),
+            effect: key.effect,
+            blend: key.blend,
+            depth_test: key.depth_test,
+            depth_write: key.depth_write,
+            cull_mode: key.cull_mode,
+            target_format: key.target_format,
+            texture_slot_mask: key.texture_slot_mask,
+            raster_geometry: key.raster_geometry,
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn as_bind_key(
+        &self,
+    ) -> NativeVulkanSceneEffectPipelineKey<'_> {
+        NativeVulkanSceneEffectPipelineKey {
+            shader: self.shader.as_str(),
+            effect: self.effect,
+            blend: self.blend,
+            depth_test: self.depth_test,
+            depth_write: self.depth_write,
+            cull_mode: self.cull_mode,
+            target_format: self.target_format,
+            texture_slot_mask: self.texture_slot_mask,
+            raster_geometry: self.raster_geometry,
+        }
     }
 }
 
@@ -142,6 +217,141 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_pipe
     Ok(NativeVulkanSceneEffectPipelineBindPlan::from_key(key))
 }
 
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineStore {
+    pipelines:
+        BTreeMap<NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanScenePipelineResources>,
+    last_actions: Vec<NativeVulkanSceneEffectPipelineCacheAction>,
+}
+
+impl NativeVulkanSceneEffectPipelineStore {
+    pub(in crate::renderer::native_vulkan) fn new() -> Self {
+        Self {
+            pipelines: BTreeMap::new(),
+            last_actions: Vec::new(),
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn resolve_pipeline<CreatePipeline>(
+        &mut self,
+        key: NativeVulkanSceneEffectPipelineCacheKey,
+        create_pipeline: CreatePipeline,
+    ) -> Result<NativeVulkanScenePipelineBinding, String>
+    where
+        CreatePipeline: FnOnce(
+            &NativeVulkanSceneEffectPipelineCacheKey,
+        ) -> Result<NativeVulkanScenePipelineResources, String>,
+    {
+        self.last_actions.clear();
+        if let Some(resources) = self.pipelines.get(&key) {
+            self.last_actions
+                .push(effect_pipeline_cache_action_reuse(&key));
+            return Ok(effect_pipeline_binding(*resources));
+        }
+
+        let resources = create_pipeline(&key)?;
+        validate_scene_effect_pipeline_resources(resources)?;
+        self.pipelines.insert(key.clone(), resources);
+        self.last_actions
+            .push(effect_pipeline_cache_action_create(&key));
+        Ok(effect_pipeline_binding(resources))
+    }
+
+    pub(in crate::renderer::native_vulkan) fn cached_pipeline(
+        &self,
+        key: &NativeVulkanSceneEffectPipelineCacheKey,
+    ) -> Option<NativeVulkanScenePipelineBinding> {
+        self.pipelines
+            .get(key)
+            .copied()
+            .map(effect_pipeline_binding)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn has_pipeline(
+        &self,
+        key: &NativeVulkanSceneEffectPipelineCacheKey,
+    ) -> bool {
+        self.pipelines.contains_key(key)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_actions(
+        &self,
+    ) -> &[NativeVulkanSceneEffectPipelineCacheAction] {
+        &self.last_actions
+    }
+
+    pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
+        for (_, resources) in std::mem::take(&mut self.pipelines) {
+            unsafe {
+                device.destroy_pipeline(resources.pipeline, None);
+                if resources.pipeline_layout != vk::PipelineLayout::null() {
+                    device.destroy_pipeline_layout(resources.pipeline_layout, None);
+                }
+            }
+        }
+        self.last_actions.clear();
+    }
+}
+
+impl Default for NativeVulkanSceneEffectPipelineStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+fn effect_pass_texture_slot_mask(pass: &SceneEffectPassGraphMaterialPass) -> Result<u32, String> {
+    let mut used_slots = BTreeSet::new();
+    let mut mask = 0u32;
+    if let Some(source) = &pass.source {
+        push_effect_pipeline_texture_slot(
+            pass.object,
+            pass.pass_index,
+            &mut used_slots,
+            &mut mask,
+            source.slot,
+        )?;
+    }
+    for input in &pass.input_bindings {
+        push_effect_pipeline_texture_slot(
+            pass.object,
+            pass.pass_index,
+            &mut used_slots,
+            &mut mask,
+            input.slot,
+        )?;
+    }
+    for resource in &pass.texture_resources {
+        push_effect_pipeline_texture_slot(
+            pass.object,
+            pass.pass_index,
+            &mut used_slots,
+            &mut mask,
+            resource.slot,
+        )?;
+    }
+    Ok(mask)
+}
+
+fn push_effect_pipeline_texture_slot(
+    object: SceneObjectId,
+    pass_index: usize,
+    used_slots: &mut BTreeSet<u32>,
+    mask: &mut u32,
+    slot: u32,
+) -> Result<(), String> {
+    if slot >= SCENE_WE_MAX_SHADER_TEXTURE_SLOTS {
+        return Err(format!(
+            "scene effect pipeline for pass {pass_index} object {object:?} texture slot {slot} exceeds WE slot mask width {SCENE_WE_MAX_SHADER_TEXTURE_SLOTS}"
+        ));
+    }
+    if !used_slots.insert(slot) {
+        return Err(format!(
+            "scene effect pipeline for pass {pass_index} object {object:?} binds texture slot {slot} more than once"
+        ));
+    }
+    *mask |= 1u32 << slot;
+    Ok(())
+}
+
 fn effect_resource_heap_texture_slot_mask(
     object: SceneObjectId,
     pass_index: usize,
@@ -158,6 +368,44 @@ fn effect_resource_heap_texture_slot_mask(
         mask |= 1u32 << binding.slot;
     }
     Ok(mask)
+}
+
+fn validate_scene_effect_pipeline_resources(
+    resources: NativeVulkanScenePipelineResources,
+) -> Result<(), String> {
+    if resources.pipeline == vk::Pipeline::null() {
+        return Err("scene effect pipeline cache requires a valid vk::Pipeline".to_owned());
+    }
+    Ok(())
+}
+
+fn effect_pipeline_binding(
+    resources: NativeVulkanScenePipelineResources,
+) -> NativeVulkanScenePipelineBinding {
+    NativeVulkanScenePipelineBinding {
+        pipeline: resources.pipeline,
+        pipeline_layout: resources.pipeline_layout,
+    }
+}
+
+fn effect_pipeline_cache_action_create(
+    key: &NativeVulkanSceneEffectPipelineCacheKey,
+) -> NativeVulkanSceneEffectPipelineCacheAction {
+    NativeVulkanSceneEffectPipelineCacheAction::Create {
+        shader: key.shader.clone(),
+        target_format: format!("{:?}", key.target_format),
+        raster_geometry: key.raster_geometry,
+    }
+}
+
+fn effect_pipeline_cache_action_reuse(
+    key: &NativeVulkanSceneEffectPipelineCacheKey,
+) -> NativeVulkanSceneEffectPipelineCacheAction {
+    NativeVulkanSceneEffectPipelineCacheAction::Reuse {
+        shader: key.shader.clone(),
+        target_format: format!("{:?}", key.target_format),
+        raster_geometry: key.raster_geometry,
+    }
 }
 
 #[cfg(test)]

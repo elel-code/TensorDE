@@ -23,14 +23,16 @@ use super::{
 pub struct SceneEffectPassGraphPlan {
     pub object_program_count: usize,
     pub material_pass_count: usize,
+    pub copy_command_count: usize,
     pub swap_command_count: usize,
     pub target_count: usize,
     pub input_binding_count: usize,
     pub resident_texture_binding_count: usize,
     pub targets: Vec<SceneEffectPassGraphTarget>,
     pub passes: Vec<SceneEffectPassGraphMaterialPass>,
+    pub copies: Vec<SceneEffectPassGraphCopy>,
     pub swaps: Vec<SceneEffectPassGraphSwap>,
-    pub command_order: [&'static str; 7],
+    pub command_order: [&'static str; 8],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -96,17 +98,29 @@ pub struct SceneEffectPassGraphSwap {
     pub b: SceneGraphTarget,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SceneEffectPassGraphCopy {
+    pub graph_command_index: usize,
+    pub object: SceneObjectId,
+    pub program_index: usize,
+    pub pass_index: usize,
+    pub source: SceneGraphTarget,
+    pub target: SceneGraphTarget,
+}
+
 impl SceneEffectPassGraphPlan {
     pub fn empty() -> Self {
         Self {
             object_program_count: 0,
             material_pass_count: 0,
+            copy_command_count: 0,
             swap_command_count: 0,
             target_count: 0,
             input_binding_count: 0,
             resident_texture_binding_count: 0,
             targets: Vec::new(),
             passes: Vec::new(),
+            copies: Vec::new(),
             swaps: Vec::new(),
             command_order: [
                 "collect_scene_object_effect_programs",
@@ -114,6 +128,7 @@ impl SceneEffectPassGraphPlan {
                 "resolve_effect_material_pass_sources",
                 "resolve_effect_material_pass_targets",
                 "preserve_effect_texture_resource_bindings",
+                "record_effect_copy_commands_without_draws",
                 "record_effect_swap_commands_without_draws",
                 "emit_scene_effect_pass_graph",
             ],
@@ -165,9 +180,26 @@ impl SceneEffectPassGraphPlan {
                         plan.passes.push(material);
                         plan.material_pass_count = plan.material_pass_count.saturating_add(1);
                     }
+                    SceneEffectCommand::Copy(copy) => {
+                        plan.copies.push(SceneEffectPassGraphCopy {
+                            graph_command_index: plan
+                                .material_pass_count
+                                .saturating_add(plan.copy_command_count)
+                                .saturating_add(plan.swap_command_count),
+                            object: object.id,
+                            program_index,
+                            pass_index: copy.pass_index,
+                            source: resolve_named_fbo_target(&fbo_targets, &copy.source)?,
+                            target: resolve_named_fbo_target(&fbo_targets, &copy.target)?,
+                        });
+                        plan.copy_command_count = plan.copy_command_count.saturating_add(1);
+                    }
                     SceneEffectCommand::Swap(swap) => {
                         plan.swaps.push(SceneEffectPassGraphSwap {
-                            graph_command_index: plan.material_pass_count + plan.swap_command_count,
+                            graph_command_index: plan
+                                .material_pass_count
+                                .saturating_add(plan.copy_command_count)
+                                .saturating_add(plan.swap_command_count),
                             object: object.id,
                             program_index,
                             pass_index: swap.pass_index,
@@ -423,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_pass_graph_preserves_named_fbos_multi_inputs_and_swaps() {
+    fn effect_pass_graph_preserves_named_fbos_multi_inputs_copy_and_swaps() {
         let object = object(SceneObjectId(7), Some(SceneResourceId(11)));
         let effects = vec![SceneObjectEffectProgram {
             object: object.id,
@@ -457,6 +489,11 @@ mod tests {
                         combos: BTreeMap::new(),
                         constants: BTreeMap::new(),
                     }),
+                    SceneEffectCommand::Copy(super::super::SceneEffectCopyCommand {
+                        pass_index: 18,
+                        source: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity2".to_owned()),
+                        target: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity1".to_owned()),
+                    }),
                     SceneEffectCommand::Swap(super::super::SceneEffectSwapCommand {
                         pass_index: 19,
                         a: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity2".to_owned()),
@@ -471,6 +508,7 @@ mod tests {
 
         assert_eq!(graph.target_count, 3);
         assert_eq!(graph.material_pass_count, 1);
+        assert_eq!(graph.copy_command_count, 1);
         assert_eq!(graph.swap_command_count, 1);
         assert_eq!(
             graph.passes[0].source.as_ref().unwrap().source,
@@ -486,6 +524,8 @@ mod tests {
         );
         assert_eq!(graph.swaps[0].a, SceneGraphTarget::NamedFbo(2));
         assert_eq!(graph.swaps[0].b, SceneGraphTarget::NamedFbo(1));
+        assert_eq!(graph.copies[0].source, SceneGraphTarget::NamedFbo(2));
+        assert_eq!(graph.copies[0].target, SceneGraphTarget::NamedFbo(1));
     }
 
     #[test]

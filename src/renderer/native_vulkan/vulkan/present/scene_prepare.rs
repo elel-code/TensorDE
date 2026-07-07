@@ -16,6 +16,10 @@ use vulkanalia::vk;
 use crate::engine::scene_engine::{
     SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget, SceneResource,
 };
+use crate::renderer::native_vulkan::scene_backend::effect_pipeline_prepare::{
+    NativeVulkanSceneEffectPipelinePreparePlan,
+    native_vulkan_prepare_scene_effect_pipeline_cache_with_target_formats,
+};
 use crate::renderer::native_vulkan::scene_backend::effect_targets::NativeVulkanSceneEffectTargetPlan;
 use crate::renderer::native_vulkan::scene_backend::frame_command_buffer::{
     native_vulkan_begin_scene_frame_command_buffer, native_vulkan_end_scene_frame_command_buffer,
@@ -35,6 +39,7 @@ use crate::renderer::native_vulkan::scene_backend::resource_prepare::{
     NativeVulkanSceneMeshResourcePrepareContext, NativeVulkanSceneMeshResourcePreparePlan,
     native_vulkan_record_scene_mesh_resource_prepare_frame,
 };
+use crate::renderer::native_vulkan::scene_backend::shader_artifacts::NativeVulkanSceneEffectShaderArtifactCatalog;
 use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
@@ -42,6 +47,7 @@ use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeap
 pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub resource_prepare: NativeVulkanVulkanaliaSceneResourcePrepareSnapshot,
     pub pipeline_prepare: NativeVulkanVulkanaliaScenePipelinePrepareSnapshot,
+    pub effect_pipeline_prepare: NativeVulkanVulkanaliaSceneEffectPipelinePrepareSnapshot,
     pub prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
@@ -53,7 +59,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 9],
+    pub command_order: [&'static str; 10],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -69,6 +75,21 @@ pub struct NativeVulkanVulkanaliaScenePipelinePrepareSnapshot {
     pub sampler_descriptor_count: usize,
     pub descriptor_model: &'static str,
     pub command_order: [&'static str; 5],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanVulkanaliaSceneEffectPipelinePrepareSnapshot {
+    pub target_formats: Vec<String>,
+    pub target_format_count: usize,
+    pub material_pass_count: usize,
+    pub cache_key_count: usize,
+    pub shader_artifact_count: usize,
+    pub created_pipeline_count: usize,
+    pub reused_pipeline_count: usize,
+    pub resource_descriptor_count: usize,
+    pub sampler_descriptor_count: usize,
+    pub descriptor_model: &'static str,
+    pub command_order: [&'static str; 6],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -108,6 +129,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     target_formats: &NativeVulkanSceneGraphTargetFormatPlan,
     swapchain_extent: vk::Extent2D,
     shaders: NativeVulkanSceneMeshPipelineShaders<'_>,
+    effect_shader_catalog: &NativeVulkanSceneEffectShaderArtifactCatalog,
 ) -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
     let prepare_slot = 0u32;
     let slot_prepare = frame_slots
@@ -200,6 +222,24 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             |target| target_formats.format(target),
             shaders,
         )?;
+        let effect_pipeline_prepare =
+            native_vulkan_prepare_scene_effect_pipeline_cache_with_target_formats(
+                device,
+                frame_resources,
+                &frame.effect_pass_graph,
+                |target| {
+                    effect_target_plan
+                    .format(target)
+                    .or_else(|effect_err| {
+                        target_formats.format(target).map_err(|graph_err| {
+                            format!(
+                                "{effect_err}; scene graph target format fallback also failed: {graph_err}"
+                            )
+                        })
+                    })
+                },
+                effect_shader_catalog,
+            )?;
         Ok(NativeVulkanVulkanaliaScenePrepareSnapshot {
             resource_prepare: NativeVulkanVulkanaliaSceneResourcePrepareSnapshot::from_plan(
                 &resource_prepare,
@@ -207,6 +247,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             pipeline_prepare: NativeVulkanVulkanaliaScenePipelinePrepareSnapshot::from_plan(
                 &pipeline_prepare,
             ),
+            effect_pipeline_prepare:
+                NativeVulkanVulkanaliaSceneEffectPipelinePrepareSnapshot::from_plan(
+                    &effect_pipeline_prepare,
+                ),
             prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot::from_plan(
                 &prepare_submit,
             ),
@@ -230,6 +274,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "wait_scene_prepare_fence_cold_path",
                 "release_completed_prepare_staging",
                 "prepare_scene_mesh_pipeline_cache",
+                "prepare_scene_effect_pipeline_cache",
             ],
         })
     })();
@@ -249,6 +294,24 @@ impl NativeVulkanVulkanaliaScenePipelinePrepareSnapshot {
             target_format_count: plan.target_format_count,
             draw_count: plan.draw_count,
             cache_key_count: plan.cache_key_count,
+            created_pipeline_count: plan.created_pipeline_count,
+            reused_pipeline_count: plan.reused_pipeline_count,
+            resource_descriptor_count: plan.resource_descriptor_count,
+            sampler_descriptor_count: plan.sampler_descriptor_count,
+            descriptor_model: plan.descriptor_model,
+            command_order: plan.command_order,
+        }
+    }
+}
+
+impl NativeVulkanVulkanaliaSceneEffectPipelinePrepareSnapshot {
+    fn from_plan(plan: &NativeVulkanSceneEffectPipelinePreparePlan) -> Self {
+        Self {
+            target_formats: plan.target_formats.clone(),
+            target_format_count: plan.target_format_count,
+            material_pass_count: plan.material_pass_count,
+            cache_key_count: plan.cache_key_count,
+            shader_artifact_count: plan.shader_artifact_count,
             created_pipeline_count: plan.created_pipeline_count,
             reused_pipeline_count: plan.reused_pipeline_count,
             resource_descriptor_count: plan.resource_descriptor_count,

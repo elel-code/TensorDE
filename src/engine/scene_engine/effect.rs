@@ -36,6 +36,7 @@ pub struct SceneEffectProgram {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub enum SceneEffectCommand {
     MaterialPass(SceneEffectMaterialPass),
+    Copy(SceneEffectCopyCommand),
     Swap(SceneEffectSwapCommand),
 }
 
@@ -60,6 +61,13 @@ pub struct SceneEffectSwapCommand {
     pub pass_index: usize,
     pub a: SceneEffectImageRef,
     pub b: SceneEffectImageRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SceneEffectCopyCommand {
+    pub pass_index: usize,
+    pub source: SceneEffectImageRef,
+    pub target: SceneEffectImageRef,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -128,6 +136,13 @@ impl SceneEffectProgram {
         self.commands
             .iter()
             .filter(|command| matches!(command, SceneEffectCommand::Swap(_)))
+            .count()
+    }
+
+    pub fn copy_command_count(&self) -> usize {
+        self.commands
+            .iter()
+            .filter(|command| matches!(command, SceneEffectCommand::Copy(_)))
             .count()
     }
 }
@@ -217,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn effect_program_counts_material_and_swap_commands() {
+    fn effect_program_counts_material_copy_and_swap_commands() {
         let program = SceneEffectProgram {
             effect_file: "effects/fluidsimulation/effect.json".to_owned(),
             effect: WeEffectKind::Unknown,
@@ -239,8 +254,13 @@ mod tests {
                     combos: BTreeMap::new(),
                     constants: BTreeMap::new(),
                 }),
-                SceneEffectCommand::Swap(SceneEffectSwapCommand {
+                SceneEffectCommand::Copy(SceneEffectCopyCommand {
                     pass_index: 1,
+                    source: SceneEffectImageRef::NamedFbo("_rt_FullCompoBuffer2".to_owned()),
+                    target: SceneEffectImageRef::NamedFbo("_rt_FullCompoBuffer1".to_owned()),
+                }),
+                SceneEffectCommand::Swap(SceneEffectSwapCommand {
+                    pass_index: 2,
                     a: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity2".to_owned()),
                     b: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity1".to_owned()),
                 }),
@@ -248,6 +268,7 @@ mod tests {
         };
 
         assert_eq!(program.material_pass_count(), 1);
+        assert_eq!(program.copy_command_count(), 1);
         assert_eq!(program.swap_command_count(), 1);
     }
 }

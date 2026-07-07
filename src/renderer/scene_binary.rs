@@ -1884,7 +1884,7 @@ mod tests {
     }
 
     #[test]
-    fn gscn_engine_plan_preserves_typed_effect_program_fbos_and_swaps() {
+    fn gscn_engine_plan_preserves_typed_effect_program_fbos_copy_and_swaps() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 { "id": "base", "type": "image", "source": "assets/base.gtex", "width": 320, "height": 180 },
@@ -1901,7 +1901,8 @@ mod tests {
                         {
                             "file": "effects/custom/effect.json",
                             "fbos": [
-                                { "name": "_rt_Custom", "format": "rgba8888", "scale": 0.5, "unique": true }
+                                { "name": "_rt_Custom", "format": "rgba8888", "scale": 0.5, "unique": true },
+                                { "name": "_rt_CustomPrev", "format": "rgba8888", "scale": 0.5, "unique": true }
                             ],
                             "passes": [
                                 {
@@ -1914,6 +1915,11 @@ mod tests {
                                     "texture_resources": ["base", null, "normal"],
                                     "combos": { "MASK": 0 },
                                     "constant_shader_values": { "strength": 0.5 }
+                                },
+                                {
+                                    "command": "copy",
+                                    "source": "_rt_Custom",
+                                    "target": "_rt_CustomPrev"
                                 },
                                 {
                                     "command": "swap",
@@ -1942,7 +1948,7 @@ mod tests {
         assert_eq!(plan.effects[0].object, SceneObjectId(0));
         let program = &plan.effects[0].program;
         assert_eq!(program.effect_file, "effects/custom/effect.json");
-        assert_eq!(program.fbos.len(), 1);
+        assert_eq!(program.fbos.len(), 2);
         assert_eq!(program.fbos[0].name, "_rt_Custom");
         assert_eq!(program.fbos[0].target, SceneGraphTarget::NamedFbo(0));
         assert_eq!(
@@ -1951,7 +1957,10 @@ mod tests {
         );
         assert!((program.fbos[0].scale - 0.5).abs() < f32::EPSILON);
         assert!(program.fbos[0].unique);
+        assert_eq!(program.fbos[1].name, "_rt_CustomPrev");
+        assert_eq!(program.fbos[1].target, SceneGraphTarget::NamedFbo(1));
         assert_eq!(program.material_pass_count(), 1);
+        assert_eq!(program.copy_command_count(), 1);
         assert_eq!(program.swap_command_count(), 1);
         let SceneEffectCommand::MaterialPass(pass) = &program.commands[0] else {
             panic!("expected material pass");
@@ -1982,10 +1991,22 @@ mod tests {
             pass.constants.get("strength"),
             Some(&SceneEffectConstantValue::Float(0.5))
         );
-        let SceneEffectCommand::Swap(swap) = &program.commands[1] else {
+        let SceneEffectCommand::Copy(copy) = &program.commands[1] else {
+            panic!("expected copy command");
+        };
+        assert_eq!(copy.pass_index, 1);
+        assert_eq!(
+            copy.source,
+            SceneEffectImageRef::NamedFbo("_rt_Custom".to_owned())
+        );
+        assert_eq!(
+            copy.target,
+            SceneEffectImageRef::NamedFbo("_rt_CustomPrev".to_owned())
+        );
+        let SceneEffectCommand::Swap(swap) = &program.commands[2] else {
             panic!("expected swap command");
         };
-        assert_eq!(swap.pass_index, 1);
+        assert_eq!(swap.pass_index, 2);
         assert_eq!(
             swap.a,
             SceneEffectImageRef::NamedFbo("_rt_Custom".to_owned())

@@ -23,8 +23,8 @@ use crate::core::scene::binary::{
 use crate::engine::scene_engine::we::WeEffectKind;
 use crate::engine::scene_engine::{
     SceneCullMode, SceneDepthTest, SceneEffectCommand, SceneEffectConstantValue,
-    SceneEffectFboBinding, SceneEffectFboFormat, SceneEffectImageRef, SceneEffectMaterialPass,
-    SceneEffectPassBlend, SceneEffectProgram, SceneEffectSwapCommand,
+    SceneEffectCopyCommand, SceneEffectFboBinding, SceneEffectFboFormat, SceneEffectImageRef,
+    SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectProgram, SceneEffectSwapCommand,
     SceneEffectTextureResourceBinding, SceneGraphTarget, SceneResourceId,
 };
 use crate::renderer::RendererPlanError;
@@ -234,6 +234,32 @@ fn gscn_effect_command(
             pass_index: pass.pass_index as usize,
             a,
             b,
+        }));
+    }
+    if command
+        .map(|command| command.eq_ignore_ascii_case("copy"))
+        .unwrap_or(false)
+    {
+        let source = binary_name(names, pass.source_name)
+            .map(SceneEffectImageRef::from_we_name)
+            .ok_or_else(|| {
+                RendererPlanError::PackageLoad(format!(
+                    "WE effect copy pass {} is missing source FBO",
+                    pass.pass_index
+                ))
+            })?;
+        let target = binary_name(names, pass.target_name)
+            .map(SceneEffectImageRef::from_we_name)
+            .ok_or_else(|| {
+                RendererPlanError::PackageLoad(format!(
+                    "WE effect copy pass {} is missing target FBO",
+                    pass.pass_index
+                ))
+            })?;
+        return Ok(SceneEffectCommand::Copy(SceneEffectCopyCommand {
+            pass_index: pass.pass_index as usize,
+            source,
+            target,
         }));
     }
 

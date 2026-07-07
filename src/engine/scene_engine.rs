@@ -35,16 +35,17 @@ pub use draw_family::{
     SceneGraphPassDrawFamilyPlan,
 };
 pub use effect::{
-    SceneEffectCommand, SceneEffectConstantValue, SceneEffectFboBinding, SceneEffectFboFormat,
-    SceneEffectImageRef, SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectProgram,
-    SceneEffectSwapCommand, SceneEffectTextureResourceBinding, SceneObjectEffectProgram,
+    SceneEffectCommand, SceneEffectConstantValue, SceneEffectCopyCommand, SceneEffectFboBinding,
+    SceneEffectFboFormat, SceneEffectImageRef, SceneEffectMaterialPass, SceneEffectPassBlend,
+    SceneEffectProgram, SceneEffectSwapCommand, SceneEffectTextureResourceBinding,
+    SceneObjectEffectProgram,
 };
 pub use effect_graph::{
     SceneEffectGraphPlan, SceneEffectInput, SceneEffectPassPlan, SceneEffectShaderFamily,
     SceneEffectTargetBinding,
 };
 pub use effect_pass_graph::{
-    SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+    SceneEffectPassGraphCopy, SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
     SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
     SceneEffectPassGraphSwap, SceneEffectPassGraphTarget,
 };
