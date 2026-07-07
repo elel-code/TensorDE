@@ -4,7 +4,9 @@
 //! - `reverse-engineered/docs/effect-format.md`
 //! - `reverse-engineered/effects/fluidsimulation.md`
 //! - `reverse-engineered/effects/iris.md`
+//! - `reverse-engineered/effects/effect-semantics.md`
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
+//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/servers/rendering/renderer_rd/uniform_set_cache_rd.h`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`

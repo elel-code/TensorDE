@@ -4,6 +4,8 @@
 //! - `reverse-engineered/docs/effect-format.md`
 //! - `reverse-engineered/effects/fluidsimulation.md`
 //! - `reverse-engineered/effects/effect-semantics.md`
+//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/docs/exe/texture-and-format.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
@@ -128,6 +130,7 @@ fn effect_fbo_vk_format(
         }
         SceneEffectFboFormat::Rg16Float => Ok((vk::Format::R16G16_SFLOAT, "we_fbo_rg1616f")),
         SceneEffectFboFormat::R16Float => Ok((vk::Format::R16_SFLOAT, "we_fbo_r16f")),
+        SceneEffectFboFormat::R8Unorm => Ok((vk::Format::R8_UNORM, "we_runtime_target_r8_unorm")),
         SceneEffectFboFormat::Rgba8Unorm => Ok((vk::Format::R8G8B8A8_UNORM, "we_fbo_rgba8888")),
         SceneEffectFboFormat::RgbaBackbuffer => Ok((swapchain_format, "we_fbo_rgba_backbuffer")),
         SceneEffectFboFormat::Other(format) => Err(format!(
@@ -152,6 +155,7 @@ fn vulkan_format_label(format: vk::Format) -> &'static str {
         vk::Format::R16G16B16A16_SFLOAT => "R16G16B16A16_SFLOAT",
         vk::Format::R16G16_SFLOAT => "R16G16_SFLOAT",
         vk::Format::R16_SFLOAT => "R16_SFLOAT",
+        vk::Format::R8_UNORM => "R8_UNORM",
         vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
         vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
         _ => "other",
@@ -223,6 +227,32 @@ mod tests {
         assert_eq!(plan.entries[1].format, "R16_SFLOAT");
         assert_eq!(plan.entries[0].width, 1920);
         assert_eq!(plan.entries[1].height, 1080);
+    }
+
+    #[test]
+    fn effect_target_plan_maps_runtime_r8_alpha_mask_format() {
+        let graph = graph(vec![target(
+            "_rt_FullAlphaMask",
+            SceneGraphTarget::NamedFbo(8),
+            SceneEffectFboFormat::R8Unorm,
+            2.0,
+        )]);
+
+        let plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
+            &graph,
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("runtime R8 alpha-mask target plan");
+
+        assert_eq!(plan.entries[0].format, "R8_UNORM");
+        assert_eq!(plan.entries[0].format_source, "we_runtime_target_r8_unorm");
+        assert_eq!(plan.entries[0].width, 1920);
+        assert_eq!(plan.entries[0].height, 1080);
+        assert_eq!(plan.requirements()[0].format, vk::Format::R8_UNORM);
     }
 
     #[test]

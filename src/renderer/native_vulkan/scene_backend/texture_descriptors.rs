@@ -4,6 +4,8 @@
 //! - `reverse-engineered/docs/tex-format.md`
 //! - `reverse-engineered/docs/material-format.md`
 //! - `reverse-engineered/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/docs/exe/texture-and-format.md`
 //! - `references/godot/servers/rendering/rendering_device.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
@@ -72,6 +74,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneTextureDescriptorVk
     R8G8B8A8Unorm,
     B8G8R8A8Unorm,
     R16Sfloat,
+    R8Unorm,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +95,7 @@ impl NativeVulkanSceneTextureDescriptorVkFormat {
             vk::Format::R8G8B8A8_UNORM => Ok(Self::R8G8B8A8Unorm),
             vk::Format::B8G8R8A8_UNORM => Ok(Self::B8G8R8A8Unorm),
             vk::Format::R16_SFLOAT => Ok(Self::R16Sfloat),
+            vk::Format::R8_UNORM => Ok(Self::R8Unorm),
             format => Err(format!(
                 "scene texture descriptor cannot represent graph target vk::Format {format:?}"
             )),
@@ -105,6 +109,7 @@ impl NativeVulkanSceneTextureDescriptorVkFormat {
             Self::R8G8B8A8Unorm => vk::Format::R8G8B8A8_UNORM,
             Self::B8G8R8A8Unorm => vk::Format::B8G8R8A8_UNORM,
             Self::R16Sfloat => vk::Format::R16_SFLOAT,
+            Self::R8Unorm => vk::Format::R8_UNORM,
         }
     }
 }
@@ -361,6 +366,16 @@ mod tests {
                 "bind_descriptor_heap_texture_mapping"
             ]
         );
+    }
+
+    #[test]
+    fn texture_descriptor_vk_format_maps_runtime_r8_targets() {
+        let format =
+            NativeVulkanSceneTextureDescriptorVkFormat::from_vk_format(vk::Format::R8_UNORM)
+                .expect("R8 target descriptor format");
+
+        assert_eq!(format, NativeVulkanSceneTextureDescriptorVkFormat::R8Unorm);
+        assert_eq!(format.to_vk_format(), vk::Format::R8_UNORM);
     }
 
     #[test]

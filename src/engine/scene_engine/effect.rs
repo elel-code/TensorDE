@@ -6,6 +6,8 @@
 //! - `reverse-engineered/effects/fluidsimulation.md`
 //! - `reverse-engineered/effects/iris.md`
 //! - `reverse-engineered/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/docs/exe/composelayer-and-effecttarget.md`
+//! - `reverse-engineered/docs/exe/texture-and-format.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
 use std::collections::BTreeMap;
@@ -88,6 +90,7 @@ pub enum SceneEffectFboFormat {
     Rgba16Float,
     Rg16Float,
     R16Float,
+    R8Unorm,
     Rgba8Unorm,
     RgbaBackbuffer,
     Other(String),
@@ -150,6 +153,7 @@ impl SceneEffectFboFormat {
             "rgba16f" | "rgba16161616f" | "rgba16_float" => Self::Rgba16Float,
             "rg1616f" | "rg16f" | "rg16_float" => Self::Rg16Float,
             "r16f" | "r16_float" => Self::R16Float,
+            "r8" | "r8_unorm" | "r8unorm" => Self::R8Unorm,
             "rgba8888" | "rgba8" | "rgba8_unorm" => Self::Rgba8Unorm,
             "rgba_backbuffer" | "backbuffer" => Self::RgbaBackbuffer,
             _ => Self::Other(format.to_owned()),
@@ -201,6 +205,10 @@ mod tests {
         assert_eq!(
             SceneEffectFboFormat::from_we_name("rg1616f"),
             SceneEffectFboFormat::Rg16Float
+        );
+        assert_eq!(
+            SceneEffectFboFormat::from_we_name("r8_unorm"),
+            SceneEffectFboFormat::R8Unorm
         );
         assert_eq!(
             SceneEffectFboFormat::from_we_name("vendor-custom"),

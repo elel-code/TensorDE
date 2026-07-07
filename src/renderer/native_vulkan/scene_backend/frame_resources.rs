@@ -22,6 +22,7 @@ use super::effect_descriptors::{
     NativeVulkanSceneEffectExternalTextureDescriptor,
     NativeVulkanSceneEffectTextureDescriptorFramePlan,
 };
+use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapFramePlan;
 use super::frame_completion::{
     NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
 };
@@ -326,6 +327,19 @@ impl NativeVulkanSceneFrameResources {
             },
             effect_previous_framebuffer_descriptor_required,
             effect_scene_descriptor_required,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn effect_resource_heap_frame_plan(
+        &self,
+        texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
+        descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    ) -> Result<NativeVulkanSceneEffectResourceHeapFramePlan, String> {
+        NativeVulkanSceneEffectResourceHeapFramePlan::from_descriptors(
+            texture_descriptors,
+            descriptor_heap_properties,
+            |resource| self.texture_image_binding(resource),
+            |target| self.offscreen_target_binding(target),
         )
     }
 
