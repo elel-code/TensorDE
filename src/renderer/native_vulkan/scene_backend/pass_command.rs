@@ -284,15 +284,29 @@ mod tests {
     }
 
     #[test]
-    fn mesh_pass_plan_rejects_non_mesh_draws() {
+    fn mesh_pass_plan_accepts_puppet_skinning_draws_in_indexed_batch() {
         let mut draw = mesh_draw(SceneObjectId(1), SceneGeometryId(4), "we/genericimage4");
         draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let pass = mesh_pass(vec![draw]);
+
+        let plan = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
+            .expect("puppet draw should remain in indexed mesh batch");
+
+        assert_eq!(plan.indexed_draw_count, 1);
+        assert_eq!(plan.pipeline_bind_count, 1);
+    }
+
+    #[test]
+    fn mesh_pass_plan_rejects_non_indexed_graphics_draws() {
+        let mut draw = mesh_draw(SceneObjectId(1), SceneGeometryId(4), "we/genericimage4");
+        draw.pipeline = SceneGraphPipelineClass::Quad;
         let pass = mesh_pass(vec![draw]);
 
         let err = NativeVulkanSceneMeshPassCommandPlan::from_record_bindings(&pass, mesh_records)
-            .expect_err("non-mesh draw must fail");
+            .expect_err("quad draw must fail until quad executor exists");
 
-        assert!(err.contains("requires Mesh pipeline"));
+        assert!(err.contains("requires indexed mesh graphics pipeline"));
     }
 
     #[test]

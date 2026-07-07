@@ -8,7 +8,7 @@
 //! - `references/godot/servers/rendering/renderer_rd/forward_mobile/render_forward_mobile.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 
-use crate::engine::scene_engine::{SceneGraphDraw, SceneGraphPipelineClass};
+use crate::engine::scene_engine::SceneGraphDraw;
 
 use super::pipeline::NativeVulkanScenePipelineKey;
 
@@ -29,9 +29,9 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
         pass_name: &str,
         draw: &'a SceneGraphDraw,
     ) -> Result<NativeVulkanSceneMeshDrawListTransition<'a>, String> {
-        if draw.pipeline != SceneGraphPipelineClass::Mesh {
+        if !draw.pipeline.is_indexed_mesh_graphics() {
             return Err(format!(
-                "scene mesh pass '{}' requires Mesh pipeline, got {:?} for object {:?}",
+                "scene mesh pass '{}' requires indexed mesh graphics pipeline, got {:?} for object {:?}",
                 pass_name, draw.pipeline, draw.object
             ));
         }
@@ -52,8 +52,8 @@ impl<'a> NativeVulkanSceneMeshDrawListState<'a> {
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGeometryId, SceneGraphResourceBinding, SceneGraphResourceRole,
-        SceneMaterialKey, SceneObjectId, SceneResourceId,
+        SceneBlendContract, SceneGeometryId, SceneGraphPipelineClass, SceneGraphResourceBinding,
+        SceneGraphResourceRole, SceneMaterialKey, SceneObjectId, SceneResourceId,
     };
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn mesh_draw_list_rejects_non_mesh_draws_before_backend_recording() {
+    fn mesh_draw_list_accepts_puppet_skinning_draws_as_indexed_graphics() {
         let mut draw = mesh_draw(
             SceneObjectId(1),
             SceneGeometryId(4),
@@ -116,13 +116,33 @@ mod tests {
             Some(SceneResourceId(7)),
         );
         draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let mut state = NativeVulkanSceneMeshDrawListState::default();
+
+        let transition = state
+            .next_draw("scene-main", &draw)
+            .expect("puppet draw must stay in indexed graphics batch");
+
+        assert!(transition.bind_pipeline);
+        assert_eq!(transition.pipeline_key.pipeline_class, SceneGraphPipelineClass::PuppetSkinning);
+    }
+
+    #[test]
+    fn mesh_draw_list_rejects_non_indexed_graphics_draws_before_backend_recording() {
+        let mut draw = mesh_draw(
+            SceneObjectId(1),
+            SceneGeometryId(4),
+            "we/genericimage4",
+            Some(SceneResourceId(7)),
+        );
+        draw.pipeline = SceneGraphPipelineClass::Quad;
         let mut state = NativeVulkanSceneMeshDrawListState::default();
 
         let err = state
             .next_draw("scene-main", &draw)
-            .expect_err("non-mesh draw must fail");
+            .expect_err("non-indexed draw must fail");
 
-        assert!(err.contains("requires Mesh pipeline"));
+        assert!(err.contains("requires indexed mesh graphics pipeline"));
     }
 
     fn mesh_draw(

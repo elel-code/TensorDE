@@ -163,8 +163,9 @@ mod tests {
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneFramePlan, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
-        SceneGraphPipelineClass, SceneGraphTarget, SceneMaterialKey, SceneMeshResidency,
-        SceneObjectId, SceneResidentResource, SceneResource, SceneResourceResidencyPlan,
+        SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneGraphTarget, SceneMaterialKey, SceneMeshResidency, SceneObjectId,
+        SceneResidentResource, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -366,7 +367,11 @@ mod tests {
             },
             geometry: Some(SceneGeometryId(2)),
             puppet: None,
-            resources: Vec::new(),
+            resources: vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource: SceneResourceId(7),
+            }],
             index_count: 3,
         };
         let draw_plan = device

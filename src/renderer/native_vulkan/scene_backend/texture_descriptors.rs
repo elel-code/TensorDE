@@ -14,8 +14,8 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneGraph, SceneGraphPipelineClass, SceneGraphResourceRole, SceneObjectId, SceneResourceId,
-    SceneTextureFormat, SceneTextureResidency,
+    SceneGraph, SceneGraphResourceRole, SceneObjectId, SceneResourceId, SceneTextureFormat,
+    SceneTextureResidency,
 };
 
 use super::resource_heap::texture_set::scene_shader_texture_mapping;
@@ -57,9 +57,9 @@ impl NativeVulkanSceneTextureDescriptorFramePlan {
 
         for pass in &graph.passes {
             for draw in &pass.draws {
-                if draw.pipeline != SceneGraphPipelineClass::Mesh {
+                if !draw.pipeline.is_indexed_mesh_graphics() {
                     return Err(format!(
-                        "scene texture descriptor plan requires Mesh pipeline, got {:?} for object {:?}",
+                        "scene texture descriptor plan requires indexed mesh graphics pipeline, got {:?} for object {:?}",
                         draw.pipeline, draw.object
                     ));
                 }
@@ -233,6 +233,37 @@ mod tests {
         .expect_err("WE texture slot mismatch must fail");
 
         assert!(err.contains("does not match WE g_Texture0"));
+    }
+
+    #[test]
+    fn texture_descriptor_plan_accepts_puppet_skinning_draws() {
+        let mut draw = mesh_draw(
+            SceneObjectId(7),
+            vec![SceneGraphResourceBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                resource: SceneResourceId(3),
+            }],
+        );
+        draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let graph = mesh_graph(vec![draw]);
+
+        let plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph(&graph, |resource| {
+            (resource == SceneResourceId(3)).then_some(SceneTextureResidency {
+                id: resource,
+                width: Some(1024),
+                height: Some(512),
+                format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+                mip_count: Some(10),
+                payload_bytes: Some(2_796_204),
+            })
+        })
+        .expect("puppet draw texture descriptors");
+
+        assert_eq!(plan.draw_count, 1);
+        assert_eq!(plan.binding_count, 1);
+        assert_eq!(plan.bindings[0].object, SceneObjectId(7));
     }
 
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {

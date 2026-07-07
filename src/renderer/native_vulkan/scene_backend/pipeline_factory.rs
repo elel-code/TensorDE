@@ -375,9 +375,9 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
     if key.shader.is_empty() {
         return Err("scene mesh pipeline requires non-empty shader name".to_owned());
     }
-    if key.pipeline_class != crate::engine::scene_engine::SceneGraphPipelineClass::Mesh {
+    if !key.pipeline_class.is_indexed_mesh_graphics() {
         return Err(format!(
-            "scene mesh pipeline requires Mesh pipeline class, got {:?}",
+            "scene mesh pipeline requires indexed mesh graphics pipeline class, got {:?}",
             key.pipeline_class
         ));
     }
@@ -554,15 +554,31 @@ mod tests {
     }
 
     #[test]
-    fn mesh_pipeline_plan_rejects_non_mesh_pipeline_class() {
+    fn mesh_pipeline_plan_accepts_puppet_skinning_pipeline_class() {
+        let plan =
+            native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
+                pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+                ..pipeline_key()
+            })
+            .expect("puppet pipeline plan");
+
+        assert_eq!(plan.vertex_stride_bytes, 20);
+        assert_eq!(
+            plan.vertex_attributes,
+            ["location0.xy", "location1.uv", "location2.opacity"]
+        );
+    }
+
+    #[test]
+    fn mesh_pipeline_plan_rejects_non_indexed_graphics_pipeline_class() {
         let err =
             native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
                 pipeline_class: SceneGraphPipelineClass::Quad,
                 ..pipeline_key()
             })
-            .expect_err("non-mesh pipeline must fail");
+            .expect_err("quad pipeline must fail");
 
-        assert!(err.contains("requires Mesh pipeline class"));
+        assert!(err.contains("requires indexed mesh graphics pipeline class"));
     }
 
     #[test]

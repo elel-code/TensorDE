@@ -29,6 +29,16 @@ pub enum SceneGraphPipelineClass {
     ParticleEmitter,
 }
 
+impl SceneGraphPipelineClass {
+    pub const fn is_indexed_mesh_graphics(self) -> bool {
+        matches!(self, Self::Mesh | Self::PuppetSkinning)
+    }
+
+    pub const fn uses_scene_mesh_vertex_layout(self) -> bool {
+        matches!(self, Self::Mesh | Self::PuppetSkinning)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub enum SceneGraphResourceRole {
     ShaderTexture { index: u32 },

@@ -15,7 +15,6 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SceneGeometryId, SceneGraphDraw,
-    SceneGraphPipelineClass,
 };
 
 use super::resource_buffers::{
@@ -124,9 +123,9 @@ fn validate_mesh_draw_bindings(
     index_key: NativeVulkanSceneGpuBufferKey,
     index_bytes: u64,
 ) -> Result<(), String> {
-    if draw.pipeline != SceneGraphPipelineClass::Mesh {
+    if !draw.pipeline.is_indexed_mesh_graphics() {
         return Err(format!(
-            "scene mesh draw command requires Mesh pipeline, got {:?}",
+            "scene mesh draw command requires indexed mesh graphics pipeline, got {:?}",
             draw.pipeline
         ));
     }
@@ -194,7 +193,8 @@ mod tests {
     use super::super::resource_buffers::NativeVulkanSceneGpuBufferRecordBinding;
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneGraphResourceBinding, SceneMaterialKey, SceneObjectId,
+        SceneBlendContract, SceneGraphPipelineClass, SceneGraphResourceBinding, SceneMaterialKey,
+        SceneObjectId,
     };
 
     #[test]
@@ -240,15 +240,29 @@ mod tests {
     }
 
     #[test]
-    fn mesh_draw_plan_rejects_non_mesh_pipeline() {
+    fn mesh_draw_plan_accepts_puppet_skinning_pipeline() {
+        let mut draw = mesh_draw(SceneGeometryId(4), 6);
+        draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let records = mesh_records(SceneGeometryId(4), 120, 24);
+
+        let plan = NativeVulkanSceneMeshDrawCommandPlan::from_record_bindings(&draw, &records)
+            .expect("puppet indexed draw should bind retained geometry buffers");
+
+        assert_eq!(plan.index_count, 6);
+        assert_eq!(plan.geometry, SceneGeometryId(4));
+    }
+
+    #[test]
+    fn mesh_draw_plan_rejects_non_indexed_graphics_pipeline() {
         let mut draw = mesh_draw(SceneGeometryId(4), 6);
         draw.pipeline = SceneGraphPipelineClass::Quad;
         let records = mesh_records(SceneGeometryId(4), 120, 24);
 
         let err = NativeVulkanSceneMeshDrawCommandPlan::from_record_bindings(&draw, &records)
-            .expect_err("non-mesh pipeline must fail");
+            .expect_err("quad pipeline must fail in indexed mesh draw command");
 
-        assert!(err.contains("requires Mesh pipeline"));
+        assert!(err.contains("requires indexed mesh graphics pipeline"));
     }
 
     fn mesh_draw(geometry: SceneGeometryId, index_count: u32) -> SceneGraphDraw {

@@ -221,9 +221,11 @@ fn scene_pipeline_vertex_layout(
     pipeline_class: SceneGraphPipelineClass,
 ) -> Result<NativeVulkanScenePipelineVertexLayout, String> {
     match pipeline_class {
-        SceneGraphPipelineClass::Mesh => Ok(NativeVulkanScenePipelineVertexLayout::SceneMeshV0),
+        SceneGraphPipelineClass::Mesh | SceneGraphPipelineClass::PuppetSkinning => {
+            debug_assert!(pipeline_class.uses_scene_mesh_vertex_layout());
+            Ok(NativeVulkanScenePipelineVertexLayout::SceneMeshV0)
+        }
         SceneGraphPipelineClass::Quad
-        | SceneGraphPipelineClass::PuppetSkinning
         | SceneGraphPipelineClass::ParticleEmitter => Err(format!(
             "scene pipeline cache does not support {:?} pipeline yet",
             pipeline_class
@@ -312,6 +314,24 @@ mod tests {
         assert_eq!(cache_key.shader, "we/genericimage4");
         assert_eq!(cache_key.target_format, vk::Format::B8G8R8A8_UNORM);
         assert_eq!(cache_key.texture_slot_mask, 1);
+        assert_eq!(
+            cache_key.vertex_layout,
+            NativeVulkanScenePipelineVertexLayout::SceneMeshV0
+        );
+    }
+
+    #[test]
+    fn pipeline_cache_key_keeps_puppet_class_with_scene_mesh_vertex_layout() {
+        let mut draw = mesh_draw("we/genericimage4");
+        draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let key = NativeVulkanScenePipelineKey::from_draw(&draw).unwrap();
+
+        let cache_key =
+            NativeVulkanScenePipelineCacheKey::from_bind_key(key, vk::Format::B8G8R8A8_UNORM)
+                .expect("puppet graphics pipeline cache key");
+
+        assert_eq!(cache_key.pipeline_class, SceneGraphPipelineClass::PuppetSkinning);
         assert_eq!(
             cache_key.vertex_layout,
             NativeVulkanScenePipelineVertexLayout::SceneMeshV0

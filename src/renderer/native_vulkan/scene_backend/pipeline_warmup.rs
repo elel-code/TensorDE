@@ -10,7 +10,7 @@
 
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneGraph, SceneGraphPipelineClass, SceneGraphTarget};
+use crate::engine::scene_engine::{SceneGraph, SceneGraphTarget};
 
 use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineKey};
 
@@ -42,9 +42,9 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
             }
 
             for draw in &pass.draws {
-                if draw.pipeline != SceneGraphPipelineClass::Mesh {
+                if !draw.pipeline.is_indexed_mesh_graphics() {
                     return Err(format!(
-                        "scene mesh pipeline warmup requires Mesh pipeline, got {:?} for object {:?}",
+                        "scene mesh pipeline warmup requires indexed mesh graphics pipeline, got {:?} for object {:?}",
                         draw.pipeline, draw.object
                     ));
                 }
@@ -96,7 +96,8 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
-        SceneGraphResourceBinding, SceneGraphResourceRole, SceneMaterialKey, SceneObjectId,
+        SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
+        SceneMaterialKey, SceneObjectId,
     };
 
     #[test]
@@ -171,22 +172,46 @@ mod tests {
     }
 
     #[test]
-    fn warmup_plan_rejects_non_mesh_draws() {
+    fn warmup_plan_keeps_puppet_skinning_pipeline_keys() {
         let mut draw = mesh_draw(
             SceneObjectId(1),
             "we/genericimage4",
             SceneBlendContract::TranslucentAlpha,
         );
         draw.pipeline = SceneGraphPipelineClass::PuppetSkinning;
+        draw.puppet = Some(crate::engine::scene_engine::ScenePuppetId(9));
+        let graph = mesh_graph(vec![draw]);
+
+        let plan = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
+            &graph,
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("puppet skinning participates in indexed graphics warmup");
+
+        assert_eq!(plan.cache_keys().len(), 1);
+        assert_eq!(
+            plan.cache_keys()[0].pipeline_class,
+            SceneGraphPipelineClass::PuppetSkinning
+        );
+    }
+
+    #[test]
+    fn warmup_plan_rejects_non_indexed_graphics_draws() {
+        let mut draw = mesh_draw(
+            SceneObjectId(1),
+            "we/genericimage4",
+            SceneBlendContract::TranslucentAlpha,
+        );
+        draw.pipeline = SceneGraphPipelineClass::Quad;
         let graph = mesh_graph(vec![draw]);
 
         let err = NativeVulkanSceneMeshPipelineWarmupPlan::from_swapchain_graph(
             &graph,
             vk::Format::B8G8R8A8_UNORM,
         )
-        .expect_err("non-mesh pipeline must fail");
+        .expect_err("quad pipeline must fail until quad executor exists");
 
-        assert!(err.contains("requires Mesh pipeline"));
+        assert!(err.contains("requires indexed mesh graphics pipeline"));
     }
 
     #[test]
