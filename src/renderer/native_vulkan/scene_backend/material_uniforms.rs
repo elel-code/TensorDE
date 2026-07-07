@@ -16,7 +16,7 @@ use serde::Serialize;
 
 use crate::engine::scene_engine::{
     SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SceneGenericImage4MaterialUniformRecord,
-    SceneObjectId, SceneShaderUniformFramePlan,
+    SceneObjectId, SceneShaderUniformFramePlan, WE_VEC4_BYTES, WeVec4,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -220,23 +220,23 @@ fn genericimage4_material_upload(
     record: &SceneGenericImage4MaterialUniformRecord,
 ) -> Result<NativeVulkanSceneMaterialUniformUpload, NativeVulkanSceneMaterialUniformError> {
     let mut payload = Vec::with_capacity(SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES as usize);
-    push_f32x4(&mut payload, record, "g_Color4", record.color4)?;
-    push_f32x4(
+    push_we_vec4(&mut payload, record, "g_Color4", record.color4)?;
+    push_we_vec4(
         &mut payload,
         record,
         "g_RoughnessMetallic",
-        [record.roughness, record.metallic, 0.0, 0.0],
+        WeVec4::from_lanes([record.roughness, record.metallic, 0.0, 0.0]),
     )?;
-    push_f32x4(
+    push_we_vec4(
         &mut payload,
         record,
         "g_SpecularTint",
-        [
+        WeVec4::from_lanes([
             record.specular_tint[0],
             record.specular_tint[1],
             record.specular_tint[2],
             0.0,
-        ],
+        ]),
     )?;
     let key = NativeVulkanSceneMaterialUniformKey {
         object: record.object,
@@ -257,24 +257,32 @@ fn genericimage4_material_upload(
     })
 }
 
-fn push_f32x4(
+fn push_we_vec4(
     payload: &mut Vec<u8>,
     record: &SceneGenericImage4MaterialUniformRecord,
     field: &'static str,
-    values: [f32; 4],
+    value: WeVec4,
 ) -> Result<(), NativeVulkanSceneMaterialUniformError> {
-    for (element, value) in values.into_iter().enumerate() {
-        if !value.is_finite() {
-            return Err(NativeVulkanSceneMaterialUniformError::NonFiniteFloat {
-                object: record.object,
-                shader: record.shader.clone(),
-                field,
-                element,
-            });
-        }
-        payload.extend_from_slice(&value.to_le_bytes());
+    if let Some(element) = value.first_non_finite_lane() {
+        return Err(NativeVulkanSceneMaterialUniformError::NonFiniteFloat {
+            object: record.object,
+            shader: record.shader.clone(),
+            field,
+            element,
+        });
     }
+    let before = payload.len();
+    value.write_le_bytes(payload);
+    let written = payload.len().saturating_sub(before);
+    debug_assert_eq!(written, WE_VEC4_BYTES as usize);
     Ok(())
+}
+
+#[cfg(test)]
+fn we_vec4_bytes(value: WeVec4) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(WE_VEC4_BYTES as usize);
+    value.write_le_bytes(&mut bytes);
+    bytes
 }
 
 fn upload_records(
@@ -337,15 +345,15 @@ mod tests {
         assert_eq!(upload.payload.len(), 48);
         assert_eq!(
             &upload.payload[0..16],
-            bytemuck_f32x4([1.0, 1.0, 1.0, 1.0]).as_slice()
+            we_vec4_bytes(WeVec4::from_lanes([1.0, 1.0, 1.0, 1.0])).as_slice()
         );
         assert_eq!(
             &upload.payload[16..32],
-            bytemuck_f32x4([0.7, 0.0, 0.0, 0.0]).as_slice()
+            we_vec4_bytes(WeVec4::from_lanes([0.7, 0.0, 0.0, 0.0])).as_slice()
         );
         assert_eq!(
             &upload.payload[32..48],
-            bytemuck_f32x4([1.0, 1.0, 1.0, 0.0]).as_slice()
+            we_vec4_bytes(WeVec4::from_lanes([1.0, 1.0, 1.0, 0.0])).as_slice()
         );
     }
 
@@ -403,6 +411,26 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn material_uniform_upload_rejects_non_finite_we_vec4_lane() {
+        let mut frame_plan = SceneShaderUniformFramePlan::from_graph(&graph()).unwrap();
+        frame_plan.genericimage4_material_records[0].color4 =
+            WeVec4::from_lanes([1.0, f32::INFINITY, 1.0, 1.0]);
+
+        let err =
+            NativeVulkanSceneMaterialUniformUploadPlan::from_shader_uniform_frame_plan(&frame_plan)
+                .expect_err("non-finite WE vec4 lane must fail");
+
+        assert!(matches!(
+            err,
+            NativeVulkanSceneMaterialUniformError::NonFiniteFloat {
+                field: "g_Color4",
+                element: 1,
+                ..
+            }
+        ));
+    }
+
     fn graph() -> SceneGraph {
         SceneGraph {
             passes: vec![SceneGraphPass {
@@ -428,12 +456,5 @@ mod tests {
                 }],
             }],
         }
-    }
-
-    fn bytemuck_f32x4(values: [f32; 4]) -> Vec<u8> {
-        values
-            .into_iter()
-            .flat_map(|value| value.to_le_bytes())
-            .collect()
     }
 }

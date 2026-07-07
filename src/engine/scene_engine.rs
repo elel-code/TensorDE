@@ -54,4 +54,4 @@ pub use resource_residency::{
 };
 pub use shader_uniforms::{SceneGenericImage4MaterialUniformRecord, SceneShaderUniformFramePlan};
 pub use timeline::{SceneSampleClock, SceneTimelineSample};
-pub use we::WeShaderInterface;
+pub use we::{WE_VEC4_BYTES, WE_VEC4_LANES, WeShaderInterface, WeVec4};

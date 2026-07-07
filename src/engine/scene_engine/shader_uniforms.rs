@@ -11,6 +11,7 @@ use serde::Serialize;
 
 use super::{
     SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SceneGraph, SceneObjectId, WeShaderInterface,
+    WeVec4,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -70,7 +71,7 @@ pub struct SceneGenericImage4MaterialUniformRecord {
     pub object: SceneObjectId,
     pub shader: String,
     pub texture_slot_mask: u32,
-    pub color4: [f32; 4],
+    pub color4: WeVec4,
     pub roughness: f32,
     pub metallic: f32,
     pub specular_tint: [f32; 3],
@@ -88,7 +89,7 @@ impl SceneGenericImage4MaterialUniformRecord {
             object,
             shader,
             texture_slot_mask,
-            color4: [1.0, 1.0, 1.0, 1.0],
+            color4: WeVec4::ONE,
             roughness: 0.7,
             metallic: 0.0,
             specular_tint: [1.0, 1.0, 1.0],
@@ -127,7 +128,7 @@ mod tests {
         let record = &plan.genericimage4_material_records[0];
         assert_eq!(record.object, SceneObjectId(7));
         assert_eq!(record.texture_slot_mask, 1);
-        assert_eq!(record.color4, [1.0, 1.0, 1.0, 1.0]);
+        assert_eq!(record.color4.lanes(), [1.0, 1.0, 1.0, 1.0]);
         assert_eq!(record.roughness, 0.7);
         assert_eq!(record.metallic, 0.0);
         assert_eq!(record.specular_tint, [1.0, 1.0, 1.0]);

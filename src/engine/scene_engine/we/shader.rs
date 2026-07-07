@@ -10,6 +10,7 @@
 //! - `reverse-engineered/shaders/effects/waterripple.frag`
 //! - `reverse-engineered/shaders/effects/waterflow.frag`
 
+use super::vec4::WE_VEC4_BYTES;
 use super::{WeEffectKind, WeEffectOutputContract};
 use serde::Serialize;
 
@@ -66,6 +67,15 @@ pub enum WeShaderUniformKind {
     Float,
     UintArray,
     Mat4x3Array,
+}
+
+impl WeShaderUniformKind {
+    pub const fn we_abi_bytes(self) -> Option<u64> {
+        match self {
+            Self::Vec4 => Some(WE_VEC4_BYTES),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -343,5 +353,24 @@ mod tests {
     #[test]
     fn unknown_shader_has_no_contract() {
         assert!(WeShaderInterface::for_shader("we/unknown").is_none());
+    }
+
+    #[test]
+    fn genericimage4_keeps_we_vec4_uniforms_as_fixed_abi_records() {
+        let interface = WeShaderInterface::for_shader("we/genericimage4").unwrap();
+        let vec4_uniforms = interface
+            .uniforms
+            .iter()
+            .filter(|uniform| uniform.kind == WeShaderUniformKind::Vec4)
+            .map(|uniform| uniform.name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            WeShaderUniformKind::Vec4.we_abi_bytes(),
+            Some(WE_VEC4_BYTES)
+        );
+        assert!(vec4_uniforms.contains(&"g_Texture0Rotation"));
+        assert!(vec4_uniforms.contains(&"g_Texture2Resolution"));
+        assert!(vec4_uniforms.contains(&"g_Color4"));
     }
 }
