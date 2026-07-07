@@ -6024,7 +6024,7 @@ fn scene_parse_puppet_mdmp_active_sources(
 }
 
 fn scene_mdmp_effective_source_scale(
-    source_scale: u32,
+    _source_scale: u32,
     base_block_len: usize,
 ) -> Result<u32, String> {
     if base_block_len % 6 != 0 {
@@ -6032,14 +6032,8 @@ fn scene_mdmp_effective_source_scale(
             "Wallpaper Engine puppet MDMP base block length {base_block_len} is not divisible by 6."
         ));
     }
-    let block_scale = u32::try_from(base_block_len / 6)
-        .map_err(|_| "Wallpaper Engine puppet MDMP base block scale overflowed.".to_owned())?;
-    if source_scale < block_scale {
-        return Err(format!(
-            "Wallpaper Engine puppet MDMP source scale {source_scale} is smaller than base block scale {block_scale}."
-        ));
-    }
-    Ok(block_scale)
+    u32::try_from(base_block_len / 6)
+        .map_err(|_| "Wallpaper Engine puppet MDMP base block scale overflowed.".to_owned())
 }
 
 fn scene_mdmp_scaled_byte_len(scale: u32, multiplier: usize) -> Result<usize, String> {

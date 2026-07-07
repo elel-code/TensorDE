@@ -263,6 +263,7 @@ fn engine_resources(
     puppet_facts: BTreeMap<u32, GscnPuppetResourceFact>,
     puppet_ids: &BTreeMap<u32, ScenePuppetId>,
 ) -> Vec<SceneResource> {
+    let texture_path_ids = engine_texture_resource_path_ids(&resources, texture_ids);
     let mut output = resources
         .into_iter()
         .enumerate()
@@ -294,20 +295,47 @@ fn engine_resources(
         puppet_facts
             .into_iter()
             .filter_map(|(source_record, fact)| {
+                let mut clipping = ScenePuppetClippingProgram::from_source_records(
+                    fact.clipping_records,
+                    fact.clipping_active_sources,
+                );
+                clipping.resolve_mask_texture_indices(|path| {
+                    texture_path_ids
+                        .get(&engine_resource_path_key(path))
+                        .copied()
+                });
                 Some(SceneResource::PuppetRig {
                     id: *puppet_ids.get(&source_record)?,
                     source_record: fact.source_record,
                     skin: fact.skin,
                     clips: fact.clips,
                     layers: fact.layers,
-                    clipping: ScenePuppetClippingProgram::from_source_records(
-                        fact.clipping_records,
-                        fact.clipping_active_sources,
-                    ),
+                    clipping,
                 })
             }),
     );
     output
+}
+
+fn engine_texture_resource_path_ids(
+    resources: &[GscnResourceFact],
+    texture_ids: &[Option<SceneResourceId>],
+) -> BTreeMap<String, SceneResourceId> {
+    let mut path_ids = BTreeMap::new();
+    for (index, resource) in resources.iter().enumerate() {
+        let Some(source) = &resource.source else {
+            continue;
+        };
+        let Some(id) = texture_ids.get(index).copied().flatten() else {
+            continue;
+        };
+        path_ids.insert(engine_resource_path_key(&source.to_string_lossy()), id);
+    }
+    path_ids
+}
+
+fn engine_resource_path_key(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 fn engine_objects(
@@ -492,6 +520,15 @@ mod tests {
                     mip_count: None,
                     payload_bytes: None,
                 },
+                GscnResourceFact {
+                    id_name: Some(88),
+                    source: Some(PathBuf::from("assets/clipping-mask.gtex")),
+                    width: Some(331),
+                    height: Some(115),
+                    format: Some(SceneTextureFormat::R8Unorm),
+                    mip_count: Some(1),
+                    payload_bytes: Some(38_065),
+                },
             ],
             mesh_resources: vec![GscnMeshResourceFact {
                 source_record: 12,
@@ -519,7 +556,15 @@ mod tests {
                     rate: 1.0,
                     initial_phase: 0.0,
                 }],
-                clipping_records: Vec::new(),
+                clipping_records: vec![SceneMeshPuppetClippingRecord {
+                    source_name: Some("eye-right".to_owned()),
+                    mask: "masks/clipping_mask_eye".to_owned(),
+                    mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                    duration_frames: 1680,
+                    flags: 1,
+                    bones: vec![42, 43],
+                    frame_keys: vec![0, 1, 2],
+                }],
                 clipping_active_sources: vec![SceneMeshPuppetClippingActiveSource {
                     source_name: "eye-right".to_owned(),
                     source_id: 0x1122_3344_5566_7788,
@@ -576,7 +621,7 @@ mod tests {
         }
         .into_plan();
 
-        assert_eq!(plan.resources.len(), 3);
+        assert_eq!(plan.resources.len(), 4);
         assert_eq!(plan.objects.len(), 2);
         assert_eq!(plan.effects.len(), 0);
         let SceneResource::Texture {
@@ -593,12 +638,22 @@ mod tests {
         assert_eq!(*format, Some(SceneTextureFormat::Bc7UnormBlock));
         assert_eq!(*mip_count, Some(1));
         assert_eq!(*payload_bytes, Some(8192));
+        let SceneResource::Texture {
+            id: mask_id,
+            format: mask_format,
+            ..
+        } = &plan.resources[1]
+        else {
+            panic!("expected clipping mask texture resource");
+        };
+        assert_eq!(*mask_id, SceneResourceId(88));
+        assert_eq!(*mask_format, Some(SceneTextureFormat::R8Unorm));
         let SceneResource::MeshGeometry {
             id,
             vertices,
             indices,
             ..
-        } = &plan.resources[1]
+        } = &plan.resources[2]
         else {
             panic!("expected mesh geometry resource");
         };
@@ -611,7 +666,7 @@ mod tests {
             layers,
             clipping,
             ..
-        } = &plan.resources[2]
+        } = &plan.resources[3]
         else {
             panic!("expected puppet rig resource");
         };
@@ -619,6 +674,8 @@ mod tests {
         assert_eq!(clips.len(), 1);
         assert_eq!(layers.len(), 1);
         assert_eq!(clipping.active_sources.len(), 1);
+        assert_eq!(clipping.records.len(), 1);
+        assert_eq!(clipping.records[0].mask_texture_index, Some(88));
         assert_eq!(plan.objects[0].source, Some(SceneResourceId(77)));
         assert_eq!(
             plan.objects[0].geometry,

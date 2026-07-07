@@ -13,6 +13,7 @@ use crate::core::scene::{
     SceneMeshPuppetClippingActiveSource as SourcePuppetClippingActiveSource,
     SceneMeshPuppetClippingRecord as SourcePuppetClippingRecord,
 };
+use crate::engine::scene_engine::SceneResourceId;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ScenePuppetClippingProgram {
@@ -53,6 +54,20 @@ impl ScenePuppetClippingProgram {
             && self.bone_indices.is_empty()
             && self.frame_keys.is_empty()
             && self.active_sources.is_empty()
+    }
+
+    pub fn resolve_mask_texture_indices(
+        &mut self,
+        mut resolve_texture: impl FnMut(&str) -> Option<SceneResourceId>,
+    ) {
+        for record in &mut self.records {
+            record.mask_texture_index = record
+                .mask_resource
+                .as_deref()
+                .or(Some(record.mask.as_str()))
+                .and_then(&mut resolve_texture)
+                .map(|resource| resource.0);
+        }
     }
 
     fn push_source_record(&mut self, record: SourcePuppetClippingRecord) {
@@ -176,5 +191,27 @@ mod tests {
             program.records[0].source_name_hash,
             scene_stable_name_hash("eye-right")
         );
+    }
+
+    #[test]
+    fn clipping_program_resolves_mask_texture_resource_id() {
+        let mut program = ScenePuppetClippingProgram::from_source_records(
+            vec![SourcePuppetClippingRecord {
+                source_name: None,
+                mask: "masks/clipping_mask_eye".to_owned(),
+                mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                duration_frames: 1680,
+                flags: 1,
+                bones: vec![42, 43],
+                frame_keys: vec![0, 1, 2],
+            }],
+            Vec::new(),
+        );
+
+        program.resolve_mask_texture_indices(|path| {
+            (path == "assets/clipping-mask.gtex").then_some(SceneResourceId(88))
+        });
+
+        assert_eq!(program.records[0].mask_texture_index, Some(88));
     }
 }

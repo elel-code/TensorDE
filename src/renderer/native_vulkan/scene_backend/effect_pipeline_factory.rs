@@ -388,7 +388,7 @@ fn scene_color_write_mask(write_alpha: bool) -> vk::ColorComponentFlags {
 
 fn scene_alpha_write_label(alpha_write: SceneAlphaWriteMode) -> &'static str {
     match alpha_write {
-        SceneAlphaWriteMode::Default => "default-rgb-only",
+        SceneAlphaWriteMode::Default => "default-inherited-rgba",
         SceneAlphaWriteMode::Enabled => "enabled-rgba",
         SceneAlphaWriteMode::Disabled => "disabled-rgb-only",
     }

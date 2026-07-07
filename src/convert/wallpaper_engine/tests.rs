@@ -249,6 +249,46 @@ fn parses_mdmp_owner_scalar_and_scale_even_when_owner_has_no_active_sources() {
 }
 
 #[test]
+fn mdmp_base_block_len_overrides_owner_source_scale_without_rejecting() {
+    let owner_flags = (1 << 10) | (1 << 13);
+    let mut bytes = Vec::new();
+    test_push_cstr(&mut bytes, "MDLV0023");
+    test_push_u32(&mut bytes, 0x0180_0009);
+    test_push_u32(&mut bytes, 1);
+    test_push_u32(&mut bytes, 1);
+    test_push_mdlv0023_owner(&mut bytes, "materials/test.json", owner_flags);
+
+    let mdmp_start = bytes.len();
+    bytes.extend_from_slice(b"MDMP0001\0");
+    let mdmp_end_field = bytes.len();
+    test_push_u32(&mut bytes, 0);
+    test_push_u16(&mut bytes, 1);
+    test_push_u32(&mut bytes, 1.0f32.to_bits());
+    test_push_u32(&mut bytes, 1);
+    bytes.extend_from_slice(&0x0102_0304_0506_0708u64.to_le_bytes());
+    test_push_cstr(&mut bytes, "scale-from-base-block");
+    test_push_block(&mut bytes, &[1; 18]);
+    test_push_block(&mut bytes, &[2; 18]);
+    test_push_u32(&mut bytes, 3);
+    test_push_u32(&mut bytes, 2);
+    test_push_f32(&mut bytes, 0.25);
+    test_push_f32(&mut bytes, -0.75);
+    let mdmp_end = u32::try_from(bytes.len()).unwrap();
+    bytes[mdmp_end_field..mdmp_end_field + 4].copy_from_slice(&mdmp_end.to_le_bytes());
+
+    let parsed_owner_flags = scene_parse_puppet_entry_owner_flags(&bytes, mdmp_start).unwrap();
+    let active_sources =
+        scene_parse_puppet_mdmp_active_sources(&bytes, &parsed_owner_flags).unwrap();
+
+    assert_eq!(active_sources.len(), 1);
+    assert_eq!(active_sources[0].source_scale, 3);
+    assert_eq!(active_sources[0].transform_index, 3);
+    assert_eq!(active_sources[0].flags, 2);
+    assert_eq!(active_sources[0].parameter0, 0.25);
+    assert_eq!(active_sources[0].parameter1, -0.75);
+}
+
+#[test]
 fn material_runtime_passes_preserve_alpha_writing_state() {
     let material = serde_json::json!({
         "passes": [

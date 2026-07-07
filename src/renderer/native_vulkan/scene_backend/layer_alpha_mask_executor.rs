@@ -8,6 +8,8 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.cpp`
 
+use std::collections::BTreeSet;
+
 use serde::Serialize;
 use vulkanalia::vk;
 
@@ -15,13 +17,17 @@ use crate::engine::scene_engine::{
     SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget, SceneLayerCompositorBlendKey,
     SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorEntry,
     SceneLayerCompositorOperation, SceneLayerCompositorPlan, SceneLayerCompositorTarget,
-    SceneMaterialRenderState, SceneObjectId,
+    SceneMaterialRenderState, SceneObject, SceneObjectGeometry, SceneObjectId, ScenePuppetId,
+    SceneResource, SceneResourceId,
 };
 
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout};
+use super::resource_heap::texture_set::scene_shader_texture_mapping;
 
-const CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 1) | (1u32 << 5);
+const CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 1);
+const CLIPPINGMASKIMAGE4_MORPH_TEXTURE_SLOT: u32 = 5;
+const CLIPPINGTARGET_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 8);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRuntimePlan {
@@ -103,6 +109,48 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskAcces
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskCopyMethod {
     None,
     FlatTextureDrawDestColorBlendKey0x100,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
+    pub tokenized_layer_count: usize,
+    pub descriptor_set_count: usize,
+    pub clippingmaskimage4_descriptor_set_count: usize,
+    pub generated_clippingtarget_descriptor_set_count: usize,
+    pub resident_texture_descriptor_count: usize,
+    pub graph_target_descriptor_count: usize,
+    pub entries: Vec<NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan>,
+    pub command_order: [&'static str; 6],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+    pub object: SceneObjectId,
+    pub puppet: ScenePuppetId,
+    pub shader: &'static str,
+    pub role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole,
+    pub slot_mask: u32,
+    pub optional_morph_slot: Option<u32>,
+    pub slots: Vec<NativeVulkanSceneLayerAlphaMaskSlotBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskDescriptorSetRole {
+    ClippingMaskImage4 { clipping_record_index: u32 },
+    GeneratedClippingTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskSlotBinding {
+    pub slot: u32,
+    pub source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+    pub shader_mapping: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerAlphaMaskDescriptorSource {
+    ResidentTexture(SceneResourceId),
+    GraphTarget(SceneGraphTarget),
 }
 
 impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
@@ -252,6 +300,208 @@ impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
     }
 }
 
+impl NativeVulkanSceneLayerAlphaMaskDescriptorPlan {
+    pub(in crate::renderer::native_vulkan) fn from_scene(
+        resources: &[SceneResource],
+        objects: &[SceneObject],
+        layer_compositor: &SceneLayerCompositorPlan,
+    ) -> Result<Self, String> {
+        if layer_compositor.tokenized_layer_count == 0 {
+            return Ok(Self::empty());
+        }
+
+        let resident_textures = resident_texture_ids(resources);
+        let mut entries = Vec::new();
+        for layer in layer_compositor
+            .layers
+            .iter()
+            .filter(|layer| layer.uses_tokenized_subdraw)
+        {
+            let object = objects
+                .iter()
+                .find(|object| object.id == layer.object)
+                .ok_or_else(|| {
+                    format!(
+                        "scene alpha-mask descriptor plan missing object {:?}",
+                        layer.object
+                    )
+                })?;
+            let source_texture = object.source.ok_or_else(|| {
+                format!(
+                    "scene alpha-mask descriptor plan object {:?} requires source texture for clippingmaskimage4 g_Texture0",
+                    object.id
+                )
+            })?;
+            validate_alpha_mask_resident_texture(source_texture, &resident_textures, "g_Texture0")?;
+            let puppet = match object.geometry {
+                SceneObjectGeometry::Puppet { puppet, .. } => puppet,
+                _ => {
+                    return Err(format!(
+                        "scene alpha-mask descriptor plan object {:?} is tokenized but has no puppet clipping geometry",
+                        object.id
+                    ));
+                }
+            };
+            let clipping = resources
+                .iter()
+                .find_map(|resource| match resource {
+                    SceneResource::PuppetRig { id, clipping, .. } if *id == puppet => {
+                        Some(clipping)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    format!(
+                        "scene alpha-mask descriptor plan object {:?} references missing puppet {:?}",
+                        object.id, puppet
+                    )
+                })?;
+            if clipping.records.is_empty() {
+                return Err(format!(
+                    "scene alpha-mask descriptor plan object {:?} has tokenized puppet {:?} without clipping records",
+                    object.id, puppet
+                ));
+            }
+
+            for (record_index, record) in clipping.records.iter().enumerate() {
+                let mask_texture = record.mask_texture_index.map(SceneResourceId).ok_or_else(|| {
+                    format!(
+                        "scene alpha-mask descriptor plan object {:?} clipping record {} has no resolved mask texture id for clippingmaskimage4 g_Texture1",
+                        object.id, record_index
+                    )
+                })?;
+                validate_alpha_mask_resident_texture(
+                    mask_texture,
+                    &resident_textures,
+                    "g_Texture1",
+                )?;
+                entries.push(NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+                    object: object.id,
+                    puppet,
+                    shader: "we/clippingmaskimage4",
+                    role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                        clipping_record_index: record_index.min(u32::MAX as usize) as u32,
+                    },
+                    slot_mask: CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
+                    optional_morph_slot: Some(CLIPPINGMASKIMAGE4_MORPH_TEXTURE_SLOT),
+                    slots: vec![
+                        alpha_mask_slot(
+                            0,
+                            NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                                source_texture,
+                            ),
+                        ),
+                        alpha_mask_slot(
+                            1,
+                            NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                                mask_texture,
+                            ),
+                        ),
+                    ],
+                });
+            }
+
+            entries.push(NativeVulkanSceneLayerAlphaMaskDescriptorSetPlan {
+                object: object.id,
+                puppet,
+                shader: "we/genericimage4",
+                role: NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget,
+                slot_mask: CLIPPINGTARGET_TEXTURE_SLOT_MASK,
+                optional_morph_slot: None,
+                slots: vec![
+                    alpha_mask_slot(
+                        0,
+                        NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                            source_texture,
+                        ),
+                    ),
+                    alpha_mask_slot(
+                        8,
+                        NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                            SceneGraphTarget::FullAlphaMask,
+                        ),
+                    ),
+                ],
+            });
+        }
+
+        let clippingmaskimage4_descriptor_set_count = entries
+            .iter()
+            .filter(|entry| {
+                matches!(
+                    entry.role,
+                    NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 { .. }
+                )
+            })
+            .count();
+        let generated_clippingtarget_descriptor_set_count = entries
+            .iter()
+            .filter(|entry| {
+                entry.role
+                    == NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::GeneratedClippingTarget
+            })
+            .count();
+        let resident_texture_descriptor_count = entries
+            .iter()
+            .flat_map(|entry| &entry.slots)
+            .filter(|slot| {
+                matches!(
+                    slot.source,
+                    NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(_)
+                )
+            })
+            .count();
+        let graph_target_descriptor_count = entries
+            .iter()
+            .flat_map(|entry| &entry.slots)
+            .filter(|slot| {
+                matches!(
+                    slot.source,
+                    NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(_)
+                )
+            })
+            .count();
+
+        Ok(Self {
+            tokenized_layer_count: layer_compositor.tokenized_layer_count,
+            descriptor_set_count: entries.len(),
+            clippingmaskimage4_descriptor_set_count,
+            generated_clippingtarget_descriptor_set_count,
+            resident_texture_descriptor_count,
+            graph_target_descriptor_count,
+            entries,
+            command_order: [
+                "resolve_tokenized_layer_object_source_texture",
+                "resolve_puppet_clipping_record_mask_texture",
+                "bind_clippingmaskimage4_slots_0_1",
+                "preserve_clippingmaskimage4_optional_morph_slot_5",
+                "bind_generated_clippingtarget_slots_0_8",
+                "keep_alpha_mask_descriptors_separate_from_genericimage4_material_heap",
+            ],
+        })
+    }
+
+    fn empty() -> Self {
+        Self {
+            tokenized_layer_count: 0,
+            descriptor_set_count: 0,
+            clippingmaskimage4_descriptor_set_count: 0,
+            generated_clippingtarget_descriptor_set_count: 0,
+            resident_texture_descriptor_count: 0,
+            graph_target_descriptor_count: 0,
+            entries: Vec::new(),
+            command_order: [
+                "resolve_tokenized_layer_object_source_texture",
+                "resolve_puppet_clipping_record_mask_texture",
+                "bind_clippingmaskimage4_slots_0_1",
+                "preserve_clippingmaskimage4_optional_morph_slot_5",
+                "bind_generated_clippingtarget_slots_0_8",
+                "keep_alpha_mask_descriptors_separate_from_genericimage4_material_heap",
+            ],
+        }
+    }
+}
+
 impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
     fn from_targets(targets: &[NativeVulkanSceneLayerAlphaMaskTargetPlan]) -> Result<Self, String> {
         if targets.is_empty() {
@@ -272,7 +522,7 @@ impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
             target_format: vk::Format::R8_UNORM,
-            texture_slot_mask: CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK,
+            texture_slot_mask: CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
         };
         Ok(Self {
             cache_key_count: 1,
@@ -287,7 +537,7 @@ impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
                 "select_clippingmaskimage4_shader",
                 "select_puppet_skinning_mesh_vertex_layout",
                 "select_r8_unorm_alpha_mask_target_format",
-                "include_we_slots_0_1_5_for_mask_generator",
+                "include_required_we_slots_0_1_for_mask_generator",
             ],
         })
     }
@@ -301,7 +551,7 @@ impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
                 "select_clippingmaskimage4_shader",
                 "select_puppet_skinning_mesh_vertex_layout",
                 "select_r8_unorm_alpha_mask_target_format",
-                "include_we_slots_0_1_5_for_mask_generator",
+                "include_required_we_slots_0_1_for_mask_generator",
             ],
         }
     }
@@ -452,10 +702,45 @@ fn layer_alpha_mask_graph_target(target: SceneLayerCompositorTarget) -> Option<S
     }
 }
 
+fn resident_texture_ids(resources: &[SceneResource]) -> BTreeSet<SceneResourceId> {
+    resources
+        .iter()
+        .filter_map(|resource| match resource {
+            SceneResource::Texture { id, .. } => Some(*id),
+            _ => None,
+        })
+        .collect()
+}
+
+fn validate_alpha_mask_resident_texture(
+    texture: SceneResourceId,
+    resident_textures: &BTreeSet<SceneResourceId>,
+    slot: &'static str,
+) -> Result<(), String> {
+    resident_textures.contains(&texture).then_some(()).ok_or_else(|| {
+        format!("scene alpha-mask descriptor plan {slot} references non-resident texture {texture:?}")
+    })
+}
+
+fn alpha_mask_slot(
+    slot: u32,
+    source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
+) -> NativeVulkanSceneLayerAlphaMaskSlotBinding {
+    NativeVulkanSceneLayerAlphaMaskSlotBinding {
+        slot,
+        source,
+        shader_mapping: scene_shader_texture_mapping(slot),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::scene_engine::{SceneLayerCompositorLayer, SceneLayerCompositorRoute};
+    use crate::core::scene::SceneMeshPuppetClippingRecord;
+    use crate::engine::scene_engine::{
+        SceneGeometryId, SceneLayerCompositorLayer, SceneLayerCompositorRoute,
+        SceneMaterialContract, ScenePuppetClippingProgram, SceneTextureFormat,
+    };
 
     #[test]
     fn alpha_mask_executor_keeps_empty_layer_plan_targetless() {
@@ -509,7 +794,7 @@ mod tests {
         );
         assert_eq!(
             plan.pipeline_warmup.keys[0].texture_slot_mask,
-            CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK
+            CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK
         );
         assert_eq!(
             plan.pipeline_warmup.cache_keys()[0].target_format,
@@ -585,6 +870,147 @@ mod tests {
         .expect_err("copy-back without blend-key 0x100 must fail");
 
         assert!(err.contains("blend-key 0x100"));
+    }
+
+    #[test]
+    fn alpha_mask_descriptor_plan_binds_mask_generator_and_generated_target_slots() {
+        let layer_compositor = tokenized_layer_compositor();
+        let objects = vec![SceneObject {
+            id: SceneObjectId(77),
+            geometry: SceneObjectGeometry::Puppet {
+                geometry: SceneGeometryId(3),
+                puppet: ScenePuppetId(5),
+                vertex_count: 4,
+                index_count: 6,
+            },
+            material: SceneMaterialContract::we_translucent("we/genericimage4"),
+            source: Some(SceneResourceId(9)),
+        }];
+        let mut clipping = ScenePuppetClippingProgram::from_source_records(
+            vec![SceneMeshPuppetClippingRecord {
+                source_name: None,
+                mask: "masks/clipping_mask_eye".to_owned(),
+                mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                duration_frames: 1680,
+                flags: 1,
+                bones: vec![42, 43],
+                frame_keys: vec![0, 1, 2],
+            }],
+            Vec::new(),
+        );
+        clipping.resolve_mask_texture_indices(|path| {
+            (path == "assets/clipping-mask.gtex").then_some(SceneResourceId(12))
+        });
+        let resources = vec![
+            texture_resource(SceneResourceId(9)),
+            texture_resource(SceneResourceId(12)),
+            SceneResource::PuppetRig {
+                id: ScenePuppetId(5),
+                source_record: 4,
+                skin: None,
+                clips: Vec::new(),
+                layers: Vec::new(),
+                clipping,
+            },
+        ];
+
+        let plan = NativeVulkanSceneLayerAlphaMaskDescriptorPlan::from_scene(
+            &resources,
+            &objects,
+            &layer_compositor,
+        )
+        .expect("alpha-mask descriptor plan");
+
+        assert_eq!(plan.descriptor_set_count, 2);
+        assert_eq!(plan.clippingmaskimage4_descriptor_set_count, 1);
+        assert_eq!(plan.generated_clippingtarget_descriptor_set_count, 1);
+        assert_eq!(plan.resident_texture_descriptor_count, 3);
+        assert_eq!(plan.graph_target_descriptor_count, 1);
+        let mask_generator = &plan.entries[0];
+        assert_eq!(mask_generator.shader, "we/clippingmaskimage4");
+        assert_eq!(
+            mask_generator.role,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSetRole::ClippingMaskImage4 {
+                clipping_record_index: 0
+            }
+        );
+        assert_eq!(
+            mask_generator.slot_mask,
+            CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK
+        );
+        assert_eq!(
+            mask_generator.optional_morph_slot,
+            Some(CLIPPINGMASKIMAGE4_MORPH_TEXTURE_SLOT)
+        );
+        assert_eq!(
+            mask_generator.slots[0].source,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(SceneResourceId(9))
+        );
+        assert_eq!(
+            mask_generator.slots[1].source,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(SceneResourceId(12))
+        );
+        let generated_target = &plan.entries[1];
+        assert_eq!(generated_target.shader, "we/genericimage4");
+        assert_eq!(generated_target.slot_mask, CLIPPINGTARGET_TEXTURE_SLOT_MASK);
+        assert_eq!(
+            generated_target.slots[1].source,
+            NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                SceneGraphTarget::FullAlphaMask
+            )
+        );
+        assert_eq!(
+            generated_target.slots[1].shader_mapping,
+            "set0.binding8.g_Texture8"
+        );
+    }
+
+    #[test]
+    fn alpha_mask_descriptor_plan_rejects_unresolved_mask_texture() {
+        let layer_compositor = tokenized_layer_compositor();
+        let objects = vec![SceneObject {
+            id: SceneObjectId(77),
+            geometry: SceneObjectGeometry::Puppet {
+                geometry: SceneGeometryId(3),
+                puppet: ScenePuppetId(5),
+                vertex_count: 4,
+                index_count: 6,
+            },
+            material: SceneMaterialContract::we_translucent("we/genericimage4"),
+            source: Some(SceneResourceId(9)),
+        }];
+        let clipping = ScenePuppetClippingProgram::from_source_records(
+            vec![SceneMeshPuppetClippingRecord {
+                source_name: None,
+                mask: "masks/clipping_mask_eye".to_owned(),
+                mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                duration_frames: 1680,
+                flags: 1,
+                bones: vec![42, 43],
+                frame_keys: vec![0, 1, 2],
+            }],
+            Vec::new(),
+        );
+        let resources = vec![
+            texture_resource(SceneResourceId(9)),
+            SceneResource::PuppetRig {
+                id: ScenePuppetId(5),
+                source_record: 4,
+                skin: None,
+                clips: Vec::new(),
+                layers: Vec::new(),
+                clipping,
+            },
+        ];
+
+        let err = NativeVulkanSceneLayerAlphaMaskDescriptorPlan::from_scene(
+            &resources,
+            &objects,
+            &layer_compositor,
+        )
+        .expect_err("mask texture id must be resolved");
+
+        assert!(err.contains("no resolved mask texture id"));
     }
 
     fn tokenized_layer_compositor() -> SceneLayerCompositorPlan {
@@ -686,6 +1112,18 @@ mod tests {
                 })
             }
             target => Err(format!("unexpected alpha-mask target {target:?}")),
+        }
+    }
+
+    fn texture_resource(id: SceneResourceId) -> SceneResource {
+        SceneResource::Texture {
+            id,
+            source: std::path::PathBuf::from(format!("assets/texture-{}.gtex", id.0)),
+            width: Some(64),
+            height: Some(64),
+            format: Some(SceneTextureFormat::R8G8B8A8Unorm),
+            mip_count: Some(1),
+            payload_bytes: Some(16_384),
         }
     }
 }

@@ -51,7 +51,7 @@ pub enum SceneAlphaWriteMode {
 
 impl SceneAlphaWriteMode {
     pub const fn writes_alpha(self) -> bool {
-        matches!(self, Self::Enabled)
+        !matches!(self, Self::Disabled)
     }
 }
 
@@ -121,5 +121,17 @@ impl SceneMaterialKey {
             )
         })?;
         interface.texture_slot_mask_for_material(&self.shader, resource_slot_mask)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alpha_write_default_inherits_rgba_wrapper_state() {
+        assert!(SceneAlphaWriteMode::Default.writes_alpha());
+        assert!(SceneAlphaWriteMode::Enabled.writes_alpha());
+        assert!(!SceneAlphaWriteMode::Disabled.writes_alpha());
     }
 }

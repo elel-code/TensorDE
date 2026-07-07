@@ -312,7 +312,7 @@ fn scene_alpha_write_label(
     alpha_write: crate::engine::scene_engine::SceneAlphaWriteMode,
 ) -> &'static str {
     match alpha_write {
-        crate::engine::scene_engine::SceneAlphaWriteMode::Default => "default-rgb-only",
+        crate::engine::scene_engine::SceneAlphaWriteMode::Default => "default-inherited-rgba",
         crate::engine::scene_engine::SceneAlphaWriteMode::Enabled => "enabled-rgba",
         crate::engine::scene_engine::SceneAlphaWriteMode::Disabled => "disabled-rgb-only",
     }
@@ -587,7 +587,7 @@ mod tests {
                 shader: "we/clippingmaskimage4".to_owned(),
                 pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
                 target_format: vk::Format::R8_UNORM,
-                texture_slot_mask: (1u32 << 0) | (1u32 << 1) | (1u32 << 5),
+                texture_slot_mask: (1u32 << 0) | (1u32 << 1),
                 ..pipeline_key()
             })
             .expect("clipping mask generator pipeline plan");
@@ -599,8 +599,7 @@ mod tests {
             plan.shader_resource_mappings,
             vec![
                 "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding1.g_Texture1 -> draw-resource-set-texture-offset2".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding5.g_Texture5 -> draw-resource-set-texture-offset3".to_owned()
+                "VK_EXT_descriptor_heap set0.binding1.g_Texture1 -> draw-resource-set-texture-offset2".to_owned()
             ]
         );
     }
