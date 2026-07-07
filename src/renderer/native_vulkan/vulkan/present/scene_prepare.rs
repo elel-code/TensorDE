@@ -145,11 +145,13 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     let slot_sync = frame_slots.slot_sync(prepare_slot)?;
     let mut submitted_to_queue = false;
     let result = (|| -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
-        let effect_target_plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
-            post_effect_graph,
-            swapchain_extent,
-            target_formats.format(SceneGraphTarget::Swapchain)?,
-        )?;
+        let effect_target_plan =
+            NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph_with_layer_compositor(
+                post_effect_graph,
+                Some(&frame.layer_compositor),
+                swapchain_extent,
+                target_formats.format(SceneGraphTarget::Swapchain)?,
+            )?;
         let offscreen_target_plan = frame_resources
             .offscreen_target_frame_plan_with_effect_targets(
                 graph_execution,

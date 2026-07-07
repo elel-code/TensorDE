@@ -21,6 +21,8 @@ pub enum SceneGraphTarget {
     NamedFbo(u32),
     EffectTarget(u32),
     ObjectFinal(SceneObjectId),
+    FullAlphaMask,
+    FullAlphaMaskIntermediate,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]

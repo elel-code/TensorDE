@@ -56,6 +56,9 @@ impl NativeVulkanSceneGraphTargetFormatPlan {
                     vk::Format::R16G16B16A16_SFLOAT,
                     "scene_effect_target_half_float_policy",
                 ),
+                SceneGraphTarget::FullAlphaMask | SceneGraphTarget::FullAlphaMaskIntermediate => {
+                    (vk::Format::R8_UNORM, "we_layer_alpha_mask_r8_unorm")
+                }
                 SceneGraphTarget::NamedFbo(_) => {
                     return Err(format!(
                         "scene graph target {:?} requires explicit effect FBO format metadata",
@@ -116,6 +119,7 @@ fn vulkan_format_label(format: vk::Format) -> &'static str {
         vk::Format::R16G16B16A16_SFLOAT => "R16G16B16A16_SFLOAT",
         vk::Format::B8G8R8A8_UNORM => "B8G8R8A8_UNORM",
         vk::Format::R8G8B8A8_UNORM => "R8G8B8A8_UNORM",
+        vk::Format::R8_UNORM => "R8_UNORM",
         _ => "other",
     }
 }
@@ -191,6 +195,37 @@ mod tests {
         assert_eq!(
             plan.format(SceneGraphTarget::Swapchain).unwrap(),
             vk::Format::B8G8R8A8_UNORM
+        );
+    }
+
+    #[test]
+    fn target_format_plan_maps_layer_alpha_mask_targets_to_r8() {
+        let graph = SceneGraph {
+            passes: vec![
+                pass("alpha-mask", None, SceneGraphTarget::FullAlphaMask),
+                pass(
+                    "alpha-mask-intermediate",
+                    None,
+                    SceneGraphTarget::FullAlphaMaskIntermediate,
+                ),
+            ],
+        };
+        let execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let plan = NativeVulkanSceneGraphTargetFormatPlan::from_execution_plan(
+            &execution,
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("alpha-mask target format plan");
+
+        assert_eq!(
+            plan.format(SceneGraphTarget::FullAlphaMask).unwrap(),
+            vk::Format::R8_UNORM
+        );
+        assert_eq!(
+            plan.format(SceneGraphTarget::FullAlphaMaskIntermediate)
+                .unwrap(),
+            vk::Format::R8_UNORM
         );
     }
 

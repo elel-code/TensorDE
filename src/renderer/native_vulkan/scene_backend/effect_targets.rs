@@ -14,7 +14,7 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SceneEffectFboFormat, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneGraphTarget,
-    SceneObjectId,
+    SceneLayerCompositorPlan, SceneObjectId,
 };
 
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetRequirement;
@@ -25,7 +25,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectTargetPlan 
     pub entries: Vec<NativeVulkanSceneEffectTargetEntry>,
     pub scale_policy: &'static str,
     pub descriptor_model: &'static str,
-    pub command_order: [&'static str; 4],
+    pub command_order: [&'static str; 5],
     #[serde(skip)]
     requirements: Vec<NativeVulkanSceneOffscreenTargetRequirement>,
 }
@@ -33,8 +33,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectTargetPlan 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectTargetEntry {
     pub target: SceneGraphTarget,
-    pub object: SceneObjectId,
-    pub program_index: usize,
+    pub object: Option<SceneObjectId>,
+    pub program_index: Option<usize>,
     pub name: String,
     pub format: &'static str,
     pub format_source: &'static str,
@@ -47,6 +47,15 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectTargetEntry
 impl NativeVulkanSceneEffectTargetPlan {
     pub(in crate::renderer::native_vulkan) fn from_effect_pass_graph(
         graph: &SceneEffectPassGraphPlan,
+        extent: vk::Extent2D,
+        swapchain_format: vk::Format,
+    ) -> Result<Self, String> {
+        Self::from_effect_pass_graph_with_layer_compositor(graph, None, extent, swapchain_format)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_effect_pass_graph_with_layer_compositor(
+        graph: &SceneEffectPassGraphPlan,
+        layer_compositor: Option<&SceneLayerCompositorPlan>,
         extent: vk::Extent2D,
         swapchain_format: vk::Format,
     ) -> Result<Self, String> {
@@ -76,8 +85,8 @@ impl NativeVulkanSceneEffectTargetPlan {
             });
             entries.push(NativeVulkanSceneEffectTargetEntry {
                 target: target.target,
-                object: target.object,
-                program_index: target.program_index,
+                object: Some(target.object),
+                program_index: Some(target.program_index),
                 name: target.name.clone(),
                 format: vulkan_format_label(format),
                 format_source,
@@ -99,6 +108,22 @@ impl NativeVulkanSceneEffectTargetPlan {
                 );
             }
         }
+        if layer_compositor.is_some_and(|plan| plan.tokenized_layer_count > 0) {
+            push_layer_alpha_mask_target_requirement(
+                &mut entries,
+                &mut requirements,
+                SceneGraphTarget::FullAlphaMask,
+                "_rt_FullAlphaMask",
+                extent,
+            );
+            push_layer_alpha_mask_target_requirement(
+                &mut entries,
+                &mut requirements,
+                SceneGraphTarget::FullAlphaMaskIntermediate,
+                "_rt_FullAlphaMaskIntermediate",
+                extent,
+            );
+        }
 
         Ok(Self {
             target_count: entries.len(),
@@ -110,6 +135,7 @@ impl NativeVulkanSceneEffectTargetPlan {
                 "read_scene_effect_pass_graph_targets",
                 "map_we_fbo_format_to_vk_format",
                 "derive_scaled_effect_target_extent",
+                "merge_layer_compositor_alpha_mask_targets",
                 "emit_effect_target_requirements",
             ],
         })
@@ -156,8 +182,8 @@ fn push_object_final_target_requirement(
     });
     entries.push(NativeVulkanSceneEffectTargetEntry {
         target,
-        object,
-        program_index,
+        object: Some(object),
+        program_index: Some(program_index),
         name: format!("object-final-{}", object.0),
         format: vulkan_format_label(swapchain_format),
         format_source: "object_final_surface_format",
@@ -165,6 +191,41 @@ fn push_object_final_target_requirement(
         height: extent.height,
         scale: 1.0,
         unique: true,
+    });
+}
+
+fn push_layer_alpha_mask_target_requirement(
+    entries: &mut Vec<NativeVulkanSceneEffectTargetEntry>,
+    requirements: &mut Vec<NativeVulkanSceneOffscreenTargetRequirement>,
+    target: SceneGraphTarget,
+    name: &str,
+    extent: vk::Extent2D,
+) {
+    if requirements
+        .iter()
+        .any(|requirement| requirement.target == target)
+    {
+        return;
+    }
+    let width = extent.width.saturating_add(1) / 2;
+    let height = extent.height.saturating_add(1) / 2;
+    requirements.push(NativeVulkanSceneOffscreenTargetRequirement {
+        target,
+        format: vk::Format::R8_UNORM,
+        width,
+        height,
+    });
+    entries.push(NativeVulkanSceneEffectTargetEntry {
+        target,
+        object: None,
+        program_index: None,
+        name: name.to_owned(),
+        format: "R8_UNORM",
+        format_source: "we_layer_alpha_mask_runtime_r8_unorm",
+        width,
+        height,
+        scale: 2.0,
+        unique: false,
     });
 }
 
@@ -181,6 +242,7 @@ fn effect_fbo_vk_format(
         SceneEffectFboFormat::R8Unorm => Ok((vk::Format::R8_UNORM, "we_runtime_target_r8_unorm")),
         SceneEffectFboFormat::Rgba8Unorm => Ok((vk::Format::R8G8B8A8_UNORM, "we_fbo_rgba8888")),
         SceneEffectFboFormat::RgbaBackbuffer => Ok((swapchain_format, "we_fbo_rgba_backbuffer")),
+        SceneEffectFboFormat::RgbBackbuffer => Ok((swapchain_format, "we_fbo_rgb_backbuffer")),
         SceneEffectFboFormat::Other(format) => Err(format!(
             "scene effect target format '{format}' has no Vulkan mapping"
         )),
@@ -216,7 +278,7 @@ mod tests {
     use crate::engine::scene_engine::{
         SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
         SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
-        SceneEffectPassGraphTarget, SceneObjectId, we::WeEffectKind,
+        SceneEffectPassGraphTarget, SceneLayerCompositorPlan, SceneObjectId, we::WeEffectKind,
     };
 
     #[test]
@@ -243,6 +305,30 @@ mod tests {
         assert_eq!(plan.entries[0].format_source, "we_fbo_rgba_backbuffer");
         assert_eq!(plan.entries[0].width, 960);
         assert_eq!(plan.entries[0].height, 540);
+        assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
+    }
+
+    #[test]
+    fn effect_target_plan_keeps_rgb_backbuffer_format_source() {
+        let graph = graph(vec![target(
+            "_rt_RgbBackbuffer",
+            SceneGraphTarget::NamedFbo(9),
+            SceneEffectFboFormat::RgbBackbuffer,
+            1.0,
+        )]);
+
+        let plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
+            &graph,
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("rgb backbuffer target plan");
+
+        assert_eq!(plan.entries[0].format, "B8G8R8A8_UNORM");
+        assert_eq!(plan.entries[0].format_source, "we_fbo_rgb_backbuffer");
         assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
     }
 
@@ -332,6 +418,42 @@ mod tests {
         assert_eq!(plan.entries[0].width, 3840);
         assert_eq!(plan.entries[0].height, 2160);
         assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
+    }
+
+    #[test]
+    fn effect_target_plan_allocates_layer_alpha_mask_targets() {
+        let graph = SceneEffectPassGraphPlan::empty();
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.tokenized_layer_count = 1;
+
+        let plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph_with_layer_compositor(
+            &graph,
+            Some(&layer_compositor),
+            vk::Extent2D {
+                width: 3839,
+                height: 2159,
+            },
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("layer alpha mask target plan");
+
+        assert_eq!(plan.target_count, 2);
+        assert_eq!(plan.entries[0].target, SceneGraphTarget::FullAlphaMask);
+        assert_eq!(plan.entries[0].object, None);
+        assert_eq!(plan.entries[0].program_index, None);
+        assert_eq!(plan.entries[0].format, "R8_UNORM");
+        assert_eq!(
+            plan.entries[0].format_source,
+            "we_layer_alpha_mask_runtime_r8_unorm"
+        );
+        assert_eq!(plan.entries[0].width, 1920);
+        assert_eq!(plan.entries[0].height, 1080);
+        assert_eq!(
+            plan.entries[1].target,
+            SceneGraphTarget::FullAlphaMaskIntermediate
+        );
+        assert_eq!(plan.requirements()[0].format, vk::Format::R8_UNORM);
+        assert_eq!(plan.requirements()[1].format, vk::Format::R8_UNORM);
     }
 
     #[test]

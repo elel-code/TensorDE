@@ -1190,9 +1190,11 @@ fn swapchain_image_count(capabilities: &vk::SurfaceCapabilitiesKHR) -> u32 {
 }
 
 fn choose_composite_alpha(flags: vk::CompositeAlphaFlagsKHR) -> vk::CompositeAlphaFlagsKHR {
+    // WE's DirectComposition handoff uses DXGI_ALPHA_MODE_PREMULTIPLIED.
+    // Reference: reverse-engineered/docs/exe/d3d11-context-calls.md.
     [
-        vk::CompositeAlphaFlagsKHR::OPAQUE,
         vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED,
+        vk::CompositeAlphaFlagsKHR::OPAQUE,
         vk::CompositeAlphaFlagsKHR::POST_MULTIPLIED,
         vk::CompositeAlphaFlagsKHR::INHERIT,
     ]
@@ -1626,6 +1628,19 @@ mod tests {
         capabilities.min_image_count = 3;
         capabilities.max_image_count = 2;
         assert_eq!(swapchain_image_count(&capabilities), 2);
+    }
+
+    #[test]
+    fn composite_alpha_prefers_we_premultiplied_handoff() {
+        let both = vk::CompositeAlphaFlagsKHR::OPAQUE | vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED;
+        assert_eq!(
+            choose_composite_alpha(both),
+            vk::CompositeAlphaFlagsKHR::PRE_MULTIPLIED
+        );
+        assert_eq!(
+            choose_composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE),
+            vk::CompositeAlphaFlagsKHR::OPAQUE
+        );
     }
 
     #[test]

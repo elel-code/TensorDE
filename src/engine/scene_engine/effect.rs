@@ -103,6 +103,7 @@ pub enum SceneEffectFboFormat {
     R8Unorm,
     Rgba8Unorm,
     RgbaBackbuffer,
+    RgbBackbuffer,
     Other(String),
 }
 
@@ -174,6 +175,7 @@ impl SceneEffectFboFormat {
             "r8" | "r8_unorm" | "r8unorm" => Self::R8Unorm,
             "rgba8888" | "rgba8" | "rgba8_unorm" => Self::Rgba8Unorm,
             "rgba_backbuffer" | "backbuffer" => Self::RgbaBackbuffer,
+            "rgb_backbuffer" => Self::RgbBackbuffer,
             _ => Self::Other(format.to_owned()),
         }
     }
@@ -232,6 +234,10 @@ mod tests {
         assert_eq!(
             SceneEffectFboFormat::from_we_name("r8_unorm"),
             SceneEffectFboFormat::R8Unorm
+        );
+        assert_eq!(
+            SceneEffectFboFormat::from_we_name("rgb_backbuffer"),
+            SceneEffectFboFormat::RgbBackbuffer
         );
         assert_eq!(
             SceneEffectFboFormat::from_we_name("vendor-custom"),
