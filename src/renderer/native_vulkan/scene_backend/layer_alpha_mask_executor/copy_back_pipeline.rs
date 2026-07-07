@@ -159,6 +159,22 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan {
     }
 }
 
+impl NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan {
+    pub(in crate::renderer::native_vulkan) fn cache_key(
+        &self,
+    ) -> NativeVulkanScenePipelineCacheKey {
+        NativeVulkanScenePipelineCacheKey {
+            shader: self.shader.to_owned(),
+            blend: SceneBlendContract::DestColorCopyBackBit0x100,
+            render_state: SceneMaterialRenderState::translucent_2d(),
+            pipeline_class: self.pipeline_class,
+            vertex_layout: self.vertex_layout,
+            target_format: vk::Format::R8_UNORM,
+            texture_slot_mask: self.texture_slot_mask,
+        }
+    }
+}
+
 fn validate_copy_back_draw_bind(
     draw: &NativeVulkanSceneLayerAlphaMaskCopyBackDrawPlan,
     draw_bind: &NativeVulkanSceneLayerAlphaMaskCopyBackDrawResourceBindPlan,

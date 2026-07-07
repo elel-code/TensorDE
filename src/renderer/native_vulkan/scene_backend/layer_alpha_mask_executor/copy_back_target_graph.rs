@@ -62,7 +62,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
                 width: target.width,
                 height: target.height,
             },
-            initial_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            initial_layout: target.current_layout,
             final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
         }),
         None,
@@ -211,7 +211,10 @@ mod tests {
         );
         assert_eq!(
             plan.target_scope.begin_command_order,
-            ["retain_color_attachment_layout", "cmd_begin_rendering"]
+            [
+                "cmd_pipeline_barrier2_color_attachment",
+                "cmd_begin_rendering"
+            ]
         );
         assert_eq!(
             plan.command_order,

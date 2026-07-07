@@ -15,10 +15,6 @@ use super::copy_back_geometry::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers,
 };
 use super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelinePlan;
-use super::copy_back_target_graph::{
-    NativeVulkanSceneLayerAlphaMaskCopyBackTargetGraphPlan,
-    native_vulkan_plan_scene_layer_alpha_mask_copy_back_target_graph,
-};
 use super::resource_binds::NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan;
 use crate::renderer::native_vulkan::scene_backend::frame_resources::NativeVulkanSceneFrameResources;
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo;
@@ -34,12 +30,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub pipeline_bind_count: usize,
     pub resource_heap_bind_count: usize,
     pub direct_draw_count: usize,
-    pub source_shader_read_transition_count: usize,
-    pub target_color_write_transition_count: usize,
-    pub target_scope_count: usize,
-    pub target_graph: Option<NativeVulkanSceneLayerAlphaMaskCopyBackTargetGraphPlan>,
     pub commands: Vec<NativeVulkanSceneLayerAlphaMaskCopyBackCommandPlan>,
-    pub command_order: [&'static str; 8],
+    pub command_order: [&'static str; 6],
 }
 
 impl NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan {
@@ -52,7 +44,6 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan {
             String,
         >,
         geometry: NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers,
-        target_graph: NativeVulkanSceneLayerAlphaMaskCopyBackTargetGraphPlan,
         warmed_pipeline_count: usize,
     ) -> Result<Self, String> {
         if pipelines.keys.is_empty() {
@@ -61,7 +52,6 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan {
 
         let mut commands = Vec::with_capacity(pipelines.keys.len());
         for pipeline in &pipelines.keys {
-            validate_pipeline_target_graph(pipeline, &target_graph)?;
             let bind_info = bind_info_for_heap_bind(pipeline.heap_bind_index).map_err(
                 |err| {
                     format!(
@@ -98,20 +88,14 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan {
             pipeline_bind_count,
             resource_heap_bind_count,
             direct_draw_count,
-            source_shader_read_transition_count: target_graph.source_shader_read_transition_count,
-            target_color_write_transition_count: target_graph.target_color_write_transition_count,
-            target_scope_count: target_graph.target_scope_count,
-            target_graph: Some(target_graph),
             commands,
             command_order: [
                 "require_warmed_util_minimalalpha_copy_back_pipelines",
                 "load_render_state_flattexture_copy_back_utility_geometry",
                 "resolve_flattexture_copy_back_descriptor_heap_bind",
-                "plan_intermediate_alpha_mask_shader_read_access",
-                "plan_full_alpha_mask_color_attachment_load_scope",
                 "build_copy_back_command_plan",
                 "preserve_draw_style_copy_back_no_transfer_copy",
-                "attach_copy_back_draws_to_alpha_mask_graph_node",
+                "defer_recording_to_alpha_mask_token_scheduler",
             ],
         })
     }
@@ -125,20 +109,14 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan {
             pipeline_bind_count: 0,
             resource_heap_bind_count: 0,
             direct_draw_count: 0,
-            source_shader_read_transition_count: 0,
-            target_color_write_transition_count: 0,
-            target_scope_count: 0,
-            target_graph: None,
             commands: Vec::new(),
             command_order: [
                 "require_warmed_util_minimalalpha_copy_back_pipelines",
                 "load_render_state_flattexture_copy_back_utility_geometry",
                 "resolve_flattexture_copy_back_descriptor_heap_bind",
-                "plan_intermediate_alpha_mask_shader_read_access",
-                "plan_full_alpha_mask_color_attachment_load_scope",
                 "build_copy_back_command_plan",
                 "preserve_draw_style_copy_back_no_transfer_copy",
-                "attach_copy_back_draws_to_alpha_mask_graph_node",
+                "defer_recording_to_alpha_mask_token_scheduler",
             ],
         }
     }
@@ -161,32 +139,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
         })?;
     }
 
-    let target_graph =
-        native_vulkan_plan_scene_layer_alpha_mask_copy_back_target_graph(frame_resources)?;
     let geometry = render_state_copy_back_geometry_buffers(frame_resources)?;
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan::from_pipeline_bind_infos_and_geometry(
         pipelines,
         |heap_bind_index| frame_resources.layer_alpha_mask_resource_heap_bind_info(heap_bind_index),
         geometry,
-        target_graph,
         pipelines.cache_keys().len(),
     )
 }
 
-fn validate_pipeline_target_graph(
-    pipeline: &super::copy_back_pipeline::NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan,
-    target_graph: &NativeVulkanSceneLayerAlphaMaskCopyBackTargetGraphPlan,
-) -> Result<(), String> {
-    if pipeline.source != target_graph.source || pipeline.target != target_graph.target {
-        return Err(format!(
-            "scene layer alpha-mask copy-back pipeline target graph mismatch: pipeline {:?}->{:?}, graph {:?}->{:?}",
-            pipeline.source, pipeline.target, target_graph.source, target_graph.target
-        ));
-    }
-    Ok(())
-}
-
-fn render_state_copy_back_geometry_buffers(
+pub(super) fn render_state_copy_back_geometry_buffers(
     frame_resources: &NativeVulkanSceneFrameResources,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskCopyBackRenderStateGeometryBuffers, String> {
     let buffers = frame_resources
@@ -249,7 +211,6 @@ mod tests {
                     Ok(bind_info(2, 4, 4))
                 },
                 geometry(),
-                target_graph(),
                 1,
             )
             .expect("copy-back runtime command plan");
@@ -261,13 +222,6 @@ mod tests {
         assert_eq!(plan.pipeline_bind_count, 1);
         assert_eq!(plan.resource_heap_bind_count, 1);
         assert_eq!(plan.direct_draw_count, 1);
-        assert_eq!(plan.source_shader_read_transition_count, 1);
-        assert_eq!(plan.target_color_write_transition_count, 0);
-        assert_eq!(plan.target_scope_count, 1);
-        assert_eq!(
-            plan.target_graph.as_ref().map(|graph| graph.source),
-            Some(SceneGraphTarget::FullAlphaMaskIntermediate)
-        );
         assert_eq!(plan.commands[0].command_index, 3);
         assert_eq!(plan.commands[0].geometry.source_field, "render_state+0x48");
         assert_eq!(
@@ -276,11 +230,9 @@ mod tests {
                 "require_warmed_util_minimalalpha_copy_back_pipelines",
                 "load_render_state_flattexture_copy_back_utility_geometry",
                 "resolve_flattexture_copy_back_descriptor_heap_bind",
-                "plan_intermediate_alpha_mask_shader_read_access",
-                "plan_full_alpha_mask_color_attachment_load_scope",
                 "build_copy_back_command_plan",
                 "preserve_draw_style_copy_back_no_transfer_copy",
-                "attach_copy_back_draws_to_alpha_mask_graph_node"
+                "defer_recording_to_alpha_mask_token_scheduler"
             ]
         );
     }
@@ -304,7 +256,6 @@ mod tests {
                     Ok(bind_info(9, 4, 4))
                 },
                 geometry(),
-                target_graph(),
                 1,
             )
             .expect("copy-back runtime command plan");
@@ -320,7 +271,6 @@ mod tests {
                 &pipelines,
                 |heap_bind_index| Err(format!("missing heap-bind {heap_bind_index}")),
                 geometry(),
-                target_graph(),
                 1,
             )
             .expect_err("missing heap bind must fail");
@@ -433,34 +383,5 @@ mod tests {
             vertex_stride_bytes: FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
             vertex_payload_hash: 100,
         }
-    }
-
-    fn target_graph() -> NativeVulkanSceneLayerAlphaMaskCopyBackTargetGraphPlan {
-        use super::super::copy_back_target_graph::native_vulkan_plan_scene_layer_alpha_mask_copy_back_target_graph_from_bindings;
-        use crate::renderer::native_vulkan::scene_backend::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
-
-        native_vulkan_plan_scene_layer_alpha_mask_copy_back_target_graph_from_bindings(
-            NativeVulkanSceneOffscreenTargetBinding {
-                target: SceneGraphTarget::FullAlphaMaskIntermediate,
-                image: vk::Image::from_raw(21),
-                view: vk::ImageView::from_raw(22),
-                sampler: vk::Sampler::from_raw(23),
-                format: vk::Format::R8_UNORM,
-                width: 1920,
-                height: 1080,
-                current_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            },
-            NativeVulkanSceneOffscreenTargetBinding {
-                target: SceneGraphTarget::FullAlphaMask,
-                image: vk::Image::from_raw(31),
-                view: vk::ImageView::from_raw(32),
-                sampler: vk::Sampler::from_raw(33),
-                format: vk::Format::R8_UNORM,
-                width: 1920,
-                height: 1080,
-                current_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-            },
-        )
-        .expect("copy-back target graph")
     }
 }
