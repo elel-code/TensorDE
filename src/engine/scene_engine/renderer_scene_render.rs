@@ -6,8 +6,8 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
 use super::{
-    RenderingDevice, SceneFrameContext, SceneFramePlan, SceneGraph, SceneObject, SceneResource,
-    SceneResourceResidencyPlan,
+    RenderingDevice, SceneEffectPassGraphPlan, SceneFrameContext, SceneFramePlan, SceneGraph,
+    SceneObject, SceneObjectEffectProgram, SceneResource, SceneResourceResidencyPlan,
 };
 
 pub trait RendererSceneRender {
@@ -16,16 +16,18 @@ pub trait RendererSceneRender {
         context: SceneFrameContext,
         resources: &[SceneResource],
         objects: &[SceneObject],
-    ) -> SceneGraph;
+        effects: &[SceneObjectEffectProgram],
+    ) -> Result<SceneGraph, String>;
 
     fn build_frame(
         &self,
         context: SceneFrameContext,
         resources: &[SceneResource],
         objects: &[SceneObject],
-    ) -> SceneFramePlan {
+        effects: &[SceneObjectEffectProgram],
+    ) -> Result<SceneFramePlan, String> {
         let residency = SceneResourceResidencyPlan::from_resources(resources);
-        self.build_frame_with_residency(context, &residency, resources, objects)
+        self.build_frame_with_residency(context, &residency, resources, objects, effects)
     }
 
     fn build_frame_with_residency(
@@ -34,11 +36,13 @@ pub trait RendererSceneRender {
         residency: &SceneResourceResidencyPlan,
         resources: &[SceneResource],
         objects: &[SceneObject],
-    ) -> SceneFramePlan {
-        SceneFramePlan {
+        effects: &[SceneObjectEffectProgram],
+    ) -> Result<SceneFramePlan, String> {
+        Ok(SceneFramePlan {
             residency: residency.clone(),
-            graph: self.build_graph(context, resources, objects),
-        }
+            graph: self.build_graph(context, resources, objects, effects)?,
+            effect_pass_graph: SceneEffectPassGraphPlan::from_scene(objects, effects)?,
+        })
     }
 
     fn draw<D: RenderingDevice>(&self, frame: &SceneFramePlan, device: &mut D) {

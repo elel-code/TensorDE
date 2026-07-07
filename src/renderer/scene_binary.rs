@@ -33,6 +33,7 @@ use crate::renderer::{
     SceneRenderTextureSlot, SceneWallpaperPlan,
 };
 
+mod effect_program;
 mod engine_plan;
 mod facts;
 mod mesh;
@@ -1646,7 +1647,10 @@ mod tests {
     use crate::core::SceneSize;
     use crate::core::scene::SceneDocument;
     use crate::core::scene::binary::encode_scene_binary_document;
-    use crate::engine::scene_engine::{SceneResource, SceneTextureFormat};
+    use crate::engine::scene_engine::{
+        SceneEffectCommand, SceneEffectConstantValue, SceneEffectFboFormat, SceneEffectImageRef,
+        SceneEffectPassBlend, SceneGraphTarget, SceneObjectId, SceneResource, SceneTextureFormat,
+    };
 
     #[test]
     fn gscn_direct_ingest_defaults_to_we_projection_stretch_fit() {
@@ -1876,6 +1880,119 @@ mod tests {
                 .get("strength")
                 .and_then(|value| value.as_f64()),
             Some(0.5)
+        );
+    }
+
+    #[test]
+    fn gscn_engine_plan_preserves_typed_effect_program_fbos_and_swaps() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "base", "type": "image", "source": "assets/base.gtex", "width": 320, "height": 180 },
+                { "id": "normal", "type": "image", "source": "assets/normal.gtex", "width": 64, "height": 64 }
+            ],
+            "nodes": [
+                {
+                    "id": "water-carrier",
+                    "type": "image",
+                    "resource": "base",
+                    "width": 320.0,
+                    "height": 180.0,
+                    "effects": [
+                        {
+                            "file": "effects/custom/effect.json",
+                            "fbos": [
+                                { "name": "_rt_Custom", "format": "rgba8888", "scale": 0.5, "unique": true }
+                            ],
+                            "passes": [
+                                {
+                                    "command": "draw",
+                                    "source": "previous",
+                                    "target": "_rt_Custom",
+                                    "binds": { "0": "previous", "2": "_rt_CustomNormal" },
+                                    "shader": "effects/custom",
+                                    "blending": "normal",
+                                    "texture_resources": ["base", null, "normal"],
+                                    "combos": { "MASK": 0 },
+                                    "constant_shader_values": { "strength": 0.5 }
+                                },
+                                {
+                                    "command": "swap",
+                                    "source": "_rt_Custom",
+                                    "target": "_rt_CustomPrev"
+                                }
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-engine-effect-program");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_engine_plan_from_gscn_path_with_properties(scene_path, 0, None)
+            .expect("scene engine plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        assert_eq!(plan.effects.len(), 1);
+        assert_eq!(plan.effects[0].object, SceneObjectId(0));
+        let program = &plan.effects[0].program;
+        assert_eq!(program.effect_file, "effects/custom/effect.json");
+        assert_eq!(program.fbos.len(), 1);
+        assert_eq!(program.fbos[0].name, "_rt_Custom");
+        assert_eq!(program.fbos[0].target, SceneGraphTarget::NamedFbo(0));
+        assert_eq!(
+            program.fbos[0].format,
+            Some(SceneEffectFboFormat::Rgba8Unorm)
+        );
+        assert!((program.fbos[0].scale - 0.5).abs() < f32::EPSILON);
+        assert!(program.fbos[0].unique);
+        assert_eq!(program.material_pass_count(), 1);
+        assert_eq!(program.swap_command_count(), 1);
+        let SceneEffectCommand::MaterialPass(pass) = &program.commands[0] else {
+            panic!("expected material pass");
+        };
+        assert_eq!(pass.pass_index, 0);
+        assert_eq!(pass.shader.as_deref(), Some("effects/custom"));
+        assert_eq!(pass.source, Some(SceneEffectImageRef::PreviousFramebuffer));
+        assert_eq!(
+            pass.target,
+            Some(SceneEffectImageRef::NamedFbo("_rt_Custom".to_owned()))
+        );
+        assert_eq!(pass.blend, SceneEffectPassBlend::NormalReplace);
+        assert_eq!(
+            pass.binds.get(&0),
+            Some(&SceneEffectImageRef::PreviousFramebuffer)
+        );
+        assert_eq!(
+            pass.binds.get(&2),
+            Some(&SceneEffectImageRef::NamedFbo(
+                "_rt_CustomNormal".to_owned()
+            ))
+        );
+        assert_eq!(pass.texture_resources.len(), 2);
+        assert_eq!(pass.texture_resources[0].slot, 0);
+        assert_eq!(pass.texture_resources[1].slot, 2);
+        assert_eq!(pass.combos.get("MASK"), Some(&0));
+        assert_eq!(
+            pass.constants.get("strength"),
+            Some(&SceneEffectConstantValue::Float(0.5))
+        );
+        let SceneEffectCommand::Swap(swap) = &program.commands[1] else {
+            panic!("expected swap command");
+        };
+        assert_eq!(swap.pass_index, 1);
+        assert_eq!(
+            swap.a,
+            SceneEffectImageRef::NamedFbo("_rt_Custom".to_owned())
+        );
+        assert_eq!(
+            swap.b,
+            SceneEffectImageRef::NamedFbo("_rt_CustomPrev".to_owned())
         );
     }
 

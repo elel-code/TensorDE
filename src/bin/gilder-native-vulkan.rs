@@ -662,7 +662,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 scene_snapshot_time_ms,
                 Some(&scene_properties),
             )?;
-            json!(scene_engine_cli_snapshot_from_engine_plan(plan))
+            json!(scene_engine_cli_snapshot_from_engine_plan(plan)?)
         }
         NativeVulkanCliMode::RunScene => {
             let source = source
@@ -913,6 +913,7 @@ struct SceneEngineCliSnapshot {
     layer_count: usize,
     resource_count: usize,
     object_count: usize,
+    effect_program_count: usize,
     frame: gilder::engine::scene_engine::SceneFramePlan,
     recorded_commands: Vec<gilder::engine::scene_engine::RenderingDeviceCommand>,
 }
@@ -920,7 +921,7 @@ struct SceneEngineCliSnapshot {
 #[cfg(feature = "native-vulkan-renderer")]
 fn scene_engine_cli_snapshot_from_engine_plan(
     plan: gilder::engine::scene_engine::SceneEnginePlan,
-) -> SceneEngineCliSnapshot {
+) -> Result<SceneEngineCliSnapshot, Box<dyn std::error::Error>> {
     use gilder::engine::scene_engine::{RenderingDevice, RenderingServer};
     use gilder::renderer::native_vulkan::{
         NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice,
@@ -928,14 +929,15 @@ fn scene_engine_cli_snapshot_from_engine_plan(
 
     let resource_count = plan.resources.len();
     let object_count = plan.objects.len();
+    let effect_program_count = plan.effects.len();
     let context = plan.frame_context();
     let mut server = RenderingServer::new();
-    server.replace_scene(plan.resources, plan.objects);
+    server.replace_scene(plan.resources, plan.objects, plan.effects);
     let renderer = NativeVulkanRendererSceneRender::new();
-    let frame = server.draw(&renderer, context);
+    let frame = server.draw(&renderer, context)?;
     let mut device = NativeVulkanRenderingDevice::new();
     device.record_scene_frame(&frame);
-    SceneEngineCliSnapshot {
+    Ok(SceneEngineCliSnapshot {
         engine: "rendering-server/renderer-scene-render/rendering-device",
         references: [
             "reverse-engineered/docs/scene-format.md",
@@ -946,9 +948,10 @@ fn scene_engine_cli_snapshot_from_engine_plan(
         layer_count: object_count,
         resource_count,
         object_count,
+        effect_program_count,
         frame,
         recorded_commands: device.into_commands(),
-    }
+    })
 }
 
 #[cfg(feature = "native-vulkan-renderer")]

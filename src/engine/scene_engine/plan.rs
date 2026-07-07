@@ -12,7 +12,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-use super::{SceneFrameContext, SceneObject, SceneResource};
+use super::{SceneFrameContext, SceneObject, SceneObjectEffectProgram, SceneResource};
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SceneEnginePlan {
@@ -22,6 +22,7 @@ pub struct SceneEnginePlan {
     pub target_height: u32,
     pub resources: Vec<SceneResource>,
     pub objects: Vec<SceneObject>,
+    pub effects: Vec<SceneObjectEffectProgram>,
     pub timeline_channel_count: usize,
     pub timeline_owner_count: usize,
     pub puppet_animation_layer_count: usize,

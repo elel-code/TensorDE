@@ -28,7 +28,8 @@ use super::material_uniforms::{
 };
 use super::offscreen_targets::{
     NativeVulkanSceneOffscreenTargetBinding, NativeVulkanSceneOffscreenTargetFramePlan,
-    NativeVulkanSceneOffscreenTargetStore, NativeVulkanSceneOffscreenTargetSyncAction,
+    NativeVulkanSceneOffscreenTargetRequirement, NativeVulkanSceneOffscreenTargetStore,
+    NativeVulkanSceneOffscreenTargetSyncAction,
 };
 use super::pipeline::{
     NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineCacheKey,
@@ -200,6 +201,26 @@ impl NativeVulkanSceneFrameResources {
             execution,
             extent,
             target_format,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn offscreen_target_frame_plan_with_effect_targets<
+        TargetFormat,
+    >(
+        &self,
+        execution: &SceneGraphExecutionPlan,
+        extent: vk::Extent2D,
+        target_format: TargetFormat,
+        effect_targets: &[NativeVulkanSceneOffscreenTargetRequirement],
+    ) -> Result<NativeVulkanSceneOffscreenTargetFramePlan, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
+        NativeVulkanSceneOffscreenTargetFramePlan::from_execution_plan_with_effect_targets(
+            execution,
+            extent,
+            target_format,
+            effect_targets,
         )
     }
 

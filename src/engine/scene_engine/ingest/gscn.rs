@@ -18,9 +18,11 @@ use crate::core::scene::{
 
 use super::super::{
     SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan, SceneGeometryId,
-    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectGeometry,
-    SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
+    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram,
+    SceneObjectGeometry, SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId,
+    SceneTextureFormat,
 };
+use crate::engine::scene_engine::SceneEffectProgram;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GscnSceneFacts {
@@ -72,13 +74,14 @@ pub struct GscnPuppetResourceFact {
     pub clipping_records: Vec<SceneMeshPuppetClippingRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GscnObjectFact {
     pub layer_index: u32,
     pub kind: GscnObjectKind,
     pub geometry: GscnGeometryFact,
     pub material: GscnMaterialFact,
     pub source_resource_index: Option<u32>,
+    pub effects: Vec<SceneEffectProgram>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -143,6 +146,7 @@ impl GscnSceneFacts {
         let puppet_facts = engine_puppet_resource_facts(puppet_resources);
         let geometry_ids = engine_geometry_ids(&geometry_facts);
         let puppet_ids = engine_puppet_ids(&puppet_facts);
+        let effects = engine_effect_programs(&object_facts);
         let objects = engine_objects(&texture_ids, &geometry_ids, &puppet_ids, object_facts);
         let resources = engine_resources(
             texture_resources,
@@ -159,6 +163,7 @@ impl GscnSceneFacts {
             target_height: target_height.max(1),
             resources,
             objects,
+            effects,
             timeline_channel_count: counts.timeline_channel_count,
             timeline_owner_count: counts.timeline_owner_count,
             puppet_animation_layer_count: counts.puppet_animation_layer_count,
@@ -167,6 +172,22 @@ impl GscnSceneFacts {
             effect_pass_count: counts.effect_pass_count,
         }
     }
+}
+
+fn engine_effect_programs(objects: &[GscnObjectFact]) -> Vec<SceneObjectEffectProgram> {
+    objects
+        .iter()
+        .flat_map(|object| {
+            object
+                .effects
+                .iter()
+                .cloned()
+                .map(|program| SceneObjectEffectProgram {
+                    object: SceneObjectId(object.layer_index),
+                    program,
+                })
+        })
+        .collect()
 }
 
 fn engine_texture_resource_ids(resources: &[GscnResourceFact]) -> Vec<Option<SceneResourceId>> {
@@ -487,6 +508,7 @@ mod tests {
                         cull_mode: SceneCullMode::None,
                     },
                     source_resource_index: Some(0),
+                    effects: Vec::new(),
                 },
                 GscnObjectFact {
                     layer_index: 1,
@@ -500,6 +522,7 @@ mod tests {
                         cull_mode: SceneCullMode::None,
                     },
                     source_resource_index: Some(1),
+                    effects: Vec::new(),
                 },
             ],
         }
@@ -507,6 +530,7 @@ mod tests {
 
         assert_eq!(plan.resources.len(), 3);
         assert_eq!(plan.objects.len(), 2);
+        assert_eq!(plan.effects.len(), 0);
         let SceneResource::Texture {
             id,
             format,

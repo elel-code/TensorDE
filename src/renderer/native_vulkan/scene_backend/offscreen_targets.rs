@@ -28,7 +28,7 @@ const SCENE_OFFSCREEN_TARGET_ROLE: &str = "scene-offscreen-target";
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneOffscreenTargetFramePlan {
     pub target_count: usize,
     pub targets: Vec<NativeVulkanSceneOffscreenTargetRequirement>,
-    pub command_order: [&'static str; 3],
+    pub command_order: [&'static str; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,7 +86,21 @@ impl NativeVulkanSceneOffscreenTargetFramePlan {
     pub(in crate::renderer::native_vulkan) fn from_execution_plan<TargetFormat>(
         execution: &SceneGraphExecutionPlan,
         extent: vk::Extent2D,
+        target_format: TargetFormat,
+    ) -> Result<Self, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
+        Self::from_execution_plan_with_effect_targets(execution, extent, target_format, &[])
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_execution_plan_with_effect_targets<
+        TargetFormat,
+    >(
+        execution: &SceneGraphExecutionPlan,
+        extent: vk::Extent2D,
         mut target_format: TargetFormat,
+        effect_targets: &[NativeVulkanSceneOffscreenTargetRequirement],
     ) -> Result<Self, String>
     where
         TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
@@ -119,6 +133,18 @@ impl NativeVulkanSceneOffscreenTargetFramePlan {
                 },
             );
         }
+        for requirement in effect_targets {
+            validate_offscreen_target_requirement(*requirement)?;
+            if let Some(existing) = targets.get(&requirement.target)
+                && existing != requirement
+            {
+                return Err(format!(
+                    "scene offscreen target {:?} has conflicting graph/effect requirements",
+                    requirement.target
+                ));
+            }
+            targets.insert(requirement.target, *requirement);
+        }
 
         let targets = targets.into_values().collect::<Vec<_>>();
         Ok(Self {
@@ -127,10 +153,32 @@ impl NativeVulkanSceneOffscreenTargetFramePlan {
             command_order: [
                 "collect_written_non_swapchain_targets",
                 "resolve_graph_target_formats",
+                "merge_effect_target_requirements",
                 "sync_retained_offscreen_target_store",
             ],
         })
     }
+}
+
+fn validate_offscreen_target_requirement(
+    requirement: NativeVulkanSceneOffscreenTargetRequirement,
+) -> Result<(), String> {
+    if requirement.target == SceneGraphTarget::Swapchain {
+        return Err("scene offscreen target requirement cannot allocate swapchain".to_owned());
+    }
+    if requirement.format == vk::Format::UNDEFINED {
+        return Err(format!(
+            "scene offscreen target {:?} requires a defined format",
+            requirement.target
+        ));
+    }
+    if requirement.width == 0 || requirement.height == 0 {
+        return Err(format!(
+            "scene offscreen target {:?} requires non-zero extent",
+            requirement.target
+        ));
+    }
+    Ok(())
 }
 
 impl NativeVulkanSceneOffscreenTargetStore {
@@ -392,9 +440,68 @@ mod tests {
             [
                 "collect_written_non_swapchain_targets",
                 "resolve_graph_target_formats",
+                "merge_effect_target_requirements",
                 "sync_retained_offscreen_target_store"
             ]
         );
+    }
+
+    #[test]
+    fn offscreen_target_plan_merges_effect_target_requirements() {
+        let execution = SceneGraphExecutionPlan::from_graph(&SceneGraph { passes: Vec::new() });
+        let effect_target = NativeVulkanSceneOffscreenTargetRequirement {
+            target: SceneGraphTarget::NamedFbo(7),
+            format: vk::Format::R16_SFLOAT,
+            width: 960,
+            height: 540,
+        };
+
+        let plan =
+            NativeVulkanSceneOffscreenTargetFramePlan::from_execution_plan_with_effect_targets(
+                &execution,
+                vk::Extent2D {
+                    width: 3840,
+                    height: 2160,
+                },
+                |_| Err("empty graph should not resolve graph target formats".to_owned()),
+                &[effect_target],
+            )
+            .expect("offscreen target plan");
+
+        assert_eq!(plan.target_count, 1);
+        assert_eq!(plan.targets[0], effect_target);
+    }
+
+    #[test]
+    fn offscreen_target_plan_rejects_conflicting_effect_target_requirement() {
+        let execution = SceneGraphExecutionPlan::from_graph(&SceneGraph {
+            passes: vec![pass(
+                "effect-a",
+                None,
+                SceneGraphTarget::NamedFbo(7),
+                SceneObjectId(1),
+            )],
+        });
+        let effect_target = NativeVulkanSceneOffscreenTargetRequirement {
+            target: SceneGraphTarget::NamedFbo(7),
+            format: vk::Format::R16_SFLOAT,
+            width: 960,
+            height: 540,
+        };
+
+        let err =
+            NativeVulkanSceneOffscreenTargetFramePlan::from_execution_plan_with_effect_targets(
+                &execution,
+                vk::Extent2D {
+                    width: 3840,
+                    height: 2160,
+                },
+                |_| Ok(vk::Format::R16G16B16A16_SFLOAT),
+                &[effect_target],
+            )
+            .expect_err("conflicting requirements must fail");
+
+        assert!(err.contains("conflicting graph/effect requirements"));
     }
 
     #[test]

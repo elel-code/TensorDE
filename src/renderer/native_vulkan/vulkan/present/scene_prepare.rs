@@ -11,7 +11,10 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
-use crate::engine::scene_engine::{SceneFramePlan, SceneGraphExecutionPlan, SceneResource};
+use crate::engine::scene_engine::{
+    SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget, SceneResource,
+};
+use crate::renderer::native_vulkan::scene_backend::effect_targets::NativeVulkanSceneEffectTargetPlan;
 use crate::renderer::native_vulkan::scene_backend::frame_command_buffer::{
     native_vulkan_begin_scene_frame_command_buffer, native_vulkan_end_scene_frame_command_buffer,
 };
@@ -39,10 +42,11 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub pipeline_prepare: NativeVulkanVulkanaliaScenePipelinePrepareSnapshot,
     pub prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
     pub graph_target_format_count: usize,
+    pub effect_target_count: usize,
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -110,11 +114,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     let slot_sync = frame_slots.slot_sync(prepare_slot)?;
     let mut submitted_to_queue = false;
     let result = (|| -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
-        let offscreen_target_plan = frame_resources.offscreen_target_frame_plan(
-            graph_execution,
+        let effect_target_plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
+            &frame.effect_pass_graph,
             swapchain_extent,
-            |target| target_formats.format(target),
+            target_formats.format(SceneGraphTarget::Swapchain)?,
         )?;
+        let offscreen_target_plan = frame_resources
+            .offscreen_target_frame_plan_with_effect_targets(
+                graph_execution,
+                swapchain_extent,
+                |target| target_formats.format(target),
+                effect_target_plan.requirements(),
+            )?;
+        let effect_target_count = effect_target_plan.target_count;
         let offscreen_target_count = offscreen_target_plan.target_count;
         let offscreen_target_action_count = frame_resources
             .sync_offscreen_targets(
@@ -173,10 +185,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 &prepare_submit,
             ),
             graph_target_format_count: target_formats.target_format_count(),
+            effect_target_count,
             offscreen_target_count,
             offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
             command_order: [
+                "derive_effect_target_requirements",
                 "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
                 "queue_submit2_scene_prepare",

@@ -3,10 +3,12 @@
 //! References:
 //! - `reverse-engineered/docs/exe/global-uniforms.md`
 //! - `reverse-engineered/docs/exe/model-and-animation.md`
+//! - `reverse-engineered/docs/effect-format.md`
+//! - `references/godot/servers/rendering/rendering_device_graph.h`
 
 use serde::Serialize;
 
-use super::{SceneGraph, SceneResourceResidencyPlan};
+use super::{SceneEffectPassGraphPlan, SceneGraph, SceneResourceResidencyPlan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct SceneFrameContext {
@@ -19,4 +21,5 @@ pub struct SceneFrameContext {
 pub struct SceneFramePlan {
     pub residency: SceneResourceResidencyPlan,
     pub graph: SceneGraph,
+    pub effect_pass_graph: SceneEffectPassGraphPlan,
 }

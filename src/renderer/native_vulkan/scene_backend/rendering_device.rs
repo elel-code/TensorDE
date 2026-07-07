@@ -165,10 +165,11 @@ mod tests {
     use super::*;
     use crate::core::scene::SceneMeshVertex;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneFramePlan, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
-        SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole,
-        SceneGraphTarget, SceneMaterialKey, SceneMeshResidency, SceneObjectId,
-        SceneResidentResource, SceneResource, SceneResourceId, SceneResourceResidencyPlan,
+        SceneBlendContract, SceneEffectPassGraphPlan, SceneFramePlan, SceneGeometryId,
+        SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding,
+        SceneGraphResourceRole, SceneGraphTarget, SceneMaterialKey, SceneMeshResidency,
+        SceneObjectId, SceneResidentResource, SceneResource, SceneResourceId,
+        SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -241,6 +242,7 @@ mod tests {
                     }],
                 }],
             },
+            effect_pass_graph: SceneEffectPassGraphPlan::empty(),
         };
         let mut device = NativeVulkanRenderingDevice::new();
         device.record_scene_frame(&frame);
@@ -298,6 +300,7 @@ mod tests {
                     }],
                 }],
             },
+            effect_pass_graph: SceneEffectPassGraphPlan::empty(),
         };
         let mut device = NativeVulkanRenderingDevice::new();
         device.record_scene_frame(&frame);

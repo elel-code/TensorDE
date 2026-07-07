@@ -9,6 +9,7 @@
 pub mod draw_command;
 pub mod draw_family;
 pub mod draw_list;
+pub mod effect_targets;
 pub mod frame_acquire;
 pub mod frame_command;
 pub mod frame_command_buffer;

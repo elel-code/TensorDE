@@ -232,9 +232,13 @@ fn with_vulkanalia_scene_present(
         let scene_object_count = options.scene.objects.len();
         let frame_context = options.scene.frame_context();
         let mut server = RenderingServer::new();
-        server.replace_scene(options.scene.resources, options.scene.objects);
+        server.replace_scene(
+            options.scene.resources,
+            options.scene.objects,
+            options.scene.effects,
+        );
         let renderer = NativeVulkanRendererSceneRender::new();
-        let frame = server.draw(&renderer, frame_context);
+        let frame = server.draw(&renderer, frame_context)?;
         let graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
         let target_formats = NativeVulkanSceneGraphTargetFormatPlan::from_execution_plan(
             &graph_execution,

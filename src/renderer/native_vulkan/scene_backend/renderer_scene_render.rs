@@ -11,7 +11,7 @@
 use crate::engine::scene_engine::{
     RendererSceneRender, SceneFrameContext, SceneGraph, SceneGraphDraw, SceneGraphPass,
     SceneGraphPipelineClass, SceneGraphResourceBinding, SceneGraphResourceRole, SceneGraphTarget,
-    SceneObject, SceneObjectGeometry, SceneResource,
+    SceneObject, SceneObjectEffectProgram, SceneObjectGeometry, SceneResource,
 };
 
 #[derive(Debug, Default)]
@@ -29,19 +29,20 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
         _context: SceneFrameContext,
         _resources: &[SceneResource],
         objects: &[SceneObject],
-    ) -> SceneGraph {
+        _effects: &[SceneObjectEffectProgram],
+    ) -> Result<SceneGraph, String> {
         if objects.is_empty() {
-            return SceneGraph::default();
+            return Ok(SceneGraph::default());
         }
 
-        SceneGraph {
+        Ok(SceneGraph {
             passes: vec![SceneGraphPass {
                 name: "scene-main".to_owned(),
                 input: None,
                 output: SceneGraphTarget::Swapchain,
                 draws: objects.iter().map(scene_graph_draw_for_object).collect(),
             }],
-        }
+        })
     }
 }
 
@@ -122,15 +123,18 @@ mod tests {
             },
             source: Some(SceneResourceId(7)),
         };
-        let graph = renderer.build_graph(
-            SceneFrameContext {
-                time_ms: 250,
-                target_width: 3840,
-                target_height: 2160,
-            },
-            &[],
-            &[object],
-        );
+        let graph = renderer
+            .build_graph(
+                SceneFrameContext {
+                    time_ms: 250,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &[object],
+                &[],
+            )
+            .expect("scene graph");
 
         assert_eq!(graph.passes.len(), 1);
         assert_eq!(graph.passes[0].name, "scene-main");
@@ -150,15 +154,18 @@ mod tests {
             mesh_object(SceneObjectId(2), SceneGeometryId(4), SceneResourceId(8)),
         ];
 
-        let graph = renderer.build_graph(
-            SceneFrameContext {
-                time_ms: 250,
-                target_width: 3840,
-                target_height: 2160,
-            },
-            &[],
-            &objects,
-        );
+        let graph = renderer
+            .build_graph(
+                SceneFrameContext {
+                    time_ms: 250,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &objects,
+                &[],
+            )
+            .expect("scene graph");
 
         assert_eq!(graph.passes.len(), 1);
         assert_eq!(graph.passes[0].name, "scene-main");
@@ -181,15 +188,18 @@ mod tests {
     fn graph_has_no_empty_scene_pass() {
         let renderer = NativeVulkanRendererSceneRender::new();
 
-        let graph = renderer.build_graph(
-            SceneFrameContext {
-                time_ms: 250,
-                target_width: 3840,
-                target_height: 2160,
-            },
-            &[],
-            &[],
-        );
+        let graph = renderer
+            .build_graph(
+                SceneFrameContext {
+                    time_ms: 250,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &[],
+                &[],
+            )
+            .expect("scene graph");
 
         assert!(graph.passes.is_empty());
     }

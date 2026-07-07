@@ -27,6 +27,7 @@ use crate::engine::scene_engine::{SceneCullMode, SceneDepthTest, SceneEnginePlan
 use crate::renderer::RendererPlanError;
 
 use super::BINARY_TEXTURE_ROLE_BASE_COLOR;
+use super::effect_program::gscn_effect_programs;
 use super::facts::{
     BinarySceneNames, BinarySceneResource, binary_name, binary_scene_names,
     binary_scene_package_root, binary_scene_puppet_animation_layer_count, binary_scene_resources,
@@ -161,9 +162,11 @@ fn gscn_objects(
     topology: &BinarySceneRetainedTopology,
 ) -> Result<Vec<GscnObjectFact>, RendererPlanError> {
     let mut objects = Vec::with_capacity(topology.renderables.len());
+    let mut next_named_fbo = 0u32;
     for renderable in &topology.renderables {
+        let layer_index = renderable.layer_index.min(u32::MAX as usize) as u32;
         objects.push(GscnObjectFact {
-            layer_index: renderable.layer_index.min(u32::MAX as usize) as u32,
+            layer_index,
             kind: gscn_object_kind(renderable.kind),
             geometry: gscn_geometry(renderable),
             material: gscn_material_fact(reader, names, renderable.material)?,
@@ -172,6 +175,13 @@ fn gscn_objects(
                 resources,
                 renderable.node,
                 renderable.material,
+            )?,
+            effects: gscn_effect_programs(
+                reader,
+                names,
+                resources,
+                renderable.material,
+                &mut next_named_fbo,
             )?,
         });
     }

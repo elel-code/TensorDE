@@ -10,7 +10,9 @@
 //! - `references/godot/servers/rendering/rendering_device.h`
 
 pub mod draw_family;
+pub mod effect;
 pub mod effect_graph;
+pub mod effect_pass_graph;
 pub mod frame;
 pub mod graph;
 pub mod graph_execution;
@@ -32,9 +34,19 @@ pub use draw_family::{
     SceneGraphDrawFamily, SceneGraphDrawFamilyEntry, SceneGraphDrawFamilyPlan,
     SceneGraphPassDrawFamilyPlan,
 };
+pub use effect::{
+    SceneEffectCommand, SceneEffectConstantValue, SceneEffectFboBinding, SceneEffectFboFormat,
+    SceneEffectImageRef, SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectProgram,
+    SceneEffectSwapCommand, SceneEffectTextureResourceBinding, SceneObjectEffectProgram,
+};
 pub use effect_graph::{
     SceneEffectGraphPlan, SceneEffectInput, SceneEffectPassPlan, SceneEffectShaderFamily,
     SceneEffectTargetBinding,
+};
+pub use effect_pass_graph::{
+    SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
+    SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
+    SceneEffectPassGraphSwap, SceneEffectPassGraphTarget,
 };
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
