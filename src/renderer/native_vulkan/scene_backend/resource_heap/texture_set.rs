@@ -87,7 +87,7 @@ pub(in crate::renderer::native_vulkan) fn scene_mesh_draw_texture_set_key_with_p
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_shader_texture_mapping(slot: u32) -> String {
-    format!("set0.binding{slot}.g_Texture{slot}")
+    format!("we.texture_slot{slot}.g_Texture{slot}")
 }
 
 #[cfg(test)]
@@ -125,8 +125,8 @@ mod tests {
         assert_eq!(
             key.shader_mappings(),
             vec![
-                "set0.binding0.g_Texture0".to_owned(),
-                "set0.binding4.g_Texture4".to_owned()
+                "we.texture_slot0.g_Texture0".to_owned(),
+                "we.texture_slot4.g_Texture4".to_owned()
             ]
         );
     }

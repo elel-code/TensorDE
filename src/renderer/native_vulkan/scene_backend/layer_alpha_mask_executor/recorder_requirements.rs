@@ -17,6 +17,7 @@ use crate::engine::scene_engine::{
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 
+use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
 use super::producer_target_graph::NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan;
 use super::resource_binds::{
@@ -74,6 +75,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub heap_bind_indices: Vec<usize>,
     pub producer_draw_index: Option<usize>,
     pub producer_target_scope_index: Option<usize>,
+    pub generated_consumer_draw_index: Option<usize>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
@@ -97,6 +99,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     schedule: &NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan, String> {
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan::empty());
@@ -141,6 +144,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             resource_binds,
             producer_draws,
             producer_target_graph,
+            generated_consumer_draws,
         )?);
     }
 
@@ -239,6 +243,7 @@ fn requirement_from_step(
     resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     producer_draws: &NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     producer_target_graph: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirement, String> {
     match step.kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
@@ -250,6 +255,7 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
@@ -307,6 +313,7 @@ fn requirement_from_step(
                 CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
                 Some(producer.producer_draw_index),
                 Some(target_scope.target_scope_index),
+                None,
                 Some(target_scope.load_op),
                 Some(target_scope.requires_initialized_initial_layout),
                 None,
@@ -338,6 +345,7 @@ fn requirement_from_step(
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
                 None,
                 None,
+                None,
                 Some(NativeVulkanSceneRenderTargetLoadOp::Load),
                 Some(true),
                 Some(SceneGraphTarget::FullAlphaMaskIntermediate),
@@ -359,6 +367,17 @@ fn requirement_from_step(
         }
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::GeneratedClippingTargetConsumer => {
             validate_generated_consumer_command(step, command)?;
+            let consumer = generated_consumer_draws
+                .bindings
+                .iter()
+                .find(|consumer| consumer.command_index == step.command_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no generated draw contract",
+                        step.command_index
+                    )
+                })?;
+            validate_generated_consumer_draw_contract(step, consumer)?;
             Ok(base_requirement(
                 step,
                 command,
@@ -369,6 +388,7 @@ fn requirement_from_step(
                 CLIPPINGTARGET_TEXTURE_SLOT_MASK,
                 None,
                 None,
+                Some(consumer.consumer_draw_index),
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -382,6 +402,7 @@ fn requirement_from_step(
                 vec![
                     "require_full_alpha_mask_ready",
                     "bind_generated_clippingtarget_resource_heap",
+                    "use_generated_clippingtarget_draw_contract",
                     "resolve_generated_material_0x428_uniforms",
                     "record_layer_0x490_rt_method_8_generated_draw",
                 ],
@@ -400,6 +421,7 @@ fn base_requirement(
     texture_slot_mask: u32,
     producer_draw_index: Option<usize>,
     producer_target_scope_index: Option<usize>,
+    generated_consumer_draw_index: Option<usize>,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
@@ -428,6 +450,7 @@ fn base_requirement(
         heap_bind_indices: step.matched_heap_bind_indices.clone(),
         producer_draw_index,
         producer_target_scope_index,
+        generated_consumer_draw_index,
         target_scope_load_op,
         requires_initialized_initial_layout,
         source_mask,
@@ -544,6 +567,37 @@ fn validate_generated_consumer_command(
     Ok(())
 }
 
+fn validate_generated_consumer_draw_contract(
+    step: &NativeVulkanSceneLayerAlphaMaskTokenScheduleStep,
+    consumer: &super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawBindingPlan,
+) -> Result<(), String> {
+    if consumer.object != step.object {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} object mismatch: step {:?}, draw {:?}",
+            step.command_index, step.object, consumer.object
+        ));
+    }
+    if step.matched_heap_bind_indices != [consumer.heap_bind_index] {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} heap-bind index mismatch: schedule {:?}, draw {}",
+            step.command_index, step.matched_heap_bind_indices, consumer.heap_bind_index
+        ));
+    }
+    if consumer.source_mask != SceneGraphTarget::FullAlphaMask {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} must sample FullAlphaMask, got {:?}",
+            step.command_index, consumer.source_mask
+        ));
+    }
+    if consumer.target != SceneLayerCompositorTarget::LayerTarget490 {
+        return Err(format!(
+            "scene layer alpha-mask generated consumer command {} must draw through layer+0x490, got {:?}",
+            step.command_index, consumer.target
+        ));
+    }
+    Ok(())
+}
+
 fn requirement_for_step_kind(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
 ) -> NativeVulkanSceneLayerAlphaMaskBindRequirement {
@@ -575,8 +629,7 @@ fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
     vec![
         "generated material +0x428 uniform layout for CLIPPINGUVS/CLIPPINGTARGET",
-        "subdraw +0x40 blend byte -> generated material +0x1f0 lowering",
-        "layer+0x490 RT method [8] generated draw geometry binding",
+        "generated draw geometry payload/buffer binding for [layer+0x490].vtable+0x40",
         "genericimage4 CLIPPINGTARGET projected UV constant source",
     ]
 }

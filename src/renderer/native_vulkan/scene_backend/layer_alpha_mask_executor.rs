@@ -1042,7 +1042,7 @@ mod tests {
         );
         assert_eq!(
             generated_target.slots[1].shader_mapping,
-            "set0.binding8.g_Texture8"
+            "we.texture_slot8.g_Texture8"
         );
         let copy_back = &plan.entries[2];
         assert_eq!(copy_back.shader, "util/minimalalpha");
@@ -1059,7 +1059,7 @@ mod tests {
         );
         assert_eq!(
             copy_back.slots[0].shader_mapping,
-            "set0.binding0.g_Texture0"
+            "we.texture_slot0.g_Texture0"
         );
     }
 

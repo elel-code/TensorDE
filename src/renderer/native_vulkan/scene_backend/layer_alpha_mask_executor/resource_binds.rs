@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(plan.copy_back_pipelines.keys[0].shader, "util/minimalalpha");
         assert_eq!(
             plan.copy_back_pipelines.keys[0].shader_mapping,
-            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
+            "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
         );
         assert_eq!(
             plan.command_order,
@@ -881,7 +881,7 @@ mod tests {
             .map(|(ordinal, binding)| {
                 let slot = binding.slot;
                 format!(
-                    "set0.binding{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
+                    "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
                 )
             })
             .collect();

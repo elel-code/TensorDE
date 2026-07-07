@@ -422,7 +422,10 @@ mod tests {
             plan.bindings[0].source,
             NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(9))
         );
-        assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.g_Texture0");
+        assert_eq!(
+            plan.bindings[0].shader_mapping,
+            "we.texture_slot0.g_Texture0"
+        );
         assert_eq!(
             plan.bindings[1].source,
             NativeVulkanSceneTextureDescriptorSource::GraphTarget(SceneGraphTarget::NamedFbo(3))

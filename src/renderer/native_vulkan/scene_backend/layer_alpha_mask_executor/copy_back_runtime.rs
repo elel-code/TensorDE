@@ -368,7 +368,7 @@ mod tests {
             resource_descriptor_count: 1,
             texture_count: 1,
             shader_mappings: vec![
-                "set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+                "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
             ],
             resource_bind: vk::BindHeapInfoEXT::builder().build(),
             sampler_bind: vk::BindHeapInfoEXT::builder().build(),

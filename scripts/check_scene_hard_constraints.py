@@ -55,6 +55,7 @@ def forbidden_patterns() -> tuple[Pattern[str], ...]:
         re.compile(rf"\b{legacy_binding_a}{camel_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_b}[\s_-]+{low_b}s?\b", re.IGNORECASE),
         re.compile(rf"\b{legacy_binding_b}{camel_b}s?\b", re.IGNORECASE),
+        re.compile(r"\bset\d+\.binding\d+\b", re.IGNORECASE),
     )
 
 

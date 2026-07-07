@@ -216,7 +216,7 @@ mod tests {
             .enumerate()
             .map(|(ordinal, binding)| {
                 format!(
-                    "set0.binding{}.g_Texture{} -> effect-heap-slice-offset{}",
+                    "we.texture_slot{}.g_Texture{} -> effect-heap-slice-offset{}",
                     binding.slot, binding.slot, ordinal
                 )
             })

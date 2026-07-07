@@ -67,13 +67,13 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     assert_eq!(
         plan.heap_bindings[1].shader_mappings,
         vec![
-            "set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-            "set0.binding8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
         ]
     );
     assert_eq!(
         plan.heap_bindings[2].shader_mappings,
-        vec!["set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned()]
+        vec!["we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned()]
     );
     assert_eq!(plan.bindings[3].view, vk::ImageView::from_raw(601));
     assert_eq!(plan.bindings[3].sampler, vk::Sampler::from_raw(602));

@@ -258,7 +258,7 @@ mod tests {
                 ),
                 mip_count: 1,
                 payload_bytes: Some(16_384),
-                shader_mapping: "set0.binding0.g_Texture0".to_owned(),
+                shader_mapping: "we.texture_slot0.g_Texture0".to_owned(),
             }],
             descriptor_model: "VK_EXT_descriptor_heap",
             command_order: [

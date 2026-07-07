@@ -356,9 +356,15 @@ mod tests {
         );
         assert_eq!(plan.bindings[0].mip_count, 10);
         assert_eq!(plan.bindings[0].payload_bytes, Some(2_796_204));
-        assert_eq!(plan.bindings[0].shader_mapping, "set0.binding0.g_Texture0");
+        assert_eq!(
+            plan.bindings[0].shader_mapping,
+            "we.texture_slot0.g_Texture0"
+        );
         assert_eq!(plan.bindings[1].slot, 4);
-        assert_eq!(plan.bindings[1].shader_mapping, "set0.binding4.g_Texture4");
+        assert_eq!(
+            plan.bindings[1].shader_mapping,
+            "we.texture_slot4.g_Texture4"
+        );
         assert_eq!(
             plan.command_order,
             [

@@ -315,7 +315,7 @@ fn scene_effect_shader_resource_mapping_labels(
         .enumerate()
         .map(|(ordinal, slot)| {
             format!(
-                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> effect-heap-slice-texture-offset{ordinal}"
+                "VK_EXT_descriptor_heap we.texture_slot{slot}.g_Texture{slot} -> effect-heap-slice-texture-offset{ordinal}"
             )
         })
         .collect()
@@ -457,8 +457,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> effect-heap-slice-texture-offset0".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding2.g_Texture2 -> effect-heap-slice-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> effect-heap-slice-texture-offset0".to_owned(),
+                "VK_EXT_descriptor_heap we.texture_slot2.g_Texture2 -> effect-heap-slice-texture-offset1".to_owned(),
             ]
         );
         assert_eq!(plan.blend, "normal-replace-one-zero");

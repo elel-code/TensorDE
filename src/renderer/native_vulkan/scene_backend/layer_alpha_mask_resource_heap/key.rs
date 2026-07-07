@@ -77,7 +77,7 @@ pub(super) fn alpha_mask_heap_slice_shader_mappings(
 }
 
 pub(super) fn binding_shader_mapping(slot: u32) -> String {
-    format!("set0.binding{slot}.g_Texture{slot}")
+    format!("we.texture_slot{slot}.g_Texture{slot}")
 }
 
 fn validate_alpha_mask_slots(

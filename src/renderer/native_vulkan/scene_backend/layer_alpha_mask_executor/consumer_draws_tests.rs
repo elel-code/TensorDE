@@ -85,8 +85,8 @@ fn generated_consumer_pairs_draw_with_full_mask_heap_bind() {
     assert_eq!(
         binding.shader_mappings,
         vec![
-            "set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
-            "set0.binding8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
         ]
     );
 }
@@ -336,7 +336,9 @@ fn bind(
         .iter()
         .enumerate()
         .map(|(ordinal, (slot, _))| {
-            format!("set0.binding{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}")
+            format!(
+                "we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
+            )
         })
         .collect::<Vec<_>>();
     NativeVulkanSceneLayerAlphaMaskResourceBindCommandPlan {

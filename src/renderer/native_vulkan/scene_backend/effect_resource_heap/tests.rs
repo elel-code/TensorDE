@@ -69,8 +69,8 @@ fn effect_resource_heap_plan_packs_sampled_image_sets() {
     assert_eq!(
         plan.pass_bindings[0].shader_mappings,
         vec![
-            "set0.binding0.g_Texture0 -> effect-heap-slice-offset0".to_owned(),
-            "set0.binding1.g_Texture1 -> effect-heap-slice-offset1".to_owned(),
+            "we.texture_slot0.g_Texture0 -> effect-heap-slice-offset0".to_owned(),
+            "we.texture_slot1.g_Texture1 -> effect-heap-slice-offset1".to_owned(),
         ]
     );
     assert_eq!(plan.bindings[0].view, vk::ImageView::from_raw(91));

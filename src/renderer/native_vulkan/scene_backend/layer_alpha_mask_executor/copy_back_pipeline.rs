@@ -113,7 +113,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             resource_descriptor_index: draw_bind.base_resource_descriptor_index,
             sampler_descriptor_index: draw_bind.base_sampler_descriptor_index,
             shader_mapping: format!(
-                "VK_EXT_descriptor_heap set0.binding{}.g_Texture{} -> alpha-mask-copy-back-heap-slice{}-resource{}-sampler{}",
+                "VK_EXT_descriptor_heap we.texture_slot{}.g_Texture{} -> alpha-mask-copy-back-heap-slice{}-resource{}-sampler{}",
                 draw.texture_slot,
                 draw.texture_slot,
                 draw_bind.heap_slice_index,
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(key.sampler_descriptor_index, 4);
         assert_eq!(
             key.shader_mapping,
-            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
+            "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
         );
         assert_eq!(plan.cache_keys().len(), 1);
         assert_eq!(plan.cache_keys()[0].shader, "util/minimalalpha");

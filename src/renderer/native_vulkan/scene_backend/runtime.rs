@@ -186,6 +186,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_token_schedule,
             &layer_alpha_mask_producer_draws,
             &layer_alpha_mask_producer_target_graph,
+            &layer_alpha_mask_generated_consumer_draws,
         )?;
     let layer_alpha_mask_copy_back_commands =
         native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands(
