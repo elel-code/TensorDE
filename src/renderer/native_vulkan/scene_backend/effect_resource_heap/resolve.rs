@@ -1,4 +1,4 @@
-//! Effect sampled-image resolver for descriptor-heap resource sets.
+//! Effect sampled-image resolver for descriptor-heap heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`

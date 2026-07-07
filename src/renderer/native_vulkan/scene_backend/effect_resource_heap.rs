@@ -1,4 +1,4 @@
-//! Effect pass descriptor-heap resource-set planning.
+//! Effect pass descriptor heap slice planning.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`
@@ -48,7 +48,7 @@ pub(in crate::renderer::native_vulkan) use bind_command::{
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneEffectTextureSetBinding;
 pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneEffectTextureSetKey;
 use key::{
-    effect_resource_set_shader_mappings, effect_texture_descriptors_by_pass, effect_texture_set_key,
+    effect_heap_slice_shader_mappings, effect_texture_descriptors_by_pass, effect_texture_set_key,
 };
 use resolve::{
     NativeVulkanSceneEffectResolvedSampledImageBinding, resolve_effect_sampled_image_binding,
@@ -63,7 +63,7 @@ pub(in crate::renderer::native_vulkan) use store::{
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHeapFramePlan {
     pub pass_count: usize,
     pub pass_binding_count: usize,
-    pub resource_set_count: usize,
+    pub heap_slice_count: usize,
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
     pub descriptor_model: &'static str,
@@ -77,7 +77,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHea
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHeapEntry {
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub descriptor_index: usize,
     pub descriptor_kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     pub resource_heap_offset: u64,
@@ -101,7 +101,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHea
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHeapPassBinding {
     pub effect_pass_index: usize,
     pub object: SceneObjectId,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub base_resource_heap_offset: u64,
@@ -127,8 +127,8 @@ pub(super) struct NativeVulkanSceneEffectResourceHeapDescriptorBinding {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeVulkanSceneEffectResourceSetSlice {
-    resource_set_index: usize,
+struct NativeVulkanSceneEffectHeapSliceLayout {
+    heap_slice_index: usize,
     base_resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
     resource_descriptor_count: usize,
@@ -137,7 +137,7 @@ struct NativeVulkanSceneEffectResourceSetSlice {
 
 #[derive(Debug, Clone)]
 struct PendingEffectResourceHeapEntry {
-    resource_set_index: usize,
+    heap_slice_index: usize,
     descriptor_index: usize,
     sampler_descriptor_index: usize,
     effect_pass_index: usize,
@@ -160,9 +160,9 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
             -> Result<NativeVulkanSceneOffscreenTargetBinding, String>,
     ) -> Result<Self, String> {
         let descriptors_by_pass = effect_texture_descriptors_by_pass(descriptors)?;
-        let mut resource_set_to_slice = BTreeMap::<
+        let mut heap_slice_lookup = BTreeMap::<
             NativeVulkanSceneEffectTextureSetKey,
-            NativeVulkanSceneEffectResourceSetSlice,
+            NativeVulkanSceneEffectHeapSliceLayout,
         >::new();
         let mut descriptor_kinds = Vec::new();
         let mut pending_entries = Vec::new();
@@ -176,10 +176,10 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
             }
             let object = pass_descriptors[0].object;
             let texture_set = effect_texture_set_key(pass_descriptors);
-            let slice = if let Some(slice) = resource_set_to_slice.get(&texture_set).copied() {
+            let slice = if let Some(slice) = heap_slice_lookup.get(&texture_set).copied() {
                 slice
             } else {
-                let resource_set_index = resource_set_to_slice.len();
+                let heap_slice_index = heap_slice_lookup.len();
                 let base_resource_descriptor_index = descriptor_kinds.len();
                 let base_sampler_descriptor_index = sampler_descriptor_count;
                 for descriptor in pass_descriptors {
@@ -192,15 +192,15 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
                         &mut descriptor_kinds,
                         &mut pending_entries,
                         &mut descriptor_bindings,
-                        resource_set_index,
+                        heap_slice_index,
                         descriptor,
                         sampled_image,
                         sampler_descriptor_count,
                     )?;
                     sampler_descriptor_count = sampler_descriptor_count.saturating_add(1);
                 }
-                let slice = NativeVulkanSceneEffectResourceSetSlice {
-                    resource_set_index,
+                let slice = NativeVulkanSceneEffectHeapSliceLayout {
+                    heap_slice_index,
                     base_resource_descriptor_index,
                     base_sampler_descriptor_index,
                     resource_descriptor_count: descriptor_kinds
@@ -208,14 +208,14 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
                         .saturating_sub(base_resource_descriptor_index),
                     texture_count: pass_descriptors.len(),
                 };
-                resource_set_to_slice.insert(texture_set.clone(), slice);
+                heap_slice_lookup.insert(texture_set.clone(), slice);
                 slice
             };
             pass_bindings.push(NativeVulkanSceneEffectResourceHeapPassBinding {
                 effect_pass_index,
                 object,
-                resource_set_index: slice.resource_set_index,
-                shader_mappings: effect_resource_set_shader_mappings(&texture_set),
+                heap_slice_index: slice.heap_slice_index,
+                shader_mappings: effect_heap_slice_shader_mappings(&texture_set),
                 texture_set,
                 base_resource_descriptor_index: slice.base_resource_descriptor_index,
                 base_resource_heap_offset: 0,
@@ -264,7 +264,7 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
         Ok(Self {
             pass_count: descriptors.pass_count,
             pass_binding_count: pass_bindings.len(),
-            resource_set_count: resource_set_to_slice.len(),
+            heap_slice_count: heap_slice_lookup.len(),
             resource_descriptor_count: entries.len(),
             sampler_descriptor_count,
             descriptor_model: "VK_EXT_descriptor_heap",
@@ -273,9 +273,9 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
             descriptor_heap_plan,
             command_order: [
                 "collect_effect_sampled_texture_descriptors",
-                "dedupe_effect_resource_sets",
+                "dedupe_effect_heap_slices",
                 "pack_effect_descriptor_heap_slices",
-                "bind_effect_resource_set_slice",
+                "bind_effect_heap_slice",
                 "record_effect_pass",
             ],
             bindings: descriptor_bindings,
@@ -287,7 +287,7 @@ fn push_effect_texture_descriptor(
     descriptor_kinds: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     pending_entries: &mut Vec<PendingEffectResourceHeapEntry>,
     descriptor_bindings: &mut Vec<NativeVulkanSceneEffectResourceHeapDescriptorBinding>,
-    resource_set_index: usize,
+    heap_slice_index: usize,
     descriptor: &NativeVulkanSceneEffectTextureDescriptorBinding,
     texture: NativeVulkanSceneEffectResolvedSampledImageBinding,
     sampler_descriptor_index: usize,
@@ -308,7 +308,7 @@ fn push_effect_texture_descriptor(
         mip_count: texture.mip_count,
     });
     pending_entries.push(PendingEffectResourceHeapEntry {
-        resource_set_index,
+        heap_slice_index,
         descriptor_index,
         sampler_descriptor_index,
         effect_pass_index: descriptor.effect_pass_index,
@@ -346,7 +346,7 @@ fn finalize_effect_entries(
                     )
                 })?;
             Ok(NativeVulkanSceneEffectResourceHeapEntry {
-                resource_set_index: entry.resource_set_index,
+                heap_slice_index: entry.heap_slice_index,
                 descriptor_index: entry.descriptor_index,
                 descriptor_kind:
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,

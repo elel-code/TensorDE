@@ -1,4 +1,4 @@
-//! Effect descriptor-heap resource-set keys.
+//! Effect descriptor-heap heap-slice keys.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`
@@ -161,7 +161,7 @@ fn effect_pass_input_descriptor_source(
     }
 }
 
-pub(super) fn effect_resource_set_shader_mappings(
+pub(super) fn effect_heap_slice_shader_mappings(
     texture_set: &NativeVulkanSceneEffectTextureSetKey,
 ) -> Vec<String> {
     texture_set
@@ -170,7 +170,7 @@ pub(super) fn effect_resource_set_shader_mappings(
         .enumerate()
         .map(|(ordinal, binding)| {
             format!(
-                "{} -> effect-resource-set-offset{}",
+                "{} -> effect-heap-slice-offset{}",
                 binding_shader_mapping(binding.slot),
                 ordinal
             )

@@ -1,4 +1,4 @@
-//! Vulkan descriptor heap write helpers for scene effect resource sets.
+//! Vulkan descriptor heap write helpers for scene effect heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`

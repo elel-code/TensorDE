@@ -184,7 +184,7 @@ where
     let mut pipeline_bind_count = 0usize;
     let mut resource_heap_bind_count = 0usize;
     let mut indexed_draw_count = 0usize;
-    let mut last_resource_set_index = None::<usize>;
+    let mut last_heap_slice_index = None::<usize>;
 
     for (local_draw_index, draw) in pass.draws.iter().enumerate() {
         let draw_index = draw_index_start
@@ -204,8 +204,8 @@ where
         }
 
         let bind_info = resource_heap_bind_for_draw(draw_index)?;
-        if last_resource_set_index != Some(bind_info.resource_set_index) {
-            let resource_set_index = bind_info.resource_set_index;
+        if last_heap_slice_index != Some(bind_info.heap_slice_index) {
+            let heap_slice_index = bind_info.heap_slice_index;
             let bind = native_vulkan_record_scene_resource_heap_draw_bind_command(
                 device,
                 command_buffer,
@@ -216,7 +216,7 @@ where
             )?;
             commands.push(NativeVulkanSceneMeshPassCommand::BindResourceHeap { bind });
             resource_heap_bind_count += 1;
-            last_resource_set_index = Some(resource_set_index);
+            last_heap_slice_index = Some(heap_slice_index);
         }
 
         let geometry = draw.geometry.ok_or_else(|| {

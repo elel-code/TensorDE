@@ -1,4 +1,4 @@
-//! Retained Vulkan descriptor heap store for scene effect resource sets.
+//! Retained Vulkan descriptor heap store for scene effect heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`
@@ -47,7 +47,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectResourceHeapS
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHeapPassBindInfo {
     pub effect_pass_index: usize,
     pub object: SceneObjectId,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub resource_descriptor_count: usize,
@@ -179,7 +179,7 @@ impl NativeVulkanSceneEffectResourceHeapStore {
         Ok(NativeVulkanSceneEffectResourceHeapPassBindInfo {
             effect_pass_index,
             object: binding.object,
-            resource_set_index: binding.resource_set_index,
+            heap_slice_index: binding.heap_slice_index,
             texture_set: binding.texture_set.clone(),
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,

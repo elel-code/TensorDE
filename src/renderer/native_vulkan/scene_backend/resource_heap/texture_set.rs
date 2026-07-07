@@ -1,4 +1,4 @@
-//! WE shader texture-set keys inside scene draw resource sets.
+//! WE shader texture-set keys inside scene draw heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/material-format.md`

@@ -1,4 +1,4 @@
-//! Vulkan descriptor heap write helpers for WE layer alpha-mask resource sets.
+//! Vulkan descriptor heap write helpers for WE layer alpha-mask heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`

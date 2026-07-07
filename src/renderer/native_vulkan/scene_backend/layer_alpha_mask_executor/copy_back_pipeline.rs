@@ -61,7 +61,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub blend_key: SceneLayerCompositorBlendKey,
     pub alpha_uniform: NativeVulkanSceneLayerAlphaMaskCopyBackAlphaUniform,
     pub heap_bind_index: usize,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_index: usize,
@@ -107,16 +107,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             blend_key: draw.blend_key,
             alpha_uniform: draw.alpha_uniform,
             heap_bind_index: draw_bind.heap_bind_index,
-            resource_set_index: draw_bind.resource_set_index,
+            heap_slice_index: draw_bind.heap_slice_index,
             base_resource_descriptor_index: draw_bind.base_resource_descriptor_index,
             base_sampler_descriptor_index: draw_bind.base_sampler_descriptor_index,
             resource_descriptor_index: draw_bind.base_resource_descriptor_index,
             sampler_descriptor_index: draw_bind.base_sampler_descriptor_index,
             shader_mapping: format!(
-                "VK_EXT_descriptor_heap set0.binding{}.g_Texture{} -> alpha-mask-copy-back-resource-set{}-resource{}-sampler{}",
+                "VK_EXT_descriptor_heap set0.binding{}.g_Texture{} -> alpha-mask-copy-back-heap-slice{}-resource{}-sampler{}",
                 draw.texture_slot,
                 draw.texture_slot,
-                draw_bind.resource_set_index,
+                draw_bind.heap_slice_index,
                 draw_bind.base_resource_descriptor_index,
                 draw_bind.base_sampler_descriptor_index
             ),
@@ -279,7 +279,7 @@ mod tests {
             ),
             bind_index: 2,
             heap_bind_index: 2,
-            resource_set_index: 2,
+            heap_slice_index: 2,
             base_resource_descriptor_index: 4,
             base_sampler_descriptor_index: 4,
             command_order: [
@@ -319,7 +319,7 @@ mod tests {
         assert_eq!(key.sampler_descriptor_index, 4);
         assert_eq!(
             key.shader_mapping,
-            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-resource-set2-resource4-sampler4"
+            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
         );
         assert_eq!(plan.cache_keys().len(), 1);
         assert_eq!(plan.cache_keys()[0].shader, "util/minimalalpha");

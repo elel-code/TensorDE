@@ -58,7 +58,7 @@ fn effect_resource_heap_plan_packs_sampled_image_sets() {
 
     assert_eq!(plan.pass_count, 2);
     assert_eq!(plan.pass_binding_count, 1);
-    assert_eq!(plan.resource_set_count, 1);
+    assert_eq!(plan.heap_slice_count, 1);
     assert_eq!(plan.resource_descriptor_count, 2);
     assert_eq!(plan.sampler_descriptor_count, 2);
     assert_eq!(plan.entries[0].image_handle, 90);
@@ -69,8 +69,8 @@ fn effect_resource_heap_plan_packs_sampled_image_sets() {
     assert_eq!(
         plan.pass_bindings[0].shader_mappings,
         vec![
-            "set0.binding0.g_Texture0 -> effect-resource-set-offset0".to_owned(),
-            "set0.binding1.g_Texture1 -> effect-resource-set-offset1".to_owned(),
+            "set0.binding0.g_Texture0 -> effect-heap-slice-offset0".to_owned(),
+            "set0.binding1.g_Texture1 -> effect-heap-slice-offset1".to_owned(),
         ]
     );
     assert_eq!(plan.bindings[0].view, vk::ImageView::from_raw(91));
@@ -126,10 +126,10 @@ fn effect_resource_heap_plan_dedupes_identical_texture_sets() {
     .expect("effect resource heap plan");
 
     assert_eq!(plan.pass_binding_count, 2);
-    assert_eq!(plan.resource_set_count, 1);
+    assert_eq!(plan.heap_slice_count, 1);
     assert_eq!(plan.resource_descriptor_count, 1);
-    assert_eq!(plan.pass_bindings[0].resource_set_index, 0);
-    assert_eq!(plan.pass_bindings[1].resource_set_index, 0);
+    assert_eq!(plan.pass_bindings[0].heap_slice_index, 0);
+    assert_eq!(plan.pass_bindings[1].heap_slice_index, 0);
 }
 
 #[test]

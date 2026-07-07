@@ -21,6 +21,7 @@ mod copy_back_recording;
 mod copy_back_runtime;
 mod copy_back_target_graph;
 mod producer_draws;
+mod producer_pipeline;
 mod producer_target_graph;
 mod recorder_requirements;
 mod resource_binds;
@@ -45,6 +46,10 @@ pub(in crate::renderer::native_vulkan) use copy_back_runtime::{
 pub(in crate::renderer::native_vulkan) use producer_draws::{
     NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
     native_vulkan_plan_scene_layer_alpha_mask_producer_draws,
+};
+pub(in crate::renderer::native_vulkan) use producer_pipeline::{
+    NativeVulkanSceneLayerAlphaMaskProducerPipelinePlan,
+    native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines,
 };
 pub(in crate::renderer::native_vulkan) use producer_target_graph::{
     NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,

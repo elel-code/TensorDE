@@ -46,12 +46,15 @@ SKIPPED_SUFFIXES = {
 
 
 def forbidden_patterns() -> tuple[Pattern[str], ...]:
-    low_a = "descriptor"
+    legacy_binding_a = "descriptor"
+    legacy_binding_b = "resource"
     low_b = "set"
     camel_b = low_b.title()
     return (
-        re.compile(rf"\b{low_a}[\s_-]+{low_b}s?\b", re.IGNORECASE),
-        re.compile(rf"\b{low_a}{camel_b}s?\b", re.IGNORECASE),
+        re.compile(rf"\b{legacy_binding_a}[\s_-]+{low_b}s?\b", re.IGNORECASE),
+        re.compile(rf"\b{legacy_binding_a}{camel_b}s?\b", re.IGNORECASE),
+        re.compile(rf"\b{legacy_binding_b}[\s_-]+{low_b}s?\b", re.IGNORECASE),
+        re.compile(rf"\b{legacy_binding_b}{camel_b}s?\b", re.IGNORECASE),
     )
 
 

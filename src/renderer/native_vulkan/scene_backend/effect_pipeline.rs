@@ -531,7 +531,7 @@ mod tests {
         NativeVulkanSceneEffectResourceHeapPassBindInfo {
             effect_pass_index: 2,
             object: SceneObjectId(7),
-            resource_set_index: 11,
+            heap_slice_index: 11,
             texture_set,
             base_resource_descriptor_index: 4,
             resource_descriptor_count: 2,

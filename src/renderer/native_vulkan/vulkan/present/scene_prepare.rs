@@ -61,12 +61,12 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub effect_target_count: usize,
     pub effect_texture_descriptor_binding_count: usize,
     pub effect_resource_heap_action_count: usize,
-    pub effect_resource_set_count: usize,
+    pub effect_heap_slice_count: usize,
     pub effect_resource_descriptor_count: usize,
     pub effect_sampler_descriptor_count: usize,
     pub layer_alpha_mask_heap_bind_count: usize,
     pub layer_alpha_mask_resource_heap_action_count: usize,
-    pub layer_alpha_mask_resource_set_count: usize,
+    pub layer_alpha_mask_heap_slice_count: usize,
     pub layer_alpha_mask_resource_descriptor_count: usize,
     pub layer_alpha_mask_sampler_descriptor_count: usize,
     pub offscreen_target_count: usize,
@@ -216,7 +216,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "scene prepare missing layer alpha-mask resource heap frame plan after sync"
                     .to_owned()
             })?;
-        let layer_alpha_mask_resource_set_count = layer_alpha_mask_resource_heap.resource_set_count;
+        let layer_alpha_mask_heap_slice_count = layer_alpha_mask_resource_heap.heap_slice_count;
         let layer_alpha_mask_resource_descriptor_count =
             layer_alpha_mask_resource_heap.resource_descriptor_count;
         let layer_alpha_mask_sampler_descriptor_count =
@@ -237,7 +237,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             .ok_or_else(|| {
                 "scene prepare missing effect resource heap frame plan after sync".to_owned()
             })?;
-        let effect_resource_set_count = effect_resource_heap.resource_set_count;
+        let effect_heap_slice_count = effect_resource_heap.heap_slice_count;
         let effect_resource_descriptor_count = effect_resource_heap.resource_descriptor_count;
         let effect_sampler_descriptor_count = effect_resource_heap.sampler_descriptor_count;
         native_vulkan_end_scene_frame_command_buffer(device, slot_sync.command_buffer)?;
@@ -321,12 +321,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             effect_target_count,
             effect_texture_descriptor_binding_count,
             effect_resource_heap_action_count,
-            effect_resource_set_count,
+            effect_heap_slice_count,
             effect_resource_descriptor_count,
             effect_sampler_descriptor_count,
             layer_alpha_mask_heap_bind_count,
             layer_alpha_mask_resource_heap_action_count,
-            layer_alpha_mask_resource_set_count,
+            layer_alpha_mask_heap_slice_count,
             layer_alpha_mask_resource_descriptor_count,
             layer_alpha_mask_sampler_descriptor_count,
             offscreen_target_count,

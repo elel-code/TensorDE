@@ -1,4 +1,4 @@
-//! Scene draw resource-set descriptor heap bind command recording.
+//! Scene draw descriptor heap slice bind command recording.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
@@ -21,7 +21,7 @@ use super::texture_set::{
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawBindInfo {
     pub draw_index: usize,
     pub object: SceneObjectId,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub texture_set: NativeVulkanSceneTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub resource_descriptor_count: usize,
@@ -35,7 +35,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneResourceHeapDrawB
 pub struct NativeVulkanSceneResourceHeapDrawBindPlan {
     pub(in crate::renderer::native_vulkan) object: SceneObjectId,
     pub(in crate::renderer::native_vulkan) draw_index: usize,
-    pub(in crate::renderer::native_vulkan) resource_set_index: usize,
+    pub(in crate::renderer::native_vulkan) heap_slice_index: usize,
     pub(in crate::renderer::native_vulkan) texture_set: NativeVulkanSceneTextureSetKey,
     pub(in crate::renderer::native_vulkan) base_resource_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) resource_descriptor_count: usize,
@@ -91,7 +91,7 @@ impl NativeVulkanSceneResourceHeapDrawBindPlan {
         Ok(Self {
             object: draw.object,
             draw_index,
-            resource_set_index: bind_info.resource_set_index,
+            heap_slice_index: bind_info.heap_slice_index,
             shader_mappings: bind_info.shader_mappings.clone(),
             texture_set,
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
@@ -131,7 +131,7 @@ mod tests {
     };
 
     #[test]
-    fn resource_heap_draw_bind_plan_tracks_resource_set_identity() {
+    fn resource_heap_draw_bind_plan_tracks_heap_slice_identity() {
         let draw = mesh_draw(SceneResourceId(7));
         let texture_set =
             scene_mesh_draw_texture_set_key_with_pass_input(&draw, None).expect("texture set");
@@ -144,7 +144,7 @@ mod tests {
 
         assert_eq!(plan.object, SceneObjectId(4));
         assert_eq!(plan.draw_index, 3);
-        assert_eq!(plan.resource_set_index, 11);
+        assert_eq!(plan.heap_slice_index, 11);
         assert_eq!(plan.base_resource_descriptor_index, 2);
         assert_eq!(plan.resource_descriptor_count, 2);
         assert_eq!(plan.texture_count, 1);
@@ -172,7 +172,7 @@ mod tests {
     fn draw_bind_info(
         draw_index: usize,
         texture_set: NativeVulkanSceneTextureSetKey,
-        resource_set_index: usize,
+        heap_slice_index: usize,
         base_resource_descriptor_index: usize,
     ) -> NativeVulkanSceneResourceHeapDrawBindInfo {
         let texture_count = texture_set.texture_count();
@@ -180,7 +180,7 @@ mod tests {
         NativeVulkanSceneResourceHeapDrawBindInfo {
             draw_index,
             object: SceneObjectId(4),
-            resource_set_index,
+            heap_slice_index,
             texture_set,
             base_resource_descriptor_index,
             resource_descriptor_count: texture_count + 1,

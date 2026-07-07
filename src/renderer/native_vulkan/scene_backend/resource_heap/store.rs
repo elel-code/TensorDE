@@ -1,4 +1,4 @@
-//! Retained Vulkan descriptor heap store for scene draw resource sets.
+//! Retained Vulkan descriptor heap store for scene draw heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
@@ -167,7 +167,7 @@ impl NativeVulkanSceneResourceHeapStore {
         Ok(NativeVulkanSceneResourceHeapDrawBindInfo {
             draw_index,
             object: binding.object,
-            resource_set_index: binding.resource_set_index,
+            heap_slice_index: binding.heap_slice_index,
             texture_set: binding.texture_set.clone(),
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,

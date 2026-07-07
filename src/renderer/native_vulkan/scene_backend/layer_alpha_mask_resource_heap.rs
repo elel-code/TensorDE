@@ -1,4 +1,4 @@
-//! Descriptor-heap resource-set planning for WE layer alpha-mask draws.
+//! Descriptor heap slice planning for WE layer alpha-mask draws.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`
@@ -42,11 +42,11 @@ use super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::texture_images::NativeVulkanSceneTextureImageBinding;
 pub(in crate::renderer::native_vulkan) use bind_command::NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan;
 #[cfg(test)]
-pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskResourceSetBinding;
-pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskResourceSetKey;
+pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskHeapSliceBinding;
+pub(in crate::renderer::native_vulkan) use key::NativeVulkanSceneLayerAlphaMaskHeapSliceKey;
 use key::{
-    alpha_mask_resource_set_shader_mappings, alpha_mask_slots_by_texture_bind,
-    alpha_mask_texture_bind_resource_set,
+    alpha_mask_heap_slice_shader_mappings, alpha_mask_slots_by_texture_bind,
+    alpha_mask_texture_bind_heap_slice,
 };
 use resolve::{
     NativeVulkanSceneLayerAlphaMaskResolvedSampledImageBinding,
@@ -61,7 +61,7 @@ pub(in crate::renderer::native_vulkan) use store::{
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
     pub heap_bind_count: usize,
-    pub resource_set_count: usize,
+    pub heap_slice_count: usize,
     pub resource_descriptor_count: usize,
     pub sampler_descriptor_count: usize,
     pub descriptor_model: &'static str,
@@ -76,7 +76,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceHeapEntry {
     pub heap_bind_index: usize,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub descriptor_index: usize,
     pub descriptor_kind: NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     pub resource_heap_offset: u64,
@@ -105,8 +105,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub puppet: ScenePuppetId,
     pub shader: String,
     pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
-    pub resource_set_index: usize,
-    pub resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+    pub heap_slice_index: usize,
+    pub heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     pub base_resource_descriptor_index: usize,
     pub base_resource_heap_offset: u64,
     pub base_sampler_descriptor_index: usize,
@@ -131,8 +131,8 @@ pub(super) struct NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct NativeVulkanSceneLayerAlphaMaskResourceSetSlice {
-    resource_set_index: usize,
+struct NativeVulkanSceneLayerAlphaMaskHeapSliceLayout {
+    heap_slice_index: usize,
     base_resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
     resource_descriptor_count: usize,
@@ -142,7 +142,7 @@ struct NativeVulkanSceneLayerAlphaMaskResourceSetSlice {
 #[derive(Debug, Clone)]
 struct PendingLayerAlphaMaskResourceHeapEntry {
     heap_bind_index: usize,
-    resource_set_index: usize,
+    heap_slice_index: usize,
     descriptor_index: usize,
     sampler_descriptor_index: usize,
     object: SceneObjectId,
@@ -167,9 +167,9 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
             -> Result<NativeVulkanSceneOffscreenTargetBinding, String>,
     ) -> Result<Self, String> {
         let slots_by_set = alpha_mask_slots_by_texture_bind(descriptors)?;
-        let mut resource_set_to_slice = BTreeMap::<
-            NativeVulkanSceneLayerAlphaMaskResourceSetKey,
-            NativeVulkanSceneLayerAlphaMaskResourceSetSlice,
+        let mut heap_slice_lookup = BTreeMap::<
+            NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+            NativeVulkanSceneLayerAlphaMaskHeapSliceLayout,
         >::new();
         let mut descriptor_kinds = Vec::new();
         let mut pending_entries = Vec::new();
@@ -178,11 +178,11 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
         let mut sampler_descriptor_count = 0usize;
 
         for (heap_bind_index, texture_bind) in descriptors.entries.iter().enumerate() {
-            let resource_set = alpha_mask_texture_bind_resource_set(texture_bind)?;
-            let slice = if let Some(slice) = resource_set_to_slice.get(&resource_set).copied() {
+            let heap_slice = alpha_mask_texture_bind_heap_slice(texture_bind)?;
+            let slice = if let Some(slice) = heap_slice_lookup.get(&heap_slice).copied() {
                 slice
             } else {
-                let resource_set_index = resource_set_to_slice.len();
+                let heap_slice_index = heap_slice_lookup.len();
                 let base_resource_descriptor_index = descriptor_kinds.len();
                 let base_sampler_descriptor_index = sampler_descriptor_count;
                 for slot in &slots_by_set[heap_bind_index] {
@@ -195,7 +195,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                         &mut descriptor_kinds,
                         &mut pending_entries,
                         &mut descriptor_bindings,
-                        resource_set_index,
+                        heap_slice_index,
                         heap_bind_index,
                         texture_bind,
                         slot.slot,
@@ -205,8 +205,8 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                     );
                     sampler_descriptor_count = sampler_descriptor_count.saturating_add(1);
                 }
-                let slice = NativeVulkanSceneLayerAlphaMaskResourceSetSlice {
-                    resource_set_index,
+                let slice = NativeVulkanSceneLayerAlphaMaskHeapSliceLayout {
+                    heap_slice_index,
                     base_resource_descriptor_index,
                     base_sampler_descriptor_index,
                     resource_descriptor_count: descriptor_kinds
@@ -214,7 +214,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                         .saturating_sub(base_resource_descriptor_index),
                     texture_count: texture_bind.slots.len(),
                 };
-                resource_set_to_slice.insert(resource_set.clone(), slice);
+                heap_slice_lookup.insert(heap_slice.clone(), slice);
                 slice
             };
             heap_bindings.push(NativeVulkanSceneLayerAlphaMaskResourceHeapBindSlice {
@@ -223,9 +223,9 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
                 puppet: texture_bind.puppet,
                 shader: texture_bind.shader.to_owned(),
                 role: texture_bind.role,
-                resource_set_index: slice.resource_set_index,
-                shader_mappings: alpha_mask_resource_set_shader_mappings(&resource_set),
-                resource_set,
+                heap_slice_index: slice.heap_slice_index,
+                shader_mappings: alpha_mask_heap_slice_shader_mappings(&heap_slice),
+                heap_slice,
                 base_resource_descriptor_index: slice.base_resource_descriptor_index,
                 base_resource_heap_offset: 0,
                 base_sampler_descriptor_index: slice.base_sampler_descriptor_index,
@@ -273,7 +273,7 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
 
         Ok(Self {
             heap_bind_count: descriptors.heap_bind_count,
-            resource_set_count: resource_set_to_slice.len(),
+            heap_slice_count: heap_slice_lookup.len(),
             resource_descriptor_count: entries.len(),
             sampler_descriptor_count,
             descriptor_model: "VK_EXT_descriptor_heap",
@@ -282,9 +282,9 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapFramePlan {
             descriptor_heap_plan,
             command_order: [
                 "collect_alpha_mask_sampled_texture_descriptors",
-                "dedupe_alpha_mask_resource_sets",
+                "dedupe_alpha_mask_heap_slices",
                 "pack_alpha_mask_descriptor_heap_slices",
-                "bind_alpha_mask_resource_set_slice",
+                "bind_alpha_mask_heap_slice",
                 "record_tokenized_alpha_mask_draws",
             ],
             bindings: descriptor_bindings,
@@ -297,7 +297,7 @@ fn push_layer_alpha_mask_texture_descriptor(
     descriptor_kinds: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     pending_entries: &mut Vec<PendingLayerAlphaMaskResourceHeapEntry>,
     descriptor_bindings: &mut Vec<NativeVulkanSceneLayerAlphaMaskResourceHeapDescriptorBinding>,
-    resource_set_index: usize,
+    heap_slice_index: usize,
     heap_bind_index: usize,
     texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
     slot: u32,
@@ -323,7 +323,7 @@ fn push_layer_alpha_mask_texture_descriptor(
     );
     pending_entries.push(PendingLayerAlphaMaskResourceHeapEntry {
         heap_bind_index,
-        resource_set_index,
+        heap_slice_index,
         descriptor_index,
         sampler_descriptor_index,
         object: texture_bind.object,
@@ -363,7 +363,7 @@ fn finalize_layer_alpha_mask_entries(
                 })?;
             Ok(NativeVulkanSceneLayerAlphaMaskResourceHeapEntry {
                 heap_bind_index: entry.heap_bind_index,
-                resource_set_index: entry.resource_set_index,
+                heap_slice_index: entry.heap_slice_index,
                 descriptor_index: entry.descriptor_index,
                 descriptor_kind:
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,

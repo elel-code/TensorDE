@@ -57,7 +57,7 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
     .expect("resource heap frame plan");
 
     assert_eq!(plan.draw_count, 1);
-    assert_eq!(plan.resource_set_count, 1);
+    assert_eq!(plan.heap_slice_count, 1);
     assert_eq!(plan.resource_descriptor_count, 3);
     assert_eq!(plan.sampler_descriptor_count, 2);
     assert_eq!(
@@ -97,7 +97,7 @@ fn resource_heap_plan_places_material_uniform_before_textures() {
 }
 
 #[test]
-fn resource_heap_plan_dedupes_identical_draw_resource_sets() {
+fn resource_heap_plan_dedupes_identical_draw_heap_slices() {
     let graph = mesh_graph(vec![
         mesh_draw(
             SceneObjectId(7),
@@ -130,10 +130,10 @@ fn resource_heap_plan_dedupes_identical_draw_resource_sets() {
     .expect("resource heap frame plan");
 
     assert_eq!(plan.draw_binding_count, 2);
-    assert_eq!(plan.resource_set_count, 1);
+    assert_eq!(plan.heap_slice_count, 1);
     assert_eq!(plan.resource_descriptor_count, 2);
-    assert_eq!(plan.draw_bindings[0].resource_set_index, 0);
-    assert_eq!(plan.draw_bindings[1].resource_set_index, 0);
+    assert_eq!(plan.draw_bindings[0].heap_slice_index, 0);
+    assert_eq!(plan.draw_bindings[1].heap_slice_index, 0);
 }
 
 #[test]
@@ -313,7 +313,7 @@ fn resource_heap_plan_binds_graph_target_input_as_sampled_image() {
     .expect("resource heap frame plan with target input");
 
     assert_eq!(plan.draw_count, 2);
-    assert_eq!(plan.resource_set_count, 2);
+    assert_eq!(plan.heap_slice_count, 2);
     assert_eq!(plan.resource_descriptor_count, 4);
     assert_eq!(plan.sampler_descriptor_count, 2);
     assert_eq!(plan.draw_bindings[1].texture_count, 1);

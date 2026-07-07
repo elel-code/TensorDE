@@ -1,4 +1,4 @@
-//! Scene effect resource-set descriptor heap bind command recording.
+//! Scene effect descriptor heap slice bind command recording.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`
@@ -21,7 +21,7 @@ use super::store::NativeVulkanSceneEffectResourceHeapPassBindInfo;
 pub struct NativeVulkanSceneEffectResourceHeapPassBindPlan {
     pub(in crate::renderer::native_vulkan) effect_pass_index: usize,
     pub(in crate::renderer::native_vulkan) object: SceneObjectId,
-    pub(in crate::renderer::native_vulkan) resource_set_index: usize,
+    pub(in crate::renderer::native_vulkan) heap_slice_index: usize,
     pub(in crate::renderer::native_vulkan) texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub(in crate::renderer::native_vulkan) base_resource_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) resource_descriptor_count: usize,
@@ -66,7 +66,7 @@ impl NativeVulkanSceneEffectResourceHeapPassBindPlan {
         Ok(Self {
             effect_pass_index: pass.graph_pass_index,
             object: pass.object,
-            resource_set_index: bind_info.resource_set_index,
+            heap_slice_index: bind_info.heap_slice_index,
             texture_set,
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
             resource_descriptor_count: bind_info.resource_descriptor_count,
@@ -106,7 +106,7 @@ mod tests {
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
     #[test]
-    fn effect_resource_heap_pass_bind_plan_tracks_resource_set_identity() {
+    fn effect_resource_heap_pass_bind_plan_tracks_heap_slice_identity() {
         let pass = effect_pass();
         let texture_set = effect_pass_texture_set_key(&pass).expect("effect texture set");
         let bind_info = pass_bind_info(2, SceneObjectId(7), texture_set, 11, 3);
@@ -118,7 +118,7 @@ mod tests {
 
         assert_eq!(plan.effect_pass_index, 2);
         assert_eq!(plan.object, SceneObjectId(7));
-        assert_eq!(plan.resource_set_index, 11);
+        assert_eq!(plan.heap_slice_index, 11);
         assert_eq!(plan.base_resource_descriptor_index, 3);
         assert_eq!(plan.resource_descriptor_count, 2);
         assert_eq!(plan.texture_count, 2);
@@ -206,7 +206,7 @@ mod tests {
         effect_pass_index: usize,
         object: SceneObjectId,
         texture_set: NativeVulkanSceneEffectTextureSetKey,
-        resource_set_index: usize,
+        heap_slice_index: usize,
         base_resource_descriptor_index: usize,
     ) -> NativeVulkanSceneEffectResourceHeapPassBindInfo {
         let texture_count = texture_set.bindings.len();
@@ -216,7 +216,7 @@ mod tests {
             .enumerate()
             .map(|(ordinal, binding)| {
                 format!(
-                    "set0.binding{}.g_Texture{} -> effect-resource-set-offset{}",
+                    "set0.binding{}.g_Texture{} -> effect-heap-slice-offset{}",
                     binding.slot, binding.slot, ordinal
                 )
             })
@@ -224,7 +224,7 @@ mod tests {
         NativeVulkanSceneEffectResourceHeapPassBindInfo {
             effect_pass_index,
             object,
-            resource_set_index,
+            heap_slice_index,
             texture_set,
             base_resource_descriptor_index,
             resource_descriptor_count: texture_count,

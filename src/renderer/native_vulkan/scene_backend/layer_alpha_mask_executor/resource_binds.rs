@@ -92,7 +92,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskCop
     pub texture_source: NativeVulkanSceneTextureDescriptorSource,
     pub bind_index: usize,
     pub heap_bind_index: usize,
-    pub resource_set_index: usize,
+    pub heap_slice_index: usize,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
     pub command_order: [&'static str; 4],
@@ -470,7 +470,7 @@ fn copy_back_draw_bind_plans(
                 texture_source: draw.texture_source,
                 bind_index,
                 heap_bind_index: bind.heap_bind_index,
-                resource_set_index: bind.bind.resource_set_index,
+                heap_slice_index: bind.bind.heap_slice_index,
                 base_resource_descriptor_index: bind.bind.base_resource_descriptor_index,
                 base_sampler_descriptor_index: bind.bind.base_sampler_descriptor_index,
                 command_order: [
@@ -513,8 +513,8 @@ mod tests {
         NativeVulkanSceneLayerAlphaMaskTargetBinding,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
-        NativeVulkanSceneLayerAlphaMaskResourceSetBinding,
-        NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+        NativeVulkanSceneLayerAlphaMaskHeapSliceBinding,
+        NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
     use vulkanalia::vk;
@@ -608,7 +608,7 @@ mod tests {
         assert_eq!(plan.copy_back_draw_binds[0].command_index, 3);
         assert_eq!(plan.copy_back_draw_binds[0].bind_index, 2);
         assert_eq!(plan.copy_back_draw_binds[0].heap_bind_index, 2);
-        assert_eq!(plan.copy_back_draw_binds[0].resource_set_index, 2);
+        assert_eq!(plan.copy_back_draw_binds[0].heap_slice_index, 2);
         assert_eq!(
             plan.copy_back_draw_binds[0].base_resource_descriptor_index,
             4
@@ -638,7 +638,7 @@ mod tests {
         assert_eq!(plan.copy_back_pipelines.keys[0].shader, "util/minimalalpha");
         assert_eq!(
             plan.copy_back_pipelines.keys[0].shader_mapping,
-            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-resource-set2-resource4-sampler4"
+            "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-copy-back-heap-slice2-resource4-sampler4"
         );
         assert_eq!(
             plan.command_order,
@@ -829,12 +829,12 @@ mod tests {
         shader: &'static str,
         textures: Vec<(u32, SceneResourceId)>,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-        let resource_set = NativeVulkanSceneLayerAlphaMaskResourceSetKey {
+        let heap_slice = NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
             shader: shader.to_owned(),
             bindings: textures
                 .iter()
                 .map(
-                    |(slot, resource)| NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
+                    |(slot, resource)| NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
                         slot: *slot,
                         source: NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
                             *resource,
@@ -843,7 +843,7 @@ mod tests {
                 )
                 .collect(),
         };
-        alpha_mask_bind_info_for_resource_set(heap_bind_index, role, shader, resource_set)
+        alpha_mask_bind_info_for_heap_slice(heap_bind_index, role, shader, heap_slice)
     }
 
     fn alpha_mask_bind_info_from_sources(
@@ -852,36 +852,36 @@ mod tests {
         shader: &'static str,
         textures: Vec<(u32, NativeVulkanSceneLayerAlphaMaskDescriptorSource)>,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-        let resource_set = NativeVulkanSceneLayerAlphaMaskResourceSetKey {
+        let heap_slice = NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
             shader: shader.to_owned(),
             bindings: textures
                 .iter()
                 .map(
-                    |(slot, source)| NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
+                    |(slot, source)| NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
                         slot: *slot,
                         source: *source,
                     },
                 )
                 .collect(),
         };
-        alpha_mask_bind_info_for_resource_set(heap_bind_index, role, shader, resource_set)
+        alpha_mask_bind_info_for_heap_slice(heap_bind_index, role, shader, heap_slice)
     }
 
-    fn alpha_mask_bind_info_for_resource_set(
+    fn alpha_mask_bind_info_for_heap_slice(
         heap_bind_index: usize,
         role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
         shader: &'static str,
-        resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+        heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
-        let texture_count = resource_set.bindings.len();
-        let shader_mappings = resource_set
+        let texture_count = heap_slice.bindings.len();
+        let shader_mappings = heap_slice
             .bindings
             .iter()
             .enumerate()
             .map(|(ordinal, binding)| {
                 let slot = binding.slot;
                 format!(
-                    "set0.binding{slot}.g_Texture{slot} -> alpha-mask-resource-set-offset{ordinal}"
+                    "set0.binding{slot}.g_Texture{slot} -> alpha-mask-heap-slice-offset{ordinal}"
                 )
             })
             .collect();
@@ -891,8 +891,8 @@ mod tests {
             puppet: ScenePuppetId(5),
             shader: shader.to_owned(),
             role,
-            resource_set_index: heap_bind_index,
-            resource_set,
+            heap_slice_index: heap_bind_index,
+            heap_slice,
             base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
             base_sampler_descriptor_index: heap_bind_index.saturating_mul(2),
             resource_descriptor_count: texture_count,

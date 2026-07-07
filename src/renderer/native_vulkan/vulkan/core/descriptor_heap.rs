@@ -641,20 +641,20 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         max_sampler_heap_size: properties.max_sampler_heap_size,
         command_order: if backend_ready {
             vec![
-                "pack_draw_resource_set_slices",
+                "pack_draw_heap_slices",
                 "create_device_addressable_resource_heap_buffer",
                 "create_device_addressable_sampler_heap_buffer",
                 "write_uniform_buffer_descriptors_into_resource_heap",
                 "write_image_descriptors_into_same_resource_heap",
                 "write_sampler_descriptors_into_sampler_heap",
-                "cmd_bind_resource_heap_ext_once_per_draw_resource_set",
-                "cmd_bind_sampler_heap_ext_once_per_draw_resource_set",
+                "cmd_bind_resource_heap_ext_once_per_draw_heap_slice",
+                "cmd_bind_sampler_heap_ext_once_per_draw_heap_slice",
             ]
         } else {
             vec!["wait_for_descriptor_heap_capabilities"]
         },
-        next_gate: "bind scene draw resource-set slices containing WE constant buffers and textures",
-        primary_reference: "VK_EXT_descriptor_heap mixed resource heap; WE PSSetConstantBuffers(slot=3) and g_TextureN sampled images must share the draw resource binding set",
+        next_gate: "bind scene draw heap slices containing WE constant buffers and textures",
+        primary_reference: "VK_EXT_descriptor_heap mixed resource heap; WE PSSetConstantBuffers(slot=3) and g_TextureN sampled images must share the draw heap slice",
     }
 }
 
@@ -1295,7 +1295,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .checked_sub(base_heap_offset)
         .ok_or_else(|| {
             format!(
-                "descriptor heap mixed sampled image index {resource_descriptor_index} precedes resource-set base {base_resource_descriptor_index}"
+                "descriptor heap mixed sampled image index {resource_descriptor_index} precedes heap-slice base {base_resource_descriptor_index}"
             )
         })?;
     let base_sampler_heap_offset = *plan
@@ -1385,7 +1385,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         .checked_sub(base_heap_offset)
         .ok_or_else(|| {
             format!(
-                "descriptor heap sampled-image descriptor index {resource_descriptor_index} precedes resource-set base {base_resource_descriptor_index}"
+                "descriptor heap sampled-image descriptor index {resource_descriptor_index} precedes heap-slice base {base_resource_descriptor_index}"
             )
         })?;
     let base_sampler_heap_offset = *plan
@@ -2352,7 +2352,7 @@ mod tests {
     }
 
     #[test]
-    fn mixed_resource_binding_mappings_use_resource_set_relative_offsets() {
+    fn mixed_resource_binding_mappings_use_heap_slice_relative_offsets() {
         let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
                 resource_descriptors: vec![

@@ -279,7 +279,7 @@ fn scene_effect_resource_heap_texture_layout(
         }));
     }
     Err(format!(
-        "scene effect pipeline shader '{}' requires a resource-set slice shaped as {} sampled textures",
+        "scene effect pipeline shader '{}' requires a heap slice shaped as {} sampled textures",
         key.shader, texture_slot_count
     ))
 }
@@ -315,7 +315,7 @@ fn scene_effect_shader_resource_mapping_labels(
         .enumerate()
         .map(|(ordinal, slot)| {
             format!(
-                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> effect-resource-set-texture-offset{ordinal}"
+                "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> effect-heap-slice-texture-offset{ordinal}"
             )
         })
         .collect()
@@ -457,8 +457,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> effect-resource-set-texture-offset0".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding2.g_Texture2 -> effect-resource-set-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> effect-heap-slice-texture-offset0".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding2.g_Texture2 -> effect-heap-slice-texture-offset1".to_owned(),
             ]
         );
         assert_eq!(plan.blend, "normal-replace-one-zero");
@@ -516,7 +516,7 @@ mod tests {
         );
 
         let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
-            .expect_err("mesh-shaped resource set must fail");
+            .expect_err("mesh-shaped heap slice must fail");
 
         assert!(err.contains("sampled textures"));
     }

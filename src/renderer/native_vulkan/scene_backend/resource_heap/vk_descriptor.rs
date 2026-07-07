@@ -1,4 +1,4 @@
-//! Vulkan descriptor heap write helpers for scene draw resource sets.
+//! Vulkan descriptor heap write helpers for scene draw heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`

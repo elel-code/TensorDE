@@ -245,7 +245,7 @@ fn resource_binds_for_runtime(
                     ),
                     bind_index: command_index,
                     heap_bind_index: command_index,
-                    resource_set_index: command_index,
+                    heap_slice_index: command_index,
                     base_resource_descriptor_index: command_index,
                     base_sampler_descriptor_index: command_index,
                     command_order: [

@@ -190,8 +190,8 @@ mod tests {
         SceneLayerCompositorOperation, SceneObjectId, ScenePuppetId,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
-        NativeVulkanSceneLayerAlphaMaskResourceSetBinding,
-        NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+        NativeVulkanSceneLayerAlphaMaskHeapSliceBinding,
+        NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
         NativeVulkanSceneTextureDescriptorSource, NativeVulkanSceneTextureDescriptorVkFormat,
@@ -238,10 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn copy_back_runtime_commands_use_heap_bind_index_not_resource_set_guess() {
+    fn copy_back_runtime_commands_use_heap_bind_index_not_heap_slice_guess() {
         let mut draw_bind = copy_back_draw_bind();
         draw_bind.heap_bind_index = 9;
-        draw_bind.resource_set_index = 2;
+        draw_bind.heap_slice_index = 2;
         let pipelines = native_vulkan_plan_scene_layer_alpha_mask_copy_back_pipelines(
             &[copy_back_draw()],
             &[draw_bind],
@@ -260,7 +260,7 @@ mod tests {
             )
             .expect("copy-back runtime command plan");
 
-        assert_eq!(plan.commands[0].resource_set_index, 2);
+        assert_eq!(plan.commands[0].heap_slice_index, 2);
     }
 
     #[test]
@@ -329,7 +329,7 @@ mod tests {
             ),
             bind_index: 2,
             heap_bind_index: 2,
-            resource_set_index: 2,
+            heap_slice_index: 2,
             base_resource_descriptor_index: 4,
             base_sampler_descriptor_index: 4,
             command_order: [
@@ -352,10 +352,10 @@ mod tests {
             puppet: ScenePuppetId(5),
             shader: "util/minimalalpha".to_owned(),
             role: super::super::NativeVulkanSceneLayerAlphaMaskTextureBindRole::FlatTextureCopyBack,
-            resource_set_index: 2,
-            resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey {
+            heap_slice_index: 2,
+            heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
                 shader: "util/minimalalpha".to_owned(),
-                bindings: vec![NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
+                bindings: vec![NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
                     slot: 0,
                     source:
                         super::super::NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
@@ -368,7 +368,7 @@ mod tests {
             resource_descriptor_count: 1,
             texture_count: 1,
             shader_mappings: vec![
-                "set0.binding0.g_Texture0 -> alpha-mask-resource-set-offset0".to_owned(),
+                "set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
             ],
             resource_bind: vk::BindHeapInfoEXT::builder().build(),
             sampler_bind: vk::BindHeapInfoEXT::builder().build(),

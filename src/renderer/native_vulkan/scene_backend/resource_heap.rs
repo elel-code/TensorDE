@@ -1,4 +1,4 @@
-//! Scene draw resource-set descriptor heap modules.
+//! Scene draw descriptor heap slice modules.
 //!
 //! References:
 //! - `reverse-engineered/docs/material-format.md`

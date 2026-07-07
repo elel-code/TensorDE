@@ -1,4 +1,4 @@
-//! Retained Vulkan descriptor heap store for WE layer alpha-mask resource sets.
+//! Retained Vulkan descriptor heap store for WE layer alpha-mask heap slices.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`
@@ -19,7 +19,7 @@ use crate::renderer::native_vulkan::vulkan::{
     native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources,
 };
 
-use super::key::NativeVulkanSceneLayerAlphaMaskResourceSetKey;
+use super::key::NativeVulkanSceneLayerAlphaMaskHeapSliceKey;
 use super::vk_descriptor::write_scene_layer_alpha_mask_resource_heap_descriptors;
 use super::{
     NativeVulkanSceneLayerAlphaMaskResourceHeapEntry,
@@ -51,8 +51,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRes
     pub puppet: ScenePuppetId,
     pub shader: String,
     pub role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
-    pub resource_set_index: usize,
-    pub resource_set: NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+    pub heap_slice_index: usize,
+    pub heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     pub base_resource_descriptor_index: usize,
     pub base_sampler_descriptor_index: usize,
     pub resource_descriptor_count: usize,
@@ -195,8 +195,8 @@ impl NativeVulkanSceneLayerAlphaMaskResourceHeapStore {
             puppet: binding.puppet,
             shader: binding.shader.clone(),
             role: binding.role,
-            resource_set_index: binding.resource_set_index,
-            resource_set: binding.resource_set.clone(),
+            heap_slice_index: binding.heap_slice_index,
+            heap_slice: binding.heap_slice.clone(),
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             base_sampler_descriptor_index: binding.base_sampler_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,

@@ -1,4 +1,4 @@
-//! WE layer alpha-mask descriptor-heap resource-set keys.
+//! WE layer alpha-mask descriptor heap slice keys.
 //!
 //! References:
 //! - `reverse-engineered/docs/exe/clipping-pipeline.md`
@@ -16,13 +16,13 @@ use super::super::layer_alpha_mask_executor::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceSetKey {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
     pub shader: String,
-    pub bindings: Vec<NativeVulkanSceneLayerAlphaMaskResourceSetBinding>,
+    pub bindings: Vec<NativeVulkanSceneLayerAlphaMaskHeapSliceBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
-pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
     pub slot: u32,
     pub source: NativeVulkanSceneLayerAlphaMaskDescriptorSource,
 }
@@ -40,35 +40,35 @@ pub(super) fn alpha_mask_slots_by_texture_bind(
     Ok(by_set)
 }
 
-pub(super) fn alpha_mask_texture_bind_resource_set(
+pub(super) fn alpha_mask_texture_bind_heap_slice(
     texture_bind: &NativeVulkanSceneLayerAlphaMaskTextureBindPlan,
-) -> Result<NativeVulkanSceneLayerAlphaMaskResourceSetKey, String> {
+) -> Result<NativeVulkanSceneLayerAlphaMaskHeapSliceKey, String> {
     let mut slots = texture_bind.slots.clone();
     slots.sort_by_key(|slot| slot.slot);
     validate_alpha_mask_slots(texture_bind, &slots)?;
     let bindings = slots
         .iter()
-        .map(|slot| NativeVulkanSceneLayerAlphaMaskResourceSetBinding {
+        .map(|slot| NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
             slot: slot.slot,
             source: slot.source,
         })
         .collect::<Vec<_>>();
-    Ok(NativeVulkanSceneLayerAlphaMaskResourceSetKey {
+    Ok(NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
         shader: texture_bind.shader.to_owned(),
         bindings,
     })
 }
 
-pub(super) fn alpha_mask_resource_set_shader_mappings(
-    resource_set: &NativeVulkanSceneLayerAlphaMaskResourceSetKey,
+pub(super) fn alpha_mask_heap_slice_shader_mappings(
+    heap_slice: &NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
 ) -> Vec<String> {
-    resource_set
+    heap_slice
         .bindings
         .iter()
         .enumerate()
         .map(|(ordinal, binding)| {
             format!(
-                "{} -> alpha-mask-resource-set-offset{}",
+                "{} -> alpha-mask-heap-slice-offset{}",
                 binding_shader_mapping(binding.slot),
                 ordinal
             )

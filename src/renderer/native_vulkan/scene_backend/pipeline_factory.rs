@@ -426,11 +426,11 @@ fn scene_mesh_shader_resource_mapping_labels(
         .map(|(ordinal, slot)| {
             if scene_pipeline_uses_alpha_mask_resource_heap(key) {
                 format!(
-                    "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> alpha-mask-resource-set-texture-offset{ordinal}"
+                    "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> alpha-mask-heap-slice-texture-offset{ordinal}"
                 )
             } else {
                 format!(
-                    "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> draw-resource-set-texture-offset{}",
+                    "VK_EXT_descriptor_heap set0.binding{slot}.g_Texture{slot} -> draw-heap-slice-texture-offset{}",
                     ordinal + 1
                 )
             }
@@ -648,7 +648,7 @@ fn scene_mesh_draw_resource_heap_texture_layout(
     }
 
     Err(format!(
-        "scene mesh pipeline shader '{}' requires a draw resource-set slice shaped as WE material uniform + {} sampled textures",
+        "scene mesh pipeline shader '{}' requires a draw heap slice shaped as WE material uniform + {} sampled textures",
         key.shader, texture_slot_count
     ))
 }
@@ -708,7 +708,7 @@ fn scene_alpha_mask_resource_heap_texture_layout(
     }
 
     Err(format!(
-        "scene alpha-mask pipeline shader '{}' requires an alpha-mask resource-set slice shaped as {} sampled textures",
+        "scene alpha-mask pipeline shader '{}' requires an alpha-mask heap slice shaped as {} sampled textures",
         key.shader, texture_slot_count
     ))
 }
@@ -737,7 +737,7 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-heap-slice-texture-offset1".to_owned()
             ]
         );
         assert_eq!(plan.blend, "translucent-src-alpha-inv-src-alpha");
@@ -803,7 +803,7 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-resource-set-texture-offset0".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-heap-slice-texture-offset0".to_owned()
             ]
         );
     }
@@ -826,8 +826,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-resource-set-texture-offset0".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding1.g_Texture1 -> alpha-mask-resource-set-texture-offset1".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> alpha-mask-heap-slice-texture-offset0".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding1.g_Texture1 -> alpha-mask-heap-slice-texture-offset1".to_owned()
             ]
         );
     }
@@ -998,8 +998,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned(),
-                "VK_EXT_descriptor_heap set0.binding4.g_Texture4 -> draw-resource-set-texture-offset2".to_owned()
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-heap-slice-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding4.g_Texture4 -> draw-heap-slice-texture-offset2".to_owned()
             ]
         );
     }

@@ -45,7 +45,7 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     .expect("alpha-mask resource heap plan");
 
     assert_eq!(plan.heap_bind_count, 3);
-    assert_eq!(plan.resource_set_count, 3);
+    assert_eq!(plan.heap_slice_count, 3);
     assert_eq!(plan.resource_descriptor_count, 5);
     assert_eq!(plan.sampler_descriptor_count, 5);
     assert_eq!(plan.entries[0].shader, "we/clippingmaskimage4");
@@ -59,21 +59,21 @@ fn alpha_mask_resource_heap_plan_packs_clipping_generated_and_copy_back_sets() {
     assert_eq!(plan.entries[4].slot, 0);
     assert_eq!(plan.entries[4].image_handle, 700);
     assert_eq!(plan.heap_bindings[0].heap_bind_index, 0);
-    assert_eq!(plan.heap_bindings[0].resource_set_index, 0);
+    assert_eq!(plan.heap_bindings[0].heap_slice_index, 0);
     assert_eq!(plan.heap_bindings[1].heap_bind_index, 1);
-    assert_eq!(plan.heap_bindings[1].resource_set_index, 1);
+    assert_eq!(plan.heap_bindings[1].heap_slice_index, 1);
     assert_eq!(plan.heap_bindings[2].heap_bind_index, 2);
-    assert_eq!(plan.heap_bindings[2].resource_set_index, 2);
+    assert_eq!(plan.heap_bindings[2].heap_slice_index, 2);
     assert_eq!(
         plan.heap_bindings[1].shader_mappings,
         vec![
-            "set0.binding0.g_Texture0 -> alpha-mask-resource-set-offset0".to_owned(),
-            "set0.binding8.g_Texture8 -> alpha-mask-resource-set-offset1".to_owned(),
+            "set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+            "set0.binding8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
         ]
     );
     assert_eq!(
         plan.heap_bindings[2].shader_mappings,
-        vec!["set0.binding0.g_Texture0 -> alpha-mask-resource-set-offset0".to_owned()]
+        vec!["set0.binding0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned()]
     );
     assert_eq!(plan.bindings[3].view, vk::ImageView::from_raw(601));
     assert_eq!(plan.bindings[3].sampler, vk::Sampler::from_raw(602));
@@ -115,10 +115,10 @@ fn alpha_mask_resource_heap_plan_dedupes_identical_texture_binds() {
     )
     .expect("alpha-mask resource heap plan");
 
-    assert_eq!(plan.resource_set_count, 1);
+    assert_eq!(plan.heap_slice_count, 1);
     assert_eq!(plan.resource_descriptor_count, 2);
-    assert_eq!(plan.heap_bindings[0].resource_set_index, 0);
-    assert_eq!(plan.heap_bindings[1].resource_set_index, 0);
+    assert_eq!(plan.heap_bindings[0].heap_slice_index, 0);
+    assert_eq!(plan.heap_bindings[1].heap_slice_index, 0);
     assert_ne!(plan.heap_bindings[0].role, plan.heap_bindings[1].role);
 }
 
