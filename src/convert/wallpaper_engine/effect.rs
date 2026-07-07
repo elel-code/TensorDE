@@ -590,7 +590,14 @@ fn scene_copy_effect_material_pass_fields(
     material_pass: &Map<String, Value>,
     output: &mut Map<String, Value>,
 ) {
-    for key in ["shader", "blending", "depthtest", "depthwrite", "cullmode"] {
+    for key in [
+        "shader",
+        "blending",
+        "alphawriting",
+        "depthtest",
+        "depthwrite",
+        "cullmode",
+    ] {
         if let Some(value) = material_pass.get(key) {
             output.insert(key.to_owned(), value.clone());
         }
@@ -604,6 +611,7 @@ fn scene_copy_effect_pass_fields(pass: &Map<String, Value>, output: &mut Map<Str
         "target",
         "shader",
         "blending",
+        "alphawriting",
         "depthtest",
         "depthwrite",
         "cullmode",
@@ -970,6 +978,40 @@ mod tests {
                 "util/perlin_256",
                 "pattern/voronoi_local"
             ])
+        );
+    }
+
+    #[test]
+    fn effect_pass_field_copiers_preserve_alpha_writing_state() {
+        let material_pass = json!({
+            "shader": "effects/opacity",
+            "blending": "normal",
+            "alphawriting": "disabled"
+        });
+        let material_pass = material_pass.as_object().expect("material pass");
+        let mut output = Map::new();
+
+        scene_copy_effect_material_pass_fields(material_pass, &mut output);
+
+        assert_eq!(
+            output.get("alphawriting").and_then(Value::as_str),
+            Some("disabled")
+        );
+
+        let object_pass = json!({
+            "command": "draw",
+            "source": "previous",
+            "target": "_rt_Effect",
+            "alphawriting": "enabled"
+        });
+        let object_pass = object_pass.as_object().expect("object pass");
+        let mut output = Map::new();
+
+        scene_copy_effect_pass_fields(object_pass, &mut output);
+
+        assert_eq!(
+            output.get("alphawriting").and_then(Value::as_str),
+            Some("enabled")
         );
     }
 

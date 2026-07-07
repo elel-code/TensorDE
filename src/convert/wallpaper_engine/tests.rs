@@ -248,6 +248,27 @@ fn parses_mdmp_owner_scalar_and_scale_even_when_owner_has_no_active_sources() {
     assert_eq!(active_sources[0].parameter1, -0.5);
 }
 
+#[test]
+fn material_runtime_passes_preserve_alpha_writing_state() {
+    let material = serde_json::json!({
+        "passes": [
+            {
+                "shader": "genericimage4",
+                "blending": "normal",
+                "alphawriting": "enabled",
+                "depthtest": "disabled",
+                "depthwrite": "disabled",
+                "cullmode": "nocull"
+            }
+        ]
+    });
+
+    let passes = scene_material_runtime_passes(&material);
+
+    assert_eq!(passes.len(), 1);
+    assert_eq!(passes[0]["alphawriting"].as_str(), Some("enabled"));
+}
+
 fn test_push_mdlv0023_owner(bytes: &mut Vec<u8>, material: &str, owner_flags: u32) {
     test_push_cstr(bytes, material);
     test_push_u32(bytes, owner_flags);

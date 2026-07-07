@@ -7159,7 +7159,14 @@ fn scene_material_runtime_passes(material_json: &Value) -> Vec<Value> {
         .filter_map(Value::as_object)
         .map(|pass| {
             let mut output = Map::new();
-            for key in ["shader", "blending", "cullmode", "depthtest", "depthwrite"] {
+            for key in [
+                "shader",
+                "blending",
+                "alphawriting",
+                "cullmode",
+                "depthtest",
+                "depthwrite",
+            ] {
                 if let Some(value) = pass.get(key) {
                     output.insert(key.to_owned(), value.clone());
                 }
