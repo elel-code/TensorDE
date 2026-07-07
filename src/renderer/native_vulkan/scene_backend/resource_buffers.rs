@@ -76,6 +76,7 @@ pub struct NativeVulkanScenePuppetStorageBufferRecords {
     pub clipping_records: Option<NativeVulkanSceneGpuBufferRecordBinding>,
     pub clipping_bone_indices: Option<NativeVulkanSceneGpuBufferRecordBinding>,
     pub clipping_frame_keys: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub active_sources: Option<NativeVulkanSceneGpuBufferRecordBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub struct NativeVulkanScenePuppetStorageBuffers {
     pub clipping_records: Option<NativeVulkanSceneGpuBufferBinding>,
     pub clipping_bone_indices: Option<NativeVulkanSceneGpuBufferBinding>,
     pub clipping_frame_keys: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub active_sources: Option<NativeVulkanSceneGpuBufferBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -260,6 +262,10 @@ impl NativeVulkanSceneGpuBufferCatalog {
             clipping_frame_keys: self.record_binding(
                 NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
                 NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+            ),
+            active_sources: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
             ),
         }
     }
@@ -459,6 +465,10 @@ impl NativeVulkanSceneGpuBufferStore {
                 NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
                 NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
             ),
+            active_sources: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
+            ),
         }
     }
 
@@ -617,6 +627,9 @@ fn scene_gpu_buffer_role_name(requirement: NativeVulkanSceneGpuBufferRequirement
         NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey => {
             "scene-puppet-clipping-frame-key-storage-buffer"
         }
+        NativeVulkanSceneGpuBufferRole::PuppetActiveSource => {
+            "scene-puppet-active-source-storage-buffer"
+        }
     }
 }
 
@@ -762,6 +775,11 @@ mod tests {
                 NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
                 vec![9; 12],
             ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
+                vec![10; 64],
+            ),
         ]);
         catalog.sync_upload_plan(&plan).unwrap();
 
@@ -785,6 +803,7 @@ mod tests {
         assert!(puppet.clipping_records.is_some());
         assert!(puppet.clipping_bone_indices.is_some());
         assert!(puppet.clipping_frame_keys.is_some());
+        assert!(puppet.active_sources.is_some());
     }
 
     #[test]
@@ -840,7 +859,8 @@ mod tests {
                     | NativeVulkanSceneGpuBufferRole::PuppetClipFrame
                     | NativeVulkanSceneGpuBufferRole::PuppetClippingRecord
                     | NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex
-                    | NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey => {
+                    | NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey
+                    | NativeVulkanSceneGpuBufferRole::PuppetActiveSource => {
                         NativeVulkanSceneGpuBufferUsage::Storage
                     }
                 },

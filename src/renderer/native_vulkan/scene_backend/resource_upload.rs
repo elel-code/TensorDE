@@ -18,10 +18,11 @@ use crate::core::scene::{
 };
 use crate::engine::scene_engine::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
-    SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
-    SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
-    SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
-    ScenePuppetClippingProgram, SceneResource,
+    SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
+    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES, SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
+    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, ScenePuppetClippingProgram, SceneResource,
+    scene_stable_name_hash,
 };
 
 use super::resource_storage::{
@@ -128,6 +129,14 @@ impl NativeVulkanSceneGpuUploadPlan {
                         clipping.frame_keys.len(),
                         SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
                         puppet_clipping_frame_key_payload(owner, clipping)?,
+                    )?;
+                    push_upload(
+                        &mut uploads,
+                        owner,
+                        NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
+                        clipping.active_sources.len(),
+                        SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
+                        puppet_active_source_payload(owner, clipping)?,
                     )?;
                 }
             }
@@ -433,6 +442,46 @@ fn puppet_clipping_frame_key_payload(
     Ok(payload)
 }
 
+fn puppet_active_source_payload(
+    owner: NativeVulkanSceneGpuBufferOwner,
+    clipping: &ScenePuppetClippingProgram,
+) -> Result<Vec<u8>, NativeVulkanSceneGpuUploadError> {
+    let role = NativeVulkanSceneGpuBufferRole::PuppetActiveSource;
+    let mut payload = Vec::with_capacity(payload_capacity(
+        owner,
+        role,
+        clipping.active_sources.len(),
+        SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
+    )?);
+    for (element, source) in clipping.active_sources.iter().enumerate() {
+        push_u64_words(&mut payload, scene_stable_name_hash(&source.source_name));
+        push_u32(&mut payload, source.scalar_bits);
+        push_u32(&mut payload, source.source_scale);
+        push_u32(&mut payload, source.flags);
+        push_u32(&mut payload, source.transform_index);
+        push_f32(
+            &mut payload,
+            owner,
+            role,
+            "parameter0",
+            element,
+            f64::from(source.parameter0),
+        )?;
+        push_f32(
+            &mut payload,
+            owner,
+            role,
+            "parameter1",
+            element,
+            f64::from(source.parameter1),
+        )?;
+        for _ in 0..8 {
+            push_u32(&mut payload, 0);
+        }
+    }
+    Ok(payload)
+}
+
 fn push_puppet_bone(
     payload: &mut Vec<u8>,
     owner: NativeVulkanSceneGpuBufferOwner,
@@ -689,9 +738,9 @@ mod tests {
         ScenePuppetAnimationClip,
     };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingProgram, ScenePuppetId,
-        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
-        scene_stable_name_hash,
+        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingActiveSource,
+        ScenePuppetClippingProgram, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource,
+        SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -805,7 +854,7 @@ mod tests {
 
     #[test]
     fn upload_plan_packs_puppet_clipping_program_storage_records() {
-        let clipping =
+        let mut clipping =
             ScenePuppetClippingProgram::from_source_records(vec![SceneMeshPuppetClippingRecord {
                 source_name: Some("eye-right".to_owned()),
                 mask: "masks/clipping_mask_eye".to_owned(),
@@ -815,6 +864,17 @@ mod tests {
                 bones: vec![42, 43],
                 frame_keys: vec![0, 1, 2],
             }]);
+        clipping
+            .active_sources
+            .push(ScenePuppetClippingActiveSource {
+                source_name: "eye-right".to_owned(),
+                scalar_bits: 1.0f32.to_bits(),
+                source_scale: 6,
+                flags: 2,
+                transform_index: 4,
+                parameter0: -1.0,
+                parameter1: 0.5,
+            });
         let resources = vec![SceneResource::PuppetRig {
             id: ScenePuppetId(8),
             source_record: 3,
@@ -826,7 +886,7 @@ mod tests {
 
         let plan = NativeVulkanSceneGpuUploadPlan::from_resources(&resources).unwrap();
 
-        assert_eq!(plan.uploads().len(), 3);
+        assert_eq!(plan.uploads().len(), 4);
         let record_upload = &plan.uploads()[0];
         assert_eq!(
             record_upload.requirement.role,
@@ -864,6 +924,27 @@ mod tests {
         assert_eq!(read_u32(&frame_key_upload.payload, 0), 0);
         assert_eq!(read_u32(&frame_key_upload.payload, 4), 1);
         assert_eq!(read_u32(&frame_key_upload.payload, 8), 2);
+
+        let active_source_upload = &plan.uploads()[3];
+        assert_eq!(
+            active_source_upload.requirement.role,
+            NativeVulkanSceneGpuBufferRole::PuppetActiveSource
+        );
+        assert_eq!(active_source_upload.requirement.bytes, 64);
+        assert_eq!(
+            read_u32(&active_source_upload.payload, 0),
+            expected_hash as u32
+        );
+        assert_eq!(
+            read_u32(&active_source_upload.payload, 4),
+            (expected_hash >> 32) as u32
+        );
+        assert_eq!(read_u32(&active_source_upload.payload, 8), 1.0f32.to_bits());
+        assert_eq!(read_u32(&active_source_upload.payload, 12), 6);
+        assert_eq!(read_u32(&active_source_upload.payload, 16), 2);
+        assert_eq!(read_u32(&active_source_upload.payload, 20), 4);
+        assert_eq!(read_f32(&active_source_upload.payload, 24), -1.0);
+        assert_eq!(read_f32(&active_source_upload.payload, 28), 0.5);
     }
 
     #[test]
@@ -915,6 +996,8 @@ mod tests {
                 clipping_bone_bytes: 0,
                 clipping_frame_key_count: 0,
                 clipping_frame_key_bytes: 0,
+                active_source_count: 0,
+                active_source_bytes: 0,
             })],
         });
 

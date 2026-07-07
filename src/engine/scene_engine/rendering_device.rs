@@ -69,6 +69,8 @@ pub enum RenderingDeviceCommand {
         clipping_bone_bytes: u64,
         clipping_frame_key_count: u32,
         clipping_frame_key_bytes: u64,
+        active_source_count: u32,
+        active_source_bytes: u64,
     },
     ReleasePuppetRigResident {
         puppet: ScenePuppetId,

@@ -295,7 +295,9 @@ fn gscn_material_fact(
 ) -> Result<GscnMaterialFact, RendererPlanError> {
     Ok(GscnMaterialFact {
         shader: gscn_effect_shader_name(reader, names, material)?,
-        blend_code: material.map(|material| material.blend_mode),
+        blending: material
+            .and_then(|material| binary_name(names, material.blending_name))
+            .map(str::to_owned),
         depth_test: material
             .map(|material| gscn_depth_test(material.depth_test))
             .unwrap_or(SceneDepthTest::Disabled),

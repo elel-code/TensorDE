@@ -121,7 +121,7 @@ pub enum GscnGeometryFact {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GscnMaterialFact {
     pub shader: Option<String>,
-    pub blend_code: Option<u16>,
+    pub blending: Option<String>,
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,
@@ -386,10 +386,7 @@ fn engine_material(kind: GscnObjectKind, material: GscnMaterialFact) -> SceneMat
         shader: material
             .shader
             .unwrap_or_else(|| default_shader_name(kind).to_owned()),
-        blend: material
-            .blend_code
-            .map(we_material_blend_contract)
-            .unwrap_or(SceneBlendContract::TranslucentAlpha),
+        blend: we_material_blend_contract(material.blending.as_deref()),
         render_state: SceneMaterialRenderState {
             depth_test: material.depth_test,
             depth_write: material.depth_write,
@@ -410,19 +407,52 @@ fn default_shader_name(kind: GscnObjectKind) -> &'static str {
     }
 }
 
-fn we_material_blend_contract(code: u16) -> SceneBlendContract {
-    match code {
-        2 => SceneBlendContract::Additive,
-        3 => SceneBlendContract::AlphaToCoverage,
-        6 => SceneBlendContract::NormalReplace,
-        8 => SceneBlendContract::ShaderColorBlend(28),
-        _ => SceneBlendContract::TranslucentAlpha,
+fn we_material_blend_contract(blending: Option<&str>) -> SceneBlendContract {
+    match blending
+        .unwrap_or("normal")
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "normal" => SceneBlendContract::NormalReplace,
+        "translucent" => SceneBlendContract::TranslucentAlpha,
+        "additive" => SceneBlendContract::Additive,
+        "alphatocoverage" => SceneBlendContract::AlphaToCoverage,
+        _ => SceneBlendContract::NormalReplace,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn we_material_blending_names_lower_to_recovered_low_modes() {
+        assert_eq!(
+            we_material_blend_contract(Some("normal")),
+            SceneBlendContract::NormalReplace
+        );
+        assert_eq!(
+            we_material_blend_contract(Some("translucent")),
+            SceneBlendContract::TranslucentAlpha
+        );
+        assert_eq!(
+            we_material_blend_contract(Some("additive")),
+            SceneBlendContract::Additive
+        );
+        assert_eq!(
+            we_material_blend_contract(Some("alphatocoverage")),
+            SceneBlendContract::AlphaToCoverage
+        );
+        assert_eq!(
+            we_material_blend_contract(Some("unrecognized")),
+            SceneBlendContract::NormalReplace
+        );
+        assert_eq!(
+            we_material_blend_contract(None),
+            SceneBlendContract::NormalReplace
+        );
+    }
 
     #[test]
     fn gscn_facts_lower_to_engine_owned_plan() {
@@ -504,7 +534,7 @@ mod tests {
                     },
                     material: GscnMaterialFact {
                         shader: None,
-                        blend_code: Some(8),
+                        blending: Some("translucent".to_owned()),
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
@@ -518,7 +548,7 @@ mod tests {
                     geometry: GscnGeometryFact::Quad,
                     material: GscnMaterialFact {
                         shader: None,
-                        blend_code: Some(6),
+                        blending: Some("normal".to_owned()),
                         depth_test: SceneDepthTest::Disabled,
                         depth_write: false,
                         cull_mode: SceneCullMode::None,
@@ -581,7 +611,7 @@ mod tests {
         assert_eq!(plan.objects[0].material.shader, "we/genericimage4");
         assert_eq!(
             plan.objects[0].material.blend,
-            SceneBlendContract::ShaderColorBlend(28)
+            SceneBlendContract::TranslucentAlpha
         );
         assert_eq!(plan.objects[1].source, None);
         assert_eq!(plan.objects[1].material.shader, "we/color");

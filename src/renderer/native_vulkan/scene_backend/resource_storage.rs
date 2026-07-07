@@ -109,6 +109,12 @@ impl NativeVulkanSceneResourceStorage {
                 NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
                 puppet.clipping_frame_key_bytes,
             );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
+                puppet.active_source_bytes,
+            );
         }
         requirements
     }
@@ -211,6 +217,8 @@ impl NativeVulkanSceneResourceStorage {
                             clipping_bone_bytes: puppet.clipping_bone_bytes,
                             clipping_frame_key_count: puppet.clipping_frame_key_count,
                             clipping_frame_key_bytes: puppet.clipping_frame_key_bytes,
+                            active_source_count: puppet.active_source_count,
+                            active_source_bytes: puppet.active_source_bytes,
                         });
                     }
                 }
@@ -236,6 +244,7 @@ pub enum NativeVulkanSceneGpuBufferRole {
     PuppetClippingRecord,
     PuppetClippingBoneIndex,
     PuppetClippingFrameKey,
+    PuppetActiveSource,
 }
 
 impl NativeVulkanSceneGpuBufferRole {
@@ -248,7 +257,8 @@ impl NativeVulkanSceneGpuBufferRole {
             | Self::PuppetClipFrame
             | Self::PuppetClippingRecord
             | Self::PuppetClippingBoneIndex
-            | Self::PuppetClippingFrameKey => NativeVulkanSceneGpuBufferUsage::Storage,
+            | Self::PuppetClippingFrameKey
+            | Self::PuppetActiveSource => NativeVulkanSceneGpuBufferUsage::Storage,
         }
     }
 }
@@ -391,6 +401,8 @@ mod tests {
                     clipping_bone_bytes: 8,
                     clipping_frame_key_count: 3,
                     clipping_frame_key_bytes: 12,
+                    active_source_count: 1,
+                    active_source_bytes: 64,
                 }),
             ],
         };
@@ -446,6 +458,12 @@ mod tests {
                     owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
                     role: NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
                     bytes: 12,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetActiveSource,
+                    bytes: 64,
                     usage: NativeVulkanSceneGpuBufferUsage::Storage,
                 },
             ]
