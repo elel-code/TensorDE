@@ -18,6 +18,7 @@ mod copy_back_command;
 mod copy_back_geometry;
 mod copy_back_pipeline;
 mod copy_back_runtime;
+mod copy_back_target_graph;
 mod resource_binds;
 
 use crate::engine::scene_engine::{
