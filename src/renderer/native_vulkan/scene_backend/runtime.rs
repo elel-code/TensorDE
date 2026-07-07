@@ -1,9 +1,11 @@
-//! Scene mesh runtime frame wiring for the native Vulkan backend.
+//! Scene runtime frame wiring for the native Vulkan backend.
 //!
 //! References:
 //! - `reverse-engineered/docs/scene-format.md`
 //! - `reverse-engineered/docs/mdl-format.md`
 //! - `reverse-engineered/docs/material-format.md`
+//! - `reverse-engineered/docs/effect-format.md`
+//! - `reverse-engineered/effects/effect-semantics.md`
 //! - `reverse-engineered/docs/exe/blend-and-render.md`
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
@@ -21,6 +23,10 @@ use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use super::draw_family::{
     NativeVulkanSceneDrawFamilyExecutorPlan, native_vulkan_require_scene_mesh_executor_families,
 };
+use super::effect_executor::{
+    NativeVulkanSceneEffectRuntimeFrameContext, NativeVulkanSceneEffectRuntimeFramePlan,
+    native_vulkan_record_scene_effect_runtime_frame,
+};
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::graph_executor::{
     NativeVulkanSceneGraphFrameCommandPlan, NativeVulkanSceneGraphRuntimeFrameContext,
@@ -36,6 +42,16 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameC
     pub target: NativeVulkanSceneSwapchainRenderTarget,
     pub target_formats: &'a NativeVulkanSceneGraphTargetFormatPlan,
     pub clear_color: Option<NativeVulkanClearColor>,
+}
+
+pub(in crate::renderer::native_vulkan) type NativeVulkanSceneRuntimeFrameContext<'a> =
+    NativeVulkanSceneMeshRuntimeFrameContext<'a>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<'a> {
+    pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
+    pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
+    pub command_order: [&'static str; 2],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +83,41 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             ],
         }
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_frame<'a>(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    context: NativeVulkanSceneRuntimeFrameContext<'_>,
+    frame: &'a SceneFramePlan,
+) -> Result<NativeVulkanSceneRuntimeFramePlan<'a>, String> {
+    let mesh = native_vulkan_record_scene_mesh_runtime_frame(
+        frame_resources,
+        NativeVulkanSceneMeshRuntimeFrameContext {
+            device: context.device,
+            command_buffer: context.command_buffer,
+            target: context.target,
+            target_formats: context.target_formats,
+            clear_color: context.clear_color,
+        },
+        frame,
+    )?;
+    let effects = native_vulkan_record_scene_effect_runtime_frame(
+        frame_resources,
+        NativeVulkanSceneEffectRuntimeFrameContext {
+            device: context.device,
+            command_buffer: context.command_buffer,
+            target_formats: context.target_formats,
+        },
+        &frame.effect_pass_graph,
+    )?;
+    Ok(NativeVulkanSceneRuntimeFramePlan {
+        mesh,
+        effects,
+        command_order: [
+            "record_scene_mesh_graph_runtime",
+            "record_scene_effect_graph_runtime",
+        ],
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtime_frame<'a>(

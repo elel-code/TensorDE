@@ -2104,6 +2104,7 @@ enum SceneBinaryNameKind {
     EffectTarget,
     EffectBind,
     PuppetClippingMask,
+    PuppetClippingSource,
 }
 
 impl SceneBinaryNameKind {
@@ -2130,6 +2131,7 @@ impl SceneBinaryNameKind {
             Self::EffectTarget => 19,
             Self::EffectBind => 20,
             Self::PuppetClippingMask => 21,
+            Self::PuppetClippingSource => 22,
         }
     }
 }
@@ -3605,6 +3607,14 @@ impl SceneBinaryPayloadBuilder {
         owner_name: u32,
         record: &SceneMeshPuppetClippingRecord,
     ) {
+        let record_owner_name = record
+            .source_name
+            .as_ref()
+            .map(|source_name| {
+                self.names
+                    .intern(SceneBinaryNameKind::PuppetClippingSource, source_name)
+            })
+            .unwrap_or(owner_name);
         let mask_name = self.names.intern(
             SceneBinaryNameKind::PuppetClippingMask,
             record.mask_resource.as_deref().unwrap_or(&record.mask),
@@ -3613,7 +3623,7 @@ impl SceneBinaryPayloadBuilder {
         for bone in &record.bones {
             self.puppet_clipping_bones.push_record(|out| {
                 SceneBinaryPuppetClippingBoneRecord {
-                    owner_name,
+                    owner_name: record_owner_name,
                     bone_index: saturating_u32(*bone),
                 }
                 .encode(out)
@@ -3627,7 +3637,7 @@ impl SceneBinaryPayloadBuilder {
         for frame_key in &record.frame_keys {
             self.puppet_clipping_frame_keys.push_record(|out| {
                 SceneBinaryPuppetClippingFrameKeyRecord {
-                    owner_name,
+                    owner_name: record_owner_name,
                     frame_key: *frame_key,
                 }
                 .encode(out)
@@ -3639,7 +3649,7 @@ impl SceneBinaryPayloadBuilder {
             .saturating_sub(first_frame_key);
         self.puppet_clipping.push_record(|out| {
             SceneBinaryPuppetClippingRecord {
-                owner_name,
+                owner_name: record_owner_name,
                 mask_name,
                 duration_frames: record.duration_frames,
                 flags: record.flags,

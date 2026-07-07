@@ -48,6 +48,7 @@ pub struct SceneEffectPassGraphTarget {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SceneEffectPassGraphMaterialPass {
+    pub graph_command_index: usize,
     pub graph_pass_index: usize,
     pub object: SceneObjectId,
     pub program_index: usize,
@@ -157,13 +158,19 @@ impl SceneEffectPassGraphPlan {
                     object_program.object
                 )
             })?;
-            let fbo_targets = effect_program_fbo_targets(&mut plan, program_index, object_program);
+            let mut fbo_targets =
+                effect_program_fbo_targets(&mut plan, program_index, object_program);
 
             for command in &object_program.program.commands {
+                let graph_command_index = plan
+                    .material_pass_count
+                    .saturating_add(plan.copy_command_count)
+                    .saturating_add(plan.swap_command_count);
                 match command {
                     SceneEffectCommand::MaterialPass(pass) => {
                         let material = effect_material_pass_graph(
                             &plan,
+                            graph_command_index,
                             object,
                             object_program,
                             program_index,
@@ -182,10 +189,7 @@ impl SceneEffectPassGraphPlan {
                     }
                     SceneEffectCommand::Copy(copy) => {
                         plan.copies.push(SceneEffectPassGraphCopy {
-                            graph_command_index: plan
-                                .material_pass_count
-                                .saturating_add(plan.copy_command_count)
-                                .saturating_add(plan.swap_command_count),
+                            graph_command_index,
                             object: object.id,
                             program_index,
                             pass_index: copy.pass_index,
@@ -195,17 +199,17 @@ impl SceneEffectPassGraphPlan {
                         plan.copy_command_count = plan.copy_command_count.saturating_add(1);
                     }
                     SceneEffectCommand::Swap(swap) => {
+                        let a = resolve_named_fbo_target(&fbo_targets, &swap.a)?;
+                        let b = resolve_named_fbo_target(&fbo_targets, &swap.b)?;
                         plan.swaps.push(SceneEffectPassGraphSwap {
-                            graph_command_index: plan
-                                .material_pass_count
-                                .saturating_add(plan.copy_command_count)
-                                .saturating_add(plan.swap_command_count),
+                            graph_command_index,
                             object: object.id,
                             program_index,
                             pass_index: swap.pass_index,
-                            a: resolve_named_fbo_target(&fbo_targets, &swap.a)?,
-                            b: resolve_named_fbo_target(&fbo_targets, &swap.b)?,
+                            a,
+                            b,
                         });
+                        apply_effect_fbo_swap(&mut fbo_targets, &swap.a, &swap.b)?;
                         plan.swap_command_count = plan.swap_command_count.saturating_add(1);
                     }
                 }
@@ -256,6 +260,7 @@ fn push_effect_target(
 
 fn effect_material_pass_graph(
     plan: &SceneEffectPassGraphPlan,
+    graph_command_index: usize,
     object: &SceneObject,
     object_program: &SceneObjectEffectProgram,
     program_index: usize,
@@ -276,6 +281,7 @@ fn effect_material_pass_graph(
         .transpose()?;
     let input_bindings = effect_pass_input_bindings(object, fbo_targets, pass, source.as_ref())?;
     Ok(SceneEffectPassGraphMaterialPass {
+        graph_command_index,
         graph_pass_index: plan.material_pass_count,
         object: object.id,
         program_index,
@@ -294,6 +300,28 @@ fn effect_material_pass_graph(
         combos: pass.combos.clone(),
         constants: pass.constants.clone(),
     })
+}
+
+fn apply_effect_fbo_swap(
+    fbo_targets: &mut BTreeMap<String, SceneGraphTarget>,
+    a: &SceneEffectImageRef,
+    b: &SceneEffectImageRef,
+) -> Result<(), String> {
+    let SceneEffectImageRef::NamedFbo(a_name) = a else {
+        return Err(format!("scene effect swap requires named FBOs, got {a:?}"));
+    };
+    let SceneEffectImageRef::NamedFbo(b_name) = b else {
+        return Err(format!("scene effect swap requires named FBOs, got {b:?}"));
+    };
+    let a_target = *fbo_targets
+        .get(a_name)
+        .ok_or_else(|| format!("scene effect swap references undeclared FBO '{a_name}'"))?;
+    let b_target = *fbo_targets
+        .get(b_name)
+        .ok_or_else(|| format!("scene effect swap references undeclared FBO '{b_name}'"))?;
+    fbo_targets.insert(a_name.clone(), b_target);
+    fbo_targets.insert(b_name.clone(), a_target);
+    Ok(())
 }
 
 fn effect_pass_input_bindings(
@@ -442,6 +470,7 @@ mod tests {
             SceneEffectPassGraphPlan::from_scene(&[object], &effects).expect("effect graph");
 
         assert_eq!(graph.material_pass_count, 1);
+        assert_eq!(graph.passes[0].graph_command_index, 0);
         assert_eq!(graph.target_count, 0);
         assert_eq!(
             graph.passes[0].output,
@@ -510,6 +539,9 @@ mod tests {
         assert_eq!(graph.material_pass_count, 1);
         assert_eq!(graph.copy_command_count, 1);
         assert_eq!(graph.swap_command_count, 1);
+        assert_eq!(graph.passes[0].graph_command_index, 0);
+        assert_eq!(graph.copies[0].graph_command_index, 1);
+        assert_eq!(graph.swaps[0].graph_command_index, 2);
         assert_eq!(
             graph.passes[0].source.as_ref().unwrap().source,
             SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::NamedFbo(1))
@@ -526,6 +558,80 @@ mod tests {
         assert_eq!(graph.swaps[0].b, SceneGraphTarget::NamedFbo(1));
         assert_eq!(graph.copies[0].source, SceneGraphTarget::NamedFbo(2));
         assert_eq!(graph.copies[0].target, SceneGraphTarget::NamedFbo(1));
+    }
+
+    #[test]
+    fn effect_pass_graph_applies_swap_alias_to_later_named_fbo_resolution() {
+        let object = object(SceneObjectId(7), Some(SceneResourceId(11)));
+        let effects = vec![SceneObjectEffectProgram {
+            object: object.id,
+            program: super::super::SceneEffectProgram {
+                effect_file: "effects/fluidsimulation/effect.json".to_owned(),
+                effect: WeEffectKind::Unknown,
+                fbos: vec![
+                    fbo("_rt_SmokeVelocity1", SceneGraphTarget::NamedFbo(1)),
+                    fbo("_rt_SmokeVelocity2", SceneGraphTarget::NamedFbo(2)),
+                ],
+                commands: vec![
+                    SceneEffectCommand::MaterialPass(super::super::SceneEffectMaterialPass {
+                        pass_index: 1,
+                        shader: Some("effects/fluidsimulation_advection".to_owned()),
+                        source: Some(SceneEffectImageRef::NamedFbo(
+                            "_rt_SmokeVelocity1".to_owned(),
+                        )),
+                        target: Some(SceneEffectImageRef::NamedFbo(
+                            "_rt_SmokeVelocity2".to_owned(),
+                        )),
+                        blend: SceneEffectPassBlend::NormalReplace,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
+                        texture_resources: Vec::new(),
+                        binds: BTreeMap::new(),
+                        combos: BTreeMap::new(),
+                        constants: BTreeMap::new(),
+                    }),
+                    SceneEffectCommand::Swap(super::super::SceneEffectSwapCommand {
+                        pass_index: 2,
+                        a: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity2".to_owned()),
+                        b: SceneEffectImageRef::NamedFbo("_rt_SmokeVelocity1".to_owned()),
+                    }),
+                    SceneEffectCommand::MaterialPass(super::super::SceneEffectMaterialPass {
+                        pass_index: 3,
+                        shader: Some("effects/fluidsimulation_divergence".to_owned()),
+                        source: Some(SceneEffectImageRef::NamedFbo(
+                            "_rt_SmokeVelocity2".to_owned(),
+                        )),
+                        target: Some(SceneEffectImageRef::NamedFbo(
+                            "_rt_SmokeVelocity1".to_owned(),
+                        )),
+                        blend: SceneEffectPassBlend::NormalReplace,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
+                        texture_resources: Vec::new(),
+                        binds: BTreeMap::new(),
+                        combos: BTreeMap::new(),
+                        constants: BTreeMap::new(),
+                    }),
+                ],
+            },
+        }];
+
+        let graph =
+            SceneEffectPassGraphPlan::from_scene(&[object], &effects).expect("effect graph");
+
+        assert_eq!(graph.passes[0].graph_command_index, 0);
+        assert_eq!(graph.swaps[0].graph_command_index, 1);
+        assert_eq!(graph.passes[1].graph_command_index, 2);
+        assert_eq!(
+            graph.passes[1].source.as_ref().unwrap().source,
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::NamedFbo(1))
+        );
+        assert_eq!(
+            graph.passes[1].output,
+            SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::NamedFbo(2))
+        );
     }
 
     #[test]

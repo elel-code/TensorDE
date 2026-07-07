@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/mdl-format.md`
 //! - `reverse-engineered/docs/scene-format.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
@@ -72,6 +73,9 @@ pub struct NativeVulkanScenePuppetStorageBufferRecords {
     pub bones: Option<NativeVulkanSceneGpuBufferRecordBinding>,
     pub skin_vertices: Option<NativeVulkanSceneGpuBufferRecordBinding>,
     pub clip_frames: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub clipping_records: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub clipping_bone_indices: Option<NativeVulkanSceneGpuBufferRecordBinding>,
+    pub clipping_frame_keys: Option<NativeVulkanSceneGpuBufferRecordBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +99,9 @@ pub struct NativeVulkanScenePuppetStorageBuffers {
     pub bones: Option<NativeVulkanSceneGpuBufferBinding>,
     pub skin_vertices: Option<NativeVulkanSceneGpuBufferBinding>,
     pub clip_frames: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub clipping_records: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub clipping_bone_indices: Option<NativeVulkanSceneGpuBufferBinding>,
+    pub clipping_frame_keys: Option<NativeVulkanSceneGpuBufferBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -241,6 +248,18 @@ impl NativeVulkanSceneGpuBufferCatalog {
             clip_frames: self.record_binding(
                 NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
                 NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
+            ),
+            clipping_records: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+            ),
+            clipping_bone_indices: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+            ),
+            clipping_frame_keys: self.record_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
             ),
         }
     }
@@ -428,6 +447,18 @@ impl NativeVulkanSceneGpuBufferStore {
                 NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
                 NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
             ),
+            clipping_records: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+            ),
+            clipping_bone_indices: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+            ),
+            clipping_frame_keys: self.buffer_binding(
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+            ),
         }
     }
 
@@ -577,6 +608,15 @@ fn scene_gpu_buffer_role_name(requirement: NativeVulkanSceneGpuBufferRequirement
             "scene-puppet-skin-vertex-storage-buffer"
         }
         NativeVulkanSceneGpuBufferRole::PuppetClipFrame => "scene-puppet-clip-frame-storage-buffer",
+        NativeVulkanSceneGpuBufferRole::PuppetClippingRecord => {
+            "scene-puppet-clipping-record-storage-buffer"
+        }
+        NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex => {
+            "scene-puppet-clipping-bone-index-storage-buffer"
+        }
+        NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey => {
+            "scene-puppet-clipping-frame-key-storage-buffer"
+        }
     }
 }
 
@@ -707,6 +747,21 @@ mod tests {
                 NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
                 vec![6; 48],
             ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+                vec![7; 48],
+            ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+                vec![8; 8],
+            ),
+            puppet_upload(
+                ScenePuppetId(9),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+                vec![9; 12],
+            ),
         ]);
         catalog.sync_upload_plan(&plan).unwrap();
 
@@ -727,6 +782,9 @@ mod tests {
         assert!(puppet.bones.is_some());
         assert!(puppet.skin_vertices.is_none());
         assert!(puppet.clip_frames.is_some());
+        assert!(puppet.clipping_records.is_some());
+        assert!(puppet.clipping_bone_indices.is_some());
+        assert!(puppet.clipping_frame_keys.is_some());
     }
 
     #[test]
@@ -779,7 +837,10 @@ mod tests {
                     }
                     NativeVulkanSceneGpuBufferRole::PuppetBone
                     | NativeVulkanSceneGpuBufferRole::PuppetSkinVertex
-                    | NativeVulkanSceneGpuBufferRole::PuppetClipFrame => {
+                    | NativeVulkanSceneGpuBufferRole::PuppetClipFrame
+                    | NativeVulkanSceneGpuBufferRole::PuppetClippingRecord
+                    | NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex
+                    | NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey => {
                         NativeVulkanSceneGpuBufferUsage::Storage
                     }
                 },

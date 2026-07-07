@@ -20,6 +20,7 @@ pub mod ingest;
 pub mod material;
 pub mod object;
 pub mod plan;
+pub mod puppet_clipping;
 pub mod renderer_scene_render;
 pub mod rendering_device;
 pub mod rendering_server;
@@ -65,6 +66,10 @@ pub use material::{
 };
 pub use object::{SceneObject, SceneObjectGeometry, SceneObjectId};
 pub use plan::SceneEnginePlan;
+pub use puppet_clipping::{
+    ScenePuppetClippingActiveSource, ScenePuppetClippingProgram, ScenePuppetClippingRecord,
+    scene_stable_name_hash,
+};
 pub use renderer_scene_render::RendererSceneRender;
 pub use rendering_device::{RenderingDevice, RenderingDeviceCommand};
 pub use rendering_server::RenderingServer;
@@ -73,8 +78,10 @@ pub use resource::{
 };
 pub use resource_gpu_layout::{
     SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
-    SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_BONE_BYTES,
-    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
+    SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
+    SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
     SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
 };
 pub use resource_residency::{

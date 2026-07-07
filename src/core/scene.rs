@@ -3934,6 +3934,8 @@ impl SceneMesh {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneMeshPuppetClippingRecord {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_name: Option<String>,
     pub mask: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mask_resource: Option<String>,
@@ -3950,6 +3952,7 @@ pub struct SceneMeshPuppetClippingRecord {
 impl SceneMeshPuppetClippingRecord {
     fn validate(&self, node_id: &str, index: usize, bone_count: usize) -> Result<(), SceneError> {
         validate_required_text("scene mesh puppet clipping mask", &self.mask)?;
+        validate_optional_text("scene mesh puppet clipping source name", &self.source_name)?;
         validate_optional_text(
             "scene mesh puppet clipping mask resource",
             &self.mask_resource,

@@ -509,6 +509,7 @@ mod tests {
 
         fn effect_pass(graph_pass_index: usize, shader: &str) -> SceneEffectPassGraphMaterialPass {
             SceneEffectPassGraphMaterialPass {
+                graph_command_index: graph_pass_index,
                 graph_pass_index,
                 object: SceneObjectId(7),
                 program_index: 0,

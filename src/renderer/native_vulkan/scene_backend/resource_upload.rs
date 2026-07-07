@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/mdl-format.md`
 //! - `reverse-engineered/docs/scene-format.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/rendering_device.h`
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
@@ -18,7 +19,9 @@ use crate::core::scene::{
 use crate::engine::scene_engine::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
     SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
-    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneResource,
+    SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES,
+    ScenePuppetClippingProgram, SceneResource,
 };
 
 use super::resource_storage::{
@@ -64,7 +67,11 @@ impl NativeVulkanSceneGpuUploadPlan {
                     )?;
                 }
                 SceneResource::PuppetRig {
-                    id, skin, clips, ..
+                    id,
+                    skin,
+                    clips,
+                    clipping,
+                    ..
                 } => {
                     let owner = NativeVulkanSceneGpuBufferOwner::PuppetRig(*id);
                     if let Some(skin) = skin {
@@ -97,6 +104,30 @@ impl NativeVulkanSceneGpuUploadPlan {
                         clip_frame_count,
                         SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
                         puppet_clip_frame_payload(owner, clips)?,
+                    )?;
+                    push_upload(
+                        &mut uploads,
+                        owner,
+                        NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+                        clipping.records.len(),
+                        SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
+                        puppet_clipping_record_payload(owner, clipping)?,
+                    )?;
+                    push_upload(
+                        &mut uploads,
+                        owner,
+                        NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+                        clipping.bone_indices.len(),
+                        SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
+                        puppet_clipping_bone_index_payload(owner, clipping)?,
+                    )?;
+                    push_upload(
+                        &mut uploads,
+                        owner,
+                        NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+                        clipping.frame_keys.len(),
+                        SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+                        puppet_clipping_frame_key_payload(owner, clipping)?,
                     )?;
                 }
             }
@@ -335,6 +366,73 @@ fn puppet_clip_frame_payload(
     Ok(payload)
 }
 
+fn puppet_clipping_record_payload(
+    owner: NativeVulkanSceneGpuBufferOwner,
+    clipping: &ScenePuppetClippingProgram,
+) -> Result<Vec<u8>, NativeVulkanSceneGpuUploadError> {
+    let role = NativeVulkanSceneGpuBufferRole::PuppetClippingRecord;
+    let mut payload = Vec::with_capacity(payload_capacity(
+        owner,
+        role,
+        clipping.records.len(),
+        SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
+    )?);
+    for record in &clipping.records {
+        push_u64_words(&mut payload, record.source_name_hash);
+        push_u32(&mut payload, record.duration_frames);
+        push_u32(&mut payload, record.flags);
+        push_u32(&mut payload, record.first_bone);
+        push_u32(&mut payload, record.bone_count);
+        push_u32(&mut payload, record.first_frame_key);
+        push_u32(&mut payload, record.frame_key_count);
+        push_u32(
+            &mut payload,
+            record.active_source_index.unwrap_or(SCENE_GPU_PARENT_NONE),
+        );
+        push_u32(
+            &mut payload,
+            record.mask_texture_index.unwrap_or(SCENE_GPU_PARENT_NONE),
+        );
+        push_u32(&mut payload, 0);
+        push_u32(&mut payload, 0);
+    }
+    Ok(payload)
+}
+
+fn puppet_clipping_bone_index_payload(
+    owner: NativeVulkanSceneGpuBufferOwner,
+    clipping: &ScenePuppetClippingProgram,
+) -> Result<Vec<u8>, NativeVulkanSceneGpuUploadError> {
+    let role = NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex;
+    let mut payload = Vec::with_capacity(payload_capacity(
+        owner,
+        role,
+        clipping.bone_indices.len(),
+        SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
+    )?);
+    for bone in &clipping.bone_indices {
+        push_u32(&mut payload, *bone);
+    }
+    Ok(payload)
+}
+
+fn puppet_clipping_frame_key_payload(
+    owner: NativeVulkanSceneGpuBufferOwner,
+    clipping: &ScenePuppetClippingProgram,
+) -> Result<Vec<u8>, NativeVulkanSceneGpuUploadError> {
+    let role = NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey;
+    let mut payload = Vec::with_capacity(payload_capacity(
+        owner,
+        role,
+        clipping.frame_keys.len(),
+        SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+    )?);
+    for frame_key in &clipping.frame_keys {
+        push_u32(&mut payload, *frame_key);
+    }
+    Ok(payload)
+}
+
 fn push_puppet_bone(
     payload: &mut Vec<u8>,
     owner: NativeVulkanSceneGpuBufferOwner,
@@ -561,6 +659,11 @@ fn push_u32(payload: &mut Vec<u8>, value: u32) {
     payload.extend_from_slice(&value.to_le_bytes());
 }
 
+fn push_u64_words(payload: &mut Vec<u8>, value: u64) {
+    push_u32(payload, value as u32);
+    push_u32(payload, (value >> 32) as u32);
+}
+
 fn checked_gpu_index(
     owner: NativeVulkanSceneGpuBufferOwner,
     role: NativeVulkanSceneGpuBufferRole,
@@ -581,10 +684,14 @@ fn checked_gpu_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::scene::{SceneMeshSkin, ScenePuppetAnimationBone, ScenePuppetAnimationClip};
+    use crate::core::scene::{
+        SceneMeshPuppetClippingRecord, SceneMeshSkin, ScenePuppetAnimationBone,
+        ScenePuppetAnimationClip,
+    };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneMeshResidency, ScenePuppetId, ScenePuppetRigResidency,
-        SceneResidentResource, SceneResourceResidencyPlan,
+        SceneGeometryId, SceneMeshResidency, ScenePuppetClippingProgram, ScenePuppetId,
+        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
+        scene_stable_name_hash,
     };
 
     #[test]
@@ -670,7 +777,7 @@ mod tests {
                 }],
             }],
             layers: Vec::new(),
-            clipping_records: Vec::new(),
+            clipping: Default::default(),
         }];
 
         let plan = NativeVulkanSceneGpuUploadPlan::from_resources(&resources).unwrap();
@@ -694,6 +801,69 @@ mod tests {
         assert_eq!(read_f32(&clip_upload.payload, 0), 1.0);
         assert_eq!(read_f32(&clip_upload.payload, 12), 0.25);
         assert_eq!(read_f32(&clip_upload.payload, 32), 1.5);
+    }
+
+    #[test]
+    fn upload_plan_packs_puppet_clipping_program_storage_records() {
+        let clipping =
+            ScenePuppetClippingProgram::from_source_records(vec![SceneMeshPuppetClippingRecord {
+                source_name: Some("eye-right".to_owned()),
+                mask: "masks/clipping_mask_eye".to_owned(),
+                mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                duration_frames: 1680,
+                flags: 3,
+                bones: vec![42, 43],
+                frame_keys: vec![0, 1, 2],
+            }]);
+        let resources = vec![SceneResource::PuppetRig {
+            id: ScenePuppetId(8),
+            source_record: 3,
+            skin: None,
+            clips: Vec::new(),
+            layers: Vec::new(),
+            clipping,
+        }];
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_resources(&resources).unwrap();
+
+        assert_eq!(plan.uploads().len(), 3);
+        let record_upload = &plan.uploads()[0];
+        assert_eq!(
+            record_upload.requirement.role,
+            NativeVulkanSceneGpuBufferRole::PuppetClippingRecord
+        );
+        assert_eq!(record_upload.requirement.bytes, 48);
+        let expected_hash = scene_stable_name_hash("eye-right");
+        assert_eq!(read_u32(&record_upload.payload, 0), expected_hash as u32);
+        assert_eq!(
+            read_u32(&record_upload.payload, 4),
+            (expected_hash >> 32) as u32
+        );
+        assert_eq!(read_u32(&record_upload.payload, 8), 1680);
+        assert_eq!(read_u32(&record_upload.payload, 12), 3);
+        assert_eq!(read_u32(&record_upload.payload, 16), 0);
+        assert_eq!(read_u32(&record_upload.payload, 20), 2);
+        assert_eq!(read_u32(&record_upload.payload, 24), 0);
+        assert_eq!(read_u32(&record_upload.payload, 28), 3);
+        assert_eq!(read_u32(&record_upload.payload, 32), SCENE_GPU_PARENT_NONE);
+        assert_eq!(read_u32(&record_upload.payload, 36), SCENE_GPU_PARENT_NONE);
+
+        let bone_upload = &plan.uploads()[1];
+        assert_eq!(
+            bone_upload.requirement.role,
+            NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex
+        );
+        assert_eq!(read_u32(&bone_upload.payload, 0), 42);
+        assert_eq!(read_u32(&bone_upload.payload, 4), 43);
+
+        let frame_key_upload = &plan.uploads()[2];
+        assert_eq!(
+            frame_key_upload.requirement.role,
+            NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey
+        );
+        assert_eq!(read_u32(&frame_key_upload.payload, 0), 0);
+        assert_eq!(read_u32(&frame_key_upload.payload, 4), 1);
+        assert_eq!(read_u32(&frame_key_upload.payload, 8), 2);
     }
 
     #[test]
@@ -740,8 +910,11 @@ mod tests {
                 clip_frame_bytes: 0,
                 layer_count: 0,
                 clipping_record_count: 0,
+                clipping_record_bytes: 0,
                 clipping_bone_count: 0,
+                clipping_bone_bytes: 0,
                 clipping_frame_key_count: 0,
+                clipping_frame_key_bytes: 0,
             })],
         });
 
@@ -805,7 +978,7 @@ mod tests {
             }),
             clips: Vec::new(),
             layers: Vec::new(),
-            clipping_records: Vec::new(),
+            clipping: Default::default(),
         }];
 
         let err = NativeVulkanSceneGpuUploadPlan::from_resources(&resources)

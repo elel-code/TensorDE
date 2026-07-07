@@ -314,6 +314,7 @@ mod tests {
 
     fn effect_pass(output: SceneEffectPassGraphOutput) -> SceneEffectPassGraphMaterialPass {
         SceneEffectPassGraphMaterialPass {
+            graph_command_index: 2,
             graph_pass_index: 2,
             object: SceneObjectId(7),
             program_index: 0,

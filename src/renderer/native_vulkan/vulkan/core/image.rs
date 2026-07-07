@@ -255,7 +255,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_color_
         return Err(format!("{role} image requires non-zero extent"));
     }
 
-    let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT | vk::ImageUsageFlags::SAMPLED;
+    let usage = vk::ImageUsageFlags::COLOR_ATTACHMENT
+        | vk::ImageUsageFlags::SAMPLED
+        | vk::ImageUsageFlags::TRANSFER_SRC
+        | vk::ImageUsageFlags::TRANSFER_DST;
     let extent = vk::Extent3D {
         width,
         height,

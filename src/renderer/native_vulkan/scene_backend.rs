@@ -10,6 +10,7 @@ pub mod draw_command;
 pub mod draw_family;
 pub mod draw_list;
 pub mod effect_descriptors;
+pub mod effect_executor;
 pub mod effect_pass_command;
 pub mod effect_pipeline;
 pub mod effect_pipeline_factory;

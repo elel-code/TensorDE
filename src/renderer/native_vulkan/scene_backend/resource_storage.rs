@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/tex-format.md`
 //! - `reverse-engineered/docs/mdl-format.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
@@ -89,6 +90,24 @@ impl NativeVulkanSceneResourceStorage {
                 NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
                 NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
                 puppet.clip_frame_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+                puppet.clipping_record_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+                puppet.clipping_bone_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::PuppetRig(puppet.id),
+                NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+                puppet.clipping_frame_key_bytes,
             );
         }
         requirements
@@ -187,8 +206,11 @@ impl NativeVulkanSceneResourceStorage {
                             clip_frame_bytes: puppet.clip_frame_bytes,
                             layer_count: puppet.layer_count,
                             clipping_record_count: puppet.clipping_record_count,
+                            clipping_record_bytes: puppet.clipping_record_bytes,
                             clipping_bone_count: puppet.clipping_bone_count,
+                            clipping_bone_bytes: puppet.clipping_bone_bytes,
                             clipping_frame_key_count: puppet.clipping_frame_key_count,
+                            clipping_frame_key_bytes: puppet.clipping_frame_key_bytes,
                         });
                     }
                 }
@@ -211,6 +233,9 @@ pub enum NativeVulkanSceneGpuBufferRole {
     PuppetBone,
     PuppetSkinVertex,
     PuppetClipFrame,
+    PuppetClippingRecord,
+    PuppetClippingBoneIndex,
+    PuppetClippingFrameKey,
 }
 
 impl NativeVulkanSceneGpuBufferRole {
@@ -218,9 +243,12 @@ impl NativeVulkanSceneGpuBufferRole {
         match self {
             Self::MeshVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
             Self::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
-            Self::PuppetBone | Self::PuppetSkinVertex | Self::PuppetClipFrame => {
-                NativeVulkanSceneGpuBufferUsage::Storage
-            }
+            Self::PuppetBone
+            | Self::PuppetSkinVertex
+            | Self::PuppetClipFrame
+            | Self::PuppetClippingRecord
+            | Self::PuppetClippingBoneIndex
+            | Self::PuppetClippingFrameKey => NativeVulkanSceneGpuBufferUsage::Storage,
         }
     }
 }
@@ -357,9 +385,12 @@ mod tests {
                     clip_frame_count: 10,
                     clip_frame_bytes: 480,
                     layer_count: 1,
-                    clipping_record_count: 0,
-                    clipping_bone_count: 0,
-                    clipping_frame_key_count: 0,
+                    clipping_record_count: 1,
+                    clipping_record_bytes: 48,
+                    clipping_bone_count: 2,
+                    clipping_bone_bytes: 8,
+                    clipping_frame_key_count: 3,
+                    clipping_frame_key_bytes: 12,
                 }),
             ],
         };
@@ -397,6 +428,24 @@ mod tests {
                     owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
                     role: NativeVulkanSceneGpuBufferRole::PuppetClipFrame,
                     bytes: 480,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetClippingRecord,
+                    bytes: 48,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetClippingBoneIndex,
+                    bytes: 8,
+                    usage: NativeVulkanSceneGpuBufferUsage::Storage,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::PuppetRig(ScenePuppetId(3)),
+                    role: NativeVulkanSceneGpuBufferRole::PuppetClippingFrameKey,
+                    bytes: 12,
                     usage: NativeVulkanSceneGpuBufferUsage::Storage,
                 },
             ]

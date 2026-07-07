@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/tex-format.md`
 //! - `reverse-engineered/docs/material-format.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
 use std::path::PathBuf;
@@ -10,9 +11,10 @@ use std::path::PathBuf;
 use serde::Serialize;
 
 use crate::core::scene::{
-    SceneMeshPuppetClippingRecord, SceneMeshSkin, SceneMeshVertex, ScenePuppetAnimationClip,
-    ScenePuppetAnimationLayer,
+    SceneMeshSkin, SceneMeshVertex, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
 };
+
+use super::ScenePuppetClippingProgram;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneResourceId(pub u32);
@@ -59,6 +61,6 @@ pub enum SceneResource {
         skin: Option<SceneMeshSkin>,
         clips: Vec<ScenePuppetAnimationClip>,
         layers: Vec<ScenePuppetAnimationLayer>,
-        clipping_records: Vec<SceneMeshPuppetClippingRecord>,
+        clipping: ScenePuppetClippingProgram,
     },
 }

@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/material-format.md`
 //! - `reverse-engineered/docs/exe/d3d11-context-calls.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
 use super::{
@@ -63,8 +64,11 @@ pub enum RenderingDeviceCommand {
         clip_frame_bytes: u64,
         layer_count: u32,
         clipping_record_count: u32,
+        clipping_record_bytes: u64,
         clipping_bone_count: u32,
+        clipping_bone_bytes: u64,
         clipping_frame_key_count: u32,
+        clipping_frame_key_bytes: u64,
     },
     ReleasePuppetRigResident {
         puppet: ScenePuppetId,

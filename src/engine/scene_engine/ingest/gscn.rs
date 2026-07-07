@@ -19,8 +19,8 @@ use crate::core::scene::{
 use super::super::{
     SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan, SceneGeometryId,
     SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram,
-    SceneObjectGeometry, SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId,
-    SceneTextureFormat,
+    SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource,
+    SceneResourceId, SceneTextureFormat,
 };
 use crate::engine::scene_engine::SceneEffectProgram;
 
@@ -298,7 +298,9 @@ fn engine_resources(
                     skin: fact.skin,
                     clips: fact.clips,
                     layers: fact.layers,
-                    clipping_records: fact.clipping_records,
+                    clipping: ScenePuppetClippingProgram::from_source_records(
+                        fact.clipping_records,
+                    ),
                 })
             }),
     );

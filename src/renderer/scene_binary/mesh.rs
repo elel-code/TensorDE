@@ -382,6 +382,7 @@ pub(super) fn binary_scene_puppet_clipping_records(
         let Some(mask) = binary_name(names, clipping.mask_name) else {
             continue;
         };
+        let source_name = binary_name(names, clipping.owner_name).map(str::to_owned);
         let bone_records = reader.record_range(
             SceneBinaryChunkKind::PuppetClippingBones,
             SCENE_BINARY_PUPPET_CLIPPING_BONE_RECORD_SIZE,
@@ -397,6 +398,7 @@ pub(super) fn binary_scene_puppet_clipping_records(
             decode_puppet_clipping_frame_key_record,
         )?;
         records.push(SceneMeshPuppetClippingRecord {
+            source_name,
             mask: mask.to_owned(),
             mask_resource: binary_scene_puppet_clipping_mask_resource(reader, mask),
             duration_frames: clipping.duration_frames,

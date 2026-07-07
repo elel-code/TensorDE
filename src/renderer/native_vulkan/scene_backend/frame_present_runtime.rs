@@ -1,8 +1,10 @@
-//! Scene mesh present-frame orchestration.
+//! Scene present-frame orchestration.
 //!
 //! References:
 //! - `reverse-engineered/docs/scene-format.md`
 //! - `reverse-engineered/docs/material-format.md`
+//! - `reverse-engineered/docs/effect-format.md`
+//! - `reverse-engineered/effects/effect-semantics.md`
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 //! - `references/godot/servers/rendering/rendering_device.h`
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
@@ -32,8 +34,8 @@ use super::frame_submit::{
     NativeVulkanSceneFrameSubmitPlan, native_vulkan_submit_scene_frame_commands2,
 };
 use super::runtime::{
-    NativeVulkanSceneMeshRuntimeFrameContext, NativeVulkanSceneMeshRuntimeFramePlan,
-    native_vulkan_record_scene_mesh_runtime_frame,
+    NativeVulkanSceneRuntimeFrameContext, NativeVulkanSceneRuntimeFramePlan,
+    native_vulkan_record_scene_runtime_frame,
 };
 use super::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 
@@ -56,7 +58,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanScenePresentFramePlan<
     pub slot_prepare: NativeVulkanSceneFrameSlotPreparePlan,
     pub acquire: NativeVulkanSceneFrameAcquirePlan,
     pub command_buffer_begin: NativeVulkanSceneFrameCommandBufferBeginPlan,
-    pub runtime_frame: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
+    pub runtime_frame: NativeVulkanSceneRuntimeFramePlan<'a>,
     pub command_buffer_end: NativeVulkanSceneFrameCommandBufferEndPlan,
     pub submit: NativeVulkanSceneFrameSubmitPlan,
     pub present: NativeVulkanSceneFramePresentPlan,
@@ -171,9 +173,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
             context.device,
             slot_sync.command_buffer,
         )?;
-        let runtime_frame = native_vulkan_record_scene_mesh_runtime_frame(
+        let runtime_frame = native_vulkan_record_scene_runtime_frame(
             frame_resources,
-            NativeVulkanSceneMeshRuntimeFrameContext {
+            NativeVulkanSceneRuntimeFrameContext {
                 device: context.device,
                 command_buffer: slot_sync.command_buffer,
                 target,
@@ -225,7 +227,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
                     "prepare_scene_frame_slot",
                     "try_acquire_next_image_khr_scene_frame",
                     "begin_command_buffer_scene_frame",
-                    "record_scene_mesh_runtime_frame",
+                    "record_scene_runtime_frame",
                     "end_command_buffer_scene_frame",
                     "reset_scene_frame_fence",
                     "queue_submit2_scene_frame",

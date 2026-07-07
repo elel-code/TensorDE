@@ -3,6 +3,7 @@
 //! References:
 //! - `reverse-engineered/docs/tex-format.md`
 //! - `reverse-engineered/docs/mdl-format.md`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
 //! - `references/godot/servers/rendering/storage/`
 //! - `references/godot/servers/rendering/rendering_device.h`
 
@@ -10,8 +11,10 @@ use serde::Serialize;
 
 use super::{
     SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
-    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneGeometryId,
-    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat, scene_gpu_record_bytes,
+    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES, SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
+    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneGeometryId, ScenePuppetId, SceneResource,
+    SceneResourceId, SceneTextureFormat, scene_gpu_record_bytes,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -77,7 +80,7 @@ impl From<&SceneResource> for SceneResidentResource {
                 skin,
                 clips,
                 layers,
-                clipping_records,
+                clipping,
             } => Self::PuppetRig(ScenePuppetRigResidency {
                 id: *id,
                 source_record: *source_record,
@@ -126,17 +129,21 @@ impl From<&SceneResource> for SceneResidentResource {
                     SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
                 ),
                 layer_count: layers.len().min(u32::MAX as usize) as u32,
-                clipping_record_count: clipping_records.len().min(u32::MAX as usize) as u32,
-                clipping_bone_count: clipping_records
-                    .iter()
-                    .map(|record| record.bones.len())
-                    .sum::<usize>()
-                    .min(u32::MAX as usize) as u32,
-                clipping_frame_key_count: clipping_records
-                    .iter()
-                    .map(|record| record.frame_keys.len())
-                    .sum::<usize>()
-                    .min(u32::MAX as usize) as u32,
+                clipping_record_count: clipping.records.len().min(u32::MAX as usize) as u32,
+                clipping_record_bytes: scene_residency_bytes(
+                    clipping.records.len(),
+                    SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
+                ),
+                clipping_bone_count: clipping.bone_indices.len().min(u32::MAX as usize) as u32,
+                clipping_bone_bytes: scene_residency_bytes(
+                    clipping.bone_indices.len(),
+                    SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
+                ),
+                clipping_frame_key_count: clipping.frame_keys.len().min(u32::MAX as usize) as u32,
+                clipping_frame_key_bytes: scene_residency_bytes(
+                    clipping.frame_keys.len(),
+                    SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+                ),
             }),
         }
     }
@@ -183,8 +190,11 @@ pub struct ScenePuppetRigResidency {
     pub clip_frame_bytes: u64,
     pub layer_count: u32,
     pub clipping_record_count: u32,
+    pub clipping_record_bytes: u64,
     pub clipping_bone_count: u32,
+    pub clipping_bone_bytes: u64,
     pub clipping_frame_key_count: u32,
+    pub clipping_frame_key_bytes: u64,
 }
 
 fn scene_residency_bytes(count: usize, record_bytes: u64) -> u64 {
@@ -194,8 +204,10 @@ fn scene_residency_bytes(count: usize, record_bytes: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::scene::SceneMeshPuppetClippingRecord;
     use crate::core::scene::{SceneMeshVertex, ScenePuppetTransform};
     use crate::core::scene::{ScenePuppetAnimationBone, ScenePuppetAnimationClip};
+    use crate::engine::scene_engine::ScenePuppetClippingProgram;
 
     #[test]
     fn residency_plan_keeps_mesh_and_puppet_payload_out_of_draw_graph() {
@@ -221,7 +233,7 @@ mod tests {
                     }],
                 }],
                 layers: Vec::new(),
-                clipping_records: Vec::new(),
+                clipping: Default::default(),
             },
         ];
 
@@ -276,5 +288,42 @@ mod tests {
                 payload_bytes: Some(155_520),
             })]
         );
+    }
+
+    #[test]
+    fn residency_plan_counts_puppet_clipping_gpu_buffers() {
+        let resources = vec![SceneResource::PuppetRig {
+            id: ScenePuppetId(7),
+            source_record: 8,
+            skin: None,
+            clips: Vec::new(),
+            layers: Vec::new(),
+            clipping: ScenePuppetClippingProgram::from_source_records(vec![
+                SceneMeshPuppetClippingRecord {
+                    source_name: Some("eye-right".to_owned()),
+                    mask: "masks/clipping_mask_eye".to_owned(),
+                    mask_resource: Some("assets/clipping-mask.gtex".to_owned()),
+                    duration_frames: 1680,
+                    flags: 1,
+                    bones: vec![42, 43],
+                    frame_keys: vec![0, 1, 2],
+                },
+            ]),
+        }];
+
+        let plan = SceneResourceResidencyPlan::from_resources(&resources);
+
+        assert!(matches!(
+            plan.resources.as_slice(),
+            [SceneResidentResource::PuppetRig(ScenePuppetRigResidency {
+                clipping_record_count: 1,
+                clipping_record_bytes: 48,
+                clipping_bone_count: 2,
+                clipping_bone_bytes: 8,
+                clipping_frame_key_count: 3,
+                clipping_frame_key_bytes: 12,
+                ..
+            })]
+        ));
     }
 }
