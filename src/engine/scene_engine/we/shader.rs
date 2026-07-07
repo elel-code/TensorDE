@@ -5,6 +5,9 @@
 //! - `reverse-engineered/docs/shader-conventions.md`
 //! - `reverse-engineered/shaders/genericimage4.vert`
 //! - `reverse-engineered/shaders/genericimage4.frag`
+//! - `reverse-engineered/docs/exe/clipping-pipeline.md`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.frag`
 //! - `reverse-engineered/shaders/common_blending.h`
 //! - `reverse-engineered/shaders/effects/waterwaves.frag`
 //! - `reverse-engineered/shaders/effects/waterripple.frag`
@@ -107,6 +110,7 @@ impl WeShaderInterface {
     pub fn for_shader(shader: &str) -> Option<&'static Self> {
         match shader {
             "we/genericimage4" | "genericimage4" => Some(&GENERICIMAGE4_INTERFACE),
+            "we/clippingmaskimage4" | "clippingmaskimage4" => Some(&CLIPPINGMASKIMAGE4_INTERFACE),
             _ => None,
         }
     }
@@ -312,6 +316,36 @@ pub static GENERICIMAGE4_COMBOS: &[WeShaderCombo] = &[
         material_key: Some("ui_editor_properties_fog"),
         reference: "reverse-engineered/shaders/genericimage4.frag:4",
     },
+    WeShaderCombo {
+        name: "MORPHING",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericimage4.vert:95",
+    },
+    WeShaderCombo {
+        name: "SKINNING_ALPHA",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericimage4.vert:91",
+    },
+    WeShaderCombo {
+        name: "CLIPPINGUVS",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/docs/exe/clipping-pipeline.md:171",
+    },
+    WeShaderCombo {
+        name: "CLIPPINGTARGET",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/docs/exe/clipping-pipeline.md:172",
+    },
+    WeShaderCombo {
+        name: "ALPHATOCOVERAGE",
+        default_value: 0,
+        material_key: Some("blending"),
+        reference: "reverse-engineered/shaders/genericimage4.frag:223",
+    },
 ];
 
 pub static GENERICIMAGE4_INTERFACE: WeShaderInterface = WeShaderInterface {
@@ -319,6 +353,156 @@ pub static GENERICIMAGE4_INTERFACE: WeShaderInterface = WeShaderInterface {
     textures: GENERICIMAGE4_TEXTURES,
     uniforms: GENERICIMAGE4_UNIFORMS,
     combos: GENERICIMAGE4_COMBOS,
+};
+
+pub static CLIPPINGMASKIMAGE4_TEXTURES: &[WeShaderTextureSlot] = &[
+    WeShaderTextureSlot {
+        slot: 0,
+        name: "g_Texture0",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::Required,
+        reference: "reverse-engineered/docs/exe/clipping-pipeline.md:225",
+    },
+    WeShaderTextureSlot {
+        slot: 1,
+        name: "g_Texture1",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::Required,
+        reference: "reverse-engineered/docs/exe/clipping-pipeline.md:228",
+    },
+    WeShaderTextureSlot {
+        slot: 5,
+        name: "g_Texture5",
+        stage: WeShaderStage::Vertex,
+        requirement: WeShaderTextureRequirement::ComboDependent,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:31",
+    },
+];
+
+pub static CLIPPINGMASKIMAGE4_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:4",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Rotation",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:5",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Translation",
+        kind: WeShaderUniformKind::Vec2,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:6",
+    },
+    WeShaderUniform {
+        name: "g_Bones",
+        kind: WeShaderUniformKind::Mat4x3Array,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:9",
+    },
+    WeShaderUniform {
+        name: "g_BonesAlpha",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:27",
+    },
+    WeShaderUniform {
+        name: "g_Texture5Resolution",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:32",
+    },
+    WeShaderUniform {
+        name: "g_MorphOffsets",
+        kind: WeShaderUniformKind::UintArray,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:34",
+    },
+    WeShaderUniform {
+        name: "g_MorphWeights",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:35",
+    },
+    WeShaderUniform {
+        name: "g_MorphBoneTransform",
+        kind: WeShaderUniformKind::Mat4x3Array,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:38",
+    },
+    WeShaderUniform {
+        name: "g_MorphBoneRules",
+        kind: WeShaderUniformKind::Vec3,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:39",
+    },
+    WeShaderUniform {
+        name: "g_RenderVar0",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Fragment,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.frag:5",
+    },
+];
+
+pub static CLIPPINGMASKIMAGE4_COMBOS: &[WeShaderCombo] = &[
+    WeShaderCombo {
+        name: "SKINNING",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:8",
+    },
+    WeShaderCombo {
+        name: "SKINNING_ALPHA",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:26",
+    },
+    WeShaderCombo {
+        name: "MORPHING",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:30",
+    },
+    WeShaderCombo {
+        name: "MORPHING_MODIFIERS",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:37",
+    },
+    WeShaderCombo {
+        name: "SPRITESHEET",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.vert:110",
+    },
+    WeShaderCombo {
+        name: "ALPHATOCOVERAGE",
+        default_value: 0,
+        material_key: Some("blending"),
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.frag:24",
+    },
+];
+
+pub static CLIPPINGMASKIMAGE4_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/clippingmaskimage4",
+    textures: CLIPPINGMASKIMAGE4_TEXTURES,
+    uniforms: CLIPPINGMASKIMAGE4_UNIFORMS,
+    combos: CLIPPINGMASKIMAGE4_COMBOS,
 };
 
 #[cfg(test)]
@@ -336,6 +520,48 @@ mod tests {
                 .texture_slot_mask_for_material("we/genericimage4", 0b1_0001)
                 .unwrap(),
             0b1_0001
+        );
+    }
+
+    #[test]
+    fn genericimage4_interface_exposes_generated_clipping_target_combos() {
+        let interface = WeShaderInterface::for_shader("we/genericimage4").unwrap();
+        let combo_names = interface
+            .combos
+            .iter()
+            .map(|combo| combo.name)
+            .collect::<Vec<_>>();
+
+        assert!(combo_names.contains(&"CLIPPINGUVS"));
+        assert!(combo_names.contains(&"CLIPPINGTARGET"));
+        assert!(combo_names.contains(&"ALPHATOCOVERAGE"));
+        assert!(
+            interface
+                .texture_slot_mask_for_material("we/genericimage4", 0b1_0000_0001)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn clippingmaskimage4_interface_tracks_mask_generator_slots_and_uniforms() {
+        let interface = WeShaderInterface::for_shader("we/clippingmaskimage4").unwrap();
+
+        assert_eq!(interface.required_texture_slot_mask(), 0b11);
+        assert_eq!(interface.declared_texture_slot_mask(), 0b10_0011);
+        assert_eq!(
+            interface
+                .texture_slot_mask_for_material("we/clippingmaskimage4", 0b10_0011)
+                .unwrap(),
+            0b10_0011
+        );
+        assert!(interface.uniforms.iter().any(|uniform| {
+            uniform.name == "g_RenderVar0" && uniform.kind == WeShaderUniformKind::Vec4
+        }));
+        assert!(
+            interface
+                .combos
+                .iter()
+                .any(|combo| combo.name == "ALPHATOCOVERAGE")
         );
     }
 

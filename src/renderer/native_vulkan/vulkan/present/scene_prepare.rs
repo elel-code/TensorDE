@@ -31,16 +31,18 @@ use crate::renderer::native_vulkan::scene_backend::frame_submit::{
     NativeVulkanScenePrepareSubmitContext, NativeVulkanScenePrepareSubmitPlan,
     native_vulkan_submit_scene_prepare_commands2,
 };
-use crate::renderer::native_vulkan::scene_backend::pipeline_factory::NativeVulkanSceneMeshPipelineShaders;
+use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::native_vulkan_plan_scene_layer_alpha_mask_runtime_frame;
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
-    native_vulkan_prepare_scene_mesh_pipeline_cache_with_target_formats,
+    native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys,
 };
 use crate::renderer::native_vulkan::scene_backend::resource_prepare::{
     NativeVulkanSceneMeshResourcePrepareContext, NativeVulkanSceneMeshResourcePreparePlan,
     native_vulkan_record_scene_mesh_resource_prepare_frame,
 };
-use crate::renderer::native_vulkan::scene_backend::shader_artifacts::NativeVulkanSceneEffectShaderArtifactCatalog;
+use crate::renderer::native_vulkan::scene_backend::shader_artifacts::{
+    NativeVulkanSceneEffectShaderArtifactCatalog, NativeVulkanSceneShaderArtifactCatalog,
+};
 use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
@@ -50,6 +52,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub pipeline_prepare: NativeVulkanVulkanaliaScenePipelinePrepareSnapshot,
     pub effect_pipeline_prepare: NativeVulkanVulkanaliaSceneEffectPipelinePrepareSnapshot,
     pub prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
+    pub scene_shader_count: usize,
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
     pub effect_texture_descriptor_binding_count: usize,
@@ -130,7 +133,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
     post_effect_graph: &SceneEffectPassGraphPlan,
     target_formats: &NativeVulkanSceneGraphTargetFormatPlan,
     swapchain_extent: vk::Extent2D,
-    shaders: NativeVulkanSceneMeshPipelineShaders<'_>,
+    shader_catalog: &NativeVulkanSceneShaderArtifactCatalog,
     effect_shader_catalog: &NativeVulkanSceneEffectShaderArtifactCatalog,
 ) -> Result<NativeVulkanVulkanaliaScenePrepareSnapshot, String> {
     let prepare_slot = 0u32;
@@ -219,13 +222,20 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
         }
         frame_slots.complete_frame_submission(frame_submission)?;
         let _ = frame_resources.release_completed_frame_resources(device, frame_submission);
-        let pipeline_prepare = native_vulkan_prepare_scene_mesh_pipeline_cache_with_target_formats(
-            device,
+        let layer_alpha_mask_plan = native_vulkan_plan_scene_layer_alpha_mask_runtime_frame(
             frame_resources,
-            &frame.graph,
-            |target| target_formats.format(target),
-            shaders,
+            &frame.layer_compositor,
+            swapchain_extent,
         )?;
+        let pipeline_prepare =
+            native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys(
+                device,
+                frame_resources,
+                &frame.graph,
+                |target| target_formats.format(target),
+                shader_catalog,
+                layer_alpha_mask_plan.pipeline_warmup.cache_keys(),
+            )?;
         let effect_pipeline_prepare =
             native_vulkan_prepare_scene_effect_pipeline_cache_with_target_formats(
                 device,
@@ -258,6 +268,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             prepare_submit: NativeVulkanVulkanaliaScenePrepareSubmitSnapshot::from_plan(
                 &prepare_submit,
             ),
+            scene_shader_count: shader_catalog.shader_count(),
             graph_target_format_count: target_formats.target_format_count(),
             effect_target_count,
             effect_texture_descriptor_binding_count,

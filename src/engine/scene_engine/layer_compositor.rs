@@ -24,7 +24,7 @@ pub struct SceneLayerCompositorPlan {
     pub object_final_layer_count: usize,
     pub tokenized_layer_count: usize,
     pub layers: Vec<SceneLayerCompositorLayer>,
-    pub command_order: [&'static str; 8],
+    pub command_order: [&'static str; 9],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,6 +85,9 @@ pub enum SceneLayerCompositorCondition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum SceneLayerCompositorBlendKey {
     Inherit,
+    WrapperPushBlendEnumAndAlphaWriteBits0x2000x8,
+    LowBlendNormalViaWrapper128,
+    SubdrawBlendByteToGeneratedMaterial1f0,
     DestColorCopyBackBit0x100,
 }
 
@@ -219,7 +222,7 @@ fn layer_commands(
         } else {
             SceneLayerCompositorTarget::Swapchain
         },
-        blend_key: SceneLayerCompositorBlendKey::Inherit,
+        blend_key: SceneLayerCompositorBlendKey::WrapperPushBlendEnumAndAlphaWriteBits0x2000x8,
     });
 
     if uses_object_final {
@@ -272,7 +275,7 @@ fn layer_commands(
             condition: SceneLayerCompositorCondition::TokenizedGeneratedMaterial,
             source: Some(SceneLayerCompositorTarget::FullAlphaMask),
             target: SceneLayerCompositorTarget::LayerTarget490,
-            blend_key: SceneLayerCompositorBlendKey::Inherit,
+            blend_key: SceneLayerCompositorBlendKey::SubdrawBlendByteToGeneratedMaterial1f0,
         });
     }
 
@@ -283,20 +286,21 @@ fn layer_commands(
             condition: SceneLayerCompositorCondition::Always,
             source: None,
             target: SceneLayerCompositorTarget::ObjectFinal(object),
-            blend_key: SceneLayerCompositorBlendKey::Inherit,
+            blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
         });
     }
 
     commands
 }
 
-fn layer_compositor_command_order() -> [&'static str; 8] {
+fn layer_compositor_command_order() -> [&'static str; 9] {
     [
         "preserve_scene_object_order",
         "classify_object_final_routes",
         "model_vtable_32_normal_render_entry",
         "model_vtable_50_clear_prep_entry",
         "model_vtable_52_53_tokenized_subdraw_entries",
+        "model_wrapper_0xd8_0x128_state_keys",
         "model_flattexture_intermediate_copy_back_bit_0x100",
         "model_vtable_51_full_layer_composite_entry",
         "lower_layer_routes_to_scene_graph_passes",
@@ -351,7 +355,7 @@ mod tests {
                     SceneLayerCompositorCondition::Always,
                     None,
                     SceneLayerCompositorTarget::ObjectFinal(SceneObjectId(2)),
-                    SceneLayerCompositorBlendKey::Inherit,
+                    SceneLayerCompositorBlendKey::WrapperPushBlendEnumAndAlphaWriteBits0x2000x8,
                 ),
                 command(
                     SceneLayerCompositorEntry::ClearPrepEntry50,
@@ -367,7 +371,7 @@ mod tests {
                     SceneLayerCompositorCondition::Always,
                     None,
                     SceneLayerCompositorTarget::ObjectFinal(SceneObjectId(2)),
-                    SceneLayerCompositorBlendKey::Inherit,
+                    SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
                 ),
             ]
         );
@@ -395,7 +399,7 @@ mod tests {
                 SceneLayerCompositorCondition::Always,
                 None,
                 SceneLayerCompositorTarget::Swapchain,
-                SceneLayerCompositorBlendKey::Inherit,
+                SceneLayerCompositorBlendKey::WrapperPushBlendEnumAndAlphaWriteBits0x2000x8,
             )
         );
     }
@@ -455,6 +459,13 @@ mod tests {
                 && command.source == Some(SceneLayerCompositorTarget::FullAlphaMaskIntermediate)
                 && command.target == SceneLayerCompositorTarget::FullAlphaMask
                 && command.blend_key == SceneLayerCompositorBlendKey::DestColorCopyBackBit0x100
+        }));
+        assert!(plan.layers[0].commands.iter().any(|command| {
+            command.operation == SceneLayerCompositorOperation::DrawGeneratedClippingTarget
+                && command.source == Some(SceneLayerCompositorTarget::FullAlphaMask)
+                && command.target == SceneLayerCompositorTarget::LayerTarget490
+                && command.blend_key
+                    == SceneLayerCompositorBlendKey::SubdrawBlendByteToGeneratedMaterial1f0
         }));
     }
 

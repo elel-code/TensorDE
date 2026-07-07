@@ -19,7 +19,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineWarmu
     draw_count: usize,
     target_formats: Vec<vk::Format>,
     cache_keys: Vec<NativeVulkanScenePipelineCacheKey>,
-    command_order: [&'static str; 3],
+    command_order: [&'static str; 4],
 }
 
 impl NativeVulkanSceneMeshPipelineWarmupPlan {
@@ -41,7 +41,20 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
 
     pub(in crate::renderer::native_vulkan) fn from_graph_with_target_formats<TargetFormat>(
         graph: &SceneGraph,
+        target_format: TargetFormat,
+    ) -> Result<Self, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
+        Self::from_graph_with_target_formats_and_extra_cache_keys(graph, target_format, &[])
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_graph_with_target_formats_and_extra_cache_keys<
+        TargetFormat,
+    >(
+        graph: &SceneGraph,
         mut target_format: TargetFormat,
+        extra_cache_keys: &[NativeVulkanScenePipelineCacheKey],
     ) -> Result<Self, String>
     where
         TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
@@ -80,6 +93,21 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
             }
         }
 
+        for key in extra_cache_keys {
+            if key.target_format == vk::Format::UNDEFINED {
+                return Err(format!(
+                    "scene mesh pipeline warmup extra key for shader '{}' requires defined target format",
+                    key.shader
+                ));
+            }
+            if !target_formats.contains(&key.target_format) {
+                target_formats.push(key.target_format);
+            }
+            if !cache_keys.iter().any(|existing| existing == key) {
+                cache_keys.push(key.clone());
+            }
+        }
+
         Ok(Self {
             draw_count,
             target_formats,
@@ -87,6 +115,7 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
             command_order: [
                 "resolve_graph_target_formats",
                 "collect_unique_pipeline_keys",
+                "append_layer_alpha_mask_pipeline_keys",
                 "require_warmed_pipeline_cache",
             ],
         })
@@ -113,7 +142,7 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
         &self.cache_keys
     }
 
-    pub(in crate::renderer::native_vulkan) fn command_order(&self) -> [&'static str; 3] {
+    pub(in crate::renderer::native_vulkan) fn command_order(&self) -> [&'static str; 4] {
         self.command_order
     }
 }
@@ -178,6 +207,7 @@ mod tests {
             [
                 "resolve_graph_target_formats",
                 "collect_unique_pipeline_keys",
+                "append_layer_alpha_mask_pipeline_keys",
                 "require_warmed_pipeline_cache"
             ]
         );
@@ -316,6 +346,43 @@ mod tests {
                 .map(|key| key.target_format)
                 .collect::<Vec<_>>(),
             vec![vk::Format::R16G16B16A16_SFLOAT, vk::Format::B8G8R8A8_UNORM]
+        );
+    }
+
+    #[test]
+    fn warmup_plan_appends_layer_alpha_mask_pipeline_keys() {
+        let graph = mesh_graph(vec![mesh_draw(
+            SceneObjectId(1),
+            "we/genericimage4",
+            SceneBlendContract::TranslucentAlpha,
+        )]);
+        let alpha_mask_key = NativeVulkanScenePipelineCacheKey {
+            shader: "we/clippingmaskimage4".to_owned(),
+            blend: SceneBlendContract::TranslucentAlpha,
+            render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
+            pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+            vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            target_format: vk::Format::R8_UNORM,
+            texture_slot_mask: (1u32 << 0) | (1u32 << 1) | (1u32 << 5),
+        };
+
+        let plan =
+            NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats_and_extra_cache_keys(
+                &graph,
+                |target| match target {
+                    SceneGraphTarget::Swapchain => Ok(vk::Format::B8G8R8A8_UNORM),
+                    target => Err(format!("unexpected target {target:?}")),
+                },
+                std::slice::from_ref(&alpha_mask_key),
+            )
+            .expect("warmup with alpha-mask pipeline");
+
+        assert_eq!(plan.draw_count(), 1);
+        assert_eq!(plan.cache_keys().len(), 2);
+        assert!(plan.cache_keys().contains(&alpha_mask_key));
+        assert_eq!(
+            plan.target_formats(),
+            &[vk::Format::B8G8R8A8_UNORM, vk::Format::R8_UNORM]
         );
     }
 

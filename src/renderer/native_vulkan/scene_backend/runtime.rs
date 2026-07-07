@@ -56,7 +56,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub effects: NativeVulkanSceneEffectRuntimeFramePlan<'a>,
     pub layer_alpha_masks: NativeVulkanSceneLayerAlphaMaskRuntimePlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 3],
+    pub command_order: [&'static str; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -109,6 +109,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         &frame.layer_compositor,
         context.target.extent,
     )?;
+    for key in layer_alpha_masks.pipeline_warmup.cache_keys() {
+        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
+            format!(
+                "{err}; scene layer alpha-mask runtime requires clippingmaskimage4 pipeline warmup before present-frame recording"
+            )
+        })?;
+    }
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -127,6 +134,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         command_order: [
             "record_scene_effect_graph_runtime",
             "plan_scene_layer_alpha_mask_token_runtime",
+            "require_warmed_layer_alpha_mask_pipelines",
             "record_scene_mesh_graph_runtime",
         ],
     })

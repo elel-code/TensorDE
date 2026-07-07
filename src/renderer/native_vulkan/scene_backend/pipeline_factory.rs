@@ -581,6 +581,31 @@ mod tests {
     }
 
     #[test]
+    fn mesh_pipeline_plan_accepts_clippingmaskimage4_alpha_mask_generator() {
+        let plan =
+            native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
+                shader: "we/clippingmaskimage4".to_owned(),
+                pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+                target_format: vk::Format::R8_UNORM,
+                texture_slot_mask: (1u32 << 0) | (1u32 << 1) | (1u32 << 5),
+                ..pipeline_key()
+            })
+            .expect("clipping mask generator pipeline plan");
+
+        assert_eq!(plan.shader, "we/clippingmaskimage4");
+        assert_eq!(plan.target_format, "R8_UNORM");
+        assert_eq!(plan.blend, "translucent-src-alpha-inv-src-alpha");
+        assert_eq!(
+            plan.shader_resource_mappings,
+            vec![
+                "VK_EXT_descriptor_heap set0.binding0.g_Texture0 -> draw-resource-set-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding1.g_Texture1 -> draw-resource-set-texture-offset2".to_owned(),
+                "VK_EXT_descriptor_heap set0.binding5.g_Texture5 -> draw-resource-set-texture-offset3".to_owned()
+            ]
+        );
+    }
+
+    #[test]
     fn mesh_pipeline_plan_rejects_non_indexed_graphics_pipeline_class() {
         let err =
             native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {

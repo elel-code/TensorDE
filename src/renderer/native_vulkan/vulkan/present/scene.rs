@@ -30,7 +30,7 @@ use crate::renderer::native_vulkan::scene_backend::frame_resources::NativeVulkan
 use crate::renderer::native_vulkan::scene_backend::frame_slots::NativeVulkanSceneFrameSlotResources;
 use crate::renderer::native_vulkan::scene_backend::renderer_scene_render::NativeVulkanRendererSceneRender;
 use crate::renderer::native_vulkan::scene_backend::shader_artifacts::{
-    NativeVulkanSceneEffectShaderArtifactCatalog, native_vulkan_load_scene_shader_artifacts,
+    NativeVulkanSceneEffectShaderArtifactCatalog, NativeVulkanSceneShaderArtifactCatalog,
 };
 use crate::renderer::native_vulkan::scene_backend::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
 use crate::renderer::native_wayland::{
@@ -246,9 +246,9 @@ fn with_vulkanalia_scene_present(
             &graph_execution,
             swapchain_plan.format.format,
         )?;
-        let shader_artifacts = native_vulkan_load_scene_shader_artifacts(
+        let shader_catalog = NativeVulkanSceneShaderArtifactCatalog::from_scene_frame(
             &options.shader_artifact_root,
-            "we/genericimage4",
+            &frame,
         )?;
         let effect_shader_catalog =
             NativeVulkanSceneEffectShaderArtifactCatalog::from_effect_pass_graph(
@@ -272,7 +272,7 @@ fn with_vulkanalia_scene_present(
             &frame.effect_pass_graph,
             &target_formats,
             swapchain_plan.extent,
-            shader_artifacts.mesh_pipeline_shaders(),
+            &shader_catalog,
             &effect_shader_catalog,
         )?;
 

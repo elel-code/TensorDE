@@ -13,7 +13,10 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::engine::scene_engine::{SceneEffectPassGraphPlan, WeShaderInterface};
+use crate::engine::scene_engine::{
+    SceneEffectPassGraphPlan, SceneFramePlan, SceneGraph, SceneLayerCompositorPlan,
+    WeShaderInterface,
+};
 
 use super::effect_pipeline::{
     NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanSceneEffectPipelineShaders,
@@ -46,6 +49,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifacts {
     pub fragment_spirv: Vec<u32>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifactCatalogPlan {
+    pub shader_count: usize,
+    pub shaders: Vec<String>,
+    pub command_order: [&'static str; 4],
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtifacts {
     pub shader: String,
@@ -66,6 +76,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectShaderArtif
     plan: NativeVulkanSceneEffectShaderArtifactCatalogPlan,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneShaderArtifactCatalog {
+    shaders: BTreeMap<String, NativeVulkanSceneShaderArtifacts>,
+    plan: NativeVulkanSceneShaderArtifactCatalogPlan,
+}
+
 impl NativeVulkanSceneShaderArtifacts {
     pub(in crate::renderer::native_vulkan) fn mesh_pipeline_shaders(
         &self,
@@ -74,6 +90,82 @@ impl NativeVulkanSceneShaderArtifacts {
             vertex_spirv: &self.vertex_spirv,
             fragment_spirv: &self.fragment_spirv,
         }
+    }
+}
+
+impl NativeVulkanSceneShaderArtifactCatalog {
+    pub(in crate::renderer::native_vulkan) fn from_scene_frame(
+        artifact_root: &Path,
+        frame: &SceneFramePlan,
+    ) -> Result<Self, String> {
+        Self::from_graph_and_layer_compositor(artifact_root, &frame.graph, &frame.layer_compositor)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn from_graph_and_layer_compositor(
+        artifact_root: &Path,
+        graph: &SceneGraph,
+        layer_compositor: &SceneLayerCompositorPlan,
+    ) -> Result<Self, String> {
+        let shader_names = required_scene_shader_names(graph, layer_compositor)?;
+        let mut shaders = BTreeMap::new();
+        for shader in &shader_names {
+            let artifacts = native_vulkan_load_scene_shader_artifacts(artifact_root, shader)?;
+            shaders.insert(shader.clone(), artifacts);
+        }
+        Ok(Self {
+            plan: NativeVulkanSceneShaderArtifactCatalogPlan {
+                shader_count: shader_names.len(),
+                shaders: shader_names,
+                command_order: [
+                    "collect_scene_graph_draw_shader_names",
+                    "append_layer_alpha_mask_shader_names",
+                    "resolve_we_scene_shader_artifact_paths",
+                    "read_unique_scene_shader_spirv",
+                ],
+            },
+            shaders,
+        })
+    }
+
+    pub(in crate::renderer::native_vulkan) fn empty() -> Self {
+        Self {
+            shaders: BTreeMap::new(),
+            plan: NativeVulkanSceneShaderArtifactCatalogPlan {
+                shader_count: 0,
+                shaders: Vec::new(),
+                command_order: [
+                    "collect_scene_graph_draw_shader_names",
+                    "append_layer_alpha_mask_shader_names",
+                    "resolve_we_scene_shader_artifact_paths",
+                    "read_unique_scene_shader_spirv",
+                ],
+            },
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn mesh_pipeline_shaders_for_key(
+        &self,
+        key: &super::pipeline::NativeVulkanScenePipelineCacheKey,
+    ) -> Result<NativeVulkanSceneMeshPipelineShaders<'_>, String> {
+        self.shaders
+            .get(&key.shader)
+            .ok_or_else(|| {
+                format!(
+                    "scene shader catalog has no artifact for shader '{}'",
+                    key.shader
+                )
+            })
+            .map(|artifacts| artifacts.mesh_pipeline_shaders())
+    }
+
+    pub(in crate::renderer::native_vulkan) fn shader_count(&self) -> usize {
+        self.plan.shader_count
+    }
+
+    pub(in crate::renderer::native_vulkan) fn plan(
+        &self,
+    ) -> &NativeVulkanSceneShaderArtifactCatalogPlan {
+        &self.plan
     }
 }
 
@@ -285,6 +377,40 @@ fn required_effect_shader_names(graph: &SceneEffectPassGraphPlan) -> Result<Vec<
     Ok(shaders)
 }
 
+fn required_scene_shader_names(
+    graph: &SceneGraph,
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> Result<Vec<String>, String> {
+    let mut unique = BTreeSet::new();
+    let mut shaders = Vec::new();
+    for pass in &graph.passes {
+        for draw in &pass.draws {
+            let shader = draw.material.shader.as_str();
+            if shader.is_empty() {
+                return Err(format!(
+                    "scene graph draw for object {:?} has an empty WE shader artifact name",
+                    draw.object
+                ));
+            }
+            WeShaderInterface::for_shader(shader).ok_or_else(|| {
+                format!(
+                    "scene graph draw for object {:?} references unknown WE shader '{}'",
+                    draw.object, shader
+                )
+            })?;
+            if unique.insert(shader.to_owned()) {
+                shaders.push(shader.to_owned());
+            }
+        }
+    }
+    if layer_compositor.tokenized_layer_count > 0
+        && unique.insert("we/clippingmaskimage4".to_owned())
+    {
+        shaders.push("we/clippingmaskimage4".to_owned());
+    }
+    Ok(shaders)
+}
+
 fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
     let normalized = shader.strip_prefix("we/").unwrap_or(shader);
     if normalized.is_empty()
@@ -387,6 +513,54 @@ mod tests {
                 "read_fragment_spirv"
             ]
         );
+    }
+
+    #[test]
+    fn shader_artifact_plan_maps_clipping_mask_shader_to_stage_spirv_paths() {
+        let plan = native_vulkan_scene_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "we/clippingmaskimage4",
+        )
+        .expect("clipping mask artifact path plan");
+
+        assert_eq!(plan.shader, "we/clippingmaskimage4");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/we/clippingmaskimage4.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/we/clippingmaskimage4.frag.spv")
+        );
+    }
+
+    #[test]
+    fn scene_shader_catalog_names_include_layer_alpha_mask_shader() {
+        let graph = scene_graph_with_shader("we/genericimage4");
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.tokenized_layer_count = 1;
+
+        let shaders = required_scene_shader_names(&graph, &layer_compositor)
+            .expect("scene shader name collection");
+
+        assert_eq!(
+            shaders,
+            vec![
+                "we/genericimage4".to_owned(),
+                "we/clippingmaskimage4".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn scene_shader_catalog_names_reject_unknown_scene_shader() {
+        let err = required_scene_shader_names(
+            &scene_graph_with_shader("we/notreal"),
+            &SceneLayerCompositorPlan::empty(),
+        )
+        .expect_err("unknown scene shader must fail");
+
+        assert!(err.contains("unknown WE shader"));
     }
 
     #[test]
@@ -570,6 +744,30 @@ mod tests {
                 combos: BTreeMap::new(),
                 constants: BTreeMap::new(),
             }
+        }
+    }
+
+    fn scene_graph_with_shader(shader: &str) -> SceneGraph {
+        SceneGraph {
+            passes: vec![crate::engine::scene_engine::SceneGraphPass {
+                name: "scene-main".to_owned(),
+                input: None,
+                output: crate::engine::scene_engine::SceneGraphTarget::Swapchain,
+                draws: vec![crate::engine::scene_engine::SceneGraphDraw {
+                    object: crate::engine::scene_engine::SceneObjectId(1),
+                    pipeline: crate::engine::scene_engine::SceneGraphPipelineClass::Mesh,
+                    material: crate::engine::scene_engine::SceneMaterialKey {
+                        shader: shader.to_owned(),
+                        blend: crate::engine::scene_engine::SceneBlendContract::TranslucentAlpha,
+                        render_state:
+                            crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
+                    },
+                    geometry: Some(crate::engine::scene_engine::SceneGeometryId(1)),
+                    puppet: None,
+                    resources: Vec::new(),
+                    index_count: 6,
+                }],
+            }],
         }
     }
 }

@@ -18,10 +18,12 @@ use super::draw_family::{
     NativeVulkanSceneDrawFamilyExecutorPlan, native_vulkan_require_scene_mesh_executor_families,
 };
 use super::frame_resources::NativeVulkanSceneFrameResources;
+use super::pipeline::NativeVulkanScenePipelineCacheKey;
 use super::pipeline_factory::{
     NativeVulkanSceneMeshPipelineLayoutSpec, NativeVulkanSceneMeshPipelineShaders,
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
+use super::shader_artifacts::NativeVulkanSceneShaderArtifactCatalog;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelinePreparePlan {
@@ -102,6 +104,88 @@ where
         } else {
             created_pipeline_count = created_pipeline_count.saturating_add(1);
         }
+        frame_resources.resolve_mesh_pipeline(device, key, shaders, pipeline_layout)?;
+    }
+
+    NativeVulkanSceneMeshPipelinePreparePlan::from_counts(
+        draw_family_executor,
+        &warmup,
+        created_pipeline_count,
+        reused_pipeline_count,
+        resource_descriptor_count,
+        sampler_descriptor_count,
+        descriptor_model,
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog<
+    TargetFormat,
+>(
+    device: &Device,
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    graph: &SceneGraph,
+    target_format: TargetFormat,
+    shader_catalog: &NativeVulkanSceneShaderArtifactCatalog,
+) -> Result<NativeVulkanSceneMeshPipelinePreparePlan, String>
+where
+    TargetFormat:
+        FnMut(crate::engine::scene_engine::SceneGraphTarget) -> Result<vk::Format, String>,
+{
+    native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys(
+        device,
+        frame_resources,
+        graph,
+        target_format,
+        shader_catalog,
+        &[],
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys<
+    TargetFormat,
+>(
+    device: &Device,
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    graph: &SceneGraph,
+    target_format: TargetFormat,
+    shader_catalog: &NativeVulkanSceneShaderArtifactCatalog,
+    extra_cache_keys: &[NativeVulkanScenePipelineCacheKey],
+) -> Result<NativeVulkanSceneMeshPipelinePreparePlan, String>
+where
+    TargetFormat:
+        FnMut(crate::engine::scene_engine::SceneGraphTarget) -> Result<vk::Format, String>,
+{
+    let draw_family_executor = native_vulkan_require_scene_mesh_executor_families(
+        &SceneGraphDrawFamilyPlan::from_graph(graph),
+    )?;
+    let warmup =
+        NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats_and_extra_cache_keys(
+        graph,
+        target_format,
+        extra_cache_keys,
+    )?;
+    let resource_heap = frame_resources
+        .current_resource_heap_frame_plan()
+        .ok_or_else(|| {
+            "scene mesh pipeline prepare requires current draw resource heap frame plan".to_owned()
+        })?;
+    let descriptor_heap_plan = resource_heap.descriptor_heap_plan.clone();
+    let resource_descriptor_count = resource_heap.resource_descriptor_count;
+    let sampler_descriptor_count = resource_heap.sampler_descriptor_count;
+    let descriptor_model = resource_heap.descriptor_model;
+    let pipeline_layout = NativeVulkanSceneMeshPipelineLayoutSpec {
+        draw_resource_heap_plan: &descriptor_heap_plan,
+    };
+    let mut created_pipeline_count = 0usize;
+    let mut reused_pipeline_count = 0usize;
+
+    for key in warmup.cache_keys().iter().cloned() {
+        if frame_resources.has_mesh_pipeline(&key) {
+            reused_pipeline_count = reused_pipeline_count.saturating_add(1);
+        } else {
+            created_pipeline_count = created_pipeline_count.saturating_add(1);
+        }
+        let shaders = shader_catalog.mesh_pipeline_shaders_for_key(&key)?;
         frame_resources.resolve_mesh_pipeline(device, key, shaders, pipeline_layout)?;
     }
 

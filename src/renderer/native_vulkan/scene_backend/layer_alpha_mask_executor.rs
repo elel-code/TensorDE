@@ -12,18 +12,23 @@ use serde::Serialize;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneGraphTarget, SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
-    SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
-    SceneLayerCompositorPlan, SceneLayerCompositorTarget, SceneObjectId,
+    SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget, SceneLayerCompositorBlendKey,
+    SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorEntry,
+    SceneLayerCompositorOperation, SceneLayerCompositorPlan, SceneLayerCompositorTarget,
+    SceneMaterialRenderState, SceneObjectId,
 };
 
 use super::frame_resources::NativeVulkanSceneFrameResources;
+use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout};
+
+const CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK: u32 = (1u32 << 0) | (1u32 << 1) | (1u32 << 5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRuntimePlan {
     pub tokenized_layer_count: usize,
     pub command_count: usize,
     pub required_target_count: usize,
+    pub pipeline_warmup: NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan,
     pub target_scope_count: usize,
     pub alpha_mask_attachment_write_count: usize,
     pub alpha_mask_shader_sample_count: usize,
@@ -34,7 +39,24 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRun
     pub transfer_copy_count: usize,
     pub targets: Vec<NativeVulkanSceneLayerAlphaMaskTargetPlan>,
     pub commands: Vec<NativeVulkanSceneLayerAlphaMaskCommandPlan>,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
+    pub cache_key_count: usize,
+    pub keys: Vec<NativeVulkanSceneLayerAlphaMaskPipelineKeyPlan>,
+    pub command_order: [&'static str; 4],
+    #[serde(skip)]
+    cache_keys: Vec<NativeVulkanScenePipelineCacheKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskPipelineKeyPlan {
+    pub shader: String,
+    pub target_format: &'static str,
+    pub pipeline_class: SceneGraphPipelineClass,
+    pub texture_slot_mask: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,11 +193,14 @@ impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
                 )
             })
             .count();
+        let pipeline_warmup =
+            NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan::from_targets(&[full, intermediate])?;
 
         Ok(Self {
             tokenized_layer_count: layer_compositor.tokenized_layer_count,
             command_count: commands.len(),
             required_target_count: 2,
+            pipeline_warmup,
             target_scope_count: alpha_mask_attachment_write_count,
             alpha_mask_attachment_write_count,
             alpha_mask_shader_sample_count,
@@ -189,6 +214,7 @@ impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
             command_order: [
                 "read_we_vtable_52_53_token_program",
                 "validate_full_alpha_mask_targets_r8_half_extent",
+                "derive_clippingmaskimage4_pipeline_warmup_key",
                 "lower_clippingmaskimage4_to_alpha_mask_attachment_writes",
                 "lower_flattexture_copy_back_to_draw_blend_key_0x100",
                 "preserve_generated_clippingtarget_full_mask_sample",
@@ -202,6 +228,7 @@ impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
             tokenized_layer_count: 0,
             command_count: 0,
             required_target_count: 0,
+            pipeline_warmup: NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan::empty(),
             target_scope_count: 0,
             alpha_mask_attachment_write_count: 0,
             alpha_mask_shader_sample_count: 0,
@@ -215,12 +242,74 @@ impl NativeVulkanSceneLayerAlphaMaskRuntimePlan {
             command_order: [
                 "read_we_vtable_52_53_token_program",
                 "validate_full_alpha_mask_targets_r8_half_extent",
+                "derive_clippingmaskimage4_pipeline_warmup_key",
                 "lower_clippingmaskimage4_to_alpha_mask_attachment_writes",
                 "lower_flattexture_copy_back_to_draw_blend_key_0x100",
                 "preserve_generated_clippingtarget_full_mask_sample",
                 "track_alpha_mask_usage_like_godot_rendering_device_graph",
             ],
         }
+    }
+}
+
+impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
+    fn from_targets(targets: &[NativeVulkanSceneLayerAlphaMaskTargetPlan]) -> Result<Self, String> {
+        if targets.is_empty() {
+            return Ok(Self::empty());
+        }
+        if !targets.iter().any(|target| {
+            target.target == SceneGraphTarget::FullAlphaMask
+                || target.target == SceneGraphTarget::FullAlphaMaskIntermediate
+        }) {
+            return Err(
+                "scene layer alpha-mask pipeline warmup requires an alpha-mask target".to_owned(),
+            );
+        }
+        let cache_key = NativeVulkanScenePipelineCacheKey {
+            shader: "we/clippingmaskimage4".to_owned(),
+            blend: SceneBlendContract::TranslucentAlpha,
+            render_state: SceneMaterialRenderState::translucent_2d(),
+            pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+            vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            target_format: vk::Format::R8_UNORM,
+            texture_slot_mask: CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK,
+        };
+        Ok(Self {
+            cache_key_count: 1,
+            keys: vec![NativeVulkanSceneLayerAlphaMaskPipelineKeyPlan {
+                shader: cache_key.shader.clone(),
+                target_format: "R8_UNORM",
+                pipeline_class: cache_key.pipeline_class,
+                texture_slot_mask: cache_key.texture_slot_mask,
+            }],
+            cache_keys: vec![cache_key],
+            command_order: [
+                "select_clippingmaskimage4_shader",
+                "select_puppet_skinning_mesh_vertex_layout",
+                "select_r8_unorm_alpha_mask_target_format",
+                "include_we_slots_0_1_5_for_mask_generator",
+            ],
+        })
+    }
+
+    fn empty() -> Self {
+        Self {
+            cache_key_count: 0,
+            keys: Vec::new(),
+            cache_keys: Vec::new(),
+            command_order: [
+                "select_clippingmaskimage4_shader",
+                "select_puppet_skinning_mesh_vertex_layout",
+                "select_r8_unorm_alpha_mask_target_format",
+                "include_we_slots_0_1_5_for_mask_generator",
+            ],
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn cache_keys(
+        &self,
+    ) -> &[NativeVulkanScenePipelineCacheKey] {
+        &self.cache_keys
     }
 }
 
@@ -383,6 +472,7 @@ mod tests {
         assert_eq!(plan.tokenized_layer_count, 0);
         assert_eq!(plan.command_count, 0);
         assert_eq!(plan.required_target_count, 0);
+        assert_eq!(plan.pipeline_warmup.cache_key_count, 0);
         assert_eq!(plan.transfer_copy_count, 0);
     }
 
@@ -402,6 +492,7 @@ mod tests {
 
         assert_eq!(plan.tokenized_layer_count, 1);
         assert_eq!(plan.required_target_count, 2);
+        assert_eq!(plan.pipeline_warmup.cache_key_count, 1);
         assert_eq!(plan.command_count, 5);
         assert_eq!(plan.token_program_dispatch_count, 1);
         assert_eq!(plan.draw_clipping_mask_count, 2);
@@ -410,6 +501,20 @@ mod tests {
         assert_eq!(plan.transfer_copy_count, 0);
         assert_eq!(plan.targets[0].width, 1920);
         assert_eq!(plan.targets[0].height, 1080);
+        assert_eq!(plan.pipeline_warmup.keys[0].shader, "we/clippingmaskimage4");
+        assert_eq!(plan.pipeline_warmup.keys[0].target_format, "R8_UNORM");
+        assert_eq!(
+            plan.pipeline_warmup.keys[0].pipeline_class,
+            SceneGraphPipelineClass::PuppetSkinning
+        );
+        assert_eq!(
+            plan.pipeline_warmup.keys[0].texture_slot_mask,
+            CLIPPINGMASKIMAGE4_TEXTURE_SLOT_MASK
+        );
+        assert_eq!(
+            plan.pipeline_warmup.cache_keys()[0].target_format,
+            vk::Format::R8_UNORM
+        );
 
         let copy_back = plan
             .commands
@@ -522,7 +627,7 @@ mod tests {
                 SceneLayerCompositorCondition::TokenizedGeneratedMaterial,
                 Some(SceneLayerCompositorTarget::FullAlphaMask),
                 SceneLayerCompositorTarget::LayerTarget490,
-                SceneLayerCompositorBlendKey::Inherit,
+                SceneLayerCompositorBlendKey::SubdrawBlendByteToGeneratedMaterial1f0,
             ),
         ];
         SceneLayerCompositorPlan {
@@ -542,6 +647,7 @@ mod tests {
                 "model_vtable_32_normal_render_entry",
                 "model_vtable_50_clear_prep_entry",
                 "model_vtable_52_53_tokenized_subdraw_entries",
+                "model_wrapper_0xd8_0x128_state_keys",
                 "model_flattexture_intermediate_copy_back_bit_0x100",
                 "model_vtable_51_full_layer_composite_entry",
                 "lower_layer_routes_to_scene_graph_passes",
