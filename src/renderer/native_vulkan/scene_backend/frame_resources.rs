@@ -22,7 +22,10 @@ use super::effect_descriptors::{
     NativeVulkanSceneEffectExternalTextureDescriptor,
     NativeVulkanSceneEffectTextureDescriptorFramePlan,
 };
-use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapFramePlan;
+use super::effect_resource_heap::{
+    NativeVulkanSceneEffectResourceHeapFramePlan, NativeVulkanSceneEffectResourceHeapPassBindInfo,
+    NativeVulkanSceneEffectResourceHeapStore, NativeVulkanSceneEffectResourceHeapSyncAction,
+};
 use super::frame_completion::{
     NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
 };
@@ -70,6 +73,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     texture_images: NativeVulkanSceneTextureImageStore,
     offscreen_targets: NativeVulkanSceneOffscreenTargetStore,
     resource_heap: NativeVulkanSceneResourceHeapStore,
+    effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
 }
@@ -82,6 +86,7 @@ impl NativeVulkanSceneFrameResources {
             texture_images: NativeVulkanSceneTextureImageStore::default(),
             offscreen_targets: NativeVulkanSceneOffscreenTargetStore::default(),
             resource_heap: NativeVulkanSceneResourceHeapStore::default(),
+            effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
         }
@@ -330,17 +335,41 @@ impl NativeVulkanSceneFrameResources {
         )
     }
 
-    pub(in crate::renderer::native_vulkan) fn effect_resource_heap_frame_plan(
-        &self,
+    pub(in crate::renderer::native_vulkan) fn sync_effect_resource_heap(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
         texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
         descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
-    ) -> Result<NativeVulkanSceneEffectResourceHeapFramePlan, String> {
-        NativeVulkanSceneEffectResourceHeapFramePlan::from_descriptors(
+    ) -> Result<&[NativeVulkanSceneEffectResourceHeapSyncAction], String> {
+        let frame_plan = NativeVulkanSceneEffectResourceHeapFramePlan::from_descriptors(
             texture_descriptors,
             descriptor_heap_properties,
-            |resource| self.texture_image_binding(resource),
-            |target| self.offscreen_target_binding(target),
-        )
+            |resource| self.texture_images.texture_binding(resource),
+            |target| self.offscreen_targets.target_binding(target),
+        )?;
+        self.effect_resource_heap
+            .sync_frame_plan(device, memory_properties, frame_plan)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn current_effect_resource_heap_frame_plan(
+        &self,
+    ) -> Option<&NativeVulkanSceneEffectResourceHeapFramePlan> {
+        self.effect_resource_heap.current_frame_plan()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn effect_resource_heap_pass_bind_info(
+        &self,
+        effect_pass_index: usize,
+    ) -> Result<NativeVulkanSceneEffectResourceHeapPassBindInfo, String> {
+        self.effect_resource_heap
+            .pass_bind_info_for_effect_pass(effect_pass_index)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_effect_resource_heap_actions(
+        &self,
+    ) -> &[NativeVulkanSceneEffectResourceHeapSyncAction] {
+        self.effect_resource_heap.last_actions()
     }
 
     pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
@@ -471,6 +500,7 @@ impl NativeVulkanSceneFrameResources {
     }
 
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
+        self.effect_resource_heap.destroy_all(device);
         self.resource_heap.destroy_all(device);
         self.offscreen_targets.destroy_all(device);
         self.texture_images.destroy_all(device);

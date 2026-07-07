@@ -46,6 +46,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
     pub effect_texture_descriptor_binding_count: usize,
+    pub effect_resource_heap_action_count: usize,
     pub effect_resource_set_count: usize,
     pub effect_resource_descriptor_count: usize,
     pub effect_sampler_descriptor_count: usize,
@@ -158,10 +159,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
         let effect_texture_descriptors =
             frame_resources.effect_texture_descriptor_frame_plan(&frame.effect_pass_graph)?;
         let effect_texture_descriptor_binding_count = effect_texture_descriptors.binding_count;
-        let effect_resource_heap = frame_resources.effect_resource_heap_frame_plan(
-            &effect_texture_descriptors,
-            descriptor_heap_properties,
-        )?;
+        let effect_resource_heap_action_count = frame_resources
+            .sync_effect_resource_heap(
+                device,
+                memory_properties,
+                &effect_texture_descriptors,
+                descriptor_heap_properties,
+            )?
+            .len();
+        let effect_resource_heap = frame_resources
+            .current_effect_resource_heap_frame_plan()
+            .ok_or_else(|| {
+                "scene prepare missing effect resource heap frame plan after sync".to_owned()
+            })?;
         let effect_resource_set_count = effect_resource_heap.resource_set_count;
         let effect_resource_descriptor_count = effect_resource_heap.resource_descriptor_count;
         let effect_sampler_descriptor_count = effect_resource_heap.sampler_descriptor_count;
@@ -203,6 +213,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             graph_target_format_count: target_formats.target_format_count(),
             effect_target_count,
             effect_texture_descriptor_binding_count,
+            effect_resource_heap_action_count,
             effect_resource_set_count,
             effect_resource_descriptor_count,
             effect_sampler_descriptor_count,
@@ -214,7 +225,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
                 "prepare_effect_texture_descriptors",
-                "prepare_effect_resource_heap",
+                "sync_effect_resource_heap",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
                 "release_completed_prepare_staging",

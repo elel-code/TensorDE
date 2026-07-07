@@ -12,6 +12,8 @@
 
 mod key;
 mod resolve;
+mod store;
+mod vk_descriptor;
 
 #[cfg(test)]
 mod tests;
@@ -46,6 +48,10 @@ use key::{
 use resolve::{
     NativeVulkanSceneEffectResolvedSampledImageBinding, resolve_effect_sampled_image_binding,
     validate_effect_texture_binding,
+};
+pub(in crate::renderer::native_vulkan) use store::{
+    NativeVulkanSceneEffectResourceHeapPassBindInfo, NativeVulkanSceneEffectResourceHeapStore,
+    NativeVulkanSceneEffectResourceHeapSyncAction,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
