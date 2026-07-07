@@ -18,6 +18,10 @@ use crate::engine::scene_engine::{
 use super::NativeVulkanSceneLayerAlphaMaskRuntimePlan;
 use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
 use super::producer_draws::NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan;
+use super::rt_method8_geometry::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8GeometrySourcePlan,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_geometry_source_plan,
+};
 
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_RECEIVER_LABEL: &str =
     "[layer+0x490]";
@@ -32,8 +36,7 @@ pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_GEOMETRY_CREAT
     "0x14020b15e";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_GEOMETRY_SOURCE: &str =
     "0x14020b15e local/generated vertex/index arrays for [layer+0x490] RT method [8]";
-pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG: &str =
-    "(([layer+0x4b8]+0x18->0x18 >> 3) & 1) toggles index-buffer usage only";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG: &str = "((([layer+0x4b8]+0x18->0x18 >> 3) & 1) * 2) selects wrapper [8] stack arg 9 bit1 dynamic index-buffer creation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
@@ -47,6 +50,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub geometry_creation_site: &'static str,
     pub geometry_source: &'static str,
     pub index_buffer_usage_flag: &'static str,
+    pub geometry_source_plan: NativeVulkanSceneLayerAlphaMaskRtMethod8GeometrySourcePlan,
     pub bridges: Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge>,
     pub command_order: [&'static str; 7],
 }
@@ -182,6 +186,8 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
             geometry_creation_site: LAYER_490_RT_METHOD8_GEOMETRY_CREATION_SITE,
             geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
             index_buffer_usage_flag: LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG,
+            geometry_source_plan:
+                native_vulkan_scene_layer_alpha_mask_rt_method8_geometry_source_plan(),
             bridges: Vec::new(),
             command_order: rt_method8_bridge_command_order(),
         }
@@ -223,6 +229,8 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
             geometry_creation_site: LAYER_490_RT_METHOD8_GEOMETRY_CREATION_SITE,
             geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
             index_buffer_usage_flag: LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG,
+            geometry_source_plan:
+                native_vulkan_scene_layer_alpha_mask_rt_method8_geometry_source_plan(),
             bridges,
             command_order: rt_method8_bridge_command_order(),
         }
@@ -311,8 +319,8 @@ fn rt_method8_bridge(
             "preserve_closed_call_site",
             "preserve_indexed_vector_draw_bridge",
             "reject_raw_shader_resource_bind_interpretation",
-            "preserve_0x14020b15e_geometry_creation_site",
-            "defer_only_unclosed_vertex_index_payload_bytes",
+            "preserve_0x14020b15e_wrapper_argument_contract",
+            "defer_only_payload_bytes_and_retained_buffer_binding",
             "feed_rt_method_8_recorder_requirements",
         ],
     }
@@ -389,7 +397,7 @@ fn rt_method8_bridge_command_order() -> [&'static str; 7] {
         "map_producer_to_0x14020d83e",
         "map_generated_consumer_to_vtable_52_53_call_site",
         "preserve_rt_method_8_indexed_draw_identity",
-        "preserve_0x14020b15e_geometry_creation_site",
+        "preserve_0x14020b15e_wrapper_argument_contract",
         "expose_single_bridge_plan_to_recorder",
     ]
 }

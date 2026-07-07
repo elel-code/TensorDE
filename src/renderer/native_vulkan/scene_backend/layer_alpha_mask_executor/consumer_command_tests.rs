@@ -265,6 +265,8 @@ fn rt_method8_bridges() -> NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
         geometry_creation_site: LAYER_490_RT_METHOD8_GEOMETRY_CREATION_SITE,
         geometry_source: LAYER_490_RT_METHOD8_GEOMETRY_SOURCE,
         index_buffer_usage_flag: LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG,
+        geometry_source_plan:
+            super::super::rt_method8_geometry::native_vulkan_scene_layer_alpha_mask_rt_method8_geometry_source_plan(),
         bridges: vec![NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge {
             bridge_index: 0,
             command_index: 7,
@@ -303,8 +305,8 @@ fn rt_method8_bridges() -> NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
                 "preserve_closed_call_site",
                 "preserve_indexed_vector_draw_bridge",
                 "reject_raw_shader_resource_bind_interpretation",
-                "preserve_0x14020b15e_geometry_creation_site",
-                "defer_only_unclosed_vertex_index_payload_bytes",
+                "preserve_0x14020b15e_wrapper_argument_contract",
+                "defer_only_payload_bytes_and_retained_buffer_binding",
                 "feed_rt_method_8_recorder_requirements",
             ],
         }],
@@ -314,7 +316,7 @@ fn rt_method8_bridges() -> NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {
             "map_producer_to_0x14020d83e",
             "map_generated_consumer_to_vtable_52_53_call_site",
             "preserve_rt_method_8_indexed_draw_identity",
-            "preserve_0x14020b15e_geometry_creation_site",
+            "preserve_0x14020b15e_wrapper_argument_contract",
             "expose_single_bridge_plan_to_recorder",
         ],
     }

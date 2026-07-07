@@ -32,6 +32,7 @@ mod producer_uniform;
 mod recorder_requirements;
 mod resource_binds;
 mod rt_method8;
+mod rt_method8_geometry;
 mod token_schedule;
 
 use crate::engine::scene_engine::{
