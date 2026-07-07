@@ -88,22 +88,27 @@ impl NativeVulkanSceneFrameResources {
             .map_err(|err| err.to_string())
     }
 
-    pub(in crate::renderer::native_vulkan) fn sync_gpu_uploads(
+    pub(in crate::renderer::native_vulkan) fn sync_gpu_uploads_recorded(
         &mut self,
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
+        command_buffer: vk::CommandBuffer,
         resources: &[SceneResource],
     ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
         let upload_plan = self.gpu_upload_plan(resources)?;
-        self.gpu_buffers.sync_upload_plan(
+        self.gpu_buffers.sync_upload_plan_recorded(
             device,
             memory_properties,
-            command_pool,
-            queue,
+            command_buffer,
             upload_plan,
         )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn release_completed_gpu_uploads(
+        &mut self,
+        device: &Device,
+    ) -> usize {
+        self.gpu_buffers.release_completed_uploads(device)
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_upload_plan(

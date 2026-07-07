@@ -83,7 +83,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "prepare_texture_descriptors",
                 "sync_texture_images",
                 "sync_texture_descriptor_heap",
-                "sync_gpu_uploads",
+                "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands",
             ],
@@ -134,11 +134,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         texture_descriptor_heap_plan: &texture_descriptor_heap_plan,
     };
     let gpu_buffer_action_count = frame_resources
-        .sync_gpu_uploads(
+        .sync_gpu_uploads_recorded(
             context.device,
             context.memory_properties,
-            context.command_pool,
-            context.queue,
+            context.command_buffer,
             resources,
         )?
         .len();
@@ -281,7 +280,7 @@ mod tests {
                 "prepare_texture_descriptors",
                 "sync_texture_images",
                 "sync_texture_descriptor_heap",
-                "sync_gpu_uploads",
+                "record_gpu_buffer_uploads",
                 "warm_mesh_pipelines",
                 "record_mesh_frame_commands"
             ]

@@ -18,8 +18,8 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{SceneGeometryId, ScenePuppetId};
 use crate::renderer::native_vulkan::vulkan::{
-    NativeVulkanVulkanaliaBuffer,
-    native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload,
+    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaRecordedBufferUpload,
+    native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_destroy_buffer,
 };
 
@@ -267,6 +267,7 @@ impl NativeVulkanSceneGpuBufferCatalog {
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneGpuBufferStore {
     buffers: BTreeMap<NativeVulkanSceneGpuBufferKey, NativeVulkanSceneGpuBufferSlot>,
+    pending_retirements: Vec<NativeVulkanVulkanaliaBuffer>,
     last_actions: Vec<NativeVulkanSceneGpuBufferSyncAction>,
 }
 
@@ -274,16 +275,16 @@ impl NativeVulkanSceneGpuBufferStore {
     pub(in crate::renderer::native_vulkan) fn new() -> Self {
         Self {
             buffers: BTreeMap::new(),
+            pending_retirements: Vec::new(),
             last_actions: Vec::new(),
         }
     }
 
-    pub(in crate::renderer::native_vulkan) fn sync_upload_plan(
+    pub(in crate::renderer::native_vulkan) fn sync_upload_plan_recorded(
         &mut self,
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
-        command_pool: vk::CommandPool,
-        queue: vk::Queue,
+        command_buffer: vk::CommandBuffer,
         upload_plan: NativeVulkanSceneGpuUploadPlan,
     ) -> Result<&[NativeVulkanSceneGpuBufferSyncAction], String> {
         let uploads = upload_map(upload_plan.into_uploads()).map_err(|err| err.to_string())?;
@@ -298,7 +299,7 @@ impl NativeVulkanSceneGpuBufferStore {
             .collect::<Vec<_>>();
         for key in stale_keys {
             if let Some(slot) = self.buffers.remove(&key) {
-                native_vulkan_vulkanalia_destroy_buffer(device, slot.buffer);
+                self.defer_retirement(slot.buffer);
                 self.last_actions
                     .push(NativeVulkanSceneGpuBufferSyncAction::Release {
                         record: slot.record,
@@ -318,17 +319,17 @@ impl NativeVulkanSceneGpuBufferStore {
                 continue;
             }
 
-            let new_buffer =
-                native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload(
+            let recorded_upload =
+                native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(
                     device,
                     memory_properties,
-                    command_pool,
-                    queue,
+                    command_buffer,
                     scene_gpu_buffer_role_name(new_record.requirement),
                     new_record.requirement.bytes,
                     scene_gpu_buffer_usage_flags(new_record.requirement.usage),
                     &upload.payload,
                 )?;
+            let new_buffer = self.finish_recorded_upload(recorded_upload);
 
             match self.buffers.insert(
                 key,
@@ -338,7 +339,7 @@ impl NativeVulkanSceneGpuBufferStore {
                 },
             ) {
                 Some(old_slot) => {
-                    native_vulkan_vulkanalia_destroy_buffer(device, old_slot.buffer);
+                    self.defer_retirement(old_slot.buffer);
                     self.last_actions
                         .push(NativeVulkanSceneGpuBufferSyncAction::Replace {
                             old: old_slot.record,
@@ -355,9 +356,23 @@ impl NativeVulkanSceneGpuBufferStore {
         Ok(&self.last_actions)
     }
 
+    pub(in crate::renderer::native_vulkan) fn release_completed_uploads(
+        &mut self,
+        device: &Device,
+    ) -> usize {
+        let retired_count = self.pending_retirements.len();
+        for buffer in std::mem::take(&mut self.pending_retirements) {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        retired_count
+    }
+
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         for (_, slot) in std::mem::take(&mut self.buffers) {
             native_vulkan_vulkanalia_destroy_buffer(device, slot.buffer);
+        }
+        for buffer in std::mem::take(&mut self.pending_retirements) {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
         }
         self.last_actions.clear();
     }
@@ -423,6 +438,20 @@ impl NativeVulkanSceneGpuBufferStore {
         self.buffers
             .get(&NativeVulkanSceneGpuBufferKey { owner, role })
             .map(|slot| buffer_binding(slot))
+    }
+
+    fn finish_recorded_upload(
+        &mut self,
+        recorded_upload: NativeVulkanVulkanaliaRecordedBufferUpload,
+    ) -> NativeVulkanVulkanaliaBuffer {
+        if let Some(staging) = recorded_upload.staging {
+            self.defer_retirement(staging);
+        }
+        recorded_upload.target
+    }
+
+    fn defer_retirement(&mut self, buffer: NativeVulkanVulkanaliaBuffer) {
+        self.pending_retirements.push(buffer);
     }
 }
 

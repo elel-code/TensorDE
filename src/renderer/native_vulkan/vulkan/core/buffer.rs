@@ -55,6 +55,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaBuffer {
 
 unsafe impl Send for NativeVulkanVulkanaliaBuffer {}
 
+pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaRecordedBufferUpload {
+    pub(in crate::renderer::native_vulkan) target: NativeVulkanVulkanaliaBuffer,
+    pub(in crate::renderer::native_vulkan) staging: Option<NativeVulkanVulkanaliaBuffer>,
+    pub(in crate::renderer::native_vulkan) copy_recorded: bool,
+}
+
+unsafe impl Send for NativeVulkanVulkanaliaRecordedBufferUpload {}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -191,18 +199,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
     result
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device_local_buffer_with_staging_upload(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
-    command_pool: vk::CommandPool,
-    queue: vk::Queue,
+    command_buffer: vk::CommandBuffer,
     role: &'static str,
     requested_bytes: u64,
     usage: vk::BufferUsageFlags,
     upload_payload: &[u8],
-) -> Result<NativeVulkanVulkanaliaBuffer, String> {
+) -> Result<NativeVulkanVulkanaliaRecordedBufferUpload, String> {
     if upload_payload.is_empty() {
-        return native_vulkan_vulkanalia_create_buffer(
+        let target = native_vulkan_vulkanalia_create_buffer(
             device,
             memory_properties,
             role,
@@ -210,7 +217,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device
             usage | vk::BufferUsageFlags::TRANSFER_DST,
             NativeVulkanVulkanaliaBufferMemoryPreference::DeviceLocal,
             None,
-        );
+        )?;
+        return Ok(NativeVulkanVulkanaliaRecordedBufferUpload {
+            target,
+            staging: None,
+            copy_recorded: false,
+        });
     }
 
     let mut target = Some(native_vulkan_vulkanalia_create_buffer(
@@ -223,17 +235,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device
         None,
     )?);
 
-    let staging_role = "scene-staging-upload";
-    let mut staging = match native_vulkan_vulkanalia_create_buffer(
+    let staging = match native_vulkan_vulkanalia_create_buffer(
         device,
         memory_properties,
-        staging_role,
+        "scene-recorded-staging-upload",
         upload_payload.len() as u64,
         vk::BufferUsageFlags::TRANSFER_SRC,
         NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
         Some(upload_payload),
     ) {
-        Ok(staging) => Some(staging),
+        Ok(staging) => staging,
         Err(err) => {
             if let Some(target) = target.take() {
                 native_vulkan_vulkanalia_destroy_buffer(device, target);
@@ -242,102 +253,31 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device
         }
     };
 
-    let mut command_buffers = Vec::new();
-    let mut fence = vk::Fence::null();
-    let result = (|| -> Result<(), String> {
-        let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
-            .command_pool(command_pool)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        command_buffers = unsafe { device.allocate_command_buffers(&command_buffer_info) }
-            .map_err(|err| {
-                format!("vkAllocateCommandBuffers(vulkanalia {role} staging upload): {err:?}")
-            })?;
-        let command_buffer = command_buffers.first().copied().ok_or_else(|| {
-            format!("vkAllocateCommandBuffers(vulkanalia {role} staging upload) returned none")
-        })?;
-
-        let begin_info = vk::CommandBufferBeginInfo::builder()
-            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        unsafe {
-            device
-                .begin_command_buffer(command_buffer, &begin_info)
-                .map_err(|err| {
-                    format!("vkBeginCommandBuffer(vulkanalia {role} staging upload): {err:?}")
-                })?;
-            let copy_region = vk::BufferCopy::builder()
-                .src_offset(0)
-                .dst_offset(0)
-                .size(upload_payload.len() as u64)
-                .build();
-            let target_buffer = target
-                .as_ref()
-                .ok_or_else(|| format!("vulkanalia {role} staging upload lost target buffer"))?
-                .buffer;
-            let staging_buffer = staging
-                .as_ref()
-                .ok_or_else(|| format!("vulkanalia {role} staging upload lost staging buffer"))?
-                .buffer;
-            device.cmd_copy_buffer(
-                command_buffer,
-                staging_buffer,
-                target_buffer,
-                &[copy_region],
-            );
-            device.end_command_buffer(command_buffer).map_err(|err| {
-                format!("vkEndCommandBuffer(vulkanalia {role} staging upload): {err:?}")
-            })?;
-
-            let fence_info = vk::FenceCreateInfo::builder();
-            fence = device.create_fence(&fence_info, None).map_err(|err| {
-                format!("vkCreateFence(vulkanalia {role} staging upload): {err:?}")
-            })?;
-            let command_buffer_info = vk::CommandBufferSubmitInfo::builder()
-                .command_buffer(command_buffer)
-                .build();
-            let command_buffer_infos = [command_buffer_info];
-            let submit_info = vk::SubmitInfo2::builder()
-                .command_buffer_infos(&command_buffer_infos)
-                .build();
-            device
-                .queue_submit2(queue, &[submit_info], fence)
-                .map_err(|err| {
-                    format!("vkQueueSubmit2(vulkanalia {role} staging upload): {err:?}")
-                })?;
-            device
-                .wait_for_fences(&[fence], true, u64::MAX)
-                .map_err(|err| {
-                    format!("vkWaitForFences(vulkanalia {role} staging upload): {err:?}")
-                })?;
-        }
-
-        Ok(())
-    })();
-
-    unsafe {
-        if fence != vk::Fence::null() {
-            device.destroy_fence(fence, None);
-        }
-        if !command_buffers.is_empty() {
-            device.free_command_buffers(command_pool, &command_buffers);
-        }
-    }
-    if let Some(staging) = staging.take() {
-        native_vulkan_vulkanalia_destroy_buffer(device, staging);
-    }
+    let mut target = target
+        .take()
+        .ok_or_else(|| format!("vulkanalia {role} recorded upload lost retained buffer"))?;
+    let result = native_vulkan_vulkanalia_record_buffer_upload_copy(
+        device,
+        command_buffer,
+        &staging,
+        &target,
+        upload_payload.len() as u64,
+        usage,
+        role,
+    );
 
     match result {
         Ok(()) => {
-            let mut target = target
-                .take()
-                .ok_or_else(|| format!("vulkanalia {role} staging upload lost retained buffer"))?;
             target.snapshot.payload_uploaded = true;
-            Ok(target)
+            Ok(NativeVulkanVulkanaliaRecordedBufferUpload {
+                target,
+                staging: Some(staging),
+                copy_recorded: true,
+            })
         }
         Err(err) => {
-            if let Some(target) = target.take() {
-                native_vulkan_vulkanalia_destroy_buffer(device, target);
-            }
+            native_vulkan_vulkanalia_destroy_buffer(device, staging);
+            native_vulkan_vulkanalia_destroy_buffer(device, target);
             Err(err)
         }
     }
@@ -350,6 +290,111 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_destroy_buffe
     unsafe {
         device.destroy_buffer(buffer.buffer, None);
         device.free_memory(buffer.memory, None);
+    }
+}
+
+fn native_vulkan_vulkanalia_record_buffer_upload_copy(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    staging: &NativeVulkanVulkanaliaBuffer,
+    target: &NativeVulkanVulkanaliaBuffer,
+    copy_bytes: u64,
+    usage: vk::BufferUsageFlags,
+    role: &'static str,
+) -> Result<(), String> {
+    if copy_bytes == 0 {
+        return Err(format!(
+            "{role} recorded staging upload requires non-zero copy size"
+        ));
+    }
+    if copy_bytes > target.snapshot.requested_bytes {
+        return Err(format!(
+            "{role} recorded staging upload copy size {copy_bytes} exceeds target buffer size {}",
+            target.snapshot.requested_bytes
+        ));
+    }
+    if copy_bytes > staging.snapshot.requested_bytes {
+        return Err(format!(
+            "{role} recorded staging upload copy size {copy_bytes} exceeds staging buffer size {}",
+            staging.snapshot.requested_bytes
+        ));
+    }
+
+    let copy_region = vk::BufferCopy::builder()
+        .src_offset(0)
+        .dst_offset(0)
+        .size(copy_bytes)
+        .build();
+    let barriers = [vk::BufferMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::ALL_TRANSFER)
+        .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+        .dst_stage_mask(recorded_upload_dst_stage_mask(usage))
+        .dst_access_mask(recorded_upload_dst_access_mask(usage))
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .buffer(target.buffer)
+        .offset(0)
+        .size(copy_bytes)
+        .build()];
+    let dependency = vk::DependencyInfo::builder()
+        .buffer_memory_barriers(&barriers)
+        .build();
+    unsafe {
+        device.cmd_copy_buffer(
+            command_buffer,
+            staging.buffer,
+            target.buffer,
+            &[copy_region],
+        );
+        device.cmd_pipeline_barrier2(command_buffer, &dependency);
+    }
+    Ok(())
+}
+
+fn recorded_upload_dst_stage_mask(usage: vk::BufferUsageFlags) -> vk::PipelineStageFlags2 {
+    let mut stages = vk::PipelineStageFlags2::empty();
+    if usage.contains(vk::BufferUsageFlags::VERTEX_BUFFER)
+        || usage.contains(vk::BufferUsageFlags::INDEX_BUFFER)
+    {
+        stages |= vk::PipelineStageFlags2::VERTEX_INPUT;
+    }
+    if usage.contains(vk::BufferUsageFlags::UNIFORM_BUFFER)
+        || usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER)
+    {
+        stages |= vk::PipelineStageFlags2::VERTEX_SHADER
+            | vk::PipelineStageFlags2::FRAGMENT_SHADER
+            | vk::PipelineStageFlags2::COMPUTE_SHADER;
+    }
+    if usage.contains(vk::BufferUsageFlags::INDIRECT_BUFFER) {
+        stages |= vk::PipelineStageFlags2::DRAW_INDIRECT;
+    }
+    if stages.is_empty() {
+        vk::PipelineStageFlags2::ALL_COMMANDS
+    } else {
+        stages
+    }
+}
+
+fn recorded_upload_dst_access_mask(usage: vk::BufferUsageFlags) -> vk::AccessFlags2 {
+    let mut access = vk::AccessFlags2::empty();
+    if usage.contains(vk::BufferUsageFlags::VERTEX_BUFFER) {
+        access |= vk::AccessFlags2::VERTEX_ATTRIBUTE_READ;
+    }
+    if usage.contains(vk::BufferUsageFlags::INDEX_BUFFER) {
+        access |= vk::AccessFlags2::INDEX_READ;
+    }
+    if usage.contains(vk::BufferUsageFlags::UNIFORM_BUFFER)
+        || usage.contains(vk::BufferUsageFlags::STORAGE_BUFFER)
+    {
+        access |= vk::AccessFlags2::SHADER_READ | vk::AccessFlags2::SHADER_WRITE;
+    }
+    if usage.contains(vk::BufferUsageFlags::INDIRECT_BUFFER) {
+        access |= vk::AccessFlags2::INDIRECT_COMMAND_READ;
+    }
+    if access.is_empty() {
+        vk::AccessFlags2::MEMORY_READ | vk::AccessFlags2::MEMORY_WRITE
+    } else {
+        access
     }
 }
 
@@ -486,6 +531,33 @@ mod tests {
         )
         .expect("fallback host visible memory type");
         assert_eq!(selected.index, 1);
+    }
+
+    #[test]
+    fn recorded_upload_barrier_covers_vertex_and_index_consumers() {
+        let usage = vk::BufferUsageFlags::VERTEX_BUFFER | vk::BufferUsageFlags::INDEX_BUFFER;
+
+        let stages = recorded_upload_dst_stage_mask(usage);
+        let access = recorded_upload_dst_access_mask(usage);
+
+        assert!(stages.contains(vk::PipelineStageFlags2::VERTEX_INPUT));
+        assert!(access.contains(vk::AccessFlags2::VERTEX_ATTRIBUTE_READ));
+        assert!(access.contains(vk::AccessFlags2::INDEX_READ));
+    }
+
+    #[test]
+    fn recorded_upload_barrier_covers_storage_and_indirect_consumers() {
+        let usage = vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::INDIRECT_BUFFER;
+
+        let stages = recorded_upload_dst_stage_mask(usage);
+        let access = recorded_upload_dst_access_mask(usage);
+
+        assert!(stages.contains(vk::PipelineStageFlags2::VERTEX_SHADER));
+        assert!(stages.contains(vk::PipelineStageFlags2::COMPUTE_SHADER));
+        assert!(stages.contains(vk::PipelineStageFlags2::DRAW_INDIRECT));
+        assert!(access.contains(vk::AccessFlags2::SHADER_READ));
+        assert!(access.contains(vk::AccessFlags2::SHADER_WRITE));
+        assert!(access.contains(vk::AccessFlags2::INDIRECT_COMMAND_READ));
     }
 
     fn memory_type_candidate(
