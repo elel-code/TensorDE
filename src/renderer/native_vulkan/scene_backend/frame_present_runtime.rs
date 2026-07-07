@@ -16,7 +16,8 @@ use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot;
 
 use super::frame_acquire::{
-    NativeVulkanSceneFrameAcquirePlan, native_vulkan_acquire_scene_frame_image,
+    NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS, NativeVulkanSceneFrameAcquirePlan,
+    native_vulkan_try_acquire_scene_frame_image,
 };
 use super::frame_command_buffer::{
     NativeVulkanSceneFrameCommandBufferBeginPlan, NativeVulkanSceneFrameCommandBufferEndPlan,
@@ -105,14 +106,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
     let mut submitted_to_queue = false;
 
     let result = (|| -> Result<NativeVulkanScenePresentFramePlan<'a>, String> {
-        let acquire = native_vulkan_acquire_scene_frame_image(
+        let acquire = native_vulkan_try_acquire_scene_frame_image(
             context.device,
             super::frame_acquire::NativeVulkanSceneFrameAcquireContext {
                 swapchain: context.swapchain,
                 image_available: slot_sync.image_available,
-                timeout_ns: u64::MAX,
+                timeout_ns: NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS,
             },
-        )?;
+        )?
+        .ok_or_else(|| "scene frame acquire would block; no swapchain image is ready".to_owned())?;
         let target = frame_slots.swapchain_target(
             context.swapchain_images,
             acquire.image_index,
@@ -178,7 +180,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_present_scene_mesh_runti
             present,
             command_order: [
                 "prepare_scene_frame_slot",
-                "acquire_next_image_khr_scene_frame",
+                "try_acquire_next_image_khr_scene_frame",
                 "begin_command_buffer_scene_frame",
                 "record_scene_mesh_runtime_frame",
                 "end_command_buffer_scene_frame",

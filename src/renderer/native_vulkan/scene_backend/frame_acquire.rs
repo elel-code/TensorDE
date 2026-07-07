@@ -6,8 +6,12 @@
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.cpp`
 
 use serde::Serialize;
+use std::mem::MaybeUninit;
 use vulkanalia::prelude::v1_4::*;
-use vulkanalia::vk::{self, KhrSwapchainExtensionDeviceCommands};
+use vulkanalia::vk;
+
+pub(in crate::renderer::native_vulkan) const NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS:
+    u64 = 0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameAcquireContext {
@@ -34,7 +38,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_frame_acquire_plan
     validate_scene_frame_acquire_context(context)?;
     Ok(NativeVulkanSceneFrameAcquirePlan {
         timeout_ns: context.timeout_ns,
-        command_order: ["acquire_next_image_khr_scene_frame"],
+        command_order: ["try_acquire_next_image_khr_scene_frame"],
     })
 }
 
@@ -42,18 +46,54 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_acquire_scene_frame_imag
     device: &Device,
     context: NativeVulkanSceneFrameAcquireContext,
 ) -> Result<NativeVulkanSceneFrameAcquireResult, String> {
+    native_vulkan_try_acquire_scene_frame_image(device, context)?
+        .ok_or_else(|| "scene frame acquire would block; no swapchain image is ready".to_owned())
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_try_acquire_scene_frame_image(
+    device: &Device,
+    context: NativeVulkanSceneFrameAcquireContext,
+) -> Result<Option<NativeVulkanSceneFrameAcquireResult>, String> {
     let plan = native_vulkan_scene_frame_acquire_plan(context)?;
-    let (image_index, _) = unsafe {
-        device.acquire_next_image_khr(
+    let mut image_index = MaybeUninit::<u32>::uninit();
+    let status = unsafe {
+        (device.commands().acquire_next_image_khr)(
+            device.handle(),
             context.swapchain,
             context.timeout_ns,
             context.image_available,
             vk::Fence::null(),
+            image_index.as_mut_ptr(),
         )
-    }
-    .map_err(|err| format!("vkAcquireNextImageKHR(scene frame): {err:?}"))?;
+    };
 
-    Ok(NativeVulkanSceneFrameAcquireResult { image_index, plan })
+    match native_vulkan_scene_frame_acquire_status(status)? {
+        NativeVulkanSceneFrameAcquireStatus::Ready => {
+            Ok(Some(NativeVulkanSceneFrameAcquireResult {
+                image_index: unsafe { image_index.assume_init() },
+                plan,
+            }))
+        }
+        NativeVulkanSceneFrameAcquireStatus::WouldBlock => Ok(None),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVulkanSceneFrameAcquireStatus {
+    Ready,
+    WouldBlock,
+}
+
+fn native_vulkan_scene_frame_acquire_status(
+    status: vk::Result,
+) -> Result<NativeVulkanSceneFrameAcquireStatus, String> {
+    if status == vk::Result::SUCCESS || status == vk::Result::SUBOPTIMAL_KHR {
+        Ok(NativeVulkanSceneFrameAcquireStatus::Ready)
+    } else if status == vk::Result::NOT_READY || status == vk::Result::TIMEOUT {
+        Ok(NativeVulkanSceneFrameAcquireStatus::WouldBlock)
+    } else {
+        Err(format!("vkAcquireNextImageKHR(scene frame): {status:?}"))
+    }
 }
 
 fn validate_scene_frame_acquire_context(
@@ -77,8 +117,34 @@ mod tests {
     fn scene_frame_acquire_plan_uses_swapchain_acquire() {
         let plan = native_vulkan_scene_frame_acquire_plan(acquire_context()).expect("acquire plan");
 
-        assert_eq!(plan.timeout_ns, u64::MAX);
-        assert_eq!(plan.command_order, ["acquire_next_image_khr_scene_frame"]);
+        assert_eq!(
+            plan.timeout_ns,
+            NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS
+        );
+        assert_eq!(
+            plan.command_order,
+            ["try_acquire_next_image_khr_scene_frame"]
+        );
+    }
+
+    #[test]
+    fn scene_frame_acquire_status_does_not_read_image_index_when_not_ready() {
+        assert_eq!(
+            native_vulkan_scene_frame_acquire_status(vk::Result::SUCCESS).unwrap(),
+            NativeVulkanSceneFrameAcquireStatus::Ready
+        );
+        assert_eq!(
+            native_vulkan_scene_frame_acquire_status(vk::Result::SUBOPTIMAL_KHR).unwrap(),
+            NativeVulkanSceneFrameAcquireStatus::Ready
+        );
+        assert_eq!(
+            native_vulkan_scene_frame_acquire_status(vk::Result::NOT_READY).unwrap(),
+            NativeVulkanSceneFrameAcquireStatus::WouldBlock
+        );
+        assert_eq!(
+            native_vulkan_scene_frame_acquire_status(vk::Result::TIMEOUT).unwrap(),
+            NativeVulkanSceneFrameAcquireStatus::WouldBlock
+        );
     }
 
     #[test]
@@ -104,7 +170,7 @@ mod tests {
         NativeVulkanSceneFrameAcquireContext {
             swapchain: vk::SwapchainKHR::from_raw(11),
             image_available: vk::Semaphore::from_raw(12),
-            timeout_ns: u64::MAX,
+            timeout_ns: NATIVE_VULKAN_SCENE_FRAME_ACQUIRE_NONBLOCKING_TIMEOUT_NS,
         }
     }
 }
