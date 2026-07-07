@@ -17,6 +17,7 @@ use crate::engine::scene_engine::{
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 
+use super::consumer_command::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan;
 use super::consumer_draws::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan;
 use super::consumer_pipeline::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan;
 use super::consumer_target::NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan;
@@ -104,6 +105,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan, String> {
     if runtime.tokenized_layer_count == 0 {
         return Ok(NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan::empty());
@@ -151,6 +153,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             generated_consumer_draws,
             generated_consumer_targets,
             generated_consumer_pipelines,
+            generated_consumer_commands,
         )?);
     }
 
@@ -252,6 +255,7 @@ fn requirement_from_step(
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
 ) -> Result<NativeVulkanSceneLayerAlphaMaskRecorderRequirement, String> {
     match step.kind {
         NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch => {
@@ -404,13 +408,31 @@ fn requirement_from_step(
                         step.command_index
                     )
                 })?;
+            let generated_command = generated_consumer_commands
+                .command_for_consumer_draw(consumer.consumer_draw_index)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask generated consumer command {} has no generated command-list contract",
+                        step.command_index
+                    )
+                })?;
+            if generated_command.command_index != pipeline.command_index
+                || generated_command.command_index != target.command_index
+                || generated_command.color_target != target.color_target
+                || generated_command.pipeline_class != pipeline.pipeline_class
+            {
+                return Err(format!(
+                    "scene layer alpha-mask generated consumer command {} recorder command-list contract drifted from target/pipeline plans",
+                    step.command_index
+                ));
+            }
             Ok(base_requirement(
                 step,
                 command,
                 NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::GeneratedClippingTargetConsumer,
                 Some("we/genericimage4"),
-                Some(pipeline.pipeline_class),
-                Some(target.target_format_label),
+                Some(generated_command.pipeline_class),
+                Some(generated_command.target_format_label),
                 CLIPPINGTARGET_TEXTURE_SLOT_MASK,
                 None,
                 None,
@@ -431,7 +453,7 @@ fn requirement_from_step(
                     "resolve_layer_0x490_current_color_target",
                     "bind_generated_clippingtarget_resource_heap",
                     "bind_generated_clippingtarget_pipeline_variant",
-                    "use_generated_clippingtarget_draw_contract",
+                    "use_generated_clippingtarget_command_plan",
                     "resolve_generated_material_0x428_uniforms",
                     "record_layer_0x490_rt_method_8_generated_draw",
                 ],

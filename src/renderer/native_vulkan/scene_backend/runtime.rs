@@ -39,6 +39,7 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     NativeVulkanSceneLayerAlphaMaskProducerDrawRuntimePlan,
@@ -50,6 +51,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
+    native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets,
     native_vulkan_plan_scene_layer_alpha_mask_producer_draws,
     native_vulkan_plan_scene_layer_alpha_mask_producer_pipelines,
@@ -90,12 +92,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     pub layer_alpha_mask_generated_consumer_pipelines:
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    pub layer_alpha_mask_generated_consumer_commands:
+        NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
     pub layer_alpha_mask_recorder_requirements:
         NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 14],
+    pub command_order: [&'static str; 15],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -217,6 +221,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             )
         })?;
     }
+    let layer_alpha_mask_generated_consumer_commands =
+        native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_runtime_commands(
+            frame_resources,
+            &layer_alpha_mask_generated_consumer_draws,
+            &layer_alpha_mask_generated_consumer_targets,
+            &layer_alpha_mask_generated_consumer_pipelines,
+        )?;
     let layer_alpha_mask_recorder_requirements =
         native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
             &layer_alpha_masks,
@@ -227,6 +238,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_generated_consumer_draws,
             &layer_alpha_mask_generated_consumer_targets,
             &layer_alpha_mask_generated_consumer_pipelines,
+            &layer_alpha_mask_generated_consumer_commands,
         )?;
     let layer_alpha_mask_copy_back_commands =
         native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands(
@@ -255,6 +267,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_generated_consumer_draws,
         layer_alpha_mask_generated_consumer_targets,
         layer_alpha_mask_generated_consumer_pipelines,
+        layer_alpha_mask_generated_consumer_commands,
         layer_alpha_mask_recorder_requirements,
         layer_alpha_mask_copy_back_commands,
         mesh,
@@ -270,6 +283,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_generated_consumer_draws",
             "plan_layer_alpha_mask_generated_consumer_targets",
             "plan_layer_alpha_mask_generated_consumer_pipelines",
+            "plan_layer_alpha_mask_generated_consumer_commands",
             "plan_layer_alpha_mask_recorder_requirements",
             "plan_layer_alpha_mask_copy_back_command_list",
             "record_scene_mesh_graph_runtime",

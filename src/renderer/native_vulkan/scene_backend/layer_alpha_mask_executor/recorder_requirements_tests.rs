@@ -12,6 +12,7 @@ use super::super::{
     NativeVulkanSceneLayerAlphaMaskDescriptorSource,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskLayerTargetBinding,
     NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan, NativeVulkanSceneLayerAlphaMaskTargetPlan,
@@ -23,11 +24,13 @@ use super::*;
 use crate::engine::scene_engine::{SceneLayerCompositorBlendKey, ScenePuppetId, SceneResourceId};
 use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
     NativeVulkanSceneLayerAlphaMaskHeapSliceBinding, NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
+    NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
     NativeVulkanSceneLayerAlphaMaskResourceHeapBindPlan,
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 use vulkanalia::vk;
+use vulkanalia::vk::HasBuilder;
 
 #[test]
 fn recorder_requirements_classify_pending_and_ready_steps() {
@@ -58,8 +61,8 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             &schedule,
         )
         .expect("generated consumer draws");
-    let (generated_consumer_targets, generated_consumer_pipelines) =
-        generated_consumer_target_pipeline_plans(&generated_consumer_draws);
+    let (generated_consumer_targets, generated_consumer_pipelines, generated_consumer_commands) =
+        generated_consumer_target_pipeline_command_plans(&generated_consumer_draws);
 
     let plan = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -70,6 +73,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &generated_consumer_draws,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
+        &generated_consumer_commands,
     )
     .expect("recorder requirements");
 
@@ -185,8 +189,8 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
             &schedule,
         )
         .expect("generated consumer draws");
-    let (generated_consumer_targets, generated_consumer_pipelines) =
-        generated_consumer_target_pipeline_plans(&generated_consumer_draws);
+    let (generated_consumer_targets, generated_consumer_pipelines, generated_consumer_commands) =
+        generated_consumer_target_pipeline_command_plans(&generated_consumer_draws);
 
     let err = native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements(
         &runtime,
@@ -197,17 +201,19 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &generated_consumer_draws,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
+        &generated_consumer_commands,
     )
     .expect_err("copy-back must require retained draw bind");
 
     assert!(err.contains("requires exactly one retained copy-back draw heap bind"));
 }
 
-fn generated_consumer_target_pipeline_plans(
+fn generated_consumer_target_pipeline_command_plans(
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
 ) -> (
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
 ) {
     let targets = native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
         generated_consumer_draws,
@@ -230,7 +236,16 @@ fn generated_consumer_target_pipeline_plans(
             &targets,
         )
         .expect("generated consumer pipelines");
-    (targets, pipelines)
+    let commands =
+        NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan::from_draws_targets_pipelines_and_heap(
+            generated_consumer_draws,
+            &targets,
+            &pipelines,
+            |heap_bind_index| Ok(generated_consumer_bind_info(heap_bind_index)),
+            pipelines.cache_keys().len(),
+        )
+        .expect("generated consumer commands");
+    (targets, pipelines, commands)
 }
 
 fn runtime(
@@ -579,6 +594,46 @@ fn alpha_mask_heap_bind(
             shader_mappings,
             command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
         },
+    }
+}
+
+fn generated_consumer_bind_info(
+    heap_bind_index: usize,
+) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
+    let object = SceneObjectId(7);
+    let shader = "we/genericimage4".to_owned();
+    let bindings = vec![
+        NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
+            slot: 0,
+            source: NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                SceneResourceId(300 + heap_bind_index as u32),
+            ),
+        },
+        NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
+            slot: 8,
+            source: NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                SceneGraphTarget::FullAlphaMask,
+            ),
+        },
+    ];
+    NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
+        heap_bind_index,
+        object,
+        puppet: ScenePuppetId(5),
+        shader: shader.clone(),
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
+        heap_slice_index: heap_bind_index,
+        heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey { shader, bindings },
+        base_resource_descriptor_index: heap_bind_index.saturating_mul(2),
+        base_sampler_descriptor_index: heap_bind_index.saturating_mul(2) + 16,
+        resource_descriptor_count: 2,
+        texture_count: 2,
+        shader_mappings: vec![
+            "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+            "we.texture_slot8.g_Texture8 -> alpha-mask-heap-slice-offset1".to_owned(),
+        ],
+        resource_bind: vk::BindHeapInfoEXT::builder().build(),
+        sampler_bind: vk::BindHeapInfoEXT::builder().build(),
     }
 }
 
