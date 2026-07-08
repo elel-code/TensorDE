@@ -14,6 +14,9 @@
 //! - `reverse-engineered/shaders/effects/waterwaves.frag`
 //! - `reverse-engineered/shaders/effects/waterripple.frag`
 //! - `reverse-engineered/shaders/effects/waterflow.frag`
+//! - `reverse-engineered/effects/iris.md`
+//! - `reverse-engineered/shaders/effects/iris.vert`
+//! - `reverse-engineered/shaders/effects/iris.frag`
 
 use super::vec4::WE_VEC4_BYTES;
 use super::{WeEffectKind, WeEffectOutputContract};
@@ -116,6 +119,18 @@ impl WeShaderInterface {
             "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
             _ => None,
         }
+    }
+
+    pub fn for_effect_shader(shader: &str) -> Option<&'static Self> {
+        match shader {
+            "effects/iris" => Some(&IRIS_INTERFACE),
+            "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
+            _ => None,
+        }
+    }
+
+    pub fn declares_combo(&self, name: &str) -> bool {
+        self.combos.iter().any(|combo| combo.name == name)
     }
 
     pub fn declared_texture_slot_mask(&self) -> u32 {
@@ -542,6 +557,111 @@ pub static MINIMALALPHA_INTERFACE: WeShaderInterface = WeShaderInterface {
     combos: MINIMALALPHA_COMBOS,
 };
 
+pub static IRIS_TEXTURES: &[WeShaderTextureSlot] = &[
+    WeShaderTextureSlot {
+        slot: 0,
+        name: "g_Texture0",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::Required,
+        reference: "reverse-engineered/shaders/effects/iris.frag:6",
+    },
+    WeShaderTextureSlot {
+        slot: 1,
+        name: "g_Texture1",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::ComboDependent,
+        reference: "reverse-engineered/shaders/effects/iris.frag:7",
+    },
+];
+
+pub static IRIS_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/effects/iris.vert:3",
+    },
+    WeShaderUniform {
+        name: "g_Time",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/effects/iris.vert:4",
+    },
+    WeShaderUniform {
+        name: "g_Scale",
+        kind: WeShaderUniformKind::Vec2,
+        stage: WeShaderStage::Vertex,
+        material_key: Some("scale"),
+        reference: "reverse-engineered/shaders/effects/iris.vert:6",
+    },
+    WeShaderUniform {
+        name: "g_Speed",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: Some("speed"),
+        reference: "reverse-engineered/shaders/effects/iris.vert:7",
+    },
+    WeShaderUniform {
+        name: "g_Rough",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: Some("rough"),
+        reference: "reverse-engineered/shaders/effects/iris.vert:8",
+    },
+    WeShaderUniform {
+        name: "g_NoiseAmount",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: Some("noiseamount"),
+        reference: "reverse-engineered/shaders/effects/iris.vert:9",
+    },
+    WeShaderUniform {
+        name: "g_PhaseOffset",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Vertex,
+        material_key: Some("phase"),
+        reference: "reverse-engineered/shaders/effects/iris.vert:10",
+    },
+    WeShaderUniform {
+        name: "g_Texture1Resolution",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/effects/iris.vert:13",
+    },
+    WeShaderUniform {
+        name: "g_EyeColor",
+        kind: WeShaderUniformKind::Vec3,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("color"),
+        reference: "reverse-engineered/shaders/effects/iris.frag:9",
+    },
+];
+
+pub static IRIS_COMBOS: &[WeShaderCombo] = &[
+    WeShaderCombo {
+        name: "BACKGROUND",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_background"),
+        reference: "reverse-engineered/shaders/effects/iris.frag:1",
+    },
+    WeShaderCombo {
+        name: "MASK",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_opacity_mask"),
+        reference: "reverse-engineered/shaders/effects/iris.frag:7",
+    },
+];
+
+pub static IRIS_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "effects/iris",
+    textures: IRIS_TEXTURES,
+    uniforms: IRIS_UNIFORMS,
+    combos: IRIS_COMBOS,
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -620,6 +740,43 @@ mod tests {
                 .iter()
                 .any(|uniform| uniform.name == "g_Alpha")
         );
+    }
+
+    #[test]
+    fn iris_effect_interface_tracks_source_mask_slots_uniforms_and_combos() {
+        let interface = WeShaderInterface::for_effect_shader("effects/iris").unwrap();
+
+        assert!(WeShaderInterface::for_shader("effects/iris").is_none());
+        assert_eq!(interface.required_texture_slot_mask(), 0b1);
+        assert_eq!(interface.declared_texture_slot_mask(), 0b11);
+        assert_eq!(
+            interface
+                .texture_slot_mask_for_material("effects/iris", 0b11)
+                .unwrap(),
+            0b11
+        );
+        assert!(interface.declares_combo("MASK"));
+        assert!(interface.declares_combo("BACKGROUND"));
+        assert!(
+            interface.uniforms.iter().any(|uniform| {
+                uniform.name == "g_Scale" && uniform.material_key == Some("scale")
+            })
+        );
+        assert!(interface.uniforms.iter().any(|uniform| {
+            uniform.name == "g_EyeColor" && uniform.kind == WeShaderUniformKind::Vec3
+        }));
+    }
+
+    #[test]
+    fn iris_effect_interface_rejects_unknown_texture_slots() {
+        let interface = WeShaderInterface::for_effect_shader("effects/iris").unwrap();
+
+        let err = interface
+            .texture_slot_mask_for_material("effects/iris", 0b101)
+            .expect_err("slot 2 is not declared by iris");
+
+        assert!(err.contains("outside shader interface"));
+        assert!(err.contains("0x00000004"));
     }
 
     #[test]

@@ -16,7 +16,8 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SceneAlphaWriteMode, SceneCullMode, SceneDepthTest,
-    SceneEffectPassBlend, SceneEffectPassGraphMaterialPass, SceneObjectId, we::WeEffectKind,
+    SceneEffectPassBlend, SceneEffectPassGraphMaterialPass, SceneObjectId,
+    we::{WeEffectKind, WeShaderInterface},
 };
 
 use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapPassBindPlan;
@@ -118,9 +119,17 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.pass_index, pass.object
             ));
         }
+        let shader_combo_values = native_vulkan_scene_effect_pass_shader_combo_values(pass)?;
+        let texture_slot_mask = effect_pass_texture_slot_mask(pass)?;
+        validate_effect_pass_shader_interface(
+            pass,
+            shader,
+            texture_slot_mask,
+            &shader_combo_values,
+        )?;
         Ok(Self {
             shader,
-            shader_combo_values: native_vulkan_scene_effect_pass_shader_combo_values(pass)?,
+            shader_combo_values,
             effect: pass.effect,
             blend: pass.blend,
             depth_test: pass.depth_test,
@@ -128,7 +137,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
             cull_mode: pass.cull_mode,
             alpha_write: pass.alpha_write,
             target_format,
-            texture_slot_mask: effect_pass_texture_slot_mask(pass)?,
+            texture_slot_mask,
             has_effect_uniform: false,
             raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         })
@@ -385,6 +394,64 @@ fn effect_pass_texture_slot_mask(pass: &SceneEffectPassGraphMaterialPass) -> Res
     Ok(mask)
 }
 
+fn validate_effect_pass_shader_interface(
+    pass: &SceneEffectPassGraphMaterialPass,
+    shader: &str,
+    texture_slot_mask: u32,
+    combo_values: &[NativeVulkanScenePipelineShaderComboValue],
+) -> Result<(), String> {
+    let Some(interface) = WeShaderInterface::for_effect_shader(shader) else {
+        return Ok(());
+    };
+    interface.texture_slot_mask_for_material(shader, texture_slot_mask)?;
+    for combo in combo_values {
+        if !interface.declares_combo(&combo.name) {
+            return Err(format!(
+                "scene effect pass {} for object {:?} shader '{}' references undeclared WE combo '{}'",
+                pass.pass_index, pass.object, shader, combo.name
+            ));
+        }
+    }
+    validate_iris_effect_pass_shader_interface(pass, shader, texture_slot_mask, combo_values)
+}
+
+fn validate_iris_effect_pass_shader_interface(
+    pass: &SceneEffectPassGraphMaterialPass,
+    shader: &str,
+    texture_slot_mask: u32,
+    combo_values: &[NativeVulkanScenePipelineShaderComboValue],
+) -> Result<(), String> {
+    if shader != "effects/iris" {
+        return Ok(());
+    }
+    let mask_combo_enabled = combo_values
+        .iter()
+        .any(|combo| combo.name == "MASK" && combo.value != 0);
+    let background_combo_enabled = combo_values
+        .iter()
+        .any(|combo| combo.name == "BACKGROUND" && combo.value != 0);
+    let mask_texture_bound = texture_slot_mask & (1u32 << 1) != 0;
+    if mask_combo_enabled && !mask_texture_bound {
+        return Err(format!(
+            "scene effect pass {} for object {:?} shader 'effects/iris' enables MASK but does not bind g_Texture1 at WE slot 1",
+            pass.pass_index, pass.object
+        ));
+    }
+    if mask_texture_bound && !mask_combo_enabled {
+        return Err(format!(
+            "scene effect pass {} for object {:?} shader 'effects/iris' binds g_Texture1 at WE slot 1 but MASK combo is not enabled",
+            pass.pass_index, pass.object
+        ));
+    }
+    if background_combo_enabled && !mask_combo_enabled {
+        return Err(format!(
+            "scene effect pass {} for object {:?} shader 'effects/iris' enables BACKGROUND without MASK; WE shader only applies BACKGROUND inside the MASK branch",
+            pass.pass_index, pass.object
+        ));
+    }
+    Ok(())
+}
+
 fn push_effect_pipeline_texture_slot(
     object: SceneObjectId,
     pass_index: usize,
@@ -502,7 +569,7 @@ mod tests {
         assert_eq!(key.depth_test, SceneDepthTest::Disabled);
         assert_eq!(key.cull_mode, SceneCullMode::None);
         assert_eq!(key.target_format, vk::Format::R16G16B16A16_SFLOAT);
-        assert_eq!(key.texture_slot_mask, 0b101);
+        assert_eq!(key.texture_slot_mask, 0b1);
         assert_eq!(
             key.raster_geometry,
             NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle
@@ -511,10 +578,10 @@ mod tests {
 
     #[test]
     fn effect_pipeline_key_tracks_sorted_we_shader_combos() {
-        let mut pass = effect_pass(Some("effects/iris"));
+        let mut pass = effect_pass_with_mask(Some("effects/iris"));
         pass.combos.insert("MASK".to_owned(), 1);
         pass.combos.insert("BACKGROUND".to_owned(), 1);
-        let bind_info = pass_bind_info();
+        let bind_info = pass_bind_info_with_mask();
         let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
             &pass, &bind_info,
         )
@@ -540,6 +607,87 @@ mod tests {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn effect_pipeline_key_rejects_undeclared_iris_combo() {
+        let mut pass = effect_pass(Some("effects/iris"));
+        pass.combos.insert("NOT_IRIS".to_owned(), 1);
+        let bind_info = pass_bind_info();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let err = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect_err("undeclared combo must fail");
+
+        assert!(err.contains("undeclared WE combo 'NOT_IRIS'"));
+    }
+
+    #[test]
+    fn effect_pipeline_key_rejects_iris_mask_texture_without_mask_combo() {
+        let pass = effect_pass_with_mask(Some("effects/iris"));
+        let bind_info = pass_bind_info_with_mask();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let err = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect_err("mask texture without MASK combo must fail");
+
+        assert!(err.contains("g_Texture1"));
+        assert!(err.contains("MASK combo is not enabled"));
+    }
+
+    #[test]
+    fn effect_pipeline_key_rejects_iris_mask_combo_without_mask_texture() {
+        let mut pass = effect_pass(Some("effects/iris"));
+        pass.combos.insert("MASK".to_owned(), 1);
+        let bind_info = pass_bind_info();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let err = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect_err("MASK combo without mask texture must fail");
+
+        assert!(err.contains("enables MASK"));
+        assert!(err.contains("WE slot 1"));
+    }
+
+    #[test]
+    fn effect_pipeline_key_rejects_iris_background_without_mask_combo() {
+        let mut pass = effect_pass(Some("effects/iris"));
+        pass.combos.insert("BACKGROUND".to_owned(), 1);
+        let bind_info = pass_bind_info();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let err = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect_err("BACKGROUND without MASK must fail");
+
+        assert!(err.contains("BACKGROUND without MASK"));
     }
 
     #[test]
@@ -603,33 +751,31 @@ mod tests {
             depth_write: false,
             cull_mode: SceneCullMode::None,
             alpha_write: SceneAlphaWriteMode::Default,
-            texture_resources: vec![SceneEffectTextureResourceBinding {
-                slot: 2,
-                resource: SceneResourceId(13),
-            }],
+            texture_resources: Vec::new(),
             combos: BTreeMap::new(),
             constants: BTreeMap::new(),
         }
     }
 
+    fn effect_pass_with_mask(shader: Option<&str>) -> SceneEffectPassGraphMaterialPass {
+        let mut pass = effect_pass(shader);
+        pass.texture_resources
+            .push(SceneEffectTextureResourceBinding {
+                slot: 1,
+                resource: SceneResourceId(13),
+            });
+        pass
+    }
+
     fn pass_bind_info() -> NativeVulkanSceneEffectResourceHeapPassBindInfo {
         let texture_set = NativeVulkanSceneEffectTextureSetKey {
-            bindings: vec![
-                NativeVulkanSceneEffectTextureSetBinding {
-                    slot: 0,
-                    role: SceneGraphResourceRole::shader_texture(0),
-                    source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(
-                        SceneResourceId(12),
-                    ),
-                },
-                NativeVulkanSceneEffectTextureSetBinding {
-                    slot: 2,
-                    role: SceneGraphResourceRole::shader_texture(2),
-                    source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(
-                        SceneResourceId(13),
-                    ),
-                },
-            ],
+            bindings: vec![NativeVulkanSceneEffectTextureSetBinding {
+                slot: 0,
+                role: SceneGraphResourceRole::shader_texture(0),
+                source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(
+                    12,
+                )),
+            }],
         };
         NativeVulkanSceneEffectResourceHeapPassBindInfo {
             effect_pass_index: 2,
@@ -643,11 +789,28 @@ mod tests {
             effect_uniform_payload_hash: None,
             texture_set,
             base_resource_descriptor_index: 4,
-            resource_descriptor_count: 2,
-            texture_count: 2,
+            resource_descriptor_count: 1,
+            texture_count: 1,
             shader_mappings: Vec::new(),
             resource_bind: vk::BindHeapInfoEXT::default(),
             sampler_bind: Some(vk::BindHeapInfoEXT::default()),
         }
+    }
+
+    fn pass_bind_info_with_mask() -> NativeVulkanSceneEffectResourceHeapPassBindInfo {
+        let mut bind_info = pass_bind_info();
+        bind_info
+            .texture_set
+            .bindings
+            .push(NativeVulkanSceneEffectTextureSetBinding {
+                slot: 1,
+                role: SceneGraphResourceRole::shader_texture(1),
+                source: NativeVulkanSceneTextureDescriptorSource::ResidentTexture(SceneResourceId(
+                    13,
+                )),
+            });
+        bind_info.resource_descriptor_count = 2;
+        bind_info.texture_count = 2;
+        bind_info
     }
 }

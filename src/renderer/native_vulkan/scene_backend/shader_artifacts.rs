@@ -866,6 +866,16 @@ fn validate_scene_effect_shader_artifact_key(
             ));
         }
     }
+    if let Some(interface) = WeShaderInterface::for_effect_shader(&key.shader) {
+        for combo in &key.shader_combo_values {
+            if !interface.declares_combo(&combo.name) {
+                return Err(format!(
+                    "scene effect shader artifact key for '{}' references undeclared WE combo '{}'",
+                    key.shader, combo.name
+                ));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1211,6 +1221,39 @@ mod tests {
             plan.source_reference,
             "reverse-engineered/shaders/effects/iris"
         );
+    }
+
+    #[test]
+    fn effect_shader_artifact_plan_rejects_undeclared_iris_combo_variant() {
+        let key = NativeVulkanSceneEffectShaderArtifactKey::variant(
+            "effects/iris",
+            native_vulkan_scene_pipeline_shader_combo_values(&[("BLUR", 1)]),
+        );
+
+        let err = native_vulkan_scene_effect_shader_artifact_path_plan_for_key(
+            Path::new("artifacts/scene-shaders"),
+            &key,
+        )
+        .expect_err("undeclared iris combo variant must fail");
+
+        assert!(err.contains("undeclared WE combo 'BLUR'"));
+    }
+
+    #[test]
+    fn effect_shader_artifact_plan_keeps_unknown_effect_interfaces_path_checked_only() {
+        let key = NativeVulkanSceneEffectShaderArtifactKey::variant(
+            "effects/blur_downsample4",
+            native_vulkan_scene_pipeline_shader_combo_values(&[("KERNEL", 1)]),
+        );
+
+        let plan = native_vulkan_scene_effect_shader_artifact_path_plan_for_key(
+            Path::new("artifacts/scene-shaders"),
+            &key,
+        )
+        .expect("unknown effect shader interface remains path validated");
+
+        assert_eq!(plan.shader, "effects/blur_downsample4");
+        assert_eq!(plan.shader_combo_values, vec!["KERNEL=1".to_owned()]);
     }
 
     #[test]

@@ -239,6 +239,10 @@ mod tests {
         shader: &str,
         output: SceneGraphTarget,
     ) -> SceneEffectPassGraphMaterialPass {
+        let mut combos = BTreeMap::new();
+        if shader == "effects/iris" {
+            combos.insert("MASK".to_owned(), 1);
+        }
         SceneEffectPassGraphMaterialPass {
             graph_command_index: graph_pass_index,
             graph_pass_index,
@@ -264,7 +268,7 @@ mod tests {
                 slot: 1,
                 resource: SceneResourceId(10),
             }],
-            combos: BTreeMap::new(),
+            combos,
             constants: BTreeMap::new(),
         }
     }

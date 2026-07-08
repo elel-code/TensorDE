@@ -302,7 +302,7 @@ mod tests {
                 image: crate::engine::scene_engine::SceneEffectImageRef::SourceTexture,
                 source: SceneEffectPassGraphInputSource::ObjectSourceTexture(SceneResourceId(9)),
             });
-        let texture_resources = slots
+        let texture_resources: Vec<SceneEffectTextureResourceBinding> = slots
             .into_iter()
             .skip(source.iter().count())
             .map(|slot| SceneEffectTextureResourceBinding {
@@ -310,6 +310,10 @@ mod tests {
                 resource: SceneResourceId(10 + slot),
             })
             .collect();
+        let mut combos = BTreeMap::new();
+        if shader == "effects/iris" && texture_resources.iter().any(|resource| resource.slot == 1) {
+            combos.insert("MASK".to_owned(), 1);
+        }
 
         SceneEffectPassGraphMaterialPass {
             graph_command_index: graph_pass_index,
@@ -329,7 +333,7 @@ mod tests {
             cull_mode: SceneCullMode::None,
             alpha_write: SceneAlphaWriteMode::Default,
             texture_resources,
-            combos: BTreeMap::new(),
+            combos,
             constants: BTreeMap::new(),
         }
     }

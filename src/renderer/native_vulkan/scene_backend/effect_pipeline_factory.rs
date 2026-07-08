@@ -17,7 +17,7 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend, WeShaderInterface,
 };
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanDescriptorHeapShaderBindingMapping,
@@ -243,6 +243,54 @@ fn validate_scene_effect_pipeline_key(
             "scene effect pipeline shader '{}' has unknown WE blend state",
             key.shader
         ));
+    }
+    if let Some(interface) = WeShaderInterface::for_effect_shader(key.shader) {
+        interface.texture_slot_mask_for_material(key.shader, key.texture_slot_mask)?;
+        for combo in &key.shader_combo_values {
+            if !interface.declares_combo(&combo.name) {
+                return Err(format!(
+                    "scene effect pipeline shader '{}' references undeclared WE combo '{}'",
+                    key.shader, combo.name
+                ));
+            }
+        }
+        validate_scene_effect_pipeline_iris_key(key)?;
+    }
+    Ok(())
+}
+
+fn validate_scene_effect_pipeline_iris_key(
+    key: &NativeVulkanSceneEffectPipelineKey<'_>,
+) -> Result<(), String> {
+    if key.shader != "effects/iris" {
+        return Ok(());
+    }
+    let mask_combo_enabled = key
+        .shader_combo_values
+        .iter()
+        .any(|combo| combo.name == "MASK" && combo.value != 0);
+    let background_combo_enabled = key
+        .shader_combo_values
+        .iter()
+        .any(|combo| combo.name == "BACKGROUND" && combo.value != 0);
+    let mask_texture_bound = key.texture_slot_mask & (1u32 << 1) != 0;
+    if mask_combo_enabled && !mask_texture_bound {
+        return Err(
+            "scene effect pipeline shader 'effects/iris' enables MASK but has no g_Texture1 WE slot 1 binding"
+                .to_owned(),
+        );
+    }
+    if mask_texture_bound && !mask_combo_enabled {
+        return Err(
+            "scene effect pipeline shader 'effects/iris' binds g_Texture1 WE slot 1 but MASK combo is not enabled"
+                .to_owned(),
+        );
+    }
+    if background_combo_enabled && !mask_combo_enabled {
+        return Err(
+            "scene effect pipeline shader 'effects/iris' enables BACKGROUND without MASK"
+                .to_owned(),
+        );
     }
     Ok(())
 }
@@ -679,8 +727,8 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> effect-heap-slice-texture-offset0".to_owned(),
-                "VK_EXT_descriptor_heap we.texture_slot2.g_Texture2 -> effect-heap-slice-texture-offset1".to_owned(),
+                "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> effect-heap-slice-texture-offset0"
+                    .to_owned()
             ]
         );
         assert_eq!(plan.blend, "normal-replace-one-zero");
@@ -702,14 +750,41 @@ mod tests {
     }
 
     #[test]
+    fn effect_pipeline_plan_rejects_undeclared_iris_combo() {
+        let mut key = effect_key();
+        key.shader_combo_values.push(
+            super::super::pipeline::NativeVulkanScenePipelineShaderComboValue {
+                name: "NOT_IRIS".to_owned(),
+                value: 1,
+            },
+        );
+
+        let err = native_vulkan_scene_effect_pipeline_create_plan(&key)
+            .expect_err("undeclared iris combo must fail");
+
+        assert!(err.contains("undeclared WE combo 'NOT_IRIS'"));
+    }
+
+    #[test]
+    fn effect_pipeline_plan_rejects_undeclared_iris_texture_slot() {
+        let mut key = effect_key();
+        key.texture_slot_mask = 0b101;
+
+        let err = native_vulkan_scene_effect_pipeline_create_plan(&key)
+            .expect_err("undeclared iris texture slot must fail");
+
+        assert!(err.contains("outside shader interface"));
+        assert!(err.contains("0x00000004"));
+    }
+
+    #[test]
     fn effect_pipeline_descriptor_heap_layout_accepts_sampled_image_set() {
         let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 1,
                 properties: descriptor_properties(),
             },
         );
@@ -731,9 +806,8 @@ mod tests {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 1,
                 properties: descriptor_properties(),
             },
         );
@@ -776,11 +850,9 @@ mod tests {
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 0,
                 properties: descriptor_properties(),
             },
         );
@@ -790,7 +862,7 @@ mod tests {
         let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &key)
             .expect_err("non-texture tail must fail");
 
-        assert!(err.contains("leading effect uniform"));
+        assert!(err.contains("requires 1 WE texture mappings"));
     }
 
     #[test]
@@ -800,15 +872,14 @@ mod tests {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 1,
                 properties: descriptor_properties(),
             },
         );
         let key = uniform_effect_key();
         let vertex_spirv = spirv_with_uniform_binding(7);
-        let fragment_spirv = spirv_with_uniform_and_sampled_bindings(8, &[0, 2]);
+        let fragment_spirv = spirv_with_uniform_and_sampled_bindings(8, &[0]);
 
         let mappings = scene_effect_descriptor_heap_stage_mappings(
             &descriptor_heap_plan,
@@ -826,14 +897,13 @@ mod tests {
             mappings.vertex[0].resource_mask,
             vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER
         );
-        assert_eq!(mappings.fragment.len(), 3);
+        assert_eq!(mappings.fragment.len(), 2);
         assert_eq!(mappings.fragment[0].first_binding, 8);
         assert_eq!(
             mappings.fragment[0].resource_mask,
             vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER
         );
         assert_eq!(mappings.fragment[1].first_binding, 0);
-        assert_eq!(mappings.fragment[2].first_binding, 2);
         unsafe {
             assert_eq!(
                 mappings.vertex[0].source_data.constant_offset.heap_offset,
@@ -859,9 +929,9 @@ mod tests {
                 properties: descriptor_properties(),
             },
         );
-        let key = texture_only_effect_key();
+        let key = masked_texture_only_effect_key();
         let vertex_spirv = spirv_with_sampled_image_bindings(&[0]);
-        let fragment_spirv = spirv_with_sampled_image_bindings(&[2]);
+        let fragment_spirv = spirv_with_sampled_image_bindings(&[1]);
 
         let mappings = scene_effect_descriptor_heap_stage_mappings(
             &descriptor_heap_plan,
@@ -880,7 +950,7 @@ mod tests {
             vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE
         );
         assert_eq!(mappings.fragment.len(), 1);
-        assert_eq!(mappings.fragment[0].first_binding, 2);
+        assert_eq!(mappings.fragment[0].first_binding, 1);
         assert_eq!(
             mappings.fragment[0].resource_mask,
             vk::SpirvResourceTypeFlagsEXT::COMBINED_SAMPLED_IMAGE
@@ -924,28 +994,26 @@ mod tests {
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 1,
                 properties: descriptor_properties(),
             },
         );
         let key = texture_only_effect_key();
-        let vertex_spirv = spirv_with_sampled_image_bindings(&[0]);
         let fragment_spirv = spirv_with_sampled_image_bindings(&[1]);
 
         let err = scene_effect_descriptor_heap_stage_mappings(
             &descriptor_heap_plan,
             &key,
             NativeVulkanSceneEffectPipelineShaders {
-                vertex_spirv: &vertex_spirv,
+                vertex_spirv: &spirv_words(Vec::new()),
                 fragment_spirv: &fragment_spirv,
             },
         )
         .expect_err("sampled image binding mismatch must fail");
 
         assert!(err.contains("sampled-image bindings do not match"));
-        assert!(err.contains("missing [2]"));
+        assert!(err.contains("missing [0]"));
         assert!(err.contains("unexpected [1]"));
     }
 
@@ -956,15 +1024,14 @@ mod tests {
                 resource_descriptors: vec![
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
                     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
-                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
                 ],
-                sampler_count: 2,
+                sampler_count: 1,
                 properties: descriptor_properties(),
             },
         );
         let key = uniform_effect_key();
         let vertex_spirv = spirv_words(Vec::new());
-        let fragment_spirv = spirv_with_sampled_image_bindings(&[0, 2]);
+        let fragment_spirv = spirv_with_sampled_image_bindings(&[0]);
 
         let err = scene_effect_descriptor_heap_stage_mappings(
             &descriptor_heap_plan,
@@ -990,14 +1057,32 @@ mod tests {
             cull_mode: SceneCullMode::None,
             alpha_write: SceneAlphaWriteMode::Default,
             target_format: vk::Format::R16G16B16A16_SFLOAT,
-            texture_slot_mask: 0b101,
+            texture_slot_mask: 0b1,
             has_effect_uniform: false,
             raster_geometry: super::super::effect_pipeline::NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         }
     }
 
+    fn masked_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
+        let mut key = effect_key();
+        key.texture_slot_mask = 0b11;
+        key.shader_combo_values = vec![
+            super::super::pipeline::NativeVulkanScenePipelineShaderComboValue {
+                name: "MASK".to_owned(),
+                value: 1,
+            },
+        ];
+        key
+    }
+
     fn texture_only_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
         let mut key = effect_key();
+        key.has_effect_uniform = false;
+        key
+    }
+
+    fn masked_texture_only_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
+        let mut key = masked_effect_key();
         key.has_effect_uniform = false;
         key
     }
