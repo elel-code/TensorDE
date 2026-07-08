@@ -75,6 +75,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use super::layer_compositor_direct_mesh::native_vulkan_record_scene_layer_compositor_direct_mesh_blocks;
 use super::layer_compositor_recorder::{
     NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     native_vulkan_plan_scene_layer_compositor_block_recording,
@@ -142,8 +143,15 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub graph_execution: SceneGraphExecutionPlan,
     pub draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
+    pub recording_strategy: NativeVulkanSceneMeshRuntimeRecordingStrategy,
     pub frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
     pub command_order: [&'static str; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneMeshRuntimeRecordingStrategy {
+    SceneGraphExecutor,
+    LayerCompositorDirectMeshBlocks,
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -151,12 +159,14 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         graph_execution: SceneGraphExecutionPlan,
         draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
+        recording_strategy: NativeVulkanSceneMeshRuntimeRecordingStrategy,
         frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
     ) -> Self {
         Self {
             graph_execution,
             draw_family_executor,
             pipeline_warmup,
+            recording_strategy,
             frame,
             command_order: [
                 "build_scene_graph_execution_plan",
@@ -331,6 +341,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_rt_method8_indexed_draw_commands,
             &layer_alpha_mask_copy_back_commands,
         )?;
+    let mesh_graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
+    let layer_compositor_schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+        &frame.layer_compositor,
+        &frame.graph,
+        &mesh_graph_execution,
+        &layer_alpha_mask_token_recording,
+    )?;
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -341,12 +358,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             clear_color: context.clear_color,
         },
         frame,
-    )?;
-    let layer_compositor_schedule = native_vulkan_plan_scene_layer_compositor_schedule(
-        &frame.layer_compositor,
-        &frame.graph,
-        &mesh.graph_execution,
-        &layer_alpha_mask_token_recording,
+        mesh_graph_execution,
+        &layer_compositor_schedule,
     )?;
     let layer_compositor_block_recording =
         native_vulkan_plan_scene_layer_compositor_block_recording(
@@ -458,8 +471,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: NativeVulkanSceneMeshRuntimeFrameContext<'_>,
     frame: &'a SceneFramePlan,
+    graph_execution: SceneGraphExecutionPlan,
+    layer_compositor_schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
 ) -> Result<NativeVulkanSceneMeshRuntimeFramePlan<'a>, String> {
-    let graph_execution = SceneGraphExecutionPlan::from_graph(&frame.graph);
     let draw_family_executor =
         native_vulkan_require_scene_mesh_executor_families(&graph_execution.draw_family_plan)?;
     let pipeline_warmup = NativeVulkanSceneMeshPipelineWarmupPlan::from_graph_with_target_formats(
@@ -475,23 +489,49 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         })?;
     }
 
-    let frame_plan = native_vulkan_record_scene_graph_frame_commands(
-        frame_resources,
-        NativeVulkanSceneGraphRuntimeFrameContext {
-            device: context.device,
-            command_buffer: context.command_buffer,
-            swapchain_target: context.target,
-            target_formats: context.target_formats,
-            clear_color: context.clear_color,
-        },
-        frame,
-        &graph_execution,
-    )?;
+    let graph_context = NativeVulkanSceneGraphRuntimeFrameContext {
+        device: context.device,
+        command_buffer: context.command_buffer,
+        swapchain_target: context.target,
+        target_formats: context.target_formats,
+        clear_color: context.clear_color,
+    };
+    let (recording_strategy, frame_plan) = if let Some(frame_plan) =
+        native_vulkan_record_scene_layer_compositor_direct_mesh_blocks(
+            frame_resources,
+            graph_context,
+            frame,
+            &graph_execution,
+            layer_compositor_schedule,
+        )? {
+        (
+            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorDirectMeshBlocks,
+            frame_plan,
+        )
+    } else {
+        let frame_plan = native_vulkan_record_scene_graph_frame_commands(
+            frame_resources,
+            NativeVulkanSceneGraphRuntimeFrameContext {
+                device: context.device,
+                command_buffer: context.command_buffer,
+                swapchain_target: context.target,
+                target_formats: context.target_formats,
+                clear_color: context.clear_color,
+            },
+            frame,
+            &graph_execution,
+        )?;
+        (
+            NativeVulkanSceneMeshRuntimeRecordingStrategy::SceneGraphExecutor,
+            frame_plan,
+        )
+    };
 
     Ok(NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         graph_execution,
         draw_family_executor,
         pipeline_warmup,
+        recording_strategy,
         frame_plan,
     ))
 }
@@ -565,6 +605,7 @@ mod tests {
             graph_execution,
             draw_family_executor,
             warmup,
+            NativeVulkanSceneMeshRuntimeRecordingStrategy::SceneGraphExecutor,
             frame,
         );
 
@@ -578,6 +619,10 @@ mod tests {
             ]
         );
         assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);
+        assert_eq!(
+            plan.recording_strategy,
+            NativeVulkanSceneMeshRuntimeRecordingStrategy::SceneGraphExecutor
+        );
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass_count, 1);
         assert_eq!(plan.frame.passes[0].pass.draw_count, 1);
