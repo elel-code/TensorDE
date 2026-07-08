@@ -14,7 +14,8 @@ use super::{
     SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
     SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
     SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneGeometryId,
-    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat, scene_gpu_record_bytes,
+    SceneObjectId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
+    scene_gpu_record_bytes,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -35,6 +36,7 @@ pub enum SceneResidentResource {
     Texture(SceneTextureResidency),
     Buffer(SceneBufferResidency),
     MeshGeometry(SceneMeshResidency),
+    LayerAlphaMaskRtMethod8MdlvGeometry(SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency),
     PuppetRig(ScenePuppetRigResidency),
 }
 
@@ -74,6 +76,20 @@ impl From<&SceneResource> for SceneResidentResource {
                 vertex_bytes: scene_gpu_record_bytes(vertices.len(), SCENE_GPU_MESH_VERTEX_BYTES),
                 index_bytes: scene_gpu_record_bytes(indices.len(), SCENE_GPU_MESH_INDEX_BYTES),
             }),
+            SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry } => {
+                Self::LayerAlphaMaskRtMethod8MdlvGeometry(
+                    SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
+                        object: geometry.object,
+                        entry_owner_index: geometry.entry_owner_index,
+                        layout_key: geometry.layout_key,
+                        vertex_stride_bytes: geometry.vertex_stride_bytes,
+                        vertex_count: geometry.vertex_count,
+                        index_count: geometry.index_count,
+                        vertex_bytes: scene_raw_payload_bytes(&geometry.vertex_payload),
+                        index_bytes: scene_raw_payload_bytes(&geometry.index_payload),
+                    },
+                )
+            }
             SceneResource::PuppetRig {
                 id,
                 source_record,
@@ -181,6 +197,18 @@ pub struct SceneMeshResidency {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
+    pub layout_key: u32,
+    pub vertex_stride_bytes: u32,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub vertex_bytes: u64,
+    pub index_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ScenePuppetRigResidency {
     pub id: ScenePuppetId,
     pub source_record: u32,
@@ -208,6 +236,10 @@ fn scene_residency_bytes(count: usize, record_bytes: u64) -> u64 {
     scene_gpu_record_bytes(count, record_bytes)
 }
 
+fn scene_raw_payload_bytes(payload: &[u8]) -> u64 {
+    u64::try_from(payload.len()).unwrap_or(u64::MAX)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,7 +247,8 @@ mod tests {
     use crate::core::scene::{SceneMeshVertex, ScenePuppetTransform};
     use crate::core::scene::{ScenePuppetAnimationBone, ScenePuppetAnimationClip};
     use crate::engine::scene_engine::{
-        ScenePuppetClippingActiveSource, ScenePuppetClippingProgram,
+        SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES, ScenePuppetClippingActiveSource,
+        ScenePuppetClippingProgram,
     };
 
     #[test]
@@ -226,6 +259,18 @@ mod tests {
                 source_record: 12,
                 vertices: vec![SceneMeshVertex::default(); 3],
                 indices: vec![0, 1, 2],
+            },
+            SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry {
+                geometry: crate::engine::scene_engine::SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+                    object: crate::engine::scene_engine::SceneObjectId(1530),
+                    entry_owner_index: 0,
+                    layout_key: 0x9,
+                    vertex_stride_bytes: 20,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_payload: vec![1; 80],
+                    index_payload: vec![2; 12],
+                },
             },
             SceneResource::PuppetRig {
                 id: ScenePuppetId(7),
@@ -247,7 +292,7 @@ mod tests {
         ];
 
         let plan = SceneResourceResidencyPlan::from_resources(&resources);
-        assert_eq!(plan.resources.len(), 2);
+        assert_eq!(plan.resources.len(), 3);
         assert!(matches!(
             plan.resources[0],
             SceneResidentResource::MeshGeometry(SceneMeshResidency {
@@ -261,6 +306,21 @@ mod tests {
         ));
         assert!(matches!(
             plan.resources[1],
+            SceneResidentResource::LayerAlphaMaskRtMethod8MdlvGeometry(
+                SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
+                    object: crate::engine::scene_engine::SceneObjectId(1530),
+                    entry_owner_index: 0,
+                    layout_key: 0x9,
+                    vertex_stride_bytes: 20,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_bytes: 80,
+                    index_bytes: bytes,
+                }
+            ) if bytes == 6 * SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES
+        ));
+        assert!(matches!(
+            plan.resources[2],
             SceneResidentResource::PuppetRig(ScenePuppetRigResidency {
                 id: ScenePuppetId(7),
                 clip_count: 1,

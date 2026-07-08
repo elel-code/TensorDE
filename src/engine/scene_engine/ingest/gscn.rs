@@ -18,9 +18,10 @@ use crate::core::scene::{
 
 use super::super::{
     SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan,
-    SceneGeometryId, SceneMaterialContract, SceneMaterialRenderState, SceneObject,
-    SceneObjectEffectProgram, SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram,
-    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
+    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneMaterialContract,
+    SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram, SceneObjectGeometry,
+    SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource, SceneResourceId,
+    SceneTextureFormat,
 };
 use crate::engine::scene_engine::SceneEffectProgram;
 
@@ -33,6 +34,8 @@ pub struct GscnSceneFacts {
     pub counts: GscnSceneCounts,
     pub resources: Vec<GscnResourceFact>,
     pub mesh_resources: Vec<GscnMeshResourceFact>,
+    pub layer_alpha_mask_rt_method8_mdlv_geometries:
+        Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>,
     pub puppet_resources: Vec<GscnPuppetResourceFact>,
     pub objects: Vec<GscnObjectFact>,
 }
@@ -63,6 +66,18 @@ pub struct GscnMeshResourceFact {
     pub source_record: u32,
     pub vertices: Vec<SceneMeshVertex>,
     pub indices: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
+    pub layout_key: u32,
+    pub vertex_stride_bytes: u32,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub vertex_payload: Vec<u8>,
+    pub index_payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -139,6 +154,7 @@ impl GscnSceneFacts {
             counts,
             resources: texture_resources,
             mesh_resources,
+            layer_alpha_mask_rt_method8_mdlv_geometries,
             puppet_resources,
             objects: object_facts,
         } = self;
@@ -155,6 +171,7 @@ impl GscnSceneFacts {
             &texture_ids,
             geometry_facts,
             &geometry_ids,
+            layer_alpha_mask_rt_method8_mdlv_geometries,
             puppet_facts,
             &puppet_ids,
         );
@@ -260,6 +277,7 @@ fn engine_resources(
     texture_ids: &[Option<SceneResourceId>],
     geometry_facts: BTreeMap<u32, GscnMeshResourceFact>,
     geometry_ids: &BTreeMap<u32, SceneGeometryId>,
+    layer_alpha_mask_rt_method8_mdlv_geometries: Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>,
     puppet_facts: BTreeMap<u32, GscnPuppetResourceFact>,
     puppet_ids: &BTreeMap<u32, ScenePuppetId>,
 ) -> Vec<SceneResource> {
@@ -289,6 +307,22 @@ fn engine_resources(
                     vertices: fact.vertices,
                     indices: fact.indices,
                 })
+            }),
+    );
+    output.extend(
+        layer_alpha_mask_rt_method8_mdlv_geometries
+            .into_iter()
+            .map(|fact| SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry {
+                geometry: SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+                    object: fact.object,
+                    entry_owner_index: fact.entry_owner_index,
+                    layout_key: fact.layout_key,
+                    vertex_stride_bytes: fact.vertex_stride_bytes,
+                    vertex_count: fact.vertex_count,
+                    index_count: fact.index_count,
+                    vertex_payload: fact.vertex_payload,
+                    index_payload: fact.index_payload,
+                },
             }),
     );
     output.extend(
@@ -535,6 +569,18 @@ mod tests {
                 vertices: vec![SceneMeshVertex::default(); 4],
                 indices: vec![0, 1, 2, 2, 3, 0],
             }],
+            layer_alpha_mask_rt_method8_mdlv_geometries: vec![
+                GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
+                    object: SceneObjectId(0),
+                    entry_owner_index: 0,
+                    layout_key: 0x9,
+                    vertex_stride_bytes: 20,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_payload: vec![1; 80],
+                    index_payload: vec![2; 12],
+                },
+            ],
             puppet_resources: vec![GscnPuppetResourceFact {
                 source_record: 3,
                 skin: None,
@@ -621,7 +667,7 @@ mod tests {
         }
         .into_plan();
 
-        assert_eq!(plan.resources.len(), 4);
+        assert_eq!(plan.resources.len(), 5);
         assert_eq!(plan.objects.len(), 2);
         assert_eq!(plan.effects.len(), 0);
         let SceneResource::Texture {
@@ -660,13 +706,22 @@ mod tests {
         assert_eq!(*id, SceneGeometryId(0));
         assert_eq!(vertices.len(), 4);
         assert_eq!(indices.len(), 6);
+        let SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry } = &plan.resources[3]
+        else {
+            panic!("expected layer alpha-mask RT method [8] geometry resource");
+        };
+        assert_eq!(geometry.object, SceneObjectId(0));
+        assert_eq!(geometry.layout_key, 0x9);
+        assert_eq!(geometry.vertex_stride_bytes, 20);
+        assert_eq!(geometry.vertex_payload.len(), 80);
+        assert_eq!(geometry.index_payload.len(), 12);
         let SceneResource::PuppetRig {
             id,
             clips,
             layers,
             clipping,
             ..
-        } = &plan.resources[3]
+        } = &plan.resources[4]
         else {
             panic!("expected puppet rig resource");
         };

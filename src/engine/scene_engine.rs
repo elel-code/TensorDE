@@ -82,10 +82,12 @@ pub use renderer_scene_render::RendererSceneRender;
 pub use rendering_device::{RenderingDevice, RenderingDeviceCommand};
 pub use rendering_server::RenderingServer;
 pub use resource::{
-    SceneGeometryId, ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
+    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, ScenePuppetId, SceneResource,
+    SceneResourceId, SceneTextureFormat,
 };
 pub use resource_gpu_layout::{
-    SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
+    SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES,
+    SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
     SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
     SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
     SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
@@ -93,8 +95,9 @@ pub use resource_gpu_layout::{
     SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
 };
 pub use resource_residency::{
-    SceneBufferResidency, SceneMeshResidency, ScenePuppetRigResidency, SceneResidentResource,
-    SceneResourceResidencyPlan, SceneTextureResidency,
+    SceneBufferResidency, SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency, SceneMeshResidency,
+    ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
+    SceneTextureResidency,
 };
 pub use shader_uniforms::{SceneGenericImage4MaterialUniformRecord, SceneShaderUniformFramePlan};
 pub use timeline::{SceneSampleClock, SceneTimelineSample};

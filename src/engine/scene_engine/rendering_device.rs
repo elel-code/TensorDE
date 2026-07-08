@@ -50,6 +50,20 @@ pub enum RenderingDeviceCommand {
     ReleaseMeshGeometryResident {
         geometry: SceneGeometryId,
     },
+    EnsureLayerAlphaMaskRtMethod8MdlvGeometryResident {
+        object: SceneObjectId,
+        entry_owner_index: u32,
+        layout_key: u32,
+        vertex_stride_bytes: u32,
+        vertex_count: u32,
+        index_count: u32,
+        vertex_bytes: u64,
+        index_bytes: u64,
+    },
+    ReleaseLayerAlphaMaskRtMethod8MdlvGeometryResident {
+        object: SceneObjectId,
+        entry_owner_index: u32,
+    },
     EnsurePuppetRigResident {
         puppet: ScenePuppetId,
         source_record: u32,

@@ -17,11 +17,12 @@ use crate::core::scene::{
     ScenePuppetAnimationClip, ScenePuppetTransform,
 };
 use crate::engine::scene_engine::{
-    SCENE_GPU_MESH_INDEX_BYTES, SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE,
-    SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES, SCENE_GPU_PUPPET_BONE_BYTES,
-    SCENE_GPU_PUPPET_CLIP_FRAME_BYTES, SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES,
-    SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES, SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES,
-    SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneFramePlan, SceneLayerCompositorEntry,
+    SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
+    SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
+    SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_BONE_INDEX_BYTES, SCENE_GPU_PUPPET_CLIPPING_FRAME_KEY_BYTES,
+    SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneFramePlan,
+    SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneLayerCompositorEntry,
     SceneLayerCompositorOperation, SceneLayerCompositorPlan, ScenePuppetClippingProgram,
     SceneResource, scene_stable_name_hash,
 };
@@ -32,8 +33,8 @@ use super::layer_alpha_mask_executor::{
 };
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
-    NativeVulkanSceneGpuBufferRole, NativeVulkanSceneRenderStateUtilityGeometry,
-    NativeVulkanSceneResourceStorage,
+    NativeVulkanSceneGpuBufferRole, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -72,6 +73,9 @@ impl NativeVulkanSceneGpuUploadPlan {
                         SCENE_GPU_MESH_INDEX_BYTES,
                         mesh_index_payload(owner, indices)?,
                     )?;
+                }
+                SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry } => {
+                    push_layer_alpha_mask_rt_method8_mdlv_geometry_uploads(&mut uploads, geometry)?;
                 }
                 SceneResource::PuppetRig {
                     id,
@@ -507,6 +511,34 @@ fn puppet_active_source_payload(
     Ok(payload)
 }
 
+fn push_layer_alpha_mask_rt_method8_mdlv_geometry_uploads(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    geometry: &SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    let owner = NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+            object: geometry.object,
+            entry_owner_index: geometry.entry_owner_index,
+        },
+    );
+    push_upload(
+        uploads,
+        owner,
+        NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+        geometry.vertex_count as usize,
+        u64::from(geometry.vertex_stride_bytes),
+        geometry.vertex_payload.clone(),
+    )?;
+    push_upload(
+        uploads,
+        owner,
+        NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+        geometry.index_count as usize,
+        SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES,
+        geometry.index_payload.clone(),
+    )
+}
+
 fn push_frame_render_state_utility_uploads(
     uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
     layer_compositor: &SceneLayerCompositorPlan,
@@ -801,10 +833,11 @@ mod tests {
         ScenePuppetAnimationBone, ScenePuppetAnimationClip,
     };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
-        SceneLayerCompositorCondition, SceneLayerCompositorLayer, SceneLayerCompositorRoute,
-        SceneLayerCompositorTarget, SceneMeshResidency, SceneObjectId, ScenePuppetClippingProgram,
-        ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
+        SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneLayerCompositorBlendKey,
+        SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorLayer,
+        SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneMeshResidency, SceneObjectId,
+        ScenePuppetClippingProgram, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource,
+        SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -1014,6 +1047,86 @@ mod tests {
         assert_eq!(read_u32(&active_source_upload.payload, 28), 4);
         assert_eq!(read_f32(&active_source_upload.payload, 32), -1.0);
         assert_eq!(read_f32(&active_source_upload.payload, 36), 0.5);
+    }
+
+    #[test]
+    fn upload_plan_preserves_layer_alpha_mask_rt_method8_mdlv_raw_payloads() {
+        let vertex_payload = (0..80).map(|value| value as u8).collect::<Vec<_>>();
+        let index_payload = vec![0, 0, 2, 0, 1, 0, 1, 0, 2, 0, 3, 0];
+        let resources = vec![SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry {
+            geometry: SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+                object: SceneObjectId(1530),
+                entry_owner_index: 0,
+                layout_key: 0x9,
+                vertex_stride_bytes: 20,
+                vertex_count: 4,
+                index_count: 6,
+                vertex_payload: vertex_payload.clone(),
+                index_payload: index_payload.clone(),
+            },
+        }];
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_resources(&resources).unwrap();
+
+        assert_eq!(plan.uploads().len(), 2);
+        assert_eq!(
+            plan.uploads()[0].requirement,
+            NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+                    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                        object: SceneObjectId(1530),
+                        entry_owner_index: 0,
+                    },
+                ),
+                role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                bytes: 80,
+                usage: NativeVulkanSceneGpuBufferUsage::Vertex,
+            }
+        );
+        assert_eq!(plan.uploads()[0].payload, vertex_payload);
+        assert_eq!(
+            plan.uploads()[1].requirement.role,
+            NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex
+        );
+        assert_eq!(plan.uploads()[1].requirement.bytes, 12);
+        assert_eq!(plan.uploads()[1].payload, index_payload);
+    }
+
+    #[test]
+    fn upload_plan_rejects_layer_alpha_mask_rt_method8_mdlv_size_mismatch() {
+        let resources = vec![SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry {
+            geometry: SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+                object: SceneObjectId(1530),
+                entry_owner_index: 0,
+                layout_key: 0x9,
+                vertex_stride_bytes: 20,
+                vertex_count: 4,
+                index_count: 6,
+                vertex_payload: vec![1; 79],
+                index_payload: vec![2; 12],
+            },
+        }];
+
+        let err = NativeVulkanSceneGpuUploadPlan::from_resources(&resources)
+            .expect_err("raw MDLV vertex bytes must match entry stride/count");
+
+        assert!(matches!(
+            err,
+            NativeVulkanSceneGpuUploadError::UploadSizeMismatch {
+                requirement: NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+                        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                            object: SceneObjectId(1530),
+                            entry_owner_index: 0,
+                        }
+                    ),
+                    role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                    bytes: 80,
+                    ..
+                },
+                actual: 79,
+            }
+        ));
     }
 
     #[test]

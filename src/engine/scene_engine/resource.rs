@@ -15,6 +15,7 @@ use crate::core::scene::{
 };
 
 use super::ScenePuppetClippingProgram;
+use super::object::SceneObjectId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneResourceId(pub u32);
@@ -55,6 +56,9 @@ pub enum SceneResource {
         vertices: Vec<SceneMeshVertex>,
         indices: Vec<u32>,
     },
+    LayerAlphaMaskRtMethod8MdlvGeometry {
+        geometry: SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    },
     PuppetRig {
         id: ScenePuppetId,
         source_record: u32,
@@ -63,4 +67,16 @@ pub enum SceneResource {
         layers: Vec<ScenePuppetAnimationLayer>,
         clipping: ScenePuppetClippingProgram,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
+    pub layout_key: u32,
+    pub vertex_stride_bytes: u32,
+    pub vertex_count: u32,
+    pub index_count: u32,
+    pub vertex_payload: Vec<u8>,
+    pub index_payload: Vec<u8>,
 }

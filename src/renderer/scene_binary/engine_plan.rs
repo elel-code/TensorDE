@@ -81,6 +81,7 @@ pub(in crate::renderer) fn scene_engine_plan_from_gscn_path_with_properties(
         },
         resources: gscn_resources(&resources),
         mesh_resources,
+        layer_alpha_mask_rt_method8_mdlv_geometries: Vec::new(),
         puppet_resources,
         objects: gscn_objects(&mut reader, &names, &resources, &topology)?,
     }

@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    RenderingDeviceCommand, SceneBufferResidency, SceneGeometryId, SceneMeshResidency,
-    SceneObjectId, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceId,
+    RenderingDeviceCommand, SceneBufferResidency, SceneGeometryId,
+    SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency, SceneMeshResidency, SceneObjectId,
+    ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceId,
     SceneResourceResidencyPlan, SceneTextureResidency,
 };
 
@@ -22,6 +23,10 @@ pub struct NativeVulkanSceneResourceStorage {
     textures: BTreeMap<SceneResourceId, SceneTextureResidency>,
     buffers: BTreeMap<SceneResourceId, SceneBufferResidency>,
     mesh_geometries: BTreeMap<SceneGeometryId, SceneMeshResidency>,
+    layer_alpha_mask_rt_method8_mdlv_geometries: BTreeMap<
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+        SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency,
+    >,
     puppet_rigs: BTreeMap<ScenePuppetId, ScenePuppetRigResidency>,
 }
 
@@ -54,6 +59,13 @@ impl NativeVulkanSceneResourceStorage {
 
     pub fn puppet_rig(&self, id: ScenePuppetId) -> Option<&ScenePuppetRigResidency> {
         self.puppet_rigs.get(&id)
+    }
+
+    pub fn layer_alpha_mask_rt_method8_mdlv_geometry(
+        &self,
+        key: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Option<&SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency> {
+        self.layer_alpha_mask_rt_method8_mdlv_geometries.get(&key)
     }
 
     pub fn gpu_buffer_requirements(&self) -> Vec<NativeVulkanSceneGpuBufferRequirement> {
@@ -116,6 +128,24 @@ impl NativeVulkanSceneResourceStorage {
                 puppet.active_source_bytes,
             );
         }
+        for geometry in self.layer_alpha_mask_rt_method8_mdlv_geometries.values() {
+            let key = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                object: geometry.object,
+                entry_owner_index: geometry.entry_owner_index,
+            };
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(key),
+                NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                geometry.vertex_bytes,
+            );
+            push_gpu_buffer_requirement(
+                &mut requirements,
+                NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(key),
+                NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                geometry.index_bytes,
+            );
+        }
         requirements
     }
 
@@ -146,6 +176,21 @@ impl NativeVulkanSceneResourceStorage {
             }
             keep
         });
+        self.layer_alpha_mask_rt_method8_mdlv_geometries
+            .retain(|key, _| {
+                let keep = active
+                    .layer_alpha_mask_rt_method8_mdlv_geometries
+                    .contains(key);
+                if !keep {
+                    commands.push(
+                        RenderingDeviceCommand::ReleaseLayerAlphaMaskRtMethod8MdlvGeometryResident {
+                            object: key.object,
+                            entry_owner_index: key.entry_owner_index,
+                        },
+                    );
+                }
+                keep
+            });
         self.puppet_rigs.retain(|id, _| {
             let keep = active.puppet_rigs.contains(id);
             if !keep {
@@ -193,6 +238,29 @@ impl NativeVulkanSceneResourceStorage {
                             vertex_bytes: mesh.vertex_bytes,
                             index_bytes: mesh.index_bytes,
                         });
+                    }
+                }
+                SceneResidentResource::LayerAlphaMaskRtMethod8MdlvGeometry(geometry) => {
+                    let key = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                        object: geometry.object,
+                        entry_owner_index: geometry.entry_owner_index,
+                    };
+                    if self.layer_alpha_mask_rt_method8_mdlv_geometries.get(&key) != Some(&geometry)
+                    {
+                        self.layer_alpha_mask_rt_method8_mdlv_geometries
+                            .insert(key, geometry);
+                        commands.push(
+                            RenderingDeviceCommand::EnsureLayerAlphaMaskRtMethod8MdlvGeometryResident {
+                                object: geometry.object,
+                                entry_owner_index: geometry.entry_owner_index,
+                                layout_key: geometry.layout_key,
+                                vertex_stride_bytes: geometry.vertex_stride_bytes,
+                                vertex_count: geometry.vertex_count,
+                                index_count: geometry.index_count,
+                                vertex_bytes: geometry.vertex_bytes,
+                                index_bytes: geometry.index_bytes,
+                            },
+                        );
                     }
                 }
                 SceneResidentResource::PuppetRig(puppet) => {
@@ -320,6 +388,8 @@ struct NativeVulkanSceneActiveResources {
     textures: BTreeSet<SceneResourceId>,
     buffers: BTreeSet<SceneResourceId>,
     mesh_geometries: BTreeSet<SceneGeometryId>,
+    layer_alpha_mask_rt_method8_mdlv_geometries:
+        BTreeSet<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry>,
     puppet_rigs: BTreeSet<ScenePuppetId>,
 }
 
@@ -336,6 +406,14 @@ impl NativeVulkanSceneActiveResources {
                 }
                 SceneResidentResource::MeshGeometry(mesh) => {
                     active.mesh_geometries.insert(mesh.id);
+                }
+                SceneResidentResource::LayerAlphaMaskRtMethod8MdlvGeometry(geometry) => {
+                    active.layer_alpha_mask_rt_method8_mdlv_geometries.insert(
+                        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                            object: geometry.object,
+                            entry_owner_index: geometry.entry_owner_index,
+                        },
+                    );
                 }
                 SceneResidentResource::PuppetRig(puppet) => {
                     active.puppet_rigs.insert(puppet.id);
@@ -392,6 +470,10 @@ mod tests {
     #[test]
     fn storage_exposes_mesh_and_puppet_gpu_buffer_requirements() {
         let mut storage = NativeVulkanSceneResourceStorage::default();
+        let mdlv_geometry = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+            object: SceneObjectId(1530),
+            entry_owner_index: 0,
+        };
         let residency = SceneResourceResidencyPlan {
             resources: vec![
                 SceneResidentResource::MeshGeometry(SceneMeshResidency {
@@ -424,6 +506,18 @@ mod tests {
                     active_source_count: 1,
                     active_source_bytes: 64,
                 }),
+                SceneResidentResource::LayerAlphaMaskRtMethod8MdlvGeometry(
+                    SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
+                        object: mdlv_geometry.object,
+                        entry_owner_index: mdlv_geometry.entry_owner_index,
+                        layout_key: 0x9,
+                        vertex_stride_bytes: 20,
+                        vertex_count: 4,
+                        index_count: 6,
+                        vertex_bytes: 80,
+                        index_bytes: 12,
+                    },
+                ),
             ],
         };
         storage.sync_residency_plan(&residency);
@@ -486,7 +580,80 @@ mod tests {
                     bytes: 64,
                     usage: NativeVulkanSceneGpuBufferUsage::Storage,
                 },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+                        mdlv_geometry
+                    ),
+                    role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                    bytes: 80,
+                    usage: NativeVulkanSceneGpuBufferUsage::Vertex,
+                },
+                NativeVulkanSceneGpuBufferRequirement {
+                    owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+                        mdlv_geometry
+                    ),
+                    role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                    bytes: 12,
+                    usage: NativeVulkanSceneGpuBufferUsage::Index,
+                },
             ]
         );
+    }
+
+    #[test]
+    fn storage_tracks_layer_alpha_mask_rt_method8_geometry_without_mesh_owner() {
+        let mut storage = NativeVulkanSceneResourceStorage::default();
+        let geometry = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+            object: SceneObjectId(1530),
+            entry_owner_index: 0,
+        };
+        let residency = SceneResourceResidencyPlan {
+            resources: vec![SceneResidentResource::LayerAlphaMaskRtMethod8MdlvGeometry(
+                SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
+                    object: geometry.object,
+                    entry_owner_index: geometry.entry_owner_index,
+                    layout_key: 0x9,
+                    vertex_stride_bytes: 20,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_bytes: 80,
+                    index_bytes: 12,
+                },
+            )],
+        };
+
+        let first = storage.sync_residency_plan(&residency);
+        assert!(matches!(
+            first.as_slice(),
+            [
+                RenderingDeviceCommand::EnsureLayerAlphaMaskRtMethod8MdlvGeometryResident {
+                    object: SceneObjectId(1530),
+                    entry_owner_index: 0,
+                    layout_key: 0x9,
+                    vertex_stride_bytes: 20,
+                    vertex_count: 4,
+                    index_count: 6,
+                    vertex_bytes: 80,
+                    index_bytes: 12,
+                }
+            ]
+        ));
+        assert!(
+            storage
+                .layer_alpha_mask_rt_method8_mdlv_geometry(geometry)
+                .is_some()
+        );
+        assert!(storage.mesh_geometry(SceneGeometryId(1530)).is_none());
+
+        let third = storage.sync_residency_plan(&SceneResourceResidencyPlan::default());
+        assert!(matches!(
+            third.as_slice(),
+            [
+                RenderingDeviceCommand::ReleaseLayerAlphaMaskRtMethod8MdlvGeometryResident {
+                    object: SceneObjectId(1530),
+                    entry_owner_index: 0,
+                }
+            ]
+        ));
     }
 }
