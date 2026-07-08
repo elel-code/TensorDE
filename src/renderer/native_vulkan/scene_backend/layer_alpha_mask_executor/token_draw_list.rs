@@ -118,38 +118,57 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
     }
 
     let mut steps = Vec::with_capacity(token_recording.steps.len());
-    for step in &token_recording.steps {
-        steps.push(match step.recording_kind {
-            NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::TokenProgramNoDraw => {
-                token_program_step(step)
-            }
-            NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::ClippingMaskImage4ProducerRtMethod8 => {
-                record_producer_step(
-                    frame_resources,
-                    &context,
-                    step,
-                    producer_targets,
-                    producer_pipelines,
-                    rt_method8_commands,
-                )?
-            }
-            NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::FlatTextureCopyBackGraphNode => {
-                record_copy_back_step(frame_resources, &context, step, resource_binds)?
-            }
-            NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::GeneratedClippingTargetRtMethod8 => {
-                record_generated_consumer_step(
-                    frame_resources,
-                    &context,
-                    step,
-                    generated_commands,
-                    generated_pipelines,
-                    rt_method8_commands,
-                )?
-            }
-        });
+    for step_index in 0..token_recording.steps.len() {
+        steps.push(
+            native_vulkan_record_scene_layer_alpha_mask_token_draw_list_step(
+                frame_resources,
+                context,
+                token_recording,
+                step_index,
+                producer_targets,
+                producer_pipelines,
+                generated_commands,
+                generated_pipelines,
+                rt_method8_commands,
+                resource_binds,
+            )?,
+        );
     }
 
     Ok(NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan::from_steps(steps))
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha_mask_token_draw_list_step(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    context: NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordContext<'_>,
+    token_recording: &NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    token_recording_step_index: usize,
+    producer_targets: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    producer_pipelines: &NativeVulkanSceneLayerAlphaMaskProducerPipelinePlan,
+    generated_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+    generated_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    rt_method8_commands: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
+    resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
+) -> Result<NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordStep, String> {
+    let step = token_recording
+        .steps
+        .get(token_recording_step_index)
+        .ok_or_else(|| {
+            format!(
+                "scene layer alpha-mask token draw-list step index {token_recording_step_index} is outside recording plan"
+            )
+        })?;
+    record_token_recording_step(
+        frame_resources,
+        &context,
+        step,
+        producer_targets,
+        producer_pipelines,
+        generated_commands,
+        generated_pipelines,
+        rt_method8_commands,
+        resource_binds,
+    )
 }
 
 impl NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan {
@@ -250,6 +269,47 @@ impl NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan {
             copy_back_direct_draw_count,
             steps,
             command_order: token_draw_list_command_order(),
+        }
+    }
+}
+
+fn record_token_recording_step(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    context: &NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordContext<'_>,
+    step: &NativeVulkanSceneLayerAlphaMaskTokenRecordingStep,
+    producer_targets: &NativeVulkanSceneLayerAlphaMaskProducerTargetGraphPlan,
+    producer_pipelines: &NativeVulkanSceneLayerAlphaMaskProducerPipelinePlan,
+    generated_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
+    generated_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
+    rt_method8_commands: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
+    resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
+) -> Result<NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordStep, String> {
+    match step.recording_kind {
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::TokenProgramNoDraw => {
+            Ok(token_program_step(step))
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::ClippingMaskImage4ProducerRtMethod8 => {
+            record_producer_step(
+                frame_resources,
+                context,
+                step,
+                producer_targets,
+                producer_pipelines,
+                rt_method8_commands,
+            )
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::FlatTextureCopyBackGraphNode => {
+            record_copy_back_step(frame_resources, context, step, resource_binds)
+        }
+        NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::GeneratedClippingTargetRtMethod8 => {
+            record_generated_consumer_step(
+                frame_resources,
+                context,
+                step,
+                generated_commands,
+                generated_pipelines,
+                rt_method8_commands,
+            )
         }
     }
 }

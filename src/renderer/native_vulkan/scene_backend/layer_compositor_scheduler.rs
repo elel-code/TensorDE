@@ -33,8 +33,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorSc
     pub alpha_mask_token_draw_list_command_count: usize,
     pub token_program_no_draw_count: usize,
     pub clear_prep_recorder_required_count: usize,
+    pub recording_block_count: usize,
+    pub mesh_graph_draw_span_block_count: usize,
+    pub alpha_mask_token_recording_block_count: usize,
+    pub no_draw_marker_block_count: usize,
     pub all_alpha_mask_commands_recordable: bool,
     pub steps: Vec<NativeVulkanSceneLayerCompositorScheduleStep>,
+    pub recording_blocks: Vec<NativeVulkanSceneLayerCompositorRecordingBlock>,
     pub command_order: [&'static str; 8],
 }
 
@@ -61,6 +66,29 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerCompositorSche
     ObjectFinalCompositeGraphDraw,
     AlphaMaskTokenProgramNoDraw,
     AlphaMaskTokenDrawListCommand,
+    LayerTargetClearPrepRecorderRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorRecordingBlock {
+    pub block_index: usize,
+    pub step_index_start: usize,
+    pub step_index_end: usize,
+    pub command_count: usize,
+    pub kind: NativeVulkanSceneLayerCompositorRecordingBlockKind,
+    pub graph_pass_index: Option<usize>,
+    pub graph_draw_index_start: Option<usize>,
+    pub graph_draw_index_end: Option<usize>,
+    pub token_recording_step_index: Option<usize>,
+    pub command_order: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerCompositorRecordingBlockKind {
+    MeshGraphDrawSpan,
+    ObjectFinalProducerEffectRuntime,
+    AlphaMaskTokenDrawListStep,
+    NoDrawLayerMarker,
     LayerTargetClearPrepRecorderRequired,
 }
 
@@ -256,6 +284,26 @@ impl NativeVulkanSceneLayerCompositorSchedulePlan {
                 )
             })
             .all(|step| step.token_recording_step_index.is_some());
+        let recording_blocks = recording_blocks_from_steps(&steps);
+        let mesh_graph_draw_span_block_count = recording_blocks
+            .iter()
+            .filter(|block| {
+                block.kind == NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+            })
+            .count();
+        let alpha_mask_token_recording_block_count = recording_blocks
+            .iter()
+            .filter(|block| {
+                block.kind
+                    == NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
+            })
+            .count();
+        let no_draw_marker_block_count = recording_blocks
+            .iter()
+            .filter(|block| {
+                block.kind == NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+            })
+            .count();
         Self {
             layer_count,
             command_count: steps.len(),
@@ -265,9 +313,128 @@ impl NativeVulkanSceneLayerCompositorSchedulePlan {
             alpha_mask_token_draw_list_command_count,
             token_program_no_draw_count,
             clear_prep_recorder_required_count,
+            recording_block_count: recording_blocks.len(),
+            mesh_graph_draw_span_block_count,
+            alpha_mask_token_recording_block_count,
+            no_draw_marker_block_count,
             all_alpha_mask_commands_recordable,
             steps,
+            recording_blocks,
             command_order: layer_compositor_schedule_command_order(),
+        }
+    }
+}
+
+fn recording_blocks_from_steps(
+    steps: &[NativeVulkanSceneLayerCompositorScheduleStep],
+) -> Vec<NativeVulkanSceneLayerCompositorRecordingBlock> {
+    let mut blocks = Vec::new();
+    for (step_index, step) in steps.iter().enumerate() {
+        if let Some(block) = blocks.last_mut()
+            && extend_recording_block(block, step_index, step)
+        {
+            continue;
+        }
+        blocks.push(recording_block_from_step(blocks.len(), step_index, step));
+    }
+    blocks
+}
+
+fn extend_recording_block(
+    block: &mut NativeVulkanSceneLayerCompositorRecordingBlock,
+    step_index: usize,
+    step: &NativeVulkanSceneLayerCompositorScheduleStep,
+) -> bool {
+    if block.kind != NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+        || !matches!(
+            step.scheduled_kind,
+            NativeVulkanSceneLayerCompositorScheduledKind::DirectMeshGraphDraw
+                | NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalCompositeGraphDraw
+        )
+        || block.graph_pass_index != step.graph_pass_index
+        || block.graph_draw_index_end != step.graph_draw_index
+    {
+        return false;
+    }
+    let Some(draw_index) = step.graph_draw_index else {
+        return false;
+    };
+    block.step_index_end = step_index.saturating_add(1);
+    block.command_count = block.command_count.saturating_add(1);
+    block.graph_draw_index_end = Some(draw_index.saturating_add(1));
+    block
+        .command_order
+        .push("extend_contiguous_mesh_graph_draw_span");
+    true
+}
+
+fn recording_block_from_step(
+    block_index: usize,
+    step_index: usize,
+    step: &NativeVulkanSceneLayerCompositorScheduleStep,
+) -> NativeVulkanSceneLayerCompositorRecordingBlock {
+    let kind = recording_block_kind(step.scheduled_kind);
+    let graph_draw_index_end = (kind
+        == NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan)
+        .then(|| step.graph_draw_index.map(|draw| draw.saturating_add(1)))
+        .flatten();
+    NativeVulkanSceneLayerCompositorRecordingBlock {
+        block_index,
+        step_index_start: step_index,
+        step_index_end: step_index.saturating_add(1),
+        command_count: 1,
+        kind,
+        graph_pass_index: step.graph_pass_index,
+        graph_draw_index_start: step.graph_draw_index,
+        graph_draw_index_end,
+        token_recording_step_index: step.token_recording_step_index,
+        command_order: recording_block_command_order(kind),
+    }
+}
+
+fn recording_block_kind(
+    kind: NativeVulkanSceneLayerCompositorScheduledKind,
+) -> NativeVulkanSceneLayerCompositorRecordingBlockKind {
+    match kind {
+        NativeVulkanSceneLayerCompositorScheduledKind::DirectMeshGraphDraw
+        | NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalCompositeGraphDraw => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+        }
+        NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
+        }
+        NativeVulkanSceneLayerCompositorScheduledKind::AlphaMaskTokenProgramNoDraw => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+        }
+        NativeVulkanSceneLayerCompositorScheduledKind::AlphaMaskTokenDrawListCommand => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
+        }
+        NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired
+        }
+    }
+}
+
+fn recording_block_command_order(
+    kind: NativeVulkanSceneLayerCompositorRecordingBlockKind,
+) -> Vec<&'static str> {
+    match kind {
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan => vec![
+            "begin_or_reuse_graph_target_scope",
+            "record_contiguous_mesh_graph_draw_span",
+        ],
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {
+            vec!["preserve_object_final_effect_runtime_before_composite"]
+        }
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep => vec![
+            "record_single_alpha_mask_token_step_at_layer_position",
+            "do_not_record_entire_token_stream_out_of_order",
+        ],
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker => {
+            vec!["preserve_no_draw_layer_marker_position"]
+        }
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
+            vec!["require_layer_target_clear_prep_recorder"]
         }
     }
 }
@@ -446,9 +613,9 @@ fn layer_compositor_schedule_command_order() -> [&'static str; 8] {
         "join_object_final_producers_to_effect_runtime",
         "join_object_final_composites_to_graph_passes",
         "join_tokenized_commands_to_alpha_mask_token_recording",
-        "preserve_we_layer_order_before_present_frame_recording",
+        "coalesce_consecutive_mesh_graph_draws_into_recording_blocks",
         "reject_missing_alpha_mask_token_draw_list_steps",
-        "report_required_clear_recorders",
+        "emit_schedule_for_present_frame_recorder",
     ]
 }
 
@@ -491,6 +658,48 @@ mod tests {
         );
         assert_eq!(schedule.steps[0].graph_pass_index, Some(0));
         assert_eq!(schedule.steps[0].graph_draw_index, Some(0));
+        assert_eq!(schedule.recording_block_count, 1);
+        assert_eq!(
+            schedule.recording_blocks[0].kind,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+        );
+        assert_eq!(schedule.recording_blocks[0].graph_draw_index_start, Some(0));
+        assert_eq!(schedule.recording_blocks[0].graph_draw_index_end, Some(1));
+    }
+
+    #[test]
+    fn scheduler_coalesces_consecutive_direct_mesh_draws_into_one_recording_block() {
+        let first = SceneObjectId(7);
+        let second = SceneObjectId(8);
+        let graph = SceneGraph {
+            passes: vec![graph_pass(
+                "scene-main",
+                None,
+                SceneGraphTarget::Swapchain,
+                vec![mesh_draw(first), mesh_draw(second)],
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![direct_layer(first), direct_layer(second)]),
+            &graph,
+            &graph_execution,
+            &empty_token_recording(),
+        )
+        .expect("layer compositor schedule");
+
+        assert_eq!(schedule.command_count, 2);
+        assert_eq!(schedule.recording_block_count, 1);
+        assert_eq!(schedule.mesh_graph_draw_span_block_count, 1);
+        assert_eq!(schedule.recording_blocks[0].command_count, 2);
+        assert_eq!(schedule.recording_blocks[0].graph_pass_index, Some(0));
+        assert_eq!(schedule.recording_blocks[0].graph_draw_index_start, Some(0));
+        assert_eq!(schedule.recording_blocks[0].graph_draw_index_end, Some(2));
+        assert!(
+            schedule.recording_blocks[0]
+                .command_order
+                .contains(&"extend_contiguous_mesh_graph_draw_span")
+        );
     }
 
     #[test]
@@ -517,6 +726,10 @@ mod tests {
         assert_eq!(schedule.direct_mesh_graph_command_count, 1);
         assert_eq!(schedule.token_program_no_draw_count, 1);
         assert_eq!(schedule.alpha_mask_token_draw_list_command_count, 4);
+        assert_eq!(schedule.recording_block_count, 6);
+        assert_eq!(schedule.mesh_graph_draw_span_block_count, 1);
+        assert_eq!(schedule.alpha_mask_token_recording_block_count, 4);
+        assert_eq!(schedule.no_draw_marker_block_count, 1);
         assert!(schedule.all_alpha_mask_commands_recordable);
         assert_eq!(
             schedule.steps[1].scheduled_kind,
