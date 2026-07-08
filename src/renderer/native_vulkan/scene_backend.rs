@@ -32,6 +32,7 @@ pub mod graph_executor;
 pub mod layer_alpha_mask_executor;
 pub mod layer_alpha_mask_resource_heap;
 pub mod layer_aux_clear_prep;
+pub mod layer_aux_clear_scope;
 pub mod layer_aux_material_draws;
 pub mod layer_aux_targets;
 pub mod layer_compositor_command_blocks;
