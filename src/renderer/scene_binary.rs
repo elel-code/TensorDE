@@ -36,6 +36,7 @@ use crate::renderer::{
 mod effect_program;
 mod engine_plan;
 mod facts;
+mod mdlv;
 mod mesh;
 mod reader;
 mod texture;
@@ -2236,6 +2237,101 @@ mod tests {
     }
 
     #[test]
+    fn gscn_engine_plan_extracts_rt_method8_raw_mdlv_geometry_from_puppet_resource() {
+        let document: SceneDocument = serde_json::from_value(json!({
+            "resources": [
+                { "id": "eye", "type": "image", "source": "assets/eye.gtex", "width": 32, "height": 16 },
+                {
+                    "id": "eye-puppet-mdl",
+                    "type": "model",
+                    "source": "assets/eye_puppet.mdl",
+                    "original_source": "models/eye_puppet.mdl",
+                    "role": "we-puppet-mdl"
+                }
+            ],
+            "nodes": [
+                {
+                    "id": "eye-node",
+                    "type": "image",
+                    "resource": "eye",
+                    "width": 32,
+                    "height": 16,
+                    "provenance": {
+                        "source_format": "wallpaper-engine-scene",
+                        "model": {
+                            "source": "models/eye.json",
+                            "puppet": "models/eye_puppet.mdl"
+                        }
+                    },
+                    "mesh": {
+                        "vertices": [
+                            { "x": 0.0, "y": 0.0, "u": 0.0, "v": 0.0 },
+                            { "x": 1.0, "y": 0.0, "u": 1.0, "v": 0.0 },
+                            { "x": 0.0, "y": 1.0, "u": 0.0, "v": 1.0 }
+                        ],
+                        "indices": [0, 1, 2],
+                        "skin": {
+                            "bones": [
+                                { "bind": { "translation": [0.0, 0.0, 0.0] } }
+                            ],
+                            "vertices": [
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] },
+                                { "bone_indices": [0, 0, 0, 0], "weights": [1.0, 0.0, 0.0, 0.0] }
+                            ]
+                        },
+                        "puppet_clipping_records": [
+                            {
+                                "source_name": "eye-right",
+                                "mask": "masks/clipping_mask_eye",
+                                "duration_frames": 1680,
+                                "flags": 1,
+                                "bones": [0],
+                                "frame_keys": [0]
+                            }
+                        ]
+                    }
+                }
+            ]
+        }))
+        .expect("scene document");
+        let bytes = encode_scene_binary_document(0, &document).expect("binary scene");
+        let root = unique_test_dir("gilder-binary-rt-method8-mdlv");
+        let assets = root.join("assets");
+        fs::create_dir_all(&assets).expect("assets dir");
+        write_test_gtex_header(&assets.join("eye.gtex"), 32, 16, 7, 1, 128);
+        let (vertex_payload, index_payload) = test_mdlv0023_entry_payloads();
+        fs::write(
+            assets.join("eye_puppet.mdl"),
+            test_mdlv0023_bytes(&vertex_payload, &index_payload),
+        )
+        .expect("write mdlv");
+        let scene_path = assets.join("scene.gscn");
+        fs::write(&scene_path, bytes).expect("write gscn");
+
+        let plan = scene_engine_plan_from_gscn_path_with_properties(scene_path, 0, None)
+            .expect("scene engine plan");
+        fs::remove_dir_all(root).expect("remove test dir");
+
+        let geometry = plan
+            .resources
+            .iter()
+            .find_map(|resource| match resource {
+                SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry } => Some(geometry),
+                _ => None,
+            })
+            .expect("rt method [8] MDLV geometry resource");
+        assert_eq!(geometry.object, SceneObjectId(0));
+        assert_eq!(geometry.entry_owner_index, 0);
+        assert_eq!(geometry.layout_key, 0x0180_000f);
+        assert_eq!(geometry.vertex_stride_bytes, 80);
+        assert_eq!(geometry.vertex_count, 3);
+        assert_eq!(geometry.index_count, 3);
+        assert_eq!(geometry.vertex_payload, vertex_payload);
+        assert_eq!(geometry.index_payload, index_payload);
+    }
+
+    #[test]
     fn gscn_direct_ingest_resolves_puppet_clipping_mask_resource_paths() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
@@ -2332,5 +2428,30 @@ mod tests {
         bytes[20..24].copy_from_slice(&mip_count.to_le_bytes());
         bytes[24..32].copy_from_slice(&payload_bytes.to_le_bytes());
         fs::write(path, bytes).expect("write test gtex");
+    }
+
+    fn test_mdlv0023_entry_payloads() -> (Vec<u8>, Vec<u8>) {
+        let vertex_payload = (0..240).map(|value| value as u8).collect::<Vec<_>>();
+        let index_payload = vec![0, 0, 1, 0, 2, 0];
+        (vertex_payload, index_payload)
+    }
+
+    fn test_mdlv0023_bytes(vertex_payload: &[u8], index_payload: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MDLV0023\0");
+        bytes.extend_from_slice(&0x0180_0009u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(b"materials/eye.json\0");
+        bytes.extend_from_slice(&0x4u32.to_le_bytes());
+        for _ in 0..6 {
+            bytes.extend_from_slice(&0.0f32.to_le_bytes());
+        }
+        bytes.extend_from_slice(&0x0180_000fu32.to_le_bytes());
+        bytes.extend_from_slice(&(vertex_payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(vertex_payload);
+        bytes.extend_from_slice(&(index_payload.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(index_payload);
+        bytes
     }
 }

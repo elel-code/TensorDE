@@ -16,8 +16,10 @@ use crate::core::FitMode;
 mod effect_uv;
 mod flutter;
 mod geometry;
+mod node;
 mod particle;
 mod puppet;
+mod resource;
 
 pub(crate) use self::effect_uv::decode_effect_uv_transform_record;
 pub use self::effect_uv::{
@@ -48,6 +50,10 @@ pub(crate) use self::geometry::{
 };
 use self::geometry::{
     geometry_flags, geometry_has_uv, geometry_ranges, geometry_stream_shape, node_has_geometry,
+};
+pub(crate) use self::node::decode_node_record;
+pub use self::node::{
+    SCENE_BINARY_NODE_RECORD_SIZE, SCENE_BINARY_NODE_RECORD_SIZE_V12, SceneBinaryNodeRecord,
 };
 pub(crate) use self::particle::decode_particle_emitter_record;
 use self::particle::particle_emitter_record_from_node;
@@ -82,17 +88,16 @@ pub(crate) use self::puppet::{
     decode_puppet_record, decode_puppet_skin_bone_record, decode_puppet_skin_vertex_record,
 };
 use self::puppet::{puppet_clip_flags, puppet_first_record, puppet_flags, puppet_layer_flags};
+pub(crate) use self::resource::decode_resource_record;
+pub use self::resource::{SCENE_BINARY_RESOURCE_RECORD_SIZE, SceneBinaryResourceRecord};
 
 pub const SCENE_BINARY_MAGIC: [u8; 4] = *b"GSCN";
 pub const SCENE_BINARY_VERSION_V12: u16 = 12;
-pub const SCENE_BINARY_VERSION: u16 = 18;
+pub const SCENE_BINARY_VERSION: u16 = 19;
 pub const SCENE_BINARY_ENDIAN_LITTLE: u8 = 1;
 pub const SCENE_BINARY_ALIGNMENT: u8 = 8;
 pub const SCENE_BINARY_HEADER_SIZE: usize = 24;
 pub const SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE: usize = 24;
-pub const SCENE_BINARY_RESOURCE_RECORD_SIZE: usize = 32;
-pub const SCENE_BINARY_NODE_RECORD_SIZE_V12: usize = 116;
-pub const SCENE_BINARY_NODE_RECORD_SIZE: usize = 120;
 pub const SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE: usize = 80;
 pub const SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE: usize = 16;
 pub const SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE: usize = 32;
@@ -1336,108 +1341,6 @@ impl<T> Iterator for SceneBinaryRecords<'_, T> {
 
 impl<T> ExactSizeIterator for SceneBinaryRecords<'_, T> {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SceneBinaryResourceRecord {
-    pub id_name: u32,
-    pub source_name: u32,
-    pub original_source_name: u32,
-    pub role_name: u32,
-    pub kind: u16,
-    pub flags: u16,
-    pub width: u32,
-    pub height: u32,
-    pub upload_hints: u32,
-}
-
-impl SceneBinaryResourceRecord {
-    fn encode(self, out: &mut Vec<u8>) {
-        write_u32(out, self.id_name);
-        write_u32(out, self.source_name);
-        write_u32(out, self.original_source_name);
-        write_u32(out, self.role_name);
-        write_u16(out, self.kind);
-        write_u16(out, self.flags);
-        write_u32(out, self.width);
-        write_u32(out, self.height);
-        write_u32(out, self.upload_hints);
-        debug_assert_eq!(SCENE_BINARY_RESOURCE_RECORD_SIZE, 32);
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SceneBinaryNodeRecord {
-    pub id_name: u32,
-    pub display_name: u32,
-    pub parent_index: u32,
-    pub resource_name: u32,
-    pub kind: u16,
-    pub flags: u16,
-    pub draw_order: u32,
-    pub child_count: u32,
-    pub first_child_index: u32,
-    pub subtree_node_count: u32,
-    pub effect_count: u32,
-    pub audio_count: u32,
-    pub property_count: u32,
-    pub material_index: u32,
-    pub geometry_index: u32,
-    pub first_transform: u32,
-    pub transform_count: u32,
-    pub puppet_index: u32,
-    pub particle_index: u32,
-    pub puppet_attachment_name: u32,
-    pub opacity: f32,
-    pub color_rgba: u32,
-    pub stroke_color_rgba: u32,
-    pub stroke_width: f32,
-    pub corner_radius: f32,
-    pub font_size: f32,
-    pub text_name: u32,
-    pub font_family_name: u32,
-    pub font_resource_name: u32,
-    pub font_weight_name: u32,
-    pub fit: u16,
-    pub text_align: u16,
-}
-
-impl SceneBinaryNodeRecord {
-    fn encode(self, out: &mut Vec<u8>) {
-        write_u32(out, self.id_name);
-        write_u32(out, self.display_name);
-        write_u32(out, self.parent_index);
-        write_u32(out, self.resource_name);
-        write_u16(out, self.kind);
-        write_u16(out, self.flags);
-        write_u32(out, self.draw_order);
-        write_u32(out, self.child_count);
-        write_u32(out, self.first_child_index);
-        write_u32(out, self.subtree_node_count);
-        write_u32(out, self.effect_count);
-        write_u32(out, self.audio_count);
-        write_u32(out, self.property_count);
-        write_u32(out, self.material_index);
-        write_u32(out, self.geometry_index);
-        write_u32(out, self.first_transform);
-        write_u32(out, self.transform_count);
-        write_u32(out, self.puppet_index);
-        write_u32(out, self.particle_index);
-        write_u32(out, self.puppet_attachment_name);
-        write_f32(out, self.opacity);
-        write_u32(out, self.color_rgba);
-        write_u32(out, self.stroke_color_rgba);
-        write_f32(out, self.stroke_width);
-        write_f32(out, self.corner_radius);
-        write_f32(out, self.font_size);
-        write_u32(out, self.text_name);
-        write_u32(out, self.font_family_name);
-        write_u32(out, self.font_resource_name);
-        write_u32(out, self.font_weight_name);
-        write_u16(out, self.fit);
-        write_u16(out, self.text_align);
-        debug_assert_eq!(SCENE_BINARY_NODE_RECORD_SIZE, 120);
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SceneBinaryTransformTimelineRecord {
     pub owner_name: u32,
@@ -2583,6 +2486,13 @@ impl SceneBinaryPayloadBuilder {
             SceneBinaryNameKind::PuppetAttachment,
             node.puppet_attachment.as_deref(),
         );
+        let puppet_source_name = self.names.intern_optional(
+            SceneBinaryNameKind::ResourcePath,
+            node.provenance
+                .as_ref()
+                .and_then(|provenance| provenance.model.as_ref())
+                .and_then(|model| model.puppet.as_deref()),
+        );
         let base_resource = node
             .resource
             .as_deref()
@@ -2728,6 +2638,7 @@ impl SceneBinaryPayloadBuilder {
                 font_weight_name,
                 fit: fit_code(node.fit),
                 text_align: text_align_code(node.text_align),
+                puppet_source_name,
             }
             .encode(out)
         });
@@ -4888,59 +4799,6 @@ fn timeline_channel_bounds(channel: &SceneTimelineChannel) -> (u64, u64, f32, f3
 
 fn retained_stable_id(owner_kind: u16, owner_name: u32, record_index: u32) -> u64 {
     (u64::from(owner_kind) << 48) | (u64::from(owner_name) << 16) | u64::from(record_index)
-}
-
-pub(crate) fn decode_resource_record(
-    bytes: &[u8],
-) -> Result<SceneBinaryResourceRecord, SceneBinaryError> {
-    Ok(SceneBinaryResourceRecord {
-        id_name: read_u32(bytes, 0)?,
-        source_name: read_u32(bytes, 4)?,
-        original_source_name: read_u32(bytes, 8)?,
-        role_name: read_u32(bytes, 12)?,
-        kind: read_u16(bytes, 16)?,
-        flags: read_u16(bytes, 18)?,
-        width: read_u32(bytes, 20)?,
-        height: read_u32(bytes, 24)?,
-        upload_hints: read_u32(bytes, 28)?,
-    })
-}
-
-pub(crate) fn decode_node_record(bytes: &[u8]) -> Result<SceneBinaryNodeRecord, SceneBinaryError> {
-    Ok(SceneBinaryNodeRecord {
-        id_name: read_u32(bytes, 0)?,
-        display_name: read_u32(bytes, 4)?,
-        parent_index: read_u32(bytes, 8)?,
-        resource_name: read_u32(bytes, 12)?,
-        kind: read_u16(bytes, 16)?,
-        flags: read_u16(bytes, 18)?,
-        draw_order: read_u32(bytes, 20)?,
-        child_count: read_u32(bytes, 24)?,
-        first_child_index: read_u32(bytes, 28)?,
-        subtree_node_count: read_u32(bytes, 32)?,
-        effect_count: read_u32(bytes, 36)?,
-        audio_count: read_u32(bytes, 40)?,
-        property_count: read_u32(bytes, 44)?,
-        material_index: read_u32(bytes, 48)?,
-        geometry_index: read_u32(bytes, 52)?,
-        first_transform: read_u32(bytes, 56)?,
-        transform_count: read_u32(bytes, 60)?,
-        puppet_index: read_u32(bytes, 64)?,
-        particle_index: read_u32(bytes, 68)?,
-        puppet_attachment_name: read_u32(bytes, 72)?,
-        opacity: read_f32(bytes, 76)?,
-        color_rgba: read_u32(bytes, 80)?,
-        stroke_color_rgba: read_u32(bytes, 84)?,
-        stroke_width: read_f32(bytes, 88)?,
-        corner_radius: read_f32(bytes, 92)?,
-        font_size: read_f32(bytes, 96)?,
-        text_name: read_u32(bytes, 100)?,
-        font_family_name: read_u32(bytes, 104)?,
-        font_resource_name: read_u32(bytes, 108)?,
-        font_weight_name: read_u32(bytes, 112)?,
-        fit: read_u16_or(bytes, 116, 1)?,
-        text_align: read_u16_or(bytes, 118, 0)?,
-    })
 }
 
 pub(crate) fn decode_transform_timeline_record(

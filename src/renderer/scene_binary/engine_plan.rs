@@ -20,8 +20,9 @@ use crate::core::scene::binary::{
     decode_texture_slot_record,
 };
 use crate::engine::scene_engine::ingest::gscn::{
-    GscnGeometryFact, GscnMaterialFact, GscnMeshResourceFact, GscnObjectFact, GscnObjectKind,
-    GscnPuppetResourceFact, GscnResourceFact, GscnSceneCounts, GscnSceneFacts,
+    GscnGeometryFact, GscnLayerAlphaMaskRtMethod8MdlvGeometryFact, GscnMaterialFact,
+    GscnMeshResourceFact, GscnObjectFact, GscnObjectKind, GscnPuppetResourceFact, GscnResourceFact,
+    GscnSceneCounts, GscnSceneFacts,
 };
 use crate::engine::scene_engine::{
     SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEnginePlan,
@@ -35,6 +36,7 @@ use super::facts::{
     binary_scene_package_root, binary_scene_puppet_animation_layer_count, binary_scene_resources,
     binary_scene_size, binary_scene_timeline_counts,
 };
+use super::mdlv::binary_scene_mdlv_first_entry_geometry;
 use super::mesh::{
     binary_scene_geometry_is_mesh_payload, binary_scene_mesh_vertices_indices,
     binary_scene_puppet_active_sources, binary_scene_puppet_clipping_records,
@@ -57,6 +59,8 @@ pub(in crate::renderer) fn scene_engine_plan_from_gscn_path_with_properties(
     let topology = binary_scene_retained_topology(&mut reader, &resources)?;
     let (mesh_resources, puppet_resources) =
         gscn_mesh_and_puppet_resources(&mut reader, &names, &topology)?;
+    let layer_alpha_mask_rt_method8_mdlv_geometries =
+        gscn_layer_alpha_mask_rt_method8_mdlv_geometries(&names, &resources, &topology)?;
     let scene_size = binary_scene_size(&mut reader)?;
     let (timeline_channel_count, timeline_owner_count) = binary_scene_timeline_counts(&mut reader)?;
     let puppet_animation_layer_count = binary_scene_puppet_animation_layer_count(&mut reader)?;
@@ -81,7 +85,7 @@ pub(in crate::renderer) fn scene_engine_plan_from_gscn_path_with_properties(
         },
         resources: gscn_resources(&resources),
         mesh_resources,
-        layer_alpha_mask_rt_method8_mdlv_geometries: Vec::new(),
+        layer_alpha_mask_rt_method8_mdlv_geometries,
         puppet_resources,
         objects: gscn_objects(&mut reader, &names, &resources, &topology)?,
     }
@@ -162,6 +166,78 @@ fn gscn_mesh_and_puppet_resources(
     }
 
     Ok((mesh_resources, puppet_resources))
+}
+
+fn gscn_layer_alpha_mask_rt_method8_mdlv_geometries(
+    names: &BinarySceneNames,
+    resources: &[BinarySceneResource],
+    topology: &BinarySceneRetainedTopology,
+) -> Result<Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>, RendererPlanError> {
+    let mut geometries = Vec::new();
+    for renderable in &topology.renderables {
+        let Some(puppet) = renderable.puppet_record else {
+            continue;
+        };
+        if puppet.clipping_record_count == 0 {
+            continue;
+        }
+        let Some(puppet_source) = binary_name(names, renderable.node.puppet_source_name) else {
+            continue;
+        };
+        let Some(resource) = resources
+            .iter()
+            .find(|resource| binary_scene_resource_matches_puppet_source(resource, puppet_source))
+        else {
+            return Err(RendererPlanError::PackageLoad(format!(
+                "binary scene object {} references puppet source {puppet_source:?} but no we-puppet-mdl resource matches it",
+                renderable.layer_index
+            )));
+        };
+        let Some(source) = &resource.source else {
+            continue;
+        };
+        let Some(geometry) = binary_scene_mdlv_first_entry_geometry(source)? else {
+            continue;
+        };
+        geometries.push(GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
+            object: crate::engine::scene_engine::SceneObjectId(
+                renderable.layer_index.min(u32::MAX as usize) as u32,
+            ),
+            entry_owner_index: geometry.entry_owner_index,
+            layout_key: geometry.layout_key,
+            vertex_stride_bytes: geometry.vertex_stride_bytes,
+            vertex_count: geometry.vertex_count,
+            index_count: geometry.index_count,
+            vertex_payload: geometry.vertex_payload,
+            index_payload: geometry.index_payload,
+        });
+    }
+    Ok(geometries)
+}
+
+fn binary_scene_resource_matches_puppet_source(
+    resource: &BinarySceneResource,
+    puppet_source: &str,
+) -> bool {
+    if resource.kind != 5 || resource.role.as_deref() != Some("we-puppet-mdl") {
+        return false;
+    }
+    let puppet_source = binary_scene_normalized_source_suffix(puppet_source);
+    resource
+        .original_source
+        .as_ref()
+        .or(resource.source.as_ref())
+        .is_some_and(|source| {
+            binary_scene_normalized_source_suffix(&source.to_string_lossy())
+                .ends_with(&puppet_source)
+        })
+}
+
+fn binary_scene_normalized_source_suffix(source: &str) -> String {
+    source
+        .replace('\\', "/")
+        .trim_start_matches("./")
+        .to_owned()
 }
 
 fn gscn_objects(

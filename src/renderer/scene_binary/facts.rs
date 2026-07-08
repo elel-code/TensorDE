@@ -27,6 +27,9 @@ use super::texture::binary_scene_texture_metadata;
 pub(super) struct BinarySceneResource {
     pub(super) id_name: u32,
     pub(super) source: Option<PathBuf>,
+    pub(super) original_source: Option<PathBuf>,
+    pub(super) kind: u16,
+    pub(super) role: Option<String>,
     pub(super) width: Option<u32>,
     pub(super) height: Option<u32>,
     pub(super) format: Option<SceneTextureFormat>,
@@ -74,6 +77,8 @@ fn binary_scene_resource(
 ) -> Result<BinarySceneResource, RendererPlanError> {
     let source = binary_name(names, record.source_name)
         .map(|source| binary_scene_resource_path(package_root, source));
+    let original_source = binary_name(names, record.original_source_name)
+        .map(|source| binary_scene_resource_path(package_root, source));
     let texture = source
         .as_ref()
         .map(|source| binary_scene_texture_metadata(source))
@@ -82,6 +87,9 @@ fn binary_scene_resource(
     Ok(BinarySceneResource {
         id_name: record.id_name,
         source,
+        original_source,
+        kind: record.kind,
+        role: binary_name(names, record.role_name).map(str::to_owned),
         width: texture
             .as_ref()
             .map(|texture| texture.width)
