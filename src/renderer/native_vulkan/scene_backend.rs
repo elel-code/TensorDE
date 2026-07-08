@@ -30,6 +30,7 @@ pub mod frame_submit;
 pub mod graph_executor;
 pub mod layer_alpha_mask_executor;
 pub mod layer_alpha_mask_resource_heap;
+pub mod layer_compositor_recorder;
 pub mod layer_compositor_scheduler;
 pub mod material_uniforms;
 pub mod offscreen_targets;

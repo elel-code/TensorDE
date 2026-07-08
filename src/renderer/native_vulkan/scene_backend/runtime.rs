@@ -75,6 +75,10 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use super::layer_compositor_recorder::{
+    NativeVulkanSceneLayerCompositorBlockRecordingPlan,
+    native_vulkan_plan_scene_layer_compositor_block_recording,
+};
 use super::layer_compositor_scheduler::{
     NativeVulkanSceneLayerCompositorSchedulePlan,
     native_vulkan_plan_scene_layer_compositor_schedule,
@@ -128,8 +132,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub layer_alpha_mask_token_recording: NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
     pub layer_compositor_schedule: NativeVulkanSceneLayerCompositorSchedulePlan,
+    pub layer_compositor_block_recording: NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 23],
+    pub command_order: [&'static str; 24],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -343,6 +348,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         &mesh.graph_execution,
         &layer_alpha_mask_token_recording,
     )?;
+    let layer_compositor_block_recording =
+        native_vulkan_plan_scene_layer_compositor_block_recording(
+            &layer_compositor_schedule,
+            &effects,
+            &mesh.frame,
+            &layer_alpha_mask_token_recording,
+        )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
         layer_alpha_masks,
@@ -365,6 +377,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_copy_back_commands,
         layer_alpha_mask_token_recording,
         layer_compositor_schedule,
+        layer_compositor_block_recording,
         mesh,
         command_order: [
             "record_scene_effect_graph_runtime",
@@ -390,6 +403,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_token_recording_contract",
             "record_scene_mesh_graph_runtime",
             "plan_scene_layer_compositor_schedule",
+            "plan_scene_layer_compositor_block_recording",
         ],
     })
 }
