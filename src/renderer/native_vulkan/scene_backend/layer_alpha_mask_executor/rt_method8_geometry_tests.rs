@@ -99,7 +99,7 @@ fn rt_method8_geometry_source_closes_created_fields_and_sibling_targets() {
     );
     assert!(
         plan.remaining_runtime_gap
-            .contains("retained Vulkan buffer binding")
+            .contains("retained [layer+0x490] geometry buffers")
     );
     assert!(
         plan.remaining_runtime_fact

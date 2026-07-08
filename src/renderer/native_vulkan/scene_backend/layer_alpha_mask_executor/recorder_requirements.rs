@@ -16,6 +16,10 @@ use crate::engine::scene_engine::{
     SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
+use crate::renderer::native_vulkan::scene_backend::resource_storage::{
+    NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRole,
+    NativeVulkanSceneGpuBufferUsage,
+};
 
 use super::consumer_command::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan,
@@ -43,6 +47,10 @@ use super::rt_method8::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
     NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose,
+};
+use super::rt_method8_buffers::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirement,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
 };
 use super::token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
@@ -100,6 +108,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub rt_method8_bridge_index: Option<usize>,
     pub rt_method8_call_site: Option<&'static str>,
     pub rt_method8_method_vma: Option<&'static str>,
+    pub rt_method8_mdlv_geometry:
+        Option<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
@@ -107,6 +117,22 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub missing_we_facts: Vec<&'static str>,
     pub reference_points: Vec<&'static str>,
     pub command_order: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement
+{
+    pub buffer_requirement_index: usize,
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
+    pub owner: NativeVulkanSceneGpuBufferOwner,
+    pub vertex_role: NativeVulkanSceneGpuBufferRole,
+    pub index_role: NativeVulkanSceneGpuBufferRole,
+    pub vertex_usage: NativeVulkanSceneGpuBufferUsage,
+    pub index_usage: NativeVulkanSceneGpuBufferUsage,
+    pub geometry_source: &'static str,
+    pub payload_rebuild_vma: &'static str,
+    pub aux_payload_region: &'static str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -126,6 +152,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    rt_method8_mdlv_geometry_buffers:
+        &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -145,6 +173,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
         return Err(format!(
             "scene layer alpha-mask recorder requirements expected {} token heap-bind facts, got {}",
             schedule.command_count, resource_binds.token_command_count
+        ));
+    }
+    if rt_method8_mdlv_geometry_buffers.bridge_count != rt_method8_bridges.bridge_count {
+        return Err(format!(
+            "scene layer alpha-mask recorder requirements expected {} RT method [8] retained geometry bridge facts, got {}",
+            rt_method8_bridges.bridge_count, rt_method8_mdlv_geometry_buffers.bridge_count
         ));
     }
 
@@ -177,6 +211,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             producer_uniforms,
             generated_consumer_draws,
             rt_method8_bridges,
+            rt_method8_mdlv_geometry_buffers,
             generated_consumer_targets,
             generated_consumer_pipelines,
             generated_consumer_commands,
@@ -282,6 +317,8 @@ fn requirement_from_step(
     producer_uniforms: &NativeVulkanSceneLayerAlphaMaskProducerUniformPlan,
     generated_consumer_draws: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerDrawRuntimePlan,
     rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    rt_method8_mdlv_geometry_buffers:
+        &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -297,6 +334,7 @@ fn requirement_from_step(
                 None,
                 None,
                 0,
+                None,
                 None,
                 None,
                 None,
@@ -378,6 +416,11 @@ fn requirement_from_step(
                 rt_method8_bridge,
                 NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose::ClippingMaskImage4Producer,
             )?;
+            let rt_method8_mdlv_geometry = rt_method8_mdlv_recorder_geometry_requirement(
+                step.command_index,
+                rt_method8_bridge,
+                rt_method8_mdlv_geometry_buffers,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -394,6 +437,7 @@ fn requirement_from_step(
                 Some(rt_method8_bridge.bridge_index),
                 Some(rt_method8_bridge.call_site),
                 Some(rt_method8_bridge.method_vma),
+                Some(rt_method8_mdlv_geometry),
                 Some(target_scope.load_op),
                 Some(target_scope.requires_initialized_initial_layout),
                 None,
@@ -424,6 +468,7 @@ fn requirement_from_step(
                 Some(SceneGraphPipelineClass::LayerUtilityIndexed),
                 Some("R8_UNORM"),
                 FLATTEXTURE_COPY_BACK_TEXTURE_SLOT_MASK,
+                None,
                 None,
                 None,
                 None,
@@ -526,6 +571,11 @@ fn requirement_from_step(
                 rt_method8_bridge,
                 NativeVulkanSceneLayerAlphaMaskRtMethod8Purpose::GeneratedClippingTargetConsumer,
             )?;
+            let rt_method8_mdlv_geometry = rt_method8_mdlv_recorder_geometry_requirement(
+                step.command_index,
+                rt_method8_bridge,
+                rt_method8_mdlv_geometry_buffers,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -542,6 +592,7 @@ fn requirement_from_step(
                 Some(rt_method8_bridge.bridge_index),
                 Some(rt_method8_bridge.call_site),
                 Some(rt_method8_bridge.method_vma),
+                Some(rt_method8_mdlv_geometry),
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -585,6 +636,9 @@ fn base_requirement(
     rt_method8_bridge_index: Option<usize>,
     rt_method8_call_site: Option<&'static str>,
     rt_method8_method_vma: Option<&'static str>,
+    rt_method8_mdlv_geometry: Option<
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement,
+    >,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
@@ -619,6 +673,7 @@ fn base_requirement(
         rt_method8_bridge_index,
         rt_method8_call_site,
         rt_method8_method_vma,
+        rt_method8_mdlv_geometry,
         target_scope_load_op,
         requires_initialized_initial_layout,
         source_mask,
@@ -885,6 +940,70 @@ fn validate_rt_method8_bridge(
     Ok(())
 }
 
+fn rt_method8_mdlv_recorder_geometry_requirement(
+    command_index: usize,
+    bridge: &NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+    buffers: &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
+) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement, String> {
+    let (buffer_requirement_index, buffer_requirement) = buffers
+        .requirement_for_object(bridge.object)
+        .ok_or_else(|| {
+            format!(
+                "scene layer alpha-mask command {command_index} has no retained [layer+0x490] MDLV geometry buffer requirement for object {:?}",
+                bridge.object
+            )
+        })?;
+    validate_rt_method8_mdlv_buffer_requirement(
+        command_index,
+        bridge,
+        buffer_requirement_index,
+        buffer_requirement,
+    )?;
+    Ok(
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement {
+            buffer_requirement_index,
+            object: buffer_requirement.object,
+            entry_owner_index: buffer_requirement.entry_owner_index,
+            owner: buffer_requirement.owner,
+            vertex_role: buffer_requirement.vertex_role,
+            index_role: buffer_requirement.index_role,
+            vertex_usage: buffer_requirement.vertex_usage,
+            index_usage: buffer_requirement.index_usage,
+            geometry_source: buffer_requirement.geometry_source,
+            payload_rebuild_vma: buffer_requirement.payload_rebuild_vma,
+            aux_payload_region: buffer_requirement.aux_payload_region,
+        },
+    )
+}
+
+fn validate_rt_method8_mdlv_buffer_requirement(
+    command_index: usize,
+    bridge: &NativeVulkanSceneLayerAlphaMaskRtMethod8Bridge,
+    buffer_requirement_index: usize,
+    buffer_requirement: &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirement,
+) -> Result<(), String> {
+    let expected_owner = NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+        buffer_requirement.geometry,
+    );
+    if buffer_requirement.requirement_index != buffer_requirement_index
+        || buffer_requirement.object != bridge.object
+        || buffer_requirement.owner != expected_owner
+        || buffer_requirement.vertex_role
+            != NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex
+        || buffer_requirement.index_role
+            != NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex
+        || buffer_requirement.vertex_usage != NativeVulkanSceneGpuBufferUsage::Vertex
+        || buffer_requirement.index_usage != NativeVulkanSceneGpuBufferUsage::Index
+        || buffer_requirement.payload_rebuild_vma != "0x14020ae00"
+        || buffer_requirement.aux_payload_region != "0x14020b214..0x14020b66f"
+    {
+        return Err(format!(
+            "scene layer alpha-mask command {command_index} has an invalid retained [layer+0x490] MDLV geometry buffer requirement"
+        ));
+    }
+    Ok(())
+}
+
 fn requirement_for_step_kind(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
 ) -> NativeVulkanSceneLayerAlphaMaskBindRequirement {
@@ -907,17 +1026,13 @@ fn requirement_for_step_kind(
 
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "retained Vulkan vertex/index buffer binding for [layer+0x490] MDLV entry geometry from 0x14020b15e",
         "aux+0x298 per-source clipping payload lowering from 0x14020b214..0x14020b66f",
         "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
     ]
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
-    vec![
-        "retained Vulkan vertex/index buffer binding for generated CLIPPINGTARGET [layer+0x490] MDLV entry geometry from 0x14020b15e",
-        "aux+0x298 per-source clipping payload lowering for generated CLIPPINGTARGET draws",
-    ]
+    vec!["aux+0x298 per-source clipping payload lowering for generated CLIPPINGTARGET draws"]
 }
 
 fn recorder_requirement_command_order() -> [&'static str; 6] {

@@ -22,8 +22,7 @@ pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_ACTIVE_MATERIA
     &str = "0x14020b1e8";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_FALLBACK_IMAGE_CREATION_SITE:
     &str = "0x14020a4ff";
-pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_RUNTIME_BINDING_GAP: &str =
-    "retained Vulkan buffer binding for [layer+0x490] MDLV entry geometry and aux+0x298 lowering";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_RUNTIME_BINDING_GAP: &str = "convert MDLV entry payload upload into retained [layer+0x490] geometry buffers and aux+0x298 indexed-slice lowering";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8GeometrySourcePlan
@@ -194,7 +193,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
             },
         ],
         remaining_runtime_gap: LAYER_490_RT_METHOD8_RUNTIME_BINDING_GAP,
-        remaining_runtime_fact: "WE payload source is closed; Gilder still must retain/bind the MDLV vertex/index buffers and lower aux+0x298 records before recording draw commands",
+        remaining_runtime_fact: "WE payload source is closed; Gilder now has the retained buffer owner/role contract and still must upload the convert MDLV entry payload plus lower aux+0x298 records into indexed slices before recording draw commands",
         reference_points: [
             "reverse-engineered/docs/exe/blend-and-render.md: wrapper [8] arguments, MDLV entry geometry, and aux+0x298 payload",
             "reverse-engineered/docs/exe/d3d11-context-calls.md: 0x14009a880 create indexed RT/draw-target object",
@@ -208,7 +207,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
             "store_created_target_at_layer_0x490",
             "preserve_wrapper_created_vertex_index_buffer_fields",
             "separate_layer_0x490_from_0x3f8_and_0x400_sibling_targets",
-            "defer_only_retained_buffer_binding_and_aux_payload_lowering",
+            "require_retained_mdlv_geometry_buffers_and_defer_aux_payload_lowering",
         ],
     }
 }

@@ -13,7 +13,7 @@ use serde::Serialize;
 
 use crate::engine::scene_engine::{
     RenderingDeviceCommand, SceneBufferResidency, SceneGeometryId, SceneMeshResidency,
-    ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceId,
+    SceneObjectId, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource, SceneResourceId,
     SceneResourceResidencyPlan, SceneTextureResidency,
 };
 
@@ -233,6 +233,7 @@ pub enum NativeVulkanSceneGpuBufferOwner {
     MeshGeometry(SceneGeometryId),
     PuppetRig(ScenePuppetId),
     RenderStateUtility(NativeVulkanSceneRenderStateUtilityGeometry),
+    LayerAlphaMaskRtMethod8MdlvEntry(NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -240,6 +241,8 @@ pub enum NativeVulkanSceneGpuBufferRole {
     MeshVertex,
     MeshIndex,
     RenderStateFlatTextureVertex,
+    LayerAlphaMaskRtMethod8MdlvVertex,
+    LayerAlphaMaskRtMethod8MdlvIndex,
     PuppetBone,
     PuppetSkinVertex,
     PuppetClipFrame,
@@ -252,10 +255,12 @@ pub enum NativeVulkanSceneGpuBufferRole {
 impl NativeVulkanSceneGpuBufferRole {
     pub fn usage(self) -> NativeVulkanSceneGpuBufferUsage {
         match self {
-            Self::MeshVertex | Self::RenderStateFlatTextureVertex => {
-                NativeVulkanSceneGpuBufferUsage::Vertex
+            Self::MeshVertex
+            | Self::RenderStateFlatTextureVertex
+            | Self::LayerAlphaMaskRtMethod8MdlvVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
+            Self::MeshIndex | Self::LayerAlphaMaskRtMethod8MdlvIndex => {
+                NativeVulkanSceneGpuBufferUsage::Index
             }
-            Self::MeshIndex => NativeVulkanSceneGpuBufferUsage::Index,
             Self::PuppetBone
             | Self::PuppetSkinVertex
             | Self::PuppetClipFrame
@@ -270,6 +275,12 @@ impl NativeVulkanSceneGpuBufferRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NativeVulkanSceneRenderStateUtilityGeometry {
     LayerAlphaMaskCopyBackState48,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

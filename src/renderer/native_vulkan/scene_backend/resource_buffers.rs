@@ -28,6 +28,7 @@ use super::frame_completion::NativeVulkanSceneFrameSubmission;
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
     NativeVulkanSceneGpuBufferRole, NativeVulkanSceneGpuBufferUsage,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     NativeVulkanSceneRenderStateUtilityGeometry,
 };
 use super::resource_upload::{NativeVulkanSceneGpuBufferUpload, NativeVulkanSceneGpuUploadPlan};
@@ -86,6 +87,13 @@ pub struct NativeVulkanSceneRenderStateUtilityGeometryBufferRecords {
     pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords {
+    pub geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
+    pub index: NativeVulkanSceneGpuBufferRecordBinding,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanSceneGpuBufferBinding {
     pub key: NativeVulkanSceneGpuBufferKey,
@@ -117,6 +125,13 @@ pub struct NativeVulkanScenePuppetStorageBuffers {
 pub struct NativeVulkanSceneRenderStateUtilityGeometryBuffers {
     pub geometry: NativeVulkanSceneRenderStateUtilityGeometry,
     pub vertex: NativeVulkanSceneGpuBufferBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers {
+    pub geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    pub vertex: NativeVulkanSceneGpuBufferBinding,
+    pub index: NativeVulkanSceneGpuBufferBinding,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -294,6 +309,25 @@ impl NativeVulkanSceneGpuBufferCatalog {
                 NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
             )?,
         })
+    }
+
+    pub fn layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords, String> {
+        Ok(
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords {
+                geometry,
+                vertex: self.required_record_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                )?,
+                index: self.required_record_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                )?,
+            },
+        )
     }
 
     fn required_record_binding(
@@ -511,6 +545,25 @@ impl NativeVulkanSceneGpuBufferStore {
         })
     }
 
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_geometry_buffers(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers, String> {
+        Ok(
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers {
+                geometry,
+                vertex: self.required_buffer_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                )?,
+                index: self.required_buffer_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                )?,
+            },
+        )
+    }
+
     fn required_buffer_binding(
         &self,
         owner: NativeVulkanSceneGpuBufferOwner,
@@ -655,6 +708,12 @@ fn scene_gpu_buffer_role_name(requirement: NativeVulkanSceneGpuBufferRequirement
         NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex => {
             "scene-render-state-flattexture-vertex-buffer"
         }
+        NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex => {
+            "scene-layer-alpha-mask-rt-method8-mdlv-vertex-buffer"
+        }
+        NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex => {
+            "scene-layer-alpha-mask-rt-method8-mdlv-index-buffer"
+        }
         NativeVulkanSceneGpuBufferRole::PuppetBone => "scene-puppet-bone-storage-buffer",
         NativeVulkanSceneGpuBufferRole::PuppetSkinVertex => {
             "scene-puppet-skin-vertex-storage-buffer"
@@ -688,7 +747,7 @@ mod tests {
         NativeVulkanSceneGpuBufferRole,
     };
     use super::*;
-    use crate::engine::scene_engine::{SceneGeometryId, ScenePuppetId};
+    use crate::engine::scene_engine::{SceneGeometryId, SceneObjectId, ScenePuppetId};
 
     #[test]
     fn catalog_creates_then_reuses_unchanged_uploads() {
@@ -877,6 +936,48 @@ mod tests {
     }
 
     #[test]
+    fn catalog_exposes_layer_alpha_mask_rt_method8_mdlv_geometry_records_without_mesh_owner() {
+        let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
+        let geometry = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+            object: SceneObjectId(1530),
+            entry_owner_index: 0,
+        };
+        let plan = upload_plan(vec![
+            layer_alpha_mask_rt_method8_mdlv_upload(
+                geometry,
+                NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                vec![1; 80],
+            ),
+            layer_alpha_mask_rt_method8_mdlv_upload(
+                geometry,
+                NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                vec![0; 12],
+            ),
+        ]);
+        catalog.sync_upload_plan(&plan).unwrap();
+
+        let records = catalog
+            .layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(geometry)
+            .expect("layer alpha-mask RT method [8] MDLV geometry records");
+
+        assert_eq!(records.geometry, geometry);
+        assert_eq!(
+            records.vertex.key.owner,
+            NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry)
+        );
+        assert_eq!(
+            records.vertex.key.role,
+            NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex
+        );
+        assert_eq!(
+            records.index.key.role,
+            NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex
+        );
+        assert_eq!(records.vertex.bytes, 80);
+        assert_eq!(records.index.bytes, 12);
+    }
+
+    #[test]
     fn catalog_requires_complete_mesh_draw_records() {
         let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
         let plan = upload_plan(vec![upload(
@@ -949,6 +1050,22 @@ mod tests {
                 role: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex,
                 bytes: payload.len() as u64,
                 usage: NativeVulkanSceneGpuBufferRole::RenderStateFlatTextureVertex.usage(),
+            },
+            payload,
+        }
+    }
+
+    fn layer_alpha_mask_rt_method8_mdlv_upload(
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+        role: NativeVulkanSceneGpuBufferRole,
+        payload: Vec<u8>,
+    ) -> NativeVulkanSceneGpuBufferUpload {
+        NativeVulkanSceneGpuBufferUpload {
+            requirement: NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                role,
+                bytes: payload.len() as u64,
+                usage: role.usage(),
             },
             payload,
         }

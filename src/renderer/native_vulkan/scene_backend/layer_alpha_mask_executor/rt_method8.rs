@@ -320,7 +320,7 @@ fn rt_method8_bridge(
             "preserve_indexed_vector_draw_bridge",
             "reject_raw_shader_resource_bind_interpretation",
             "preserve_0x14020b15e_wrapper_argument_contract",
-            "defer_only_payload_bytes_and_retained_buffer_binding",
+            "require_retained_mdlv_geometry_buffer_plan",
             "feed_rt_method_8_recorder_requirements",
         ],
     }
