@@ -20,11 +20,15 @@ use crate::engine::scene_engine::{
 };
 
 use super::effect_resource_heap::NativeVulkanSceneEffectResourceHeapPassBindPlan;
-use super::pipeline::{NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineResources};
+use super::pipeline::{
+    NativeVulkanScenePipelineBinding, NativeVulkanScenePipelineResources,
+    NativeVulkanScenePipelineShaderComboValue,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineKey<'a> {
     pub shader: &'a str,
+    pub shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
     pub effect: WeEffectKind,
     pub blend: SceneEffectPassBlend,
     pub depth_test: SceneDepthTest,
@@ -51,6 +55,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineSha
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineCacheKey {
     pub shader: String,
+    pub shader_combo_values: Vec<NativeVulkanScenePipelineShaderComboValue>,
     pub effect: WeEffectKind,
     pub blend: SceneEffectPassBlend,
     pub depth_test: SceneDepthTest,
@@ -76,7 +81,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectPipelineCache
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineBindPlan<'a> {
     pub key: NativeVulkanSceneEffectPipelineKey<'a>,
     pub command_order: [&'static str; 1],
@@ -113,6 +118,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
         }
         Ok(Self {
             shader,
+            shader_combo_values: native_vulkan_scene_effect_pass_shader_combo_values(pass)?,
             effect: pass.effect,
             blend: pass.blend,
             depth_test: pass.depth_test,
@@ -161,6 +167,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
     ) -> Self {
         Self {
             shader: key.shader.to_owned(),
+            shader_combo_values: key.shader_combo_values,
             effect: key.effect,
             blend: key.blend,
             depth_test: key.depth_test,
@@ -178,6 +185,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
     ) -> NativeVulkanSceneEffectPipelineKey<'_> {
         NativeVulkanSceneEffectPipelineKey {
             shader: self.shader.as_str(),
+            shader_combo_values: self.shader_combo_values.clone(),
             effect: self.effect,
             blend: self.blend,
             depth_test: self.depth_test,
@@ -220,6 +228,41 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_pipe
         device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
     }
     Ok(NativeVulkanSceneEffectPipelineBindPlan::from_key(key))
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_pass_shader_combo_values(
+    pass: &SceneEffectPassGraphMaterialPass,
+) -> Result<Vec<NativeVulkanScenePipelineShaderComboValue>, String> {
+    pass.combos
+        .iter()
+        .map(|(name, value)| {
+            if name.is_empty() {
+                return Err(format!(
+                    "scene effect pass {} for object {:?} has empty WE combo name",
+                    pass.pass_index, pass.object
+                ));
+            }
+            if !name
+                .chars()
+                .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+            {
+                return Err(format!(
+                    "scene effect pass {} for object {:?} has unsafe WE combo name '{}'",
+                    pass.pass_index, pass.object, name
+                ));
+            }
+            let value = u32::try_from(*value).map_err(|_| {
+                format!(
+                    "scene effect pass {} for object {:?} combo '{}' value {} is outside u32",
+                    pass.pass_index, pass.object, name, value
+                )
+            })?;
+            Ok(NativeVulkanScenePipelineShaderComboValue {
+                name: name.clone(),
+                value,
+            })
+        })
+        .collect()
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineStore {
@@ -447,6 +490,7 @@ mod tests {
         .expect("effect pipeline key");
 
         assert_eq!(key.shader, "effects/iris");
+        assert!(key.shader_combo_values.is_empty());
         assert_eq!(key.effect, WeEffectKind::Iris);
         assert_eq!(key.blend, SceneEffectPassBlend::NormalReplace);
         assert_eq!(key.depth_test, SceneDepthTest::Disabled);
@@ -457,6 +501,59 @@ mod tests {
             key.raster_geometry,
             NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle
         );
+    }
+
+    #[test]
+    fn effect_pipeline_key_tracks_sorted_we_shader_combos() {
+        let mut pass = effect_pass(Some("effects/iris"));
+        pass.combos.insert("MASK".to_owned(), 1);
+        pass.combos.insert("BACKGROUND".to_owned(), 1);
+        let bind_info = pass_bind_info();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let key = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect("effect pipeline key with combos");
+
+        assert_eq!(
+            key.shader_combo_values,
+            vec![
+                NativeVulkanScenePipelineShaderComboValue {
+                    name: "BACKGROUND".to_owned(),
+                    value: 1
+                },
+                NativeVulkanScenePipelineShaderComboValue {
+                    name: "MASK".to_owned(),
+                    value: 1
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn effect_pipeline_key_rejects_negative_we_shader_combo_value() {
+        let mut pass = effect_pass(Some("effects/iris"));
+        pass.combos.insert("MASK".to_owned(), -1);
+        let bind_info = pass_bind_info();
+        let bind_plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect resource heap bind plan");
+
+        let err = NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+            &pass,
+            vk::Format::R16G16B16A16_SFLOAT,
+            &bind_plan,
+        )
+        .expect_err("negative combo must fail");
+
+        assert!(err.contains("outside u32"));
     }
 
     #[test]

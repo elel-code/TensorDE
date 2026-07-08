@@ -177,7 +177,7 @@ where
         target_format,
         &validated_bind,
     )?;
-    let pipeline = pipeline_for_key(pipeline_key)?;
+    let pipeline = pipeline_for_key(pipeline_key.clone())?;
     let pipeline_bind = native_vulkan_record_scene_effect_pipeline_bind_command(
         device,
         command_buffer,

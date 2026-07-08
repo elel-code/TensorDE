@@ -39,6 +39,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineLay
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneEffectPipelineCreatePlan {
     pub shader: String,
+    pub shader_combo_values: Vec<String>,
     pub target_format: String,
     pub raster_geometry: &'static str,
     pub vertex_input: &'static str,
@@ -58,6 +59,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_pipeline_cr
     validate_scene_effect_pipeline_key(key)?;
     Ok(NativeVulkanSceneEffectPipelineCreatePlan {
         shader: key.shader.to_owned(),
+        shader_combo_values: scene_effect_shader_combo_labels(key),
         target_format: format!("{:?}", key.target_format),
         raster_geometry: "fullscreen-triangle",
         vertex_input: "none",
@@ -321,6 +323,13 @@ fn scene_effect_shader_resource_mapping_labels(
         .collect()
 }
 
+fn scene_effect_shader_combo_labels(key: &NativeVulkanSceneEffectPipelineKey<'_>) -> Vec<String> {
+    key.shader_combo_values
+        .iter()
+        .map(|combo| format!("{}={}", combo.name, combo.value))
+        .collect()
+}
+
 fn scene_effect_texture_slots(texture_slot_mask: u32) -> Vec<u32> {
     (0..u32::BITS)
         .filter(|slot| texture_slot_mask & (1u32 << slot) != 0)
@@ -524,6 +533,7 @@ mod tests {
     fn effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
         NativeVulkanSceneEffectPipelineKey {
             shader: "effects/iris",
+            shader_combo_values: Vec::new(),
             effect: WeEffectKind::Iris,
             blend: SceneEffectPassBlend::NormalReplace,
             depth_test: SceneDepthTest::Disabled,
