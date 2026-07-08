@@ -29,7 +29,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorBl
     pub object_final_effect_runtime_count: usize,
     pub alpha_mask_single_step_recorder_count: usize,
     pub no_draw_marker_count: usize,
-    pub clear_prep_pending_recorder_count: usize,
     pub schedule_consumed_block_count: usize,
     pub all_non_clear_blocks_have_recording_source: bool,
     pub actual_present_recording_order_replaced: bool,
@@ -62,7 +61,6 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerCompositorBloc
         token_recording_step_index: usize,
     },
     NoDrawMarker,
-    LayerTargetClearPrepPendingRecorder,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_compositor_block_recording(
@@ -135,15 +133,6 @@ impl NativeVulkanSceneLayerCompositorBlockRecordingPlan {
                 )
             })
             .count();
-        let clear_prep_pending_recorder_count = blocks
-            .iter()
-            .filter(|block| {
-                matches!(
-                    block.source,
-                    NativeVulkanSceneLayerCompositorBlockRecordingSource::LayerTargetClearPrepPendingRecorder
-                )
-            })
-            .count();
         let schedule_consumed_block_count = blocks.len();
         Self {
             block_count: blocks.len(),
@@ -151,7 +140,6 @@ impl NativeVulkanSceneLayerCompositorBlockRecordingPlan {
             object_final_effect_runtime_count,
             alpha_mask_single_step_recorder_count,
             no_draw_marker_count,
-            clear_prep_pending_recorder_count,
             schedule_consumed_block_count,
             all_non_clear_blocks_have_recording_source: true,
             actual_present_recording_order_replaced,
@@ -162,7 +150,7 @@ impl NativeVulkanSceneLayerCompositorBlockRecordingPlan {
                 "bind_object_final_blocks_to_effect_runtime_outputs",
                 "bind_alpha_mask_blocks_to_single_step_token_recorder",
                 "preserve_no_draw_token_markers",
-                "surface_clear_prep_pending_recorders",
+                "reject_active_clear_prep_without_recorder",
                 "emit_compositor_block_recording_plan",
             ],
         }
@@ -206,7 +194,10 @@ fn recording_for_block(
             NativeVulkanSceneLayerCompositorBlockRecordingSource::NoDrawMarker
         }
         NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
-            NativeVulkanSceneLayerCompositorBlockRecordingSource::LayerTargetClearPrepPendingRecorder
+            return Err(
+                "scene layer compositor block recorder cannot consume active aux clear-prep; 0x140207740 must be lowered to explicit aux+0x3e8 target clear and material draws before block recording"
+                    .to_owned(),
+            );
         }
     };
     Ok(NativeVulkanSceneLayerCompositorBlockRecording {
@@ -326,7 +317,9 @@ fn block_recording_command_order(
             "consume_mesh_graph_draw_span_block",
             "reuse_command_block_mesh_pass_draw_commands_in_we_layer_order",
         ],
-        NativeVulkanSceneLayerCompositorBlockRecordingSource::ObjectFinalEffectRuntime { .. } => {
+        NativeVulkanSceneLayerCompositorBlockRecordingSource::ObjectFinalEffectRuntime {
+            ..
+        } => {
             vec!["consume_object_final_effect_runtime_output"]
         }
         NativeVulkanSceneLayerCompositorBlockRecordingSource::AlphaMaskTokenDrawListStep {
@@ -337,9 +330,6 @@ fn block_recording_command_order(
         ],
         NativeVulkanSceneLayerCompositorBlockRecordingSource::NoDrawMarker => {
             vec!["consume_no_draw_layer_marker_block"]
-        }
-        NativeVulkanSceneLayerCompositorBlockRecordingSource::LayerTargetClearPrepPendingRecorder => {
-            vec!["report_layer_target_clear_prep_recorder_missing"]
         }
     }
 }
@@ -401,7 +391,6 @@ mod tests {
         assert_eq!(recording.mesh_graph_draw_span_count, 1);
         assert_eq!(recording.alpha_mask_single_step_recorder_count, 4);
         assert_eq!(recording.no_draw_marker_count, 1);
-        assert_eq!(recording.clear_prep_pending_recorder_count, 0);
         assert!(recording.all_non_clear_blocks_have_recording_source);
         assert!(!recording.actual_present_recording_order_replaced);
         let replaced_recording = native_vulkan_plan_scene_layer_compositor_block_recording(
@@ -460,6 +449,31 @@ mod tests {
         assert!(err.contains("outside recorded pass"));
     }
 
+    #[test]
+    fn block_recorder_rejects_active_clear_prep_without_explicit_recorder() {
+        let object = SceneObjectId(50);
+        let graph = SceneGraph { passes: Vec::new() };
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![active_clear_prep_layer(object)]),
+            &graph,
+            &SceneGraphExecutionPlan::from_graph(&graph),
+            &empty_token_recording(),
+        )
+        .expect("active clear-prep schedule");
+
+        let err = native_vulkan_plan_scene_layer_compositor_block_recording(
+            &schedule,
+            &empty_effects(),
+            &mesh_frame(0, 0, 0),
+            &empty_token_recording(),
+            false,
+        )
+        .expect_err("active aux clear-prep requires explicit recorder");
+
+        assert!(err.contains("0x140207740"));
+        assert!(err.contains("aux+0x3e8"));
+    }
+
     fn layer_compositor(layers: Vec<SceneLayerCompositorLayer>) -> SceneLayerCompositorPlan {
         let command_count = layers.iter().map(|layer| layer.commands.len()).sum();
         let tokenized_layer_count = layers
@@ -491,6 +505,23 @@ mod tests {
         layer.uses_tokenized_subdraw = true;
         layer.commands.extend(token_commands());
         layer
+    }
+
+    fn active_clear_prep_layer(object: SceneObjectId) -> SceneLayerCompositorLayer {
+        SceneLayerCompositorLayer {
+            object,
+            route: SceneLayerCompositorRoute::DirectSwapchain,
+            uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+                operation: SceneLayerCompositorOperation::ClearPrep,
+                condition: SceneLayerCompositorCondition::Always,
+                source: None,
+                target: SceneLayerCompositorTarget::LayerTarget490,
+                blend_key: SceneLayerCompositorBlendKey::Inherit,
+            }],
+        }
     }
 
     fn normal_command() -> SceneLayerCompositorCommand {
