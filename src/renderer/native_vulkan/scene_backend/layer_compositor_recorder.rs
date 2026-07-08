@@ -70,6 +70,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
     effects: &NativeVulkanSceneEffectRuntimeFramePlan<'_>,
     mesh_frame: &NativeVulkanSceneGraphFrameCommandPlan<'_>,
     token_recording: &NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    actual_present_recording_order_replaced: bool,
 ) -> Result<NativeVulkanSceneLayerCompositorBlockRecordingPlan, String> {
     let mut blocks = Vec::with_capacity(schedule.recording_blocks.len());
     for block in &schedule.recording_blocks {
@@ -81,11 +82,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
             block,
         )?);
     }
-    Ok(NativeVulkanSceneLayerCompositorBlockRecordingPlan::from_blocks(blocks))
+    Ok(
+        NativeVulkanSceneLayerCompositorBlockRecordingPlan::from_blocks(
+            blocks,
+            actual_present_recording_order_replaced,
+        ),
+    )
 }
 
 impl NativeVulkanSceneLayerCompositorBlockRecordingPlan {
-    fn from_blocks(blocks: Vec<NativeVulkanSceneLayerCompositorBlockRecording>) -> Self {
+    fn from_blocks(
+        blocks: Vec<NativeVulkanSceneLayerCompositorBlockRecording>,
+        actual_present_recording_order_replaced: bool,
+    ) -> Self {
         let mesh_graph_draw_span_count = blocks
             .iter()
             .filter(|block| {
@@ -145,7 +154,7 @@ impl NativeVulkanSceneLayerCompositorBlockRecordingPlan {
             clear_prep_pending_recorder_count,
             schedule_consumed_block_count,
             all_non_clear_blocks_have_recording_source: true,
-            actual_present_recording_order_replaced: false,
+            actual_present_recording_order_replaced,
             blocks,
             command_order: [
                 "read_layer_compositor_recording_blocks",
@@ -384,6 +393,7 @@ mod tests {
             &empty_effects(),
             &mesh_frame(0, 0, 1),
             &token_recording_for_tokenized_layer(object),
+            false,
         )
         .expect("recording blocks");
 
@@ -394,6 +404,15 @@ mod tests {
         assert_eq!(recording.clear_prep_pending_recorder_count, 0);
         assert!(recording.all_non_clear_blocks_have_recording_source);
         assert!(!recording.actual_present_recording_order_replaced);
+        let replaced_recording = native_vulkan_plan_scene_layer_compositor_block_recording(
+            &schedule,
+            &empty_effects(),
+            &mesh_frame(0, 0, 1),
+            &token_recording_for_tokenized_layer(object),
+            true,
+        )
+        .expect("recording blocks with replaced present order");
+        assert!(replaced_recording.actual_present_recording_order_replaced);
         assert!(matches!(
             recording.blocks[0].source,
             NativeVulkanSceneLayerCompositorBlockRecordingSource::MeshGraphDrawSpan {
@@ -434,6 +453,7 @@ mod tests {
             &empty_effects(),
             &mesh_frame(0, 5, 6),
             &empty_token_recording(),
+            false,
         )
         .expect_err("mesh span must be inside recorded pass");
 
@@ -461,6 +481,7 @@ mod tests {
             object,
             route: SceneLayerCompositorRoute::DirectSwapchain,
             uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: false,
             commands: vec![normal_command()],
         }
     }

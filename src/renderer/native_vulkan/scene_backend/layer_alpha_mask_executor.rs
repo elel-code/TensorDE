@@ -1231,6 +1231,7 @@ mod tests {
                 object: SceneObjectId(77),
                 route: SceneLayerCompositorRoute::DirectSwapchain,
                 uses_tokenized_subdraw: true,
+                has_active_aux_clear_target: false,
                 commands,
             }],
             command_order: [

@@ -1294,6 +1294,7 @@ mod tests {
                     object: SceneObjectId(1530),
                     route: SceneLayerCompositorRoute::DirectSwapchain,
                     uses_tokenized_subdraw: true,
+                    has_active_aux_clear_target: false,
                     commands: Vec::new(),
                 }],
                 command_order: SceneLayerCompositorPlan::empty().command_order,
@@ -1563,6 +1564,7 @@ mod tests {
             object: SceneObjectId(7),
             route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
             uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
             commands: vec![SceneLayerCompositorCommand {
                 entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
                 operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,

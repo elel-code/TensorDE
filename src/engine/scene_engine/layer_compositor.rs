@@ -33,6 +33,7 @@ pub struct SceneLayerCompositorLayer {
     pub object: SceneObjectId,
     pub route: SceneLayerCompositorRoute,
     pub uses_tokenized_subdraw: bool,
+    pub has_active_aux_clear_target: bool,
     pub commands: Vec<SceneLayerCompositorCommand>,
 }
 
@@ -135,6 +136,7 @@ impl SceneLayerCompositorPlan {
                     pass.object == object.id
                         && pass_output_uses_tokenized_target(&pass.output, &tokenized_targets)
                 });
+            let has_active_aux_clear_target = object_has_active_aux_clear_target(resources, object);
             let layer = SceneLayerCompositorLayer {
                 object: object.id,
                 route: if uses_object_final {
@@ -143,6 +145,7 @@ impl SceneLayerCompositorPlan {
                     SceneLayerCompositorRoute::DirectSwapchain
                 },
                 uses_tokenized_subdraw,
+                has_active_aux_clear_target,
                 commands: layer_commands(
                     object.id,
                     uses_object_final,
@@ -215,6 +218,10 @@ fn object_has_puppet_clipping(resources: &[SceneResource], object: &SceneObject)
                 if *id == puppet && !clipping.is_empty()
         )
     })
+}
+
+fn object_has_active_aux_clear_target(_resources: &[SceneResource], _object: &SceneObject) -> bool {
+    false
 }
 
 fn image_layer_target_for_object(
@@ -543,6 +550,7 @@ mod tests {
 
         assert_eq!(plan.tokenized_layer_count, 1);
         assert!(plan.layers[0].uses_tokenized_subdraw);
+        assert!(!plan.layers[0].has_active_aux_clear_target);
         assert!(plan.layers[0].commands.iter().any(|command| {
             command.entry == SceneLayerCompositorEntry::TokenizedCompositeEntry52
         }));
@@ -593,6 +601,7 @@ mod tests {
 
         assert_eq!(plan.tokenized_layer_count, 1);
         assert!(plan.layers[0].uses_tokenized_subdraw);
+        assert!(!plan.layers[0].has_active_aux_clear_target);
         assert!(plan.layers[0].commands.iter().any(|command| {
             command.condition == SceneLayerCompositorCondition::Token2AfterIntermediateMask
                 && command.entry == SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed

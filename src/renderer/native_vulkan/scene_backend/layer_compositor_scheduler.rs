@@ -172,7 +172,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
                     }
                 },
                 SceneLayerCompositorOperation::ClearPrep => {
-                    if layer.uses_tokenized_subdraw {
+                    if layer.has_active_aux_clear_target {
                         command_order.extend([
                             "require_layer_target_clear_recorder",
                             "keep_active_aux_clear_step_in_we_layer_order",
@@ -885,7 +885,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_keeps_tokenized_clear_prep_as_active_recorder_required() {
+    fn scheduler_treats_tokenized_clear_prep_without_aux_target_as_early_out_marker() {
         let object = SceneObjectId(10);
         let graph = SceneGraph {
             passes: vec![graph_pass(
@@ -904,6 +904,41 @@ mod tests {
             &token_recording_for_tokenized_layer_with_start(object, 2),
         )
         .expect("tokenized object-final clear prep schedule");
+
+        assert_eq!(schedule.clear_prep_early_out_no_draw_count, 1);
+        assert_eq!(schedule.clear_prep_recorder_required_count, 0);
+        assert_eq!(
+            schedule.steps[1].scheduled_kind,
+            NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepEarlyOutNoDraw
+        );
+        assert_eq!(
+            schedule.recording_blocks[1].kind,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+        );
+    }
+
+    #[test]
+    fn scheduler_keeps_aux_clear_prep_as_active_recorder_required() {
+        let object = SceneObjectId(10);
+        let graph = SceneGraph {
+            passes: vec![graph_pass(
+                "object-final-composite",
+                Some(SceneGraphTarget::ObjectFinal(object)),
+                SceneGraphTarget::Swapchain,
+                vec![mesh_draw(object)],
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+        let mut layer = object_final_layer(object, true);
+        layer.has_active_aux_clear_target = true;
+
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![layer]),
+            &graph,
+            &graph_execution,
+            &token_recording_for_tokenized_layer_with_start(object, 2),
+        )
+        .expect("active aux clear prep schedule");
 
         assert_eq!(schedule.clear_prep_early_out_no_draw_count, 0);
         assert_eq!(schedule.clear_prep_recorder_required_count, 1);
@@ -1013,6 +1048,7 @@ mod tests {
             object,
             route: SceneLayerCompositorRoute::DirectSwapchain,
             uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: false,
             commands: vec![normal_command(SceneLayerCompositorTarget::Swapchain)],
         }
     }
@@ -1054,6 +1090,7 @@ mod tests {
             object,
             route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
             uses_tokenized_subdraw,
+            has_active_aux_clear_target: false,
             commands,
         }
     }
@@ -1063,6 +1100,7 @@ mod tests {
             object,
             route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
             uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: false,
             commands: vec![
                 normal_command(SceneLayerCompositorTarget::ImageLayerSource(object)),
                 SceneLayerCompositorCommand {

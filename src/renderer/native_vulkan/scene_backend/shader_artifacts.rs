@@ -1080,6 +1080,7 @@ mod tests {
             object: SceneObjectId(7),
             route: SceneLayerCompositorRoute::DirectSwapchain,
             uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
             commands: vec![SceneLayerCompositorCommand {
                 entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
                 operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,
@@ -1121,6 +1122,7 @@ mod tests {
             object: SceneObjectId(7),
             route: SceneLayerCompositorRoute::DirectSwapchain,
             uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
             commands: vec![SceneLayerCompositorCommand {
                 entry: SceneLayerCompositorEntry::TokenizedCompositeWithMaterialEntry53,
                 operation: SceneLayerCompositorOperation::DrawGeneratedClippingTarget,
@@ -1561,6 +1563,7 @@ mod tests {
             object: SceneObjectId(7),
             route: SceneLayerCompositorRoute::DirectSwapchain,
             uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
             commands: vec![SceneLayerCompositorCommand {
                 entry: SceneLayerCompositorEntry::FlatTextureCopyBack20d9ed,
                 operation: SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,

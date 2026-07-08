@@ -446,6 +446,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &effects,
             &mesh.frame,
             &layer_alpha_mask_token_recording,
+            mesh.recording_strategy
+                == NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorCommandBlocks,
         )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
