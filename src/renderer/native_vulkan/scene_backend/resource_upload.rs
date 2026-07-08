@@ -30,10 +30,14 @@ use crate::engine::scene_engine::{
 use super::layer_alpha_mask_executor::{
     FLATTEXTURE_COPY_BACK_VERTEX_COUNT, FLATTEXTURE_COPY_BACK_VERTEX_STRIDE_BYTES,
     native_vulkan_scene_layer_alpha_mask_copy_back_fullscreen_triangle_payload,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_lower_aux_payload,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_materialize_index_slice,
 };
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
     NativeVulkanSceneGpuBufferRole, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
     NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
 };
 
@@ -178,6 +182,11 @@ impl NativeVulkanSceneGpuUploadPlan {
         }
 
         push_frame_render_state_utility_uploads(&mut resident_uploads, &frame.layer_compositor)?;
+        push_frame_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(
+            &mut resident_uploads,
+            resources,
+            &frame.layer_compositor,
+        )?;
 
         Ok(Self {
             uploads: resident_uploads,
@@ -248,6 +257,11 @@ pub enum NativeVulkanSceneGpuUploadError {
     MissingResidentPayload {
         requirement: NativeVulkanSceneGpuBufferRequirement,
     },
+    SemanticLowering {
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+        message: String,
+    },
 }
 
 impl fmt::Display for NativeVulkanSceneGpuUploadError {
@@ -290,6 +304,14 @@ impl fmt::Display for NativeVulkanSceneGpuUploadError {
             Self::MissingResidentPayload { requirement } => {
                 write!(f, "missing resident scene GPU payload for {requirement:?}")
             }
+            Self::SemanticLowering {
+                owner,
+                role,
+                message,
+            } => write!(
+                f,
+                "failed to lower scene GPU upload payload for {owner:?} {role:?}: {message}"
+            ),
         }
     }
 }
@@ -563,6 +585,126 @@ fn push_frame_render_state_utility_uploads(
     )
 }
 
+fn push_frame_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    resources: &[SceneResource],
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    let tokenized_objects = layer_compositor
+        .layers
+        .iter()
+        .filter(|layer| layer.uses_tokenized_subdraw)
+        .map(|layer| layer.object)
+        .collect::<BTreeSet<_>>();
+    if tokenized_objects.is_empty() {
+        return Ok(());
+    }
+
+    for resource in resources {
+        let SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry } = resource else {
+            continue;
+        };
+        if tokenized_objects.contains(&geometry.object) {
+            push_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(uploads, geometry)?;
+        }
+    }
+    Ok(())
+}
+
+fn push_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    geometry: &SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    if geometry.source_records.is_empty() || geometry.subdraws.is_empty() {
+        return Ok(());
+    }
+
+    let aux_payload = native_vulkan_scene_layer_alpha_mask_rt_method8_lower_aux_payload(geometry)
+        .map_err(
+        |message| NativeVulkanSceneGpuUploadError::SemanticLowering {
+            owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(
+                NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+                    object: geometry.object,
+                    entry_owner_index: geometry.entry_owner_index,
+                },
+            ),
+            role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex,
+            message,
+        },
+    )?;
+
+    for (subdraw_index, subdraw) in geometry.subdraws.iter().enumerate() {
+        if !subdraw.first_indices.is_empty() {
+            push_layer_alpha_mask_rt_method8_mdlv_index_slice_upload(
+                uploads,
+                geometry,
+                &aux_payload,
+                subdraw_index,
+                NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::FirstListAppendToken0,
+                &subdraw.first_indices,
+                true,
+            )?;
+        }
+        if !subdraw.second_indices.is_empty() {
+            push_layer_alpha_mask_rt_method8_mdlv_index_slice_upload(
+                uploads,
+                geometry,
+                &aux_payload,
+                subdraw_index,
+                NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::SecondListNoToken,
+                &subdraw.second_indices,
+                false,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn push_layer_alpha_mask_rt_method8_mdlv_index_slice_upload(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    geometry: &SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    aux_payload: &super::layer_alpha_mask_executor::NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan,
+    subdraw_index: usize,
+    kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
+    payload_indices: &[u32],
+    appends_token_zero: bool,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    let slice = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+        object: geometry.object,
+        entry_owner_index: geometry.entry_owner_index,
+        subdraw_index: subdraw_index.min(u32::MAX as usize) as u32,
+        kind,
+    };
+    let owner = NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice);
+    let role = NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex;
+    let payload_indices = payload_indices
+        .iter()
+        .map(|index| *index as usize)
+        .collect::<Vec<_>>();
+    let slice_plan = native_vulkan_scene_layer_alpha_mask_rt_method8_materialize_index_slice(
+        geometry,
+        aux_payload,
+        slice.subdraw_index,
+        &payload_indices,
+        appends_token_zero,
+    )
+    .map_err(
+        |message| NativeVulkanSceneGpuUploadError::SemanticLowering {
+            owner,
+            role,
+            message,
+        },
+    )?;
+    push_upload(
+        uploads,
+        owner,
+        role,
+        slice_plan.index_count as usize,
+        SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES,
+        slice_plan.index_payload,
+    )
+}
+
 fn layer_compositor_uses_flattexture_copy_back(
     layer_compositor: &SceneLayerCompositorPlan,
 ) -> bool {
@@ -833,11 +975,12 @@ mod tests {
         ScenePuppetAnimationBone, ScenePuppetAnimationClip,
     };
     use crate::engine::scene_engine::{
-        SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneLayerCompositorBlendKey,
-        SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorLayer,
-        SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneMeshResidency, SceneObjectId,
-        ScenePuppetClippingProgram, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource,
-        SceneResourceResidencyPlan,
+        SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+        SceneLayerAlphaMaskRtMethod8MdlvSourceRecord, SceneLayerAlphaMaskRtMethod8MdlvSubdraw,
+        SceneLayerCompositorBlendKey, SceneLayerCompositorCommand, SceneLayerCompositorCondition,
+        SceneLayerCompositorLayer, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+        SceneMeshResidency, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId,
+        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
     };
 
     #[test]
@@ -1092,6 +1235,112 @@ mod tests {
         );
         assert_eq!(plan.uploads()[1].requirement.bytes, 12);
         assert_eq!(plan.uploads()[1].payload, index_payload);
+    }
+
+    #[test]
+    fn frame_upload_plan_materializes_rt_method8_mdlv_index_slices() {
+        let geometry = SceneLayerAlphaMaskRtMethod8MdlvGeometry {
+            object: SceneObjectId(1530),
+            entry_owner_index: 0,
+            layout_key: 0x9,
+            vertex_stride_bytes: 20,
+            vertex_count: 1,
+            index_count: 8,
+            vertex_payload: vec![0; 20],
+            index_payload: vec![0, 0, 2, 0, 1, 0, 3, 0, 4, 0, 5, 0, 6, 0, 7, 0],
+            source_records: vec![
+                SceneLayerAlphaMaskRtMethod8MdlvSourceRecord {
+                    source_index: 0,
+                    local_offset: 0,
+                    index_span_offset: 1,
+                    index_span_count: 2,
+                },
+                SceneLayerAlphaMaskRtMethod8MdlvSourceRecord {
+                    source_index: 1,
+                    local_offset: 0,
+                    index_span_offset: 4,
+                    index_span_count: 2,
+                },
+                SceneLayerAlphaMaskRtMethod8MdlvSourceRecord {
+                    source_index: 2,
+                    local_offset: 0,
+                    index_span_offset: 6,
+                    index_span_count: 1,
+                },
+            ],
+            subdraws: vec![SceneLayerAlphaMaskRtMethod8MdlvSubdraw {
+                source_qword: 0x690,
+                mask_resource: "masks/clipping_mask".to_owned(),
+                raw_flags: 0,
+                first_indices: vec![0, 1],
+                second_indices: vec![2],
+                link: u32::MAX,
+            }],
+        };
+        let resources = vec![SceneResource::LayerAlphaMaskRtMethod8MdlvGeometry { geometry }];
+        let frame = SceneFramePlan {
+            residency: Default::default(),
+            graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
+            effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
+            layer_compositor: SceneLayerCompositorPlan {
+                layer_count: 1,
+                command_count: 1,
+                object_final_layer_count: 0,
+                tokenized_layer_count: 1,
+                layers: vec![SceneLayerCompositorLayer {
+                    object: SceneObjectId(1530),
+                    route: SceneLayerCompositorRoute::DirectSwapchain,
+                    uses_tokenized_subdraw: true,
+                    commands: Vec::new(),
+                }],
+                command_order: SceneLayerCompositorPlan::empty().command_order,
+            },
+        };
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_scene_frame(
+            &NativeVulkanSceneResourceStorage::default(),
+            &resources,
+            &frame,
+        )
+        .unwrap();
+
+        assert_eq!(plan.uploads().len(), 2);
+        let first = &plan.uploads()[0];
+        assert_eq!(
+            first.requirement.owner,
+            NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(
+                NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+                    object: SceneObjectId(1530),
+                    entry_owner_index: 0,
+                    subdraw_index: 0,
+                    kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::FirstListAppendToken0,
+                },
+            )
+        );
+        assert_eq!(
+            first.requirement.role,
+            NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex
+        );
+        assert_eq!(
+            first.requirement.usage,
+            NativeVulkanSceneGpuBufferUsage::Index
+        );
+        assert_eq!(first.payload, vec![2, 0, 1, 0, 4, 0, 5, 0]);
+
+        let second = &plan.uploads()[1];
+        assert_eq!(
+            second.requirement.owner,
+            NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(
+                NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+                    object: SceneObjectId(1530),
+                    entry_owner_index: 0,
+                    subdraw_index: 0,
+                    kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::SecondListNoToken,
+                },
+            )
+        );
+        assert_eq!(second.payload, vec![6, 0]);
     }
 
     #[test]

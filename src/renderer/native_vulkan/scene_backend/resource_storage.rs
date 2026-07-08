@@ -302,6 +302,7 @@ pub enum NativeVulkanSceneGpuBufferOwner {
     PuppetRig(ScenePuppetId),
     RenderStateUtility(NativeVulkanSceneRenderStateUtilityGeometry),
     LayerAlphaMaskRtMethod8MdlvEntry(NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry),
+    LayerAlphaMaskRtMethod8MdlvIndexSlice(NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -311,6 +312,7 @@ pub enum NativeVulkanSceneGpuBufferRole {
     RenderStateFlatTextureVertex,
     LayerAlphaMaskRtMethod8MdlvVertex,
     LayerAlphaMaskRtMethod8MdlvIndex,
+    LayerAlphaMaskRtMethod8MdlvSliceIndex,
     PuppetBone,
     PuppetSkinVertex,
     PuppetClipFrame,
@@ -326,9 +328,9 @@ impl NativeVulkanSceneGpuBufferRole {
             Self::MeshVertex
             | Self::RenderStateFlatTextureVertex
             | Self::LayerAlphaMaskRtMethod8MdlvVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
-            Self::MeshIndex | Self::LayerAlphaMaskRtMethod8MdlvIndex => {
-                NativeVulkanSceneGpuBufferUsage::Index
-            }
+            Self::MeshIndex
+            | Self::LayerAlphaMaskRtMethod8MdlvIndex
+            | Self::LayerAlphaMaskRtMethod8MdlvSliceIndex => NativeVulkanSceneGpuBufferUsage::Index,
             Self::PuppetBone
             | Self::PuppetSkinVertex
             | Self::PuppetClipFrame
@@ -349,6 +351,20 @@ pub enum NativeVulkanSceneRenderStateUtilityGeometry {
 pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
     pub object: SceneObjectId,
     pub entry_owner_index: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+    pub object: SceneObjectId,
+    pub entry_owner_index: u32,
+    pub subdraw_index: u32,
+    pub kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub enum NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind {
+    FirstListAppendToken0,
+    SecondListNoToken,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

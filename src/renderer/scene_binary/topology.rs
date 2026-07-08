@@ -15,7 +15,7 @@ use crate::renderer::RendererPlanError;
 
 use super::facts::BinarySceneResource;
 use super::reader::BinarySceneReader;
-use super::{binary_resource_by_name, binary_scene_material_texture_slots_cached};
+use super::render_layers::{binary_resource_by_name, binary_scene_material_texture_slots_cached};
 
 #[derive(Debug, Clone)]
 pub(super) struct BinarySceneRetainedTopology {

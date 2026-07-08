@@ -36,6 +36,14 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_hea
 };
 use crate::renderer::native_vulkan::scene_backend::material_uniforms::NativeVulkanSceneMaterialUniformKey;
 use crate::renderer::native_vulkan::scene_backend::render_target::NativeVulkanSceneRenderTargetLoadOp;
+use crate::renderer::native_vulkan::scene_backend::resource_buffers::{
+    NativeVulkanSceneGpuBufferKey, NativeVulkanSceneGpuBufferRecordBinding,
+};
+use crate::renderer::native_vulkan::scene_backend::resource_storage::{
+    NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRole,
+    NativeVulkanSceneGpuBufferUsage, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
+};
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 use vulkanalia::vk;
 use vulkanalia::vk::HasBuilder;
@@ -90,6 +98,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             &rt_method8_bridges,
         )
         .expect("RT method [8] MDLV geometry buffers");
+    let rt_method8_mdlv_index_slices = rt_method8_index_slice_plan(SceneObjectId(7));
     let (
         generated_consumer_targets,
         generated_consumer_pipelines,
@@ -110,6 +119,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         &generated_consumer_draws,
         &rt_method8_bridges,
         &rt_method8_mdlv_geometry_buffers,
+        &rt_method8_mdlv_index_slices,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
@@ -159,6 +169,11 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .expect("producer MDLV geometry")
             .entry_owner_index,
         0
+    );
+    assert_eq!(plan.requirements[1].rt_method8_mdlv_index_slices.len(), 2);
+    assert_eq!(
+        plan.requirements[1].rt_method8_mdlv_index_slices[0].helper_vma,
+        "0x14020c850"
     );
     assert_eq!(
         plan.requirements[1].target_scope_load_op,
@@ -225,6 +240,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .buffer_requirement_index,
         0
     );
+    assert_eq!(plan.requirements[4].rt_method8_mdlv_index_slices.len(), 2);
     assert_eq!(
         plan.requirements[4].source_mask,
         Some(SceneGraphTarget::FullAlphaMask)
@@ -273,7 +289,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
         plan.requirements[4]
             .missing_we_facts
             .iter()
-            .any(|fact| fact.contains("aux+0x298"))
+            .all(|fact| !fact.contains("aux+0x298"))
     );
     assert!(
         plan.requirements[4]
@@ -281,7 +297,7 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .iter()
             .all(|fact| !fact.contains("payload byte construction"))
     );
-    assert_eq!(plan.requirements[4].missing_we_facts.len(), 1);
+    assert!(plan.requirements[4].missing_we_facts.is_empty());
 }
 
 #[test]
@@ -332,6 +348,7 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
             &rt_method8_bridges,
         )
         .expect("RT method [8] MDLV geometry buffers");
+    let rt_method8_mdlv_index_slices = rt_method8_index_slice_plan(SceneObjectId(7));
     let (
         generated_consumer_targets,
         generated_consumer_pipelines,
@@ -352,6 +369,7 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
         &generated_consumer_draws,
         &rt_method8_bridges,
         &rt_method8_mdlv_geometry_buffers,
+        &rt_method8_mdlv_index_slices,
         &generated_consumer_targets,
         &generated_consumer_pipelines,
         &generated_consumer_commands,
@@ -360,6 +378,87 @@ fn recorder_requirements_reject_copy_back_without_retained_draw_bind() {
     .expect_err("copy-back must require retained draw bind");
 
     assert!(err.contains("requires exactly one retained copy-back draw heap bind"));
+}
+
+fn rt_method8_index_slice_plan(
+    object: SceneObjectId,
+) -> NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan {
+    let requirements = vec![
+        rt_method8_index_slice_requirement(
+            0,
+            object,
+            0,
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::FirstListAppendToken0,
+            "0x14020c850",
+        ),
+        rt_method8_index_slice_requirement(
+            1,
+            object,
+            0,
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::SecondListNoToken,
+            "0x14020c710",
+        ),
+    ];
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan {
+        geometry_count: 1,
+        slice_requirement_count: requirements.len(),
+        requirements,
+        command_order: [
+            "read_rt_method8_geometry_buffer_requirements",
+            "resolve_retained_mdlv_index_slice_buffers_from_gpu_store",
+            "validate_slice_owner_role_and_index_usage",
+            "carry_slice_records_to_alpha_mask_recorder_requirements",
+            "forbid_recorder_side_cpu_slice_materialization",
+        ],
+    }
+}
+
+fn rt_method8_index_slice_requirement(
+    requirement_index: usize,
+    object: SceneObjectId,
+    subdraw_index: u32,
+    kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
+    helper_vma: &'static str,
+) -> NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement {
+    let slice = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+        object,
+        entry_owner_index: 0,
+        subdraw_index,
+        kind,
+    };
+    let owner = NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice);
+    let index_role = NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex;
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement {
+        requirement_index,
+        object,
+        entry_owner_index: 0,
+        slice,
+        owner,
+        index_role,
+        index_usage: NativeVulkanSceneGpuBufferUsage::Index,
+        index: NativeVulkanSceneGpuBufferRecordBinding {
+            key: NativeVulkanSceneGpuBufferKey {
+                owner,
+                role: index_role,
+            },
+            bytes: 4,
+            payload_hash: 0x8500 + requirement_index as u64,
+        },
+        helper_vma,
+        reference_points: [
+            "reverse-engineered/docs/exe/clipping-pipeline.md: 0x14020c710 materializes no-token R16 index slices",
+            "reverse-engineered/docs/exe/clipping-pipeline.md: 0x14020c850 materializes R16 index slices and appends token 0",
+            "reverse-engineered/docs/exe/blend-and-render.md: [layer+0x490] vtable+0x40 consumes indexed draw buffers",
+            "references/godot/servers/rendering/rendering_device_graph.cpp: indexed draw resources are recorded before draw execution",
+        ],
+        command_order: [
+            "select_mdlv_subdraw_slice_owner",
+            "validate_retained_slice_index_buffer_record",
+            "map_slice_kind_to_recovered_helper_vma",
+            "attach_slice_to_rt_method8_recorder_requirement",
+            "record_indexed_draw_without_cpu_materializing_slice_payload",
+        ],
+    }
 }
 
 fn generated_consumer_target_pipeline_command_uniform_plans(

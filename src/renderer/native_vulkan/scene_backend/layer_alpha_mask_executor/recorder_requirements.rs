@@ -52,6 +52,10 @@ use super::rt_method8_buffers::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirement,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
 };
+use super::rt_method8_slices::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
+};
 use super::token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenRecordingStatus,
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
@@ -110,6 +114,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRec
     pub rt_method8_method_vma: Option<&'static str>,
     pub rt_method8_mdlv_geometry:
         Option<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement>,
+    pub rt_method8_mdlv_index_slices:
+        Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement>,
     pub target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     pub requires_initialized_initial_layout: Option<bool>,
     pub source_mask: Option<SceneGraphTarget>,
@@ -154,6 +160,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
     rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     rt_method8_mdlv_geometry_buffers:
         &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
+    rt_method8_mdlv_index_slices:
+        &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -212,6 +220,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_alpha_m
             generated_consumer_draws,
             rt_method8_bridges,
             rt_method8_mdlv_geometry_buffers,
+            rt_method8_mdlv_index_slices,
             generated_consumer_targets,
             generated_consumer_pipelines,
             generated_consumer_commands,
@@ -319,6 +328,8 @@ fn requirement_from_step(
     rt_method8_bridges: &NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     rt_method8_mdlv_geometry_buffers:
         &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
+    rt_method8_mdlv_index_slices:
+        &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     generated_consumer_targets: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     generated_consumer_pipelines: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelinePlan,
     generated_consumer_commands: &NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -343,6 +354,7 @@ fn requirement_from_step(
                 None,
                 None,
                 None,
+                Vec::new(),
                 None,
                 None,
                 None,
@@ -421,6 +433,11 @@ fn requirement_from_step(
                 rt_method8_bridge,
                 rt_method8_mdlv_geometry_buffers,
             )?;
+            let rt_method8_mdlv_index_slices = rt_method8_mdlv_recorder_index_slice_requirements(
+                step.command_index,
+                rt_method8_bridge.object,
+                rt_method8_mdlv_index_slices,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -438,6 +455,7 @@ fn requirement_from_step(
                 Some(rt_method8_bridge.call_site),
                 Some(rt_method8_bridge.method_vma),
                 Some(rt_method8_mdlv_geometry),
+                rt_method8_mdlv_index_slices,
                 Some(target_scope.load_op),
                 Some(target_scope.requires_initialized_initial_layout),
                 None,
@@ -477,6 +495,7 @@ fn requirement_from_step(
                 None,
                 None,
                 None,
+                Vec::new(),
                 Some(NativeVulkanSceneRenderTargetLoadOp::Load),
                 Some(true),
                 Some(SceneGraphTarget::FullAlphaMaskIntermediate),
@@ -576,6 +595,11 @@ fn requirement_from_step(
                 rt_method8_bridge,
                 rt_method8_mdlv_geometry_buffers,
             )?;
+            let rt_method8_mdlv_index_slices = rt_method8_mdlv_recorder_index_slice_requirements(
+                step.command_index,
+                rt_method8_bridge.object,
+                rt_method8_mdlv_index_slices,
+            )?;
             Ok(base_requirement(
                 step,
                 command,
@@ -593,6 +617,7 @@ fn requirement_from_step(
                 Some(rt_method8_bridge.call_site),
                 Some(rt_method8_bridge.method_vma),
                 Some(rt_method8_mdlv_geometry),
+                rt_method8_mdlv_index_slices,
                 None,
                 None,
                 Some(SceneGraphTarget::FullAlphaMask),
@@ -639,6 +664,9 @@ fn base_requirement(
     rt_method8_mdlv_geometry: Option<
         NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement,
     >,
+    rt_method8_mdlv_index_slices: Vec<
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement,
+    >,
     target_scope_load_op: Option<NativeVulkanSceneRenderTargetLoadOp>,
     requires_initialized_initial_layout: Option<bool>,
     source_mask: Option<SceneGraphTarget>,
@@ -674,6 +702,7 @@ fn base_requirement(
         rt_method8_call_site,
         rt_method8_method_vma,
         rt_method8_mdlv_geometry,
+        rt_method8_mdlv_index_slices,
         target_scope_load_op,
         requires_initialized_initial_layout,
         source_mask,
@@ -1004,6 +1033,20 @@ fn validate_rt_method8_mdlv_buffer_requirement(
     Ok(())
 }
 
+fn rt_method8_mdlv_recorder_index_slice_requirements(
+    command_index: usize,
+    object: SceneObjectId,
+    slices: &NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
+) -> Result<Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirement>, String> {
+    let requirements = slices.requirements_for_object(object);
+    if requirements.is_empty() {
+        return Err(format!(
+            "scene layer alpha-mask command {command_index} has no retained [layer+0x490] MDLV indexed-slice buffer requirements for object {object:?}"
+        ));
+    }
+    Ok(requirements)
+}
+
 fn requirement_for_step_kind(
     kind: NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind,
 ) -> NativeVulkanSceneLayerAlphaMaskBindRequirement {
@@ -1025,16 +1068,11 @@ fn requirement_for_step_kind(
 }
 
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
-    vec![
-        "recorder consumption of lowered aux+0x298 indexed-slice plan from 0x14020c710/0x14020c850",
-        "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
-    ]
+    vec!["clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active"]
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
-    vec![
-        "recorder consumption of lowered aux+0x298 indexed-slice plan for generated CLIPPINGTARGET draws",
-    ]
+    Vec::new()
 }
 
 fn recorder_requirement_command_order() -> [&'static str; 6] {

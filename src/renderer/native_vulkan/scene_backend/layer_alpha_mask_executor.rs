@@ -35,6 +35,7 @@ mod rt_method8;
 mod rt_method8_buffers;
 mod rt_method8_geometry;
 mod rt_method8_payload;
+mod rt_method8_slices;
 mod token_schedule;
 
 use crate::engine::scene_engine::{
@@ -109,6 +110,15 @@ pub(in crate::renderer::native_vulkan) use rt_method8::{
 pub(in crate::renderer::native_vulkan) use rt_method8_buffers::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+};
+pub(in crate::renderer::native_vulkan) use rt_method8_payload::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_lower_aux_payload,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_materialize_index_slice,
+};
+pub(in crate::renderer::native_vulkan) use rt_method8_slices::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
 };
 pub(in crate::renderer::native_vulkan) use token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,

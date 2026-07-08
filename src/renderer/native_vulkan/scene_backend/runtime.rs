@@ -51,6 +51,7 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
@@ -66,6 +67,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
@@ -100,6 +102,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_rt_method8_bridges: NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
     pub layer_alpha_mask_rt_method8_mdlv_geometry_buffers:
         NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
+    pub layer_alpha_mask_rt_method8_mdlv_index_slices:
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     pub layer_alpha_mask_generated_consumer_targets:
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerTargetPlan,
     pub layer_alpha_mask_generated_consumer_pipelines:
@@ -113,7 +117,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 19],
+    pub command_order: [&'static str; 20],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +228,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers(
             &layer_alpha_mask_rt_method8_bridges,
         )?;
+    let layer_alpha_mask_rt_method8_mdlv_index_slices =
+        native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices(
+            &layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+            |geometry| {
+                frame_resources
+                    .layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(
+                        geometry,
+                    )
+            },
+        )?;
     let layer_alpha_mask_generated_consumer_targets =
         native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_targets(
             &layer_alpha_mask_generated_consumer_draws,
@@ -273,6 +287,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_generated_consumer_draws,
             &layer_alpha_mask_rt_method8_bridges,
             &layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+            &layer_alpha_mask_rt_method8_mdlv_index_slices,
             &layer_alpha_mask_generated_consumer_targets,
             &layer_alpha_mask_generated_consumer_pipelines,
             &layer_alpha_mask_generated_consumer_commands,
@@ -306,6 +321,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_generated_consumer_draws,
         layer_alpha_mask_rt_method8_bridges,
         layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+        layer_alpha_mask_rt_method8_mdlv_index_slices,
         layer_alpha_mask_generated_consumer_targets,
         layer_alpha_mask_generated_consumer_pipelines,
         layer_alpha_mask_generated_consumer_commands,
@@ -326,6 +342,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_generated_consumer_draws",
             "plan_layer_alpha_mask_rt_method8_bridges",
             "plan_layer_alpha_mask_rt_method8_mdlv_geometry_buffers",
+            "plan_layer_alpha_mask_rt_method8_mdlv_index_slices",
             "plan_layer_alpha_mask_generated_consumer_targets",
             "plan_layer_alpha_mask_generated_consumer_pipelines",
             "plan_layer_alpha_mask_generated_consumer_commands",

@@ -29,6 +29,7 @@ use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
     NativeVulkanSceneGpuBufferRole, NativeVulkanSceneGpuBufferUsage,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
     NativeVulkanSceneRenderStateUtilityGeometry,
 };
 use super::resource_upload::{NativeVulkanSceneGpuBufferUpload, NativeVulkanSceneGpuUploadPlan};
@@ -94,6 +95,12 @@ pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords {
     pub index: NativeVulkanSceneGpuBufferRecordBinding,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords {
+    pub slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    pub index: NativeVulkanSceneGpuBufferRecordBinding,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeVulkanSceneGpuBufferBinding {
     pub key: NativeVulkanSceneGpuBufferKey,
@@ -131,6 +138,12 @@ pub struct NativeVulkanSceneRenderStateUtilityGeometryBuffers {
 pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers {
     pub geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     pub vertex: NativeVulkanSceneGpuBufferBinding,
+    pub index: NativeVulkanSceneGpuBufferBinding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers {
+    pub slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
     pub index: NativeVulkanSceneGpuBufferBinding,
 }
 
@@ -328,6 +341,47 @@ impl NativeVulkanSceneGpuBufferCatalog {
                 )?,
             },
         )
+    }
+
+    pub fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records(
+        &self,
+        slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords, String> {
+        Ok(
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords {
+                slice,
+                index: self.required_record_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex,
+                )?,
+            },
+        )
+    }
+
+    pub fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords> {
+        self.records
+            .iter()
+            .filter_map(|(key, record)| {
+                let NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice) =
+                    key.owner
+                else {
+                    return None;
+                };
+                (slice.object == geometry.object
+                    && slice.entry_owner_index == geometry.entry_owner_index
+                    && key.role
+                        == NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex)
+                    .then(
+                        || NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords {
+                            slice,
+                            index: record_binding(record),
+                        },
+                    )
+            })
+            .collect()
     }
 
     fn required_record_binding(
@@ -564,6 +618,47 @@ impl NativeVulkanSceneGpuBufferStore {
         )
     }
 
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffers(
+        &self,
+        slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers, String> {
+        Ok(
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers {
+                slice,
+                index: self.required_buffer_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex,
+                )?,
+            },
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords> {
+        self.buffers
+            .iter()
+            .filter_map(|(key, slot)| {
+                let NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(slice) =
+                    key.owner
+                else {
+                    return None;
+                };
+                (slice.object == geometry.object
+                    && slice.entry_owner_index == geometry.entry_owner_index
+                    && key.role
+                        == NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex)
+                    .then(
+                        || NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords {
+                            slice,
+                            index: record_binding(&slot.record),
+                        },
+                    )
+            })
+            .collect()
+    }
+
     fn required_buffer_binding(
         &self,
         owner: NativeVulkanSceneGpuBufferOwner,
@@ -714,6 +809,9 @@ fn scene_gpu_buffer_role_name(requirement: NativeVulkanSceneGpuBufferRequirement
         NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex => {
             "scene-layer-alpha-mask-rt-method8-mdlv-index-buffer"
         }
+        NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex => {
+            "scene-layer-alpha-mask-rt-method8-mdlv-slice-index-buffer"
+        }
         NativeVulkanSceneGpuBufferRole::PuppetBone => "scene-puppet-bone-storage-buffer",
         NativeVulkanSceneGpuBufferRole::PuppetSkinVertex => {
             "scene-puppet-skin-vertex-storage-buffer"
@@ -744,7 +842,7 @@ fn scene_stable_byte_hash(bytes: &[u8]) -> u64 {
 mod tests {
     use super::super::resource_storage::{
         NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
-        NativeVulkanSceneGpuBufferRole,
+        NativeVulkanSceneGpuBufferRole, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
     };
     use super::*;
     use crate::engine::scene_engine::{SceneGeometryId, SceneObjectId, ScenePuppetId};
@@ -978,6 +1076,51 @@ mod tests {
     }
 
     #[test]
+    fn catalog_exposes_layer_alpha_mask_rt_method8_mdlv_index_slice_records() {
+        let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
+        let geometry = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry {
+            object: SceneObjectId(1530),
+            entry_owner_index: 0,
+        };
+        let first = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+            object: geometry.object,
+            entry_owner_index: geometry.entry_owner_index,
+            subdraw_index: 0,
+            kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::FirstListAppendToken0,
+        };
+        let second = NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice {
+            object: geometry.object,
+            entry_owner_index: geometry.entry_owner_index,
+            subdraw_index: 0,
+            kind: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind::SecondListNoToken,
+        };
+        let plan = upload_plan(vec![
+            layer_alpha_mask_rt_method8_mdlv_slice_upload(first, vec![2, 0, 1, 0]),
+            layer_alpha_mask_rt_method8_mdlv_slice_upload(second, vec![6, 0]),
+        ]);
+        catalog.sync_upload_plan(&plan).unwrap();
+
+        let first_records = catalog
+            .layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records(first)
+            .expect("first-list RT method [8] slice records");
+        assert_eq!(first_records.slice, first);
+        assert_eq!(
+            first_records.index.key.owner,
+            NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(first)
+        );
+        assert_eq!(
+            first_records.index.key.role,
+            NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex
+        );
+        assert_eq!(first_records.index.bytes, 4);
+
+        let all_records = catalog
+            .layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(geometry);
+        assert_eq!(all_records.len(), 2);
+        assert!(all_records.iter().any(|records| records.slice == second));
+    }
+
+    #[test]
     fn catalog_requires_complete_mesh_draw_records() {
         let mut catalog = NativeVulkanSceneGpuBufferCatalog::default();
         let plan = upload_plan(vec![upload(
@@ -1066,6 +1209,23 @@ mod tests {
                 role,
                 bytes: payload.len() as u64,
                 usage: role.usage(),
+            },
+            payload,
+        }
+    }
+
+    fn layer_alpha_mask_rt_method8_mdlv_slice_upload(
+        slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+        payload: Vec<u8>,
+    ) -> NativeVulkanSceneGpuBufferUpload {
+        NativeVulkanSceneGpuBufferUpload {
+            requirement: NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvIndexSlice(
+                    slice,
+                ),
+                role: NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvSliceIndex,
+                bytes: payload.len() as u64,
+                usage: NativeVulkanSceneGpuBufferUsage::Index,
             },
             payload,
         }

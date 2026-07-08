@@ -65,6 +65,7 @@ use super::pipeline_factory::{
 };
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
     NativeVulkanSceneRenderStateUtilityGeometryBuffers,
 };
@@ -73,6 +74,7 @@ use super::resource_heap::{
     NativeVulkanSceneResourceHeapStore, NativeVulkanSceneResourceHeapSyncAction,
 };
 use super::resource_storage::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
 };
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
@@ -322,6 +324,14 @@ impl NativeVulkanSceneFrameResources {
     ) -> Result<NativeVulkanSceneRenderStateUtilityGeometryBuffers, String> {
         self.gpu_buffers
             .render_state_utility_geometry_buffers(geometry)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords> {
+        self.gpu_buffers
+            .layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(geometry)
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_descriptor_frame_plan(

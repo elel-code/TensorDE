@@ -24,7 +24,6 @@ use crate::engine::scene_engine::ingest::gscn::{
 };
 use crate::renderer::RendererPlanError;
 
-use super::BINARY_TEXTURE_ROLE_BASE_COLOR;
 use super::effect_program::gscn_effect_programs;
 use super::facts::{
     BinarySceneNames, BinarySceneResource, binary_scene_names, binary_scene_package_root,
@@ -33,6 +32,7 @@ use super::facts::{
 };
 use super::mesh::binary_scene_geometry_is_mesh_payload;
 use super::reader::BinarySceneReader;
+use super::schema::BINARY_TEXTURE_ROLE_BASE_COLOR;
 use super::topology::{
     BinarySceneRetainedRenderable, BinarySceneRetainedTopology, binary_scene_retained_topology,
 };
