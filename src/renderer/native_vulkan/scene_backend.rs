@@ -52,6 +52,7 @@ pub mod resource_upload;
 pub mod runtime;
 pub mod shader_artifacts;
 pub mod shader_module;
+pub mod shader_reflection;
 pub mod target_access;
 pub mod target_barriers;
 pub mod target_formats;

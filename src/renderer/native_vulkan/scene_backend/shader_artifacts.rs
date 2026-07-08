@@ -1468,6 +1468,7 @@ mod tests {
             alpha_write: SceneAlphaWriteMode::Default,
             target_format: vk::Format::R16G16B16A16_SFLOAT,
             texture_slot_mask: 1,
+            has_effect_uniform: false,
             raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         };
 

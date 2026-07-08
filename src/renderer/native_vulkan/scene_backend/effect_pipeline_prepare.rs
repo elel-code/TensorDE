@@ -47,17 +47,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_prepare_scene_effect_pip
 where
     TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
 {
-    let warmup =
-        NativeVulkanSceneEffectPipelineWarmupPlan::from_effect_pass_graph_with_target_formats(
-            graph,
-            target_format,
-        )?;
     let effect_resource_heap = frame_resources
         .current_effect_resource_heap_frame_plan()
         .ok_or_else(|| {
             "scene effect pipeline prepare requires current effect resource heap frame plan"
                 .to_owned()
         })?;
+    let warmup = NativeVulkanSceneEffectPipelineWarmupPlan::from_effect_pass_graph_with_target_formats_and_resource_heap(
+        graph,
+        target_format,
+        effect_resource_heap,
+    )?;
     let descriptor_heap_plan = effect_resource_heap.descriptor_heap_plan.clone();
     let resource_descriptor_count = effect_resource_heap.resource_descriptor_count;
     let sampler_descriptor_count = effect_resource_heap.sampler_descriptor_count;

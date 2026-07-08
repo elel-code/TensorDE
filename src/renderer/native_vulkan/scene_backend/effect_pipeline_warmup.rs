@@ -17,6 +17,9 @@ use crate::engine::scene_engine::{
 use super::effect_pipeline::{
     NativeVulkanSceneEffectPipelineCacheKey, NativeVulkanSceneEffectPipelineKey,
 };
+use super::effect_resource_heap::{
+    NativeVulkanSceneEffectResourceHeapFramePlan, NativeVulkanSceneEffectResourceHeapPassBindPlan,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineWarmupPlan {
@@ -75,6 +78,57 @@ impl NativeVulkanSceneEffectPipelineWarmupPlan {
         })
     }
 
+    pub(in crate::renderer::native_vulkan) fn from_effect_pass_graph_with_target_formats_and_resource_heap<
+        TargetFormat,
+    >(
+        graph: &SceneEffectPassGraphPlan,
+        mut target_format: TargetFormat,
+        effect_resource_heap: &NativeVulkanSceneEffectResourceHeapFramePlan,
+    ) -> Result<Self, String>
+    where
+        TargetFormat: FnMut(SceneGraphTarget) -> Result<vk::Format, String>,
+    {
+        let mut cache_keys = Vec::new();
+        let mut target_formats = Vec::new();
+        for pass in &graph.passes {
+            let output = effect_pass_render_target(&pass.output, pass.pass_index, pass.object)?;
+            let pass_target_format = target_format(output)?;
+            if pass_target_format == vk::Format::UNDEFINED {
+                return Err(format!(
+                    "scene effect pipeline warmup requires defined format for graph target {:?}",
+                    output
+                ));
+            }
+            if !target_formats.contains(&pass_target_format) {
+                target_formats.push(pass_target_format);
+            }
+            let resource_heap =
+                effect_resource_heap_pass_bind_plan(effect_resource_heap, pass.graph_pass_index)?;
+            let key = NativeVulkanSceneEffectPipelineCacheKey::from_bind_key(
+                NativeVulkanSceneEffectPipelineKey::from_pass_and_resource_heap(
+                    pass,
+                    pass_target_format,
+                    &resource_heap,
+                )?,
+            );
+            if !cache_keys.iter().any(|existing| existing == &key) {
+                cache_keys.push(key);
+            }
+        }
+
+        Ok(Self {
+            material_pass_count: graph.passes.len(),
+            target_formats,
+            cache_keys,
+            command_order: [
+                "resolve_effect_pass_target_formats",
+                "read_effect_heap_slice_shapes",
+                "collect_unique_effect_pipeline_keys",
+                "require_warmed_effect_pipeline_cache",
+            ],
+        })
+    }
+
     pub(in crate::renderer::native_vulkan) fn material_pass_count(&self) -> usize {
         self.material_pass_count
     }
@@ -92,6 +146,33 @@ impl NativeVulkanSceneEffectPipelineWarmupPlan {
     pub(in crate::renderer::native_vulkan) fn command_order(&self) -> [&'static str; 4] {
         self.command_order
     }
+}
+
+fn effect_resource_heap_pass_bind_plan(
+    effect_resource_heap: &NativeVulkanSceneEffectResourceHeapFramePlan,
+    effect_pass_index: usize,
+) -> Result<NativeVulkanSceneEffectResourceHeapPassBindPlan, String> {
+    let binding = effect_resource_heap
+        .pass_bindings
+        .iter()
+        .find(|binding| binding.effect_pass_index == effect_pass_index)
+        .ok_or_else(|| {
+            format!(
+                "scene effect pipeline warmup has no effect resource heap binding for pass {effect_pass_index}"
+            )
+        })?;
+    Ok(NativeVulkanSceneEffectResourceHeapPassBindPlan {
+        effect_pass_index: binding.effect_pass_index,
+        object: binding.object,
+        heap_slice_index: binding.heap_slice_index,
+        has_effect_uniform: binding.effect_uniform.is_some(),
+        texture_set: binding.texture_set.clone(),
+        base_resource_descriptor_index: binding.base_resource_descriptor_index,
+        resource_descriptor_count: binding.resource_descriptor_count,
+        texture_count: binding.texture_count,
+        shader_mappings: binding.shader_mappings.clone(),
+        command_order: ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"],
+    })
 }
 
 fn effect_pass_render_target(

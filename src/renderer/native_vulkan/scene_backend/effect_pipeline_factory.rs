@@ -23,6 +23,7 @@ use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
 
@@ -31,6 +32,7 @@ use super::effect_pipeline::{
 };
 use super::pipeline::NativeVulkanScenePipelineResources;
 use super::shader_module::native_vulkan_create_scene_shader_module;
+use super::shader_reflection::native_vulkan_reflect_scene_spirv_resources;
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineLayoutSpec<'a> {
@@ -98,32 +100,44 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_create_scene_effect_pipe
             )?;
             let result = (|| -> Result<NativeVulkanScenePipelineResources, String> {
                 let shader_entry = b"main\0";
-                let descriptor_heap_mappings =
-                    scene_effect_descriptor_heap_mappings(layout.effect_resource_heap_plan, key)?;
-                let mut descriptor_heap_mapping_info =
+                let descriptor_heap_mappings = scene_effect_descriptor_heap_stage_mappings(
+                    layout.effect_resource_heap_plan,
+                    key,
+                    shaders,
+                )?;
+                let mut vertex_descriptor_heap_mapping_info =
                     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
-                        &descriptor_heap_mappings,
+                        &descriptor_heap_mappings.vertex,
                     )?;
+                let mut fragment_descriptor_heap_mapping_info =
+                    native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info(
+                        &descriptor_heap_mappings.fragment,
+                    )?;
+                let vertex_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
+                    .stage(vk::ShaderStageFlags::VERTEX)
+                    .module(vertex_module)
+                    .name(shader_entry);
+                let vertex_stage = if descriptor_heap_mappings.vertex.is_empty() {
+                    vertex_stage_builder.build()
+                } else {
+                    let mut vertex_stage = vertex_stage_builder.build();
+                    vertex_stage.next = &mut vertex_descriptor_heap_mapping_info as *mut _
+                        as *const std::ffi::c_void;
+                    vertex_stage
+                };
                 let fragment_stage_builder = vk::PipelineShaderStageCreateInfo::builder()
                     .stage(vk::ShaderStageFlags::FRAGMENT)
                     .module(fragment_module)
                     .name(shader_entry);
-                let fragment_stage = if descriptor_heap_mappings.is_empty() {
+                let fragment_stage = if descriptor_heap_mappings.fragment.is_empty() {
                     fragment_stage_builder.build()
                 } else {
                     let mut fragment_stage = fragment_stage_builder.build();
-                    fragment_stage.next =
-                        &mut descriptor_heap_mapping_info as *mut _ as *const std::ffi::c_void;
+                    fragment_stage.next = &mut fragment_descriptor_heap_mapping_info as *mut _
+                        as *const std::ffi::c_void;
                     fragment_stage
                 };
-                let stages = [
-                    vk::PipelineShaderStageCreateInfo::builder()
-                        .stage(vk::ShaderStageFlags::VERTEX)
-                        .module(vertex_module)
-                        .name(shader_entry)
-                        .build(),
-                    fragment_stage,
-                ];
+                let stages = [vertex_stage, fragment_stage];
 
                 let vertex_input = vk::PipelineVertexInputStateCreateInfo::builder().build();
                 let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
@@ -243,6 +257,12 @@ struct SceneEffectResourceHeapTextureLayout {
     has_effect_uniform: bool,
 }
 
+#[derive(Debug, Clone)]
+struct SceneEffectDescriptorHeapStageMappings {
+    vertex: Vec<NativeVulkanDescriptorHeapShaderBindingMapping>,
+    fragment: Vec<NativeVulkanDescriptorHeapShaderBindingMapping>,
+}
+
 fn scene_effect_resource_heap_texture_layout(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanSceneEffectPipelineKey<'_>,
@@ -269,15 +289,18 @@ fn scene_effect_resource_heap_texture_layout(
             key.shader, texture_slot_count, descriptor_heap_plan.sampler_count
         ));
     }
-    if effect_heap_slice_has_sampled_images(descriptor_heap_plan, 0, texture_slot_count) {
+    if !key.has_effect_uniform
+        && effect_heap_slice_has_sampled_images(descriptor_heap_plan, 0, texture_slot_count)
+    {
         return Ok(Some(SceneEffectResourceHeapTextureLayout {
             base_resource_descriptor_index: 0,
             base_sampler_descriptor_index: 0,
             has_effect_uniform: false,
         }));
     }
-    if descriptor_heap_plan.resource_descriptor_kinds.first()
-        == Some(&NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer)
+    if key.has_effect_uniform
+        && descriptor_heap_plan.resource_descriptor_kinds.first()
+            == Some(&NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer)
         && effect_heap_slice_has_sampled_images(descriptor_heap_plan, 1, texture_slot_count)
     {
         return Ok(Some(SceneEffectResourceHeapTextureLayout {
@@ -287,8 +310,14 @@ fn scene_effect_resource_heap_texture_layout(
         }));
     }
     Err(format!(
-        "scene effect pipeline shader '{}' requires a heap slice shaped as optional effect uniform plus {} sampled textures",
-        key.shader, texture_slot_count
+        "scene effect pipeline shader '{}' requires a heap slice shaped as {}{} sampled textures",
+        key.shader,
+        if key.has_effect_uniform {
+            "leading effect uniform plus "
+        } else {
+            ""
+        },
+        texture_slot_count
     ))
 }
 
@@ -324,6 +353,70 @@ fn scene_effect_descriptor_heap_mappings(
             }
         })
         .collect()
+}
+
+fn scene_effect_descriptor_heap_stage_mappings(
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    key: &NativeVulkanSceneEffectPipelineKey<'_>,
+    shaders: NativeVulkanSceneEffectPipelineShaders<'_>,
+) -> Result<SceneEffectDescriptorHeapStageMappings, String> {
+    let texture_mappings = scene_effect_descriptor_heap_mappings(descriptor_heap_plan, key)?;
+    let Some(layout) = scene_effect_resource_heap_texture_layout(descriptor_heap_plan, key)? else {
+        return Ok(SceneEffectDescriptorHeapStageMappings {
+            vertex: Vec::new(),
+            fragment: texture_mappings,
+        });
+    };
+    if !key.has_effect_uniform {
+        return Ok(SceneEffectDescriptorHeapStageMappings {
+            vertex: Vec::new(),
+            fragment: texture_mappings,
+        });
+    }
+    if !layout.has_effect_uniform {
+        return Err(format!(
+            "scene effect pipeline shader '{}' requires reflected effect uniform mapping but heap layout has no leading uniform",
+            key.shader
+        ));
+    }
+    let vertex_uniform_bindings =
+        native_vulkan_reflect_scene_spirv_resources(shaders.vertex_spirv, "scene effect vertex")?
+            .uniform_buffer_bindings;
+    let fragment_uniform_bindings = native_vulkan_reflect_scene_spirv_resources(
+        shaders.fragment_spirv,
+        "scene effect fragment",
+    )?
+    .uniform_buffer_bindings;
+    if vertex_uniform_bindings.is_empty() && fragment_uniform_bindings.is_empty() {
+        return Err(format!(
+            "scene effect pipeline shader '{}' requires effect uniform mapping but SPIR-V reflection found no uniform-buffer bindings",
+            key.shader
+        ));
+    }
+    let mut vertex = Vec::new();
+    for binding in vertex_uniform_bindings {
+        vertex.push(
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                descriptor_heap_plan,
+                binding,
+                layout.base_resource_descriptor_index,
+                layout.base_resource_descriptor_index,
+            )?,
+        );
+    }
+    let mut fragment = Vec::new();
+    for binding in fragment_uniform_bindings {
+        fragment.push(
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                descriptor_heap_plan,
+                binding,
+                layout.base_resource_descriptor_index,
+                layout.base_resource_descriptor_index,
+            )?,
+        );
+    }
+    fragment.extend(texture_mappings);
+    Ok(SceneEffectDescriptorHeapStageMappings { vertex, fragment })
 }
 
 fn effect_heap_slice_has_sampled_images(
@@ -540,10 +633,10 @@ mod tests {
             },
         );
 
-        let layout =
-            scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
-                .expect("effect descriptor heap layout")
-                .expect("texture layout");
+        let key = texture_only_effect_key();
+        let layout = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &key)
+            .expect("effect descriptor heap layout")
+            .expect("texture layout");
 
         assert_eq!(layout.base_resource_descriptor_index, 0);
         assert_eq!(layout.base_sampler_descriptor_index, 0);
@@ -564,10 +657,10 @@ mod tests {
             },
         );
 
-        let layout =
-            scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
-                .expect("effect descriptor heap layout")
-                .expect("texture layout");
+        let key = uniform_effect_key();
+        let layout = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &key)
+            .expect("effect descriptor heap layout")
+            .expect("texture layout");
 
         assert_eq!(layout.base_resource_descriptor_index, 0);
         assert_eq!(layout.base_sampler_descriptor_index, 0);
@@ -589,10 +682,95 @@ mod tests {
             },
         );
 
-        let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
+        let mut key = effect_key();
+        key.has_effect_uniform = true;
+        let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &key)
             .expect_err("non-texture tail must fail");
 
-        assert!(err.contains("optional effect uniform"));
+        assert!(err.contains("leading effect uniform"));
+    }
+
+    #[test]
+    fn effect_pipeline_stage_mappings_include_reflected_uniform_bindings() {
+        let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 2,
+                properties: descriptor_properties(),
+            },
+        );
+        let key = uniform_effect_key();
+        let vertex_spirv = spirv_with_uniform_binding(7);
+        let fragment_spirv = spirv_with_uniform_binding(8);
+
+        let mappings = scene_effect_descriptor_heap_stage_mappings(
+            &descriptor_heap_plan,
+            &key,
+            NativeVulkanSceneEffectPipelineShaders {
+                vertex_spirv: &vertex_spirv,
+                fragment_spirv: &fragment_spirv,
+            },
+        )
+        .expect("stage mappings");
+
+        assert_eq!(mappings.vertex.len(), 1);
+        assert_eq!(mappings.vertex[0].first_binding, 7);
+        assert_eq!(
+            mappings.vertex[0].resource_mask,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER
+        );
+        assert_eq!(mappings.fragment.len(), 3);
+        assert_eq!(mappings.fragment[0].first_binding, 8);
+        assert_eq!(
+            mappings.fragment[0].resource_mask,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER
+        );
+        assert_eq!(mappings.fragment[1].first_binding, 0);
+        assert_eq!(mappings.fragment[2].first_binding, 2);
+        unsafe {
+            assert_eq!(
+                mappings.vertex[0].source_data.constant_offset.heap_offset,
+                0
+            );
+            assert_eq!(
+                mappings.fragment[0].source_data.constant_offset.heap_offset,
+                0
+            );
+            assert!(mappings.fragment[1].source_data.constant_offset.heap_offset > 0);
+        }
+    }
+
+    #[test]
+    fn effect_pipeline_stage_mappings_reject_missing_reflected_uniform() {
+        let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 2,
+                properties: descriptor_properties(),
+            },
+        );
+        let key = uniform_effect_key();
+        let empty_spirv = spirv_words(Vec::new());
+
+        let err = scene_effect_descriptor_heap_stage_mappings(
+            &descriptor_heap_plan,
+            &key,
+            NativeVulkanSceneEffectPipelineShaders {
+                vertex_spirv: &empty_spirv,
+                fragment_spirv: &empty_spirv,
+            },
+        )
+        .expect_err("missing reflected uniform must fail");
+
+        assert!(err.contains("found no uniform-buffer bindings"));
     }
 
     fn effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
@@ -607,8 +785,21 @@ mod tests {
             alpha_write: SceneAlphaWriteMode::Default,
             target_format: vk::Format::R16G16B16A16_SFLOAT,
             texture_slot_mask: 0b101,
+            has_effect_uniform: false,
             raster_geometry: super::super::effect_pipeline::NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         }
+    }
+
+    fn texture_only_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
+        let mut key = effect_key();
+        key.has_effect_uniform = false;
+        key
+    }
+
+    fn uniform_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
+        let mut key = effect_key();
+        key.has_effect_uniform = true;
+        key
     }
 
     fn descriptor_properties() -> NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
@@ -632,5 +823,27 @@ mod tests {
             sparse_descriptor_heaps: false,
             protected_descriptor_heaps: false,
         }
+    }
+
+    fn spirv_with_uniform_binding(binding: u32) -> Vec<u32> {
+        spirv_words(vec![
+            instr(71, &[7, 33, binding]),
+            instr(71, &[7, 34, 0]),
+            instr(59, &[3, 7, 2]),
+        ])
+    }
+
+    fn spirv_words(instructions: Vec<Vec<u32>>) -> Vec<u32> {
+        let mut words = vec![0x0723_0203, 0x0001_0000, 0, 32, 0];
+        for instruction in instructions {
+            words.extend(instruction);
+        }
+        words
+    }
+
+    fn instr(opcode: u16, operands: &[u32]) -> Vec<u32> {
+        let mut words = vec![((operands.len() as u32 + 1) << 16) | u32::from(opcode)];
+        words.extend_from_slice(operands);
+        words
     }
 }

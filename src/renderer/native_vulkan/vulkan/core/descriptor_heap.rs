@@ -1214,6 +1214,67 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     )
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    binding: u32,
+    base_resource_descriptor_index: usize,
+    resource_descriptor_index: usize,
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        base_resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+    )?;
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+    )?;
+    let base_heap_offset = *plan
+        .resource_descriptor_offsets
+        .get(base_resource_descriptor_index)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed base uniform descriptor index {base_resource_descriptor_index} has no resource offset"
+            )
+        })?;
+    let heap_offset = plan
+        .resource_descriptor_offsets
+        .get(resource_descriptor_index)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed uniform descriptor index {resource_descriptor_index} has no resource offset"
+            )
+        })?
+        .checked_sub(base_heap_offset)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed uniform descriptor index {resource_descriptor_index} precedes heap-slice base {base_resource_descriptor_index}"
+            )
+        })?;
+    let heap_offset = u32::try_from(heap_offset)
+        .map_err(|_| "descriptor heap mixed relative uniform offset exceeds u32".to_owned())?;
+    let heap_array_stride = u32::try_from(plan.buffer_descriptor_stride)
+        .map_err(|_| "descriptor heap mixed uniform-buffer stride exceeds u32".to_owned())?;
+    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
+        .heap_offset(heap_offset)
+        .heap_array_stride(heap_array_stride)
+        .sampler_heap_offset(0)
+        .sampler_heap_array_stride(0)
+        .build();
+
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_combined_image_sampler_binding_mapping(
     plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     binding: u32,
@@ -2380,10 +2441,10 @@ mod tests {
         );
 
         let uniform =
-            native_vulkan_vulkanalia_descriptor_heap_resource_uniform_buffer_binding_mapping(
-                &snapshot, 3, 0,
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                &snapshot, 3, 0, 0,
             )
-            .expect("uniform mapping");
+            .expect("relative uniform mapping");
         let texture =
             native_vulkan_vulkanalia_descriptor_heap_resource_combined_image_sampler_binding_mapping(
                 &snapshot, 4, 2, 1,
@@ -2406,6 +2467,42 @@ mod tests {
             assert_eq!(texture.source_data.constant_offset.heap_offset, 64);
             assert_eq!(texture.source_data.constant_offset.sampler_heap_offset, 16);
         }
+    }
+
+    #[test]
+    fn mixed_resource_relative_uniform_mapping_rejects_non_uniform_base() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                ],
+                sampler_count: 1,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 32,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
+                    max_sampler_heap_size: 4096,
+                    min_sampler_heap_reserved_range: 0,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    sampler_descriptor_size: 12,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        let err =
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                &snapshot, 3, 0, 1,
+            )
+            .expect_err("sampled image base cannot anchor a relative uniform mapping");
+
+        assert!(err.contains("expected UniformBuffer"));
     }
 
     #[test]

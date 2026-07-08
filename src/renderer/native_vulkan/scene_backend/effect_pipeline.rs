@@ -38,6 +38,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineKey
     #[serde(skip)]
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
+    pub has_effect_uniform: bool,
     pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
 }
 
@@ -64,6 +65,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineCac
     pub alpha_write: SceneAlphaWriteMode,
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
+    pub has_effect_uniform: bool,
     pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
 }
 
@@ -127,6 +129,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
             alpha_write: pass.alpha_write,
             target_format,
             texture_slot_mask: effect_pass_texture_slot_mask(pass)?,
+            has_effect_uniform: false,
             raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         })
     }
@@ -148,7 +151,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.object, resource_heap.object
             ));
         }
-        let key = Self::from_pass_and_target_format(pass, target_format)?;
+        let mut key = Self::from_pass_and_target_format(pass, target_format)?;
         let resource_heap_mask =
             effect_resource_heap_texture_slot_mask(pass.object, pass.pass_index, resource_heap)?;
         if key.texture_slot_mask != resource_heap_mask {
@@ -157,6 +160,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.pass_index, pass.object, key.texture_slot_mask, resource_heap_mask
             ));
         }
+        key.has_effect_uniform = resource_heap.has_effect_uniform;
         Ok(key)
     }
 }
@@ -176,6 +180,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             alpha_write: key.alpha_write,
             target_format: key.target_format,
             texture_slot_mask: key.texture_slot_mask,
+            has_effect_uniform: key.has_effect_uniform,
             raster_geometry: key.raster_geometry,
         }
     }
@@ -194,6 +199,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             alpha_write: self.alpha_write,
             target_format: self.target_format,
             texture_slot_mask: self.texture_slot_mask,
+            has_effect_uniform: self.has_effect_uniform,
             raster_geometry: self.raster_geometry,
         }
     }
