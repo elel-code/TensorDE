@@ -183,8 +183,10 @@ fn scene_graph_puppet_id(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneBlendContract, SceneEffectPassBlend, SceneEffectPassGraphMaterialPass,
-        SceneEffectPassGraphOutput, SceneFrameContext, SceneGeometryId, SceneMaterialContract,
+        SceneBlendContract, SceneEffectCommand, SceneEffectConstantValue, SceneEffectImageRef,
+        SceneEffectMaterialPass, SceneEffectPassBlend, SceneEffectPassGraphMaterialPass,
+        SceneEffectPassGraphOutput, SceneEffectProgram, SceneEffectTextureResourceBinding,
+        SceneFrameContext, SceneGeometryId, SceneMaterialContract, SceneObjectEffectProgram,
         SceneObjectId, SceneResourceId, we::WeEffectKind,
     };
 
@@ -415,6 +417,72 @@ mod tests {
         );
         assert_eq!(graph.passes[2].output, SceneGraphTarget::Swapchain);
         assert_eq!(graph.passes[3].draws[0].object, SceneObjectId(3));
+    }
+
+    #[test]
+    fn build_frame_populates_iris_effect_uniform_plan_from_effect_program() {
+        let renderer = NativeVulkanRendererSceneRender::new();
+        let object = mesh_object(SceneObjectId(1530), SceneGeometryId(4), SceneResourceId(8));
+        let effect = SceneObjectEffectProgram {
+            object: object.id,
+            program: SceneEffectProgram {
+                effect_file: "effects/iris/effect.json".to_owned(),
+                effect: WeEffectKind::Iris,
+                fbos: Vec::new(),
+                commands: vec![SceneEffectCommand::MaterialPass(SceneEffectMaterialPass {
+                    pass_index: 0,
+                    shader: Some("effects/iris".to_owned()),
+                    source: Some(SceneEffectImageRef::SourceTexture),
+                    target: None,
+                    blend: SceneEffectPassBlend::NormalReplace,
+                    depth_test: crate::engine::scene_engine::SceneDepthTest::Disabled,
+                    depth_write: false,
+                    cull_mode: crate::engine::scene_engine::SceneCullMode::None,
+                    alpha_write: crate::engine::scene_engine::SceneAlphaWriteMode::Default,
+                    texture_resources: vec![SceneEffectTextureResourceBinding {
+                        slot: 1,
+                        resource: SceneResourceId(9),
+                    }],
+                    binds: Default::default(),
+                    combos: [("MASK".to_owned(), 1), ("BACKGROUND".to_owned(), 1)]
+                        .into_iter()
+                        .collect(),
+                    constants: [
+                        (
+                            "scale".to_owned(),
+                            SceneEffectConstantValue::Vec2([2.0, 2.5]),
+                        ),
+                        ("speed".to_owned(), SceneEffectConstantValue::Float(1.25)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })],
+            },
+        };
+
+        let frame = renderer
+            .build_frame(
+                SceneFrameContext {
+                    time_ms: 2000,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &[object],
+                &[effect],
+            )
+            .expect("scene frame");
+
+        assert_eq!(frame.effect_uniforms.iris_record_count, 1);
+        let record = &frame.effect_uniforms.iris_records[0];
+        assert_eq!(record.object, SceneObjectId(1530));
+        assert_eq!(record.time_seconds, 2.0);
+        assert_eq!(record.scale, [2.0, 2.5]);
+        assert_eq!(record.speed, 1.25);
+        assert_eq!(record.mask_combo, 1);
+        assert_eq!(record.background_combo, 1);
+        assert_eq!(record.texture_resolution_slots, vec![1]);
+        assert_eq!(record.texture_slot_mask, 0b11);
     }
 
     fn mesh_object(

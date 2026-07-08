@@ -9,8 +9,8 @@
 use serde::Serialize;
 
 use super::{
-    SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneGraph, SceneLayerCompositorPlan,
-    SceneResourceResidencyPlan,
+    SceneEffectPassGraphPlan, SceneEffectUniformFramePlan, SceneFinalCompositorPlan, SceneGraph,
+    SceneLayerCompositorPlan, SceneResourceResidencyPlan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -25,6 +25,7 @@ pub struct SceneFramePlan {
     pub residency: SceneResourceResidencyPlan,
     pub graph: SceneGraph,
     pub effect_pass_graph: SceneEffectPassGraphPlan,
+    pub effect_uniforms: SceneEffectUniformFramePlan,
     pub final_compositor: SceneFinalCompositorPlan,
     pub layer_compositor: SceneLayerCompositorPlan,
 }

@@ -179,6 +179,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResourceRele
     pub completed_submission: NativeVulkanSceneFrameSubmission,
     pub gpu_buffers: usize,
     pub material_uniform_buffers: usize,
+    pub effect_uniform_buffers: usize,
     pub offscreen_targets: usize,
     pub texture_images: usize,
     pub texture_staging_buffers: usize,
@@ -188,6 +189,7 @@ impl NativeVulkanSceneFrameResourceRelease {
     pub(in crate::renderer::native_vulkan) fn total_retirements(self) -> usize {
         self.gpu_buffers
             .saturating_add(self.material_uniform_buffers)
+            .saturating_add(self.effect_uniform_buffers)
             .saturating_add(self.offscreen_targets)
             .saturating_add(self.texture_images)
             .saturating_add(self.texture_staging_buffers)
@@ -214,12 +216,13 @@ mod tests {
             completed_submission: NativeVulkanSceneFrameSubmission::new(2, 12),
             gpu_buffers: 3,
             material_uniform_buffers: 11,
+            effect_uniform_buffers: 17,
             offscreen_targets: 13,
             texture_images: 5,
             texture_staging_buffers: 7,
         };
 
-        assert_eq!(release.total_retirements(), 39);
+        assert_eq!(release.total_retirements(), 56);
     }
 
     #[test]

@@ -13,6 +13,7 @@ pub mod draw_family;
 pub mod effect;
 pub mod effect_graph;
 pub mod effect_pass_graph;
+pub mod effect_uniforms;
 pub mod final_compositor;
 pub mod frame;
 pub mod graph;
@@ -53,6 +54,7 @@ pub use effect_pass_graph::{
     SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
     SceneEffectPassGraphSwap, SceneEffectPassGraphTarget,
 };
+pub use effect_uniforms::{SceneEffectUniformFramePlan, SceneIrisEffectUniformRecord};
 pub use final_compositor::{SceneFinalCompositorObjectInput, SceneFinalCompositorPlan};
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
@@ -92,7 +94,7 @@ pub use resource::{
     ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 pub use resource_gpu_layout::{
-    SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES,
+    SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES, SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES,
     SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES, SCENE_GPU_MESH_INDEX_BYTES,
     SCENE_GPU_MESH_VERTEX_BYTES, SCENE_GPU_PARENT_NONE, SCENE_GPU_PUPPET_ACTIVE_SOURCE_BYTES,
     SCENE_GPU_PUPPET_BONE_BYTES, SCENE_GPU_PUPPET_CLIP_FRAME_BYTES,

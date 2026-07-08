@@ -245,6 +245,7 @@ mod tests {
                 }],
             },
             effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: SceneFinalCompositorPlan::empty(),
             layer_compositor: SceneLayerCompositorPlan::empty(),
         };
@@ -305,6 +306,7 @@ mod tests {
                 }],
             },
             effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: SceneFinalCompositorPlan::empty(),
             layer_compositor: SceneLayerCompositorPlan::empty(),
         };
@@ -345,6 +347,7 @@ mod tests {
             residency: residency.clone(),
             graph: SceneGraph { passes: Vec::new() },
             effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: SceneFinalCompositorPlan::empty(),
             layer_compositor: SceneLayerCompositorPlan::empty(),
         };

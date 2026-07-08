@@ -6,9 +6,10 @@
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
 use super::{
-    RenderingDevice, SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneFrameContext,
-    SceneFramePlan, SceneGraph, SceneLayerCompositorPlan, SceneObject, SceneObjectEffectProgram,
-    SceneResource, SceneResourceResidencyPlan,
+    RenderingDevice, SceneEffectPassGraphPlan, SceneEffectUniformFramePlan,
+    SceneFinalCompositorPlan, SceneFrameContext, SceneFramePlan, SceneGraph,
+    SceneLayerCompositorPlan, SceneObject, SceneObjectEffectProgram, SceneResource,
+    SceneResourceResidencyPlan,
 };
 
 pub trait RendererSceneRender {
@@ -43,6 +44,8 @@ pub trait RendererSceneRender {
         effects: &[SceneObjectEffectProgram],
     ) -> Result<SceneFramePlan, String> {
         let effect_pass_graph = SceneEffectPassGraphPlan::from_scene(objects, effects)?;
+        let effect_uniforms =
+            SceneEffectUniformFramePlan::from_effect_pass_graph(context, &effect_pass_graph)?;
         let final_compositor =
             SceneFinalCompositorPlan::from_effect_pass_graph(objects, &effect_pass_graph);
         let layer_compositor = SceneLayerCompositorPlan::from_scene(
@@ -64,6 +67,7 @@ pub trait RendererSceneRender {
             residency: residency.clone(),
             graph,
             effect_pass_graph,
+            effect_uniforms,
             final_compositor,
             layer_compositor,
         })

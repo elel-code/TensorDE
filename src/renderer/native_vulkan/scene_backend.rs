@@ -18,6 +18,7 @@ pub mod effect_pipeline_prepare;
 pub mod effect_pipeline_warmup;
 pub mod effect_resource_heap;
 pub mod effect_targets;
+pub mod effect_uniforms;
 pub mod frame_acquire;
 pub mod frame_command;
 pub mod frame_command_buffer;

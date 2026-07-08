@@ -202,6 +202,7 @@ impl NativeVulkanSceneGpuUploadPlan {
             residency: Default::default(),
             graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
             effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
             layer_compositor: SceneLayerCompositorPlan::empty(),
         };
@@ -1282,6 +1283,7 @@ mod tests {
             residency: Default::default(),
             graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
             effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
             layer_compositor: SceneLayerCompositorPlan {
                 layer_count: 1,
@@ -1574,6 +1576,7 @@ mod tests {
             residency: SceneResourceResidencyPlan::default(),
             graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
             effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
             layer_compositor,
         }

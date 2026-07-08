@@ -34,6 +34,11 @@ use super::effect_resource_heap::{
     NativeVulkanSceneEffectResourceHeapFramePlan, NativeVulkanSceneEffectResourceHeapPassBindInfo,
     NativeVulkanSceneEffectResourceHeapStore, NativeVulkanSceneEffectResourceHeapSyncAction,
 };
+use super::effect_uniforms::{
+    NativeVulkanSceneEffectUniformGpuBufferBinding, NativeVulkanSceneEffectUniformGpuBufferStore,
+    NativeVulkanSceneEffectUniformGpuBufferSyncAction, NativeVulkanSceneEffectUniformKey,
+    NativeVulkanSceneEffectUniformUploadPlan,
+};
 use super::frame_completion::{
     NativeVulkanSceneFrameResourceRelease, NativeVulkanSceneFrameSubmission,
 };
@@ -100,6 +105,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore,
     layer_alpha_mask_resource_heap: NativeVulkanSceneLayerAlphaMaskResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
+    effect_uniform_buffers: NativeVulkanSceneEffectUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
     effect_pipelines: NativeVulkanSceneEffectPipelineStore,
 }
@@ -116,6 +122,7 @@ impl NativeVulkanSceneFrameResources {
             layer_alpha_mask_resource_heap:
                 NativeVulkanSceneLayerAlphaMaskResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
+            effect_uniform_buffers: NativeVulkanSceneEffectUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
             effect_pipelines: NativeVulkanSceneEffectPipelineStore::default(),
         }
@@ -204,6 +211,9 @@ impl NativeVulkanSceneFrameResources {
         let material_uniform_buffers = self
             .material_uniform_buffers
             .release_completed_uploads(device, completed_submission);
+        let effect_uniform_buffers = self
+            .effect_uniform_buffers
+            .release_completed_uploads(device, completed_submission);
         let offscreen_targets = self
             .offscreen_targets
             .release_completed_targets(device, completed_submission);
@@ -211,6 +221,7 @@ impl NativeVulkanSceneFrameResources {
             completed_submission,
             gpu_buffers,
             material_uniform_buffers,
+            effect_uniform_buffers,
             offscreen_targets,
             texture_images: texture_release.images,
             texture_staging_buffers: texture_release.staging_buffers,
@@ -423,6 +434,43 @@ impl NativeVulkanSceneFrameResources {
             .sync_frame_plan(device, memory_properties, frame_plan)
     }
 
+    pub(in crate::renderer::native_vulkan) fn effect_uniform_upload_plan(
+        &self,
+        frame: &SceneFramePlan,
+        texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
+    ) -> Result<NativeVulkanSceneEffectUniformUploadPlan, String> {
+        NativeVulkanSceneEffectUniformUploadPlan::from_effect_uniform_frame_plan(
+            &frame.effect_uniforms,
+            texture_descriptors,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn sync_effect_uniform_gpu_buffers_recorded(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        command_buffer: vk::CommandBuffer,
+        frame_submission: NativeVulkanSceneFrameSubmission,
+        frame: &SceneFramePlan,
+        texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
+    ) -> Result<&[NativeVulkanSceneEffectUniformGpuBufferSyncAction], String> {
+        let upload_plan = self.effect_uniform_upload_plan(frame, texture_descriptors)?;
+        self.effect_uniform_buffers.sync_upload_plan_recorded(
+            device,
+            memory_properties,
+            command_buffer,
+            frame_submission,
+            &upload_plan,
+        )
+    }
+
+    pub(in crate::renderer::native_vulkan) fn effect_uniform_gpu_buffer(
+        &self,
+        key: &NativeVulkanSceneEffectUniformKey,
+    ) -> Result<NativeVulkanSceneEffectUniformGpuBufferBinding, String> {
+        self.effect_uniform_buffers.effect_uniform_buffer(key)
+    }
+
     pub(in crate::renderer::native_vulkan) fn current_effect_resource_heap_frame_plan(
         &self,
     ) -> Option<&NativeVulkanSceneEffectResourceHeapFramePlan> {
@@ -613,6 +661,12 @@ impl NativeVulkanSceneFrameResources {
         self.material_uniform_buffers.last_actions()
     }
 
+    pub(in crate::renderer::native_vulkan) fn last_effect_uniform_gpu_buffer_actions(
+        &self,
+    ) -> &[NativeVulkanSceneEffectUniformGpuBufferSyncAction] {
+        self.effect_uniform_buffers.last_actions()
+    }
+
     pub(in crate::renderer::native_vulkan) fn resolve_mesh_pipeline(
         &mut self,
         device: &Device,
@@ -687,6 +741,7 @@ impl NativeVulkanSceneFrameResources {
         self.resource_heap.destroy_all(device);
         self.offscreen_targets.destroy_all(device);
         self.texture_images.destroy_all(device);
+        self.effect_uniform_buffers.destroy_all(device);
         self.material_uniform_buffers.destroy_all(device);
         self.gpu_buffers.destroy_all(device);
         self.pipelines.destroy_all(device);
@@ -1033,6 +1088,7 @@ mod tests {
             residency: SceneResourceResidencyPlan::default(),
             graph: SceneGraph { passes: Vec::new() },
             effect_pass_graph: SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
             final_compositor: SceneFinalCompositorPlan::empty(),
             layer_compositor: crate::engine::scene_engine::SceneLayerCompositorPlan::empty(),
         }

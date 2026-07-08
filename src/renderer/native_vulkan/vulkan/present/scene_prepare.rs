@@ -65,6 +65,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
     pub effect_texture_descriptor_binding_count: usize,
+    pub effect_uniform_gpu_buffer_action_count: usize,
     pub effect_resource_heap_action_count: usize,
     pub effect_heap_slice_count: usize,
     pub effect_resource_descriptor_count: usize,
@@ -77,7 +78,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 12],
+    pub command_order: [&'static str; 13],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -230,6 +231,16 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
         let effect_texture_descriptors =
             frame_resources.effect_texture_descriptor_frame_plan(post_effect_graph)?;
         let effect_texture_descriptor_binding_count = effect_texture_descriptors.binding_count;
+        let effect_uniform_gpu_buffer_action_count = frame_resources
+            .sync_effect_uniform_gpu_buffers_recorded(
+                device,
+                memory_properties,
+                slot_sync.command_buffer,
+                frame_submission,
+                frame,
+                &effect_texture_descriptors,
+            )?
+            .len();
         let effect_resource_heap_action_count = frame_resources
             .sync_effect_resource_heap(
                 device,
@@ -358,6 +369,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             graph_target_format_count: target_formats.target_format_count(),
             effect_target_count,
             effect_texture_descriptor_binding_count,
+            effect_uniform_gpu_buffer_action_count,
             effect_resource_heap_action_count,
             effect_heap_slice_count,
             effect_resource_descriptor_count,
@@ -377,6 +389,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "prepare_layer_alpha_mask_descriptors",
                 "sync_layer_alpha_mask_resource_heap",
                 "prepare_effect_texture_descriptors",
+                "record_effect_uniform_buffer_uploads",
                 "sync_effect_resource_heap",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
