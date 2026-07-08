@@ -170,6 +170,12 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .iter()
             .all(|fact| !fact.contains("g_RenderVar0"))
     );
+    assert!(
+        plan.requirements[1]
+            .missing_we_facts
+            .iter()
+            .all(|fact| !fact.contains("payload byte construction"))
+    );
     assert_eq!(plan.requirements[3].shader, Some("util/minimalalpha"));
     assert_eq!(
         plan.requirements[3].recording_status,
@@ -223,7 +229,25 @@ fn recorder_requirements_classify_pending_and_ready_steps() {
             .iter()
             .all(|fact| !fact.contains("+0x428"))
     );
-    assert_eq!(plan.requirements[4].missing_we_facts.len(), 1);
+    assert!(
+        plan.requirements[4]
+            .missing_we_facts
+            .iter()
+            .any(|fact| fact.contains("retained Vulkan vertex/index buffer binding"))
+    );
+    assert!(
+        plan.requirements[4]
+            .missing_we_facts
+            .iter()
+            .any(|fact| fact.contains("aux+0x298"))
+    );
+    assert!(
+        plan.requirements[4]
+            .missing_we_facts
+            .iter()
+            .all(|fact| !fact.contains("payload byte construction"))
+    );
+    assert_eq!(plan.requirements[4].missing_we_facts.len(), 2);
 }
 
 #[test]

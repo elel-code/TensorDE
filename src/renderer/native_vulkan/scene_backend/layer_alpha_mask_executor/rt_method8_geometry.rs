@@ -11,6 +11,10 @@ use super::rt_method8::{
     LAYER_490_RT_METHOD8_GEOMETRY_CREATION_SITE, LAYER_490_RT_METHOD8_RECEIVER_LABEL,
     LAYER_490_RT_METHOD8_RECEIVER_VTABLE, LAYER_490_RT_METHOD8_VMA,
 };
+use super::rt_method8_payload::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8PayloadPlan,
+    native_vulkan_scene_layer_alpha_mask_rt_method8_payload_plan,
+};
 
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_WRAPPER_CREATE_VMA: &str =
     "0x14009a880";
@@ -18,8 +22,8 @@ pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_ACTIVE_MATERIA
     &str = "0x14020b1e8";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_FALLBACK_IMAGE_CREATION_SITE:
     &str = "0x14020a4ff";
-pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_LOCAL_PAYLOAD_REGION: &str =
-    "0x14020aa80..0x14020b102";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_RUNTIME_BINDING_GAP: &str =
+    "retained Vulkan buffer binding for [layer+0x490] MDLV entry geometry and aux+0x298 lowering";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8GeometrySourcePlan
@@ -34,12 +38,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub created_field_count: usize,
     pub created_fields: [NativeVulkanSceneLayerAlphaMaskRtMethod8CreatedField; 7],
     pub usage_selector: NativeVulkanSceneLayerAlphaMaskRtMethod8UsageSelector,
+    pub payload_plan: NativeVulkanSceneLayerAlphaMaskRtMethod8PayloadPlan,
     pub sibling_creation_site_count: usize,
     pub sibling_creation_sites: [NativeVulkanSceneLayerAlphaMaskRtMethod8SiblingCreationSite; 2],
-    pub remaining_payload_region: &'static str,
-    pub remaining_payload_fact: &'static str,
+    pub remaining_runtime_gap: &'static str,
+    pub remaining_runtime_fact: &'static str,
     pub reference_points: [&'static str; 4],
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -91,28 +96,28 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "edx",
-                value_source: "ebp",
-                semantic: "vertex layout/format key; 0x1400ea5b0(edx) computes stride",
+                value_source: "[[layer+0x4b8]+0x18]+0x38",
+                semantic: "MDLV entry vertex layout/format key; 0x1400ea5b0(edx) computes stride",
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "r8",
-                value_source: "rbx, normally r15",
-                semantic: "local/generated vertex-data pointer",
+                value_source: "[entry+0x48] or temporary scaled copy from 0x14020af79..0x14020b102",
+                semantic: "MDLV vertex-data pointer",
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "r9d",
-                value_source: "r14d",
-                semantic: "vertex count",
+                value_source: "[entry+0x40] / [entry+0x3c]",
+                semantic: "MDLV vertex count",
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "stack arg 5",
-                value_source: "[caller rsp+0x58]",
-                semantic: "index-data pointer",
+                value_source: "[entry+0x58]",
+                semantic: "MDLV u16 index-data pointer",
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "stack arg 6",
-                value_source: "[caller rsp+0xe0]",
-                semantic: "index count; positive value becomes target draw count +0x2c",
+                value_source: "[entry+0x50] / 2",
+                semantic: "u16 index count; positive value becomes target draw count +0x2c",
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "stack arg 7",
@@ -126,7 +131,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
             },
             NativeVulkanSceneLayerAlphaMaskRtMethod8WrapperArgumentSource {
                 argument: "stack arg 9",
-                value_source: "((([layer+0x4b8]+0x18)->0x18 >> 3) & 1) * 2",
+                value_source: "((entry+0x18 >> 3) & 1) * 2",
                 semantic: "buffer usage flags; bit 1 controls dynamic index-buffer creation",
             },
         ],
@@ -170,10 +175,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
         ],
         usage_selector: NativeVulkanSceneLayerAlphaMaskRtMethod8UsageSelector {
             stack_argument: "stack arg 9",
-            source: "((([layer+0x4b8]+0x18)->0x18 >> 3) & 1) * 2",
+            source: "((entry+0x18 >> 3) & 1) * 2",
             bit_zero_semantic: "dynamic vertex-buffer creation",
             bit_one_semantic: "dynamic index-buffer creation",
         },
+        payload_plan: native_vulkan_scene_layer_alpha_mask_rt_method8_payload_plan(),
         sibling_creation_site_count: 2,
         sibling_creation_sites: [
             NativeVulkanSceneLayerAlphaMaskRtMethod8SiblingCreationSite {
@@ -187,10 +193,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
                 source: "fallback image entry: generated layout key, vertex +0x98/+0x90, index +0x58/+0x50",
             },
         ],
-        remaining_payload_region: LAYER_490_RT_METHOD8_LOCAL_PAYLOAD_REGION,
-        remaining_payload_fact: "local vertex/index payload byte construction and retained Vulkan buffer binding must be lowered before recording draw commands",
+        remaining_runtime_gap: LAYER_490_RT_METHOD8_RUNTIME_BINDING_GAP,
+        remaining_runtime_fact: "WE payload source is closed; Gilder still must retain/bind the MDLV vertex/index buffers and lower aux+0x298 records before recording draw commands",
         reference_points: [
-            "reverse-engineered/docs/exe/blend-and-render.md: wrapper [8] arguments and target fields",
+            "reverse-engineered/docs/exe/blend-and-render.md: wrapper [8] arguments, MDLV entry geometry, and aux+0x298 payload",
             "reverse-engineered/docs/exe/d3d11-context-calls.md: 0x14009a880 create indexed RT/draw-target object",
             "reverse-engineered/docs/exe/composelayer-and-effecttarget.md: [layer+0x490] method [8] draw receiver",
             "references/godot/servers/rendering/rendering_device_graph.cpp: draw resources are modeled before command recording",
@@ -198,10 +204,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
         command_order: [
             "classify_0x14009a880_as_indexed_rt_target_factory",
             "map_0x14020b15e_call_registers_and_stack_arguments",
+            "attach_0x14020ae00_mdlv_payload_contract",
             "store_created_target_at_layer_0x490",
             "preserve_wrapper_created_vertex_index_buffer_fields",
             "separate_layer_0x490_from_0x3f8_and_0x400_sibling_targets",
-            "defer_only_payload_bytes_and_retained_buffer_binding",
+            "defer_only_retained_buffer_binding_and_aux_payload_lowering",
         ],
     }
 }

@@ -907,14 +907,16 @@ fn requirement_for_step_kind(
 
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "0x14020aa80..0x14020b102 local vertex/index payload byte construction and retained buffer binding for [layer+0x490] RT method [8]",
+        "retained Vulkan vertex/index buffer binding for [layer+0x490] MDLV entry geometry from 0x14020b15e",
+        "aux+0x298 per-source clipping payload lowering from 0x14020b214..0x14020b66f",
         "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
     ]
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "0x14020aa80..0x14020b102 generated CLIPPINGTARGET vertex/index payload byte construction and retained buffer binding for [layer+0x490] RT method [8]",
+        "retained Vulkan vertex/index buffer binding for generated CLIPPINGTARGET [layer+0x490] MDLV entry geometry from 0x14020b15e",
+        "aux+0x298 per-source clipping payload lowering for generated CLIPPINGTARGET draws",
     ]
 }
 

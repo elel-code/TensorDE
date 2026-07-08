@@ -33,6 +33,7 @@ mod recorder_requirements;
 mod resource_binds;
 mod rt_method8;
 mod rt_method8_geometry;
+mod rt_method8_payload;
 mod token_schedule;
 
 use crate::engine::scene_engine::{

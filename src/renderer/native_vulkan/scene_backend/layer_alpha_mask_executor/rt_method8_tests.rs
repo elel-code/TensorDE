@@ -77,7 +77,7 @@ fn rt_method8_bridge_closes_producer_and_generated_call_sites() {
     assert_eq!(plan.geometry_creation_site, "0x14020b15e");
     assert!(
         plan.geometry_source
-            .contains("local/generated vertex/index arrays")
+            .contains("first/current MDLV entry-owner geometry")
     );
     assert_eq!(
         plan.geometry_source_plan.wrapper_create_method_vma,
@@ -86,11 +86,11 @@ fn rt_method8_bridge_closes_producer_and_generated_call_sites() {
     assert_eq!(plan.geometry_source_plan.wrapper_argument_count, 9);
     assert_eq!(
         plan.geometry_source_plan.wrapper_arguments[4].semantic,
-        "index-data pointer"
+        "MDLV u16 index-data pointer"
     );
     assert_eq!(
         plan.geometry_source_plan.usage_selector.source,
-        "((([layer+0x4b8]+0x18)->0x18 >> 3) & 1) * 2"
+        "((entry+0x18 >> 3) & 1) * 2"
     );
 
     let producer = plan.bridge_for_producer_draw(0).expect("producer bridge");

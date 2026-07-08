@@ -17,20 +17,30 @@ fn rt_method8_geometry_source_closes_wrapper_arguments() {
         "r11 = [[layer+0xc8]+0x1518]"
     );
     assert_eq!(plan.wrapper_arguments[1].argument, "edx");
-    assert_eq!(plan.wrapper_arguments[1].value_source, "ebp");
+    assert_eq!(
+        plan.wrapper_arguments[1].value_source,
+        "[[layer+0x4b8]+0x18]+0x38"
+    );
     assert!(
         plan.wrapper_arguments[1]
             .semantic
             .contains("0x1400ea5b0(edx)")
     );
     assert_eq!(plan.wrapper_arguments[2].argument, "r8");
-    assert_eq!(plan.wrapper_arguments[2].value_source, "rbx, normally r15");
+    assert!(
+        plan.wrapper_arguments[2]
+            .value_source
+            .contains("[entry+0x48]")
+    );
     assert_eq!(plan.wrapper_arguments[3].argument, "r9d");
-    assert_eq!(plan.wrapper_arguments[3].value_source, "r14d");
+    assert_eq!(
+        plan.wrapper_arguments[3].value_source,
+        "[entry+0x40] / [entry+0x3c]"
+    );
     assert_eq!(plan.wrapper_arguments[4].argument, "stack arg 5");
-    assert_eq!(plan.wrapper_arguments[4].value_source, "[caller rsp+0x58]");
+    assert_eq!(plan.wrapper_arguments[4].value_source, "[entry+0x58]");
     assert_eq!(plan.wrapper_arguments[5].argument, "stack arg 6");
-    assert_eq!(plan.wrapper_arguments[5].value_source, "[caller rsp+0xe0]");
+    assert_eq!(plan.wrapper_arguments[5].value_source, "[entry+0x50] / 2");
     assert_eq!(plan.wrapper_arguments[6].argument, "stack arg 7");
     assert_eq!(plan.wrapper_arguments[6].value_source, "0");
     assert!(plan.wrapper_arguments[6].semantic.contains("R16_UINT"));
@@ -40,7 +50,7 @@ fn rt_method8_geometry_source_closes_wrapper_arguments() {
     assert_eq!(plan.wrapper_arguments[8].argument, "stack arg 9");
     assert_eq!(
         plan.wrapper_arguments[8].value_source,
-        "((([layer+0x4b8]+0x18)->0x18 >> 3) & 1) * 2"
+        "((entry+0x18 >> 3) & 1) * 2"
     );
 }
 
@@ -61,10 +71,7 @@ fn rt_method8_geometry_source_closes_created_fields_and_sibling_targets() {
     assert_eq!(plan.created_fields[6].field, "+0x30");
 
     assert_eq!(plan.usage_selector.stack_argument, "stack arg 9");
-    assert_eq!(
-        plan.usage_selector.source,
-        "((([layer+0x4b8]+0x18)->0x18 >> 3) & 1) * 2"
-    );
+    assert_eq!(plan.usage_selector.source, "((entry+0x18 >> 3) & 1) * 2");
     assert_eq!(
         plan.usage_selector.bit_one_semantic,
         "dynamic index-buffer creation"
@@ -81,9 +88,21 @@ fn rt_method8_geometry_source_closes_created_fields_and_sibling_targets() {
         plan.sibling_creation_sites[1].stored_target,
         "[layer+0x4b8]+0x400"
     );
-    assert_eq!(plan.remaining_payload_region, "0x14020aa80..0x14020b102");
+    assert_eq!(plan.payload_plan.rebuild_function_vma, "0x14020ae00");
+    assert_eq!(
+        plan.payload_plan.copy_scale_region,
+        "0x14020af31..0x14020b102"
+    );
+    assert_eq!(
+        plan.payload_plan.aux_payload_region,
+        "0x14020b214..0x14020b66f"
+    );
     assert!(
-        plan.remaining_payload_fact
+        plan.remaining_runtime_gap
             .contains("retained Vulkan buffer binding")
+    );
+    assert!(
+        plan.remaining_runtime_fact
+            .contains("WE payload source is closed")
     );
 }

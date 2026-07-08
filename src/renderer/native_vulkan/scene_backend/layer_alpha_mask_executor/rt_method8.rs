@@ -35,8 +35,8 @@ pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_DRAW_CALL: &st
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_GEOMETRY_CREATION_SITE: &str =
     "0x14020b15e";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_GEOMETRY_SOURCE: &str =
-    "0x14020b15e local/generated vertex/index arrays for [layer+0x490] RT method [8]";
-pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG: &str = "((([layer+0x4b8]+0x18->0x18 >> 3) & 1) * 2) selects wrapper [8] stack arg 9 bit1 dynamic index-buffer creation";
+    "0x14020b15e first/current MDLV entry-owner geometry for [layer+0x490] RT method [8]";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_INDEX_BUFFER_USAGE_FLAG: &str = "((entry+0x18 >> 3) & 1) * 2 selects wrapper [8] stack arg 9 bit1 dynamic index-buffer creation";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan {

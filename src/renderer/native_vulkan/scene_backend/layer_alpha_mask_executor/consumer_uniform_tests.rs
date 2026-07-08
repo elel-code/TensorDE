@@ -149,7 +149,7 @@ fn command() -> NativeVulkanSceneLayerAlphaMaskGeneratedConsumerCommandPlan {
         ],
         material_source: "local generated material variant +0x428",
         blend_byte_source: "subdraw+0x40 -> generated material +0x1f0",
-        geometry_source: "0x14020b15e local/generated vertex/index arrays for [layer+0x490] RT method [8]",
+        geometry_source: "0x14020b15e first/current MDLV entry-owner geometry for [layer+0x490] RT method [8]",
         rt_method8_bridge_index: 0,
         rt_method8_call_site: "0x14020908c",
         rt_method8_method_vma: "0x1400eacd0",
