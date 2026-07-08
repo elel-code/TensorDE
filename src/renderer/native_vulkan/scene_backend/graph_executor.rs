@@ -84,14 +84,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
                     execution_pass.pass_index
                 )
             })?;
-        let render_target =
-            resolve_pass_render_target(frame_resources, &context, graph_execution, execution_pass)?;
+        let render_target = native_vulkan_resolve_scene_graph_pass_render_target(
+            frame_resources,
+            &context,
+            graph_execution,
+            execution_pass,
+        )?;
         native_vulkan_record_scene_graph_pass_input_access(
             frame_resources,
             &context,
             execution_pass,
         )?;
-        let clear_color = pass_clear_color(
+        let clear_color = native_vulkan_scene_graph_pass_clear_color(
             graph_execution,
             execution_pass,
             render_target,
@@ -103,7 +107,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
             render_target,
             clear_color,
         )?;
-        mark_output_target_layout(
+        native_vulkan_mark_scene_graph_output_target_layout(
             frame_resources,
             execution_pass.output,
             vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
@@ -133,7 +137,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
             render_target,
             clear_color,
         )?;
-        mark_output_target_layout(
+        native_vulkan_mark_scene_graph_output_target_layout(
             frame_resources,
             execution_pass.output,
             render_target.final_layout(),
@@ -180,7 +184,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_targe
             barrier,
             image,
         )?;
-        mark_output_target_layout(
+        native_vulkan_mark_scene_graph_output_target_layout(
             frame_resources,
             barrier.target,
             native_vulkan_scene_target_usage_layout(barrier.next_usage),
@@ -202,7 +206,7 @@ fn target_barrier_image(
     Ok(NativeVulkanSceneTargetBarrierImage { target, image })
 }
 
-fn resolve_pass_render_target(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_resolve_scene_graph_pass_render_target(
     frame_resources: &NativeVulkanSceneFrameResources,
     context: &NativeVulkanSceneGraphRuntimeFrameContext<'_>,
     graph_execution: &SceneGraphExecutionPlan,
@@ -284,7 +288,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_pass_
     Ok(())
 }
 
-fn pass_clear_color(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_graph_pass_clear_color(
     graph_execution: &SceneGraphExecutionPlan,
     execution_pass: &SceneGraphExecutionPass,
     render_target: NativeVulkanSceneRenderTarget,
@@ -325,7 +329,7 @@ fn transparent_clear_color() -> NativeVulkanClearColor {
     }
 }
 
-fn mark_output_target_layout(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_mark_scene_graph_output_target_layout(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     target: SceneGraphTarget,
     layout: vk::ImageLayout,
@@ -399,8 +403,13 @@ mod tests {
                 final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
             });
 
-        let clear = pass_clear_color(&execution, &execution.passes[0], render_target, None)
-            .expect("first write clears target");
+        let clear = native_vulkan_scene_graph_pass_clear_color(
+            &execution,
+            &execution.passes[0],
+            render_target,
+            None,
+        )
+        .expect("first write clears target");
 
         assert_eq!(clear.a, 0.0);
     }

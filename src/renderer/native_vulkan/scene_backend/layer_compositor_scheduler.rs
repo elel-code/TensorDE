@@ -146,10 +146,28 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
                         NativeVulkanSceneLayerCompositorScheduledKind::DirectMeshGraphDraw
                     }
                     SceneLayerCompositorRoute::ObjectFinalMeshComposite => {
-                        command_order.extend([
-                            "join_object_final_layer_to_effect_runtime_output",
-                            "preserve_object_final_before_swapchain_composite",
-                        ]);
+                        if let Some(prefill_target) =
+                            image_layer_prefill_graph_target(command.target)
+                        {
+                            let position = find_graph_draw_position(
+                                graph,
+                                graph_execution,
+                                layer.object,
+                                None,
+                                prefill_target,
+                            )?;
+                            graph_pass_index = Some(position.pass_index);
+                            graph_draw_index = Some(position.draw_index);
+                            command_order.extend([
+                                "join_image_layer_prefill_to_mesh_graph_pass",
+                                "record_prefill_before_layer_final_effect_runtime",
+                            ]);
+                        } else {
+                            command_order.extend([
+                                "join_object_final_layer_to_effect_runtime_output",
+                                "preserve_object_final_before_swapchain_composite",
+                            ]);
+                        }
                         NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime
                     }
                 },
@@ -372,6 +390,27 @@ fn layer_compositor_graph_target(
     }
 }
 
+fn image_layer_prefill_graph_target(
+    target: SceneLayerCompositorTarget,
+) -> Option<SceneGraphTarget> {
+    match target {
+        SceneLayerCompositorTarget::ImageLayerCompositeA(object) => {
+            Some(SceneGraphTarget::ImageLayerCompositeA(object))
+        }
+        SceneLayerCompositorTarget::ImageLayerSource(object) => {
+            Some(SceneGraphTarget::ImageLayerSource(object))
+        }
+        SceneLayerCompositorTarget::Swapchain
+        | SceneLayerCompositorTarget::ObjectFinal(_)
+        | SceneLayerCompositorTarget::LayerTarget490
+        | SceneLayerCompositorTarget::EffectTarget3f8
+        | SceneLayerCompositorTarget::FallbackImage400
+        | SceneLayerCompositorTarget::DirectTarget2d8
+        | SceneLayerCompositorTarget::FullAlphaMask
+        | SceneLayerCompositorTarget::FullAlphaMaskIntermediate => None,
+    }
+}
+
 fn recording_blocks_from_steps(
     steps: &[NativeVulkanSceneLayerCompositorScheduleStep],
 ) -> Vec<NativeVulkanSceneLayerCompositorRecordingBlock> {
@@ -421,8 +460,7 @@ fn recording_block_from_step(
     step: &NativeVulkanSceneLayerCompositorScheduleStep,
 ) -> NativeVulkanSceneLayerCompositorRecordingBlock {
     let kind = recording_block_kind(step.scheduled_kind);
-    let graph_draw_index_end = (kind
-        == NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan)
+    let graph_draw_index_end = recording_block_records_mesh_draw_span(kind)
         .then(|| step.graph_draw_index.map(|draw| draw.saturating_add(1)))
         .flatten();
     NativeVulkanSceneLayerCompositorRecordingBlock {
@@ -437,6 +475,16 @@ fn recording_block_from_step(
         token_recording_step_index: step.token_recording_step_index,
         command_order: recording_block_command_order(kind),
     }
+}
+
+fn recording_block_records_mesh_draw_span(
+    kind: NativeVulkanSceneLayerCompositorRecordingBlockKind,
+) -> bool {
+    matches!(
+        kind,
+        NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+            | NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
+    )
 }
 
 fn recording_block_kind(
@@ -474,7 +522,10 @@ fn recording_block_command_order(
             "record_contiguous_mesh_graph_draw_span",
         ],
         NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {
-            vec!["preserve_object_final_effect_runtime_before_composite"]
+            vec![
+                "record_optional_image_layer_prefill_mesh_draw",
+                "preserve_layer_final_effect_runtime_before_composite",
+            ]
         }
         NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep => vec![
             "record_single_alpha_mask_token_step_at_layer_position",
@@ -791,12 +842,20 @@ mod tests {
     fn scheduler_joins_image_layer_composite_source_to_final_mesh_pass() {
         let object = SceneObjectId(1530);
         let graph = SceneGraph {
-            passes: vec![graph_pass(
-                "image-layer-final-composite",
-                Some(SceneGraphTarget::ImageLayerCompositeA(object)),
-                SceneGraphTarget::Swapchain,
-                vec![mesh_draw(object)],
-            )],
+            passes: vec![
+                graph_pass(
+                    "image-layer-prefill",
+                    None,
+                    SceneGraphTarget::ImageLayerSource(object),
+                    vec![mesh_draw(object)],
+                ),
+                graph_pass(
+                    "image-layer-final-composite",
+                    Some(SceneGraphTarget::ImageLayerCompositeA(object)),
+                    SceneGraphTarget::Swapchain,
+                    vec![mesh_draw(object)],
+                ),
+            ],
         };
         let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
 
@@ -809,8 +868,15 @@ mod tests {
         .expect("image-layer composite schedule");
 
         assert_eq!(schedule.object_final_composite_command_count, 1);
-        assert_eq!(schedule.steps[2].graph_pass_index, Some(0));
-        assert_eq!(schedule.steps[2].graph_draw_index, Some(0));
+        assert_eq!(schedule.steps[0].graph_pass_index, Some(0));
+        assert_eq!(schedule.steps[0].graph_draw_index, Some(0));
+        assert!(
+            schedule.steps[0]
+                .command_order
+                .contains(&"join_image_layer_prefill_to_mesh_graph_pass")
+        );
+        assert_eq!(schedule.steps[2].graph_pass_index, Some(1));
+        assert_eq!(schedule.steps[2].graph_draw_index, Some(1));
         assert!(
             schedule.steps[2]
                 .command_order

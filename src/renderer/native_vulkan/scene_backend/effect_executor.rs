@@ -108,7 +108,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectObjectComma
     pub material_pass_count: usize,
     pub copy_command_count: usize,
     pub swap_command_count: usize,
-    pub object_final_pass_count: usize,
+    pub layer_final_pass_count: usize,
     pub streams: Vec<NativeVulkanSceneEffectObjectCommandStream>,
     pub entries: Vec<NativeVulkanSceneEffectObjectCommandStreamEntry>,
     pub command_order: [&'static str; 4],
@@ -123,7 +123,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectObjectComma
     pub material_pass_count: usize,
     pub copy_command_count: usize,
     pub swap_command_count: usize,
-    pub object_final_pass_count: usize,
+    pub layer_final_pass_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -394,7 +394,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object
         let mut material_pass_count = 0usize;
         let mut copy_command_count = 0usize;
         let mut swap_command_count = 0usize;
-        let mut object_final_pass_count = 0usize;
+        let mut layer_final_pass_count = 0usize;
         while entry_index < entries.len() && entries[entry_index].object == object {
             match entries[entry_index].kind {
                 NativeVulkanSceneEffectObjectCommandKind::Material => {
@@ -405,8 +405,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object
                             entries[entry_index].graph_command_index
                         )
                     })?;
-                    if pass.output == SceneEffectPassGraphOutput::ObjectFinal(object) {
-                        object_final_pass_count = object_final_pass_count.saturating_add(1);
+                    if effect_pass_is_layer_final_output(graph, object, &pass.output) {
+                        layer_final_pass_count = layer_final_pass_count.saturating_add(1);
                     }
                 }
                 NativeVulkanSceneEffectObjectCommandKind::Copy => {
@@ -427,7 +427,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object
             material_pass_count,
             copy_command_count,
             swap_command_count,
-            object_final_pass_count,
+            layer_final_pass_count,
         });
     }
 
@@ -437,9 +437,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object
         material_pass_count: graph.material_pass_count,
         copy_command_count: graph.copy_command_count,
         swap_command_count: graph.swap_command_count,
-        object_final_pass_count: streams
+        layer_final_pass_count: streams
             .iter()
-            .map(|stream| stream.object_final_pass_count)
+            .map(|stream| stream.layer_final_pass_count)
             .sum(),
         streams,
         entries,
@@ -447,12 +447,27 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object
             "merge_effect_material_copy_swap_commands",
             "sort_by_scene_effect_graph_command_index",
             "partition_contiguous_commands_by_object",
-            "count_object_final_outputs_per_stream",
+            "count_layer_final_outputs_per_stream",
         ],
     })
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_object_final_command_stream<
+fn effect_pass_is_layer_final_output(
+    graph: &SceneEffectPassGraphPlan,
+    object: SceneObjectId,
+    output: &SceneEffectPassGraphOutput,
+) -> bool {
+    match output {
+        SceneEffectPassGraphOutput::ObjectFinal(output_object) => *output_object == object,
+        SceneEffectPassGraphOutput::GraphTarget(target) => {
+            graph.image_layer_targets.iter().any(|image_layer| {
+                image_layer.object == object && image_layer.final_source_target == *target
+            })
+        }
+    }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_layer_final_command_stream<
     'a,
 >(
     frame_resources: &mut NativeVulkanSceneFrameResources,
@@ -468,17 +483,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_obje
         .iter()
         .filter(|stream| stream.object == object);
     let stream = matches.next().ok_or_else(|| {
-        format!("scene effect ObjectFinal block for object {object:?} has no effect command stream")
+        format!("scene effect layer-final block for object {object:?} has no effect command stream")
     })?;
     if matches.next().is_some() {
         return Err(format!(
-            "scene effect ObjectFinal block for object {object:?} has non-contiguous effect command streams"
+            "scene effect layer-final block for object {object:?} has non-contiguous effect command streams"
         ));
     }
-    if stream.object_final_pass_count != 1 {
+    if stream.layer_final_pass_count != 1 {
         return Err(format!(
-            "scene effect ObjectFinal block for object {object:?} requires exactly one ObjectFinal material pass, got {}",
-            stream.object_final_pass_count
+            "scene effect layer-final block for object {object:?} requires exactly one layer-final material pass, got {}",
+            stream.layer_final_pass_count
         ));
     }
     for entry in stream_plan
@@ -486,7 +501,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_obje
         .get(stream.entry_index_start..stream.entry_index_end)
         .ok_or_else(|| {
             format!(
-                "scene effect ObjectFinal stream for object {object:?} has invalid entry range {}..{}",
+                "scene effect layer-final stream for object {object:?} has invalid entry range {}..{}",
                 stream.entry_index_start, stream.entry_index_end
             )
         })?

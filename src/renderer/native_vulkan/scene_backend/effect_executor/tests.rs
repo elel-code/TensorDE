@@ -109,10 +109,10 @@ fn effect_object_command_stream_partitions_contiguous_material_copy_swap_command
 
     assert_eq!(streams.stream_count, 1);
     assert_eq!(streams.command_count, 4);
-    assert_eq!(streams.object_final_pass_count, 1);
+    assert_eq!(streams.layer_final_pass_count, 1);
     assert_eq!(streams.streams[0].object, SceneObjectId(7));
     assert_eq!(streams.streams[0].command_count, 4);
-    assert_eq!(streams.streams[0].object_final_pass_count, 1);
+    assert_eq!(streams.streams[0].layer_final_pass_count, 1);
     assert_eq!(
         streams
             .entries
@@ -126,6 +126,36 @@ fn effect_object_command_stream_partitions_contiguous_material_copy_swap_command
             NativeVulkanSceneEffectObjectCommandKind::Material,
         ]
     );
+}
+
+#[test]
+fn effect_object_command_stream_counts_image_layer_final_source_as_layer_final() {
+    let object = SceneObjectId(1530);
+    let image_layer_target = crate::engine::scene_engine::SceneImageLayerTargetPlan::for_object(
+        object,
+        Some(SceneResourceId(9)),
+        1,
+    )
+    .expect("image-layer target");
+    let graph = SceneEffectPassGraphPlan {
+        object_program_count: 1,
+        material_pass_count: 1,
+        image_layer_target_count: 1,
+        image_layer_scene_output_pass_count: 1,
+        image_layer_targets: vec![image_layer_target],
+        passes: vec![SceneEffectPassGraphMaterialPass {
+            object,
+            ..pass_to(0, 0, SceneGraphTarget::ImageLayerCompositeA(object))
+        }],
+        ..SceneEffectPassGraphPlan::empty()
+    };
+
+    let streams =
+        native_vulkan_plan_scene_effect_object_command_streams(&graph).expect("stream plan");
+
+    assert_eq!(streams.stream_count, 1);
+    assert_eq!(streams.layer_final_pass_count, 1);
+    assert_eq!(streams.streams[0].layer_final_pass_count, 1);
 }
 
 #[test]

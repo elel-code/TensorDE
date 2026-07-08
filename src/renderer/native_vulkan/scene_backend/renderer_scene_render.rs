@@ -13,8 +13,8 @@ use std::collections::BTreeMap;
 use crate::engine::scene_engine::{
     RendererSceneRender, SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneFrameContext,
     SceneGraph, SceneGraphDraw, SceneGraphPass, SceneGraphPipelineClass, SceneGraphResourceBinding,
-    SceneGraphResourceRole, SceneGraphTarget, SceneLayerCompositorPlan, SceneObject,
-    SceneObjectEffectProgram, SceneObjectGeometry, SceneResource,
+    SceneGraphResourceRole, SceneGraphTarget, SceneImageLayerTargetPlan, SceneLayerCompositorPlan,
+    SceneObject, SceneObjectEffectProgram, SceneObjectGeometry, SceneResource,
 };
 
 #[derive(Debug, Default)]
@@ -33,7 +33,7 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
         _resources: &[SceneResource],
         objects: &[SceneObject],
         _effects: &[SceneObjectEffectProgram],
-        _effect_pass_graph: &SceneEffectPassGraphPlan,
+        effect_pass_graph: &SceneEffectPassGraphPlan,
         final_compositor: &SceneFinalCompositorPlan,
         layer_compositor: &SceneLayerCompositorPlan,
     ) -> Result<SceneGraph, String> {
@@ -55,6 +55,11 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
             .iter()
             .filter_map(|pass| pass.draws.first().map(|draw| (draw.object, pass)))
             .collect::<BTreeMap<_, _>>();
+        let image_layer_targets_by_object = effect_pass_graph
+            .image_layer_targets
+            .iter()
+            .map(|target| (target.object, target))
+            .collect::<BTreeMap<_, _>>();
         let mut passes = Vec::new();
         let mut direct_draws = Vec::new();
         for object in objects {
@@ -69,6 +74,9 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
                     )
                 })?;
                 flush_direct_scene_pass(&mut passes, &mut direct_draws);
+                if let Some(image_layer_target) = image_layer_targets_by_object.get(&object.id) {
+                    passes.push(image_layer_prefill_pass(object, image_layer_target));
+                }
                 passes.push((*final_pass).clone());
             } else {
                 direct_draws.push(scene_graph_draw_for_object(object));
@@ -77,6 +85,18 @@ impl RendererSceneRender for NativeVulkanRendererSceneRender {
         flush_direct_scene_pass(&mut passes, &mut direct_draws);
 
         Ok(SceneGraph { passes })
+    }
+}
+
+fn image_layer_prefill_pass(
+    object: &SceneObject,
+    image_layer_target: &SceneImageLayerTargetPlan,
+) -> SceneGraphPass {
+    SceneGraphPass {
+        name: format!("scene-image-layer-prefill-{}", object.id.0),
+        input: None,
+        output: image_layer_target.prefill_target,
+        draws: vec![scene_graph_draw_for_object(object)],
     }
 }
 
@@ -324,6 +344,77 @@ mod tests {
             SceneBlendContract::NormalReplace
         );
         assert_eq!(graph.passes[2].draws[0].object, SceneObjectId(3));
+    }
+
+    #[test]
+    fn graph_inserts_image_layer_prefill_pass_before_final_composite() {
+        let renderer = NativeVulkanRendererSceneRender::new();
+        let image_object = SceneObjectId(1530);
+        let objects = vec![
+            mesh_object(SceneObjectId(1), SceneGeometryId(3), SceneResourceId(7)),
+            mesh_object(image_object, SceneGeometryId(4), SceneResourceId(8)),
+            mesh_object(SceneObjectId(3), SceneGeometryId(5), SceneResourceId(9)),
+        ];
+        let image_layer_target =
+            crate::engine::scene_engine::SceneImageLayerTargetPlan::for_object(
+                image_object,
+                Some(SceneResourceId(8)),
+                1,
+            )
+            .expect("image-layer target");
+        let effect_graph = SceneEffectPassGraphPlan {
+            material_pass_count: 1,
+            image_layer_target_count: 1,
+            image_layer_scene_output_pass_count: 1,
+            image_layer_targets: vec![image_layer_target],
+            passes: vec![SceneEffectPassGraphMaterialPass {
+                output: SceneEffectPassGraphOutput::GraphTarget(
+                    SceneGraphTarget::ImageLayerCompositeA(image_object),
+                ),
+                ..effect_output_pass(image_object)
+            }],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+        let final_compositor =
+            SceneFinalCompositorPlan::from_effect_pass_graph(&objects, &effect_graph);
+        let layer_compositor =
+            SceneLayerCompositorPlan::from_scene(&[], &objects, &effect_graph, &final_compositor);
+
+        let graph = renderer
+            .build_graph(
+                SceneFrameContext {
+                    time_ms: 250,
+                    target_width: 3840,
+                    target_height: 2160,
+                },
+                &[],
+                &objects,
+                &[],
+                &effect_graph,
+                &final_compositor,
+                &layer_compositor,
+            )
+            .expect("scene graph");
+
+        assert_eq!(graph.passes.len(), 4);
+        assert_eq!(graph.passes[0].draws[0].object, SceneObjectId(1));
+        assert_eq!(graph.passes[1].name, "scene-image-layer-prefill-1530");
+        assert_eq!(graph.passes[1].input, None);
+        assert_eq!(
+            graph.passes[1].output,
+            SceneGraphTarget::ImageLayerSource(image_object)
+        );
+        assert_eq!(graph.passes[1].draws[0].object, image_object);
+        assert_eq!(
+            graph.passes[1].draws[0].resources[0].resource,
+            SceneResourceId(8)
+        );
+        assert_eq!(
+            graph.passes[2].input,
+            Some(SceneGraphTarget::ImageLayerCompositeA(image_object))
+        );
+        assert_eq!(graph.passes[2].output, SceneGraphTarget::Swapchain);
+        assert_eq!(graph.passes[3].draws[0].object, SceneObjectId(3));
     }
 
     fn mesh_object(
