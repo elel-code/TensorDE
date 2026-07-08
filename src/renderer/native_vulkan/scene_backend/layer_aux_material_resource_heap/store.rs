@@ -194,6 +194,26 @@ impl NativeVulkanSceneLayerAuxMaterialResourceHeapStore {
         self.bind_info_from_binding(binding)
     }
 
+    pub(in crate::renderer::native_vulkan) fn bind_info_for_command(
+        &self,
+        command_index: usize,
+    ) -> Result<NativeVulkanSceneLayerAuxMaterialResourceHeapBindInfo, String> {
+        let current = self
+            .current
+            .as_ref()
+            .ok_or_else(|| "scene aux material resource heap has no frame plan".to_owned())?;
+        let binding = current
+            .clear_bindings
+            .iter()
+            .find(|binding| binding.command_index == command_index)
+            .ok_or_else(|| {
+                format!(
+                    "scene aux material resource heap has no binding for command {command_index}"
+                )
+            })?;
+        self.bind_info_from_binding(binding)
+    }
+
     fn bind_info_from_binding(
         &self,
         binding: &NativeVulkanSceneLayerAuxMaterialResourceHeapClearBinding,

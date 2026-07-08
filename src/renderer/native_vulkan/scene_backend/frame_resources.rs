@@ -583,6 +583,14 @@ impl NativeVulkanSceneFrameResources {
             .bind_info_for_clear_bind(clear_bind_index)
     }
 
+    pub(in crate::renderer::native_vulkan) fn layer_aux_material_resource_heap_bind_info_for_command(
+        &self,
+        command_index: usize,
+    ) -> Result<NativeVulkanSceneLayerAuxMaterialResourceHeapBindInfo, String> {
+        self.layer_aux_material_resource_heap
+            .bind_info_for_command(command_index)
+    }
+
     pub(in crate::renderer::native_vulkan) fn last_layer_aux_material_resource_heap_actions(
         &self,
     ) -> &[NativeVulkanSceneLayerAuxMaterialResourceHeapSyncAction] {
