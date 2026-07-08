@@ -32,6 +32,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorSc
     pub object_final_composite_command_count: usize,
     pub alpha_mask_token_draw_list_command_count: usize,
     pub token_program_no_draw_count: usize,
+    pub clear_prep_early_out_no_draw_count: usize,
     pub clear_prep_recorder_required_count: usize,
     pub recording_block_count: usize,
     pub mesh_graph_draw_span_block_count: usize,
@@ -66,6 +67,7 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneLayerCompositorSche
     ObjectFinalCompositeGraphDraw,
     AlphaMaskTokenProgramNoDraw,
     AlphaMaskTokenDrawListCommand,
+    LayerTargetClearPrepEarlyOutNoDraw,
     LayerTargetClearPrepRecorderRequired,
 }
 
@@ -152,11 +154,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
                     }
                 },
                 SceneLayerCompositorOperation::ClearPrep => {
-                    command_order.extend([
-                        "require_layer_target_clear_recorder",
-                        "keep_clear_step_in_we_layer_order",
-                    ]);
-                    NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired
+                    if layer.uses_tokenized_subdraw {
+                        command_order.extend([
+                            "require_layer_target_clear_recorder",
+                            "keep_active_aux_clear_step_in_we_layer_order",
+                        ]);
+                        NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired
+                    } else {
+                        command_order.extend([
+                            "apply_0x140207740_aux_3e8_absent_early_out",
+                            "preserve_clear_prep_position_as_no_draw_marker",
+                        ]);
+                        NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepEarlyOutNoDraw
+                    }
                 }
                 SceneLayerCompositorOperation::FullLayerComposite => {
                     let position = find_graph_draw_position(
@@ -271,6 +281,10 @@ impl NativeVulkanSceneLayerCompositorSchedulePlan {
             &steps,
             NativeVulkanSceneLayerCompositorScheduledKind::AlphaMaskTokenProgramNoDraw,
         );
+        let clear_prep_early_out_no_draw_count = count_kind(
+            &steps,
+            NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepEarlyOutNoDraw,
+        );
         let clear_prep_recorder_required_count = count_kind(
             &steps,
             NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired,
@@ -312,6 +326,7 @@ impl NativeVulkanSceneLayerCompositorSchedulePlan {
             object_final_composite_command_count,
             alpha_mask_token_draw_list_command_count,
             token_program_no_draw_count,
+            clear_prep_early_out_no_draw_count,
             clear_prep_recorder_required_count,
             recording_block_count: recording_blocks.len(),
             mesh_graph_draw_span_block_count,
@@ -404,6 +419,9 @@ fn recording_block_kind(
             NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
         }
         NativeVulkanSceneLayerCompositorScheduledKind::AlphaMaskTokenProgramNoDraw => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+        }
+        NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepEarlyOutNoDraw => {
             NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
         }
         NativeVulkanSceneLayerCompositorScheduledKind::AlphaMaskTokenDrawListCommand => {
@@ -703,6 +721,74 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_treats_object_final_clear_prep_without_aux_target_as_early_out_marker() {
+        let object = SceneObjectId(9);
+        let graph = SceneGraph {
+            passes: vec![graph_pass(
+                "object-final-composite",
+                Some(SceneGraphTarget::ObjectFinal(object)),
+                SceneGraphTarget::Swapchain,
+                vec![mesh_draw(object)],
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![object_final_layer(object, false)]),
+            &graph,
+            &graph_execution,
+            &empty_token_recording(),
+        )
+        .expect("object-final clear prep early-out schedule");
+
+        assert_eq!(schedule.command_count, 3);
+        assert_eq!(schedule.object_final_producer_command_count, 1);
+        assert_eq!(schedule.object_final_composite_command_count, 1);
+        assert_eq!(schedule.clear_prep_early_out_no_draw_count, 1);
+        assert_eq!(schedule.clear_prep_recorder_required_count, 0);
+        assert_eq!(
+            schedule.steps[1].scheduled_kind,
+            NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepEarlyOutNoDraw
+        );
+        assert_eq!(
+            schedule.recording_blocks[1].kind,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+        );
+    }
+
+    #[test]
+    fn scheduler_keeps_tokenized_clear_prep_as_active_recorder_required() {
+        let object = SceneObjectId(10);
+        let graph = SceneGraph {
+            passes: vec![graph_pass(
+                "object-final-composite",
+                Some(SceneGraphTarget::ObjectFinal(object)),
+                SceneGraphTarget::Swapchain,
+                vec![mesh_draw(object)],
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![object_final_layer(object, true)]),
+            &graph,
+            &graph_execution,
+            &token_recording_for_tokenized_layer_with_start(object, 2),
+        )
+        .expect("tokenized object-final clear prep schedule");
+
+        assert_eq!(schedule.clear_prep_early_out_no_draw_count, 0);
+        assert_eq!(schedule.clear_prep_recorder_required_count, 1);
+        assert_eq!(
+            schedule.steps[1].scheduled_kind,
+            NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired
+        );
+        assert_eq!(
+            schedule.recording_blocks[1].kind,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired
+        );
+    }
+
+    #[test]
     fn scheduler_joins_token_commands_to_alpha_mask_recording_steps() {
         let object = SceneObjectId(12);
         let graph = SceneGraph {
@@ -809,6 +895,40 @@ mod tests {
         layer
     }
 
+    fn object_final_layer(
+        object: SceneObjectId,
+        uses_tokenized_subdraw: bool,
+    ) -> SceneLayerCompositorLayer {
+        let mut commands = vec![
+            normal_command(SceneLayerCompositorTarget::ObjectFinal(object)),
+            SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+                operation: SceneLayerCompositorOperation::ClearPrep,
+                condition: SceneLayerCompositorCondition::Always,
+                source: None,
+                target: SceneLayerCompositorTarget::LayerTarget490,
+                blend_key: SceneLayerCompositorBlendKey::Inherit,
+            },
+        ];
+        if uses_tokenized_subdraw {
+            commands.extend(token_commands());
+        }
+        commands.push(SceneLayerCompositorCommand {
+            entry: SceneLayerCompositorEntry::FullLayerCompositeEntry51,
+            operation: SceneLayerCompositorOperation::FullLayerComposite,
+            condition: SceneLayerCompositorCondition::Always,
+            source: None,
+            target: SceneLayerCompositorTarget::ObjectFinal(object),
+            blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
+        });
+        SceneLayerCompositorLayer {
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw,
+            commands,
+        }
+    }
+
     fn normal_command(target: SceneLayerCompositorTarget) -> SceneLayerCompositorCommand {
         SceneLayerCompositorCommand {
             entry: SceneLayerCompositorEntry::NormalRenderEntry32,
@@ -868,37 +988,44 @@ mod tests {
     fn token_recording_for_tokenized_layer(
         object: SceneObjectId,
     ) -> NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan {
+        token_recording_for_tokenized_layer_with_start(object, 1)
+    }
+
+    fn token_recording_for_tokenized_layer_with_start(
+        object: SceneObjectId,
+        first_command_index: usize,
+    ) -> NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan {
         let steps = vec![
             token_recording_step(
-                1,
+                first_command_index,
                 object,
                 SceneLayerCompositorOperation::TokenProgramDispatch,
                 NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::TokenProgramDispatch,
                 NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::TokenProgramNoDraw,
             ),
             token_recording_step(
-                2,
+                first_command_index + 1,
                 object,
                 SceneLayerCompositorOperation::DrawClippingMask,
                 NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::FullMaskProducer,
                 NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::ClippingMaskImage4ProducerRtMethod8,
             ),
             token_recording_step(
-                3,
+                first_command_index + 2,
                 object,
                 SceneLayerCompositorOperation::DrawClippingMask,
                 NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateMaskProducer,
                 NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::ClippingMaskImage4ProducerRtMethod8,
             ),
             token_recording_step(
-                4,
+                first_command_index + 3,
                 object,
                 SceneLayerCompositorOperation::CopyIntermediateToFullAlphaMask,
                 NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::IntermediateCopyBackToFullMask,
                 NativeVulkanSceneLayerAlphaMaskTokenRecordingKind::FlatTextureCopyBackGraphNode,
             ),
             token_recording_step(
-                5,
+                first_command_index + 4,
                 object,
                 SceneLayerCompositorOperation::DrawGeneratedClippingTarget,
                 NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind::GeneratedClippingTargetConsumer,

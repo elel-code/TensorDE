@@ -1031,6 +1031,7 @@ mod tests {
                 })
                 .count(),
             token_program_no_draw_count: 0,
+            clear_prep_early_out_no_draw_count: 0,
             clear_prep_recorder_required_count: 0,
             recording_block_count: recording_blocks.len(),
             mesh_graph_draw_span_block_count: recording_blocks
