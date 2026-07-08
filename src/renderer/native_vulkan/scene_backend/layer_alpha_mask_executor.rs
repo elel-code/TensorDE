@@ -37,6 +37,7 @@ mod rt_method8_command;
 mod rt_method8_geometry;
 mod rt_method8_payload;
 mod rt_method8_slices;
+pub(in crate::renderer::native_vulkan) mod token_draw_list;
 mod token_recording;
 mod token_schedule;
 

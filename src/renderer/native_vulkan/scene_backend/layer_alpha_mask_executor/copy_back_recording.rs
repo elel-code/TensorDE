@@ -64,9 +64,46 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
         return Ok(None);
     }
 
+    record_copy_back_graph_node_for_pipelines(
+        frame_resources,
+        device,
+        command_buffer,
+        &pipelines.keys,
+    )
+    .map(Some)
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha_mask_copy_back_graph_node_for_command(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    resource_binds: &NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
+    command_index: usize,
+) -> Result<NativeVulkanSceneLayerAlphaMaskCopyBackGraphRecordPlan, String> {
+    let pipelines = resource_binds
+        .copy_back_pipelines
+        .keys
+        .iter()
+        .filter(|pipeline| pipeline.command_index == command_index)
+        .cloned()
+        .collect::<Vec<_>>();
+    if pipelines.is_empty() {
+        return Err(format!(
+            "scene layer alpha-mask copy-back token command {command_index} has no util/minimalalpha pipeline key"
+        ));
+    }
+    record_copy_back_graph_node_for_pipelines(frame_resources, device, command_buffer, &pipelines)
+}
+
+fn record_copy_back_graph_node_for_pipelines(
+    frame_resources: &mut NativeVulkanSceneFrameResources,
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    pipelines: &[NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan],
+) -> Result<NativeVulkanSceneLayerAlphaMaskCopyBackGraphRecordPlan, String> {
     let geometry = render_state_copy_back_geometry_buffers(frame_resources)?;
-    let mut resolved = Vec::with_capacity(pipelines.keys.len());
-    for pipeline in &pipelines.keys {
+    let mut resolved = Vec::with_capacity(pipelines.len());
+    for pipeline in pipelines {
         let cache_key = pipeline.cache_key();
         let vk_pipeline = frame_resources
             .cached_mesh_pipeline(&cache_key)
@@ -148,7 +185,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
         vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
     )?;
 
-    Ok(Some(
+    Ok(
         NativeVulkanSceneLayerAlphaMaskCopyBackGraphRecordPlan::from_recorded_parts(
             target_graph,
             source_transition,
@@ -156,7 +193,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
             target_scope,
             commands,
         ),
-    ))
+    )
 }
 
 impl NativeVulkanSceneLayerAlphaMaskCopyBackGraphRecordPlan {

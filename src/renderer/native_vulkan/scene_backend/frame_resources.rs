@@ -66,7 +66,9 @@ use super::pipeline_factory::{
 use super::resource_buffers::{
     NativeVulkanSceneGpuBufferStore, NativeVulkanSceneGpuBufferSyncAction,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers,
     NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
     NativeVulkanSceneRenderStateUtilityGeometryBuffers,
 };
@@ -76,6 +78,7 @@ use super::resource_heap::{
 };
 use super::resource_storage::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
     NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
 };
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
@@ -335,12 +338,28 @@ impl NativeVulkanSceneFrameResources {
             .layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(geometry)
     }
 
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_geometry_buffers(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers, String> {
+        self.gpu_buffers
+            .layer_alpha_mask_rt_method8_mdlv_geometry_buffers(geometry)
+    }
+
     pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(
         &self,
         geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords, String> {
         self.gpu_buffers
             .layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(geometry)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffers(
+        &self,
+        slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers, String> {
+        self.gpu_buffers
+            .layer_alpha_mask_rt_method8_mdlv_index_slice_buffers(slice)
     }
 
     pub(in crate::renderer::native_vulkan) fn texture_descriptor_frame_plan(
