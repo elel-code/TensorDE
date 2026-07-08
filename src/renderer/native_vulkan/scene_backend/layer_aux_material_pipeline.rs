@@ -271,10 +271,10 @@ impl NativeVulkanSceneLayerAuxGeneratedMaterialPipelineRequirement {
             draw_receiver: draw.receiver_kind,
             material_offset: draw.material_offset,
             target_offset: draw.target_offset,
-            layout_bitmask: 0,
-            vertex_stride_bytes: 0,
-            vertex_count: 0,
-            index_count: 0,
+            layout_bitmask: draw.layout_bitmask,
+            vertex_stride_bytes: draw.vertex_stride_bytes,
+            vertex_count: draw.vertex_count,
+            index_count: draw.index_count,
             material_entry_source: "active material entry [aux+0x18] + [aux+0x390] * 0xc8",
             shader_source_required: "generated aux+0x408 material shader and resource heap slice must come from retained material entry, not mesh fallback",
             command_order: [
@@ -403,6 +403,15 @@ mod tests {
             plan.cache_keys()[0].target_format,
             vk::Format::R8G8B8A8_UNORM
         );
+        let generated = &plan.generated_requirements[0];
+        assert_eq!(
+            generated.draw_receiver,
+            NativeVulkanSceneLayerAuxMaterialDrawReceiverKind::Aux3f8GeneratedMaterialIndexed
+        );
+        assert_eq!(generated.layout_bitmask, 0x180000f);
+        assert_eq!(generated.vertex_stride_bytes, 80);
+        assert_eq!(generated.vertex_count, 4106);
+        assert_eq!(generated.index_count, 23_988);
     }
 
     fn clear_scope_for_material_draws(
