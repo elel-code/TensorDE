@@ -80,6 +80,10 @@ use super::layer_alpha_mask_executor::{
 use super::layer_aux_clear_prep::{
     NativeVulkanSceneLayerAuxClearPrepFramePlan, native_vulkan_plan_scene_layer_aux_clear_prep,
 };
+use super::layer_aux_material_draws::{
+    NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
+    native_vulkan_plan_scene_layer_aux_material_draws,
+};
 use super::layer_compositor_command_blocks::{
     NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs,
     NativeVulkanSceneLayerCompositorCommandBlockRecordPlan,
@@ -144,10 +148,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub layer_alpha_mask_token_recording: NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
     pub layer_aux_clear_prep: NativeVulkanSceneLayerAuxClearPrepFramePlan,
+    pub layer_aux_material_draws: NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
     pub layer_compositor_schedule: NativeVulkanSceneLayerCompositorSchedulePlan,
     pub layer_compositor_block_recording: NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 25],
+    pub command_order: [&'static str; 26],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -373,7 +378,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         &effect_context,
         &frame.effect_pass_graph,
     )?;
-    let (mesh, layer_compositor_effect_commands, layer_aux_clear_prep) =
+    let (mesh, layer_compositor_effect_commands, layer_aux_clear_prep, layer_aux_material_draws) =
         native_vulkan_record_scene_mesh_runtime_frame(
             frame_resources,
             NativeVulkanSceneMeshRuntimeFrameContext {
@@ -446,6 +451,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_copy_back_commands,
         layer_alpha_mask_token_recording,
         layer_aux_clear_prep,
+        layer_aux_material_draws,
         layer_compositor_schedule,
         layer_compositor_block_recording,
         mesh,
@@ -473,6 +479,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_token_recording_contract",
             "plan_scene_layer_compositor_schedule",
             "plan_scene_layer_aux_clear_prep",
+            "plan_scene_layer_aux_material_draw_receivers",
             "record_scene_mesh_graph_runtime",
             "plan_scene_layer_compositor_block_recording",
         ],
@@ -576,6 +583,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         NativeVulkanSceneMeshRuntimeFramePlan<'a>,
         Vec<super::effect_executor::NativeVulkanSceneEffectRuntimeCommandPlan<'a>>,
         NativeVulkanSceneLayerAuxClearPrepFramePlan,
+        NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
     ),
     String,
 > {
@@ -603,6 +611,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     };
     let aux_clear_prep =
         native_vulkan_plan_scene_layer_aux_clear_prep(layer_compositor_schedule, &frame.residency)?;
+    let aux_material_draws =
+        native_vulkan_plan_scene_layer_aux_material_draws(&aux_clear_prep, &frame.residency)?;
     let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) = {
         let command_block_output = native_vulkan_record_scene_layer_compositor_command_blocks(
             frame_resources,
@@ -611,6 +621,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             &graph_execution,
             layer_compositor_schedule,
             &aux_clear_prep,
+            &aux_material_draws,
             alpha_inputs,
             effect_inputs,
         )?;
@@ -628,7 +639,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         layer_compositor_command_blocks,
         frame_plan,
     );
-    Ok((mesh, layer_compositor_effect_commands, aux_clear_prep))
+    Ok((
+        mesh,
+        layer_compositor_effect_commands,
+        aux_clear_prep,
+        aux_material_draws,
+    ))
 }
 
 fn scene_effect_graph_command_count(
