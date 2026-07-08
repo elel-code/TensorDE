@@ -82,6 +82,19 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectRuntimeComman
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectRuntimeCommandCounts {
+    pub command_count: usize,
+    pub material_pass_count: usize,
+    pub copy_command_count: usize,
+    pub swap_command_count: usize,
+    pub target_transition_count: usize,
+    pub target_initial_clear_count: usize,
+    pub target_scope_count: usize,
+    pub fullscreen_draw_count: usize,
+    pub copy_image_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectObjectCommandKind {
     Material,
     Copy,
@@ -165,6 +178,54 @@ impl<'a> NativeVulkanSceneEffectRuntimeFramePlan<'a> {
             ],
         }
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_count_scene_effect_runtime_commands(
+    commands: &[NativeVulkanSceneEffectRuntimeCommandPlan<'_>],
+) -> NativeVulkanSceneEffectRuntimeCommandCounts {
+    let mut counts = NativeVulkanSceneEffectRuntimeCommandCounts {
+        command_count: commands.len(),
+        material_pass_count: 0,
+        copy_command_count: 0,
+        swap_command_count: 0,
+        target_transition_count: 0,
+        target_initial_clear_count: 0,
+        target_scope_count: 0,
+        fullscreen_draw_count: 0,
+        copy_image_count: 0,
+    };
+    for command in commands {
+        match command {
+            NativeVulkanSceneEffectRuntimeCommandPlan::MaterialPass(pass) => {
+                counts.material_pass_count = counts.material_pass_count.saturating_add(1);
+                counts.target_transition_count = counts
+                    .target_transition_count
+                    .saturating_add(effect_access_transition_count(&pass.input_accesses))
+                    .saturating_add(pass.output_transition_count);
+                counts.target_initial_clear_count = counts
+                    .target_initial_clear_count
+                    .saturating_add(effect_access_initial_clear_count(&pass.input_accesses));
+                counts.target_scope_count = counts.target_scope_count.saturating_add(1);
+                counts.fullscreen_draw_count = counts
+                    .fullscreen_draw_count
+                    .saturating_add(pass.pass.fullscreen_draw_count);
+            }
+            NativeVulkanSceneEffectRuntimeCommandPlan::Copy(copy) => {
+                counts.copy_command_count = counts.copy_command_count.saturating_add(1);
+                counts.target_transition_count = counts
+                    .target_transition_count
+                    .saturating_add(copy.source_access.iter().count())
+                    .saturating_add(copy.target_access.iter().count());
+                counts.copy_image_count = counts
+                    .copy_image_count
+                    .saturating_add(copy.copy_image_count);
+            }
+            NativeVulkanSceneEffectRuntimeCommandPlan::Swap(_) => {
+                counts.swap_command_count = counts.swap_command_count.saturating_add(1);
+            }
+        }
+    }
+    counts
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_runtime_preflight(
@@ -478,46 +539,21 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_obje
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_runtime_frame_from_recorded_commands<
     'a,
 >(
-    graph: &SceneEffectPassGraphPlan,
+    _graph: &SceneEffectPassGraphPlan,
     preflight: NativeVulkanSceneEffectRuntimePreflightPlan,
     commands: Vec<NativeVulkanSceneEffectRuntimeCommandPlan<'a>>,
 ) -> NativeVulkanSceneEffectRuntimeFramePlan<'a> {
-    let mut target_transition_count = 0usize;
-    let mut target_initial_clear_count = 0usize;
-    let mut target_scope_count = 0usize;
-    let mut fullscreen_draw_count = 0usize;
-    let mut copy_image_count = 0usize;
-    for command in &commands {
-        match command {
-            NativeVulkanSceneEffectRuntimeCommandPlan::MaterialPass(pass) => {
-                target_transition_count = target_transition_count
-                    .saturating_add(effect_access_transition_count(&pass.input_accesses))
-                    .saturating_add(pass.output_transition_count);
-                target_initial_clear_count = target_initial_clear_count
-                    .saturating_add(effect_access_initial_clear_count(&pass.input_accesses));
-                target_scope_count = target_scope_count.saturating_add(1);
-                fullscreen_draw_count =
-                    fullscreen_draw_count.saturating_add(pass.pass.fullscreen_draw_count);
-            }
-            NativeVulkanSceneEffectRuntimeCommandPlan::Copy(copy) => {
-                target_transition_count = target_transition_count
-                    .saturating_add(copy.source_access.iter().count())
-                    .saturating_add(copy.target_access.iter().count());
-                copy_image_count = copy_image_count.saturating_add(copy.copy_image_count);
-            }
-            NativeVulkanSceneEffectRuntimeCommandPlan::Swap(_) => {}
-        }
-    }
+    let counts = native_vulkan_count_scene_effect_runtime_commands(&commands);
     NativeVulkanSceneEffectRuntimeFramePlan {
-        command_count: commands.len(),
-        material_pass_count: graph.material_pass_count,
-        copy_command_count: graph.copy_command_count,
-        swap_command_count: graph.swap_command_count,
-        target_transition_count,
-        target_initial_clear_count,
-        target_scope_count,
-        fullscreen_draw_count,
-        copy_image_count,
+        command_count: counts.command_count,
+        material_pass_count: counts.material_pass_count,
+        copy_command_count: counts.copy_command_count,
+        swap_command_count: counts.swap_command_count,
+        target_transition_count: counts.target_transition_count,
+        target_initial_clear_count: counts.target_initial_clear_count,
+        target_scope_count: counts.target_scope_count,
+        fullscreen_draw_count: counts.fullscreen_draw_count,
+        copy_image_count: counts.copy_image_count,
         commands,
         command_sequence: preflight.command_sequence,
         pipeline_warmup: preflight.pipeline_warmup,

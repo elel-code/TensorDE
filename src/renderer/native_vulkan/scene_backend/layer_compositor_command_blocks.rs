@@ -14,8 +14,9 @@ use crate::engine::scene_engine::{
 };
 
 use super::effect_executor::{
-    NativeVulkanSceneEffectObjectCommandStreamPlan, NativeVulkanSceneEffectRuntimeCommandPlan,
-    NativeVulkanSceneEffectRuntimeFrameContext,
+    NativeVulkanSceneEffectObjectCommandStreamPlan, NativeVulkanSceneEffectRuntimeCommandCounts,
+    NativeVulkanSceneEffectRuntimeCommandPlan, NativeVulkanSceneEffectRuntimeFrameContext,
+    native_vulkan_count_scene_effect_runtime_commands,
     native_vulkan_record_scene_effect_object_final_command_stream,
 };
 use super::frame_resources::NativeVulkanSceneFrameResources;
@@ -87,6 +88,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorCo
     pub object_final_effect_target_scope_count: usize,
     pub alpha_mask_target_scope_count: usize,
     pub object_final_effect_recorded_command_count: usize,
+    pub object_final_effect_material_pass_count: usize,
+    pub object_final_effect_copy_command_count: usize,
+    pub object_final_effect_swap_command_count: usize,
+    pub object_final_effect_target_transition_count: usize,
+    pub object_final_effect_target_initial_clear_count: usize,
+    pub object_final_effect_fullscreen_draw_count: usize,
+    pub object_final_effect_copy_image_count: usize,
     pub alpha_mask_recorded_step_count: usize,
     pub alpha_mask_token_draw_list: NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan,
     pub command_order: [&'static str; 7],
@@ -374,11 +382,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     };
     let alpha_mask_token_draw_list =
         NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan::from_steps(alpha_steps);
+    let effect_counts = native_vulkan_count_scene_effect_runtime_commands(&effect_commands);
     let command_blocks =
         NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::from_recorded_parts(
             schedule,
             mesh_target_scope_count,
-            effect_commands.len(),
+            effect_counts,
             alpha_mask_token_draw_list,
         );
     Ok(Some(
@@ -402,6 +411,13 @@ impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
             object_final_effect_target_scope_count: 0,
             alpha_mask_target_scope_count: 0,
             object_final_effect_recorded_command_count: 0,
+            object_final_effect_material_pass_count: 0,
+            object_final_effect_copy_command_count: 0,
+            object_final_effect_swap_command_count: 0,
+            object_final_effect_target_transition_count: 0,
+            object_final_effect_target_initial_clear_count: 0,
+            object_final_effect_fullscreen_draw_count: 0,
+            object_final_effect_copy_image_count: 0,
             alpha_mask_recorded_step_count: 0,
             alpha_mask_token_draw_list:
                 NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan::empty(),
@@ -412,7 +428,7 @@ impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
     fn from_recorded_parts(
         schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
         mesh_target_scope_count: usize,
-        object_final_effect_recorded_command_count: usize,
+        effect_counts: NativeVulkanSceneEffectRuntimeCommandCounts,
         alpha_mask_token_draw_list: NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan,
     ) -> Self {
         Self {
@@ -422,9 +438,17 @@ impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
             alpha_mask_token_block_count: schedule.alpha_mask_token_recording_block_count,
             no_draw_marker_block_count: schedule.no_draw_marker_block_count,
             mesh_target_scope_count,
-            object_final_effect_target_scope_count: object_final_effect_recorded_command_count,
+            object_final_effect_target_scope_count: effect_counts.target_scope_count,
             alpha_mask_target_scope_count: alpha_mask_token_draw_list.target_scope_count,
-            object_final_effect_recorded_command_count,
+            object_final_effect_recorded_command_count: effect_counts.command_count,
+            object_final_effect_material_pass_count: effect_counts.material_pass_count,
+            object_final_effect_copy_command_count: effect_counts.copy_command_count,
+            object_final_effect_swap_command_count: effect_counts.swap_command_count,
+            object_final_effect_target_transition_count: effect_counts.target_transition_count,
+            object_final_effect_target_initial_clear_count: effect_counts
+                .target_initial_clear_count,
+            object_final_effect_fullscreen_draw_count: effect_counts.fullscreen_draw_count,
+            object_final_effect_copy_image_count: effect_counts.copy_image_count,
             alpha_mask_recorded_step_count: alpha_mask_token_draw_list.scheduled_step_count,
             alpha_mask_token_draw_list,
             command_order: command_block_record_order(),
@@ -818,6 +842,38 @@ mod tests {
                 .expect("empty object stream plan")
             )
         );
+    }
+
+    #[test]
+    fn command_block_record_plan_counts_object_final_effect_stream_shapes() {
+        let schedule = object_final_schedule(SceneObjectId(7));
+        let plan = NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::from_recorded_parts(
+            &schedule,
+            0,
+            NativeVulkanSceneEffectRuntimeCommandCounts {
+                command_count: 4,
+                material_pass_count: 2,
+                copy_command_count: 1,
+                swap_command_count: 1,
+                target_transition_count: 3,
+                target_initial_clear_count: 1,
+                target_scope_count: 2,
+                fullscreen_draw_count: 2,
+                copy_image_count: 1,
+            },
+            NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan::empty(),
+        );
+
+        assert_eq!(plan.object_final_effect_block_count, 1);
+        assert_eq!(plan.object_final_effect_recorded_command_count, 4);
+        assert_eq!(plan.object_final_effect_material_pass_count, 2);
+        assert_eq!(plan.object_final_effect_copy_command_count, 1);
+        assert_eq!(plan.object_final_effect_swap_command_count, 1);
+        assert_eq!(plan.object_final_effect_target_scope_count, 2);
+        assert_eq!(plan.object_final_effect_target_transition_count, 3);
+        assert_eq!(plan.object_final_effect_target_initial_clear_count, 1);
+        assert_eq!(plan.object_final_effect_fullscreen_draw_count, 2);
+        assert_eq!(plan.object_final_effect_copy_image_count, 1);
     }
 
     #[test]
