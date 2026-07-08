@@ -128,9 +128,13 @@ pub(in crate::renderer::native_vulkan) use rt_method8_slices::{
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
 };
 pub(in crate::renderer::native_vulkan) use token_recording::{
+    NativeVulkanSceneLayerAlphaMaskTokenRecordingKind,
     NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    NativeVulkanSceneLayerAlphaMaskTokenRecordingStep,
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
 };
+#[cfg(test)]
+pub(in crate::renderer::native_vulkan) use token_schedule::NativeVulkanSceneLayerAlphaMaskTokenScheduleStepKind;
 pub(in crate::renderer::native_vulkan) use token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,

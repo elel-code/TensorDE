@@ -75,6 +75,10 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use super::layer_compositor_scheduler::{
+    NativeVulkanSceneLayerCompositorSchedulePlan,
+    native_vulkan_plan_scene_layer_compositor_schedule,
+};
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
 use super::render_target::NativeVulkanSceneSwapchainRenderTarget;
 use super::target_formats::NativeVulkanSceneGraphTargetFormatPlan;
@@ -123,8 +127,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub layer_alpha_mask_token_recording: NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    pub layer_compositor_schedule: NativeVulkanSceneLayerCompositorSchedulePlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 22],
+    pub command_order: [&'static str; 23],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,6 +337,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         },
         frame,
     )?;
+    let layer_compositor_schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+        &frame.layer_compositor,
+        &frame.graph,
+        &mesh.graph_execution,
+        &layer_alpha_mask_token_recording,
+    )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
         layer_alpha_masks,
@@ -353,6 +364,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_rt_method8_indexed_draw_commands,
         layer_alpha_mask_copy_back_commands,
         layer_alpha_mask_token_recording,
+        layer_compositor_schedule,
         mesh,
         command_order: [
             "record_scene_effect_graph_runtime",
@@ -377,6 +389,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_copy_back_command_list",
             "plan_layer_alpha_mask_token_recording_contract",
             "record_scene_mesh_graph_runtime",
+            "plan_scene_layer_compositor_schedule",
         ],
     })
 }
