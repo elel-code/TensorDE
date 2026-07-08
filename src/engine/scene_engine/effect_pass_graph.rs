@@ -445,9 +445,17 @@ fn resolve_effect_input_source(
             Ok(SceneEffectPassGraphInputSource::GraphTarget(*target))
         }
         SceneEffectImageRef::PreviousFramebuffer => {
+            if let Some(target) = image_layer_target {
+                return Ok(SceneEffectPassGraphInputSource::GraphTarget(target.source));
+            }
             Ok(SceneEffectPassGraphInputSource::PreviousFramebuffer)
         }
-        SceneEffectImageRef::Scene => Ok(SceneEffectPassGraphInputSource::Scene),
+        SceneEffectImageRef::Scene => {
+            if let Some(target) = image_layer_target {
+                return Ok(SceneEffectPassGraphInputSource::GraphTarget(target.source));
+            }
+            Ok(SceneEffectPassGraphInputSource::Scene)
+        }
     }
 }
 
@@ -674,6 +682,58 @@ mod tests {
             graph.passes[1].output,
             SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::ImageLayerCompositeA(
                 SceneObjectId(1336)
+            ))
+        );
+    }
+
+    #[test]
+    fn effect_pass_graph_resolves_image_layer_previous_and_scene_inputs_to_source_target() {
+        let object = object(SceneObjectId(1530), Some(SceneResourceId(9)));
+        let effects = vec![SceneObjectEffectProgram {
+            object: object.id,
+            program: super::super::SceneEffectProgram {
+                effect_file: "effects/fluidsimulation/effect.json".to_owned(),
+                effect: WeEffectKind::Unknown,
+                fbos: Vec::new(),
+                commands: vec![SceneEffectCommand::MaterialPass(
+                    super::super::SceneEffectMaterialPass {
+                        pass_index: 18,
+                        shader: Some("effects/fluidsimulation_combine".to_owned()),
+                        source: Some(SceneEffectImageRef::PreviousFramebuffer),
+                        target: None,
+                        blend: SceneEffectPassBlend::NormalReplace,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
+                        texture_resources: Vec::new(),
+                        binds: BTreeMap::from([(1, SceneEffectImageRef::Scene)]),
+                        combos: BTreeMap::new(),
+                        constants: BTreeMap::new(),
+                    },
+                )],
+            },
+        }];
+
+        let graph =
+            SceneEffectPassGraphPlan::from_scene(&[object], &effects).expect("effect graph");
+
+        assert_eq!(
+            graph.passes[0].source.as_ref().unwrap().source,
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::ImageLayerSource(
+                SceneObjectId(1530)
+            ))
+        );
+        assert_eq!(
+            graph.passes[0].input_bindings[0].source,
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::ImageLayerSource(
+                SceneObjectId(1530)
+            ))
+        );
+        assert_eq!(
+            graph.passes[0].output,
+            SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::ImageLayerCompositeA(
+                SceneObjectId(1530)
             ))
         );
     }
