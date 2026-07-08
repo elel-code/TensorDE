@@ -9,8 +9,8 @@
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget, SceneLayerCompositorTarget,
-    SceneMaterialRenderState, SceneObjectId,
+    SceneAlphaWriteMode, SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget,
+    SceneLayerCompositorTarget, SceneMaterialRenderState, SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline::{
     NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineShaderComboValue,
@@ -60,6 +60,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub target_format: NativeVulkanSceneTextureDescriptorVkFormat,
     pub pipeline_class: SceneGraphPipelineClass,
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
+    pub blend: SceneBlendContract,
+    pub alpha_write: SceneAlphaWriteMode,
+    pub color_write_mask: &'static str,
     pub texture_slot_mask: u32,
     pub heap_bind_index: usize,
     pub heap_slice_index: usize,
@@ -230,8 +233,11 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan {
         NativeVulkanScenePipelineCacheKey {
             shader: self.shader.to_owned(),
             shader_combo_values: self.shader_combo_values.clone(),
-            blend: SceneBlendContract::TranslucentAlpha,
-            render_state: SceneMaterialRenderState::translucent_2d(),
+            blend: self.blend,
+            render_state: SceneMaterialRenderState {
+                alpha_write: self.alpha_write,
+                ..SceneMaterialRenderState::translucent_2d()
+            },
             pipeline_class: self.pipeline_class,
             vertex_layout: self.vertex_layout,
             target_format: self.target_format.to_vk_format(),
@@ -260,6 +266,9 @@ fn generated_consumer_pipeline_binding(
             target_format: target.target_format,
             pipeline_class: target.pipeline_class,
             vertex_layout: target.vertex_layout,
+            blend: SceneBlendContract::TranslucentAlpha,
+            alpha_write: SceneAlphaWriteMode::Disabled,
+            color_write_mask: "RGB",
             texture_slot_mask: CLIPPINGTARGET_TEXTURE_SLOT_MASK,
             heap_bind_index: consumer.heap_bind_index,
             heap_slice_index: consumer.heap_slice_index,
@@ -281,7 +290,7 @@ fn generated_consumer_pipeline_binding(
                 "validate_slot0_source_and_slot8_full_alpha_mask",
                 "select_resolved_layer_0x490_color_target_format",
                 "preserve_layer_0x490_rt_method_8_geometry_source",
-                "derive_generated_clippingtarget_pipeline_cache_key",
+                "derive_rgb_only_alpha_over_generated_clippingtarget_pipeline_key",
             ],
         },
     )

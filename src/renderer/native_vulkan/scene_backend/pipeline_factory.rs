@@ -1077,6 +1077,38 @@ mod tests {
         );
     }
 
+    #[test]
+    fn color_blend_attachment_respects_rgb_only_alpha_write_contract() {
+        let mut key = pipeline_key();
+        key.render_state.alpha_write = crate::engine::scene_engine::SceneAlphaWriteMode::Disabled;
+
+        let attachment = scene_mesh_color_blend_attachment(
+            key.blend,
+            key.render_state.alpha_write.writes_alpha(),
+        );
+
+        assert!(
+            attachment
+                .color_write_mask
+                .contains(vk::ColorComponentFlags::R)
+        );
+        assert!(
+            attachment
+                .color_write_mask
+                .contains(vk::ColorComponentFlags::G)
+        );
+        assert!(
+            attachment
+                .color_write_mask
+                .contains(vk::ColorComponentFlags::B)
+        );
+        assert!(
+            !attachment
+                .color_write_mask
+                .contains(vk::ColorComponentFlags::A)
+        );
+    }
+
     fn pipeline_key() -> NativeVulkanScenePipelineCacheKey {
         NativeVulkanScenePipelineCacheKey {
             shader: "we/genericimage4".to_owned(),
