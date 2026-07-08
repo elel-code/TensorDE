@@ -28,6 +28,7 @@ use super::draw_family::{
 };
 use super::effect_executor::{
     NativeVulkanSceneEffectRuntimeFrameContext, NativeVulkanSceneEffectRuntimeFramePlan,
+    native_vulkan_plan_scene_effect_object_command_streams,
     native_vulkan_plan_scene_effect_runtime_preflight,
     native_vulkan_record_scene_effect_runtime_frame,
     native_vulkan_scene_effect_runtime_frame_from_recorded_commands,
@@ -358,10 +359,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         &mesh_graph_execution,
         &layer_alpha_mask_token_recording,
     )?;
+    let effect_command_streams =
+        native_vulkan_plan_scene_effect_object_command_streams(&frame.effect_pass_graph)?;
     let defer_object_final_effects =
         native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
             &layer_compositor_schedule,
             &frame.effect_pass_graph,
+            &effect_command_streams,
         );
     let (effect_preflight, eager_effects, effect_runtime_command_count) =
         if defer_object_final_effects {
@@ -417,6 +421,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
                 target_formats: context.target_formats,
             },
             graph: &frame.effect_pass_graph,
+            command_streams: &effect_command_streams,
         },
     )?;
     let effects = match (eager_effects, effect_preflight) {
@@ -550,7 +555,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     effect_runtime_command_count: usize,
     require_layer_compositor_command_blocks: bool,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
-    effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_>,
+    effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_, '_>,
 ) -> Result<
     (
         NativeVulkanSceneMeshRuntimeFramePlan<'a>,

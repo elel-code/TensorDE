@@ -9,13 +9,14 @@
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPass,
-    SceneGraphExecutionPlan, SceneGraphTarget,
+    SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPass, SceneGraphExecutionPlan,
+    SceneGraphTarget,
 };
 
 use super::effect_executor::{
-    NativeVulkanSceneEffectRuntimeCommandPlan, NativeVulkanSceneEffectRuntimeFrameContext,
-    native_vulkan_record_scene_effect_object_final_material_pass,
+    NativeVulkanSceneEffectObjectCommandStreamPlan, NativeVulkanSceneEffectRuntimeCommandPlan,
+    NativeVulkanSceneEffectRuntimeFrameContext,
+    native_vulkan_record_scene_effect_object_final_command_stream,
 };
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::graph_executor::{
@@ -67,9 +68,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorAl
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorEffectBlockInputs<
     'graph,
     'context,
+    'streams,
 > {
     pub context: NativeVulkanSceneEffectRuntimeFrameContext<'context>,
     pub graph: &'graph SceneEffectPassGraphPlan,
+    pub command_streams: &'streams NativeVulkanSceneEffectObjectCommandStreamPlan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +109,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     graph_execution: &SceneGraphExecutionPlan,
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
-    effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_>,
+    effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_, '_>,
 ) -> Result<Option<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>>, String> {
     if schedule.recording_block_count == 0 && graph_execution.pass_count == 0 {
         return Ok(Some(
@@ -318,13 +321,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                         )
                     })?
                     .object;
-                effect_commands.push(native_vulkan_record_scene_effect_object_final_material_pass(
+                native_vulkan_record_scene_effect_object_final_command_stream(
                     frame_resources,
                     &effect_inputs.context,
                     effect_inputs.graph,
+                    effect_inputs.command_streams,
                     object,
                     &mut written_effect_targets,
-                )?);
+                    &mut effect_commands,
+                )?;
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
                 return Ok(None);
@@ -488,14 +493,20 @@ fn last_swapchain_writer_block_index(
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
     graph: &SceneEffectPassGraphPlan,
+    command_streams: &NativeVulkanSceneEffectObjectCommandStreamPlan,
 ) -> bool {
     if schedule.object_final_producer_command_count == 0 {
         return false;
     }
-    if graph.copy_command_count != 0 || graph.swap_command_count != 0 {
+    if command_streams.command_count
+        != graph
+            .material_pass_count
+            .saturating_add(graph.copy_command_count)
+            .saturating_add(graph.swap_command_count)
+    {
         return false;
     }
-    if graph.material_pass_count != schedule.object_final_producer_command_count {
+    if command_streams.object_final_pass_count != schedule.object_final_producer_command_count {
         return false;
     }
     let objects = schedule
@@ -506,14 +517,29 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_compositor_e
                 == super::layer_compositor_scheduler::NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime
         })
         .map(|step| step.object)
-        .collect::<std::collections::BTreeSet<_>>();
-    if objects.len() != graph.passes.len() {
+        .collect::<Vec<_>>();
+    if objects.len() != schedule.object_final_producer_command_count {
         return false;
     }
-    graph.passes.iter().all(|pass| {
-        pass.output == SceneEffectPassGraphOutput::ObjectFinal(pass.object)
-            && objects.contains(&pass.object)
-    })
+    let unique_objects = objects
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique_objects.len() != objects.len() {
+        return false;
+    }
+    if command_streams.stream_count != objects.len() {
+        return false;
+    }
+    command_streams
+        .streams
+        .iter()
+        .map(|stream| stream.object)
+        .eq(objects)
+        && command_streams
+            .streams
+            .iter()
+            .all(|stream| stream.object_final_pass_count == 1)
 }
 
 fn alpha_token_block_writes_swapchain(
@@ -629,7 +655,8 @@ mod tests {
 
     use crate::engine::scene_engine::{
         SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
-        SceneEffectPassGraphMaterialPass, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
+        SceneEffectPassGraphCopy, SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput,
+        SceneEffectPassGraphSwap, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
         SceneLayerCompositorRoute, SceneObjectId, we::WeEffectKind,
     };
 
@@ -700,26 +727,76 @@ mod tests {
     fn object_final_effect_blocks_require_object_final_only_graph() {
         let object = SceneObjectId(7);
         let schedule = object_final_schedule(object);
-        let graph = object_final_graph(object);
+        let graph = object_final_graph(object, 0);
+        let command_streams =
+            super::super::effect_executor::native_vulkan_plan_scene_effect_object_command_streams(
+                &graph,
+            )
+            .expect("object stream plan");
 
         assert!(
-            native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(&schedule, &graph)
-        );
-
-        let mut graph_with_copy = object_final_graph(object);
-        graph_with_copy.copy_command_count = 1;
-        assert!(
-            !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+            native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
                 &schedule,
-                &graph_with_copy
+                &graph,
+                &command_streams
             )
         );
 
-        let mismatched_graph = object_final_graph(SceneObjectId(8));
+        let graph_with_copy_and_swap = object_final_graph_with_copy_and_swap(object);
+        let command_streams =
+            super::super::effect_executor::native_vulkan_plan_scene_effect_object_command_streams(
+                &graph_with_copy_and_swap,
+            )
+            .expect("copy/swap object stream plan");
+        assert!(
+            native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+                &schedule,
+                &graph_with_copy_and_swap,
+                &command_streams
+            )
+        );
+
+        let mismatched_graph = object_final_graph(SceneObjectId(8), 0);
+        let command_streams =
+            super::super::effect_executor::native_vulkan_plan_scene_effect_object_command_streams(
+                &mismatched_graph,
+            )
+            .expect("mismatched object stream plan");
         assert!(
             !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
                 &schedule,
-                &mismatched_graph
+                &mismatched_graph,
+                &command_streams
+            )
+        );
+    }
+
+    #[test]
+    fn object_final_effect_blocks_reject_interleaved_object_streams() {
+        let first = SceneObjectId(7);
+        let second = SceneObjectId(8);
+        let schedule = object_final_pair_schedule(first, second);
+        let graph = SceneEffectPassGraphPlan {
+            object_program_count: 2,
+            material_pass_count: 3,
+            passes: vec![
+                effect_pass(first, 0, 0, SceneGraphTarget::NamedFbo(1)),
+                effect_pass(second, 1, 1, SceneGraphTarget::ObjectFinal(second)),
+                effect_pass(first, 2, 2, SceneGraphTarget::ObjectFinal(first)),
+            ],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+        let command_streams =
+            super::super::effect_executor::native_vulkan_plan_scene_effect_object_command_streams(
+                &graph,
+            )
+            .expect("interleaved stream plan");
+
+        assert!(
+            !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+                &schedule,
+                &graph,
+                &command_streams
             )
         );
     }
@@ -734,7 +811,11 @@ mod tests {
         assert!(
             !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
                 &schedule,
-                &SceneEffectPassGraphPlan::empty()
+                &SceneEffectPassGraphPlan::empty(),
+                &super::super::effect_executor::native_vulkan_plan_scene_effect_object_command_streams(
+                    &SceneEffectPassGraphPlan::empty(),
+                )
+                .expect("empty object stream plan")
             )
         );
     }
@@ -863,32 +944,123 @@ mod tests {
         plan
     }
 
-    fn object_final_graph(object: SceneObjectId) -> SceneEffectPassGraphPlan {
+    fn object_final_pair_schedule(
+        first: SceneObjectId,
+        second: SceneObjectId,
+    ) -> NativeVulkanSceneLayerCompositorSchedulePlan {
+        let mut plan = schedule(vec![
+            block(
+                0,
+                NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime,
+            ),
+            block(
+                1,
+                NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime,
+            ),
+        ]);
+        plan.steps = vec![object_final_step(0, first), object_final_step(1, second)];
+        plan
+    }
+
+    fn object_final_step(
+        global_command_index: usize,
+        object: SceneObjectId,
+    ) -> NativeVulkanSceneLayerCompositorScheduleStep {
+        NativeVulkanSceneLayerCompositorScheduleStep {
+            global_command_index,
+            layer_index: global_command_index,
+            layer_command_index: 0,
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            entry: SceneLayerCompositorEntry::NormalRenderEntry32,
+            operation: SceneLayerCompositorOperation::NormalRender,
+            scheduled_kind:
+                NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime,
+            graph_pass_index: None,
+            graph_draw_index: None,
+            token_recording_step_index: None,
+            command_order: vec!["test_object_final_producer"],
+        }
+    }
+
+    fn object_final_graph(
+        object: SceneObjectId,
+        graph_command_index: usize,
+    ) -> SceneEffectPassGraphPlan {
         SceneEffectPassGraphPlan {
             object_program_count: 1,
             material_pass_count: 1,
-            passes: vec![SceneEffectPassGraphMaterialPass {
-                graph_command_index: 0,
-                graph_pass_index: 0,
+            passes: vec![effect_pass(
+                object,
+                graph_command_index,
+                graph_command_index,
+                SceneGraphTarget::ObjectFinal(object),
+            )],
+            ..SceneEffectPassGraphPlan::empty()
+        }
+    }
+
+    fn object_final_graph_with_copy_and_swap(object: SceneObjectId) -> SceneEffectPassGraphPlan {
+        SceneEffectPassGraphPlan {
+            object_program_count: 1,
+            material_pass_count: 2,
+            copy_command_count: 1,
+            swap_command_count: 1,
+            passes: vec![
+                effect_pass(object, 0, 0, SceneGraphTarget::NamedFbo(1)),
+                effect_pass(object, 3, 3, SceneGraphTarget::ObjectFinal(object)),
+            ],
+            copies: vec![SceneEffectPassGraphCopy {
+                graph_command_index: 1,
                 object,
                 program_index: 0,
-                pass_index: 0,
-                effect_file: "effects/test/effect.json".to_owned(),
-                effect: WeEffectKind::Unknown,
-                shader: Some("effects/iris".to_owned()),
-                source: None,
-                input_bindings: Vec::new(),
-                output: SceneEffectPassGraphOutput::ObjectFinal(object),
-                blend: SceneEffectPassBlend::NormalReplace,
-                depth_test: SceneDepthTest::Disabled,
-                depth_write: false,
-                cull_mode: SceneCullMode::None,
-                alpha_write: SceneAlphaWriteMode::Default,
-                texture_resources: Vec::new(),
-                combos: BTreeMap::new(),
-                constants: BTreeMap::new(),
+                pass_index: 1,
+                source: SceneGraphTarget::NamedFbo(1),
+                target: SceneGraphTarget::NamedFbo(2),
+            }],
+            swaps: vec![SceneEffectPassGraphSwap {
+                graph_command_index: 2,
+                object,
+                program_index: 0,
+                pass_index: 2,
+                a: SceneGraphTarget::NamedFbo(1),
+                b: SceneGraphTarget::NamedFbo(2),
             }],
             ..SceneEffectPassGraphPlan::empty()
+        }
+    }
+
+    fn effect_pass(
+        object: SceneObjectId,
+        graph_command_index: usize,
+        graph_pass_index: usize,
+        output: SceneGraphTarget,
+    ) -> SceneEffectPassGraphMaterialPass {
+        SceneEffectPassGraphMaterialPass {
+            graph_command_index,
+            graph_pass_index,
+            object,
+            program_index: 0,
+            pass_index: graph_command_index,
+            effect_file: "effects/test/effect.json".to_owned(),
+            effect: WeEffectKind::Unknown,
+            shader: Some("effects/iris".to_owned()),
+            source: None,
+            input_bindings: Vec::new(),
+            output: match output {
+                SceneGraphTarget::ObjectFinal(object) => {
+                    SceneEffectPassGraphOutput::ObjectFinal(object)
+                }
+                target => SceneEffectPassGraphOutput::GraphTarget(target),
+            },
+            blend: SceneEffectPassBlend::NormalReplace,
+            depth_test: SceneDepthTest::Disabled,
+            depth_write: false,
+            cull_mode: SceneCullMode::None,
+            alpha_write: SceneAlphaWriteMode::Default,
+            texture_resources: Vec::new(),
+            combos: BTreeMap::new(),
+            constants: BTreeMap::new(),
         }
     }
 

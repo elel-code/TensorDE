@@ -8,7 +8,10 @@ use crate::engine::scene_engine::{
     SceneResourceId, we::WeEffectKind,
 };
 
-use super::NativeVulkanSceneEffectRuntimeCommandSequencePlan;
+use super::{
+    NativeVulkanSceneEffectObjectCommandKind, NativeVulkanSceneEffectRuntimeCommandSequencePlan,
+    native_vulkan_plan_scene_effect_object_command_streams,
+};
 
 #[test]
 fn effect_runtime_command_sequence_orders_material_copy_and_swap() {
@@ -72,7 +75,101 @@ fn effect_runtime_command_sequence_rejects_sparse_indices() {
     assert!(err.contains("dense and ordered"));
 }
 
+#[test]
+fn effect_object_command_stream_partitions_contiguous_material_copy_swap_commands() {
+    let graph = SceneEffectPassGraphPlan {
+        material_pass_count: 2,
+        copy_command_count: 1,
+        swap_command_count: 1,
+        passes: vec![
+            pass_to(0, 0, SceneGraphTarget::NamedFbo(1)),
+            pass_to(3, 1, SceneGraphTarget::ObjectFinal(SceneObjectId(7))),
+        ],
+        copies: vec![SceneEffectPassGraphCopy {
+            graph_command_index: 1,
+            object: SceneObjectId(7),
+            program_index: 0,
+            pass_index: 1,
+            source: SceneGraphTarget::NamedFbo(1),
+            target: SceneGraphTarget::NamedFbo(2),
+        }],
+        swaps: vec![SceneEffectPassGraphSwap {
+            graph_command_index: 2,
+            object: SceneObjectId(7),
+            program_index: 0,
+            pass_index: 2,
+            a: SceneGraphTarget::NamedFbo(2),
+            b: SceneGraphTarget::NamedFbo(1),
+        }],
+        ..SceneEffectPassGraphPlan::empty()
+    };
+
+    let streams =
+        native_vulkan_plan_scene_effect_object_command_streams(&graph).expect("stream plan");
+
+    assert_eq!(streams.stream_count, 1);
+    assert_eq!(streams.command_count, 4);
+    assert_eq!(streams.object_final_pass_count, 1);
+    assert_eq!(streams.streams[0].object, SceneObjectId(7));
+    assert_eq!(streams.streams[0].command_count, 4);
+    assert_eq!(streams.streams[0].object_final_pass_count, 1);
+    assert_eq!(
+        streams
+            .entries
+            .iter()
+            .map(|entry| entry.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            NativeVulkanSceneEffectObjectCommandKind::Material,
+            NativeVulkanSceneEffectObjectCommandKind::Copy,
+            NativeVulkanSceneEffectObjectCommandKind::Swap,
+            NativeVulkanSceneEffectObjectCommandKind::Material,
+        ]
+    );
+}
+
+#[test]
+fn effect_object_command_stream_preserves_interleaved_object_chunks_for_compositor_gate() {
+    let other = SceneObjectId(8);
+    let mut second_object = pass_to(1, 1, SceneGraphTarget::ObjectFinal(other));
+    second_object.object = other;
+    let graph = SceneEffectPassGraphPlan {
+        object_program_count: 2,
+        material_pass_count: 3,
+        passes: vec![
+            pass_to(0, 0, SceneGraphTarget::NamedFbo(1)),
+            second_object,
+            pass_to(2, 2, SceneGraphTarget::ObjectFinal(SceneObjectId(7))),
+        ],
+        ..SceneEffectPassGraphPlan::empty()
+    };
+
+    let streams =
+        native_vulkan_plan_scene_effect_object_command_streams(&graph).expect("stream plan");
+
+    assert_eq!(
+        streams
+            .streams
+            .iter()
+            .map(|stream| stream.object)
+            .collect::<Vec<_>>(),
+        vec![SceneObjectId(7), SceneObjectId(8), SceneObjectId(7)]
+    );
+}
+
 fn pass(graph_command_index: usize, graph_pass_index: usize) -> SceneEffectPassGraphMaterialPass {
+    pass_to(
+        graph_command_index,
+        graph_pass_index,
+        SceneGraphTarget::NamedFbo(4),
+    )
+}
+
+fn pass_to(
+    graph_command_index: usize,
+    graph_pass_index: usize,
+    output: SceneGraphTarget,
+) -> SceneEffectPassGraphMaterialPass {
     SceneEffectPassGraphMaterialPass {
         graph_command_index,
         graph_pass_index,
@@ -88,7 +185,12 @@ fn pass(graph_command_index: usize, graph_pass_index: usize) -> SceneEffectPassG
             source: SceneEffectPassGraphInputSource::ObjectSourceTexture(SceneResourceId(9)),
         }),
         input_bindings: Vec::new(),
-        output: SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::NamedFbo(4)),
+        output: match output {
+            SceneGraphTarget::ObjectFinal(object) => {
+                SceneEffectPassGraphOutput::ObjectFinal(object)
+            }
+            target => SceneEffectPassGraphOutput::GraphTarget(target),
+        },
         blend: SceneEffectPassBlend::NormalReplace,
         depth_test: SceneDepthTest::Disabled,
         depth_write: false,

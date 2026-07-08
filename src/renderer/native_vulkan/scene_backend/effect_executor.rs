@@ -81,6 +81,46 @@ pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectRuntimeComman
     Swap(NativeVulkanSceneEffectSwapCommandPlan),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectObjectCommandKind {
+    Material,
+    Copy,
+    Swap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectObjectCommandStreamPlan {
+    pub stream_count: usize,
+    pub command_count: usize,
+    pub material_pass_count: usize,
+    pub copy_command_count: usize,
+    pub swap_command_count: usize,
+    pub object_final_pass_count: usize,
+    pub streams: Vec<NativeVulkanSceneEffectObjectCommandStream>,
+    pub entries: Vec<NativeVulkanSceneEffectObjectCommandStreamEntry>,
+    pub command_order: [&'static str; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectObjectCommandStream {
+    pub object: SceneObjectId,
+    pub entry_index_start: usize,
+    pub entry_index_end: usize,
+    pub command_count: usize,
+    pub material_pass_count: usize,
+    pub copy_command_count: usize,
+    pub swap_command_count: usize,
+    pub object_final_pass_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectObjectCommandStreamEntry {
+    pub graph_command_index: usize,
+    pub object: SceneObjectId,
+    pub kind: NativeVulkanSceneEffectObjectCommandKind,
+    pub graph_vector_index: usize,
+}
+
 impl NativeVulkanSceneEffectRuntimePreflightPlan {
     fn from_parts(
         command_sequence: NativeVulkanSceneEffectRuntimeCommandSequencePlan,
@@ -242,29 +282,197 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_runt
     })
 }
 
-pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_object_final_material_pass<
+pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_object_command_streams(
+    graph: &SceneEffectPassGraphPlan,
+) -> Result<NativeVulkanSceneEffectObjectCommandStreamPlan, String> {
+    let mut entries = Vec::with_capacity(
+        graph
+            .material_pass_count
+            .saturating_add(graph.copy_command_count)
+            .saturating_add(graph.swap_command_count),
+    );
+    entries.extend(graph.passes.iter().enumerate().map(|(index, pass)| {
+        NativeVulkanSceneEffectObjectCommandStreamEntry {
+            graph_command_index: pass.graph_command_index,
+            object: pass.object,
+            kind: NativeVulkanSceneEffectObjectCommandKind::Material,
+            graph_vector_index: index,
+        }
+    }));
+    entries.extend(graph.copies.iter().enumerate().map(|(index, copy)| {
+        NativeVulkanSceneEffectObjectCommandStreamEntry {
+            graph_command_index: copy.graph_command_index,
+            object: copy.object,
+            kind: NativeVulkanSceneEffectObjectCommandKind::Copy,
+            graph_vector_index: index,
+        }
+    }));
+    entries.extend(graph.swaps.iter().enumerate().map(|(index, swap)| {
+        NativeVulkanSceneEffectObjectCommandStreamEntry {
+            graph_command_index: swap.graph_command_index,
+            object: swap.object,
+            kind: NativeVulkanSceneEffectObjectCommandKind::Swap,
+            graph_vector_index: index,
+        }
+    }));
+    entries.sort_by_key(|entry| entry.graph_command_index);
+    for (expected, entry) in entries.iter().enumerate() {
+        if entry.graph_command_index != expected {
+            return Err(format!(
+                "scene effect object command stream must be dense and ordered; expected command index {expected}, got {}",
+                entry.graph_command_index
+            ));
+        }
+    }
+
+    let mut streams = Vec::new();
+    let mut entry_index = 0usize;
+    while entry_index < entries.len() {
+        let object = entries[entry_index].object;
+        let start = entry_index;
+        let mut material_pass_count = 0usize;
+        let mut copy_command_count = 0usize;
+        let mut swap_command_count = 0usize;
+        let mut object_final_pass_count = 0usize;
+        while entry_index < entries.len() && entries[entry_index].object == object {
+            match entries[entry_index].kind {
+                NativeVulkanSceneEffectObjectCommandKind::Material => {
+                    material_pass_count = material_pass_count.saturating_add(1);
+                    let pass = graph.passes.get(entries[entry_index].graph_vector_index).ok_or_else(|| {
+                        format!(
+                            "scene effect object command stream entry {} points outside material pass list",
+                            entries[entry_index].graph_command_index
+                        )
+                    })?;
+                    if pass.output == SceneEffectPassGraphOutput::ObjectFinal(object) {
+                        object_final_pass_count = object_final_pass_count.saturating_add(1);
+                    }
+                }
+                NativeVulkanSceneEffectObjectCommandKind::Copy => {
+                    copy_command_count = copy_command_count.saturating_add(1);
+                }
+                NativeVulkanSceneEffectObjectCommandKind::Swap => {
+                    swap_command_count = swap_command_count.saturating_add(1);
+                }
+            }
+            entry_index = entry_index.saturating_add(1);
+        }
+        let command_count = entry_index.saturating_sub(start);
+        streams.push(NativeVulkanSceneEffectObjectCommandStream {
+            object,
+            entry_index_start: start,
+            entry_index_end: entry_index,
+            command_count,
+            material_pass_count,
+            copy_command_count,
+            swap_command_count,
+            object_final_pass_count,
+        });
+    }
+
+    Ok(NativeVulkanSceneEffectObjectCommandStreamPlan {
+        stream_count: streams.len(),
+        command_count: entries.len(),
+        material_pass_count: graph.material_pass_count,
+        copy_command_count: graph.copy_command_count,
+        swap_command_count: graph.swap_command_count,
+        object_final_pass_count: streams
+            .iter()
+            .map(|stream| stream.object_final_pass_count)
+            .sum(),
+        streams,
+        entries,
+        command_order: [
+            "merge_effect_material_copy_swap_commands",
+            "sort_by_scene_effect_graph_command_index",
+            "partition_contiguous_commands_by_object",
+            "count_object_final_outputs_per_stream",
+        ],
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_object_final_command_stream<
     'a,
 >(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: &NativeVulkanSceneEffectRuntimeFrameContext<'_>,
     graph: &'a SceneEffectPassGraphPlan,
+    stream_plan: &NativeVulkanSceneEffectObjectCommandStreamPlan,
     object: SceneObjectId,
     written_targets: &mut BTreeSet<SceneGraphTarget>,
-) -> Result<NativeVulkanSceneEffectRuntimeCommandPlan<'a>, String> {
-    let mut matches = graph.passes.iter().filter(|pass| {
-        pass.object == object && pass.output == SceneEffectPassGraphOutput::ObjectFinal(object)
-    });
-    let pass = matches.next().ok_or_else(|| {
-        format!("scene effect ObjectFinal block for object {object:?} has no material pass output")
+    runtime_commands: &mut Vec<NativeVulkanSceneEffectRuntimeCommandPlan<'a>>,
+) -> Result<usize, String> {
+    let mut matches = stream_plan
+        .streams
+        .iter()
+        .filter(|stream| stream.object == object);
+    let stream = matches.next().ok_or_else(|| {
+        format!("scene effect ObjectFinal block for object {object:?} has no effect command stream")
     })?;
     if matches.next().is_some() {
         return Err(format!(
-            "scene effect ObjectFinal block for object {object:?} has multiple material passes; full effect graph recorder is required"
+            "scene effect ObjectFinal block for object {object:?} has non-contiguous effect command streams"
         ));
     }
-    Ok(NativeVulkanSceneEffectRuntimeCommandPlan::MaterialPass(
-        record_effect_material_pass(frame_resources, context, pass, written_targets)?,
-    ))
+    if stream.object_final_pass_count != 1 {
+        return Err(format!(
+            "scene effect ObjectFinal block for object {object:?} requires exactly one ObjectFinal material pass, got {}",
+            stream.object_final_pass_count
+        ));
+    }
+    for entry in stream_plan
+        .entries
+        .get(stream.entry_index_start..stream.entry_index_end)
+        .ok_or_else(|| {
+            format!(
+                "scene effect ObjectFinal stream for object {object:?} has invalid entry range {}..{}",
+                stream.entry_index_start, stream.entry_index_end
+            )
+        })?
+    {
+        match entry.kind {
+            NativeVulkanSceneEffectObjectCommandKind::Material => {
+                let pass = graph.passes.get(entry.graph_vector_index).ok_or_else(|| {
+                    format!(
+                        "scene effect material stream entry {} points outside material pass list",
+                        entry.graph_command_index
+                    )
+                })?;
+                runtime_commands.push(NativeVulkanSceneEffectRuntimeCommandPlan::MaterialPass(
+                    record_effect_material_pass(frame_resources, context, pass, written_targets)?,
+                ));
+            }
+            NativeVulkanSceneEffectObjectCommandKind::Copy => {
+                let copy = graph.copies.get(entry.graph_vector_index).ok_or_else(|| {
+                    format!(
+                        "scene effect copy stream entry {} points outside copy command list",
+                        entry.graph_command_index
+                    )
+                })?;
+                runtime_commands.push(NativeVulkanSceneEffectRuntimeCommandPlan::Copy(
+                    record_effect_copy_command(
+                        frame_resources,
+                        context.device,
+                        context.command_buffer,
+                        copy,
+                        written_targets,
+                    )?,
+                ));
+            }
+            NativeVulkanSceneEffectObjectCommandKind::Swap => {
+                let swap = graph.swaps.get(entry.graph_vector_index).ok_or_else(|| {
+                    format!(
+                        "scene effect swap stream entry {} points outside swap command list",
+                        entry.graph_command_index
+                    )
+                })?;
+                runtime_commands.push(NativeVulkanSceneEffectRuntimeCommandPlan::Swap(
+                    NativeVulkanSceneEffectSwapCommandPlan::from_graph_swap(swap),
+                ));
+            }
+        }
+    }
+    Ok(stream.command_count)
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_effect_runtime_frame_from_recorded_commands<
