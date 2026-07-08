@@ -1,4 +1,4 @@
-//! Scene graph pass executor for retained Vulkan scene resources.
+//! Scene graph target/barrier helpers for retained Vulkan scene resources.
 //!
 //! References:
 //! - `reverse-engineered/docs/effect-format.md`
@@ -12,19 +12,15 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneFramePlan, SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTarget,
+    SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTarget,
 };
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
 use super::frame_resources::NativeVulkanSceneFrameResources;
-use super::pass_command::{
-    NativeVulkanSceneMeshPassCommandPlan, native_vulkan_record_scene_mesh_pass_draw_commands,
-};
-use super::pipeline::NativeVulkanScenePipelineCacheKey;
+use super::pass_command::NativeVulkanSceneMeshPassCommandPlan;
 use super::render_target::{
     NativeVulkanSceneOffscreenRenderTarget, NativeVulkanSceneRenderTarget,
     NativeVulkanSceneRenderTargetScopePlan, NativeVulkanSceneSwapchainRenderTarget,
-    native_vulkan_record_scene_render_target_begin, native_vulkan_record_scene_render_target_end,
 };
 use super::target_barriers::{
     NativeVulkanSceneTargetBarrierImage, NativeVulkanSceneTargetBarrierPlan,
@@ -55,114 +51,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneGraphPassCommandP
     pub target: SceneGraphTarget,
     pub target_scope: NativeVulkanSceneRenderTargetScopePlan,
     pub pass: NativeVulkanSceneMeshPassCommandPlan<'a>,
-}
-
-pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame_commands<'a>(
-    frame_resources: &mut NativeVulkanSceneFrameResources,
-    context: NativeVulkanSceneGraphRuntimeFrameContext<'_>,
-    frame: &'a SceneFramePlan,
-    graph_execution: &SceneGraphExecutionPlan,
-) -> Result<NativeVulkanSceneGraphFrameCommandPlan<'a>, String> {
-    let mut passes = Vec::with_capacity(graph_execution.passes.len());
-    let mut target_barriers = Vec::with_capacity(graph_execution.target_barriers.len());
-    for execution_pass in &graph_execution.passes {
-        native_vulkan_record_scene_graph_target_barriers_before_pass(
-            frame_resources,
-            &context,
-            graph_execution,
-            execution_pass.pass_index,
-            &mut target_barriers,
-        )?;
-
-        let graph_pass = frame
-            .graph
-            .passes
-            .get(execution_pass.pass_index)
-            .ok_or_else(|| {
-                format!(
-                    "scene graph executor pass index {} is outside graph pass list",
-                    execution_pass.pass_index
-                )
-            })?;
-        let render_target = native_vulkan_resolve_scene_graph_pass_render_target(
-            frame_resources,
-            &context,
-            graph_execution,
-            execution_pass,
-        )?;
-        native_vulkan_record_scene_graph_pass_input_access(
-            frame_resources,
-            &context,
-            execution_pass,
-        )?;
-        let clear_color = native_vulkan_scene_graph_pass_clear_color(
-            graph_execution,
-            execution_pass,
-            render_target,
-            context.clear_color,
-        );
-        let target_scope = native_vulkan_record_scene_render_target_begin(
-            context.device,
-            context.command_buffer,
-            render_target,
-            clear_color,
-        )?;
-        native_vulkan_mark_scene_graph_output_target_layout(
-            frame_resources,
-            execution_pass.output,
-            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-        )?;
-
-        let pass_target_format = context.target_formats.format(execution_pass.output)?;
-        let pass_plan = {
-            let resources = &*frame_resources;
-            native_vulkan_record_scene_mesh_pass_draw_commands(
-                context.device,
-                context.command_buffer,
-                graph_pass,
-                execution_pass.draw_index_start,
-                |key| {
-                    let cache_key =
-                        NativeVulkanScenePipelineCacheKey::from_bind_key(key, pass_target_format)?;
-                    Ok(resources.cached_mesh_pipeline(&cache_key)?.pipeline)
-                },
-                |draw_index| resources.resource_heap_draw_bind_info_for_draw(draw_index),
-                |geometry| resources.mesh_draw_buffers(geometry),
-            )?
-        };
-
-        native_vulkan_record_scene_render_target_end(
-            context.device,
-            context.command_buffer,
-            render_target,
-            clear_color,
-        )?;
-        native_vulkan_mark_scene_graph_output_target_layout(
-            frame_resources,
-            execution_pass.output,
-            render_target.final_layout(),
-        )?;
-
-        passes.push(NativeVulkanSceneGraphPassCommandPlan {
-            target: execution_pass.output,
-            target_scope,
-            pass: pass_plan,
-        });
-    }
-
-    Ok(NativeVulkanSceneGraphFrameCommandPlan {
-        pass_count: passes.len(),
-        target_barrier_count: target_barriers.len(),
-        target_format_count: context.target_formats.target_format_count(),
-        passes,
-        target_barriers,
-        command_order: [
-            "resolve_scene_graph_target_formats",
-            "record_graph_pass_render_targets",
-            "record_mesh_pass_draw_lists",
-            "record_scene_graph_target_barriers",
-        ],
-    })
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_target_barriers_before_pass(

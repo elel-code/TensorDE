@@ -324,7 +324,7 @@ fn block_recording_command_order(
     match source {
         NativeVulkanSceneLayerCompositorBlockRecordingSource::MeshGraphDrawSpan { .. } => vec![
             "consume_mesh_graph_draw_span_block",
-            "reuse_recorded_mesh_pass_draw_commands_until_split_recorder_replaces_graph_executor",
+            "reuse_command_block_mesh_pass_draw_commands_in_we_layer_order",
         ],
         NativeVulkanSceneLayerCompositorBlockRecordingSource::ObjectFinalEffectRuntime { .. } => {
             vec!["consume_object_final_effect_runtime_output"]
