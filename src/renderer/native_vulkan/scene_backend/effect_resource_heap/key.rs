@@ -163,19 +163,28 @@ fn effect_pass_input_descriptor_source(
 
 pub(super) fn effect_heap_slice_shader_mappings(
     texture_set: &NativeVulkanSceneEffectTextureSetKey,
+    has_effect_uniform: bool,
 ) -> Vec<String> {
-    texture_set
-        .bindings
-        .iter()
-        .enumerate()
-        .map(|(ordinal, binding)| {
-            format!(
-                "{} -> effect-heap-slice-offset{}",
-                binding_shader_mapping(binding.slot),
-                ordinal
-            )
-        })
-        .collect()
+    let mut mappings = if has_effect_uniform {
+        vec!["WE effect uniform payload -> effect-heap-slice-offset0".to_owned()]
+    } else {
+        Vec::new()
+    };
+    let texture_base = usize::from(has_effect_uniform);
+    mappings.extend(
+        texture_set
+            .bindings
+            .iter()
+            .enumerate()
+            .map(|(ordinal, binding)| {
+                format!(
+                    "{} -> effect-heap-slice-offset{}",
+                    binding_shader_mapping(binding.slot),
+                    texture_base + ordinal
+                )
+            }),
+    );
+    mappings
 }
 
 pub(super) fn binding_shader_mapping(slot: u32) -> String {

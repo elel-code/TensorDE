@@ -22,6 +22,7 @@ pub struct NativeVulkanSceneEffectResourceHeapPassBindPlan {
     pub(in crate::renderer::native_vulkan) effect_pass_index: usize,
     pub(in crate::renderer::native_vulkan) object: SceneObjectId,
     pub(in crate::renderer::native_vulkan) heap_slice_index: usize,
+    pub(in crate::renderer::native_vulkan) has_effect_uniform: bool,
     pub(in crate::renderer::native_vulkan) texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub(in crate::renderer::native_vulkan) base_resource_descriptor_index: usize,
     pub(in crate::renderer::native_vulkan) resource_descriptor_count: usize,
@@ -63,10 +64,24 @@ impl NativeVulkanSceneEffectResourceHeapPassBindPlan {
                 bind_info.texture_count
             ));
         }
+        let expected_resource_descriptor_count = texture_set
+            .bindings
+            .len()
+            .saturating_add(usize::from(bind_info.effect_uniform.is_some()));
+        if expected_resource_descriptor_count != bind_info.resource_descriptor_count {
+            return Err(format!(
+                "scene effect resource heap bind resource descriptor count mismatch for pass {} object {:?}: expected {}, heap {}",
+                pass.graph_pass_index,
+                pass.object,
+                expected_resource_descriptor_count,
+                bind_info.resource_descriptor_count
+            ));
+        }
         Ok(Self {
             effect_pass_index: pass.graph_pass_index,
             object: pass.object,
             heap_slice_index: bind_info.heap_slice_index,
+            has_effect_uniform: bind_info.effect_uniform.is_some(),
             texture_set,
             base_resource_descriptor_index: bind_info.base_resource_descriptor_index,
             resource_descriptor_count: bind_info.resource_descriptor_count,
@@ -87,7 +102,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_reso
         NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(pass, &bind_info)?;
     unsafe {
         device.cmd_bind_resource_heap_ext(command_buffer, &bind_info.resource_bind);
-        device.cmd_bind_sampler_heap_ext(command_buffer, &bind_info.sampler_bind);
+        if let Some(sampler_bind) = bind_info.sampler_bind.as_ref() {
+            device.cmd_bind_sampler_heap_ext(command_buffer, sampler_bind);
+        }
     }
     Ok(plan)
 }
@@ -103,6 +120,7 @@ mod tests {
         SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneGraphResourceRole,
         SceneGraphTarget, SceneResourceId, we::WeEffectKind,
     };
+    use crate::renderer::native_vulkan::scene_backend::effect_uniforms::NativeVulkanSceneEffectUniformKey;
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
     #[test]
@@ -119,6 +137,7 @@ mod tests {
         assert_eq!(plan.effect_pass_index, 2);
         assert_eq!(plan.object, SceneObjectId(7));
         assert_eq!(plan.heap_slice_index, 11);
+        assert!(!plan.has_effect_uniform);
         assert_eq!(plan.base_resource_descriptor_index, 3);
         assert_eq!(plan.resource_descriptor_count, 2);
         assert_eq!(plan.texture_count, 2);
@@ -126,6 +145,33 @@ mod tests {
             plan.command_order,
             ["cmd_bind_resource_heap_ext", "cmd_bind_sampler_heap_ext"]
         );
+    }
+
+    #[test]
+    fn effect_resource_heap_pass_bind_plan_tracks_uniform_plus_textures() {
+        let pass = effect_pass();
+        let texture_set = effect_pass_texture_set_key(&pass).expect("effect texture set");
+        let mut bind_info = pass_bind_info(2, SceneObjectId(7), texture_set, 11, 3);
+        bind_info.effect_uniform = Some(NativeVulkanSceneEffectUniformKey {
+            effect_pass_index: 2,
+            object: SceneObjectId(7),
+            shader: "effects/fluidsimulation_vorticity".to_owned(),
+        });
+        bind_info.effect_uniform_buffer_handle = Some(0x4200);
+        bind_info.effect_uniform_device_address = Some(0x4280);
+        bind_info.effect_uniform_record_index = Some(0);
+        bind_info.effect_uniform_bytes = Some(64);
+        bind_info.effect_uniform_payload_hash = Some(0x1234);
+        bind_info.resource_descriptor_count = 3;
+
+        let plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("effect pass resource heap bind plan");
+
+        assert!(plan.has_effect_uniform);
+        assert_eq!(plan.resource_descriptor_count, 3);
+        assert_eq!(plan.texture_count, 2);
     }
 
     #[test]
@@ -225,13 +271,19 @@ mod tests {
             effect_pass_index,
             object,
             heap_slice_index,
+            effect_uniform: None,
+            effect_uniform_buffer_handle: None,
+            effect_uniform_device_address: None,
+            effect_uniform_record_index: None,
+            effect_uniform_bytes: None,
+            effect_uniform_payload_hash: None,
             texture_set,
             base_resource_descriptor_index,
             resource_descriptor_count: texture_count,
             texture_count,
             shader_mappings,
             resource_bind: vk::BindHeapInfoEXT::builder().build(),
-            sampler_bind: vk::BindHeapInfoEXT::builder().build(),
+            sampler_bind: Some(vk::BindHeapInfoEXT::builder().build()),
         }
     }
 }

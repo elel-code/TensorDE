@@ -245,6 +245,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             .sync_effect_resource_heap(
                 device,
                 memory_properties,
+                frame,
                 &effect_texture_descriptors,
                 descriptor_heap_properties,
             )?

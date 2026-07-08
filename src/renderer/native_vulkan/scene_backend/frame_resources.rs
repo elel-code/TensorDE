@@ -421,12 +421,15 @@ impl NativeVulkanSceneFrameResources {
         &mut self,
         device: &Device,
         memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        frame: &SceneFramePlan,
         texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
         descriptor_heap_properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     ) -> Result<&[NativeVulkanSceneEffectResourceHeapSyncAction], String> {
         let frame_plan = NativeVulkanSceneEffectResourceHeapFramePlan::from_descriptors(
             texture_descriptors,
+            &frame.effect_uniforms,
             descriptor_heap_properties,
+            |key| self.effect_uniform_buffers.effect_uniform_buffer(key),
             |resource| self.texture_images.texture_binding(resource),
             |target| self.offscreen_targets.target_binding(target),
         )?;

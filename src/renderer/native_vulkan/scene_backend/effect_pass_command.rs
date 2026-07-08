@@ -374,13 +374,19 @@ mod tests {
             effect_pass_index: 2,
             object: SceneObjectId(7),
             heap_slice_index: 11,
+            effect_uniform: None,
+            effect_uniform_buffer_handle: None,
+            effect_uniform_device_address: None,
+            effect_uniform_record_index: None,
+            effect_uniform_bytes: None,
+            effect_uniform_payload_hash: None,
             texture_set,
             base_resource_descriptor_index: 4,
             resource_descriptor_count: 2,
             texture_count: 2,
             shader_mappings: Vec::new(),
             resource_bind: vk::BindHeapInfoEXT::default(),
-            sampler_bind: vk::BindHeapInfoEXT::default(),
+            sampler_bind: Some(vk::BindHeapInfoEXT::default()),
         }
     }
 }

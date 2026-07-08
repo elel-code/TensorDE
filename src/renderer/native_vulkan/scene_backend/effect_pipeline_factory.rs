@@ -21,6 +21,7 @@ use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanDescriptorHeapShaderBindingMapping,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping_info,
 };
@@ -239,6 +240,7 @@ fn validate_scene_effect_descriptor_heap_pipeline_layout(
 struct SceneEffectResourceHeapTextureLayout {
     base_resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
+    has_effect_uniform: bool,
 }
 
 fn scene_effect_resource_heap_texture_layout(
@@ -267,21 +269,25 @@ fn scene_effect_resource_heap_texture_layout(
             key.shader, texture_slot_count, descriptor_heap_plan.sampler_count
         ));
     }
-    if descriptor_heap_plan
-        .resource_descriptor_kinds
-        .iter()
-        .take(texture_slot_count)
-        .all(|kind| {
-            *kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
-        })
+    if effect_heap_slice_has_sampled_images(descriptor_heap_plan, 0, texture_slot_count) {
+        return Ok(Some(SceneEffectResourceHeapTextureLayout {
+            base_resource_descriptor_index: 0,
+            base_sampler_descriptor_index: 0,
+            has_effect_uniform: false,
+        }));
+    }
+    if descriptor_heap_plan.resource_descriptor_kinds.first()
+        == Some(&NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer)
+        && effect_heap_slice_has_sampled_images(descriptor_heap_plan, 1, texture_slot_count)
     {
         return Ok(Some(SceneEffectResourceHeapTextureLayout {
             base_resource_descriptor_index: 0,
             base_sampler_descriptor_index: 0,
+            has_effect_uniform: true,
         }));
     }
     Err(format!(
-        "scene effect pipeline shader '{}' requires a heap slice shaped as {} sampled textures",
+        "scene effect pipeline shader '{}' requires a heap slice shaped as optional effect uniform plus {} sampled textures",
         key.shader, texture_slot_count
     ))
 }
@@ -297,16 +303,49 @@ fn scene_effect_descriptor_heap_mappings(
         .into_iter()
         .enumerate()
         .map(|(ordinal, slot)| {
-            native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping(
-                descriptor_heap_plan,
-                slot,
-                layout.base_resource_descriptor_index,
-                layout.base_resource_descriptor_index + ordinal,
-                layout.base_sampler_descriptor_index,
-                layout.base_sampler_descriptor_index + ordinal,
-            )
+            if layout.has_effect_uniform {
+                native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
+                    descriptor_heap_plan,
+                    slot,
+                    layout.base_resource_descriptor_index,
+                    layout.base_resource_descriptor_index + 1 + ordinal,
+                    layout.base_sampler_descriptor_index,
+                    layout.base_sampler_descriptor_index + ordinal,
+                )
+            } else {
+                native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping(
+                    descriptor_heap_plan,
+                    slot,
+                    layout.base_resource_descriptor_index,
+                    layout.base_resource_descriptor_index + ordinal,
+                    layout.base_sampler_descriptor_index,
+                    layout.base_sampler_descriptor_index + ordinal,
+                )
+            }
         })
         .collect()
+}
+
+fn effect_heap_slice_has_sampled_images(
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    first_resource_descriptor_index: usize,
+    texture_slot_count: usize,
+) -> bool {
+    descriptor_heap_plan
+        .resource_descriptor_kinds
+        .iter()
+        .skip(first_resource_descriptor_index)
+        .take(texture_slot_count)
+        .count()
+        == texture_slot_count
+        && descriptor_heap_plan
+            .resource_descriptor_kinds
+            .iter()
+            .skip(first_resource_descriptor_index)
+            .take(texture_slot_count)
+            .all(|kind| {
+                *kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
+            })
 }
 
 fn scene_effect_shader_resource_mapping_labels(
@@ -508,10 +547,11 @@ mod tests {
 
         assert_eq!(layout.base_resource_descriptor_index, 0);
         assert_eq!(layout.base_sampler_descriptor_index, 0);
+        assert!(!layout.has_effect_uniform);
     }
 
     #[test]
-    fn effect_pipeline_descriptor_heap_layout_rejects_mesh_uniform_base() {
+    fn effect_pipeline_descriptor_heap_layout_accepts_effect_uniform_then_sampled_images() {
         let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
                 resource_descriptors: vec![
@@ -524,10 +564,35 @@ mod tests {
             },
         );
 
-        let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
-            .expect_err("mesh-shaped heap slice must fail");
+        let layout =
+            scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
+                .expect("effect descriptor heap layout")
+                .expect("texture layout");
 
-        assert!(err.contains("sampled textures"));
+        assert_eq!(layout.base_resource_descriptor_index, 0);
+        assert_eq!(layout.base_sampler_descriptor_index, 0);
+        assert!(layout.has_effect_uniform);
+    }
+
+    #[test]
+    fn effect_pipeline_descriptor_heap_layout_rejects_non_texture_tail() {
+        let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 2,
+                properties: descriptor_properties(),
+            },
+        );
+
+        let err = scene_effect_resource_heap_texture_layout(&descriptor_heap_plan, &effect_key())
+            .expect_err("non-texture tail must fail");
+
+        assert!(err.contains("optional effect uniform"));
     }
 
     fn effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {

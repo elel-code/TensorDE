@@ -20,6 +20,7 @@ use crate::renderer::native_vulkan::vulkan::{
     native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources,
 };
 
+use super::super::effect_uniforms::NativeVulkanSceneEffectUniformKey;
 use super::key::NativeVulkanSceneEffectTextureSetKey;
 use super::vk_descriptor::write_scene_effect_resource_heap_descriptors;
 use super::{
@@ -48,13 +49,19 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHea
     pub effect_pass_index: usize,
     pub object: SceneObjectId,
     pub heap_slice_index: usize,
+    pub effect_uniform: Option<NativeVulkanSceneEffectUniformKey>,
+    pub effect_uniform_buffer_handle: Option<u64>,
+    pub effect_uniform_device_address: Option<u64>,
+    pub effect_uniform_record_index: Option<usize>,
+    pub effect_uniform_bytes: Option<u64>,
+    pub effect_uniform_payload_hash: Option<u64>,
     pub texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub resource_descriptor_count: usize,
     pub texture_count: usize,
     pub shader_mappings: Vec<String>,
     pub resource_bind: vk::BindHeapInfoEXT,
-    pub sampler_bind: vk::BindHeapInfoEXT,
+    pub sampler_bind: Option<vk::BindHeapInfoEXT>,
 }
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHeapStore {
@@ -180,6 +187,12 @@ impl NativeVulkanSceneEffectResourceHeapStore {
             effect_pass_index,
             object: binding.object,
             heap_slice_index: binding.heap_slice_index,
+            effect_uniform: binding.effect_uniform.clone(),
+            effect_uniform_buffer_handle: binding.effect_uniform_buffer_handle,
+            effect_uniform_device_address: binding.effect_uniform_device_address,
+            effect_uniform_record_index: binding.effect_uniform_record_index,
+            effect_uniform_bytes: binding.effect_uniform_bytes,
+            effect_uniform_payload_hash: binding.effect_uniform_payload_hash,
             texture_set: binding.texture_set.clone(),
             base_resource_descriptor_index: binding.base_resource_descriptor_index,
             resource_descriptor_count: binding.resource_descriptor_count,
@@ -190,11 +203,15 @@ impl NativeVulkanSceneEffectResourceHeapStore {
                     resources,
                     binding.base_resource_descriptor_index,
                 )?,
-            sampler_bind:
-                native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor(
-                    resources,
-                    binding.base_sampler_descriptor_index,
-                )?,
+            sampler_bind: binding
+                .base_sampler_descriptor_index
+                .map(|sampler_index| {
+                    native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor(
+                        resources,
+                        sampler_index,
+                    )
+                })
+                .transpose()?,
         })
     }
 
