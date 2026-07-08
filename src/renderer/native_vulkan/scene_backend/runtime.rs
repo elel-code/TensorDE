@@ -50,6 +50,7 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8BridgePlan,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
@@ -66,6 +67,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_recorder_requirements,
     native_vulkan_plan_scene_layer_alpha_mask_resource_binds,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_bridges,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
@@ -114,10 +116,12 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskGeneratedConsumerUniformPlan,
     pub layer_alpha_mask_recorder_requirements:
         NativeVulkanSceneLayerAlphaMaskRecorderRequirementPlan,
+    pub layer_alpha_mask_rt_method8_indexed_draw_commands:
+        NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 20],
+    pub command_order: [&'static str; 21],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -293,6 +297,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &layer_alpha_mask_generated_consumer_commands,
             &layer_alpha_mask_generated_consumer_uniforms,
         )?;
+    let layer_alpha_mask_rt_method8_indexed_draw_commands =
+        native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands(
+            &layer_alpha_mask_recorder_requirements,
+            |geometry| {
+                frame_resources.layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(geometry)
+            },
+        )?;
     let layer_alpha_mask_copy_back_commands =
         native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands(
             frame_resources,
@@ -327,6 +338,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_generated_consumer_commands,
         layer_alpha_mask_generated_consumer_uniforms,
         layer_alpha_mask_recorder_requirements,
+        layer_alpha_mask_rt_method8_indexed_draw_commands,
         layer_alpha_mask_copy_back_commands,
         mesh,
         command_order: [
@@ -348,6 +360,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_generated_consumer_commands",
             "plan_layer_alpha_mask_generated_consumer_uniforms",
             "plan_layer_alpha_mask_recorder_requirements",
+            "plan_layer_alpha_mask_rt_method8_indexed_draw_commands",
             "plan_layer_alpha_mask_copy_back_command_list",
             "record_scene_mesh_graph_runtime",
         ],

@@ -56,7 +56,7 @@ pub struct NativeVulkanSceneGpuBufferRecord {
     pub payload_hash: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneGpuBufferRecordBinding {
     pub key: NativeVulkanSceneGpuBufferKey,
     pub bytes: u64,
@@ -618,6 +618,25 @@ impl NativeVulkanSceneGpuBufferStore {
         )
     }
 
+    pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_geometry_buffer_records(
+        &self,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
+    ) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords, String> {
+        Ok(
+            NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords {
+                geometry,
+                vertex: self.required_record_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex,
+                )?,
+                index: self.required_record_binding(
+                    NativeVulkanSceneGpuBufferOwner::LayerAlphaMaskRtMethod8MdlvEntry(geometry),
+                    NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex,
+                )?,
+            },
+        )
+    }
+
     pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffers(
         &self,
         slice: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
@@ -666,6 +685,19 @@ impl NativeVulkanSceneGpuBufferStore {
     ) -> Result<NativeVulkanSceneGpuBufferBinding, String> {
         self.buffer_binding(owner, role)
             .ok_or_else(|| format!("missing retained scene GPU buffer for {owner:?} {role:?}"))
+    }
+
+    fn required_record_binding(
+        &self,
+        owner: NativeVulkanSceneGpuBufferOwner,
+        role: NativeVulkanSceneGpuBufferRole,
+    ) -> Result<NativeVulkanSceneGpuBufferRecordBinding, String> {
+        self.buffers
+            .get(&NativeVulkanSceneGpuBufferKey { owner, role })
+            .map(|slot| record_binding(&slot.record))
+            .ok_or_else(|| {
+                format!("missing retained scene GPU buffer record for {owner:?} {role:?}")
+            })
     }
 
     fn buffer_binding(

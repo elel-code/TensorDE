@@ -33,6 +33,7 @@ mod recorder_requirements;
 mod resource_binds;
 mod rt_method8;
 mod rt_method8_buffers;
+mod rt_method8_command;
 mod rt_method8_geometry;
 mod rt_method8_payload;
 mod rt_method8_slices;
@@ -110,6 +111,10 @@ pub(in crate::renderer::native_vulkan) use rt_method8::{
 pub(in crate::renderer::native_vulkan) use rt_method8_buffers::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
+};
+pub(in crate::renderer::native_vulkan) use rt_method8_command::{
+    NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands,
 };
 pub(in crate::renderer::native_vulkan) use rt_method8_payload::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan,
