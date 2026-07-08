@@ -135,6 +135,12 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
             },
         ));
     }
+    if schedule.clear_prep_recorder_required_count != 0 {
+        return Err(format!(
+            "scene layer compositor command-block recorder cannot record {} active aux clear-prep block(s): 0x140207740 requires explicit aux+0x3e8 target clear and aux material draws, so this must be implemented before present-frame recording",
+            schedule.clear_prep_recorder_required_count
+        ));
+    }
     if !schedule_is_command_block_recordable(schedule) {
         return Ok(None);
     }
@@ -361,7 +367,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                 )?;
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
-                return Ok(None);
+                return Err(
+                    "scene layer compositor command-block recorder hit active aux clear-prep after preflight; 0x140207740 must be lowered to an explicit clear/draw block"
+                        .to_owned(),
+                );
             }
         }
     }
@@ -510,7 +519,10 @@ fn last_swapchain_writer_block_index(
             NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
             | NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {}
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
-                return Ok(None);
+                return Err(
+                    "scene layer compositor swapchain writer scan hit active aux clear-prep; 0x140207740 requires a dedicated recorder before scheduling can continue"
+                        .to_owned(),
+                );
             }
         }
     }
@@ -792,7 +804,10 @@ fn mesh_execution_passes_are_command_block_recordable(
                 continue;
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
-                return Ok(false);
+                return Err(
+                    "scene layer compositor mesh pass coverage hit active aux clear-prep; 0x140207740 must be modeled as explicit aux+0x3e8 target clear/draw resources"
+                        .to_owned(),
+                );
             }
         }
         let pass_index = block.graph_pass_index.ok_or_else(|| {
@@ -897,7 +912,10 @@ fn mesh_blocks_cover_execution_pass(
             | NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
              => {}
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
-                return Ok(false);
+                return Err(
+                    "scene layer compositor object-final coverage hit active aux clear-prep; 0x140207740 cannot be treated as a mesh/effect span"
+                        .to_owned(),
+                );
             }
         }
     }
@@ -996,6 +1014,29 @@ mod tests {
         )]);
 
         assert!(!schedule_is_command_block_recordable(&clear));
+    }
+
+    #[test]
+    fn mesh_block_recorder_reports_active_clear_prep_as_hard_error() {
+        let clear = schedule(vec![block(
+            0,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired,
+        )]);
+        let graph = SceneGraph {
+            passes: vec![mesh_graph_pass(
+                "scene-clear-prep",
+                None,
+                SceneObjectId(7),
+                SceneGeometryId(7),
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let err = mesh_execution_passes_are_command_block_recordable(&clear, &graph_execution)
+            .expect_err("active clear-prep must be a hard semantic error");
+
+        assert!(err.contains("0x140207740"));
+        assert!(err.contains("aux+0x3e8"));
     }
 
     #[test]
