@@ -330,6 +330,65 @@ fn resource_heap_plan_binds_graph_target_input_as_sampled_image() {
     ));
 }
 
+#[test]
+fn resource_heap_plan_binds_object_final_input_as_texture0_graph_target() {
+    let object = SceneObjectId(42);
+    let graph = SceneGraph {
+        passes: vec![SceneGraphPass {
+            name: "scene-object-final-42".to_owned(),
+            input: Some(SceneGraphTarget::ObjectFinal(object)),
+            output: SceneGraphTarget::Swapchain,
+            draws: vec![mesh_draw(object, Vec::new())],
+        }],
+    };
+    let material_bindings = material_bindings(&graph);
+    let texture_plan = NativeVulkanSceneTextureDescriptorFramePlan::from_graph_with_target_inputs(
+        &graph,
+        |_| None,
+        |target| {
+            Ok(NativeVulkanSceneTargetInputTextureDescriptor {
+                target,
+                width: 3840,
+                height: 2160,
+                format: NativeVulkanSceneTextureDescriptorVkFormat::R16G16B16A16Sfloat,
+            })
+        },
+    )
+    .expect("object-final input texture descriptor plan");
+
+    let plan = NativeVulkanSceneResourceHeapFramePlan::from_graph(
+        &graph,
+        &texture_plan,
+        descriptor_heap_properties(),
+        |key| material_binding(&material_bindings, key),
+        texture_binding,
+        target_binding,
+    )
+    .expect("resource heap frame plan with object-final input");
+
+    assert_eq!(plan.draw_count, 1);
+    assert_eq!(plan.draw_bindings[0].texture_count, 1);
+    assert_eq!(plan.draw_bindings[0].texture_set.slot_mask(), 1);
+    assert_eq!(
+        plan.draw_bindings[0].shader_mappings,
+        vec![
+            "WE PSSetConstantBuffers(slot=3) -> draw-heap-slice-offset0".to_owned(),
+            "we.texture_slot0.g_Texture0 -> draw-heap-slice-offset1".to_owned()
+        ]
+    );
+    assert!(matches!(
+        plan.entries[1].role,
+        NativeVulkanSceneResourceHeapEntryRole::WeSampledTexture {
+            source: NativeVulkanSceneTextureDescriptorSource::GraphTarget(
+                SceneGraphTarget::ObjectFinal(SceneObjectId(42))
+            ),
+            slot: 0,
+            image_handle,
+            ..
+        } if image_handle == 0x9500 + 42
+    ));
+}
+
 fn material_bindings(
     graph: &SceneGraph,
 ) -> BTreeMap<NativeVulkanSceneMaterialUniformKey, NativeVulkanSceneMaterialUniformGpuBufferBinding>
