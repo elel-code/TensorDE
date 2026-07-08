@@ -49,6 +49,12 @@ use super::layer_alpha_mask_resource_heap::{
     NativeVulkanSceneLayerAlphaMaskResourceHeapStore,
     NativeVulkanSceneLayerAlphaMaskResourceHeapSyncAction,
 };
+use super::layer_aux_material_resource_heap::{
+    NativeVulkanSceneLayerAuxMaterialResourceHeapBindInfo,
+    NativeVulkanSceneLayerAuxMaterialResourceHeapFramePlan,
+    NativeVulkanSceneLayerAuxMaterialResourceHeapStore,
+    NativeVulkanSceneLayerAuxMaterialResourceHeapSyncAction,
+};
 use super::material_uniforms::{
     NativeVulkanSceneMaterialUniformGpuBufferBinding,
     NativeVulkanSceneMaterialUniformGpuBufferStore,
@@ -106,6 +112,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneFrameResources {
     resource_heap: NativeVulkanSceneResourceHeapStore,
     effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore,
     layer_alpha_mask_resource_heap: NativeVulkanSceneLayerAlphaMaskResourceHeapStore,
+    layer_aux_material_resource_heap: NativeVulkanSceneLayerAuxMaterialResourceHeapStore,
     material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore,
     effect_uniform_buffers: NativeVulkanSceneEffectUniformGpuBufferStore,
     pipelines: NativeVulkanScenePipelineStore,
@@ -123,6 +130,8 @@ impl NativeVulkanSceneFrameResources {
             effect_resource_heap: NativeVulkanSceneEffectResourceHeapStore::default(),
             layer_alpha_mask_resource_heap:
                 NativeVulkanSceneLayerAlphaMaskResourceHeapStore::default(),
+            layer_aux_material_resource_heap:
+                NativeVulkanSceneLayerAuxMaterialResourceHeapStore::default(),
             material_uniform_buffers: NativeVulkanSceneMaterialUniformGpuBufferStore::default(),
             effect_uniform_buffers: NativeVulkanSceneEffectUniformGpuBufferStore::default(),
             pipelines: NativeVulkanScenePipelineStore::default(),
@@ -550,6 +559,36 @@ impl NativeVulkanSceneFrameResources {
         self.layer_alpha_mask_resource_heap.last_actions()
     }
 
+    pub(in crate::renderer::native_vulkan) fn sync_layer_aux_material_resource_heap_frame_plan(
+        &mut self,
+        device: &Device,
+        memory_properties: &vk::PhysicalDeviceMemoryProperties,
+        frame_plan: NativeVulkanSceneLayerAuxMaterialResourceHeapFramePlan,
+    ) -> Result<&[NativeVulkanSceneLayerAuxMaterialResourceHeapSyncAction], String> {
+        self.layer_aux_material_resource_heap
+            .sync_frame_plan(device, memory_properties, frame_plan)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn current_layer_aux_material_resource_heap_frame_plan(
+        &self,
+    ) -> Option<&NativeVulkanSceneLayerAuxMaterialResourceHeapFramePlan> {
+        self.layer_aux_material_resource_heap.current_frame_plan()
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_aux_material_resource_heap_bind_info(
+        &self,
+        clear_bind_index: usize,
+    ) -> Result<NativeVulkanSceneLayerAuxMaterialResourceHeapBindInfo, String> {
+        self.layer_aux_material_resource_heap
+            .bind_info_for_clear_bind(clear_bind_index)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn last_layer_aux_material_resource_heap_actions(
+        &self,
+    ) -> &[NativeVulkanSceneLayerAuxMaterialResourceHeapSyncAction] {
+        self.layer_aux_material_resource_heap.last_actions()
+    }
+
     pub(in crate::renderer::native_vulkan) fn material_uniform_upload_plan(
         &self,
         graph: &SceneGraph,
@@ -758,6 +797,7 @@ impl NativeVulkanSceneFrameResources {
     pub(in crate::renderer::native_vulkan) fn destroy_all(&mut self, device: &Device) {
         self.effect_pipelines.destroy_all(device);
         self.layer_alpha_mask_resource_heap.destroy_all(device);
+        self.layer_aux_material_resource_heap.destroy_all(device);
         self.effect_resource_heap.destroy_all(device);
         self.resource_heap.destroy_all(device);
         self.offscreen_targets.destroy_all(device);

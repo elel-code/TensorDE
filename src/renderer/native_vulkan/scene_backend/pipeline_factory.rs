@@ -46,6 +46,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPipelineLayou
     pub draw_resource_heap_plan: &'a NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     pub layer_alpha_mask_resource_heap_plan:
         Option<&'a NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot>,
+    pub layer_aux_material_resource_heap_plan:
+        Option<&'a NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -476,10 +478,16 @@ fn scene_pipeline_descriptor_heap_mappings(
                     key.shader
                 )
             })?;
-            scene_alpha_mask_descriptor_heap_mappings(alpha_mask_plan, key)
+            scene_sampled_image_only_descriptor_heap_mappings(alpha_mask_plan, key)
         }
         NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial => {
-            Err("scene aux material resource heap pipeline mapping is not synced yet".to_owned())
+            let aux_material_plan = layout.layer_aux_material_resource_heap_plan.ok_or_else(|| {
+                format!(
+                    "scene aux material pipeline shader '{}' requires aux material descriptor heap mapping",
+                    key.shader
+                )
+            })?;
+            scene_sampled_image_only_descriptor_heap_mappings(aux_material_plan, key)
         }
     }
 }
@@ -508,11 +516,12 @@ fn scene_mesh_descriptor_heap_mappings(
         .collect()
 }
 
-fn scene_alpha_mask_descriptor_heap_mappings(
+fn scene_sampled_image_only_descriptor_heap_mappings(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
-    let Some(layout) = scene_alpha_mask_resource_heap_texture_layout(descriptor_heap_plan, key)?
+    let Some(layout) =
+        scene_sampled_image_only_resource_heap_texture_layout(descriptor_heap_plan, key)?
     else {
         return Ok(Vec::new());
     };
@@ -661,10 +670,17 @@ fn validate_scene_mesh_descriptor_heap_pipeline_layout(
                     key.shader
                 )
             })?;
-            scene_alpha_mask_resource_heap_texture_layout(alpha_mask_plan, key).map(|_| ())
+            scene_sampled_image_only_resource_heap_texture_layout(alpha_mask_plan, key).map(|_| ())
         }
         NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial => {
-            Err("scene aux material resource heap pipeline layout is not synced yet".to_owned())
+            let aux_material_plan = layout.layer_aux_material_resource_heap_plan.ok_or_else(|| {
+                format!(
+                    "scene aux material pipeline shader '{}' requires aux material descriptor heap mapping",
+                    key.shader
+                )
+            })?;
+            scene_sampled_image_only_resource_heap_texture_layout(aux_material_plan, key)
+                .map(|_| ())
         }
     }
 }
@@ -676,7 +692,7 @@ struct SceneMeshDrawResourceHeapTextureLayout {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct SceneAlphaMaskResourceHeapTextureLayout {
+struct SceneSampledImageOnlyResourceHeapTextureLayout {
     base_resource_descriptor_index: usize,
     base_sampler_descriptor_index: usize,
 }
@@ -752,10 +768,10 @@ fn scene_mesh_draw_resource_heap_texture_layout(
     ))
 }
 
-fn scene_alpha_mask_resource_heap_texture_layout(
+fn scene_sampled_image_only_resource_heap_texture_layout(
     descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     key: &NativeVulkanScenePipelineCacheKey,
-) -> Result<Option<SceneAlphaMaskResourceHeapTextureLayout>, String> {
+) -> Result<Option<SceneSampledImageOnlyResourceHeapTextureLayout>, String> {
     let texture_slot_count = key.texture_slot_mask.count_ones() as usize;
     if texture_slot_count == 0 {
         return Ok(None);
@@ -799,7 +815,7 @@ fn scene_alpha_mask_resource_heap_texture_layout(
                         == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage
                 })
                 .count();
-            return Ok(Some(SceneAlphaMaskResourceHeapTextureLayout {
+            return Ok(Some(SceneSampledImageOnlyResourceHeapTextureLayout {
                 base_resource_descriptor_index,
                 base_sampler_descriptor_index,
             }));
@@ -1025,6 +1041,7 @@ mod tests {
             NativeVulkanSceneMeshPipelineLayoutSpec {
                 draw_resource_heap_plan: &descriptor_heap_plan,
                 layer_alpha_mask_resource_heap_plan: None,
+                layer_aux_material_resource_heap_plan: None,
             },
             &key,
         )
@@ -1059,10 +1076,53 @@ mod tests {
             NativeVulkanSceneMeshPipelineLayoutSpec {
                 draw_resource_heap_plan: &descriptor_heap_plan,
                 layer_alpha_mask_resource_heap_plan: Some(&descriptor_heap_plan),
+                layer_aux_material_resource_heap_plan: None,
             },
             &key,
         )
         .expect("alpha-mask texture-only utility mapping");
+    }
+
+    #[test]
+    fn mesh_pipeline_descriptor_heap_layout_accepts_aux_material_texture_only_mapping() {
+        let key = NativeVulkanScenePipelineCacheKey {
+            shader: "util/passthrough".to_owned(),
+            pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
+            vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial,
+            target_format: vk::Format::R8G8B8A8_UNORM,
+            texture_slot_mask: 1,
+            ..pipeline_key()
+        };
+        let draw_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 1,
+                properties: descriptor_properties(),
+            },
+        );
+        let aux_material_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 1,
+                properties: descriptor_properties(),
+            },
+        );
+
+        validate_scene_mesh_descriptor_heap_pipeline_layout(
+            NativeVulkanSceneMeshPipelineLayoutSpec {
+                draw_resource_heap_plan: &draw_heap_plan,
+                layer_alpha_mask_resource_heap_plan: None,
+                layer_aux_material_resource_heap_plan: Some(&aux_material_heap_plan),
+            },
+            &key,
+        )
+        .expect("aux material texture-only utility mapping");
     }
 
     #[test]
@@ -1101,6 +1161,7 @@ mod tests {
             NativeVulkanSceneMeshPipelineLayoutSpec {
                 draw_resource_heap_plan: &draw_heap_plan,
                 layer_alpha_mask_resource_heap_plan: Some(&alpha_mask_heap_plan),
+                layer_aux_material_resource_heap_plan: None,
             },
             &key,
         )
@@ -1134,6 +1195,7 @@ mod tests {
             NativeVulkanSceneMeshPipelineLayoutSpec {
                 draw_resource_heap_plan: &draw_heap_plan,
                 layer_alpha_mask_resource_heap_plan: None,
+                layer_aux_material_resource_heap_plan: None,
             },
             &key,
         )

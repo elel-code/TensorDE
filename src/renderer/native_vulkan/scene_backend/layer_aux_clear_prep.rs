@@ -9,10 +9,11 @@
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneGraphTarget, SceneLayerAuxCompositeTargetsResidency, SceneObjectId, SceneResidentResource,
-    SceneResourceResidencyPlan, WE_AUX_CLEAR_PREP_VMA, WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET,
-    WE_LAYER_AUX_CLEAR_TARGET_OFFSET, WE_LAYER_AUX_EFFECT_TARGET_OFFSET,
-    WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET, WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
+    SceneGraphTarget, SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorOperation,
+    SceneLayerCompositorPlan, SceneObjectId, SceneResidentResource, SceneResourceResidencyPlan,
+    WE_AUX_CLEAR_PREP_VMA, WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET, WE_LAYER_AUX_CLEAR_TARGET_OFFSET,
+    WE_LAYER_AUX_EFFECT_TARGET_OFFSET, WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET,
+    WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
 };
 
 use super::layer_compositor_scheduler::{
@@ -118,6 +119,53 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_aux_cle
             schedule.clear_prep_recorder_required_count,
             commands.len()
         ));
+    }
+
+    Ok(NativeVulkanSceneLayerAuxClearPrepFramePlan::from_commands(
+        commands,
+    ))
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_aux_clear_prep_from_compositor(
+    layer_compositor: &SceneLayerCompositorPlan,
+    residency: &SceneResourceResidencyPlan,
+) -> Result<NativeVulkanSceneLayerAuxClearPrepFramePlan, String> {
+    if layer_compositor
+        .layers
+        .iter()
+        .all(|layer| !layer.has_active_aux_clear_target)
+    {
+        return Ok(NativeVulkanSceneLayerAuxClearPrepFramePlan::empty());
+    }
+
+    let mut commands = Vec::new();
+    let mut global_command_index = 0usize;
+    for layer in &layer_compositor.layers {
+        for command in &layer.commands {
+            if command.operation != SceneLayerCompositorOperation::ClearPrep {
+                global_command_index = global_command_index.saturating_add(1);
+                continue;
+            }
+            if !layer.has_active_aux_clear_target {
+                global_command_index = global_command_index.saturating_add(1);
+                continue;
+            }
+            let targets = aux_targets_for_object(residency, layer.object).ok_or_else(|| {
+                format!(
+                    "scene layer aux clear-prep object {:?} has active [50] layer command but no complete SceneLayerAuxCompositeTargets residency",
+                    layer.object
+                )
+            })?;
+            commands.push(NativeVulkanSceneLayerAuxClearPrepCommandPlan::from_block(
+                commands.len(),
+                global_command_index,
+                global_command_index,
+                global_command_index.saturating_add(1),
+                layer.object,
+                targets,
+            )?);
+            global_command_index = global_command_index.saturating_add(1);
+        }
     }
 
     Ok(NativeVulkanSceneLayerAuxClearPrepFramePlan::from_commands(
@@ -256,10 +304,12 @@ fn aux_clear_prep_frame_order() -> [&'static str; 8] {
 mod tests {
     use super::*;
     use crate::engine::scene_engine::{
-        SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorEntry,
-        SceneLayerCompositorOperation, WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
-        WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR, WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
-        WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+        SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorBlendKey,
+        SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorEntry,
+        SceneLayerCompositorLayer, SceneLayerCompositorOperation, SceneLayerCompositorPlan,
+        SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+        WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT, WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
+        WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR, WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_compositor_scheduler::{
         NativeVulkanSceneLayerCompositorRecordingBlock,
@@ -359,6 +409,26 @@ mod tests {
         assert!(plan.commands.is_empty());
     }
 
+    #[test]
+    fn aux_clear_prep_from_compositor_uses_active_clear_command_order() {
+        let object = SceneObjectId(7);
+        let plan = native_vulkan_plan_scene_layer_aux_clear_prep_from_compositor(
+            &active_clear_compositor(object),
+            &residency_with_aux_targets(object, true),
+        )
+        .expect("aux clear-prep from compositor");
+
+        assert_eq!(plan.command_count, 1);
+        assert_eq!(plan.commands[0].block_index, 1);
+        assert_eq!(plan.commands[0].step_index_start, 1);
+        assert_eq!(plan.commands[0].step_index_end, 2);
+        assert_eq!(plan.commands[0].object, object);
+        assert_eq!(
+            plan.commands[0].clear_target,
+            SceneGraphTarget::LayerAuxClear(object)
+        );
+    }
+
     fn residency_with_aux_targets(
         object: SceneObjectId,
         complete: bool,
@@ -422,6 +492,50 @@ mod tests {
                 command_order: vec!["require_layer_target_clear_recorder"],
             }],
             ..empty_schedule()
+        }
+    }
+
+    fn active_clear_compositor(object: SceneObjectId) -> SceneLayerCompositorPlan {
+        SceneLayerCompositorPlan {
+            layer_count: 1,
+            command_count: 2,
+            object_final_layer_count: 1,
+            tokenized_layer_count: 0,
+            layers: vec![SceneLayerCompositorLayer {
+                object,
+                route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+                uses_tokenized_subdraw: false,
+                has_active_aux_clear_target: true,
+                commands: vec![
+                    SceneLayerCompositorCommand {
+                        entry: SceneLayerCompositorEntry::NormalRenderEntry32,
+                        operation: SceneLayerCompositorOperation::NormalRender,
+                        condition: SceneLayerCompositorCondition::Always,
+                        source: None,
+                        target: SceneLayerCompositorTarget::ObjectFinal(object),
+                        blend_key: SceneLayerCompositorBlendKey::Inherit,
+                    },
+                    SceneLayerCompositorCommand {
+                        entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+                        operation: SceneLayerCompositorOperation::ClearPrep,
+                        condition: SceneLayerCompositorCondition::Always,
+                        source: None,
+                        target: SceneLayerCompositorTarget::EffectTarget3f8,
+                        blend_key: SceneLayerCompositorBlendKey::Inherit,
+                    },
+                ],
+            }],
+            command_order: [
+                "read_scene_objects_in_author_order",
+                "classify_object_final_composite_route",
+                "append_normal_render_entry_32",
+                "append_active_aux_clear_entry_50",
+                "append_full_layer_composite_entry_51",
+                "append_tokenized_entries_52_53",
+                "append_alpha_mask_helper_commands",
+                "preserve_we_layer_command_order",
+                "emit_scene_layer_compositor_plan",
+            ],
         }
     }
 

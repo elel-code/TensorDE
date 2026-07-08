@@ -656,6 +656,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         &aux_clear_scopes,
         &aux_material_commands,
     )?;
+    for key in aux_material_pipelines.cache_keys() {
+        frame_resources.cached_mesh_pipeline(key).map_err(|err| {
+            format!(
+                "{err}; scene layer aux material runtime requires util/passthrough fullscreenlayer pipeline warmup before command-list assembly"
+            )
+        })?;
+    }
     let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) = {
         let command_block_output = native_vulkan_record_scene_layer_compositor_command_blocks(
             frame_resources,

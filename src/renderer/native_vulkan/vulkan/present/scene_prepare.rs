@@ -15,7 +15,7 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPlan, SceneGraphTarget,
-    SceneObject, SceneResource,
+    SceneLayerCompositorTarget, SceneObject, SceneResource,
 };
 use crate::renderer::native_vulkan::scene_backend::effect_pipeline_prepare::{
     NativeVulkanSceneEffectPipelinePreparePlan,
@@ -40,6 +40,12 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use crate::renderer::native_vulkan::scene_backend::layer_aux_clear_prep::native_vulkan_plan_scene_layer_aux_clear_prep_from_compositor;
+use crate::renderer::native_vulkan::scene_backend::layer_aux_clear_scope::native_vulkan_plan_scene_layer_aux_clear_scopes;
+use crate::renderer::native_vulkan::scene_backend::layer_aux_material_commands::native_vulkan_plan_scene_layer_aux_material_commands;
+use crate::renderer::native_vulkan::scene_backend::layer_aux_material_draws::native_vulkan_plan_scene_layer_aux_material_draws;
+use crate::renderer::native_vulkan::scene_backend::layer_aux_material_pipeline::native_vulkan_plan_scene_layer_aux_material_pipelines;
+use crate::renderer::native_vulkan::scene_backend::layer_aux_material_resource_heap::NativeVulkanSceneLayerAuxMaterialResourceHeapFramePlan;
 use crate::renderer::native_vulkan::scene_backend::layer_aux_targets::NativeVulkanSceneLayerAuxTargetPlan;
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
@@ -77,10 +83,14 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub layer_alpha_mask_heap_slice_count: usize,
     pub layer_alpha_mask_resource_descriptor_count: usize,
     pub layer_alpha_mask_sampler_descriptor_count: usize,
+    pub layer_aux_material_resource_heap_action_count: usize,
+    pub layer_aux_material_heap_slice_count: usize,
+    pub layer_aux_material_resource_descriptor_count: usize,
+    pub layer_aux_material_sampler_descriptor_count: usize,
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 14],
+    pub command_order: [&'static str; 18],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -265,6 +275,62 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
         let effect_heap_slice_count = effect_resource_heap.heap_slice_count;
         let effect_resource_descriptor_count = effect_resource_heap.resource_descriptor_count;
         let effect_sampler_descriptor_count = effect_resource_heap.sampler_descriptor_count;
+        let layer_aux_clear_prep = native_vulkan_plan_scene_layer_aux_clear_prep_from_compositor(
+            &frame.layer_compositor,
+            &frame.residency,
+        )?;
+        let layer_aux_material_draws = native_vulkan_plan_scene_layer_aux_material_draws(
+            &layer_aux_clear_prep,
+            &frame.residency,
+        )?;
+        let layer_aux_clear_scopes = native_vulkan_plan_scene_layer_aux_clear_scopes(
+            frame_resources,
+            &layer_aux_clear_prep,
+            &layer_aux_material_draws,
+        )?;
+        let layer_aux_material_commands = native_vulkan_plan_scene_layer_aux_material_commands(
+            &layer_aux_clear_scopes,
+            &layer_aux_material_draws,
+        )?;
+        let layer_aux_material_pipelines = native_vulkan_plan_scene_layer_aux_material_pipelines(
+            &layer_aux_clear_scopes,
+            &layer_aux_material_commands,
+        )?;
+        let layer_aux_material_resource_heap_plan =
+            NativeVulkanSceneLayerAuxMaterialResourceHeapFramePlan::from_pipeline_plan(
+                &layer_aux_material_pipelines,
+                descriptor_heap_properties,
+                |key| {
+                    let binding = native_vulkan_resolve_scene_layer_490_color_target(
+                        frame_resources,
+                        target_formats,
+                        swapchain_extent,
+                        &frame.layer_compositor,
+                        key.object,
+                        SceneLayerCompositorTarget::LayerTarget490,
+                    )?;
+                    Ok(binding.color_target)
+                },
+                |target| frame_resources.offscreen_target_binding(target),
+            )?;
+        let layer_aux_material_resource_heap_action_count = frame_resources
+            .sync_layer_aux_material_resource_heap_frame_plan(
+                device,
+                memory_properties,
+                layer_aux_material_resource_heap_plan,
+            )?
+            .len();
+        let layer_aux_material_resource_heap = frame_resources
+            .current_layer_aux_material_resource_heap_frame_plan()
+            .ok_or_else(|| {
+                "scene prepare missing layer aux material resource heap frame plan after sync"
+                    .to_owned()
+            })?;
+        let layer_aux_material_heap_slice_count = layer_aux_material_resource_heap.heap_slice_count;
+        let layer_aux_material_resource_descriptor_count =
+            layer_aux_material_resource_heap.resource_descriptor_count;
+        let layer_aux_material_sampler_descriptor_count =
+            layer_aux_material_resource_heap.sampler_descriptor_count;
         native_vulkan_end_scene_frame_command_buffer(device, slot_sync.command_buffer)?;
         let prepare_submit = native_vulkan_submit_scene_prepare_commands2(
             device,
@@ -332,6 +398,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
         );
         layer_alpha_mask_pipeline_keys
             .extend_from_slice(layer_alpha_mask_generated_consumer_pipelines.cache_keys());
+        layer_alpha_mask_pipeline_keys.extend_from_slice(layer_aux_material_pipelines.cache_keys());
         let pipeline_prepare =
             native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys(
                 device,
@@ -388,6 +455,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             layer_alpha_mask_heap_slice_count,
             layer_alpha_mask_resource_descriptor_count,
             layer_alpha_mask_sampler_descriptor_count,
+            layer_aux_material_resource_heap_action_count,
+            layer_aux_material_heap_slice_count,
+            layer_aux_material_resource_descriptor_count,
+            layer_aux_material_sampler_descriptor_count,
             offscreen_target_count,
             offscreen_target_action_count,
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
@@ -401,6 +472,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 "prepare_effect_texture_descriptors",
                 "record_effect_uniform_buffer_uploads",
                 "sync_effect_resource_heap",
+                "plan_layer_aux_clear_prep_from_compositor",
+                "plan_layer_aux_material_draw_receivers",
+                "plan_layer_aux_material_pipelines",
+                "sync_layer_aux_material_resource_heap",
                 "queue_submit2_scene_prepare",
                 "wait_scene_prepare_fence_cold_path",
                 "release_completed_prepare_staging",
