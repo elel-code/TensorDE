@@ -149,7 +149,9 @@ impl NativeVulkanSceneMeshPipelineWarmupPlan {
 
 #[cfg(test)]
 mod tests {
-    use super::super::pipeline::NativeVulkanScenePipelineVertexLayout;
+    use super::super::pipeline::{
+        NativeVulkanScenePipelineResourceHeapClass, NativeVulkanScenePipelineVertexLayout,
+    };
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraphDraw, SceneGraphPass,
@@ -363,6 +365,7 @@ mod tests {
             render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: (1u32 << 0) | (1u32 << 1) | (1u32 << 5),
         };

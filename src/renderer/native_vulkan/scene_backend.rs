@@ -35,6 +35,7 @@ pub mod layer_aux_clear_prep;
 pub mod layer_aux_clear_scope;
 pub mod layer_aux_material_commands;
 pub mod layer_aux_material_draws;
+pub mod layer_aux_material_pipeline;
 pub mod layer_aux_targets;
 pub mod layer_compositor_command_blocks;
 pub mod layer_compositor_recorder;

@@ -13,8 +13,9 @@ use crate::engine::scene_engine::{
     SceneGraphTarget, SceneLayerCompositorTarget, SceneMaterialRenderState, SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline::{
-    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineShaderComboValue,
-    NativeVulkanScenePipelineVertexLayout, native_vulkan_scene_pipeline_shader_combo_values,
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResourceHeapClass,
+    NativeVulkanScenePipelineShaderComboValue, NativeVulkanScenePipelineVertexLayout,
+    native_vulkan_scene_pipeline_shader_combo_values,
 };
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorVkFormat;
 
@@ -242,6 +243,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan {
             },
             pipeline_class: self.pipeline_class,
             vertex_layout: self.vertex_layout,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: self.target_format.to_vk_format(),
             texture_slot_mask: self.texture_slot_mask,
         }

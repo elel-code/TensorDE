@@ -55,8 +55,16 @@ pub struct NativeVulkanScenePipelineCacheKey {
     pub render_state: SceneMaterialRenderState,
     pub pipeline_class: SceneGraphPipelineClass,
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
+    pub resource_heap: NativeVulkanScenePipelineResourceHeapClass,
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
+pub enum NativeVulkanScenePipelineResourceHeapClass {
+    Draw,
+    LayerAlphaMask,
+    LayerAuxMaterial,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,9 +130,20 @@ impl NativeVulkanScenePipelineCacheKey {
             render_state: key.render_state,
             pipeline_class: key.pipeline_class,
             vertex_layout: scene_pipeline_vertex_layout(key.pipeline_class)?,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::Draw,
             target_format,
             texture_slot_mask: key.texture_slot_mask,
         })
+    }
+}
+
+impl NativeVulkanScenePipelineResourceHeapClass {
+    pub(in crate::renderer::native_vulkan) const fn label(self) -> &'static str {
+        match self {
+            Self::Draw => "draw-resource-heap",
+            Self::LayerAlphaMask => "layer-alpha-mask-resource-heap",
+            Self::LayerAuxMaterial => "layer-aux-material-resource-heap",
+        }
     }
 }
 

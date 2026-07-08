@@ -28,8 +28,8 @@ use crate::renderer::native_vulkan::vulkan::{
 };
 
 use super::pipeline::{
-    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResources,
-    NativeVulkanScenePipelineVertexLayout,
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResourceHeapClass,
+    NativeVulkanScenePipelineResources, NativeVulkanScenePipelineVertexLayout,
 };
 use super::shader_module::{
     native_vulkan_create_scene_shader_module, native_vulkan_validate_scene_spirv,
@@ -57,6 +57,7 @@ pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub vertex_attributes: Vec<&'static str>,
     pub dynamic_states: [&'static str; 2],
     pub shader_resource_mappings: Vec<String>,
+    pub resource_heap: &'static str,
     pub blend: &'static str,
     pub depth_test: &'static str,
     pub depth_write: bool,
@@ -78,6 +79,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         vertex_attributes: scene_pipeline_vertex_attribute_labels(key.vertex_layout),
         dynamic_states: ["viewport", "scissor"],
         shader_resource_mappings: scene_mesh_shader_resource_mapping_labels(key),
+        resource_heap: key.resource_heap.label(),
         blend: scene_pipeline_blend_label(key.blend),
         depth_test: scene_depth_test_label(key.render_state.depth_test),
         depth_write: key.render_state.depth_write,
@@ -441,9 +443,13 @@ fn scene_mesh_shader_resource_mapping_labels(
         .into_iter()
         .enumerate()
         .map(|(ordinal, slot)| {
-            if scene_pipeline_uses_alpha_mask_resource_heap(key) {
+            if key.resource_heap == NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask {
                 format!(
                     "VK_EXT_descriptor_heap we.texture_slot{slot}.g_Texture{slot} -> alpha-mask-heap-slice-texture-offset{ordinal}"
+                )
+            } else if key.resource_heap == NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial {
+                format!(
+                    "VK_EXT_descriptor_heap we.texture_slot{slot}.g_Texture{slot} -> aux-material-heap-slice-texture-offset{ordinal}"
                 )
             } else {
                 format!(
@@ -459,16 +465,23 @@ fn scene_pipeline_descriptor_heap_mappings(
     layout: NativeVulkanSceneMeshPipelineLayoutSpec<'_>,
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<Vec<NativeVulkanDescriptorHeapShaderBindingMapping>, String> {
-    if scene_pipeline_uses_alpha_mask_resource_heap(key) {
-        let alpha_mask_plan = layout.layer_alpha_mask_resource_heap_plan.ok_or_else(|| {
-            format!(
-                "scene alpha-mask pipeline shader '{}' requires alpha-mask descriptor heap mapping",
-                key.shader
-            )
-        })?;
-        return scene_alpha_mask_descriptor_heap_mappings(alpha_mask_plan, key);
+    match key.resource_heap {
+        NativeVulkanScenePipelineResourceHeapClass::Draw => {
+            scene_mesh_descriptor_heap_mappings(layout.draw_resource_heap_plan, key)
+        }
+        NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask => {
+            let alpha_mask_plan = layout.layer_alpha_mask_resource_heap_plan.ok_or_else(|| {
+                format!(
+                    "scene alpha-mask pipeline shader '{}' requires alpha-mask descriptor heap mapping",
+                    key.shader
+                )
+            })?;
+            scene_alpha_mask_descriptor_heap_mappings(alpha_mask_plan, key)
+        }
+        NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial => {
+            Err("scene aux material resource heap pipeline mapping is not synced yet".to_owned())
+        }
     }
-    scene_mesh_descriptor_heap_mappings(layout.draw_resource_heap_plan, key)
 }
 
 fn scene_mesh_descriptor_heap_mappings(
@@ -557,6 +570,7 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
     if key.target_format == vk::Format::UNDEFINED {
         return Err("scene mesh pipeline requires defined target format".to_owned());
     }
+    validate_scene_pipeline_resource_heap_class(key)?;
     let interface = WeShaderInterface::for_shader(&key.shader).ok_or_else(|| {
         format!(
             "scene mesh pipeline references unknown WE shader '{}'",
@@ -593,24 +607,66 @@ fn validate_scene_mesh_pipeline_key(key: &NativeVulkanScenePipelineCacheKey) -> 
     Ok(())
 }
 
+fn validate_scene_pipeline_resource_heap_class(
+    key: &NativeVulkanScenePipelineCacheKey,
+) -> Result<(), String> {
+    let clippingtarget_combo = key
+        .shader_combo_values
+        .iter()
+        .any(|combo| combo.name == "CLIPPINGTARGET" && combo.value != 0);
+    let alpha_mask_required = key.shader == "we/clippingmaskimage4"
+        || key.shader == "util/minimalalpha"
+        || clippingtarget_combo;
+    if alpha_mask_required
+        && key.resource_heap != NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask
+    {
+        return Err(format!(
+            "scene pipeline shader '{}' requires layer alpha-mask resource heap, got {}",
+            key.shader,
+            key.resource_heap.label()
+        ));
+    }
+    if key.resource_heap == NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial
+        && key.shader != "util/passthrough"
+    {
+        return Err(format!(
+            "scene aux material resource heap only accepts util/passthrough, got '{}'",
+            key.shader
+        ));
+    }
+    if key.resource_heap == NativeVulkanScenePipelineResourceHeapClass::Draw
+        && key.pipeline_class
+            == crate::engine::scene_engine::SceneGraphPipelineClass::LayerUtilityIndexed
+    {
+        return Err(
+            "scene layer utility pipelines must select an explicit layer resource heap".to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_scene_mesh_descriptor_heap_pipeline_layout(
     layout: NativeVulkanSceneMeshPipelineLayoutSpec<'_>,
     key: &NativeVulkanScenePipelineCacheKey,
 ) -> Result<(), String> {
-    if scene_pipeline_uses_alpha_mask_resource_heap(key) {
-        let alpha_mask_plan = layout.layer_alpha_mask_resource_heap_plan.ok_or_else(|| {
-            format!(
-                "scene alpha-mask pipeline shader '{}' requires alpha-mask descriptor heap mapping",
-                key.shader
-            )
-        })?;
-        return scene_alpha_mask_resource_heap_texture_layout(alpha_mask_plan, key).map(|_| ());
+    match key.resource_heap {
+        NativeVulkanScenePipelineResourceHeapClass::Draw => {
+            scene_mesh_draw_resource_heap_texture_layout(layout.draw_resource_heap_plan, key)
+                .map(|_| ())
+        }
+        NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask => {
+            let alpha_mask_plan = layout.layer_alpha_mask_resource_heap_plan.ok_or_else(|| {
+                format!(
+                    "scene alpha-mask pipeline shader '{}' requires alpha-mask descriptor heap mapping",
+                    key.shader
+                )
+            })?;
+            scene_alpha_mask_resource_heap_texture_layout(alpha_mask_plan, key).map(|_| ())
+        }
+        NativeVulkanScenePipelineResourceHeapClass::LayerAuxMaterial => {
+            Err("scene aux material resource heap pipeline layout is not synced yet".to_owned())
+        }
     }
-    scene_mesh_draw_resource_heap_texture_layout(layout.draw_resource_heap_plan, key).map(|_| ())
-}
-
-fn scene_pipeline_uses_alpha_mask_resource_heap(key: &NativeVulkanScenePipelineCacheKey) -> bool {
-    key.pipeline_class.is_layer_utility_indexed() || key.shader == "we/clippingmaskimage4"
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -760,7 +816,10 @@ fn scene_alpha_mask_resource_heap_texture_layout(
 mod tests {
     use super::*;
     use crate::engine::scene_engine::SceneGraphPipelineClass;
-    use crate::renderer::native_vulkan::scene_backend::pipeline::native_vulkan_scene_pipeline_shader_combo_values;
+    use crate::renderer::native_vulkan::scene_backend::pipeline::{
+        NativeVulkanScenePipelineResourceHeapClass,
+        native_vulkan_scene_pipeline_shader_combo_values,
+    };
     use crate::renderer::native_vulkan::vulkan::{
         NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
@@ -778,6 +837,7 @@ mod tests {
             vec!["location0.xy", "location1.uv", "location2.opacity"]
         );
         assert_eq!(plan.dynamic_states, ["viewport", "scissor"]);
+        assert_eq!(plan.resource_heap, "draw-resource-heap");
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
@@ -825,6 +885,7 @@ mod tests {
                     ("CLIPPINGTARGET", 1),
                     ("CLIPPINGUVS", 1),
                 ]),
+                resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
                 texture_slot_mask: (1u32 << 0) | (1u32 << 8),
                 ..pipeline_key()
             })
@@ -876,6 +937,7 @@ mod tests {
                 blend: SceneBlendContract::DestColorCopyBackBit0x100,
                 pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
                 vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
+                resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
                 target_format: vk::Format::R8_UNORM,
                 texture_slot_mask: 1,
                 ..pipeline_key()
@@ -904,6 +966,7 @@ mod tests {
             native_vulkan_scene_mesh_pipeline_create_plan(&NativeVulkanScenePipelineCacheKey {
                 shader: "we/clippingmaskimage4".to_owned(),
                 pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
+                resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
                 target_format: vk::Format::R8_UNORM,
                 texture_slot_mask: (1u32 << 0) | (1u32 << 1),
                 ..pipeline_key()
@@ -977,6 +1040,7 @@ mod tests {
             blend: SceneBlendContract::DestColorCopyBackBit0x100,
             pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: 1,
             ..pipeline_key()
@@ -1007,6 +1071,7 @@ mod tests {
             shader: "we/clippingmaskimage4".to_owned(),
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: 0b11,
             ..pipeline_key()
@@ -1048,6 +1113,7 @@ mod tests {
             shader: "we/clippingmaskimage4".to_owned(),
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: 0b11,
             ..pipeline_key()
@@ -1134,6 +1200,7 @@ mod tests {
             render_state: crate::engine::scene_engine::SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::Draw,
             target_format: vk::Format::B8G8R8A8_UNORM,
             texture_slot_mask: 1,
         }

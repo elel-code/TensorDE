@@ -18,7 +18,8 @@ use crate::engine::scene_engine::{
     SceneMaterialRenderState, SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline::{
-    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout,
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResourceHeapClass,
+    NativeVulkanScenePipelineVertexLayout,
 };
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorSource, NativeVulkanSceneTextureDescriptorVkFormat,
@@ -170,6 +171,7 @@ impl NativeVulkanSceneLayerAlphaMaskCopyBackPipelineKeyPlan {
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: self.pipeline_class,
             vertex_layout: self.vertex_layout,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: self.texture_slot_mask,
         }
@@ -229,6 +231,7 @@ fn copy_back_pipeline_cache_key(
         render_state: SceneMaterialRenderState::translucent_2d(),
         pipeline_class: SceneGraphPipelineClass::LayerUtilityIndexed,
         vertex_layout: NativeVulkanScenePipelineVertexLayout::FlatTexturePositionUv,
+        resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
         target_format: vk::Format::R8_UNORM,
         texture_slot_mask: 1u32 << draw.texture_slot,
     })

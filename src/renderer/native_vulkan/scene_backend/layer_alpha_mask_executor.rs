@@ -50,7 +50,10 @@ use crate::engine::scene_engine::{
 };
 
 use super::frame_resources::NativeVulkanSceneFrameResources;
-use super::pipeline::{NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout};
+use super::pipeline::{
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResourceHeapClass,
+    NativeVulkanScenePipelineVertexLayout,
+};
 use super::resource_heap::texture_set::scene_shader_texture_mapping;
 pub(in crate::renderer::native_vulkan) use consumer_command::{
     NativeVulkanSceneLayerAlphaMaskGeneratedConsumerRuntimeCommandPlan,
@@ -670,6 +673,7 @@ impl NativeVulkanSceneLayerAlphaMaskPipelineWarmupPlan {
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
         };

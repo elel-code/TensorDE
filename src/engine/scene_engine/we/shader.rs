@@ -10,6 +10,8 @@
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/clippingmaskimage4.frag`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.vert`
 //! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/minimalalpha.frag`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert`
+//! - `artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.frag`
 //! - `reverse-engineered/shaders/common_blending.h`
 //! - `reverse-engineered/shaders/effects/waterwaves.frag`
 //! - `reverse-engineered/shaders/effects/waterripple.frag`
@@ -117,6 +119,7 @@ impl WeShaderInterface {
             "we/genericimage4" | "genericimage4" => Some(&GENERICIMAGE4_INTERFACE),
             "we/clippingmaskimage4" | "clippingmaskimage4" => Some(&CLIPPINGMASKIMAGE4_INTERFACE),
             "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
+            "util/passthrough" | "passthrough" => Some(&PASSTHROUGH_INTERFACE),
             _ => None,
         }
     }
@@ -125,6 +128,7 @@ impl WeShaderInterface {
         match shader {
             "effects/iris" => Some(&IRIS_INTERFACE),
             "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
+            "util/passthrough" | "passthrough" => Some(&PASSTHROUGH_INTERFACE),
             _ => None,
         }
     }
@@ -557,6 +561,60 @@ pub static MINIMALALPHA_INTERFACE: WeShaderInterface = WeShaderInterface {
     combos: MINIMALALPHA_COMBOS,
 };
 
+pub static PASSTHROUGH_TEXTURES: &[WeShaderTextureSlot] = &[WeShaderTextureSlot {
+    slot: 0,
+    name: "g_Texture0",
+    stage: WeShaderStage::Fragment,
+    requirement: WeShaderTextureRequirement::Required,
+    reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.frag:4",
+}];
+
+pub static PASSTHROUGH_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert:3",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Rotation",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert:4",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Translation",
+        kind: WeShaderUniformKind::Vec2,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert:5",
+    },
+];
+
+pub static PASSTHROUGH_COMBOS: &[WeShaderCombo] = &[
+    WeShaderCombo {
+        name: "SPRITESHEET",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert:18",
+    },
+    WeShaderCombo {
+        name: "TRANSFORM",
+        default_value: 0,
+        material_key: None,
+        reference: "artifacts/wallpaper-engine-workshop/steamcmd-root/assets/shaders/passthrough.vert:25",
+    },
+];
+
+pub static PASSTHROUGH_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "util/passthrough",
+    textures: PASSTHROUGH_TEXTURES,
+    uniforms: PASSTHROUGH_UNIFORMS,
+    combos: PASSTHROUGH_COMBOS,
+};
+
 pub static IRIS_TEXTURES: &[WeShaderTextureSlot] = &[
     WeShaderTextureSlot {
         slot: 0,
@@ -740,6 +798,26 @@ mod tests {
                 .iter()
                 .any(|uniform| uniform.name == "g_Alpha")
         );
+    }
+
+    #[test]
+    fn passthrough_interface_tracks_fullscreenlayer_slot_uniforms_and_combos() {
+        let interface = WeShaderInterface::for_shader("util/passthrough").unwrap();
+
+        assert_eq!(interface.required_texture_slot_mask(), 0b1);
+        assert_eq!(interface.declared_texture_slot_mask(), 0b1);
+        assert_eq!(
+            interface
+                .texture_slot_mask_for_material("util/passthrough", 0b1)
+                .unwrap(),
+            0b1
+        );
+        assert!(interface.declares_combo("SPRITESHEET"));
+        assert!(interface.declares_combo("TRANSFORM"));
+        assert!(interface.uniforms.iter().any(|uniform| {
+            uniform.name == "g_ModelViewProjectionMatrix"
+                && uniform.kind == WeShaderUniformKind::Mat4
+        }));
     }
 
     #[test]

@@ -145,7 +145,7 @@ impl NativeVulkanSceneShaderArtifactCatalog {
                 shaders: shader_labels,
                 command_order: [
                     "collect_scene_graph_draw_shader_names",
-                    "append_layer_alpha_mask_shader_variant_keys",
+                    "append_layer_alpha_mask_and_aux_shader_variant_keys",
                     "resolve_we_scene_shader_variant_artifact_paths",
                     "read_unique_scene_shader_spirv",
                 ],
@@ -162,7 +162,7 @@ impl NativeVulkanSceneShaderArtifactCatalog {
                 shaders: Vec::new(),
                 command_order: [
                     "collect_scene_graph_draw_shader_names",
-                    "append_layer_alpha_mask_shader_variant_keys",
+                    "append_layer_alpha_mask_and_aux_shader_variant_keys",
                     "resolve_we_scene_shader_variant_artifact_paths",
                     "read_unique_scene_shader_spirv",
                 ],
@@ -740,6 +740,15 @@ fn required_scene_shader_artifact_keys(
             ALPHA_MASK_FLATTEXTURE_SHADER,
         ));
     }
+    if layer_compositor_uses_aux_fullscreenlayer(layer_compositor)
+        && unique.insert(NativeVulkanSceneShaderArtifactKey::plain(
+            "util/passthrough",
+        ))
+    {
+        shader_keys.push(NativeVulkanSceneShaderArtifactKey::plain(
+            "util/passthrough",
+        ));
+    }
     Ok(shader_keys)
 }
 
@@ -753,9 +762,22 @@ fn layer_compositor_uses_generated_clipping_target(
     })
 }
 
+fn layer_compositor_uses_aux_fullscreenlayer(layer_compositor: &SceneLayerCompositorPlan) -> bool {
+    layer_compositor.layers.iter().any(|layer| {
+        layer.has_active_aux_clear_target
+            && layer
+                .commands
+                .iter()
+                .any(|command| command.operation == SceneLayerCompositorOperation::ClearPrep)
+    })
+}
+
 fn scene_shader_artifact_relative_path(shader: &str) -> Result<PathBuf, String> {
     if shader == ALPHA_MASK_FLATTEXTURE_SHADER {
         return Ok(PathBuf::from("minimalalpha"));
+    }
+    if shader == "util/passthrough" || shader == "passthrough" {
+        return Ok(PathBuf::from("passthrough"));
     }
     let normalized = shader.strip_prefix("we/").unwrap_or(shader);
     if normalized.is_empty()
@@ -1045,6 +1067,25 @@ mod tests {
     }
 
     #[test]
+    fn shader_artifact_plan_maps_passthrough_scene_utility_shader() {
+        let plan = native_vulkan_scene_shader_artifact_path_plan(
+            Path::new("artifacts/scene-shaders"),
+            "util/passthrough",
+        )
+        .expect("passthrough scene utility artifact path plan");
+
+        assert_eq!(plan.shader, "util/passthrough");
+        assert_eq!(
+            plan.vertex_path,
+            PathBuf::from("artifacts/scene-shaders/passthrough.vert.spv")
+        );
+        assert_eq!(
+            plan.fragment_path,
+            PathBuf::from("artifacts/scene-shaders/passthrough.frag.spv")
+        );
+    }
+
+    #[test]
     fn scene_shader_catalog_names_include_layer_alpha_mask_shader() {
         let graph = scene_graph_with_shader("we/genericimage4");
         let mut layer_compositor = SceneLayerCompositorPlan::empty();
@@ -1101,6 +1142,43 @@ mod tests {
                 "we/clippingmaskimage4".to_owned(),
                 "util/minimalalpha".to_owned()
             ]
+        );
+    }
+
+    #[test]
+    fn scene_shader_catalog_names_append_passthrough_for_active_aux_clear() {
+        use crate::engine::scene_engine::{
+            SceneLayerCompositorBlendKey, SceneLayerCompositorCommand,
+            SceneLayerCompositorCondition, SceneLayerCompositorEntry, SceneLayerCompositorLayer,
+            SceneLayerCompositorOperation, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
+            SceneObjectId,
+        };
+
+        let graph = scene_graph_with_shader("we/genericimage4");
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(7),
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: true,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+                operation: SceneLayerCompositorOperation::ClearPrep,
+                condition: SceneLayerCompositorCondition::Always,
+                source: None,
+                target: SceneLayerCompositorTarget::LayerTarget490,
+                blend_key: SceneLayerCompositorBlendKey::Inherit,
+            }],
+        }];
+
+        let shaders = required_scene_shader_names(&graph, &layer_compositor)
+            .expect("scene shader name collection with aux clear");
+
+        assert_eq!(
+            shaders,
+            vec!["we/genericimage4".to_owned(), "util/passthrough".to_owned()]
         );
     }
 
@@ -1372,7 +1450,9 @@ mod tests {
         use crate::engine::scene_engine::{
             SceneBlendContract, SceneGraphPipelineClass, SceneMaterialRenderState,
         };
-        use crate::renderer::native_vulkan::scene_backend::pipeline::NativeVulkanScenePipelineVertexLayout;
+        use crate::renderer::native_vulkan::scene_backend::pipeline::{
+            NativeVulkanScenePipelineResourceHeapClass, NativeVulkanScenePipelineVertexLayout,
+        };
         use vulkanalia::vk;
 
         let ordinary_key = NativeVulkanSceneShaderArtifactKey::plain("we/genericimage4");
@@ -1398,7 +1478,7 @@ mod tests {
                 shaders: vec!["we/genericimage4".to_owned()],
                 command_order: [
                     "collect_scene_graph_draw_shader_names",
-                    "append_layer_alpha_mask_shader_variant_keys",
+                    "append_layer_alpha_mask_and_aux_shader_variant_keys",
                     "resolve_we_scene_shader_variant_artifact_paths",
                     "read_unique_scene_shader_spirv",
                 ],
@@ -1411,6 +1491,7 @@ mod tests {
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::B8G8R8A8_UNORM,
             texture_slot_mask: (1u32 << 0) | (1u32 << 8),
         };

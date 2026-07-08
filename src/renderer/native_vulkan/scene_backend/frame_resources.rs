@@ -1177,6 +1177,7 @@ mod tests {
             pipeline_class: SceneGraphPipelineClass::Mesh,
             vertex_layout:
                 super::super::pipeline::NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+            resource_heap: super::super::pipeline::NativeVulkanScenePipelineResourceHeapClass::Draw,
             target_format: vk::Format::B8G8R8A8_UNORM,
             texture_slot_mask: 1,
         }

@@ -47,6 +47,7 @@ use super::layer_aux_clear_prep::NativeVulkanSceneLayerAuxClearPrepFramePlan;
 use super::layer_aux_clear_scope::NativeVulkanSceneLayerAuxClearScopeFramePlan;
 use super::layer_aux_material_commands::NativeVulkanSceneLayerAuxMaterialCommandFramePlan;
 use super::layer_aux_material_draws::NativeVulkanSceneLayerAuxMaterialDrawFramePlan;
+use super::layer_aux_material_pipeline::NativeVulkanSceneLayerAuxMaterialPipelineFramePlan;
 use super::layer_compositor_scheduler::{
     NativeVulkanSceneLayerCompositorRecordingBlockKind,
     NativeVulkanSceneLayerCompositorSchedulePlan,
@@ -129,6 +130,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     aux_material_draws: &NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
     aux_clear_scopes: &NativeVulkanSceneLayerAuxClearScopeFramePlan,
     aux_material_commands: &NativeVulkanSceneLayerAuxMaterialCommandFramePlan,
+    aux_material_pipelines: &NativeVulkanSceneLayerAuxMaterialPipelineFramePlan,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
     effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_, '_>,
 ) -> Result<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>, String> {
@@ -168,11 +170,20 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                 aux_material_commands.active_block_count
             ));
         }
+        if !aux_material_pipelines.covers_material_commands(aux_material_commands) {
+            return Err(format!(
+                "scene layer compositor command-block recorder saw {} active aux clear-prep block(s), but layer_aux_material_pipeline planned {} clear pipeline(s) and {} generated material requirement(s)",
+                schedule.clear_prep_recorder_required_count,
+                aux_material_pipelines.clear_pipeline_count,
+                aux_material_pipelines.generated_material_entry_pipeline_required_count
+            ));
+        }
         return Err(format!(
-            "scene layer compositor command-block recorder has {} planned active aux clear-prep block(s), {} aux target scope(s), and {} aux scoped material draw command(s), but Vulkan material pipeline/resource-heap/draw emission for [aux+0x410]/[aux+0x408] is not wired yet",
+            "scene layer compositor command-block recorder has {} planned active aux clear-prep block(s), {} aux target scope(s), {} aux scoped material draw command(s), and {} aux fullscreenlayer pipeline key(s), but Vulkan material resource-heap/draw emission for [aux+0x410]/[aux+0x408] is not wired yet",
             schedule.clear_prep_recorder_required_count,
             aux_clear_scopes.target_scope_count,
-            aux_material_commands.scoped_draw_count
+            aux_material_commands.scoped_draw_count,
+            aux_material_pipelines.cache_key_count
         ));
     }
     if !schedule_is_command_block_recordable(schedule) {

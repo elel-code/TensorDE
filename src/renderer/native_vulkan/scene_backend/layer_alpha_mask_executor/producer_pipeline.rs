@@ -15,7 +15,8 @@ use crate::engine::scene_engine::{
     SceneMaterialRenderState, SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline::{
-    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineVertexLayout,
+    NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineResourceHeapClass,
+    NativeVulkanScenePipelineVertexLayout,
 };
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorVkFormat;
 
@@ -175,6 +176,7 @@ impl NativeVulkanSceneLayerAlphaMaskProducerPipelineBindingPlan {
             render_state: SceneMaterialRenderState::translucent_2d(),
             pipeline_class: self.pipeline_class,
             vertex_layout: self.vertex_layout,
+            resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
             target_format: vk::Format::R8_UNORM,
             texture_slot_mask: self.texture_slot_mask,
         }
@@ -309,6 +311,7 @@ fn producer_pipeline_cache_key(
         render_state: SceneMaterialRenderState::translucent_2d(),
         pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
         vertex_layout: NativeVulkanScenePipelineVertexLayout::SceneMeshV0,
+        resource_heap: NativeVulkanScenePipelineResourceHeapClass::LayerAlphaMask,
         target_format: vk::Format::R8_UNORM,
         texture_slot_mask: CLIPPINGMASKIMAGE4_REQUIRED_TEXTURE_SLOT_MASK,
     })
