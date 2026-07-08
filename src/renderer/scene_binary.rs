@@ -2329,6 +2329,29 @@ mod tests {
         assert_eq!(geometry.index_count, 3);
         assert_eq!(geometry.vertex_payload, vertex_payload);
         assert_eq!(geometry.index_payload, index_payload);
+        assert_eq!(geometry.source_records.len(), 2);
+        assert_eq!(geometry.source_records[0].source_index, 0);
+        assert_eq!(geometry.source_records[0].local_offset, 10);
+        assert_eq!(geometry.source_records[0].index_span_offset, 0);
+        assert_eq!(geometry.source_records[0].index_span_count, 2);
+        assert_eq!(geometry.source_records[1].source_index, 1);
+        assert_eq!(geometry.source_records[1].index_span_offset, 2);
+        assert_eq!(geometry.source_records[1].index_span_count, 1);
+        assert_eq!(geometry.subdraws.len(), 2);
+        assert_eq!(geometry.subdraws[0].source_qword, 0x690);
+        assert_eq!(
+            geometry.subdraws[0].mask_resource,
+            "masks/clipping_mask_eye"
+        );
+        assert_eq!(geometry.subdraws[0].raw_flags, 0);
+        assert_eq!(geometry.subdraws[0].first_indices, vec![0, 1]);
+        assert_eq!(geometry.subdraws[0].second_indices, Vec::<u32>::new());
+        assert_eq!(geometry.subdraws[0].link, u32::MAX);
+        assert_eq!(geometry.subdraws[1].source_qword, 0x691);
+        assert_eq!(geometry.subdraws[1].raw_flags, 1);
+        assert_eq!(geometry.subdraws[1].first_indices, vec![1]);
+        assert_eq!(geometry.subdraws[1].second_indices, vec![0]);
+        assert_eq!(geometry.subdraws[1].link, 0);
     }
 
     #[test]
@@ -2452,6 +2475,32 @@ mod tests {
         bytes.extend_from_slice(vertex_payload);
         bytes.extend_from_slice(&(index_payload.len() as u32).to_le_bytes());
         bytes.extend_from_slice(index_payload);
+        bytes.push(0);
+        bytes.push(1);
+        bytes.extend_from_slice(&32u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&10u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&20u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0x690u64.to_le_bytes());
+        bytes.extend_from_slice(b"masks/clipping_mask_eye\0");
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&0x691u64.to_le_bytes());
+        bytes.extend_from_slice(b"masks/clipping_mask_inner\0");
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes
     }
 }

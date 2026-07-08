@@ -79,4 +79,24 @@ pub struct SceneLayerAlphaMaskRtMethod8MdlvGeometry {
     pub index_count: u32,
     pub vertex_payload: Vec<u8>,
     pub index_payload: Vec<u8>,
+    pub source_records: Vec<SceneLayerAlphaMaskRtMethod8MdlvSourceRecord>,
+    pub subdraws: Vec<SceneLayerAlphaMaskRtMethod8MdlvSubdraw>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SceneLayerAlphaMaskRtMethod8MdlvSourceRecord {
+    pub source_index: u32,
+    pub local_offset: u32,
+    pub index_span_offset: u32,
+    pub index_span_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SceneLayerAlphaMaskRtMethod8MdlvSubdraw {
+    pub source_qword: u64,
+    pub mask_resource: String,
+    pub raw_flags: u32,
+    pub first_indices: Vec<u32>,
+    pub second_indices: Vec<u32>,
+    pub link: u32,
 }

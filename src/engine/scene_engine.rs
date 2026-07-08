@@ -82,8 +82,9 @@ pub use renderer_scene_render::RendererSceneRender;
 pub use rendering_device::{RenderingDevice, RenderingDeviceCommand};
 pub use rendering_server::RenderingServer;
 pub use resource::{
-    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, ScenePuppetId, SceneResource,
-    SceneResourceId, SceneTextureFormat,
+    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    SceneLayerAlphaMaskRtMethod8MdlvSourceRecord, SceneLayerAlphaMaskRtMethod8MdlvSubdraw,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 pub use resource_gpu_layout::{
     SCENE_GPU_GENERICIMAGE4_MATERIAL_UNIFORM_BYTES,

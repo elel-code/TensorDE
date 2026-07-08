@@ -7,12 +7,22 @@
 
 use serde::Serialize;
 
+use crate::engine::scene_engine::SceneLayerAlphaMaskRtMethod8MdlvGeometry;
+
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_PAYLOAD_REBUILD_VMA: &str =
     "0x14020ae00";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_COPY_SCALE_REGION: &str =
     "0x14020af31..0x14020b102";
 pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_AUX_PAYLOAD_REGION: &str =
     "0x14020b214..0x14020b66f";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_SLICE_HELPER_NO_TOKEN_VMA: &str =
+    "0x14020c710";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_SLICE_HELPER_APPEND_TOKEN0_VMA:
+    &str = "0x14020c850";
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_AUX_FLAG_FIRST_LIST: u32 = 0x1;
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_AUX_FLAG_FIRST_LIST_MODIFIER:
+    u32 = 0x4;
+pub(in crate::renderer::native_vulkan) const LAYER_490_RT_METHOD8_AUX_FLAG_SECOND_LIST: u32 = 0x8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8PayloadPlan {
@@ -77,6 +87,52 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub range: &'static str,
     pub source: &'static str,
     pub flag: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan
+{
+    pub source_record_count: usize,
+    pub subdraw_count: usize,
+    pub aux_record_count: usize,
+    pub records: Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadRecord>,
+    pub reference_points: [&'static str; 4],
+    pub command_order: [&'static str; 5],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadRecord
+{
+    pub payload_index: usize,
+    pub source_index: u32,
+    pub local_offset: u32,
+    pub index_span_offset: u32,
+    pub index_span_count: u32,
+    pub ordinal: u32,
+    pub flags: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSlicePlan
+{
+    pub helper_vma: &'static str,
+    pub draw_index: u32,
+    pub appends_token_zero: bool,
+    pub payload_indices: Vec<usize>,
+    pub index_count: u32,
+    pub index_payload: Vec<u8>,
+    pub copied_spans: Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSliceSpan>,
+    pub command_order: [&'static str; 6],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSliceSpan
+{
+    pub payload_index: usize,
+    pub source_index_offset: u32,
+    pub index_count: u32,
+    pub byte_offset: u32,
+    pub byte_count: u32,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_rt_method8_payload_plan()
@@ -231,6 +287,151 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_r
             "feed_token_52_53_0x14020cff0_and_0x14020d6a0_consumers",
         ],
     }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_rt_method8_lower_aux_payload(
+    geometry: &SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan, String> {
+    let mut records = geometry
+        .source_records
+        .iter()
+        .enumerate()
+        .map(
+            |(payload_index, record)| NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadRecord {
+                payload_index,
+                source_index: record.source_index,
+                local_offset: record.local_offset,
+                index_span_offset: record.index_span_offset,
+                index_span_count: record.index_span_count,
+                ordinal: payload_index.min(u32::MAX as usize) as u32,
+                flags: 0,
+            },
+        )
+        .collect::<Vec<_>>();
+
+    for (subdraw_index, subdraw) in geometry.subdraws.iter().enumerate() {
+        for payload_index in &subdraw.first_indices {
+            let record = aux_record_mut(&mut records, *payload_index, subdraw_index)?;
+            record.flags |= LAYER_490_RT_METHOD8_AUX_FLAG_FIRST_LIST;
+            if subdraw.raw_flags & 0x8 != 0 {
+                record.flags |= LAYER_490_RT_METHOD8_AUX_FLAG_FIRST_LIST_MODIFIER;
+            }
+        }
+        for payload_index in &subdraw.second_indices {
+            aux_record_mut(&mut records, *payload_index, subdraw_index)?.flags |=
+                LAYER_490_RT_METHOD8_AUX_FLAG_SECOND_LIST;
+        }
+    }
+
+    Ok(
+        NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan {
+            source_record_count: geometry.source_records.len(),
+            subdraw_count: geometry.subdraws.len(),
+            aux_record_count: records.len(),
+            records,
+            reference_points: [
+                "reverse-engineered/docs/exe/blend-and-render.md: 0x14020b3e0..0x14020b446 allocates 0x1c aux+0x298 records from entry+0xa8",
+                "reverse-engineered/docs/exe/clipping-pipeline.md: payload +0x0c/+0x10 are u16 index span offset/count",
+                "reverse-engineered/docs/exe/clipping-pipeline.md: subdraw +0x08/+0x20/+0x44 set aux flags 0x1/0x8/0x4",
+                "reverse-engineered/docs/exe/d3d11-context-calls.md: 0x14020c710/0x14020c850 materialize R16 indexed slices, not SRVs",
+            ],
+            command_order: [
+                "read_mdlv_optional_b_16_byte_source_records",
+                "initialize_aux_0x298_records_with_source_index_local_offset_and_index_span",
+                "apply_subdraw_first_list_flag_0x1",
+                "apply_subdraw_second_list_flag_0x8",
+                "apply_subdraw_raw_flag_0x8_modifier_0x4_to_first_list",
+            ],
+        },
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_alpha_mask_rt_method8_materialize_index_slice(
+    geometry: &SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    aux_payload: &NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadLoweringPlan,
+    draw_index: u32,
+    payload_indices: &[usize],
+    appends_token_zero: bool,
+) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSlicePlan, String> {
+    let mut index_payload = Vec::new();
+    let mut copied_spans = Vec::with_capacity(payload_indices.len());
+    let mut index_count = 0u32;
+    for payload_index in payload_indices {
+        let record = aux_payload.records.get(*payload_index).ok_or_else(|| {
+            format!(
+                "scene layer alpha-mask RT method [8] slice draw {draw_index} references missing aux+0x298 payload index {payload_index}"
+            )
+        })?;
+        let byte_offset = record.index_span_offset.checked_mul(2).ok_or_else(|| {
+            "scene layer alpha-mask RT method [8] slice byte offset overflowed".to_owned()
+        })?;
+        let byte_count = record.index_span_count.checked_mul(2).ok_or_else(|| {
+            "scene layer alpha-mask RT method [8] slice byte count overflowed".to_owned()
+        })?;
+        let byte_end = byte_offset.checked_add(byte_count).ok_or_else(|| {
+            "scene layer alpha-mask RT method [8] slice byte range overflowed".to_owned()
+        })?;
+        let source = geometry
+            .index_payload
+            .get(byte_offset as usize..byte_end as usize)
+            .ok_or_else(|| {
+                format!(
+                    "scene layer alpha-mask RT method [8] slice draw {draw_index} payload index {payload_index} references R16 span outside MDLV index payload"
+                )
+            })?;
+        index_payload.extend_from_slice(source);
+        index_count = index_count
+            .checked_add(record.index_span_count)
+            .ok_or_else(|| {
+                "scene layer alpha-mask RT method [8] slice index count overflowed".to_owned()
+            })?;
+        copied_spans.push(NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSliceSpan {
+            payload_index: *payload_index,
+            source_index_offset: record.index_span_offset,
+            index_count: record.index_span_count,
+            byte_offset,
+            byte_count,
+        });
+    }
+
+    Ok(NativeVulkanSceneLayerAlphaMaskRtMethod8IndexSlicePlan {
+        helper_vma: if appends_token_zero {
+            LAYER_490_RT_METHOD8_SLICE_HELPER_APPEND_TOKEN0_VMA
+        } else {
+            LAYER_490_RT_METHOD8_SLICE_HELPER_NO_TOKEN_VMA
+        },
+        draw_index,
+        appends_token_zero,
+        payload_indices: payload_indices.to_vec(),
+        index_count,
+        index_payload,
+        copied_spans,
+        command_order: [
+            "clear_layer_0x490_slice_slot_with_vtable_plus_0x38",
+            "configure_r16_slice_buffer_with_vtable_plus_0x30",
+            "map_slice_buffer_with_vtable_plus_0x50",
+            "copy_mdlv_index_payload_spans_from_entry_plus_0x58",
+            "unmap_slice_buffer_with_vtable_plus_0x58",
+            "append_token_0_only_for_0x14020c850",
+        ],
+    })
+}
+
+fn aux_record_mut(
+    records: &mut [NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadRecord],
+    payload_index: u32,
+    subdraw_index: usize,
+) -> Result<&mut NativeVulkanSceneLayerAlphaMaskRtMethod8AuxPayloadRecord, String> {
+    let Some(index) = usize::try_from(payload_index).ok() else {
+        return Err(format!(
+            "scene layer alpha-mask subdraw {subdraw_index} aux payload index overflowed"
+        ));
+    };
+    records.get_mut(index).ok_or_else(|| {
+        format!(
+            "scene layer alpha-mask subdraw {subdraw_index} references missing aux+0x298 payload index {payload_index}"
+        )
+    })
 }
 
 #[cfg(test)]

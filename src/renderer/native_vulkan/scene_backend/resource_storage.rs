@@ -516,6 +516,8 @@ mod tests {
                         index_count: 6,
                         vertex_bytes: 80,
                         index_bytes: 12,
+                        source_record_count: 0,
+                        subdraw_count: 0,
                     },
                 ),
             ],
@@ -618,6 +620,8 @@ mod tests {
                     index_count: 6,
                     vertex_bytes: 80,
                     index_bytes: 12,
+                    source_record_count: 0,
+                    subdraw_count: 0,
                 },
             )],
         };

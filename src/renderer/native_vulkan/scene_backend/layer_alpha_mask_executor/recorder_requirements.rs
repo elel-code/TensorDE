@@ -1026,13 +1026,15 @@ fn requirement_for_step_kind(
 
 fn clippingmaskimage4_missing_we_facts() -> Vec<&'static str> {
     vec![
-        "aux+0x298 per-source clipping payload lowering from 0x14020b214..0x14020b66f",
+        "recorder consumption of lowered aux+0x298 indexed-slice plan from 0x14020c710/0x14020c850",
         "clippingmaskimage4 MORPHING combo lowering and slot5 resource bind when active",
     ]
 }
 
 fn generated_clippingtarget_missing_we_facts() -> Vec<&'static str> {
-    vec!["aux+0x298 per-source clipping payload lowering for generated CLIPPINGTARGET draws"]
+    vec![
+        "recorder consumption of lowered aux+0x298 indexed-slice plan for generated CLIPPINGTARGET draws",
+    ]
 }
 
 fn recorder_requirement_command_order() -> [&'static str; 6] {

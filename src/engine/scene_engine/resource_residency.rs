@@ -87,6 +87,9 @@ impl From<&SceneResource> for SceneResidentResource {
                         index_count: geometry.index_count,
                         vertex_bytes: scene_raw_payload_bytes(&geometry.vertex_payload),
                         index_bytes: scene_raw_payload_bytes(&geometry.index_payload),
+                        source_record_count: geometry.source_records.len().min(u32::MAX as usize)
+                            as u32,
+                        subdraw_count: geometry.subdraws.len().min(u32::MAX as usize) as u32,
                     },
                 )
             }
@@ -206,6 +209,8 @@ pub struct SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
     pub index_count: u32,
     pub vertex_bytes: u64,
     pub index_bytes: u64,
+    pub source_record_count: u32,
+    pub subdraw_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -270,6 +275,8 @@ mod tests {
                     index_count: 6,
                     vertex_payload: vec![1; 80],
                     index_payload: vec![2; 12],
+                    source_records: Vec::new(),
+                    subdraws: Vec::new(),
                 },
             },
             SceneResource::PuppetRig {
@@ -316,6 +323,8 @@ mod tests {
                     index_count: 6,
                     vertex_bytes: 80,
                     index_bytes: bytes,
+                    source_record_count: 0,
+                    subdraw_count: 0,
                 }
             ) if bytes == 6 * SCENE_GPU_LAYER_ALPHA_MASK_RT_METHOD8_MDLV_INDEX_BYTES
         ));

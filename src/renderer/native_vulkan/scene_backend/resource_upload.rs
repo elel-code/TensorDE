@@ -1063,6 +1063,8 @@ mod tests {
                 index_count: 6,
                 vertex_payload: vertex_payload.clone(),
                 index_payload: index_payload.clone(),
+                source_records: Vec::new(),
+                subdraws: Vec::new(),
             },
         }];
 
@@ -1104,6 +1106,8 @@ mod tests {
                 index_count: 6,
                 vertex_payload: vec![1; 79],
                 index_payload: vec![2; 12],
+                source_records: Vec::new(),
+                subdraws: Vec::new(),
             },
         }];
 

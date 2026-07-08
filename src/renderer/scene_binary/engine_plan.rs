@@ -210,6 +210,8 @@ fn gscn_layer_alpha_mask_rt_method8_mdlv_geometries(
             index_count: geometry.index_count,
             vertex_payload: geometry.vertex_payload,
             index_payload: geometry.index_payload,
+            source_records: geometry.source_records,
+            subdraws: geometry.subdraws,
         });
     }
     Ok(geometries)

@@ -18,10 +18,11 @@ use crate::core::scene::{
 
 use super::super::{
     SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan,
-    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneMaterialContract,
-    SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram, SceneObjectGeometry,
-    SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource, SceneResourceId,
-    SceneTextureFormat,
+    SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    SceneLayerAlphaMaskRtMethod8MdlvSourceRecord, SceneLayerAlphaMaskRtMethod8MdlvSubdraw,
+    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram,
+    SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource,
+    SceneResourceId, SceneTextureFormat,
 };
 use crate::engine::scene_engine::SceneEffectProgram;
 
@@ -78,6 +79,8 @@ pub struct GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
     pub index_count: u32,
     pub vertex_payload: Vec<u8>,
     pub index_payload: Vec<u8>,
+    pub source_records: Vec<SceneLayerAlphaMaskRtMethod8MdlvSourceRecord>,
+    pub subdraws: Vec<SceneLayerAlphaMaskRtMethod8MdlvSubdraw>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -322,6 +325,8 @@ fn engine_resources(
                     index_count: fact.index_count,
                     vertex_payload: fact.vertex_payload,
                     index_payload: fact.index_payload,
+                    source_records: fact.source_records,
+                    subdraws: fact.subdraws,
                 },
             }),
     );
@@ -579,6 +584,8 @@ mod tests {
                     index_count: 6,
                     vertex_payload: vec![1; 80],
                     index_payload: vec![2; 12],
+                    source_records: Vec::new(),
+                    subdraws: Vec::new(),
                 },
             ],
             puppet_resources: vec![GscnPuppetResourceFact {
