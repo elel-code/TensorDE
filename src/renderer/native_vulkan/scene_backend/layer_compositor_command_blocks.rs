@@ -9,9 +9,14 @@
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SceneFramePlan, SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTarget,
+    SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneFramePlan, SceneGraphExecutionPass,
+    SceneGraphExecutionPlan, SceneGraphTarget,
 };
 
+use super::effect_executor::{
+    NativeVulkanSceneEffectRuntimeCommandPlan, NativeVulkanSceneEffectRuntimeFrameContext,
+    native_vulkan_record_scene_effect_object_final_material_pass,
+};
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::graph_executor::{
     NativeVulkanSceneGraphFrameCommandPlan, NativeVulkanSceneGraphPassCommandPlan,
@@ -59,18 +64,37 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorAl
     pub resource_binds: &'a NativeVulkanSceneLayerAlphaMaskResourceBindRuntimePlan,
 }
 
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorEffectBlockInputs<
+    'graph,
+    'context,
+> {
+    pub context: NativeVulkanSceneEffectRuntimeFrameContext<'context>,
+    pub graph: &'graph SceneEffectPassGraphPlan,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorCommandBlockRecordPlan
 {
     pub block_count: usize,
     pub mesh_span_block_count: usize,
+    pub object_final_effect_block_count: usize,
     pub alpha_mask_token_block_count: usize,
     pub no_draw_marker_block_count: usize,
     pub mesh_target_scope_count: usize,
+    pub object_final_effect_target_scope_count: usize,
     pub alpha_mask_target_scope_count: usize,
+    pub object_final_effect_recorded_command_count: usize,
     pub alpha_mask_recorded_step_count: usize,
     pub alpha_mask_token_draw_list: NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan,
     pub command_order: [&'static str; 7],
+}
+
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<
+    'a,
+> {
+    pub mesh_frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
+    pub command_blocks: NativeVulkanSceneLayerCompositorCommandBlockRecordPlan,
+    pub effect_commands: Vec<NativeVulkanSceneEffectRuntimeCommandPlan<'a>>,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compositor_command_blocks<
@@ -82,18 +106,18 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     graph_execution: &SceneGraphExecutionPlan,
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
-) -> Result<
-    Option<(
-        NativeVulkanSceneGraphFrameCommandPlan<'a>,
-        NativeVulkanSceneLayerCompositorCommandBlockRecordPlan,
-    )>,
-    String,
-> {
+    effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_>,
+) -> Result<Option<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>>, String> {
     if schedule.recording_block_count == 0 && graph_execution.pass_count == 0 {
-        return Ok(Some((
-            empty_mesh_block_frame_plan(context.target_formats.target_format_count()),
-            NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::empty(),
-        )));
+        return Ok(Some(
+            NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
+                mesh_frame: empty_mesh_block_frame_plan(
+                    context.target_formats.target_format_count(),
+                ),
+                command_blocks: NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::empty(),
+                effect_commands: Vec::new(),
+            },
+        ));
     }
     if !schedule_is_command_block_recordable(schedule) {
         return Ok(None);
@@ -145,6 +169,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     let mut mesh_target_scope_count = 0usize;
     let mut counts = NativeVulkanSceneMeshPassDrawSpanCounts::default();
     let mut alpha_steps = Vec::new();
+    let mut effect_commands = Vec::new();
+    let mut written_effect_targets = std::collections::BTreeSet::new();
     let mut swapchain_current_layout = context.swapchain_target.initial_layout;
     let mut swapchain_was_written = false;
 
@@ -281,8 +307,26 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                 }
                 alpha_steps.push(step);
             }
-            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
-            | NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {
+                let object = schedule
+                    .steps
+                    .get(block.step_index_start)
+                    .ok_or_else(|| {
+                        format!(
+                            "scene layer compositor ObjectFinal block {} has no schedule step",
+                            block.block_index
+                        )
+                    })?
+                    .object;
+                effect_commands.push(native_vulkan_record_scene_effect_object_final_material_pass(
+                    frame_resources,
+                    &effect_inputs.context,
+                    effect_inputs.graph,
+                    object,
+                    &mut written_effect_targets,
+                )?);
+            }
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
                 return Ok(None);
             }
         }
@@ -329,9 +373,16 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
         NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::from_recorded_parts(
             schedule,
             mesh_target_scope_count,
+            effect_commands.len(),
             alpha_mask_token_draw_list,
         );
-    Ok(Some((mesh_frame, command_blocks)))
+    Ok(Some(
+        NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
+            mesh_frame,
+            command_blocks,
+            effect_commands,
+        },
+    ))
 }
 
 impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
@@ -339,10 +390,13 @@ impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
         Self {
             block_count: 0,
             mesh_span_block_count: 0,
+            object_final_effect_block_count: 0,
             alpha_mask_token_block_count: 0,
             no_draw_marker_block_count: 0,
             mesh_target_scope_count: 0,
+            object_final_effect_target_scope_count: 0,
             alpha_mask_target_scope_count: 0,
+            object_final_effect_recorded_command_count: 0,
             alpha_mask_recorded_step_count: 0,
             alpha_mask_token_draw_list:
                 NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan::empty(),
@@ -353,15 +407,19 @@ impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {
     fn from_recorded_parts(
         schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
         mesh_target_scope_count: usize,
+        object_final_effect_recorded_command_count: usize,
         alpha_mask_token_draw_list: NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan,
     ) -> Self {
         Self {
             block_count: schedule.recording_block_count,
             mesh_span_block_count: schedule.mesh_graph_draw_span_block_count,
+            object_final_effect_block_count: schedule.object_final_producer_command_count,
             alpha_mask_token_block_count: schedule.alpha_mask_token_recording_block_count,
             no_draw_marker_block_count: schedule.no_draw_marker_block_count,
             mesh_target_scope_count,
+            object_final_effect_target_scope_count: object_final_effect_recorded_command_count,
             alpha_mask_target_scope_count: alpha_mask_token_draw_list.target_scope_count,
+            object_final_effect_recorded_command_count,
             alpha_mask_recorded_step_count: alpha_mask_token_draw_list.scheduled_step_count,
             alpha_mask_token_draw_list,
             command_order: command_block_record_order(),
@@ -373,9 +431,9 @@ fn command_block_record_order() -> [&'static str; 7] {
     [
         "read_layer_compositor_recording_blocks",
         "record_mesh_spans_in_schedule_order",
+        "record_object_final_effects_in_schedule_order",
         "preserve_no_draw_layer_markers",
         "record_alpha_mask_token_steps_in_schedule_order",
-        "close_swapchain_scopes_before_offscreen_alpha_work",
         "keep_descriptor_heap_binding_model",
         "leave_effect_and_clear_blocks_for_full_compositor_recorder",
     ]
@@ -388,13 +446,15 @@ fn schedule_is_command_block_recordable(
         == schedule
             .mesh_graph_draw_span_block_count
             .saturating_add(schedule.no_draw_marker_block_count)
+            .saturating_add(schedule.object_final_producer_command_count)
             .saturating_add(schedule.alpha_mask_token_recording_block_count)
         && schedule.recording_blocks.iter().all(|block| {
             matches!(
                 block.kind,
-                NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
-                    | NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
-                    | NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
+                    NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
+                        | NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+                        | NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
+                        | NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
             )
         })
 }
@@ -415,14 +475,45 @@ fn last_swapchain_writer_block_index(
                     last = Some(block.block_index);
                 }
             }
-            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker => {}
-            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
-            | NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
+            | NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {}
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
                 return Ok(None);
             }
         }
     }
     Ok(last)
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+    schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
+    graph: &SceneEffectPassGraphPlan,
+) -> bool {
+    if schedule.object_final_producer_command_count == 0 {
+        return false;
+    }
+    if graph.copy_command_count != 0 || graph.swap_command_count != 0 {
+        return false;
+    }
+    if graph.material_pass_count != schedule.object_final_producer_command_count {
+        return false;
+    }
+    let objects = schedule
+        .steps
+        .iter()
+        .filter(|step| {
+            step.scheduled_kind
+                == super::layer_compositor_scheduler::NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime
+        })
+        .map(|step| step.object)
+        .collect::<std::collections::BTreeSet<_>>();
+    if objects.len() != graph.passes.len() {
+        return false;
+    }
+    graph.passes.iter().all(|pass| {
+        pass.output == SceneEffectPassGraphOutput::ObjectFinal(pass.object)
+            && objects.contains(&pass.object)
+    })
 }
 
 fn alpha_token_block_writes_swapchain(
@@ -504,9 +595,9 @@ fn mesh_blocks_cover_execution_pass(
                 next_draw_index = draw_end;
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker
-            | NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep => {}
-            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
-            | NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
+            | NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep
+            | NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime => {}
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired => {
                 return Ok(false);
             }
         }
@@ -534,9 +625,18 @@ fn empty_mesh_block_frame_plan(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use crate::engine::scene_engine::{
+        SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
+        SceneEffectPassGraphMaterialPass, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
+        SceneLayerCompositorRoute, SceneObjectId, we::WeEffectKind,
+    };
+
     use super::super::layer_compositor_scheduler::{
         NativeVulkanSceneLayerCompositorRecordingBlock,
-        NativeVulkanSceneLayerCompositorSchedulePlan,
+        NativeVulkanSceneLayerCompositorSchedulePlan, NativeVulkanSceneLayerCompositorScheduleStep,
+        NativeVulkanSceneLayerCompositorScheduledKind,
     };
     use super::*;
 
@@ -577,18 +677,66 @@ mod tests {
     }
 
     #[test]
-    fn mesh_block_recorder_rejects_effect_and_clear_blocks() {
+    fn mesh_block_recorder_accepts_object_final_effect_blocks() {
         let effect = schedule(vec![block(
             0,
             NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime,
         )]);
+
+        assert!(schedule_is_command_block_recordable(&effect));
+    }
+
+    #[test]
+    fn mesh_block_recorder_rejects_clear_blocks() {
         let clear = schedule(vec![block(
             0,
             NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired,
         )]);
 
-        assert!(!schedule_is_command_block_recordable(&effect));
         assert!(!schedule_is_command_block_recordable(&clear));
+    }
+
+    #[test]
+    fn object_final_effect_blocks_require_object_final_only_graph() {
+        let object = SceneObjectId(7);
+        let schedule = object_final_schedule(object);
+        let graph = object_final_graph(object);
+
+        assert!(
+            native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(&schedule, &graph)
+        );
+
+        let mut graph_with_copy = object_final_graph(object);
+        graph_with_copy.copy_command_count = 1;
+        assert!(
+            !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+                &schedule,
+                &graph_with_copy
+            )
+        );
+
+        let mismatched_graph = object_final_graph(SceneObjectId(8));
+        assert!(
+            !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+                &schedule,
+                &mismatched_graph
+            )
+        );
+    }
+
+    #[test]
+    fn object_final_effect_blocks_ignore_frames_without_object_final_producers() {
+        let schedule = schedule(vec![block(
+            0,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan,
+        )]);
+
+        assert!(
+            !native_vulkan_scene_layer_compositor_effect_blocks_are_recordable(
+                &schedule,
+                &SceneEffectPassGraphPlan::empty()
+            )
+        );
     }
 
     #[test]
@@ -636,7 +784,13 @@ mod tests {
                         == NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan
                 })
                 .count(),
-            object_final_producer_command_count: 0,
+            object_final_producer_command_count: recording_blocks
+                .iter()
+                .filter(|block| {
+                    block.kind
+                        == NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime
+                })
+                .count(),
             object_final_composite_command_count: 0,
             alpha_mask_token_draw_list_command_count: recording_blocks
                 .iter()
@@ -681,6 +835,60 @@ mod tests {
                 "reject_missing_alpha_mask_token_draw_list_steps",
                 "emit_schedule_for_present_frame_recorder",
             ],
+        }
+    }
+
+    fn object_final_schedule(
+        object: SceneObjectId,
+    ) -> NativeVulkanSceneLayerCompositorSchedulePlan {
+        let mut plan = schedule(vec![block(
+            0,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime,
+        )]);
+        plan.steps = vec![NativeVulkanSceneLayerCompositorScheduleStep {
+            global_command_index: 0,
+            layer_index: 0,
+            layer_command_index: 0,
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            entry: SceneLayerCompositorEntry::NormalRenderEntry32,
+            operation: SceneLayerCompositorOperation::NormalRender,
+            scheduled_kind:
+                NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalProducerEffectRuntime,
+            graph_pass_index: None,
+            graph_draw_index: None,
+            token_recording_step_index: None,
+            command_order: vec!["test_object_final_producer"],
+        }];
+        plan
+    }
+
+    fn object_final_graph(object: SceneObjectId) -> SceneEffectPassGraphPlan {
+        SceneEffectPassGraphPlan {
+            object_program_count: 1,
+            material_pass_count: 1,
+            passes: vec![SceneEffectPassGraphMaterialPass {
+                graph_command_index: 0,
+                graph_pass_index: 0,
+                object,
+                program_index: 0,
+                pass_index: 0,
+                effect_file: "effects/test/effect.json".to_owned(),
+                effect: WeEffectKind::Unknown,
+                shader: Some("effects/iris".to_owned()),
+                source: None,
+                input_bindings: Vec::new(),
+                output: SceneEffectPassGraphOutput::ObjectFinal(object),
+                blend: SceneEffectPassBlend::NormalReplace,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_write: SceneAlphaWriteMode::Default,
+                texture_resources: Vec::new(),
+                combos: BTreeMap::new(),
+                constants: BTreeMap::new(),
+            }],
+            ..SceneEffectPassGraphPlan::empty()
         }
     }
 
