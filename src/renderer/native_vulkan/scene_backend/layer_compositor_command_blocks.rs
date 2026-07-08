@@ -123,17 +123,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
     effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_, '_>,
-) -> Result<Option<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>>, String> {
+) -> Result<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>, String> {
     if schedule.recording_block_count == 0 && graph_execution.pass_count == 0 {
-        return Ok(Some(
-            NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
-                mesh_frame: empty_mesh_block_frame_plan(
-                    context.target_formats.target_format_count(),
-                ),
-                command_blocks: NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::empty(),
-                effect_commands: Vec::new(),
-            },
-        ));
+        return Ok(NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
+            mesh_frame: empty_mesh_block_frame_plan(context.target_formats.target_format_count()),
+            command_blocks: NativeVulkanSceneLayerCompositorCommandBlockRecordPlan::empty(),
+            effect_commands: Vec::new(),
+        });
     }
     if schedule.clear_prep_recorder_required_count != 0 {
         return Err(format!(
@@ -142,11 +138,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
         ));
     }
     if !schedule_is_command_block_recordable(schedule) {
-        return Ok(None);
+        return Err(
+            "scene layer compositor command-block recorder requires every scheduled block to be MeshGraphDrawSpan, NoDrawLayerMarker, ObjectFinalProducerEffectRuntime, or AlphaMaskTokenDrawListStep; missing recorder kinds must be implemented, not skipped"
+                .to_owned(),
+        );
     }
 
     if !mesh_execution_passes_are_command_block_recordable(schedule, graph_execution)? {
-        return Ok(None);
+        return Err(
+            "scene layer compositor command-block recorder requires mesh graph execution passes to be fully covered by WE layer-order command blocks"
+                .to_owned(),
+        );
     }
     let last_swapchain_writer_block = last_swapchain_writer_block_index(schedule, &alpha_inputs)?;
     let mut passes = Vec::with_capacity(schedule.mesh_graph_draw_span_block_count);
@@ -402,13 +404,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
             effect_counts,
             alpha_mask_token_draw_list,
         );
-    Ok(Some(
-        NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
-            mesh_frame,
-            command_blocks,
-            effect_commands,
-        },
-    ))
+    Ok(NativeVulkanSceneLayerCompositorCommandBlockRecordOutput {
+        mesh_frame,
+        command_blocks,
+        effect_commands,
+    })
 }
 
 impl NativeVulkanSceneLayerCompositorCommandBlockRecordPlan {

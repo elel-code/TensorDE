@@ -593,29 +593,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         target_formats: context.target_formats,
         clear_color: context.clear_color,
     };
-    let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) =
-        if let Some(command_block_output) =
-            native_vulkan_record_scene_layer_compositor_command_blocks(
-                frame_resources,
-                graph_context,
-                frame,
-                &graph_execution,
-                layer_compositor_schedule,
-                alpha_inputs,
-                effect_inputs,
-            )?
-        {
-            (
-                Some(command_block_output.command_blocks),
-                command_block_output.effect_commands,
-                command_block_output.mesh_frame,
-            )
-        } else {
-            return Err(
-            "scene runtime requires layer compositor command-block recording; graph-executor fallback is not allowed"
-                .to_owned(),
-        );
-        };
+    let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) = {
+        let command_block_output = native_vulkan_record_scene_layer_compositor_command_blocks(
+            frame_resources,
+            graph_context,
+            frame,
+            &graph_execution,
+            layer_compositor_schedule,
+            alpha_inputs,
+            effect_inputs,
+        )?;
+        (
+            Some(command_block_output.command_blocks),
+            command_block_output.effect_commands,
+            command_block_output.mesh_frame,
+        )
+    };
 
     let mesh = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         graph_execution,
