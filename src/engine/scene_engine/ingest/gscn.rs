@@ -92,6 +92,13 @@ pub struct GscnLayerAuxCompositeTargetFact {
     pub effect_target_3f8: bool,
     pub generated_material_408: bool,
     pub clear_material_410: bool,
+    pub clear_target_width: u32,
+    pub clear_target_height: u32,
+    pub clear_target_color_format: u32,
+    pub clear_target_aux_format: u32,
+    pub clear_target_r9_selector: u32,
+    pub clear_target_resource_selector: u32,
+    pub clear_target_cache_selector: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -353,6 +360,13 @@ fn engine_resources(
                 effect_target_3f8: fact.effect_target_3f8,
                 generated_material_408: fact.generated_material_408,
                 clear_material_410: fact.clear_material_410,
+                clear_target_width: fact.clear_target_width,
+                clear_target_height: fact.clear_target_height,
+                clear_target_color_format: fact.clear_target_color_format,
+                clear_target_aux_format: fact.clear_target_aux_format,
+                clear_target_r9_selector: fact.clear_target_r9_selector,
+                clear_target_resource_selector: fact.clear_target_resource_selector,
+                clear_target_cache_selector: fact.clear_target_cache_selector,
             },
         }
     }));
@@ -522,6 +536,11 @@ fn we_material_blend_contract(blending: Option<&str>) -> SceneBlendContract {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::scene_engine::{
+        WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT, WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
+        WE_LAYER_AUX_CLEAR_TARGET_DEFAULT_COLOR_FORMAT, WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+        WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+    };
 
     #[test]
     fn we_material_blending_names_lower_to_recovered_low_modes() {
@@ -621,6 +640,13 @@ mod tests {
                 effect_target_3f8: true,
                 generated_material_408: true,
                 clear_material_410: true,
+                clear_target_width: 3840,
+                clear_target_height: 2160,
+                clear_target_color_format: WE_LAYER_AUX_CLEAR_TARGET_DEFAULT_COLOR_FORMAT,
+                clear_target_aux_format: WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                clear_target_r9_selector: WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                clear_target_resource_selector: WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                clear_target_cache_selector: WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
             }],
             puppet_resources: vec![GscnPuppetResourceFact {
                 source_record: 3,

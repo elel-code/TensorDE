@@ -102,6 +102,13 @@ impl From<&SceneResource> for SceneResidentResource {
                     effect_target_3f8: targets.effect_target_3f8,
                     generated_material_408: targets.generated_material_408,
                     clear_material_410: targets.clear_material_410,
+                    clear_target_width: targets.clear_target_width,
+                    clear_target_height: targets.clear_target_height,
+                    clear_target_color_format: targets.clear_target_color_format,
+                    clear_target_aux_format: targets.clear_target_aux_format,
+                    clear_target_r9_selector: targets.clear_target_r9_selector,
+                    clear_target_resource_selector: targets.clear_target_resource_selector,
+                    clear_target_cache_selector: targets.clear_target_cache_selector,
                     clear_prep_ready: targets.clear_prep_ready(),
                 })
             }
@@ -233,6 +240,13 @@ pub struct SceneLayerAuxCompositeTargetsResidency {
     pub effect_target_3f8: bool,
     pub generated_material_408: bool,
     pub clear_material_410: bool,
+    pub clear_target_width: u32,
+    pub clear_target_height: u32,
+    pub clear_target_color_format: u32,
+    pub clear_target_aux_format: u32,
+    pub clear_target_r9_selector: u32,
+    pub clear_target_resource_selector: u32,
+    pub clear_target_cache_selector: u32,
     pub clear_prep_ready: bool,
 }
 

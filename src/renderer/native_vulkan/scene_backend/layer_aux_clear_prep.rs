@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneLayerAuxCompositeTargetsResidency, SceneObjectId, SceneResidentResource,
+    SceneGraphTarget, SceneLayerAuxCompositeTargetsResidency, SceneObjectId, SceneResidentResource,
     SceneResourceResidencyPlan, WE_AUX_CLEAR_PREP_VMA, WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET,
     WE_LAYER_AUX_CLEAR_TARGET_OFFSET, WE_LAYER_AUX_EFFECT_TARGET_OFFSET,
     WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET, WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
@@ -30,7 +30,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAuxClearPrep
     pub material_target_draw_count: usize,
     pub target_pop_count: usize,
     pub commands: Vec<NativeVulkanSceneLayerAuxClearPrepCommandPlan>,
-    pub command_order: [&'static str; 7],
+    pub command_order: [&'static str; 8],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -41,6 +41,14 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAuxClearPrep
     pub step_index_end: usize,
     pub object: SceneObjectId,
     pub clear_target_offset: u32,
+    pub clear_target: SceneGraphTarget,
+    pub clear_target_width: u32,
+    pub clear_target_height: u32,
+    pub clear_target_color_format: u32,
+    pub clear_target_aux_format: u32,
+    pub clear_target_r9_selector: u32,
+    pub clear_target_resource_selector: u32,
+    pub clear_target_cache_selector: u32,
     pub material_target_offset: u32,
     pub effect_target_offset: u32,
     pub generated_material_offset: u32,
@@ -165,6 +173,14 @@ impl NativeVulkanSceneLayerAuxClearPrepCommandPlan {
             step_index_end,
             object,
             clear_target_offset: WE_LAYER_AUX_CLEAR_TARGET_OFFSET,
+            clear_target: SceneGraphTarget::LayerAuxClear(object),
+            clear_target_width: targets.clear_target_width,
+            clear_target_height: targets.clear_target_height,
+            clear_target_color_format: targets.clear_target_color_format,
+            clear_target_aux_format: targets.clear_target_aux_format,
+            clear_target_r9_selector: targets.clear_target_r9_selector,
+            clear_target_resource_selector: targets.clear_target_resource_selector,
+            clear_target_cache_selector: targets.clear_target_cache_selector,
             material_target_offset: WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
             effect_target_offset: WE_LAYER_AUX_EFFECT_TARGET_OFFSET,
             generated_material_offset: WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET,
@@ -182,7 +198,7 @@ impl NativeVulkanSceneLayerAuxClearPrepCommandPlan {
                 "reverse-engineered/docs/exe/blend-and-render.md: 0x140207740 aux clear/prep cluster",
                 "reverse-engineered/docs/exe/d3d11-context-calls.md: [layer+0x4b8]+0x3e8 early-out and restore",
                 "reverse-engineered/reconstructed/cpp/wallpaper64/layer/resource_update_0x1402065e0.cpp: 0x140209540 resource-update route",
-                "0x14020a083 stores [aux+0x3e8]; 0x14020a3f0 stores [aux+0x3f0]",
+                "0x14020a07b creates [aux+0x3e8] with desc +0x2c/+0x30, color format 0/0xe, aux format 0x1b",
                 "0x14020a2bd stores [aux+0x410]; 0x14020a573 releases/zeros [aux+0x3e8]",
             ],
             command_order: [
@@ -217,11 +233,12 @@ fn aux_targets_for_object(
         })
 }
 
-fn aux_clear_prep_frame_order() -> [&'static str; 7] {
+fn aux_clear_prep_frame_order() -> [&'static str; 8] {
     [
         "read_layer_compositor_active_clear_prep_blocks",
         "join_blocks_to_scene_layer_aux_composite_targets",
         "require_aux_0x3e8_0x3f0_0x3f8_0x408_0x410",
+        "preserve_0x14020a07b_target_create_arguments",
         "emit_target_push_clear_material_draw_pop_sequence",
         "preserve_we_0x140207740_order",
         "keep_descriptor_heap_model",
@@ -234,7 +251,9 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorEntry,
-        SceneLayerCompositorOperation,
+        SceneLayerCompositorOperation, WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+        WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR, WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+        WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
     };
     use crate::renderer::native_vulkan::scene_backend::layer_compositor_scheduler::{
         NativeVulkanSceneLayerCompositorRecordingBlock,
@@ -260,6 +279,29 @@ mod tests {
         assert_eq!(plan.target_pop_count, 1);
         assert_eq!(plan.commands[0].clear_prep_vma, 0x140207740);
         assert_eq!(plan.commands[0].clear_target_offset, 0x3e8);
+        assert_eq!(
+            plan.commands[0].clear_target,
+            SceneGraphTarget::LayerAuxClear(object)
+        );
+        assert_eq!(plan.commands[0].clear_target_width, 3840);
+        assert_eq!(plan.commands[0].clear_target_height, 2160);
+        assert_eq!(plan.commands[0].clear_target_color_format, 0);
+        assert_eq!(
+            plan.commands[0].clear_target_aux_format,
+            WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT
+        );
+        assert_eq!(
+            plan.commands[0].clear_target_r9_selector,
+            WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR
+        );
+        assert_eq!(
+            plan.commands[0].clear_target_resource_selector,
+            WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR
+        );
+        assert_eq!(
+            plan.commands[0].clear_target_cache_selector,
+            WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR
+        );
         assert_eq!(plan.commands[0].material_target_offset, 0x3f0);
         assert_eq!(plan.commands[0].effect_target_offset, 0x3f8);
         assert_eq!(plan.commands[0].generated_material_offset, 0x408);
@@ -324,6 +366,13 @@ mod tests {
                     effect_target_3f8: complete,
                     generated_material_408: true,
                     clear_material_410: true,
+                    clear_target_width: 3840,
+                    clear_target_height: 2160,
+                    clear_target_color_format: 0,
+                    clear_target_aux_format: WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                    clear_target_r9_selector: WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                    clear_target_resource_selector: WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                    clear_target_cache_selector: WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
                     clear_prep_ready: complete,
                 },
             )],

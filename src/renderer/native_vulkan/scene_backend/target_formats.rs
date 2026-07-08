@@ -56,6 +56,12 @@ impl NativeVulkanSceneGraphTargetFormatPlan {
                 SceneGraphTarget::ImageLayerSource(_) => {
                     (swapchain_format, "image_layer_source_surface_format")
                 }
+                SceneGraphTarget::LayerAuxClear(_) => {
+                    return Err(format!(
+                        "scene graph target {:?} requires explicit WE aux target format metadata",
+                        lifetime.target
+                    ));
+                }
                 SceneGraphTarget::ImageLocalMain(_)
                 | SceneGraphTarget::ImageLocalSub(_)
                 | SceneGraphTarget::EffectTarget(_) => (

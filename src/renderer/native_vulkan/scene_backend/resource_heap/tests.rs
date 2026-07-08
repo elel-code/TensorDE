@@ -484,6 +484,7 @@ fn target_binding_ordinal(target: SceneGraphTarget) -> u64 {
         SceneGraphTarget::ImageLayerSource(object) => 0x800 + u64::from(object.0),
         SceneGraphTarget::FullAlphaMask => 0x600,
         SceneGraphTarget::FullAlphaMaskIntermediate => 0x601,
+        SceneGraphTarget::LayerAuxClear(object) => 0x900 + u64::from(object.0),
     }
 }
 

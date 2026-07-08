@@ -23,6 +23,7 @@ pub enum SceneGraphTarget {
     ImageLayerCompositeA(SceneObjectId),
     ImageLayerSource(SceneObjectId),
     ObjectFinal(SceneObjectId),
+    LayerAuxClear(SceneObjectId),
     FullAlphaMask,
     FullAlphaMaskIntermediate,
 }

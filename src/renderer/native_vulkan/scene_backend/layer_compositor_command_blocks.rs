@@ -1532,6 +1532,17 @@ mod tests {
                     effect_target_3f8: true,
                     generated_material_408: true,
                     clear_material_410: true,
+                    clear_target_width: 3840,
+                    clear_target_height: 2160,
+                    clear_target_color_format: 0,
+                    clear_target_aux_format:
+                        crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                    clear_target_r9_selector:
+                        crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                    clear_target_resource_selector:
+                        crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                    clear_target_cache_selector:
+                        crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
                     clear_prep_ready: true,
                 },
             )],

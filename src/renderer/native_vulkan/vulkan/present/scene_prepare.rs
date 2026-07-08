@@ -40,6 +40,7 @@ use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use crate::renderer::native_vulkan::scene_backend::layer_aux_targets::NativeVulkanSceneLayerAuxTargetPlan;
 use crate::renderer::native_vulkan::scene_backend::pipeline_prepare::{
     NativeVulkanSceneMeshPipelinePreparePlan,
     native_vulkan_prepare_scene_mesh_pipeline_cache_with_shader_catalog_and_extra_keys,
@@ -64,6 +65,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub scene_shader_count: usize,
     pub graph_target_format_count: usize,
     pub effect_target_count: usize,
+    pub layer_aux_target_count: usize,
     pub effect_texture_descriptor_binding_count: usize,
     pub effect_uniform_gpu_buffer_action_count: usize,
     pub effect_resource_heap_action_count: usize,
@@ -78,7 +80,7 @@ pub struct NativeVulkanVulkanaliaScenePrepareSnapshot {
     pub offscreen_target_count: usize,
     pub offscreen_target_action_count: usize,
     pub cold_prepare_wait: &'static str,
-    pub command_order: [&'static str; 13],
+    pub command_order: [&'static str; 14],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -171,14 +173,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
                 swapchain_extent,
                 target_formats.format(SceneGraphTarget::Swapchain)?,
             )?;
+        let layer_aux_target_plan =
+            NativeVulkanSceneLayerAuxTargetPlan::from_residency(&frame.residency)?;
+        let mut extra_target_requirements = effect_target_plan.requirements().to_vec();
+        extra_target_requirements.extend_from_slice(layer_aux_target_plan.requirements());
         let offscreen_target_plan = frame_resources
             .offscreen_target_frame_plan_with_effect_targets(
                 graph_execution,
                 swapchain_extent,
                 |target| target_formats.format(target),
-                effect_target_plan.requirements(),
+                &extra_target_requirements,
             )?;
         let effect_target_count = effect_target_plan.target_count;
+        let layer_aux_target_count = layer_aux_target_plan.target_count;
         let offscreen_target_count = offscreen_target_plan.target_count;
         let offscreen_target_action_count = frame_resources
             .sync_offscreen_targets(
@@ -369,6 +376,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             scene_shader_count: shader_catalog.shader_count(),
             graph_target_format_count: target_formats.target_format_count(),
             effect_target_count,
+            layer_aux_target_count,
             effect_texture_descriptor_binding_count,
             effect_uniform_gpu_buffer_action_count,
             effect_resource_heap_action_count,
@@ -385,6 +393,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn prepare_scene_resources_and_pi
             cold_prepare_wait: "vkWaitForFences only before present-frame loop",
             command_order: [
                 "derive_effect_target_requirements",
+                "derive_layer_aux_target_requirements",
                 "sync_retained_offscreen_targets",
                 "record_resource_prepare_command_buffer",
                 "prepare_layer_alpha_mask_descriptors",

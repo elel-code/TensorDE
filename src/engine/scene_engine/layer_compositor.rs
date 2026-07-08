@@ -350,7 +350,8 @@ fn layer_target_from_graph_target(target: SceneGraphTarget) -> SceneLayerComposi
         SceneGraphTarget::ImageLocalMain(_)
         | SceneGraphTarget::ImageLocalSub(_)
         | SceneGraphTarget::NamedFbo(_)
-        | SceneGraphTarget::EffectTarget(_) => {
+        | SceneGraphTarget::EffectTarget(_)
+        | SceneGraphTarget::LayerAuxClear(_) => {
             panic!("scene layer compositor cannot consume unrelated graph target {target:?}")
         }
     }
@@ -600,6 +601,18 @@ mod tests {
                 effect_target_3f8: false,
                 generated_material_408: true,
                 clear_material_410: true,
+                clear_target_width: 3840,
+                clear_target_height: 2160,
+                clear_target_color_format:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_DEFAULT_COLOR_FORMAT,
+                clear_target_aux_format:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                clear_target_r9_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                clear_target_resource_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                clear_target_cache_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
             },
         };
 
@@ -619,6 +632,18 @@ mod tests {
                 effect_target_3f8: true,
                 generated_material_408: true,
                 clear_material_410: true,
+                clear_target_width: 3840,
+                clear_target_height: 2160,
+                clear_target_color_format:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_DEFAULT_COLOR_FORMAT,
+                clear_target_aux_format:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                clear_target_r9_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                clear_target_resource_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                clear_target_cache_selector:
+                    crate::engine::scene_engine::WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
             },
         };
         let complete_plan = SceneLayerCompositorPlan::from_scene(
