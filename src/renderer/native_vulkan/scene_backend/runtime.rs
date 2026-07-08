@@ -83,6 +83,10 @@ use super::layer_aux_clear_prep::{
 use super::layer_aux_clear_scope::{
     NativeVulkanSceneLayerAuxClearScopeFramePlan, native_vulkan_plan_scene_layer_aux_clear_scopes,
 };
+use super::layer_aux_material_commands::{
+    NativeVulkanSceneLayerAuxMaterialCommandFramePlan,
+    native_vulkan_plan_scene_layer_aux_material_commands,
+};
 use super::layer_aux_material_draws::{
     NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
     native_vulkan_plan_scene_layer_aux_material_draws,
@@ -153,10 +157,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_aux_clear_prep: NativeVulkanSceneLayerAuxClearPrepFramePlan,
     pub layer_aux_material_draws: NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
     pub layer_aux_clear_scopes: NativeVulkanSceneLayerAuxClearScopeFramePlan,
+    pub layer_aux_material_commands: NativeVulkanSceneLayerAuxMaterialCommandFramePlan,
     pub layer_compositor_schedule: NativeVulkanSceneLayerCompositorSchedulePlan,
     pub layer_compositor_block_recording: NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 27],
+    pub command_order: [&'static str; 28],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +393,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_aux_clear_prep,
         layer_aux_material_draws,
         layer_aux_clear_scopes,
+        layer_aux_material_commands,
     ) = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -462,6 +468,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_aux_clear_prep,
         layer_aux_material_draws,
         layer_aux_clear_scopes,
+        layer_aux_material_commands,
         layer_compositor_schedule,
         layer_compositor_block_recording,
         mesh,
@@ -491,6 +498,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_scene_layer_aux_clear_prep",
             "plan_scene_layer_aux_material_draw_receivers",
             "plan_scene_layer_aux_clear_target_scopes",
+            "plan_scene_layer_aux_material_scoped_draw_commands",
             "record_scene_mesh_graph_runtime",
             "plan_scene_layer_compositor_block_recording",
         ],
@@ -596,6 +604,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         NativeVulkanSceneLayerAuxClearPrepFramePlan,
         NativeVulkanSceneLayerAuxMaterialDrawFramePlan,
         NativeVulkanSceneLayerAuxClearScopeFramePlan,
+        NativeVulkanSceneLayerAuxMaterialCommandFramePlan,
     ),
     String,
 > {
@@ -630,6 +639,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         &aux_clear_prep,
         &aux_material_draws,
     )?;
+    let aux_material_commands = native_vulkan_plan_scene_layer_aux_material_commands(
+        &aux_clear_scopes,
+        &aux_material_draws,
+    )?;
     let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) = {
         let command_block_output = native_vulkan_record_scene_layer_compositor_command_blocks(
             frame_resources,
@@ -640,6 +653,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             &aux_clear_prep,
             &aux_material_draws,
             &aux_clear_scopes,
+            &aux_material_commands,
             alpha_inputs,
             effect_inputs,
         )?;
@@ -663,6 +677,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         aux_clear_prep,
         aux_material_draws,
         aux_clear_scopes,
+        aux_material_commands,
     ))
 }
 
