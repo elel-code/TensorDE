@@ -274,6 +274,12 @@ fn validate_scene_effect_pipeline_iris_key(
         .iter()
         .any(|combo| combo.name == "BACKGROUND" && combo.value != 0);
     let mask_texture_bound = key.texture_slot_mask & (1u32 << 1) != 0;
+    if key.effect_uniform_buffer_count != 2 {
+        return Err(format!(
+            "scene effect pipeline shader 'effects/iris' requires 2 stage-split effect uniform buffers, got {}",
+            key.effect_uniform_buffer_count
+        ));
+    }
     if mask_combo_enabled && !mask_texture_bound {
         return Err(
             "scene effect pipeline shader 'effects/iris' enables MASK but has no g_Texture1 WE slot 1 binding"
@@ -609,15 +615,39 @@ fn effect_heap_slice_has_sampled_images(
 fn scene_effect_shader_resource_mapping_labels(
     key: &NativeVulkanSceneEffectPipelineKey<'_>,
 ) -> Vec<String> {
-    scene_effect_texture_slots(key.texture_slot_mask)
+    let mut labels = (0..key.effect_uniform_buffer_count)
+        .map(|ordinal| {
+            if key.shader == "effects/iris" {
+                match ordinal {
+                    0 => {
+                        "VK_EXT_descriptor_heap effects/iris VS slot2 uniform -> effect-heap-slice-offset0"
+                            .to_owned()
+                    }
+                    1 => {
+                        "VK_EXT_descriptor_heap effects/iris PS slot3 uniform -> effect-heap-slice-offset1"
+                            .to_owned()
+                    }
+                    _ => format!(
+                        "VK_EXT_descriptor_heap effects/iris extra uniform ordinal{ordinal} -> effect-heap-slice-offset{ordinal}"
+                    ),
+                }
+            } else {
+                format!(
+                    "VK_EXT_descriptor_heap effect.uniform_ordinal{ordinal} -> effect-heap-slice-offset{ordinal}"
+                )
+            }
+        })
+        .collect::<Vec<_>>();
+    labels.extend(scene_effect_texture_slots(key.texture_slot_mask)
         .into_iter()
         .enumerate()
         .map(|(ordinal, slot)| {
             format!(
-                "VK_EXT_descriptor_heap we.texture_slot{slot}.g_Texture{slot} -> effect-heap-slice-texture-offset{ordinal}"
+                "VK_EXT_descriptor_heap we.texture_slot{slot}.g_Texture{slot} -> effect-heap-slice-offset{}",
+                key.effect_uniform_buffer_count.saturating_add(ordinal)
             )
-        })
-        .collect()
+        }));
+    labels
 }
 
 fn scene_effect_shader_combo_labels(key: &NativeVulkanSceneEffectPipelineKey<'_>) -> Vec<String> {
@@ -763,7 +793,11 @@ mod tests {
         assert_eq!(
             plan.shader_resource_mappings,
             vec![
-                "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> effect-heap-slice-texture-offset0"
+                "VK_EXT_descriptor_heap effects/iris VS slot2 uniform -> effect-heap-slice-offset0"
+                    .to_owned(),
+                "VK_EXT_descriptor_heap effects/iris PS slot3 uniform -> effect-heap-slice-offset1"
+                    .to_owned(),
+                "VK_EXT_descriptor_heap we.texture_slot0.g_Texture0 -> effect-heap-slice-offset2"
                     .to_owned()
             ]
         );
@@ -1099,7 +1133,7 @@ mod tests {
             alpha_write: SceneAlphaWriteMode::Default,
             target_format: vk::Format::R16G16B16A16_SFLOAT,
             texture_slot_mask: 0b1,
-            effect_uniform_buffer_count: 0,
+            effect_uniform_buffer_count: 2,
             raster_geometry: super::super::effect_pipeline::NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         }
     }
@@ -1118,12 +1152,15 @@ mod tests {
 
     fn texture_only_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
         let mut key = effect_key();
+        key.shader = "effects/blur_downsample4";
+        key.effect = WeEffectKind::Unknown;
         key.effect_uniform_buffer_count = 0;
         key
     }
 
     fn masked_texture_only_effect_key() -> NativeVulkanSceneEffectPipelineKey<'static> {
-        let mut key = masked_effect_key();
+        let mut key = texture_only_effect_key();
+        key.texture_slot_mask = 0b11;
         key.effect_uniform_buffer_count = 0;
         key
     }

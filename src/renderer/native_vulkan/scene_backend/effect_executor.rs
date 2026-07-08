@@ -235,11 +235,24 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_effect_runtim
 ) -> Result<NativeVulkanSceneEffectRuntimePreflightPlan, String> {
     let command_sequence =
         NativeVulkanSceneEffectRuntimeCommandSequencePlan::from_effect_pass_graph(graph)?;
-    let pipeline_warmup =
+    let pipeline_warmup = if graph.material_pass_count == 0 {
         NativeVulkanSceneEffectPipelineWarmupPlan::from_effect_pass_graph_with_target_formats(
             graph,
             |target| effect_target_format(frame_resources, context.target_formats, target),
-        )?;
+        )?
+    } else {
+        let effect_resource_heap = frame_resources
+            .current_effect_resource_heap_frame_plan()
+            .ok_or_else(|| {
+                "scene effect runtime preflight requires current effect resource heap frame plan"
+                    .to_owned()
+            })?;
+        NativeVulkanSceneEffectPipelineWarmupPlan::from_effect_pass_graph_with_target_formats_and_resource_heap(
+            graph,
+            |target| effect_target_format(frame_resources, context.target_formats, target),
+            effect_resource_heap,
+        )?
+    };
     for key in pipeline_warmup.cache_keys() {
         frame_resources.cached_effect_pipeline(key).map_err(|err| {
             format!(

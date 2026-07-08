@@ -12,8 +12,12 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
-use crate::engine::scene_engine::{SceneEffectPassGraphMaterialPass, SceneObjectId};
+use crate::engine::scene_engine::{
+    SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES, SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
+    SceneEffectPassGraphMaterialPass, SceneObjectId,
+};
 
+use super::super::effect_uniforms::NativeVulkanSceneEffectUniformStage;
 use super::key::{NativeVulkanSceneEffectTextureSetKey, effect_pass_texture_set_key};
 use super::store::NativeVulkanSceneEffectResourceHeapPassBindInfo;
 
@@ -78,6 +82,7 @@ impl NativeVulkanSceneEffectResourceHeapPassBindPlan {
                 bind_info.resource_descriptor_count
             ));
         }
+        validate_iris_effect_uniform_contract(pass, bind_info)?;
         Ok(Self {
             effect_pass_index: pass.graph_pass_index,
             object: pass.object,
@@ -129,6 +134,60 @@ fn validate_effect_uniform_metadata_counts(
     Ok(())
 }
 
+fn validate_iris_effect_uniform_contract(
+    pass: &SceneEffectPassGraphMaterialPass,
+    bind_info: &NativeVulkanSceneEffectResourceHeapPassBindInfo,
+) -> Result<(), String> {
+    if pass.shader.as_deref() != Some("effects/iris") {
+        return Ok(());
+    }
+    let expected = [
+        (
+            NativeVulkanSceneEffectUniformStage::Vertex,
+            SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
+        ),
+        (
+            NativeVulkanSceneEffectUniformStage::Fragment,
+            SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES,
+        ),
+    ];
+    if bind_info.effect_uniform_buffer_count != expected.len() {
+        return Err(format!(
+            "scene effects/iris pass {} for object {:?} requires {} stage-split effect uniform buffers, got {}",
+            pass.graph_pass_index,
+            pass.object,
+            expected.len(),
+            bind_info.effect_uniform_buffer_count
+        ));
+    }
+    for (ordinal, (expected_stage, expected_bytes)) in expected.into_iter().enumerate() {
+        let uniform = bind_info.effect_uniforms.get(ordinal).ok_or_else(|| {
+            format!(
+                "scene effects/iris pass {} for object {:?} is missing effect uniform ordinal {ordinal}",
+                pass.graph_pass_index, pass.object
+            )
+        })?;
+        if uniform.effect_pass_index != pass.graph_pass_index
+            || uniform.object != pass.object
+            || uniform.shader != "effects/iris"
+            || uniform.stage != expected_stage
+        {
+            return Err(format!(
+                "scene effects/iris pass {} for object {:?} uniform ordinal {ordinal} must be {:?} for the same pass/object, got {:?}",
+                pass.graph_pass_index, pass.object, expected_stage, uniform
+            ));
+        }
+        let bytes = bind_info.effect_uniform_bytes[ordinal];
+        if bytes != expected_bytes {
+            return Err(format!(
+                "scene effects/iris pass {} for object {:?} uniform ordinal {ordinal} has {bytes} bytes, expected {expected_bytes}",
+                pass.graph_pass_index, pass.object
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_effect_resource_heap_pass_bind_command(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -157,7 +216,9 @@ mod tests {
         SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneGraphResourceRole,
         SceneGraphTarget, SceneResourceId, we::WeEffectKind,
     };
-    use crate::renderer::native_vulkan::scene_backend::effect_uniforms::NativeVulkanSceneEffectUniformKey;
+    use crate::renderer::native_vulkan::scene_backend::effect_uniforms::{
+        NativeVulkanSceneEffectUniformKey, NativeVulkanSceneEffectUniformStage,
+    };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
     #[test]
@@ -219,6 +280,40 @@ mod tests {
         assert_eq!(plan.effect_uniform_buffer_count, 2);
         assert_eq!(plan.resource_descriptor_count, 4);
         assert_eq!(plan.texture_count, 2);
+    }
+
+    #[test]
+    fn effect_resource_heap_pass_bind_plan_requires_iris_stage_split_uniforms() {
+        let mut pass = effect_pass();
+        pass.effect_file = "effects/iris/effect.json".to_owned();
+        pass.effect = WeEffectKind::Iris;
+        pass.shader = Some("effects/iris".to_owned());
+        pass.texture_resources.clear();
+        let texture_set = effect_pass_texture_set_key(&pass).expect("iris texture set");
+        let bind_info = pass_bind_info(2, SceneObjectId(7), texture_set.clone(), 11, 3);
+
+        let err = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect_err("iris without stage-split uniform buffers must fail");
+
+        assert!(err.contains("effects/iris"));
+        assert!(err.contains("requires 2 stage-split"));
+
+        let bind_info = pass_bind_info_with_iris_uniforms(pass_bind_info(
+            2,
+            SceneObjectId(7),
+            texture_set,
+            11,
+            3,
+        ));
+        let plan = NativeVulkanSceneEffectResourceHeapPassBindPlan::from_pass_and_bind_info(
+            &pass, &bind_info,
+        )
+        .expect("iris stage-split heap bind plan");
+
+        assert_eq!(plan.effect_uniform_buffer_count, 2);
+        assert_eq!(plan.resource_descriptor_count, 3);
     }
 
     #[test]
@@ -354,6 +449,39 @@ mod tests {
             shader_mappings,
             resource_bind: vk::BindHeapInfoEXT::builder().build(),
             sampler_bind: Some(vk::BindHeapInfoEXT::builder().build()),
+        }
+    }
+
+    fn pass_bind_info_with_iris_uniforms(
+        mut bind_info: NativeVulkanSceneEffectResourceHeapPassBindInfo,
+    ) -> NativeVulkanSceneEffectResourceHeapPassBindInfo {
+        bind_info.effect_uniforms = vec![
+            iris_uniform_key(NativeVulkanSceneEffectUniformStage::Vertex),
+            iris_uniform_key(NativeVulkanSceneEffectUniformStage::Fragment),
+        ];
+        bind_info.effect_uniform_buffer_count = bind_info.effect_uniforms.len();
+        bind_info.effect_uniform_buffer_handles = vec![0x4200, 0x4300];
+        bind_info.effect_uniform_device_addresses = vec![0x4280, 0x4380];
+        bind_info.effect_uniform_record_indices = vec![0, 0];
+        bind_info.effect_uniform_bytes = vec![
+            SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
+            SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES,
+        ];
+        bind_info.effect_uniform_payload_hashes = vec![0x1234, 0x5678];
+        bind_info.resource_descriptor_count = bind_info
+            .texture_count
+            .saturating_add(bind_info.effect_uniform_buffer_count);
+        bind_info
+    }
+
+    fn iris_uniform_key(
+        stage: NativeVulkanSceneEffectUniformStage,
+    ) -> NativeVulkanSceneEffectUniformKey {
+        NativeVulkanSceneEffectUniformKey {
+            effect_pass_index: 2,
+            object: SceneObjectId(7),
+            shader: "effects/iris".to_owned(),
+            stage,
         }
     }
 }

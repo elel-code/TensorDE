@@ -170,6 +170,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
             ));
         }
         key.effect_uniform_buffer_count = resource_heap.effect_uniform_buffer_count;
+        validate_effect_pipeline_uniform_contract(pass, key.shader, resource_heap)?;
         Ok(key)
     }
 }
@@ -452,6 +453,23 @@ fn validate_iris_effect_pass_shader_interface(
     Ok(())
 }
 
+fn validate_effect_pipeline_uniform_contract(
+    pass: &SceneEffectPassGraphMaterialPass,
+    shader: &str,
+    resource_heap: &NativeVulkanSceneEffectResourceHeapPassBindPlan,
+) -> Result<(), String> {
+    if shader != "effects/iris" {
+        return Ok(());
+    }
+    if resource_heap.effect_uniform_buffer_count != 2 {
+        return Err(format!(
+            "scene effect pass {} for object {:?} shader 'effects/iris' requires 2 stage-split uniform buffers from the effect heap, got {}",
+            pass.pass_index, pass.object, resource_heap.effect_uniform_buffer_count
+        ));
+    }
+    Ok(())
+}
+
 fn push_effect_pipeline_texture_slot(
     object: SceneObjectId,
     pass_index: usize,
@@ -535,6 +553,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::engine::scene_engine::{
+        SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES, SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
         SceneEffectPassGraphInputBinding, SceneEffectPassGraphInputSource,
         SceneEffectPassGraphOutput, SceneEffectTextureResourceBinding, SceneGraphResourceRole,
         SceneGraphTarget, SceneResourceId,
@@ -543,6 +562,9 @@ mod tests {
         NativeVulkanSceneEffectResourceHeapPassBindInfo,
         NativeVulkanSceneEffectResourceHeapPassBindPlan, NativeVulkanSceneEffectTextureSetBinding,
         NativeVulkanSceneEffectTextureSetKey,
+    };
+    use crate::renderer::native_vulkan::scene_backend::effect_uniforms::{
+        NativeVulkanSceneEffectUniformKey, NativeVulkanSceneEffectUniformStage,
     };
     use crate::renderer::native_vulkan::scene_backend::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
@@ -781,16 +803,22 @@ mod tests {
             effect_pass_index: 2,
             object: SceneObjectId(7),
             heap_slice_index: 11,
-            effect_uniform_buffer_count: 0,
-            effect_uniforms: Vec::new(),
-            effect_uniform_buffer_handles: Vec::new(),
-            effect_uniform_device_addresses: Vec::new(),
-            effect_uniform_record_indices: Vec::new(),
-            effect_uniform_bytes: Vec::new(),
-            effect_uniform_payload_hashes: Vec::new(),
+            effect_uniform_buffer_count: 2,
+            effect_uniforms: vec![
+                iris_uniform_key(NativeVulkanSceneEffectUniformStage::Vertex),
+                iris_uniform_key(NativeVulkanSceneEffectUniformStage::Fragment),
+            ],
+            effect_uniform_buffer_handles: vec![0x4200, 0x4300],
+            effect_uniform_device_addresses: vec![0x4280, 0x4380],
+            effect_uniform_record_indices: vec![0, 0],
+            effect_uniform_bytes: vec![
+                SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
+                SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES,
+            ],
+            effect_uniform_payload_hashes: vec![0x1234, 0x5678],
             texture_set,
             base_resource_descriptor_index: 4,
-            resource_descriptor_count: 1,
+            resource_descriptor_count: 3,
             texture_count: 1,
             shader_mappings: Vec::new(),
             resource_bind: vk::BindHeapInfoEXT::default(),
@@ -810,8 +838,19 @@ mod tests {
                     13,
                 )),
             });
-        bind_info.resource_descriptor_count = 2;
+        bind_info.resource_descriptor_count = 4;
         bind_info.texture_count = 2;
         bind_info
+    }
+
+    fn iris_uniform_key(
+        stage: NativeVulkanSceneEffectUniformStage,
+    ) -> NativeVulkanSceneEffectUniformKey {
+        NativeVulkanSceneEffectUniformKey {
+            effect_pass_index: 2,
+            object: SceneObjectId(7),
+            shader: "effects/iris".to_owned(),
+            stage,
+        }
     }
 }
