@@ -66,7 +66,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
     let mut passes = Vec::with_capacity(graph_execution.passes.len());
     let mut target_barriers = Vec::with_capacity(graph_execution.target_barriers.len());
     for execution_pass in &graph_execution.passes {
-        record_barriers_before_pass(
+        native_vulkan_record_scene_graph_target_barriers_before_pass(
             frame_resources,
             &context,
             graph_execution,
@@ -86,7 +86,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
             })?;
         let render_target =
             resolve_pass_render_target(frame_resources, &context, graph_execution, execution_pass)?;
-        record_pass_input_access(frame_resources, &context, execution_pass)?;
+        native_vulkan_record_scene_graph_pass_input_access(
+            frame_resources,
+            &context,
+            execution_pass,
+        )?;
         let clear_color = pass_clear_color(
             graph_execution,
             execution_pass,
@@ -157,7 +161,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_frame
     })
 }
 
-fn record_barriers_before_pass(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_target_barriers_before_pass(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: &NativeVulkanSceneGraphRuntimeFrameContext<'_>,
     graph_execution: &SceneGraphExecutionPlan,
@@ -254,7 +258,7 @@ fn pass_output_final_layout(
     }
 }
 
-fn record_pass_input_access(
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_graph_pass_input_access(
     frame_resources: &mut NativeVulkanSceneFrameResources,
     context: &NativeVulkanSceneGraphRuntimeFrameContext<'_>,
     execution_pass: &SceneGraphExecutionPass,

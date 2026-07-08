@@ -22,7 +22,8 @@ use super::effect_executor::{
 use super::frame_resources::NativeVulkanSceneFrameResources;
 use super::graph_executor::{
     NativeVulkanSceneGraphFrameCommandPlan, NativeVulkanSceneGraphPassCommandPlan,
-    NativeVulkanSceneGraphRuntimeFrameContext,
+    NativeVulkanSceneGraphRuntimeFrameContext, native_vulkan_record_scene_graph_pass_input_access,
+    native_vulkan_record_scene_graph_target_barriers_before_pass,
 };
 use super::layer_alpha_mask_executor::token_draw_list::{
     NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordContext,
@@ -45,7 +46,7 @@ use super::layer_compositor_scheduler::{
 };
 use super::pass_command::{
     NativeVulkanSceneMeshPassCommand, NativeVulkanSceneMeshPassCommandPlan,
-    NativeVulkanSceneMeshPassDrawSpanCounts, NativeVulkanSceneMeshPassDrawSpanState,
+    NativeVulkanSceneMeshPassDrawSpanState,
     native_vulkan_record_scene_mesh_pass_draw_span_commands,
 };
 use super::pipeline::NativeVulkanScenePipelineCacheKey;
@@ -134,51 +135,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
         return Ok(None);
     }
 
-    let execution_pass = if schedule.mesh_graph_draw_span_block_count == 0 {
-        if graph_execution.pass_count != 0 {
-            return Ok(None);
-        }
-        None
-    } else {
-        if graph_execution.pass_count != 1 {
-            return Ok(None);
-        }
-        let execution_pass = &graph_execution.passes[0];
-        if execution_pass.input.is_some() || execution_pass.output != SceneGraphTarget::Swapchain {
-            return Ok(None);
-        }
-        if !mesh_blocks_cover_execution_pass(schedule, execution_pass)? {
-            return Ok(None);
-        }
-        Some(execution_pass)
-    };
-    let graph_pass = execution_pass
-        .map(|execution_pass| {
-            frame
-                .graph
-                .passes
-                .get(execution_pass.pass_index)
-                .ok_or_else(|| {
-                    format!(
-                        "scene layer compositor command-block recorder pass {} is outside graph",
-                        execution_pass.pass_index
-                    )
-                })
-        })
-        .transpose()?;
-    let pass_target_format = context.target_formats.format(SceneGraphTarget::Swapchain)?;
+    if !mesh_execution_passes_are_command_block_recordable(schedule, graph_execution)? {
+        return Ok(None);
+    }
     let last_swapchain_writer_block = last_swapchain_writer_block_index(schedule, &alpha_inputs)?;
-    let mut commands = Vec::with_capacity(
-        graph_pass
-            .map(|pass| pass.draws.len())
-            .unwrap_or_default()
-            .saturating_mul(2)
-            .saturating_add(schedule.recording_blocks.len())
-            .saturating_add(2),
-    );
-    let mut first_mesh_target_scope = None;
+    let mut passes = Vec::with_capacity(schedule.mesh_graph_draw_span_block_count);
+    let mut target_barriers = Vec::with_capacity(graph_execution.target_barriers.len());
+    let mut recorded_graph_pass_access = std::collections::BTreeSet::new();
+    let mut pending_no_draw_markers = Vec::new();
     let mut mesh_target_scope_count = 0usize;
-    let mut counts = NativeVulkanSceneMeshPassDrawSpanCounts::default();
     let mut alpha_steps = Vec::new();
     let mut effect_commands = Vec::new();
     let mut written_effect_targets = std::collections::BTreeSet::new();
@@ -188,18 +153,46 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     for block in &schedule.recording_blocks {
         match block.kind {
             NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan => {
-                let execution_pass = execution_pass.ok_or_else(|| {
-                    format!(
-                        "scene layer compositor command-block recorder block {} needs a graph execution pass",
-                        block.block_index
-                    )
-                })?;
-                let graph_pass = graph_pass.ok_or_else(|| {
-                    format!(
-                        "scene layer compositor command-block recorder block {} needs a graph pass",
-                        block.block_index
-                    )
-                })?;
+                let execution_pass =
+                    mesh_execution_pass_for_block(graph_execution, block.graph_pass_index)?;
+                let graph_pass = frame
+                    .graph
+                    .passes
+                    .get(execution_pass.pass_index)
+                    .ok_or_else(|| {
+                        format!(
+                            "scene layer compositor command-block recorder pass {} is outside graph",
+                            execution_pass.pass_index
+                        )
+                    })?;
+                let pass_target_format = context.target_formats.format(execution_pass.output)?;
+                if recorded_graph_pass_access.insert(execution_pass.pass_index) {
+                    native_vulkan_record_scene_graph_target_barriers_before_pass(
+                        frame_resources,
+                        &context,
+                        graph_execution,
+                        execution_pass.pass_index,
+                        &mut target_barriers,
+                    )?;
+                    native_vulkan_record_scene_graph_pass_input_access(
+                        frame_resources,
+                        &context,
+                        execution_pass,
+                    )?;
+                }
+                if execution_pass.output != SceneGraphTarget::Swapchain {
+                    return Err(format!(
+                        "scene layer compositor command-block recorder pass {} must write swapchain, got {:?}",
+                        execution_pass.pass_index, execution_pass.output
+                    ));
+                }
+                if graph_pass.input != execution_pass.input || graph_pass.output != execution_pass.output
+                {
+                    return Err(format!(
+                        "scene layer compositor command-block recorder pass {} graph/execution target mismatch",
+                        execution_pass.pass_index
+                    ));
+                }
                 let draw_index_start = block.graph_draw_index_start.ok_or_else(|| {
                     format!(
                         "scene layer compositor command-block recorder block {} has no draw start",
@@ -212,6 +205,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                         block.block_index
                     )
                 })?;
+                let draw_count = draw_index_end.saturating_sub(draw_index_start);
                 let mut swapchain = context.swapchain_target;
                 swapchain.initial_layout = swapchain_current_layout;
                 swapchain.final_layout =
@@ -226,8 +220,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                     render_target,
                     clear_color,
                 )?;
-                first_mesh_target_scope.get_or_insert(target_scope);
                 mesh_target_scope_count = mesh_target_scope_count.saturating_add(1);
+                let mut commands = std::mem::take(&mut pending_no_draw_markers);
                 commands.push(NativeVulkanSceneMeshPassCommand::BeginPass {
                     name: graph_pass.name.as_str(),
                     input: graph_pass.input,
@@ -257,15 +251,6 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                         |geometry| resources.mesh_draw_buffers(geometry),
                     )?
                 };
-                counts.pipeline_bind_count = counts
-                    .pipeline_bind_count
-                    .saturating_add(span_counts.pipeline_bind_count);
-                counts.resource_heap_bind_count = counts
-                    .resource_heap_bind_count
-                    .saturating_add(span_counts.resource_heap_bind_count);
-                counts.indexed_draw_count = counts
-                    .indexed_draw_count
-                    .saturating_add(span_counts.indexed_draw_count);
                 commands.push(NativeVulkanSceneMeshPassCommand::EndPass);
                 native_vulkan_record_scene_render_target_end(
                     context.device,
@@ -275,13 +260,31 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
                 )?;
                 swapchain_current_layout = swapchain.final_layout;
                 swapchain_was_written = true;
+                passes.push(NativeVulkanSceneGraphPassCommandPlan {
+                    target: SceneGraphTarget::Swapchain,
+                    target_scope,
+                    pass: NativeVulkanSceneMeshPassCommandPlan {
+                        name: graph_pass.name.as_str(),
+                        input: graph_pass.input,
+                        output: graph_pass.output,
+                        draw_index_start,
+                        draw_index_end,
+                        draw_count,
+                        pipeline_bind_count: span_counts.pipeline_bind_count,
+                        resource_heap_bind_count: span_counts.resource_heap_bind_count,
+                        indexed_draw_count: span_counts.indexed_draw_count,
+                        commands,
+                    },
+                });
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::NoDrawLayerMarker => {
-                commands.push(NativeVulkanSceneMeshPassCommand::LayerCompositorNoDrawMarker {
-                    block_index: block.block_index,
-                    step_index_start: block.step_index_start,
-                    step_index_end: block.step_index_end,
-                });
+                pending_no_draw_markers.push(
+                    NativeVulkanSceneMeshPassCommand::LayerCompositorNoDrawMarker {
+                        block_index: block.block_index,
+                        step_index_start: block.step_index_start,
+                        step_index_end: block.step_index_end,
+                    },
+                );
             }
             NativeVulkanSceneLayerCompositorRecordingBlockKind::AlphaMaskTokenDrawListStep => {
                 let token_recording_step_index = block.token_recording_step_index.ok_or_else(|| {
@@ -344,39 +347,21 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
             }
         }
     }
-
-    let passes = if let (Some(graph_pass), Some(execution_pass), Some(target_scope)) =
-        (graph_pass, execution_pass, first_mesh_target_scope)
+    if !pending_no_draw_markers.is_empty()
+        && let Some(last_pass) = passes.last_mut()
     {
-        vec![NativeVulkanSceneGraphPassCommandPlan {
-            target: SceneGraphTarget::Swapchain,
-            target_scope,
-            pass: NativeVulkanSceneMeshPassCommandPlan {
-                name: graph_pass.name.as_str(),
-                input: graph_pass.input,
-                output: graph_pass.output,
-                draw_index_start: execution_pass.draw_index_start,
-                draw_index_end: execution_pass.draw_index_end,
-                draw_count: counts.indexed_draw_count,
-                pipeline_bind_count: counts.pipeline_bind_count,
-                resource_heap_bind_count: counts.resource_heap_bind_count,
-                indexed_draw_count: counts.indexed_draw_count,
-                commands,
-            },
-        }]
-    } else {
-        Vec::new()
-    };
+        last_pass.pass.commands.extend(pending_no_draw_markers);
+    }
     let mesh_frame = NativeVulkanSceneGraphFrameCommandPlan {
         pass_count: passes.len(),
-        target_barrier_count: 0,
+        target_barrier_count: target_barriers.len(),
         target_format_count: context.target_formats.target_format_count(),
         passes,
-        target_barriers: Vec::new(),
+        target_barriers,
         command_order: [
             "resolve_scene_graph_target_formats",
             "record_layer_compositor_mesh_block_target",
-            "record_mesh_and_alpha_draw_spans_from_compositor_blocks",
+            "record_mesh_alpha_and_object_final_blocks_in_compositor_order",
             "record_scene_graph_target_barriers",
         ],
     };
@@ -616,6 +601,68 @@ fn swapchain_final_layout(
     }
 }
 
+fn mesh_execution_passes_are_command_block_recordable(
+    schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
+    graph_execution: &SceneGraphExecutionPlan,
+) -> Result<bool, String> {
+    if schedule.mesh_graph_draw_span_block_count == 0 {
+        return Ok(graph_execution.pass_count == 0);
+    }
+    if graph_execution.pass_count == 0 {
+        return Ok(false);
+    }
+
+    let mut mesh_pass_indices = std::collections::BTreeSet::new();
+    for block in &schedule.recording_blocks {
+        if block.kind != NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan {
+            continue;
+        }
+        let pass_index = block.graph_pass_index.ok_or_else(|| {
+            format!(
+                "scene layer compositor command-block recorder mesh block {} has no graph pass index",
+                block.block_index
+            )
+        })?;
+        mesh_pass_indices.insert(pass_index);
+    }
+    if mesh_pass_indices.len() != graph_execution.pass_count {
+        return Ok(false);
+    }
+
+    for execution_pass in &graph_execution.passes {
+        if execution_pass.output != SceneGraphTarget::Swapchain {
+            return Ok(false);
+        }
+        if !mesh_pass_indices.contains(&execution_pass.pass_index) {
+            return Ok(false);
+        }
+        if !mesh_blocks_cover_execution_pass(schedule, execution_pass)? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn mesh_execution_pass_for_block(
+    graph_execution: &SceneGraphExecutionPlan,
+    graph_pass_index: Option<usize>,
+) -> Result<&SceneGraphExecutionPass, String> {
+    let pass_index = graph_pass_index.ok_or_else(|| {
+        "scene layer compositor command-block recorder mesh block has no graph pass index"
+            .to_owned()
+    })?;
+    graph_execution
+        .passes
+        .iter()
+        .find(|pass| pass.pass_index == pass_index)
+        .ok_or_else(|| {
+            format!(
+                "scene layer compositor command-block recorder pass {pass_index} is outside execution plan"
+            )
+        })
+}
+
 fn mesh_blocks_cover_execution_pass(
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
     execution_pass: &SceneGraphExecutionPass,
@@ -625,7 +672,7 @@ fn mesh_blocks_cover_execution_pass(
         match block.kind {
             NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan => {
                 if block.graph_pass_index != Some(execution_pass.pass_index) {
-                    return Ok(false);
+                    continue;
                 }
                 let draw_start = block.graph_draw_index_start.ok_or_else(|| {
                     format!(
@@ -680,8 +727,10 @@ mod tests {
     use crate::engine::scene_engine::{
         SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
         SceneEffectPassGraphCopy, SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput,
-        SceneEffectPassGraphSwap, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
-        SceneLayerCompositorRoute, SceneObjectId, we::WeEffectKind,
+        SceneEffectPassGraphSwap, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphPass,
+        SceneGraphPipelineClass, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
+        SceneLayerCompositorRoute, SceneMaterialKey, SceneMaterialRenderState, SceneObjectId,
+        we::WeEffectKind,
     };
 
     use super::super::layer_compositor_scheduler::{
@@ -905,6 +954,51 @@ mod tests {
         schedule.recording_blocks[2].graph_draw_index_end = Some(4);
         assert!(
             !mesh_blocks_cover_execution_pass(&schedule, &execution_pass(0, 4)).expect("gap check")
+        );
+    }
+
+    #[test]
+    fn mesh_block_recorder_accepts_object_final_input_composite_pass() {
+        let object = SceneObjectId(7);
+        let mut schedule = schedule(vec![
+            block(
+                0,
+                NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan,
+            ),
+            block(
+                1,
+                NativeVulkanSceneLayerCompositorRecordingBlockKind::ObjectFinalProducerEffectRuntime,
+            ),
+            block(
+                2,
+                NativeVulkanSceneLayerCompositorRecordingBlockKind::MeshGraphDrawSpan,
+            ),
+        ]);
+        schedule.recording_blocks[0].graph_pass_index = Some(0);
+        schedule.recording_blocks[0].graph_draw_index_start = Some(0);
+        schedule.recording_blocks[0].graph_draw_index_end = Some(1);
+        schedule.recording_blocks[2].graph_pass_index = Some(1);
+        schedule.recording_blocks[2].graph_draw_index_start = Some(1);
+        schedule.recording_blocks[2].graph_draw_index_end = Some(2);
+
+        let graph = mesh_graph_with_object_final_input(object);
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        assert!(
+            mesh_execution_passes_are_command_block_recordable(&schedule, &graph_execution)
+                .expect("multi-pass recordability")
+        );
+        assert_eq!(
+            graph_execution.passes[1].input,
+            Some(SceneGraphTarget::ObjectFinal(object))
+        );
+        assert!(
+            mesh_blocks_cover_execution_pass(&schedule, &graph_execution.passes[0])
+                .expect("direct pass coverage")
+        );
+        assert!(
+            mesh_blocks_cover_execution_pass(&schedule, &graph_execution.passes[1])
+                .expect("object-final pass coverage")
         );
     }
 
@@ -1135,6 +1229,46 @@ mod tests {
             graph_draw_index_end: Some(block_index.saturating_add(1)),
             token_recording_step_index: None,
             command_order: Vec::new(),
+        }
+    }
+
+    fn mesh_graph_with_object_final_input(object: SceneObjectId) -> SceneGraph {
+        SceneGraph {
+            passes: vec![
+                mesh_graph_pass("scene-direct", None, SceneObjectId(1), SceneGeometryId(1)),
+                mesh_graph_pass(
+                    "scene-object-final",
+                    Some(SceneGraphTarget::ObjectFinal(object)),
+                    object,
+                    SceneGeometryId(2),
+                ),
+            ],
+        }
+    }
+
+    fn mesh_graph_pass(
+        name: &str,
+        input: Option<SceneGraphTarget>,
+        object: SceneObjectId,
+        geometry: SceneGeometryId,
+    ) -> SceneGraphPass {
+        SceneGraphPass {
+            name: name.to_owned(),
+            input,
+            output: SceneGraphTarget::Swapchain,
+            draws: vec![SceneGraphDraw {
+                object,
+                pipeline: SceneGraphPipelineClass::Mesh,
+                material: SceneMaterialKey {
+                    shader: "we/genericimage4".to_owned(),
+                    blend: crate::engine::scene_engine::SceneBlendContract::TranslucentAlpha,
+                    render_state: SceneMaterialRenderState::translucent_2d(),
+                },
+                geometry: Some(geometry),
+                puppet: None,
+                resources: Vec::new(),
+                index_count: 6,
+            }],
         }
     }
 
