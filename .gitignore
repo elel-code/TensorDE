@@ -11,5 +11,6 @@
 /references/*
 artifacts/
 reverse-engineered/extracted/
-scripts/__pycache__/
+**/__pycache__/
+*.py[cod]
 reverse-engineered/references/
