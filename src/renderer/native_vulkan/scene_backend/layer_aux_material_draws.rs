@@ -12,7 +12,8 @@ use serde::Serialize;
 
 use crate::engine::scene_engine::{
     SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency, SceneObjectId, SceneResidentResource,
-    SceneResourceResidencyPlan, WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET,
+    SceneResourceResidencyPlan, WE_AUX_CLEAR_SOURCE_DIMENSION_REGION,
+    WE_AUX_CLEAR_UV_FLIP_FLAG_SOURCE, WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET,
     WE_LAYER_AUX_EFFECT_TARGET_OFFSET, WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET,
     WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
 };
@@ -43,6 +44,8 @@ pub(in crate::renderer::native_vulkan) const WE_RT_TARGET_POSITION_UV_STRIDE_BYT
 pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_CLEAR_VERTEX_COUNT: u32 = 3;
 pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_CLEAR_VERTEX_BYTES: u64 =
     WE_AUX_MATERIAL_CLEAR_VERTEX_COUNT as u64 * WE_RT_TARGET_POSITION_UV_STRIDE_BYTES as u64;
+pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_CLEAR_TRIANGLE_PAYLOAD_BYTES: usize =
+    WE_AUX_MATERIAL_CLEAR_VERTEX_BYTES as usize;
 pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_CLEAR_TOPOLOGY_SELECTOR: u32 = 0;
 pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_ACTIVE_INDEX_WIDTH_SELECTOR: u32 = 0;
 pub(in crate::renderer::native_vulkan) const WE_AUX_MATERIAL_ACTIVE_TOPOLOGY_SELECTOR: u32 = 0;
@@ -114,10 +117,65 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAuxClearTria
     pub position_constants_vma: [u64; 2],
     pub uv_formula_region: &'static str,
     pub flip_flag_source: &'static str,
+    pub source_width: u32,
+    pub source_height: u32,
+    pub target_width: u32,
+    pub target_height: u32,
+    pub uv_y_flipped: bool,
+    pub uv_x_scale_bits: u32,
+    pub uv_y_scale_bits: u32,
     pub clip_positions_bits: [[u32; 3]; 3],
     pub uv_x_formula: [&'static str; 3],
     pub uv_y_normal_formula: [&'static str; 3],
     pub uv_y_flipped_formula: [&'static str; 3],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAuxClearTrianglePayload {
+    pub bytes: Vec<u8>,
+    pub uv_x_scale_bits: u32,
+    pub uv_y_scale_bits: u32,
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_aux_clear_triangle_payload(
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+    uv_y_flipped: bool,
+) -> Result<NativeVulkanSceneLayerAuxClearTrianglePayload, String> {
+    if source_width == 0 || source_height == 0 || target_width == 0 || target_height == 0 {
+        return Err(format!(
+            "scene layer aux clear triangle needs non-zero source/target dimensions, got source {}x{} target {}x{}",
+            source_width, source_height, target_width, target_height
+        ));
+    }
+
+    let uv_x_scale = 2.0f32 * (target_width as f32) / (source_width as f32);
+    let uv_y_scale = (target_height as f32) / (source_height as f32);
+    if !uv_x_scale.is_finite() || !uv_y_scale.is_finite() {
+        return Err(format!(
+            "scene layer aux clear triangle produced non-finite UV scale from source {}x{} target {}x{}",
+            source_width, source_height, target_width, target_height
+        ));
+    }
+
+    let uv_y_0 = if uv_y_flipped { 0.0 } else { uv_y_scale };
+    let uv_y_1 = if uv_y_flipped {
+        uv_x_scale
+    } else {
+        -uv_y_scale
+    };
+    let uv_y_2 = if uv_y_flipped { 0.0 } else { uv_y_scale };
+    let mut bytes = Vec::with_capacity(WE_AUX_MATERIAL_CLEAR_TRIANGLE_PAYLOAD_BYTES);
+    push_aux_clear_vertex(&mut bytes, -1.0, 1.0, 0.0, 0.0, uv_y_0);
+    push_aux_clear_vertex(&mut bytes, -1.0, -3.0, 0.0, 0.0, uv_y_1);
+    push_aux_clear_vertex(&mut bytes, 3.0, 1.0, 0.0, uv_x_scale, uv_y_2);
+    Ok(NativeVulkanSceneLayerAuxClearTrianglePayload {
+        bytes,
+        uv_x_scale_bits: uv_x_scale.to_bits(),
+        uv_y_scale_bits: uv_y_scale.to_bits(),
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_aux_material_draws(
@@ -245,12 +303,23 @@ impl NativeVulkanSceneLayerAuxMaterialDrawReceiverPlan {
     fn clear_material(
         clear_prep: &NativeVulkanSceneLayerAuxClearPrepCommandPlan,
     ) -> Result<Self, String> {
-        if clear_prep.clear_target_width == 0 || clear_prep.clear_target_height == 0 {
+        if clear_prep.clear_source_width == 0
+            || clear_prep.clear_source_height == 0
+            || clear_prep.clear_target_width == 0
+            || clear_prep.clear_target_height == 0
+        {
             return Err(format!(
-                "scene layer aux material draw object {:?} has zero aux target extent",
+                "scene layer aux material draw object {:?} has zero aux source/target extent",
                 clear_prep.object
             ));
         }
+        let clear_triangle_payload = native_vulkan_scene_layer_aux_clear_triangle_payload(
+            clear_prep.clear_source_width,
+            clear_prep.clear_source_height,
+            clear_prep.clear_target_width,
+            clear_prep.clear_target_height,
+            clear_prep.clear_uv_y_flipped,
+        )?;
         Ok(Self {
             receiver_kind:
                 NativeVulkanSceneLayerAuxMaterialDrawReceiverKind::Aux3f0ClearMaterialNonIndexed,
@@ -275,9 +344,17 @@ impl NativeVulkanSceneLayerAuxMaterialDrawReceiverPlan {
             topology_selector: WE_AUX_MATERIAL_CLEAR_TOPOLOGY_SELECTOR,
             stack_usage_byte: Some(0),
             active_entry_owner_index: None,
-            retained_vertex_bytes: None,
+            retained_vertex_bytes: Some(WE_AUX_MATERIAL_CLEAR_VERTEX_BYTES),
             retained_index_bytes: None,
-            clear_triangle_payload: Some(aux_clear_triangle_payload_plan()),
+            clear_triangle_payload: Some(aux_clear_triangle_payload_plan(
+                clear_prep.clear_source_width,
+                clear_prep.clear_source_height,
+                clear_prep.clear_target_width,
+                clear_prep.clear_target_height,
+                clear_prep.clear_uv_y_flipped,
+                clear_triangle_payload.uv_x_scale_bits,
+                clear_triangle_payload.uv_y_scale_bits,
+            )),
             reference_points: [
                 "0x14020a2d2..0x14020a379 fills the 3*20-byte stack vertex payload",
                 "0x14020a3ba..0x14020a3d2 computes layout key from attr ids [0,7]",
@@ -372,12 +449,27 @@ fn active_geometry_for_object(
         })
 }
 
-fn aux_clear_triangle_payload_plan() -> NativeVulkanSceneLayerAuxClearTrianglePayloadPlan {
+fn aux_clear_triangle_payload_plan(
+    source_width: u32,
+    source_height: u32,
+    target_width: u32,
+    target_height: u32,
+    uv_y_flipped: bool,
+    uv_x_scale_bits: u32,
+    uv_y_scale_bits: u32,
+) -> NativeVulkanSceneLayerAuxClearTrianglePayloadPlan {
     NativeVulkanSceneLayerAuxClearTrianglePayloadPlan {
         create_region: "0x14020a2d2..0x14020a379",
         position_constants_vma: [0x140492aa0, 0x140492af0],
-        uv_formula_region: "0x14020a2f1..0x14020a379",
-        flip_flag_source: "[[layer+0xc8]+0x118] bit 0",
+        uv_formula_region: WE_AUX_CLEAR_SOURCE_DIMENSION_REGION,
+        flip_flag_source: WE_AUX_CLEAR_UV_FLIP_FLAG_SOURCE,
+        source_width,
+        source_height,
+        target_width,
+        target_height,
+        uv_y_flipped,
+        uv_x_scale_bits,
+        uv_y_scale_bits,
         clip_positions_bits: [
             [(-1.0f32).to_bits(), 1.0f32.to_bits(), 0.0f32.to_bits()],
             [(-1.0f32).to_bits(), (-3.0f32).to_bits(), 0.0f32.to_bits()],
@@ -391,6 +483,14 @@ fn aux_clear_triangle_payload_plan() -> NativeVulkanSceneLayerAuxClearTrianglePa
         ],
         uv_y_flipped_formula: ["0", "2.0 * float(desc+0x2c) / float(desc+0x20)", "0"],
     }
+}
+
+fn push_aux_clear_vertex(bytes: &mut Vec<u8>, x: f32, y: f32, z: f32, u: f32, v: f32) {
+    bytes.extend_from_slice(&x.to_le_bytes());
+    bytes.extend_from_slice(&y.to_le_bytes());
+    bytes.extend_from_slice(&z.to_le_bytes());
+    bytes.extend_from_slice(&u.to_le_bytes());
+    bytes.extend_from_slice(&v.to_le_bytes());
 }
 
 fn aux_material_draw_frame_order() -> [&'static str; 8] {
@@ -457,6 +557,19 @@ mod tests {
             .clear_triangle_payload
             .expect("3f0 triangle payload");
         assert_eq!(triangle.position_constants_vma, [0x140492aa0, 0x140492af0]);
+        assert_eq!(triangle.source_width, 3840);
+        assert_eq!(triangle.source_height, 2160);
+        assert_eq!(triangle.target_width, 3840);
+        assert_eq!(triangle.target_height, 2160);
+        assert_eq!(triangle.uv_x_scale_bits, 2.0f32.to_bits());
+        assert_eq!(triangle.uv_y_scale_bits, 1.0f32.to_bits());
+        assert_eq!(
+            native_vulkan_scene_layer_aux_clear_triangle_payload(3840, 2160, 3840, 2160, false)
+                .expect("triangle payload")
+                .bytes
+                .len(),
+            WE_AUX_MATERIAL_CLEAR_TRIANGLE_PAYLOAD_BYTES
+        );
 
         assert_eq!(
             command.generated_material.receiver_kind,
@@ -561,8 +674,11 @@ mod tests {
                         effect_target_3f8: true,
                         generated_material_408: true,
                         clear_material_410: true,
+                        clear_source_width: 3840,
+                        clear_source_height: 2160,
                         clear_target_width: 3840,
                         clear_target_height: 2160,
+                        clear_uv_y_flipped: false,
                         clear_target_color_format: 0,
                         clear_target_aux_format: WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
                         clear_target_r9_selector: WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,

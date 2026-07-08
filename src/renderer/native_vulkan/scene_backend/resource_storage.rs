@@ -302,6 +302,7 @@ pub enum NativeVulkanSceneGpuBufferOwner {
     MeshGeometry(SceneGeometryId),
     PuppetRig(ScenePuppetId),
     RenderStateUtility(NativeVulkanSceneRenderStateUtilityGeometry),
+    LayerAuxMaterialClearGeometry(NativeVulkanSceneLayerAuxMaterialClearGeometry),
     LayerAlphaMaskRtMethod8MdlvEntry(NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry),
     LayerAlphaMaskRtMethod8MdlvIndexSlice(NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice),
 }
@@ -311,6 +312,7 @@ pub enum NativeVulkanSceneGpuBufferRole {
     MeshVertex,
     MeshIndex,
     RenderStateFlatTextureVertex,
+    LayerAuxMaterialClearVertex,
     LayerAlphaMaskRtMethod8MdlvVertex,
     LayerAlphaMaskRtMethod8MdlvIndex,
     LayerAlphaMaskRtMethod8MdlvSliceIndex,
@@ -328,6 +330,7 @@ impl NativeVulkanSceneGpuBufferRole {
         match self {
             Self::MeshVertex
             | Self::RenderStateFlatTextureVertex
+            | Self::LayerAuxMaterialClearVertex
             | Self::LayerAlphaMaskRtMethod8MdlvVertex => NativeVulkanSceneGpuBufferUsage::Vertex,
             Self::MeshIndex
             | Self::LayerAlphaMaskRtMethod8MdlvIndex
@@ -346,6 +349,11 @@ impl NativeVulkanSceneGpuBufferRole {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum NativeVulkanSceneRenderStateUtilityGeometry {
     LayerAlphaMaskCopyBackState48,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub struct NativeVulkanSceneLayerAuxMaterialClearGeometry {
+    pub object: SceneObjectId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]

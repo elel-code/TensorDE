@@ -13,6 +13,8 @@ pub const WE_AUX_CLEAR_PREP_VMA: u64 = 0x140207740;
 pub const WE_AUX_CLEAR_TARGET_CREATE_VMA: u64 = 0x14020a07b;
 pub const WE_AUX_CLEAR_TARGET_STORE_VMA: u64 = 0x14020a083;
 pub const WE_AUX_CLEAR_TARGET_RELEASE_ZERO_VMA: u64 = 0x14020a573;
+pub const WE_AUX_CLEAR_SOURCE_DIMENSION_REGION: &str = "0x14020a2f1..0x14020a33c";
+pub const WE_AUX_CLEAR_UV_FLIP_FLAG_SOURCE: &str = "[[layer+0xc8]+0x118] bit 0";
 
 pub const WE_LAYER_AUX_CLEAR_TARGET_OFFSET: u32 = 0x3e8;
 pub const WE_LAYER_AUX_MATERIAL_TARGET_OFFSET: u32 = 0x3f0;
@@ -35,8 +37,11 @@ pub struct SceneLayerAuxCompositeTargets {
     pub effect_target_3f8: bool,
     pub generated_material_408: bool,
     pub clear_material_410: bool,
+    pub clear_source_width: u32,
+    pub clear_source_height: u32,
     pub clear_target_width: u32,
     pub clear_target_height: u32,
+    pub clear_uv_y_flipped: bool,
     pub clear_target_color_format: u32,
     pub clear_target_aux_format: u32,
     pub clear_target_r9_selector: u32,
@@ -51,6 +56,8 @@ impl SceneLayerAuxCompositeTargets {
             && self.effect_target_3f8
             && self.generated_material_408
             && self.clear_material_410
+            && self.clear_source_width != 0
+            && self.clear_source_height != 0
             && self.clear_target_width != 0
             && self.clear_target_height != 0
             && (self.clear_target_color_format == WE_LAYER_AUX_CLEAR_TARGET_DEFAULT_COLOR_FORMAT

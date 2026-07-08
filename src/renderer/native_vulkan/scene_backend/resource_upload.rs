@@ -24,7 +24,7 @@ use crate::engine::scene_engine::{
     SCENE_GPU_PUPPET_CLIPPING_RECORD_BYTES, SCENE_GPU_PUPPET_SKIN_VERTEX_BYTES, SceneFramePlan,
     SceneLayerAlphaMaskRtMethod8MdlvGeometry, SceneLayerCompositorEntry,
     SceneLayerCompositorOperation, SceneLayerCompositorPlan, ScenePuppetClippingProgram,
-    SceneResource, scene_stable_name_hash,
+    SceneResidentResource, SceneResource, SceneResourceResidencyPlan, scene_stable_name_hash,
 };
 
 use super::layer_alpha_mask_executor::{
@@ -33,12 +33,17 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_scene_layer_alpha_mask_rt_method8_lower_aux_payload,
     native_vulkan_scene_layer_alpha_mask_rt_method8_materialize_index_slice,
 };
+use super::layer_aux_material_draws::{
+    WE_AUX_MATERIAL_CLEAR_VERTEX_COUNT, WE_RT_TARGET_POSITION_UV_STRIDE_BYTES,
+    native_vulkan_scene_layer_aux_clear_triangle_payload,
+};
 use super::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRequirement,
     NativeVulkanSceneGpuBufferRole, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind,
-    NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
+    NativeVulkanSceneLayerAuxMaterialClearGeometry, NativeVulkanSceneRenderStateUtilityGeometry,
+    NativeVulkanSceneResourceStorage,
 };
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -184,6 +189,11 @@ impl NativeVulkanSceneGpuUploadPlan {
         }
 
         push_frame_render_state_utility_uploads(&mut resident_uploads, &frame.layer_compositor)?;
+        push_frame_layer_aux_material_clear_geometry_uploads(
+            &mut resident_uploads,
+            &frame.residency,
+            &frame.layer_compositor,
+        )?;
         push_frame_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(
             &mut resident_uploads,
             resources,
@@ -588,6 +598,60 @@ fn push_frame_render_state_utility_uploads(
     )
 }
 
+fn push_frame_layer_aux_material_clear_geometry_uploads(
+    uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
+    residency: &SceneResourceResidencyPlan,
+    layer_compositor: &SceneLayerCompositorPlan,
+) -> Result<(), NativeVulkanSceneGpuUploadError> {
+    let active_aux_objects = layer_compositor
+        .layers
+        .iter()
+        .filter(|layer| layer.has_active_aux_clear_target)
+        .map(|layer| layer.object)
+        .collect::<BTreeSet<_>>();
+    if active_aux_objects.is_empty() {
+        return Ok(());
+    }
+
+    for resource in &residency.resources {
+        let SceneResidentResource::LayerAuxCompositeTargets(targets) = resource else {
+            continue;
+        };
+        if !targets.clear_prep_ready || !active_aux_objects.contains(&targets.object) {
+            continue;
+        }
+        let owner = NativeVulkanSceneGpuBufferOwner::LayerAuxMaterialClearGeometry(
+            NativeVulkanSceneLayerAuxMaterialClearGeometry {
+                object: targets.object,
+            },
+        );
+        let role = NativeVulkanSceneGpuBufferRole::LayerAuxMaterialClearVertex;
+        let payload = native_vulkan_scene_layer_aux_clear_triangle_payload(
+            targets.clear_source_width,
+            targets.clear_source_height,
+            targets.clear_target_width,
+            targets.clear_target_height,
+            targets.clear_uv_y_flipped,
+        )
+        .map_err(
+            |message| NativeVulkanSceneGpuUploadError::SemanticLowering {
+                owner,
+                role,
+                message,
+            },
+        )?;
+        push_upload(
+            uploads,
+            owner,
+            role,
+            WE_AUX_MATERIAL_CLEAR_VERTEX_COUNT as usize,
+            u64::from(WE_RT_TARGET_POSITION_UV_STRIDE_BYTES),
+            payload.bytes,
+        )?;
+    }
+    Ok(())
+}
+
 fn push_frame_layer_alpha_mask_rt_method8_mdlv_index_slice_uploads(
     uploads: &mut Vec<NativeVulkanSceneGpuBufferUpload>,
     resources: &[SceneResource],
@@ -980,10 +1044,13 @@ mod tests {
     use crate::engine::scene_engine::{
         SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry,
         SceneLayerAlphaMaskRtMethod8MdlvSourceRecord, SceneLayerAlphaMaskRtMethod8MdlvSubdraw,
-        SceneLayerCompositorBlendKey, SceneLayerCompositorCommand, SceneLayerCompositorCondition,
-        SceneLayerCompositorLayer, SceneLayerCompositorRoute, SceneLayerCompositorTarget,
-        SceneMeshResidency, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId,
-        ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
+        SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorBlendKey,
+        SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorLayer,
+        SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneMeshResidency, SceneObjectId,
+        ScenePuppetClippingProgram, ScenePuppetId, ScenePuppetRigResidency, SceneResidentResource,
+        SceneResourceResidencyPlan, WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+        WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR, WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+        WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
     };
 
     #[test]
@@ -1445,6 +1512,56 @@ mod tests {
     }
 
     #[test]
+    fn frame_upload_plan_includes_aux_3f0_clear_triangle_geometry() {
+        let storage = NativeVulkanSceneResourceStorage::default();
+        let frame = active_aux_clear_frame(false);
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_scene_frame(&storage, &[], &frame)
+            .expect("frame aux geometry upload plan");
+
+        assert_eq!(plan.uploads().len(), 1);
+        let upload = &plan.uploads()[0];
+        assert_eq!(
+            upload.requirement,
+            NativeVulkanSceneGpuBufferRequirement {
+                owner: NativeVulkanSceneGpuBufferOwner::LayerAuxMaterialClearGeometry(
+                    NativeVulkanSceneLayerAuxMaterialClearGeometry {
+                        object: SceneObjectId(1530),
+                    },
+                ),
+                role: NativeVulkanSceneGpuBufferRole::LayerAuxMaterialClearVertex,
+                bytes: u64::from(WE_AUX_MATERIAL_CLEAR_VERTEX_COUNT)
+                    * u64::from(WE_RT_TARGET_POSITION_UV_STRIDE_BYTES),
+                usage: NativeVulkanSceneGpuBufferUsage::Vertex,
+            }
+        );
+        assert_eq!(upload.payload.len(), 60);
+        assert_eq!(read_f32(&upload.payload, 0), -1.0);
+        assert_eq!(read_f32(&upload.payload, 4), 1.0);
+        assert_eq!(read_f32(&upload.payload, 16), 1.0);
+        assert_eq!(read_f32(&upload.payload, 20), -1.0);
+        assert_eq!(read_f32(&upload.payload, 24), -3.0);
+        assert_eq!(read_f32(&upload.payload, 36), -1.0);
+        assert_eq!(read_f32(&upload.payload, 40), 3.0);
+        assert_eq!(read_f32(&upload.payload, 52), 2.0);
+        assert_eq!(read_f32(&upload.payload, 56), 1.0);
+    }
+
+    #[test]
+    fn frame_upload_plan_preserves_aux_3f0_flipped_uv_variant() {
+        let storage = NativeVulkanSceneResourceStorage::default();
+        let frame = active_aux_clear_frame(true);
+
+        let plan = NativeVulkanSceneGpuUploadPlan::from_scene_frame(&storage, &[], &frame)
+            .expect("frame aux flipped geometry upload plan");
+
+        let payload = &plan.uploads()[0].payload;
+        assert_eq!(read_f32(payload, 16), 0.0);
+        assert_eq!(read_f32(payload, 36), 2.0);
+        assert_eq!(read_f32(payload, 56), 0.0);
+    }
+
+    #[test]
     fn resident_upload_plan_rejects_missing_payload_for_active_storage() {
         let mut storage = NativeVulkanSceneResourceStorage::default();
         storage.sync_residency_plan(&SceneResourceResidencyPlan {
@@ -1578,6 +1695,50 @@ mod tests {
         }];
         SceneFramePlan {
             residency: SceneResourceResidencyPlan::default(),
+            graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
+            effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
+            effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),
+            final_compositor: crate::engine::scene_engine::SceneFinalCompositorPlan::empty(),
+            layer_compositor,
+        }
+    }
+
+    fn active_aux_clear_frame(uv_y_flipped: bool) -> SceneFramePlan {
+        let mut layer_compositor = SceneLayerCompositorPlan::empty();
+        layer_compositor.layer_count = 1;
+        layer_compositor.command_count = 1;
+        layer_compositor.object_final_layer_count = 1;
+        layer_compositor.layers = vec![SceneLayerCompositorLayer {
+            object: SceneObjectId(1530),
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw: false,
+            has_active_aux_clear_target: true,
+            commands: Vec::new(),
+        }];
+        SceneFramePlan {
+            residency: SceneResourceResidencyPlan {
+                resources: vec![SceneResidentResource::LayerAuxCompositeTargets(
+                    SceneLayerAuxCompositeTargetsResidency {
+                        object: SceneObjectId(1530),
+                        clear_target_3e8: true,
+                        material_target_3f0: true,
+                        effect_target_3f8: true,
+                        generated_material_408: true,
+                        clear_material_410: true,
+                        clear_source_width: 3840,
+                        clear_source_height: 2160,
+                        clear_target_width: 3840,
+                        clear_target_height: 2160,
+                        clear_uv_y_flipped: uv_y_flipped,
+                        clear_target_color_format: 0,
+                        clear_target_aux_format: WE_LAYER_AUX_CLEAR_TARGET_AUX_FORMAT,
+                        clear_target_r9_selector: WE_LAYER_AUX_CLEAR_TARGET_R9_SELECTOR,
+                        clear_target_resource_selector: WE_LAYER_AUX_CLEAR_TARGET_RESOURCE_SELECTOR,
+                        clear_target_cache_selector: WE_LAYER_AUX_CLEAR_TARGET_CACHE_SELECTOR,
+                        clear_prep_ready: true,
+                    },
+                )],
+            },
             graph: crate::engine::scene_engine::SceneGraph { passes: Vec::new() },
             effect_pass_graph: crate::engine::scene_engine::SceneEffectPassGraphPlan::empty(),
             effect_uniforms: crate::engine::scene_engine::SceneEffectUniformFramePlan::empty(),

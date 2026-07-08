@@ -74,8 +74,9 @@ use super::resource_buffers::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBufferRecords,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers,
-    NativeVulkanSceneMeshDrawBuffers, NativeVulkanScenePuppetStorageBuffers,
-    NativeVulkanSceneRenderStateUtilityGeometryBuffers,
+    NativeVulkanSceneLayerAuxMaterialClearGeometryBufferRecords,
+    NativeVulkanSceneLayerAuxMaterialClearGeometryBuffers, NativeVulkanSceneMeshDrawBuffers,
+    NativeVulkanScenePuppetStorageBuffers, NativeVulkanSceneRenderStateUtilityGeometryBuffers,
 };
 use super::resource_heap::{
     NativeVulkanSceneResourceHeapDrawBindInfo, NativeVulkanSceneResourceHeapFramePlan,
@@ -84,7 +85,8 @@ use super::resource_heap::{
 use super::resource_storage::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
-    NativeVulkanSceneRenderStateUtilityGeometry, NativeVulkanSceneResourceStorage,
+    NativeVulkanSceneLayerAuxMaterialClearGeometry, NativeVulkanSceneRenderStateUtilityGeometry,
+    NativeVulkanSceneResourceStorage,
 };
 use super::resource_upload::NativeVulkanSceneGpuUploadPlan;
 use super::texture_descriptors::{
@@ -339,6 +341,22 @@ impl NativeVulkanSceneFrameResources {
     ) -> Result<NativeVulkanSceneRenderStateUtilityGeometryBuffers, String> {
         self.gpu_buffers
             .render_state_utility_geometry_buffers(geometry)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_aux_material_clear_geometry_buffers(
+        &self,
+        geometry: NativeVulkanSceneLayerAuxMaterialClearGeometry,
+    ) -> Result<NativeVulkanSceneLayerAuxMaterialClearGeometryBuffers, String> {
+        self.gpu_buffers
+            .layer_aux_material_clear_geometry_buffers(geometry)
+    }
+
+    pub(in crate::renderer::native_vulkan) fn layer_aux_material_clear_geometry_buffer_records(
+        &self,
+        geometry: NativeVulkanSceneLayerAuxMaterialClearGeometry,
+    ) -> Result<NativeVulkanSceneLayerAuxMaterialClearGeometryBufferRecords, String> {
+        self.gpu_buffers
+            .layer_aux_material_clear_geometry_buffer_records(geometry)
     }
 
     pub(in crate::renderer::native_vulkan) fn layer_alpha_mask_rt_method8_mdlv_index_slice_buffer_records_for_geometry(
