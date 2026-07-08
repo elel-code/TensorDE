@@ -151,16 +151,10 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
     pub graph_execution: SceneGraphExecutionPlan,
     pub draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
     pub pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
-    pub recording_strategy: NativeVulkanSceneMeshRuntimeRecordingStrategy,
     pub layer_compositor_command_blocks:
         Option<NativeVulkanSceneLayerCompositorCommandBlockRecordPlan>,
     pub frame: NativeVulkanSceneGraphFrameCommandPlan<'a>,
     pub command_order: [&'static str; 4],
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneMeshRuntimeRecordingStrategy {
-    LayerCompositorCommandBlocks,
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -168,7 +162,6 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
         graph_execution: SceneGraphExecutionPlan,
         draw_family_executor: NativeVulkanSceneDrawFamilyExecutorPlan,
         pipeline_warmup: NativeVulkanSceneMeshPipelineWarmupPlan,
-        recording_strategy: NativeVulkanSceneMeshRuntimeRecordingStrategy,
         layer_compositor_command_blocks: Option<
             NativeVulkanSceneLayerCompositorCommandBlockRecordPlan,
         >,
@@ -178,7 +171,6 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
             graph_execution,
             draw_family_executor,
             pipeline_warmup,
-            recording_strategy,
             layer_compositor_command_blocks,
             frame,
             command_order: [
@@ -425,8 +417,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             &effects,
             &mesh.frame,
             &layer_alpha_mask_token_recording,
-            mesh.recording_strategy
-                == NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorCommandBlocks,
+            mesh.layer_compositor_command_blocks.is_some(),
         )?;
     Ok(NativeVulkanSceneRuntimeFramePlan {
         effects,
@@ -602,39 +593,34 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         target_formats: context.target_formats,
         clear_color: context.clear_color,
     };
-    let (
-        recording_strategy,
-        layer_compositor_command_blocks,
-        layer_compositor_effect_commands,
-        frame_plan,
-    ) = if let Some(command_block_output) =
-        native_vulkan_record_scene_layer_compositor_command_blocks(
-            frame_resources,
-            graph_context,
-            frame,
-            &graph_execution,
-            layer_compositor_schedule,
-            alpha_inputs,
-            effect_inputs,
-        )? {
-        (
-            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorCommandBlocks,
-            Some(command_block_output.command_blocks),
-            command_block_output.effect_commands,
-            command_block_output.mesh_frame,
-        )
-    } else {
-        return Err(
+    let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) =
+        if let Some(command_block_output) =
+            native_vulkan_record_scene_layer_compositor_command_blocks(
+                frame_resources,
+                graph_context,
+                frame,
+                &graph_execution,
+                layer_compositor_schedule,
+                alpha_inputs,
+                effect_inputs,
+            )?
+        {
+            (
+                Some(command_block_output.command_blocks),
+                command_block_output.effect_commands,
+                command_block_output.mesh_frame,
+            )
+        } else {
+            return Err(
             "scene runtime requires layer compositor command-block recording; graph-executor fallback is not allowed"
                 .to_owned(),
         );
-    };
+        };
 
     let mesh = NativeVulkanSceneMeshRuntimeFramePlan::from_parts(
         graph_execution,
         draw_family_executor,
         pipeline_warmup,
-        recording_strategy,
         layer_compositor_command_blocks,
         frame_plan,
     );
@@ -721,7 +707,6 @@ mod tests {
             graph_execution,
             draw_family_executor,
             warmup,
-            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorCommandBlocks,
             None,
             frame,
         );
@@ -736,10 +721,7 @@ mod tests {
             ]
         );
         assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);
-        assert_eq!(
-            plan.recording_strategy,
-            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorCommandBlocks
-        );
+        assert!(plan.layer_compositor_command_blocks.is_none());
         assert_eq!(plan.pipeline_warmup.cache_keys().len(), 1);
         assert_eq!(plan.frame.pass_count, 1);
         assert_eq!(plan.frame.passes[0].pass.draw_count, 1);
