@@ -75,7 +75,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
-use super::layer_compositor_direct_mesh::native_vulkan_record_scene_layer_compositor_direct_mesh_blocks;
+use super::layer_compositor_mesh_blocks::native_vulkan_record_scene_layer_compositor_mesh_blocks;
 use super::layer_compositor_recorder::{
     NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     native_vulkan_plan_scene_layer_compositor_block_recording,
@@ -151,7 +151,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshRuntimeFrameP
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneMeshRuntimeRecordingStrategy {
     SceneGraphExecutor,
-    LayerCompositorDirectMeshBlocks,
+    LayerCompositorMeshBlocks,
 }
 
 impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
@@ -172,7 +172,7 @@ impl<'a> NativeVulkanSceneMeshRuntimeFramePlan<'a> {
                 "build_scene_graph_execution_plan",
                 "select_scene_draw_family_executors",
                 "require_warmed_mesh_pipelines",
-                "record_scene_graph_frame_commands",
+                "record_scene_mesh_frame_commands",
             ],
         }
     }
@@ -497,7 +497,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         clear_color: context.clear_color,
     };
     let (recording_strategy, frame_plan) = if let Some(frame_plan) =
-        native_vulkan_record_scene_layer_compositor_direct_mesh_blocks(
+        native_vulkan_record_scene_layer_compositor_mesh_blocks(
             frame_resources,
             graph_context,
             frame,
@@ -505,7 +505,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             layer_compositor_schedule,
         )? {
         (
-            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorDirectMeshBlocks,
+            NativeVulkanSceneMeshRuntimeRecordingStrategy::LayerCompositorMeshBlocks,
             frame_plan,
         )
     } else {
@@ -615,7 +615,7 @@ mod tests {
                 "build_scene_graph_execution_plan",
                 "select_scene_draw_family_executors",
                 "require_warmed_mesh_pipelines",
-                "record_scene_graph_frame_commands"
+                "record_scene_mesh_frame_commands"
             ]
         );
         assert_eq!(plan.draw_family_executor.missing_executor_draw_count, 0);

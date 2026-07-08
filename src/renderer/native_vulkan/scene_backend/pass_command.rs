@@ -49,6 +49,19 @@ pub struct NativeVulkanSceneMeshPassCommandPlan<'a> {
     pub commands: Vec<NativeVulkanSceneMeshPassCommand<'a>>,
 }
 
+#[derive(Debug, Default)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPassDrawSpanState<'a> {
+    draw_list_state: NativeVulkanSceneMeshDrawListState<'a>,
+    last_heap_slice_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneMeshPassDrawSpanCounts {
+    pub pipeline_bind_count: usize,
+    pub resource_heap_bind_count: usize,
+    pub indexed_draw_count: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub enum NativeVulkanSceneMeshPassCommand<'a> {
     BeginPass {
@@ -67,6 +80,11 @@ pub enum NativeVulkanSceneMeshPassCommand<'a> {
         object: SceneObjectId,
         geometry: SceneGeometryId,
         draw: NativeVulkanSceneMeshDrawCommandPlan,
+    },
+    LayerCompositorNoDrawMarker {
+        block_index: usize,
+        step_index_start: usize,
+        step_index_end: usize,
     },
     EndPass,
 }
@@ -153,9 +171,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_d
     command_buffer: vk::CommandBuffer,
     pass: &'a SceneGraphPass,
     draw_index_start: usize,
-    mut pipeline_for_key: PipelineForKey,
-    mut resource_heap_bind_for_draw: ResourceHeapBindForDraw,
-    mut mesh_buffers: MeshBuffersForGeometry,
+    pipeline_for_key: PipelineForKey,
+    resource_heap_bind_for_draw: ResourceHeapBindForDraw,
+    mesh_buffers: MeshBuffersForGeometry,
 ) -> Result<NativeVulkanSceneMeshPassCommandPlan<'a>, String>
 where
     PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
@@ -180,17 +198,97 @@ where
         draw_index_start,
     });
 
-    let mut draw_list_state = NativeVulkanSceneMeshDrawListState::default();
-    let mut pipeline_bind_count = 0usize;
-    let mut resource_heap_bind_count = 0usize;
-    let mut indexed_draw_count = 0usize;
-    let mut last_heap_slice_index = None::<usize>;
+    let mut draw_span_state = NativeVulkanSceneMeshPassDrawSpanState::default();
+    let draw_counts = native_vulkan_record_scene_mesh_pass_draw_span_commands(
+        device,
+        command_buffer,
+        pass,
+        draw_index_start,
+        draw_index_start,
+        draw_index_end,
+        &mut draw_span_state,
+        &mut commands,
+        pipeline_for_key,
+        resource_heap_bind_for_draw,
+        mesh_buffers,
+    )?;
 
-    for (local_draw_index, draw) in pass.draws.iter().enumerate() {
-        let draw_index = draw_index_start
+    commands.push(NativeVulkanSceneMeshPassCommand::EndPass);
+
+    Ok(NativeVulkanSceneMeshPassCommandPlan {
+        name: pass.name.as_str(),
+        input: pass.input,
+        output: pass.output,
+        draw_index_start,
+        draw_index_end,
+        draw_count: pass.draws.len(),
+        pipeline_bind_count: draw_counts.pipeline_bind_count,
+        resource_heap_bind_count: draw_counts.resource_heap_bind_count,
+        indexed_draw_count: draw_counts.indexed_draw_count,
+        commands,
+    })
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_pass_draw_span_commands<
+    'a,
+    PipelineForKey,
+    ResourceHeapBindForDraw,
+    MeshBuffersForGeometry,
+>(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    pass: &'a SceneGraphPass,
+    pass_draw_index_start: usize,
+    span_draw_index_start: usize,
+    span_draw_index_end: usize,
+    draw_span_state: &mut NativeVulkanSceneMeshPassDrawSpanState<'a>,
+    commands: &mut Vec<NativeVulkanSceneMeshPassCommand<'a>>,
+    mut pipeline_for_key: PipelineForKey,
+    mut resource_heap_bind_for_draw: ResourceHeapBindForDraw,
+    mut mesh_buffers: MeshBuffersForGeometry,
+) -> Result<NativeVulkanSceneMeshPassDrawSpanCounts, String>
+where
+    PipelineForKey: FnMut(NativeVulkanScenePipelineKey<'a>) -> Result<vk::Pipeline, String>,
+    ResourceHeapBindForDraw:
+        FnMut(usize) -> Result<NativeVulkanSceneResourceHeapDrawBindInfo, String>,
+    MeshBuffersForGeometry:
+        FnMut(SceneGeometryId) -> Result<NativeVulkanSceneMeshDrawBuffers, String>,
+{
+    let pass_draw_index_end = pass_draw_index_start
+        .checked_add(pass.draws.len())
+        .ok_or_else(|| {
+            format!(
+                "scene mesh pass '{}' global draw range overflows usize",
+                pass.name
+            )
+        })?;
+    if span_draw_index_start > span_draw_index_end {
+        return Err(format!(
+            "scene mesh pass '{}' has inverted draw span {}..{}",
+            pass.name, span_draw_index_start, span_draw_index_end
+        ));
+    }
+    if span_draw_index_start < pass_draw_index_start || span_draw_index_end > pass_draw_index_end {
+        return Err(format!(
+            "scene mesh pass '{}' draw span {}..{} is outside pass range {}..{}",
+            pass.name,
+            span_draw_index_start,
+            span_draw_index_end,
+            pass_draw_index_start,
+            pass_draw_index_end
+        ));
+    }
+
+    let mut counts = NativeVulkanSceneMeshPassDrawSpanCounts::default();
+    let local_start = span_draw_index_start.saturating_sub(pass_draw_index_start);
+    let local_end = span_draw_index_end.saturating_sub(pass_draw_index_start);
+    for (local_draw_index, draw) in pass.draws[local_start..local_end].iter().enumerate() {
+        let draw_index = span_draw_index_start
             .checked_add(local_draw_index)
             .ok_or_else(|| format!("scene mesh pass '{}' draw index overflow", pass.name))?;
-        let transition = draw_list_state.next_draw(&pass.name, pass.input, draw)?;
+        let transition = draw_span_state
+            .draw_list_state
+            .next_draw(&pass.name, pass.input, draw)?;
         if transition.bind_pipeline {
             let pipeline = pipeline_for_key(transition.pipeline_key)?;
             let bind = native_vulkan_record_scene_pipeline_bind_command(
@@ -200,11 +298,11 @@ where
                 pipeline,
             )?;
             commands.push(NativeVulkanSceneMeshPassCommand::BindPipeline { bind });
-            pipeline_bind_count += 1;
+            counts.pipeline_bind_count += 1;
         }
 
         let bind_info = resource_heap_bind_for_draw(draw_index)?;
-        if last_heap_slice_index != Some(bind_info.heap_slice_index) {
+        if draw_span_state.last_heap_slice_index != Some(bind_info.heap_slice_index) {
             let heap_slice_index = bind_info.heap_slice_index;
             let bind = native_vulkan_record_scene_resource_heap_draw_bind_command(
                 device,
@@ -215,8 +313,8 @@ where
                 bind_info,
             )?;
             commands.push(NativeVulkanSceneMeshPassCommand::BindResourceHeap { bind });
-            resource_heap_bind_count += 1;
-            last_heap_slice_index = Some(heap_slice_index);
+            counts.resource_heap_bind_count += 1;
+            draw_span_state.last_heap_slice_index = Some(heap_slice_index);
         }
 
         let geometry = draw.geometry.ok_or_else(|| {
@@ -233,23 +331,10 @@ where
             geometry: draw_plan.geometry,
             draw: draw_plan,
         });
-        indexed_draw_count += 1;
+        counts.indexed_draw_count += 1;
     }
 
-    commands.push(NativeVulkanSceneMeshPassCommand::EndPass);
-
-    Ok(NativeVulkanSceneMeshPassCommandPlan {
-        name: pass.name.as_str(),
-        input: pass.input,
-        output: pass.output,
-        draw_index_start,
-        draw_index_end,
-        draw_count: pass.draws.len(),
-        pipeline_bind_count,
-        resource_heap_bind_count,
-        indexed_draw_count,
-        commands,
-    })
+    Ok(counts)
 }
 
 #[cfg(test)]
