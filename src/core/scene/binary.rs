@@ -720,14 +720,7 @@ impl<'a> SceneBinaryMaterialState<'a> {
         base_resource: Option<SceneBinaryResourceBinding<'_>>,
         resource_index: &SceneBinaryResourceIndex<'_>,
     ) -> Self {
-        let first_pass = node
-            .effects
-            .iter()
-            .filter(|effect| scene_binary_effect_is_visible(effect))
-            .flat_map(|effect| effect.passes.iter())
-            .next();
-        let material_source = scene_binary_base_material_pass_source(node)
-            .or_else(|| first_pass.map(scene_binary_effect_material_pass_source));
+        let material_source = scene_binary_base_material_pass_source(node);
         let effect_pass_count = node_effect_pass_count(&node.effects);
         let effect_texture_slot_count =
             node_effect_texture_slot_count(&node.effects, base_resource, resource_index);
@@ -793,19 +786,6 @@ fn scene_binary_base_material_pass_source(
         cullmode: pass.get("cullmode").and_then(serde_json::Value::as_str),
         alphawriting: pass.get("alphawriting").and_then(serde_json::Value::as_str),
     })
-}
-
-fn scene_binary_effect_material_pass_source(
-    pass: &SceneEffectPass,
-) -> SceneBinaryMaterialPassSource<'_> {
-    SceneBinaryMaterialPassSource {
-        shader: pass.shader.as_deref(),
-        blending: pass.blending.as_deref(),
-        depthtest: pass.depthtest.as_deref(),
-        depthwrite: pass.depthwrite.as_deref(),
-        cullmode: pass.cullmode.as_deref(),
-        alphawriting: pass.alphawriting.as_deref(),
-    }
 }
 
 impl SceneBinaryPayloadBuilder {
@@ -3455,13 +3435,13 @@ mod tests {
             debug_names
                 .name(materials[0].shader_name)
                 .expect("material shader"),
-            Some("effects/flutter")
+            None
         );
         assert_eq!(
             debug_names
                 .name(materials[0].blending_name)
                 .expect("material blending"),
-            Some("additive")
+            None
         );
         assert_eq!(materials[0].texture_slot_count, 1);
         assert_eq!(materials[0].effect_pass_count, 1);
@@ -3470,13 +3450,10 @@ mod tests {
             materials[0].blend_mode,
             blend_mode_code(SceneBlendMode::Screen)
         );
-        assert_eq!(materials[0].depth_test, material_flag_code(Some("false")));
-        assert_eq!(materials[0].depth_write, material_flag_code(Some("false")));
-        assert_eq!(materials[0].cull_mode, cull_mode_code(Some("none")));
-        assert_eq!(
-            materials[0].alpha_write,
-            material_flag_code(Some("enabled"))
-        );
+        assert_eq!(materials[0].depth_test, material_flag_code(None));
+        assert_eq!(materials[0].depth_write, material_flag_code(None));
+        assert_eq!(materials[0].cull_mode, cull_mode_code(None));
+        assert_eq!(materials[0].alpha_write, material_flag_code(None));
         assert_eq!(materials[0].effect_kind_flags, 1 << (8 - 1));
         assert_ne!(materials[0].pipeline_key, 0);
         let material_effect_passes = layout
@@ -3523,6 +3500,18 @@ mod tests {
         assert_eq!(effect_passes[0].first_texture_slot, 0);
         assert_eq!(effect_passes[0].first_parameter, 1);
         assert_eq!(effect_passes[0].parameter_count, 4);
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].shader_name)
+                .expect("effect shader"),
+            Some("effects/flutter")
+        );
+        assert_eq!(
+            debug_names
+                .name(effect_passes[0].blending_name)
+                .expect("effect blending"),
+            Some("additive")
+        );
         assert_eq!(
             debug_names
                 .name(effect_passes[0].command_name)

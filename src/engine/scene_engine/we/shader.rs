@@ -22,6 +22,7 @@
 //! - `reverse-engineered/docs/particle-format.md`
 //! - `reverse-engineered/shaders/genericparticle.vert`
 //! - `reverse-engineered/shaders/genericparticle.frag`
+//! - `reverse-engineered/docs/scene-format.md`
 
 use super::vec4::WE_VEC4_BYTES;
 use super::{WeEffectKind, WeEffectOutputContract};
@@ -122,6 +123,10 @@ impl WeShaderInterface {
             "we/genericimage4" | "genericimage4" => Some(&GENERICIMAGE4_INTERFACE),
             "we/clippingmaskimage4" | "clippingmaskimage4" => Some(&CLIPPINGMASKIMAGE4_INTERFACE),
             "we/genericparticle" | "genericparticle" => Some(&GENERICPARTICLE_INTERFACE),
+            "we/color" | "color" => Some(&COLOR_INTERFACE),
+            "we/text" | "text" => Some(&TEXT_INTERFACE),
+            "we/path" | "path" => Some(&PATH_INTERFACE),
+            "we/video" | "video" => Some(&VIDEO_INTERFACE),
             "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
             "util/passthrough" | "passthrough" => Some(&PASSTHROUGH_INTERFACE),
             _ => None,
@@ -619,6 +624,131 @@ pub static PASSTHROUGH_INTERFACE: WeShaderInterface = WeShaderInterface {
     combos: PASSTHROUGH_COMBOS,
 };
 
+pub static COLOR_TEXTURES: &[WeShaderTextureSlot] = &[];
+
+pub static COLOR_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/docs/scene-format.md:303",
+    },
+    WeShaderUniform {
+        name: "g_Color4",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("color"),
+        reference: "reverse-engineered/docs/scene-format.md:325",
+    },
+];
+
+pub static COLOR_COMBOS: &[WeShaderCombo] = &[];
+
+pub static COLOR_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/color",
+    textures: COLOR_TEXTURES,
+    uniforms: COLOR_UNIFORMS,
+    combos: COLOR_COMBOS,
+};
+
+pub static TEXT_TEXTURES: &[WeShaderTextureSlot] = &[];
+
+pub static TEXT_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/docs/scene-format.md:325",
+    },
+    WeShaderUniform {
+        name: "g_TextColor",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("color"),
+        reference: "reverse-engineered/docs/scene-format.md:325",
+    },
+];
+
+pub static TEXT_COMBOS: &[WeShaderCombo] = &[];
+
+pub static TEXT_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/text",
+    textures: TEXT_TEXTURES,
+    uniforms: TEXT_UNIFORMS,
+    combos: TEXT_COMBOS,
+};
+
+pub static PATH_TEXTURES: &[WeShaderTextureSlot] = &[];
+
+pub static PATH_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/docs/scene-format.md:325",
+    },
+    WeShaderUniform {
+        name: "g_FillColor",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("color"),
+        reference: "reverse-engineered/docs/scene-format.md:325",
+    },
+];
+
+pub static PATH_COMBOS: &[WeShaderCombo] = &[];
+
+pub static PATH_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/path",
+    textures: PATH_TEXTURES,
+    uniforms: PATH_UNIFORMS,
+    combos: PATH_COMBOS,
+};
+
+pub static VIDEO_TEXTURES: &[WeShaderTextureSlot] = &[WeShaderTextureSlot {
+    slot: 0,
+    name: "g_Texture0",
+    stage: WeShaderStage::Fragment,
+    requirement: WeShaderTextureRequirement::Required,
+    reference: "reverse-engineered/docs/scene-format.md:165",
+}];
+
+pub static VIDEO_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/docs/scene-format.md:165",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Rotation",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericimage4.vert:6",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Translation",
+        kind: WeShaderUniformKind::Vec2,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericimage4.vert:7",
+    },
+];
+
+pub static VIDEO_COMBOS: &[WeShaderCombo] = &[];
+
+pub static VIDEO_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/video",
+    textures: VIDEO_TEXTURES,
+    uniforms: VIDEO_UNIFORMS,
+    combos: VIDEO_COMBOS,
+};
+
 pub static GENERICPARTICLE_TEXTURES: &[WeShaderTextureSlot] = &[
     WeShaderTextureSlot {
         slot: 0,
@@ -995,6 +1125,32 @@ mod tests {
         assert!(interface.uniforms.iter().any(|uniform| {
             uniform.name == "g_Overbright" && uniform.kind == WeShaderUniformKind::Float
         }));
+    }
+
+    #[test]
+    fn object_surface_interfaces_track_scene_color_text_path_video_contracts() {
+        let color = WeShaderInterface::for_shader("we/color").unwrap();
+        assert_eq!(color.required_texture_slot_mask(), 0);
+        assert_eq!(color.declared_texture_slot_mask(), 0);
+        assert!(color.uniforms.iter().any(|uniform| {
+            uniform.name == "g_Color4" && uniform.kind == WeShaderUniformKind::Vec4
+        }));
+
+        let text = WeShaderInterface::for_shader("we/text").unwrap();
+        assert_eq!(text.required_texture_slot_mask(), 0);
+        assert!(text.uniforms.iter().any(|uniform| {
+            uniform.name == "g_TextColor" && uniform.kind == WeShaderUniformKind::Vec4
+        }));
+
+        let path = WeShaderInterface::for_shader("we/path").unwrap();
+        assert_eq!(path.required_texture_slot_mask(), 0);
+        assert!(path.uniforms.iter().any(|uniform| {
+            uniform.name == "g_FillColor" && uniform.kind == WeShaderUniformKind::Vec4
+        }));
+
+        let video = WeShaderInterface::for_shader("we/video").unwrap();
+        assert_eq!(video.required_texture_slot_mask(), 0b1);
+        assert_eq!(video.declared_texture_slot_mask(), 0b1);
     }
 
     #[test]

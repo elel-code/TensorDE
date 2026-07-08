@@ -1,13 +1,12 @@
 //! `.gscn` material fact lowering for the scene engine ingest boundary.
 //!
 //! References:
+//! - `reverse-engineered/docs/scene-format.md`
 //! - `reverse-engineered/docs/material-format.md`
 //! - `reverse-engineered/docs/effect-format.md`
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
-use crate::core::scene::binary::{
-    SceneBinaryChunkKind, SceneBinaryMaterialPassRecord, decode_effect_pass_record,
-};
+use crate::core::scene::binary::SceneBinaryMaterialPassRecord;
 use crate::engine::scene_engine::ingest::gscn::GscnMaterialFact;
 use crate::engine::scene_engine::{SceneAlphaWriteMode, SceneCullMode, SceneDepthTest};
 use crate::renderer::RendererPlanError;
@@ -16,12 +15,12 @@ use super::super::facts::{BinarySceneNames, binary_name};
 use super::super::reader::BinarySceneReader;
 
 pub(super) fn gscn_material_fact(
-    reader: &mut BinarySceneReader,
+    _reader: &mut BinarySceneReader,
     names: &BinarySceneNames,
     material: Option<SceneBinaryMaterialPassRecord>,
 ) -> Result<GscnMaterialFact, RendererPlanError> {
     Ok(GscnMaterialFact {
-        shader: gscn_effect_shader_name(reader, names, material)?,
+        shader: gscn_material_shader_name(names, material),
         blending: material
             .and_then(|material| binary_name(names, material.blending_name))
             .map(str::to_owned),
@@ -68,28 +67,19 @@ fn gscn_alpha_write(code: u16) -> SceneAlphaWriteMode {
     }
 }
 
-fn gscn_effect_shader_name(
-    reader: &mut BinarySceneReader,
+fn gscn_material_shader_name(
     names: &BinarySceneNames,
     material: Option<SceneBinaryMaterialPassRecord>,
-) -> Result<Option<String>, RendererPlanError> {
-    if let Some(material) = material
-        && material.effect_pass_count > 0
-    {
-        let passes = reader.record_range(
-            SceneBinaryChunkKind::EffectPass,
-            reader.layout_record_size(SceneBinaryChunkKind::EffectPass)?,
-            material.first_effect_pass,
-            material.effect_pass_count,
-            decode_effect_pass_record,
-        )?;
-        if let Some(shader) = passes
-            .iter()
-            .rev()
-            .find_map(|pass| binary_name(names, pass.shader_name))
-        {
-            return Ok(Some(shader.to_owned()));
-        }
+) -> Option<String> {
+    let shader = binary_name(names, material?.shader_name)?;
+    if is_effect_shader_name(shader) {
+        None
+    } else {
+        Some(shader.to_owned())
     }
-    Ok(None)
+}
+
+fn is_effect_shader_name(shader: &str) -> bool {
+    let normalized = shader.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("effects/") || normalized.contains("/effects/")
 }

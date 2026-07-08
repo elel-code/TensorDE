@@ -499,9 +499,7 @@ fn engine_geometry(
 
 fn engine_material(kind: GscnObjectKind, material: GscnMaterialFact) -> SceneMaterialContract {
     SceneMaterialContract {
-        shader: material
-            .shader
-            .unwrap_or_else(|| default_shader_name(kind).to_owned()),
+        shader: engine_scene_material_shader(kind, material.shader.as_deref()),
         blend: we_material_blend_contract(material.blending.as_deref()),
         render_state: SceneMaterialRenderState {
             depth_test: material.depth_test,
@@ -510,6 +508,18 @@ fn engine_material(kind: GscnObjectKind, material: GscnMaterialFact) -> SceneMat
             alpha_write: material.alpha_write,
         },
     }
+}
+
+fn engine_scene_material_shader(kind: GscnObjectKind, shader: Option<&str>) -> String {
+    shader
+        .filter(|shader| !is_effect_shader_name(shader))
+        .unwrap_or_else(|| default_shader_name(kind))
+        .to_owned()
+}
+
+fn is_effect_shader_name(shader: &str) -> bool {
+    let normalized = shader.replace('\\', "/").to_ascii_lowercase();
+    normalized.starts_with("effects/") || normalized.contains("/effects/")
 }
 
 fn default_shader_name(kind: GscnObjectKind) -> &'static str {
@@ -573,6 +583,33 @@ mod tests {
         assert_eq!(
             we_material_blend_contract(None),
             SceneBlendContract::NormalReplace
+        );
+    }
+
+    #[test]
+    fn effect_shader_names_stay_out_of_object_material_contracts() {
+        assert_eq!(
+            engine_scene_material_shader(GscnObjectKind::Image, Some("effects/waterflow")),
+            "we/genericimage4"
+        );
+        assert_eq!(
+            engine_scene_material_shader(
+                GscnObjectKind::Image,
+                Some("workshop/2790231929/effects/foliagesway"),
+            ),
+            "we/genericimage4"
+        );
+        assert_eq!(
+            engine_scene_material_shader(GscnObjectKind::ParticleEmitter, Some("effects/iris")),
+            "we/genericparticle"
+        );
+        assert_eq!(
+            engine_scene_material_shader(GscnObjectKind::Color, None),
+            "we/color"
+        );
+        assert_eq!(
+            engine_scene_material_shader(GscnObjectKind::Image, Some("we/genericimage4")),
+            "we/genericimage4"
         );
     }
 
