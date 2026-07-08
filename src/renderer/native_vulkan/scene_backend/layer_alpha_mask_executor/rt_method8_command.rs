@@ -10,16 +10,22 @@
 use serde::Serialize;
 
 use crate::engine::scene_engine::{SceneGraphPipelineClass, SceneObjectId};
+use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo;
 use crate::renderer::native_vulkan::scene_backend::resource_buffers::{
-    NativeVulkanSceneGpuBufferRecordBinding,
+    NativeVulkanSceneGpuBufferBinding, NativeVulkanSceneGpuBufferRecordBinding,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRecords,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
+    NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers,
 };
 use crate::renderer::native_vulkan::scene_backend::resource_storage::{
     NativeVulkanSceneGpuBufferOwner, NativeVulkanSceneGpuBufferRole,
     NativeVulkanSceneGpuBufferUsage, NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSlice,
 };
+use vulkanalia::prelude::v1_4::*;
+use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
+use super::NativeVulkanSceneLayerAlphaMaskTextureBindRole;
 use super::recorder_requirements::{
     NativeVulkanSceneLayerAlphaMaskRecorderRequirement,
     NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind,
@@ -52,6 +58,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub pipeline_class: SceneGraphPipelineClass,
     pub rt_method8_call_site: &'static str,
     pub rt_method8_method_vma: &'static str,
+    pub heap_bind_index: usize,
     pub geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
     pub geometry_index: NativeVulkanSceneGpuBufferRecordBinding,
@@ -64,6 +71,24 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub receiver: &'static str,
     pub reference_points: [&'static str; 5],
     pub command_order: [&'static str; 8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan
+{
+    pub command_index: usize,
+    pub object: SceneObjectId,
+    pub kind: NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind,
+    pub heap_bind_index: usize,
+    pub heap_slice_index: usize,
+    pub pipeline_bind_count: usize,
+    pub resource_heap_bind_count: usize,
+    pub vertex_buffer_bind_count: usize,
+    pub slice_index_buffer_bind_count: usize,
+    pub indexed_draw_count: usize,
+    pub r16_index_count: u32,
+    pub draw_call: &'static str,
+    pub command_order: [&'static str; 6],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -231,6 +256,7 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
                 requirement.command_index
             )
         })?;
+        let heap_bind_index = sole_heap_bind_index(requirement)?;
 
         let mut slices = Vec::with_capacity(requirement.rt_method8_mdlv_index_slices.len());
         for slice in &requirement.rt_method8_mdlv_index_slices {
@@ -250,6 +276,7 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
             pipeline_class,
             rt_method8_call_site: call_site,
             rt_method8_method_vma: method_vma,
+            heap_bind_index,
             geometry: geometry_records.geometry,
             vertex: geometry_records.vertex,
             geometry_index: geometry_records.index,
@@ -279,6 +306,109 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
             ],
         })
     }
+}
+
+impl NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan {
+    fn from_command_and_buffers(
+        command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+        bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
+        geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
+        slices: &[NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers],
+    ) -> Result<Self, String> {
+        validate_heap_bind_for_recording(command, bind_info)?;
+        validate_geometry_buffers_for_recording(command, geometry)?;
+        if slices.len() != command.slices.len() {
+            return Err(format!(
+                "scene layer alpha-mask RT method [8] command {} expected {} retained slice buffers, got {}",
+                command.command_index,
+                command.slices.len(),
+                slices.len()
+            ));
+        }
+        let mut r16_index_count = 0u32;
+        for (slice_command, slice_buffer) in command.slices.iter().zip(slices.iter().copied()) {
+            validate_slice_buffer_for_recording(
+                command.command_index,
+                slice_command,
+                slice_buffer,
+            )?;
+            r16_index_count = r16_index_count
+                .checked_add(slice_command.index_count)
+                .ok_or_else(|| {
+                    format!(
+                        "scene layer alpha-mask RT method [8] command {} total R16 index count overflowed",
+                        command.command_index
+                    )
+                })?;
+        }
+        Ok(Self {
+            command_index: command.command_index,
+            object: command.object,
+            kind: command.kind,
+            heap_bind_index: bind_info.heap_bind_index,
+            heap_slice_index: bind_info.heap_slice_index,
+            pipeline_bind_count: 1,
+            resource_heap_bind_count: 1,
+            vertex_buffer_bind_count: 1,
+            slice_index_buffer_bind_count: slices.len(),
+            indexed_draw_count: slices.len(),
+            r16_index_count,
+            draw_call: "vkCmdDrawIndexed",
+            command_order: [
+                "cmd_bind_rt_method8_pipeline",
+                "cmd_bind_alpha_mask_resource_heap_ext",
+                "cmd_bind_alpha_mask_sampler_heap_ext",
+                "cmd_bind_layer_0x490_vertex_buffer",
+                "cmd_bind_each_r16_slice_index_buffer",
+                "cmd_draw_indexed_each_slice",
+            ],
+        })
+    }
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha_mask_rt_method8_indexed_draw_command(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+    vk_pipeline: vk::Pipeline,
+    bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
+    geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
+    slices: &[NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers],
+) -> Result<NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan, String> {
+    if command_buffer == vk::CommandBuffer::null() {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} requires a valid command buffer",
+            command.command_index
+        ));
+    }
+    if vk_pipeline == vk::Pipeline::null() {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} requires a warmed vk::Pipeline",
+            command.command_index
+        ));
+    }
+    let plan =
+        NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan::from_command_and_buffers(
+            command, bind_info, geometry, slices,
+        )?;
+    unsafe {
+        device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, vk_pipeline);
+        device.cmd_bind_resource_heap_ext(command_buffer, &bind_info.resource_bind);
+        device.cmd_bind_sampler_heap_ext(command_buffer, &bind_info.sampler_bind);
+        let vertex_buffers = [geometry.vertex.buffer];
+        let vertex_offsets = [0u64];
+        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+        for (slice_command, slice_buffer) in command.slices.iter().zip(slices.iter().copied()) {
+            device.cmd_bind_index_buffer(
+                command_buffer,
+                slice_buffer.index.buffer,
+                0,
+                vk::IndexType::UINT16,
+            );
+            device.cmd_draw_indexed(command_buffer, slice_command.index_count, 1, 0, 0, 0);
+        }
+    }
+    Ok(plan)
 }
 
 impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawSliceCommand {
@@ -402,6 +532,121 @@ fn validate_geometry_records(
     Ok(())
 }
 
+fn sole_heap_bind_index(
+    requirement: &NativeVulkanSceneLayerAlphaMaskRecorderRequirement,
+) -> Result<usize, String> {
+    if requirement.heap_bind_count != 1 || requirement.heap_bind_indices.len() != 1 {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} requires exactly one heap bind, got count={} indices={:?}",
+            requirement.command_index, requirement.heap_bind_count, requirement.heap_bind_indices
+        ));
+    }
+    Ok(requirement.heap_bind_indices[0])
+}
+
+fn validate_heap_bind_for_recording(
+    command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+    bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
+) -> Result<(), String> {
+    if bind_info.heap_bind_index != command.heap_bind_index {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} heap-bind mismatch: command {}, heap {}",
+            command.command_index, command.heap_bind_index, bind_info.heap_bind_index
+        ));
+    }
+    if bind_info.object != command.object {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} object mismatch: command {:?}, heap {:?}",
+            command.command_index, command.object, bind_info.object
+        ));
+    }
+    if bind_info.shader != command.shader {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} shader mismatch: command {}, heap {}",
+            command.command_index, command.shader, bind_info.shader
+        ));
+    }
+    let valid_role = match command.kind {
+        NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::ClippingMaskImage4Producer => {
+            matches!(
+                bind_info.role,
+                NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 { .. }
+            )
+        }
+        NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::GeneratedClippingTargetConsumer => {
+            bind_info.role == NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget
+        }
+    };
+    if !valid_role {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} heap role {:?} does not match {:?}",
+            command.command_index, bind_info.role, command.kind
+        ));
+    }
+    Ok(())
+}
+
+fn validate_geometry_buffers_for_recording(
+    command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+    geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers,
+) -> Result<(), String> {
+    if geometry.geometry != command.geometry {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {} geometry buffer owner mismatch",
+            command.command_index
+        ));
+    }
+    validate_actual_buffer(
+        command.command_index,
+        "vertex",
+        geometry.vertex,
+        command.vertex,
+    )?;
+    validate_actual_buffer(
+        command.command_index,
+        "geometry index",
+        geometry.index,
+        command.geometry_index,
+    )?;
+    Ok(())
+}
+
+fn validate_slice_buffer_for_recording(
+    command_index: usize,
+    slice_command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawSliceCommand,
+    slice_buffer: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers,
+) -> Result<(), String> {
+    if slice_buffer.slice != slice_command.slice {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {command_index} slice buffer owner mismatch"
+        ));
+    }
+    validate_actual_buffer(
+        command_index,
+        "slice index",
+        slice_buffer.index,
+        slice_command.index,
+    )
+}
+
+fn validate_actual_buffer(
+    command_index: usize,
+    label: &'static str,
+    actual: NativeVulkanSceneGpuBufferBinding,
+    expected: NativeVulkanSceneGpuBufferRecordBinding,
+) -> Result<(), String> {
+    if actual.buffer == vk::Buffer::null()
+        || actual.key != expected.key
+        || actual.bytes != expected.bytes
+        || actual.payload_hash != expected.payload_hash
+    {
+        return Err(format!(
+            "scene layer alpha-mask RT method [8] command {command_index} {label} buffer does not match retained record"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::recorder_requirements::NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvRecorderGeometryRequirement;
@@ -413,10 +658,15 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneGraphTarget, SceneLayerCompositorCondition, SceneLayerCompositorEntry,
-        SceneLayerCompositorOperation, SceneLayerCompositorTarget,
+        SceneLayerCompositorOperation, SceneLayerCompositorTarget, ScenePuppetId, SceneResourceId,
+    };
+    use crate::renderer::native_vulkan::scene_backend::layer_alpha_mask_resource_heap::{
+        NativeVulkanSceneLayerAlphaMaskHeapSliceBinding,
+        NativeVulkanSceneLayerAlphaMaskHeapSliceKey,
     };
     use crate::renderer::native_vulkan::scene_backend::resource_buffers::NativeVulkanSceneGpuBufferKey;
     use crate::renderer::native_vulkan::scene_backend::resource_storage::NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceKind;
+    use vulkanalia::vk::Handle;
 
     #[test]
     fn indexed_draw_commands_bind_geometry_and_r16_slices() {
@@ -489,6 +739,177 @@ mod tests {
         .expect_err("geometry role drift must fail");
 
         assert!(err.contains("geometry buffers have invalid owner/role/bytes"));
+    }
+
+    #[test]
+    fn recorded_draw_command_plan_binds_heap_geometry_and_r16_slices() {
+        let command = indexed_draw_command(producer_requirement(1));
+        let geometry = geometry_buffers(&command);
+        let slices = slice_buffers(&command);
+        let bind_info = heap_bind_info(
+            &command,
+            NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
+                clipping_record_index: 0,
+            },
+        );
+
+        let plan =
+            NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan::from_command_and_buffers(
+                &command,
+                &bind_info,
+                geometry,
+                &slices,
+            )
+            .expect("recorded draw command plan");
+
+        assert_eq!(plan.command_index, 1);
+        assert_eq!(plan.heap_bind_index, command.heap_bind_index);
+        assert_eq!(plan.heap_slice_index, 8);
+        assert_eq!(plan.pipeline_bind_count, 1);
+        assert_eq!(plan.resource_heap_bind_count, 1);
+        assert_eq!(plan.vertex_buffer_bind_count, 1);
+        assert_eq!(plan.slice_index_buffer_bind_count, 2);
+        assert_eq!(plan.indexed_draw_count, 2);
+        assert_eq!(plan.r16_index_count, 5);
+        assert_eq!(plan.draw_call, "vkCmdDrawIndexed");
+    }
+
+    #[test]
+    fn recorded_draw_command_plan_rejects_wrong_heap_role() {
+        let command = indexed_draw_command(producer_requirement(1));
+        let geometry = geometry_buffers(&command);
+        let slices = slice_buffers(&command);
+        let bind_info = heap_bind_info(
+            &command,
+            NativeVulkanSceneLayerAlphaMaskTextureBindRole::GeneratedClippingTarget,
+        );
+
+        let err =
+            NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan::from_command_and_buffers(
+                &command,
+                &bind_info,
+                geometry,
+                &slices,
+            )
+            .expect_err("wrong heap role must fail");
+
+        assert!(err.contains("heap role"));
+    }
+
+    #[test]
+    fn recorded_draw_command_plan_rejects_slice_buffer_record_drift() {
+        let command = indexed_draw_command(producer_requirement(1));
+        let geometry = geometry_buffers(&command);
+        let mut slices = slice_buffers(&command);
+        slices[0].index.payload_hash ^= 1;
+        let bind_info = heap_bind_info(
+            &command,
+            NativeVulkanSceneLayerAlphaMaskTextureBindRole::ClippingMaskImage4 {
+                clipping_record_index: 0,
+            },
+        );
+
+        let err =
+            NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan::from_command_and_buffers(
+                &command,
+                &bind_info,
+                geometry,
+                &slices,
+            )
+            .expect_err("slice binding drift must fail");
+
+        assert!(err.contains("slice index buffer does not match"));
+    }
+
+    fn indexed_draw_command(
+        requirement: NativeVulkanSceneLayerAlphaMaskRecorderRequirement,
+    ) -> NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
+        let plan = native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands(
+            &requirements(vec![requirement]),
+            |geometry| Ok(geometry_records(geometry, 80, 12)),
+        )
+        .expect("indexed draw command plan");
+        plan.commands[0].clone()
+    }
+
+    fn geometry_buffers(
+        command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+    ) -> NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers {
+        NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBuffers {
+            geometry: command.geometry,
+            vertex: actual_buffer(command.vertex, 0x1100),
+            index: actual_buffer(command.geometry_index, 0x1200),
+        }
+    }
+
+    fn slice_buffers(
+        command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+    ) -> Vec<NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers> {
+        command
+            .slices
+            .iter()
+            .enumerate()
+            .map(
+                |(index, slice)| NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceBuffers {
+                    slice: slice.slice,
+                    index: actual_buffer(slice.index, 0x2100 + index as u64),
+                },
+            )
+            .collect()
+    }
+
+    fn actual_buffer(
+        record: NativeVulkanSceneGpuBufferRecordBinding,
+        raw: u64,
+    ) -> NativeVulkanSceneGpuBufferBinding {
+        NativeVulkanSceneGpuBufferBinding {
+            key: record.key,
+            buffer: vk::Buffer::from_raw(raw),
+            bytes: record.bytes,
+            payload_hash: record.payload_hash,
+        }
+    }
+
+    fn heap_bind_info(
+        command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
+        role: NativeVulkanSceneLayerAlphaMaskTextureBindRole,
+    ) -> NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
+        NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo {
+            heap_bind_index: command.heap_bind_index,
+            object: command.object,
+            puppet: ScenePuppetId(5),
+            shader: command.shader.to_owned(),
+            role,
+            heap_slice_index: 8,
+            heap_slice: NativeVulkanSceneLayerAlphaMaskHeapSliceKey {
+                shader: command.shader.to_owned(),
+                bindings: vec![
+                    NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
+                        slot: 0,
+                        source: super::super::NativeVulkanSceneLayerAlphaMaskDescriptorSource::ResidentTexture(
+                            SceneResourceId(9),
+                        ),
+                    },
+                    NativeVulkanSceneLayerAlphaMaskHeapSliceBinding {
+                        slot: 1,
+                        source: super::super::NativeVulkanSceneLayerAlphaMaskDescriptorSource::GraphTarget(
+                            SceneGraphTarget::FullAlphaMask,
+                        ),
+                    },
+                ],
+            },
+            material: None,
+            base_resource_descriptor_index: 16,
+            base_sampler_descriptor_index: 32,
+            resource_descriptor_count: 2,
+            texture_count: 2,
+            shader_mappings: vec![
+                "we.texture_slot0.g_Texture0 -> alpha-mask-heap-slice-offset0".to_owned(),
+                "we.texture_slot1.g_Texture1 -> alpha-mask-heap-slice-offset1".to_owned(),
+            ],
+            resource_bind: vk::BindHeapInfoEXT::builder().build(),
+            sampler_bind: vk::BindHeapInfoEXT::builder().build(),
+        }
     }
 
     fn requirements(
