@@ -740,6 +740,15 @@ mod tests {
             rt_method8_call_site: "0x14020d83e",
             rt_method8_method_vma: "0x1400eacd0",
             heap_bind_index: command_index,
+            uniform_binding_index: command_index,
+            uniform_contract: match kind {
+                NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::ClippingMaskImage4Producer => {
+                    "clippingmaskimage4:g_RenderVar0+clear-scalar+slot0-slot1-slot5"
+                }
+                NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::GeneratedClippingTargetConsumer => {
+                    "genericimage4:CLIPPINGTARGET+CLIPPINGUVS+active-clipping+material-0x428"
+                }
+            },
             geometry,
             vertex: buffer_record(owner, NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvVertex),
             geometry_index: buffer_record(owner, NativeVulkanSceneGpuBufferRole::LayerAlphaMaskRtMethod8MdlvIndex),

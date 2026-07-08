@@ -59,6 +59,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub rt_method8_call_site: &'static str,
     pub rt_method8_method_vma: &'static str,
     pub heap_bind_index: usize,
+    pub uniform_binding_index: usize,
+    pub uniform_contract: &'static str,
     pub geometry: NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvEntryGeometry,
     pub vertex: NativeVulkanSceneGpuBufferRecordBinding,
     pub geometry_index: NativeVulkanSceneGpuBufferRecordBinding,
@@ -81,6 +83,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub kind: NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind,
     pub heap_bind_index: usize,
     pub heap_slice_index: usize,
+    pub uniform_binding_index: usize,
+    pub uniform_contract: &'static str,
+    pub uniform_contract_count: usize,
     pub pipeline_bind_count: usize,
     pub resource_heap_bind_count: usize,
     pub vertex_buffer_bind_count: usize,
@@ -88,7 +93,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskRtM
     pub indexed_draw_count: usize,
     pub r16_index_count: u32,
     pub draw_call: &'static str,
-    pub command_order: [&'static str; 6],
+    pub command_order: [&'static str; 7],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -257,6 +262,8 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
             )
         })?;
         let heap_bind_index = sole_heap_bind_index(requirement)?;
+        let (uniform_binding_index, uniform_contract) =
+            rt_method8_uniform_contract(kind, requirement)?;
 
         let mut slices = Vec::with_capacity(requirement.rt_method8_mdlv_index_slices.len());
         for slice in &requirement.rt_method8_mdlv_index_slices {
@@ -277,6 +284,8 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
             rt_method8_call_site: call_site,
             rt_method8_method_vma: method_vma,
             heap_bind_index,
+            uniform_binding_index,
+            uniform_contract,
             geometry: geometry_records.geometry,
             vertex: geometry_records.vertex,
             geometry_index: geometry_records.index,
@@ -297,12 +306,12 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand {
             command_order: [
                 "bind_pipeline_for_rt_method8_requirement",
                 "bind_resource_heap_for_we_texture_slots",
+                "preserve_uniform_contract_for_rt_method8_draw",
                 "bind_layer_0x490_mdlv_vertex_buffer",
                 "bind_layer_0x490_mdlv_geometry_index_buffer",
                 "iterate_retained_subdraw_index_slices",
                 "bind_r16_slice_index_buffer",
                 "cmd_draw_indexed_for_slice",
-                "preserve_token_scheduler_order",
             ],
         })
     }
@@ -347,6 +356,9 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan {
             kind: command.kind,
             heap_bind_index: bind_info.heap_bind_index,
             heap_slice_index: bind_info.heap_slice_index,
+            uniform_binding_index: command.uniform_binding_index,
+            uniform_contract: command.uniform_contract,
+            uniform_contract_count: 1,
             pipeline_bind_count: 1,
             resource_heap_bind_count: 1,
             vertex_buffer_bind_count: 1,
@@ -358,6 +370,7 @@ impl NativeVulkanSceneLayerAlphaMaskRtMethod8RecordedDrawCommandPlan {
                 "cmd_bind_rt_method8_pipeline",
                 "cmd_bind_alpha_mask_resource_heap_ext",
                 "cmd_bind_alpha_mask_sampler_heap_ext",
+                "validate_retained_uniform_contract_before_draw",
                 "cmd_bind_layer_0x490_vertex_buffer",
                 "cmd_bind_each_r16_slice_index_buffer",
                 "cmd_draw_indexed_each_slice",
@@ -544,6 +557,32 @@ fn sole_heap_bind_index(
     Ok(requirement.heap_bind_indices[0])
 }
 
+fn rt_method8_uniform_contract(
+    kind: NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind,
+    requirement: &NativeVulkanSceneLayerAlphaMaskRecorderRequirement,
+) -> Result<(usize, &'static str), String> {
+    match kind {
+        NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::ClippingMaskImage4Producer => {
+            let index = requirement.producer_uniform_index.ok_or_else(|| {
+                format!(
+                    "scene layer alpha-mask RT method [8] command {} has no clippingmaskimage4 producer uniform contract index",
+                    requirement.command_index
+                )
+            })?;
+            Ok((index, "clippingmaskimage4:g_RenderVar0+clear-scalar+slot0-slot1-slot5"))
+        }
+        NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::GeneratedClippingTargetConsumer => {
+            let index = requirement.generated_consumer_uniform_index.ok_or_else(|| {
+                format!(
+                    "scene layer alpha-mask RT method [8] command {} has no generated CLIPPINGTARGET uniform contract index",
+                    requirement.command_index
+                )
+            })?;
+            Ok((index, "genericimage4:CLIPPINGTARGET+CLIPPINGUVS+active-clipping+material-0x428"))
+        }
+    }
+}
+
 fn validate_heap_bind_for_recording(
     command: &NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommand,
     bind_info: &NativeVulkanSceneLayerAlphaMaskResourceHeapBindInfo,
@@ -690,6 +729,11 @@ mod tests {
         );
         assert_eq!(plan.commands[0].draw_call, "vkCmdDrawIndexed");
         assert_eq!(plan.commands[0].index_type, "VK_INDEX_TYPE_UINT16");
+        assert_eq!(plan.commands[0].uniform_binding_index, 3);
+        assert_eq!(
+            plan.commands[0].uniform_contract,
+            "clippingmaskimage4:g_RenderVar0+clear-scalar+slot0-slot1-slot5"
+        );
         assert_eq!(plan.commands[0].slices[0].index_count, 3);
         assert_eq!(plan.commands[0].slices[1].helper_vma, "0x14020c710");
     }
@@ -710,6 +754,11 @@ mod tests {
             NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawKind::GeneratedClippingTargetConsumer
         );
         assert_eq!(plan.commands[0].shader, "we/genericimage4");
+        assert_eq!(plan.commands[0].uniform_binding_index, 4);
+        assert_eq!(
+            plan.commands[0].uniform_contract,
+            "genericimage4:CLIPPINGTARGET+CLIPPINGUVS+active-clipping+material-0x428"
+        );
     }
 
     #[test]
@@ -742,6 +791,29 @@ mod tests {
     }
 
     #[test]
+    fn indexed_draw_commands_reject_missing_uniform_contract_index() {
+        let mut requirement = producer_requirement(1);
+        requirement.producer_uniform_index = None;
+        let err = native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands(
+            &requirements(vec![requirement]),
+            |geometry| Ok(geometry_records(geometry, 80, 12)),
+        )
+        .expect_err("missing producer uniform index must fail");
+
+        assert!(err.contains("producer uniform contract index"));
+
+        let mut requirement = generated_requirement(4);
+        requirement.generated_consumer_uniform_index = None;
+        let err = native_vulkan_plan_scene_layer_alpha_mask_rt_method8_indexed_draw_commands(
+            &requirements(vec![requirement]),
+            |geometry| Ok(geometry_records(geometry, 80, 12)),
+        )
+        .expect_err("missing generated uniform index must fail");
+
+        assert!(err.contains("generated CLIPPINGTARGET uniform contract index"));
+    }
+
+    #[test]
     fn recorded_draw_command_plan_binds_heap_geometry_and_r16_slices() {
         let command = indexed_draw_command(producer_requirement(1));
         let geometry = geometry_buffers(&command);
@@ -765,6 +837,9 @@ mod tests {
         assert_eq!(plan.command_index, 1);
         assert_eq!(plan.heap_bind_index, command.heap_bind_index);
         assert_eq!(plan.heap_slice_index, 8);
+        assert_eq!(plan.uniform_binding_index, command.uniform_binding_index);
+        assert_eq!(plan.uniform_contract, command.uniform_contract);
+        assert_eq!(plan.uniform_contract_count, 1);
         assert_eq!(plan.pipeline_bind_count, 1);
         assert_eq!(plan.resource_heap_bind_count, 1);
         assert_eq!(plan.vertex_buffer_bind_count, 1);
@@ -1024,11 +1099,15 @@ mod tests {
                 == NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::ClippingMaskImage4Producer)
                 .then_some(0),
             producer_target_scope_index: None,
-            producer_uniform_index: None,
+            producer_uniform_index: (kind
+                == NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::ClippingMaskImage4Producer)
+                .then_some(3),
             generated_consumer_draw_index: (kind
                 == NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::GeneratedClippingTargetConsumer)
                 .then_some(0),
-            generated_consumer_uniform_index: None,
+            generated_consumer_uniform_index: (kind
+                == NativeVulkanSceneLayerAlphaMaskRecorderRequirementKind::GeneratedClippingTargetConsumer)
+                .then_some(4),
             rt_method8_bridge_index: Some(0),
             rt_method8_call_site: Some(call_site),
             rt_method8_method_vma: Some("0x1400eacd0"),
