@@ -16,7 +16,8 @@ use super::{
     SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneAlphaWriteMode, SceneCullMode, SceneDepthTest,
     SceneEffectCommand, SceneEffectConstantValue, SceneEffectFboBinding, SceneEffectFboFormat,
     SceneEffectImageRef, SceneEffectPassBlend, SceneEffectTextureResourceBinding, SceneGraphTarget,
-    SceneObject, SceneObjectEffectProgram, SceneObjectId, SceneResourceId, we::WeEffectKind,
+    SceneImageLayerPassTarget, SceneImageLayerTargetPlan, SceneObject, SceneObjectEffectProgram,
+    SceneObjectId, SceneResourceId, image_layer_pass_target, we::WeEffectKind,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -28,11 +29,14 @@ pub struct SceneEffectPassGraphPlan {
     pub target_count: usize,
     pub input_binding_count: usize,
     pub resident_texture_binding_count: usize,
+    pub image_layer_target_count: usize,
+    pub image_layer_scene_output_pass_count: usize,
+    pub image_layer_targets: Vec<SceneImageLayerTargetPlan>,
     pub targets: Vec<SceneEffectPassGraphTarget>,
     pub passes: Vec<SceneEffectPassGraphMaterialPass>,
     pub copies: Vec<SceneEffectPassGraphCopy>,
     pub swaps: Vec<SceneEffectPassGraphSwap>,
-    pub command_order: [&'static str; 8],
+    pub command_order: [&'static str; 10],
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -120,6 +124,9 @@ impl SceneEffectPassGraphPlan {
             target_count: 0,
             input_binding_count: 0,
             resident_texture_binding_count: 0,
+            image_layer_target_count: 0,
+            image_layer_scene_output_pass_count: 0,
+            image_layer_targets: Vec::new(),
             targets: Vec::new(),
             passes: Vec::new(),
             copies: Vec::new(),
@@ -127,6 +134,8 @@ impl SceneEffectPassGraphPlan {
             command_order: [
                 "collect_scene_object_effect_programs",
                 "declare_named_fbo_targets",
+                "count_we_image_layer_scene_output_passes",
+                "resolve_we_image_layer_source_target_ping_pong",
                 "resolve_effect_material_pass_sources",
                 "resolve_effect_material_pass_targets",
                 "preserve_effect_texture_resource_bindings",
@@ -149,8 +158,24 @@ impl SceneEffectPassGraphPlan {
             .iter()
             .map(|object| (object.id, object))
             .collect::<BTreeMap<_, _>>();
+        let image_layer_pass_counts = image_layer_scene_output_pass_counts(effects);
+        let mut image_layer_pass_indices = BTreeMap::<SceneObjectId, usize>::new();
         let mut plan = Self::empty();
         plan.object_program_count = effects.len();
+        for (object_id, pass_count) in &image_layer_pass_counts {
+            let object = objects_by_id.get(object_id).ok_or_else(|| {
+                format!("scene effect program references missing object {object_id:?}")
+            })?;
+            if let Some(target_plan) =
+                SceneImageLayerTargetPlan::for_object(*object_id, object.source, *pass_count)
+            {
+                plan.image_layer_scene_output_pass_count = plan
+                    .image_layer_scene_output_pass_count
+                    .saturating_add(target_plan.scene_output_pass_count);
+                plan.image_layer_targets.push(target_plan);
+            }
+        }
+        plan.image_layer_target_count = plan.image_layer_targets.len();
 
         for (program_index, object_program) in effects.iter().enumerate() {
             let object = objects_by_id.get(&object_program.object).ok_or_else(|| {
@@ -169,6 +194,12 @@ impl SceneEffectPassGraphPlan {
                     .saturating_add(plan.swap_command_count);
                 match command {
                     SceneEffectCommand::MaterialPass(pass) => {
+                        let image_layer_target = image_layer_pass_target_for_material_pass(
+                            object.id,
+                            pass,
+                            &image_layer_pass_counts,
+                            &mut image_layer_pass_indices,
+                        );
                         let material = effect_material_pass_graph(
                             &plan,
                             graph_command_index,
@@ -177,6 +208,7 @@ impl SceneEffectPassGraphPlan {
                             program_index,
                             pass,
                             &fbo_targets,
+                            image_layer_target,
                         )?;
                         plan.input_binding_count = plan
                             .input_binding_count
@@ -267,6 +299,7 @@ fn effect_material_pass_graph(
     program_index: usize,
     pass: &super::SceneEffectMaterialPass,
     fbo_targets: &BTreeMap<String, SceneGraphTarget>,
+    image_layer_target: Option<SceneImageLayerPassTarget>,
 ) -> Result<SceneEffectPassGraphMaterialPass, String> {
     let source = pass
         .source
@@ -277,10 +310,17 @@ fn effect_material_pass_graph(
                 fbo_targets,
                 SCENE_WE_PASS_INPUT_TEXTURE_SLOT,
                 source,
+                image_layer_target,
             )
         })
         .transpose()?;
-    let input_bindings = effect_pass_input_bindings(object, fbo_targets, pass, source.as_ref())?;
+    let input_bindings = effect_pass_input_bindings(
+        object,
+        fbo_targets,
+        pass,
+        source.as_ref(),
+        image_layer_target,
+    )?;
     Ok(SceneEffectPassGraphMaterialPass {
         graph_command_index,
         graph_pass_index: plan.material_pass_count,
@@ -292,7 +332,12 @@ fn effect_material_pass_graph(
         shader: pass.shader.clone(),
         source,
         input_bindings,
-        output: effect_pass_output(object.id, fbo_targets, pass.target.as_ref())?,
+        output: effect_pass_output(
+            object.id,
+            fbo_targets,
+            pass.target.as_ref(),
+            image_layer_target,
+        )?,
         blend: pass.blend,
         depth_test: pass.depth_test,
         depth_write: pass.depth_write,
@@ -331,6 +376,7 @@ fn effect_pass_input_bindings(
     fbo_targets: &BTreeMap<String, SceneGraphTarget>,
     pass: &super::SceneEffectMaterialPass,
     source: Option<&SceneEffectPassGraphInputBinding>,
+    image_layer_target: Option<SceneImageLayerPassTarget>,
 ) -> Result<Vec<SceneEffectPassGraphInputBinding>, String> {
     let mut used_slots = BTreeSet::new();
     if let Some(source) = source {
@@ -349,6 +395,7 @@ fn effect_pass_input_bindings(
             fbo_targets,
             *slot,
             image,
+            image_layer_target,
         )?);
     }
     Ok(bindings)
@@ -359,11 +406,12 @@ fn resolve_effect_input_binding(
     fbo_targets: &BTreeMap<String, SceneGraphTarget>,
     slot: u32,
     image: &SceneEffectImageRef,
+    image_layer_target: Option<SceneImageLayerPassTarget>,
 ) -> Result<SceneEffectPassGraphInputBinding, String> {
     Ok(SceneEffectPassGraphInputBinding {
         slot,
         image: image.clone(),
-        source: resolve_effect_input_source(object, fbo_targets, image)?,
+        source: resolve_effect_input_source(object, fbo_targets, image, image_layer_target)?,
     })
 }
 
@@ -371,17 +419,23 @@ fn resolve_effect_input_source(
     object: &SceneObject,
     fbo_targets: &BTreeMap<String, SceneGraphTarget>,
     image: &SceneEffectImageRef,
+    image_layer_target: Option<SceneImageLayerPassTarget>,
 ) -> Result<SceneEffectPassGraphInputSource, String> {
     match image {
-        SceneEffectImageRef::SourceTexture => object
-            .source
-            .map(SceneEffectPassGraphInputSource::ObjectSourceTexture)
-            .ok_or_else(|| {
-                format!(
-                    "scene effect for object {:?} requires a source texture but the object has none",
-                    object.id
-                )
-            }),
+        SceneEffectImageRef::SourceTexture => {
+            if let Some(target) = image_layer_target {
+                return Ok(SceneEffectPassGraphInputSource::GraphTarget(target.source));
+            }
+            object
+                .source
+                .map(SceneEffectPassGraphInputSource::ObjectSourceTexture)
+                .ok_or_else(|| {
+                    format!(
+                        "scene effect for object {:?} requires a source texture but the object has none",
+                        object.id
+                    )
+                })
+        }
         SceneEffectImageRef::NamedFbo(name) => Ok(SceneEffectPassGraphInputSource::GraphTarget(
             *fbo_targets
                 .get(name)
@@ -401,6 +455,7 @@ fn effect_pass_output(
     object: SceneObjectId,
     fbo_targets: &BTreeMap<String, SceneGraphTarget>,
     target: Option<&SceneEffectImageRef>,
+    image_layer_target: Option<SceneImageLayerPassTarget>,
 ) -> Result<SceneEffectPassGraphOutput, String> {
     match target {
         Some(SceneEffectImageRef::NamedFbo(name)) => Ok(SceneEffectPassGraphOutput::GraphTarget(
@@ -408,9 +463,9 @@ fn effect_pass_output(
                 .get(name)
                 .ok_or_else(|| format!("scene effect writes undeclared FBO '{name}'"))?,
         )),
-        Some(SceneEffectImageRef::Scene) | None => {
-            Ok(SceneEffectPassGraphOutput::ObjectFinal(object))
-        }
+        Some(SceneEffectImageRef::Scene) | None => Ok(image_layer_target
+            .map(|target| SceneEffectPassGraphOutput::GraphTarget(target.output))
+            .unwrap_or(SceneEffectPassGraphOutput::ObjectFinal(object))),
         Some(SceneEffectImageRef::SourceTexture) => {
             Err("scene effect source texture cannot be a render target".to_owned())
         }
@@ -421,6 +476,46 @@ fn effect_pass_output(
             Err("scene effect previous framebuffer cannot be a render target".to_owned())
         }
     }
+}
+
+fn image_layer_scene_output_pass_counts(
+    effects: &[SceneObjectEffectProgram],
+) -> BTreeMap<SceneObjectId, usize> {
+    let mut counts = BTreeMap::<SceneObjectId, usize>::new();
+    for object_program in effects {
+        for command in &object_program.program.commands {
+            let SceneEffectCommand::MaterialPass(pass) = command else {
+                continue;
+            };
+            if effect_pass_writes_image_layer_scene_target(pass) {
+                *counts.entry(object_program.object).or_default() += 1;
+            }
+        }
+    }
+    counts
+}
+
+fn image_layer_pass_target_for_material_pass(
+    object: SceneObjectId,
+    pass: &super::SceneEffectMaterialPass,
+    pass_counts: &BTreeMap<SceneObjectId, usize>,
+    pass_indices: &mut BTreeMap<SceneObjectId, usize>,
+) -> Option<SceneImageLayerPassTarget> {
+    if !effect_pass_writes_image_layer_scene_target(pass) {
+        return None;
+    }
+    let pass_count = *pass_counts.get(&object)?;
+    let pass_index = pass_indices.entry(object).or_default();
+    let target = image_layer_pass_target(object, pass_count, *pass_index);
+    *pass_index = pass_index.saturating_add(1);
+    Some(target)
+}
+
+fn effect_pass_writes_image_layer_scene_target(pass: &super::SceneEffectMaterialPass) -> bool {
+    matches!(
+        pass.target.as_ref(),
+        None | Some(SceneEffectImageRef::Scene)
+    )
 }
 
 fn resolve_named_fbo_target(
@@ -447,7 +542,7 @@ mod tests {
     };
 
     #[test]
-    fn effect_pass_graph_maps_iris_to_object_final_without_mixback() {
+    fn effect_pass_graph_maps_single_scene_output_to_image_layer_composite_a() {
         let object = object(SceneObjectId(4), Some(SceneResourceId(9)));
         let effects = vec![SceneObjectEffectProgram {
             object: object.id,
@@ -481,15 +576,106 @@ mod tests {
         assert_eq!(graph.material_pass_count, 1);
         assert_eq!(graph.passes[0].graph_command_index, 0);
         assert_eq!(graph.target_count, 0);
+        assert_eq!(graph.image_layer_target_count, 1);
+        assert_eq!(graph.image_layer_scene_output_pass_count, 1);
+        assert_eq!(
+            graph.image_layer_targets[0].prefill_target,
+            SceneGraphTarget::ImageLayerSource(SceneObjectId(4))
+        );
+        assert_eq!(
+            graph.image_layer_targets[0].final_source_target,
+            SceneGraphTarget::ImageLayerCompositeA(SceneObjectId(4))
+        );
         assert_eq!(
             graph.passes[0].output,
-            SceneEffectPassGraphOutput::ObjectFinal(SceneObjectId(4))
+            SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::ImageLayerCompositeA(
+                SceneObjectId(4)
+            ))
         );
         assert_eq!(
             graph.passes[0].source.as_ref().unwrap().source,
-            SceneEffectPassGraphInputSource::ObjectSourceTexture(SceneResourceId(9))
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::ImageLayerSource(
+                SceneObjectId(4)
+            ))
         );
         assert_eq!(graph.passes[0].blend, SceneEffectPassBlend::NormalReplace);
+    }
+
+    #[test]
+    fn effect_pass_graph_alternates_two_scene_outputs_back_to_composite_a() {
+        let object = object(SceneObjectId(1336), Some(SceneResourceId(77)));
+        let effects = vec![SceneObjectEffectProgram {
+            object: object.id,
+            program: super::super::SceneEffectProgram {
+                effect_file: "effects/iris/effect.json".to_owned(),
+                effect: WeEffectKind::Iris,
+                fbos: Vec::new(),
+                commands: vec![
+                    SceneEffectCommand::MaterialPass(super::super::SceneEffectMaterialPass {
+                        pass_index: 0,
+                        shader: Some("effects/iris".to_owned()),
+                        source: Some(SceneEffectImageRef::SourceTexture),
+                        target: None,
+                        blend: SceneEffectPassBlend::NormalReplace,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
+                        texture_resources: Vec::new(),
+                        binds: BTreeMap::new(),
+                        combos: BTreeMap::new(),
+                        constants: BTreeMap::new(),
+                    }),
+                    SceneEffectCommand::MaterialPass(super::super::SceneEffectMaterialPass {
+                        pass_index: 1,
+                        shader: Some("materials/util/effectpassthrough".to_owned()),
+                        source: Some(SceneEffectImageRef::SourceTexture),
+                        target: None,
+                        blend: SceneEffectPassBlend::TranslucentAlpha,
+                        depth_test: SceneDepthTest::Disabled,
+                        depth_write: false,
+                        cull_mode: SceneCullMode::None,
+                        alpha_write: SceneAlphaWriteMode::Default,
+                        texture_resources: Vec::new(),
+                        binds: BTreeMap::new(),
+                        combos: BTreeMap::new(),
+                        constants: BTreeMap::new(),
+                    }),
+                ],
+            },
+        }];
+
+        let graph =
+            SceneEffectPassGraphPlan::from_scene(&[object], &effects).expect("effect graph");
+
+        assert_eq!(
+            graph.image_layer_targets[0].prefill_target,
+            SceneGraphTarget::ImageLayerCompositeA(SceneObjectId(1336))
+        );
+        assert_eq!(
+            graph.passes[0].source.as_ref().unwrap().source,
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::ImageLayerCompositeA(
+                SceneObjectId(1336)
+            ))
+        );
+        assert_eq!(
+            graph.passes[0].output,
+            SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::ImageLayerSource(
+                SceneObjectId(1336)
+            ))
+        );
+        assert_eq!(
+            graph.passes[1].source.as_ref().unwrap().source,
+            SceneEffectPassGraphInputSource::GraphTarget(SceneGraphTarget::ImageLayerSource(
+                SceneObjectId(1336)
+            ))
+        );
+        assert_eq!(
+            graph.passes[1].output,
+            SceneEffectPassGraphOutput::GraphTarget(SceneGraphTarget::ImageLayerCompositeA(
+                SceneObjectId(1336)
+            ))
+        );
     }
 
     #[test]

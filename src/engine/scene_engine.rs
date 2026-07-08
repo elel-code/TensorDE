@@ -17,6 +17,7 @@ pub mod final_compositor;
 pub mod frame;
 pub mod graph;
 pub mod graph_execution;
+pub mod image_layer_targets;
 pub mod ingest;
 pub mod layer_compositor;
 pub mod material;
@@ -52,7 +53,7 @@ pub use effect_pass_graph::{
     SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput, SceneEffectPassGraphPlan,
     SceneEffectPassGraphSwap, SceneEffectPassGraphTarget,
 };
-pub use final_compositor::SceneFinalCompositorPlan;
+pub use final_compositor::{SceneFinalCompositorObjectInput, SceneFinalCompositorPlan};
 pub use frame::{SceneFrameContext, SceneFramePlan};
 pub use graph::{
     SCENE_WE_MAX_SHADER_TEXTURE_SLOTS, SCENE_WE_PASS_INPUT_TEXTURE_SLOT, SceneGraph,
@@ -62,6 +63,10 @@ pub use graph::{
 pub use graph_execution::{
     SceneGraphExecutionPass, SceneGraphExecutionPlan, SceneGraphTargetBarrier,
     SceneGraphTargetBarrierReason, SceneGraphTargetLifetime, SceneGraphTargetUsage,
+};
+pub use image_layer_targets::{
+    SceneImageLayerPassTarget, SceneImageLayerTargetPlan, image_layer_pass_target,
+    image_layer_prefill_target,
 };
 pub use layer_compositor::{
     SceneLayerCompositorBlendKey, SceneLayerCompositorCommand, SceneLayerCompositorCondition,

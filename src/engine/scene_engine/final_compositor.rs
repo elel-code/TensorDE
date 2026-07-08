@@ -9,7 +9,7 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.h`
 //! - `references/godot/servers/rendering/renderer_rd/renderer_canvas_render_rd.h`
 
-use std::collections::BTreeSet;
+use std::collections::BTreeMap;
 
 use serde::Serialize;
 
@@ -25,8 +25,15 @@ pub struct SceneFinalCompositorPlan {
     pub object_final_count: usize,
     pub pass_count: usize,
     pub object_finals: Vec<SceneObjectId>,
+    pub object_inputs: Vec<SceneFinalCompositorObjectInput>,
     pub passes: Vec<SceneGraphPass>,
     pub command_order: [&'static str; 5],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SceneFinalCompositorObjectInput {
+    pub object: SceneObjectId,
+    pub input: SceneGraphTarget,
 }
 
 impl SceneFinalCompositorPlan {
@@ -35,6 +42,7 @@ impl SceneFinalCompositorPlan {
             object_final_count: 0,
             pass_count: 0,
             object_finals: Vec::new(),
+            object_inputs: Vec::new(),
             passes: Vec::new(),
             command_order: final_compositor_command_order(),
         }
@@ -44,22 +52,20 @@ impl SceneFinalCompositorPlan {
         objects: &[SceneObject],
         effect_graph: &SceneEffectPassGraphPlan,
     ) -> Self {
-        let object_finals = effect_graph
-            .passes
-            .iter()
-            .filter_map(|pass| match pass.output {
-                SceneEffectPassGraphOutput::ObjectFinal(object) => Some(object),
-                SceneEffectPassGraphOutput::GraphTarget(_) => None,
-            })
-            .collect::<BTreeSet<_>>();
+        let object_inputs = final_compositor_inputs(effect_graph);
         let mut plan = Self::empty();
 
         for object in objects
             .iter()
-            .filter(|object| object_finals.contains(&object.id))
+            .filter(|object| object_inputs.contains_key(&object.id))
         {
+            let input = object_inputs[&object.id];
             plan.object_finals.push(object.id);
-            plan.passes.push(final_compositor_pass(object));
+            plan.object_inputs.push(SceneFinalCompositorObjectInput {
+                object: object.id,
+                input,
+            });
+            plan.passes.push(final_compositor_pass(object, input));
         }
 
         plan.object_final_count = plan.object_finals.len();
@@ -70,12 +76,36 @@ impl SceneFinalCompositorPlan {
     pub fn contains_object(&self, object: SceneObjectId) -> bool {
         self.object_finals.contains(&object)
     }
+
+    pub fn input_for_object(&self, object: SceneObjectId) -> Option<SceneGraphTarget> {
+        self.object_inputs
+            .iter()
+            .find(|input| input.object == object)
+            .map(|input| input.input)
+    }
 }
 
-fn final_compositor_pass(object: &SceneObject) -> SceneGraphPass {
+fn final_compositor_inputs(
+    effect_graph: &SceneEffectPassGraphPlan,
+) -> BTreeMap<SceneObjectId, SceneGraphTarget> {
+    let mut inputs = BTreeMap::new();
+    for target in &effect_graph.image_layer_targets {
+        inputs.insert(target.object, target.final_source_target);
+    }
+    for pass in &effect_graph.passes {
+        if let SceneEffectPassGraphOutput::ObjectFinal(object) = pass.output {
+            inputs
+                .entry(object)
+                .or_insert(SceneGraphTarget::ObjectFinal(object));
+        }
+    }
+    inputs
+}
+
+fn final_compositor_pass(object: &SceneObject, input: SceneGraphTarget) -> SceneGraphPass {
     SceneGraphPass {
         name: format!("scene-object-final-{}", object.id.0),
-        input: Some(SceneGraphTarget::ObjectFinal(object.id)),
+        input: Some(input),
         output: SceneGraphTarget::Swapchain,
         draws: vec![final_compositor_draw(object)],
     }
@@ -141,7 +171,7 @@ fn final_compositor_command_order() -> [&'static str; 5] {
         "collect_object_final_effect_outputs",
         "preserve_scene_object_order_for_final_composite",
         "emit_object_geometry_final_mesh_passes",
-        "sample_object_final_targets_as_g_texture0",
+        "sample_final_graph_targets_as_g_texture0",
         "write_final_objects_to_swapchain_with_we_normal_replace",
     ]
 }
@@ -210,6 +240,45 @@ mod tests {
 
         assert!(plan.contains_object(SceneObjectId(7)));
         assert!(!plan.contains_object(SceneObjectId(8)));
+    }
+
+    #[test]
+    fn final_compositor_samples_image_layer_composite_a_for_scene_output_effects() {
+        let object_id = SceneObjectId(1530);
+        let objects = vec![object(object_id)];
+        let image_layer_target =
+            crate::engine::scene_engine::SceneImageLayerTargetPlan::for_object(
+                object_id,
+                Some(SceneResourceId(77)),
+                1,
+            )
+            .expect("image layer target plan");
+        let effect_graph = SceneEffectPassGraphPlan {
+            object_program_count: 1,
+            material_pass_count: 1,
+            image_layer_target_count: 1,
+            image_layer_scene_output_pass_count: 1,
+            image_layer_targets: vec![image_layer_target],
+            passes: vec![SceneEffectPassGraphMaterialPass {
+                output: SceneEffectPassGraphOutput::GraphTarget(
+                    SceneGraphTarget::ImageLayerCompositeA(object_id),
+                ),
+                ..effect_output_pass(0, object_id)
+            }],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+
+        let plan = SceneFinalCompositorPlan::from_effect_pass_graph(&objects, &effect_graph);
+
+        assert_eq!(plan.object_finals, vec![object_id]);
+        assert_eq!(
+            plan.input_for_object(object_id),
+            Some(SceneGraphTarget::ImageLayerCompositeA(object_id))
+        );
+        assert_eq!(
+            plan.passes[0].input,
+            Some(SceneGraphTarget::ImageLayerCompositeA(object_id))
+        );
     }
 
     fn effect_output_pass(

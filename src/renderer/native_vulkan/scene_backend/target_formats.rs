@@ -50,6 +50,12 @@ impl NativeVulkanSceneGraphTargetFormatPlan {
                 SceneGraphTarget::ObjectFinal(_) => {
                     (swapchain_format, "object_final_surface_format")
                 }
+                SceneGraphTarget::ImageLayerCompositeA(_) => {
+                    (swapchain_format, "image_layer_composite_surface_format")
+                }
+                SceneGraphTarget::ImageLayerSource(_) => {
+                    (swapchain_format, "image_layer_source_surface_format")
+                }
                 SceneGraphTarget::ImageLocalMain(_)
                 | SceneGraphTarget::ImageLocalSub(_)
                 | SceneGraphTarget::EffectTarget(_) => (
@@ -226,6 +232,43 @@ mod tests {
             plan.format(SceneGraphTarget::FullAlphaMaskIntermediate)
                 .unwrap(),
             vk::Format::R8_UNORM
+        );
+    }
+
+    #[test]
+    fn target_format_plan_maps_image_layer_targets_to_surface_format() {
+        let object = SceneObjectId(1530);
+        let graph = SceneGraph {
+            passes: vec![
+                pass(
+                    "image-layer-source",
+                    None,
+                    SceneGraphTarget::ImageLayerSource(object),
+                ),
+                pass(
+                    "image-layer-final",
+                    Some(SceneGraphTarget::ImageLayerCompositeA(object)),
+                    SceneGraphTarget::Swapchain,
+                ),
+            ],
+        };
+        let execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let plan = NativeVulkanSceneGraphTargetFormatPlan::from_execution_plan(
+            &execution,
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("image layer target format plan");
+
+        assert_eq!(
+            plan.format(SceneGraphTarget::ImageLayerSource(object))
+                .unwrap(),
+            vk::Format::B8G8R8A8_UNORM
+        );
+        assert_eq!(
+            plan.format(SceneGraphTarget::ImageLayerCompositeA(object))
+                .unwrap(),
+            vk::Format::B8G8R8A8_UNORM
         );
     }
 

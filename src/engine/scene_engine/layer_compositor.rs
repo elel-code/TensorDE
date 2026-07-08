@@ -13,8 +13,9 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use super::{
-    SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneFinalCompositorPlan, SceneObject,
-    SceneObjectGeometry, SceneObjectId, SceneResource,
+    SceneEffectPassGraphOutput, SceneEffectPassGraphPlan, SceneFinalCompositorPlan,
+    SceneGraphTarget, SceneImageLayerTargetPlan, SceneObject, SceneObjectGeometry, SceneObjectId,
+    SceneResource,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -99,6 +100,8 @@ pub enum SceneLayerCompositorTarget {
     EffectTarget3f8,
     FallbackImage400,
     DirectTarget2d8,
+    ImageLayerCompositeA(SceneObjectId),
+    ImageLayerSource(SceneObjectId),
     FullAlphaMask,
     FullAlphaMaskIntermediate,
 }
@@ -125,6 +128,8 @@ impl SceneLayerCompositorPlan {
         let tokenized_targets = tokenized_clipping_targets(effect_graph);
         for object in objects {
             let uses_object_final = final_compositor.contains_object(object.id);
+            let image_layer_target = image_layer_target_for_object(effect_graph, object.id);
+            let final_input = final_compositor.input_for_object(object.id);
             let uses_tokenized_subdraw = object_has_puppet_clipping(resources, object)
                 || effect_graph.passes.iter().any(|pass| {
                     pass.object == object.id
@@ -138,7 +143,13 @@ impl SceneLayerCompositorPlan {
                     SceneLayerCompositorRoute::DirectSwapchain
                 },
                 uses_tokenized_subdraw,
-                commands: layer_commands(object.id, uses_object_final, uses_tokenized_subdraw),
+                commands: layer_commands(
+                    object.id,
+                    uses_object_final,
+                    uses_tokenized_subdraw,
+                    image_layer_target,
+                    final_input,
+                ),
             };
             plan.command_count = plan.command_count.saturating_add(layer.commands.len());
             plan.object_final_layer_count = plan
@@ -206,10 +217,22 @@ fn object_has_puppet_clipping(resources: &[SceneResource], object: &SceneObject)
     })
 }
 
+fn image_layer_target_for_object(
+    effect_graph: &SceneEffectPassGraphPlan,
+    object: SceneObjectId,
+) -> Option<&SceneImageLayerTargetPlan> {
+    effect_graph
+        .image_layer_targets
+        .iter()
+        .find(|target| target.object == object)
+}
+
 fn layer_commands(
     object: SceneObjectId,
     uses_object_final: bool,
     uses_tokenized_subdraw: bool,
+    image_layer_target: Option<&SceneImageLayerTargetPlan>,
+    final_input: Option<SceneGraphTarget>,
 ) -> Vec<SceneLayerCompositorCommand> {
     let mut commands = Vec::new();
     commands.push(SceneLayerCompositorCommand {
@@ -218,7 +241,9 @@ fn layer_commands(
         condition: SceneLayerCompositorCondition::Always,
         source: None,
         target: if uses_object_final {
-            SceneLayerCompositorTarget::ObjectFinal(object)
+            image_layer_target
+                .map(|target| layer_target_from_graph_target(target.prefill_target))
+                .unwrap_or(SceneLayerCompositorTarget::ObjectFinal(object))
         } else {
             SceneLayerCompositorTarget::Swapchain
         },
@@ -284,13 +309,38 @@ fn layer_commands(
             entry: SceneLayerCompositorEntry::FullLayerCompositeEntry51,
             operation: SceneLayerCompositorOperation::FullLayerComposite,
             condition: SceneLayerCompositorCondition::Always,
-            source: None,
-            target: SceneLayerCompositorTarget::ObjectFinal(object),
+            source: final_input
+                .map(layer_target_from_graph_target)
+                .or(Some(SceneLayerCompositorTarget::ObjectFinal(object))),
+            target: SceneLayerCompositorTarget::Swapchain,
             blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
         });
     }
 
     commands
+}
+
+fn layer_target_from_graph_target(target: SceneGraphTarget) -> SceneLayerCompositorTarget {
+    match target {
+        SceneGraphTarget::Swapchain => SceneLayerCompositorTarget::Swapchain,
+        SceneGraphTarget::ObjectFinal(object) => SceneLayerCompositorTarget::ObjectFinal(object),
+        SceneGraphTarget::ImageLayerCompositeA(object) => {
+            SceneLayerCompositorTarget::ImageLayerCompositeA(object)
+        }
+        SceneGraphTarget::ImageLayerSource(object) => {
+            SceneLayerCompositorTarget::ImageLayerSource(object)
+        }
+        SceneGraphTarget::FullAlphaMask => SceneLayerCompositorTarget::FullAlphaMask,
+        SceneGraphTarget::FullAlphaMaskIntermediate => {
+            SceneLayerCompositorTarget::FullAlphaMaskIntermediate
+        }
+        SceneGraphTarget::ImageLocalMain(_)
+        | SceneGraphTarget::ImageLocalSub(_)
+        | SceneGraphTarget::NamedFbo(_)
+        | SceneGraphTarget::EffectTarget(_) => {
+            panic!("scene layer compositor cannot consume unrelated graph target {target:?}")
+        }
+    }
 }
 
 fn layer_compositor_command_order() -> [&'static str; 9] {
@@ -369,11 +419,56 @@ mod tests {
                     SceneLayerCompositorEntry::FullLayerCompositeEntry51,
                     SceneLayerCompositorOperation::FullLayerComposite,
                     SceneLayerCompositorCondition::Always,
-                    None,
-                    SceneLayerCompositorTarget::ObjectFinal(SceneObjectId(2)),
+                    Some(SceneLayerCompositorTarget::ObjectFinal(SceneObjectId(2))),
+                    SceneLayerCompositorTarget::Swapchain,
                     SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn layer_compositor_routes_scene_output_effects_through_image_layer_targets() {
+        let object_id = SceneObjectId(1530);
+        let objects = vec![object(object_id)];
+        let image_layer_target =
+            crate::engine::scene_engine::SceneImageLayerTargetPlan::for_object(
+                object_id,
+                Some(SceneResourceId(77)),
+                1,
+            )
+            .expect("image layer target plan");
+        let effect_graph = SceneEffectPassGraphPlan {
+            material_pass_count: 1,
+            image_layer_target_count: 1,
+            image_layer_scene_output_pass_count: 1,
+            image_layer_targets: vec![image_layer_target],
+            passes: vec![SceneEffectPassGraphMaterialPass {
+                output: SceneEffectPassGraphOutput::GraphTarget(
+                    SceneGraphTarget::ImageLayerCompositeA(object_id),
+                ),
+                ..effect_output_pass(object_id)
+            }],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+        let final_compositor =
+            SceneFinalCompositorPlan::from_effect_pass_graph(&objects, &effect_graph);
+
+        let plan =
+            SceneLayerCompositorPlan::from_scene(&[], &objects, &effect_graph, &final_compositor);
+
+        assert_eq!(plan.object_final_layer_count, 1);
+        assert_eq!(
+            plan.layers[0].commands[0].target,
+            SceneLayerCompositorTarget::ImageLayerSource(object_id)
+        );
+        assert_eq!(
+            plan.layers[0].commands.last().unwrap().source,
+            Some(SceneLayerCompositorTarget::ImageLayerCompositeA(object_id))
+        );
+        assert_eq!(
+            plan.layers[0].commands.last().unwrap().target,
+            SceneLayerCompositorTarget::Swapchain
         );
     }
 

@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::engine::scene_engine::{
     SceneGraph, SceneGraphExecutionPlan, SceneGraphTarget, SceneLayerCompositorEntry,
     SceneLayerCompositorOperation, SceneLayerCompositorPlan, SceneLayerCompositorRoute,
-    SceneObjectId,
+    SceneLayerCompositorTarget, SceneObjectId,
 };
 
 use super::layer_alpha_mask_executor::{
@@ -169,17 +169,22 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_plan_scene_layer_composi
                     }
                 }
                 SceneLayerCompositorOperation::FullLayerComposite => {
+                    let input = layer_compositor_graph_target(
+                        command
+                            .source
+                            .unwrap_or(SceneLayerCompositorTarget::ObjectFinal(layer.object)),
+                    )?;
                     let position = find_graph_draw_position(
                         graph,
                         graph_execution,
                         layer.object,
-                        Some(SceneGraphTarget::ObjectFinal(layer.object)),
+                        Some(input),
                         SceneGraphTarget::Swapchain,
                     )?;
                     graph_pass_index = Some(position.pass_index);
                     graph_draw_index = Some(position.draw_index);
                     command_order.extend([
-                        "join_object_final_input_to_swapchain_graph_pass",
+                        "join_layer_final_input_to_swapchain_graph_pass",
                         "reuse_object_geometry_final_composite_draw",
                     ]);
                     NativeVulkanSceneLayerCompositorScheduledKind::ObjectFinalCompositeGraphDraw
@@ -337,6 +342,33 @@ impl NativeVulkanSceneLayerCompositorSchedulePlan {
             recording_blocks,
             command_order: layer_compositor_schedule_command_order(),
         }
+    }
+}
+
+fn layer_compositor_graph_target(
+    target: SceneLayerCompositorTarget,
+) -> Result<SceneGraphTarget, String> {
+    match target {
+        SceneLayerCompositorTarget::Swapchain => Ok(SceneGraphTarget::Swapchain),
+        SceneLayerCompositorTarget::ObjectFinal(object) => {
+            Ok(SceneGraphTarget::ObjectFinal(object))
+        }
+        SceneLayerCompositorTarget::ImageLayerCompositeA(object) => {
+            Ok(SceneGraphTarget::ImageLayerCompositeA(object))
+        }
+        SceneLayerCompositorTarget::ImageLayerSource(object) => {
+            Ok(SceneGraphTarget::ImageLayerSource(object))
+        }
+        SceneLayerCompositorTarget::FullAlphaMask => Ok(SceneGraphTarget::FullAlphaMask),
+        SceneLayerCompositorTarget::FullAlphaMaskIntermediate => {
+            Ok(SceneGraphTarget::FullAlphaMaskIntermediate)
+        }
+        SceneLayerCompositorTarget::LayerTarget490
+        | SceneLayerCompositorTarget::EffectTarget3f8
+        | SceneLayerCompositorTarget::FallbackImage400
+        | SceneLayerCompositorTarget::DirectTarget2d8 => Err(format!(
+            "scene layer compositor target {target:?} is not a graph target input"
+        )),
     }
 }
 
@@ -756,6 +788,37 @@ mod tests {
     }
 
     #[test]
+    fn scheduler_joins_image_layer_composite_source_to_final_mesh_pass() {
+        let object = SceneObjectId(1530);
+        let graph = SceneGraph {
+            passes: vec![graph_pass(
+                "image-layer-final-composite",
+                Some(SceneGraphTarget::ImageLayerCompositeA(object)),
+                SceneGraphTarget::Swapchain,
+                vec![mesh_draw(object)],
+            )],
+        };
+        let graph_execution = SceneGraphExecutionPlan::from_graph(&graph);
+
+        let schedule = native_vulkan_plan_scene_layer_compositor_schedule(
+            &layer_compositor(vec![image_layer_composite_layer(object)]),
+            &graph,
+            &graph_execution,
+            &empty_token_recording(),
+        )
+        .expect("image-layer composite schedule");
+
+        assert_eq!(schedule.object_final_composite_command_count, 1);
+        assert_eq!(schedule.steps[2].graph_pass_index, Some(0));
+        assert_eq!(schedule.steps[2].graph_draw_index, Some(0));
+        assert!(
+            schedule.steps[2]
+                .command_order
+                .contains(&"join_layer_final_input_to_swapchain_graph_pass")
+        );
+    }
+
+    #[test]
     fn scheduler_keeps_tokenized_clear_prep_as_active_recorder_required() {
         let object = SceneObjectId(10);
         let graph = SceneGraph {
@@ -917,8 +980,8 @@ mod tests {
             entry: SceneLayerCompositorEntry::FullLayerCompositeEntry51,
             operation: SceneLayerCompositorOperation::FullLayerComposite,
             condition: SceneLayerCompositorCondition::Always,
-            source: None,
-            target: SceneLayerCompositorTarget::ObjectFinal(object),
+            source: Some(SceneLayerCompositorTarget::ObjectFinal(object)),
+            target: SceneLayerCompositorTarget::Swapchain,
             blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
         });
         SceneLayerCompositorLayer {
@@ -926,6 +989,33 @@ mod tests {
             route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
             uses_tokenized_subdraw,
             commands,
+        }
+    }
+
+    fn image_layer_composite_layer(object: SceneObjectId) -> SceneLayerCompositorLayer {
+        SceneLayerCompositorLayer {
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw: false,
+            commands: vec![
+                normal_command(SceneLayerCompositorTarget::ImageLayerSource(object)),
+                SceneLayerCompositorCommand {
+                    entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+                    operation: SceneLayerCompositorOperation::ClearPrep,
+                    condition: SceneLayerCompositorCondition::Always,
+                    source: None,
+                    target: SceneLayerCompositorTarget::LayerTarget490,
+                    blend_key: SceneLayerCompositorBlendKey::Inherit,
+                },
+                SceneLayerCompositorCommand {
+                    entry: SceneLayerCompositorEntry::FullLayerCompositeEntry51,
+                    operation: SceneLayerCompositorOperation::FullLayerComposite,
+                    condition: SceneLayerCompositorCondition::Always,
+                    source: Some(SceneLayerCompositorTarget::ImageLayerCompositeA(object)),
+                    target: SceneLayerCompositorTarget::Swapchain,
+                    blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
+                },
+            ],
         }
     }
 

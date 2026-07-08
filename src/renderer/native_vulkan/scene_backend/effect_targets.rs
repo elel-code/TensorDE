@@ -25,7 +25,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectTargetPlan 
     pub entries: Vec<NativeVulkanSceneEffectTargetEntry>,
     pub scale_policy: &'static str,
     pub descriptor_model: &'static str,
-    pub command_order: [&'static str; 5],
+    pub command_order: [&'static str; 6],
     #[serde(skip)]
     requirements: Vec<NativeVulkanSceneOffscreenTargetRequirement>,
 }
@@ -96,6 +96,46 @@ impl NativeVulkanSceneEffectTargetPlan {
                 unique: target.unique,
             });
         }
+        for target in &graph.image_layer_targets {
+            push_image_layer_target_requirement(
+                &mut entries,
+                &mut requirements,
+                target.object,
+                target.prefill_target,
+                "image_layer_prefill_target",
+                extent,
+                swapchain_format,
+            );
+            push_image_layer_target_requirement(
+                &mut entries,
+                &mut requirements,
+                target.object,
+                target.final_source_target,
+                "image_layer_final_source_target",
+                extent,
+                swapchain_format,
+            );
+            for pass_target in &target.pass_targets {
+                push_image_layer_target_requirement(
+                    &mut entries,
+                    &mut requirements,
+                    target.object,
+                    pass_target.source,
+                    "image_layer_pass_source_target",
+                    extent,
+                    swapchain_format,
+                );
+                push_image_layer_target_requirement(
+                    &mut entries,
+                    &mut requirements,
+                    target.object,
+                    pass_target.output,
+                    "image_layer_pass_output_target",
+                    extent,
+                    swapchain_format,
+                );
+            }
+        }
         for pass in &graph.passes {
             if let SceneEffectPassGraphOutput::ObjectFinal(object) = pass.output {
                 push_object_final_target_requirement(
@@ -135,6 +175,7 @@ impl NativeVulkanSceneEffectTargetPlan {
                 "read_scene_effect_pass_graph_targets",
                 "map_we_fbo_format_to_vk_format",
                 "derive_scaled_effect_target_extent",
+                "merge_we_image_layer_source_composite_targets",
                 "merge_layer_compositor_alpha_mask_targets",
                 "emit_effect_target_requirements",
             ],
@@ -157,6 +198,50 @@ impl NativeVulkanSceneEffectTargetPlan {
             .map(|requirement| requirement.format)
             .ok_or_else(|| format!("scene effect target plan has no format for {target:?}"))
     }
+}
+
+fn push_image_layer_target_requirement(
+    entries: &mut Vec<NativeVulkanSceneEffectTargetEntry>,
+    requirements: &mut Vec<NativeVulkanSceneOffscreenTargetRequirement>,
+    object: SceneObjectId,
+    target: SceneGraphTarget,
+    format_source: &'static str,
+    extent: vk::Extent2D,
+    swapchain_format: vk::Format,
+) {
+    if requirements
+        .iter()
+        .any(|requirement| requirement.target == target)
+    {
+        return;
+    }
+    let name = match target {
+        SceneGraphTarget::ImageLayerCompositeA(object) => {
+            format!("_rt_imageLayerComposite_{}_a", object.0)
+        }
+        SceneGraphTarget::ImageLayerSource(object) => {
+            format!("_rt_imageLayerSource_{}", object.0)
+        }
+        _ => panic!("image-layer target requirement received non-image-layer target {target:?}"),
+    };
+    requirements.push(NativeVulkanSceneOffscreenTargetRequirement {
+        target,
+        format: swapchain_format,
+        width: extent.width,
+        height: extent.height,
+    });
+    entries.push(NativeVulkanSceneEffectTargetEntry {
+        target,
+        object: Some(object),
+        program_index: None,
+        name,
+        format: vulkan_format_label(swapchain_format),
+        format_source,
+        width: extent.width,
+        height: extent.height,
+        scale: 1.0,
+        unique: true,
+    });
 }
 
 fn push_object_final_target_requirement(
@@ -418,6 +503,49 @@ mod tests {
         assert_eq!(plan.entries[0].width, 3840);
         assert_eq!(plan.entries[0].height, 2160);
         assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
+    }
+
+    #[test]
+    fn effect_target_plan_allocates_image_layer_source_and_composite_targets() {
+        let object = SceneObjectId(1530);
+        let image_layer_target =
+            crate::engine::scene_engine::SceneImageLayerTargetPlan::for_object(object, None, 1)
+                .expect("image layer target");
+        let graph = SceneEffectPassGraphPlan {
+            image_layer_target_count: 1,
+            image_layer_scene_output_pass_count: 1,
+            image_layer_targets: vec![image_layer_target],
+            ..SceneEffectPassGraphPlan::empty()
+        };
+
+        let plan = NativeVulkanSceneEffectTargetPlan::from_effect_pass_graph(
+            &graph,
+            vk::Extent2D {
+                width: 3840,
+                height: 2160,
+            },
+            vk::Format::B8G8R8A8_UNORM,
+        )
+        .expect("image layer targets");
+
+        assert_eq!(plan.target_count, 2);
+        assert_eq!(
+            plan.entries[0].target,
+            SceneGraphTarget::ImageLayerSource(object)
+        );
+        assert_eq!(
+            plan.entries[1].target,
+            SceneGraphTarget::ImageLayerCompositeA(object)
+        );
+        assert_eq!(plan.entries[0].format_source, "image_layer_prefill_target");
+        assert_eq!(
+            plan.entries[1].format_source,
+            "image_layer_final_source_target"
+        );
+        assert_eq!(plan.entries[0].width, 3840);
+        assert_eq!(plan.entries[1].height, 2160);
+        assert_eq!(plan.requirements()[0].format, vk::Format::B8G8R8A8_UNORM);
+        assert_eq!(plan.requirements()[1].format, vk::Format::B8G8R8A8_UNORM);
     }
 
     #[test]

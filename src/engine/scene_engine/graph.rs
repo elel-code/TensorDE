@@ -20,6 +20,8 @@ pub enum SceneGraphTarget {
     ImageLocalSub(u32),
     NamedFbo(u32),
     EffectTarget(u32),
+    ImageLayerCompositeA(SceneObjectId),
+    ImageLayerSource(SceneObjectId),
     ObjectFinal(SceneObjectId),
     FullAlphaMask,
     FullAlphaMaskIntermediate,
