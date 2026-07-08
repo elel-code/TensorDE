@@ -7,7 +7,6 @@
 
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -31,7 +30,14 @@ use crate::renderer::{RendererPlanError, SceneRenderImageEffectPass, SceneRender
 use super::binary_plan_error;
 use super::facts::binary_scene_package_root;
 
-const BINARY_SCENE_RECORD_STREAM_BYTES: usize = 64 * 1024;
+mod cache;
+mod io;
+mod record_stream;
+
+use cache::binary_scene_cached_record_at;
+pub(super) use cache::binary_scene_cached_record_slice;
+use io::{binary_scene_read_exact_at, binary_scene_read_u32, binary_scene_read_u64};
+use record_stream::binary_scene_read_record_range;
 
 pub(super) struct BinarySceneReader {
     file: File,
@@ -190,147 +196,16 @@ impl BinarySceneReader {
         record_count: u32,
         decode: fn(&[u8]) -> Result<T, SceneBinaryError>,
     ) -> Result<Vec<T>, RendererPlanError> {
-        let descriptor = self
-            .layout
-            .chunk(kind)
-            .cloned()
-            .ok_or_else(|| binary_plan_error(SceneBinaryError::MissingChunk { kind }))?;
-        if record_size == 0 {
-            return Err(binary_plan_error(SceneBinaryError::InvalidRecordPayload {
-                kind,
-                record_size,
-                record_count,
-                length: usize::try_from(descriptor.length).unwrap_or(usize::MAX),
-            }));
-        }
-        if record_count == 0 {
-            return Ok(Vec::new());
-        }
-        let first = usize::try_from(first_record).map_err(|_| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record,
-                record_count,
-                chunk_record_count: descriptor.record_count,
-            })
-        })?;
-        let count = usize::try_from(record_count).map_err(|_| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record,
-                record_count,
-                chunk_record_count: descriptor.record_count,
-            })
-        })?;
-        let end_record = first.checked_add(count).ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record,
-                record_count,
-                chunk_record_count: descriptor.record_count,
-            })
-        })?;
-        if end_record > descriptor.record_count as usize {
-            return Err(binary_plan_error(
-                SceneBinaryError::RecordRangeOutOfBounds {
-                    kind,
-                    first_record,
-                    record_count,
-                    chunk_record_count: descriptor.record_count,
-                },
-            ));
-        }
-        let byte_offset = first.checked_mul(record_size).ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record,
-                record_count,
-                chunk_record_count: descriptor.record_count,
-            })
-        })?;
-        let byte_len = count.checked_mul(record_size).ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-                kind,
-                first_record,
-                record_count,
-                chunk_record_count: descriptor.record_count,
-            })
-        })?;
-        let end_offset = byte_offset.checked_add(byte_len).ok_or_else(|| {
-            binary_plan_error(SceneBinaryError::InvalidRecordPayload {
-                kind,
-                record_size,
-                record_count,
-                length: usize::try_from(descriptor.length).unwrap_or(usize::MAX),
-            })
-        })?;
-        let descriptor_len = usize::try_from(descriptor.length).map_err(|_| {
-            binary_plan_error(SceneBinaryError::ChunkOutOfBounds {
-                kind,
-                offset: descriptor.offset,
-                length: descriptor.length,
-                container_len: self.file_len,
-            })
-        })?;
-        if end_offset > descriptor_len {
-            return Err(binary_plan_error(SceneBinaryError::InvalidRecordPayload {
-                kind,
-                record_size,
-                record_count,
-                length: descriptor_len,
-            }));
-        }
-        let absolute_offset = descriptor
-            .offset
-            .checked_add(byte_offset as u64)
-            .ok_or_else(|| {
-                binary_plan_error(SceneBinaryError::ChunkOutOfBounds {
-                    kind,
-                    offset: descriptor.offset,
-                    length: descriptor.length,
-                    container_len: self.file_len,
-                })
-            })?;
-        let mut records = Vec::with_capacity(count);
-        if byte_len == 0 {
-            return Ok(records);
-        }
-        self.file
-            .seek(SeekFrom::Start(absolute_offset))
-            .map_err(|err| {
-                binary_plan_error(SceneBinaryError::StreamIo {
-                    operation: "seek",
-                    message: err.to_string(),
-                })
-            })?;
-        let stream_bytes = byte_len.min(BINARY_SCENE_RECORD_STREAM_BYTES);
-        let records_per_read = (stream_bytes / record_size).max(1);
-        let mut buffer = vec![0; records_per_read.saturating_mul(record_size)];
-        let mut remaining_records = count;
-        while remaining_records > 0 {
-            let read_records = remaining_records.min(records_per_read);
-            let read_len = read_records.checked_mul(record_size).ok_or_else(|| {
-                binary_plan_error(SceneBinaryError::InvalidRecordPayload {
-                    kind,
-                    record_size,
-                    record_count,
-                    length: descriptor_len,
-                })
-            })?;
-            self.file
-                .read_exact(&mut buffer[..read_len])
-                .map_err(|err| {
-                    binary_plan_error(SceneBinaryError::StreamIo {
-                        operation: "read",
-                        message: err.to_string(),
-                    })
-                })?;
-            for chunk in buffer[..read_len].chunks_exact(record_size) {
-                records.push(decode(chunk).map_err(binary_plan_error)?);
-            }
-            remaining_records -= read_records;
-        }
-        Ok(records)
+        binary_scene_read_record_range(
+            &mut self.file,
+            self.file_len,
+            &self.layout,
+            kind,
+            record_size,
+            first_record,
+            record_count,
+            decode,
+        )
     }
 
     pub(super) fn node_records_cached(
@@ -489,104 +364,4 @@ impl BinarySceneReader {
             self.chunk_count(SceneBinaryChunkKind::Puppet),
         )
     }
-}
-
-pub(super) fn binary_scene_cached_record_at<T: Copy>(
-    records: &[T],
-    kind: SceneBinaryChunkKind,
-    record_index: u32,
-    chunk_record_count: usize,
-) -> Result<T, RendererPlanError> {
-    records.get(record_index as usize).copied().ok_or_else(|| {
-        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-            kind,
-            first_record: record_index,
-            record_count: 1,
-            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
-        })
-    })
-}
-
-pub(super) fn binary_scene_cached_record_slice<T>(
-    records: &[T],
-    kind: SceneBinaryChunkKind,
-    first_record: u32,
-    record_count: u32,
-    chunk_record_count: usize,
-) -> Result<&[T], RendererPlanError> {
-    let first = usize::try_from(first_record).map_err(|_| {
-        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-            kind,
-            first_record,
-            record_count,
-            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
-        })
-    })?;
-    let count = usize::try_from(record_count).map_err(|_| {
-        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-            kind,
-            first_record,
-            record_count,
-            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
-        })
-    })?;
-    let end = first.checked_add(count).ok_or_else(|| {
-        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-            kind,
-            first_record,
-            record_count,
-            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
-        })
-    })?;
-    records.get(first..end).ok_or_else(|| {
-        binary_plan_error(SceneBinaryError::RecordRangeOutOfBounds {
-            kind,
-            first_record,
-            record_count,
-            chunk_record_count: chunk_record_count.min(u32::MAX as usize) as u32,
-        })
-    })
-}
-
-fn binary_scene_read_exact_at(
-    file: &mut File,
-    offset: u64,
-    len: usize,
-) -> Result<Vec<u8>, RendererPlanError> {
-    file.seek(SeekFrom::Start(offset)).map_err(|err| {
-        binary_plan_error(SceneBinaryError::StreamIo {
-            operation: "seek",
-            message: err.to_string(),
-        })
-    })?;
-    let mut bytes = vec![0; len];
-    file.read_exact(&mut bytes).map_err(|err| {
-        binary_plan_error(SceneBinaryError::StreamIo {
-            operation: "read",
-            message: err.to_string(),
-        })
-    })?;
-    Ok(bytes)
-}
-
-fn binary_scene_read_u32(bytes: &[u8], offset: usize) -> Result<u32, SceneBinaryError> {
-    let end = offset.saturating_add(4);
-    let value = bytes
-        .get(offset..end)
-        .ok_or(SceneBinaryError::BufferTooSmall {
-            needed: end,
-            actual: bytes.len(),
-        })?;
-    Ok(u32::from_le_bytes(value.try_into().unwrap()))
-}
-
-fn binary_scene_read_u64(bytes: &[u8], offset: usize) -> Result<u64, SceneBinaryError> {
-    let end = offset.saturating_add(8);
-    let value = bytes
-        .get(offset..end)
-        .ok_or(SceneBinaryError::BufferTooSmall {
-            needed: end,
-            actual: bytes.len(),
-        })?;
-    Ok(u64::from_le_bytes(value.try_into().unwrap()))
 }

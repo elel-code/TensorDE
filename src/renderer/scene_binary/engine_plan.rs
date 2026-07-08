@@ -8,7 +8,7 @@
 //! - `references/godot/servers/rendering/rendering_server_default.h`
 //! - `references/godot/servers/rendering/renderer_scene_render.h`
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde_json::Value;
@@ -16,35 +16,34 @@ use serde_json::Value;
 use crate::core::SceneNodeKind;
 use crate::core::scene::binary::{
     SCENE_BINARY_NONE_ID, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SceneBinaryChunkKind,
-    SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord, decode_effect_pass_record,
-    decode_texture_slot_record,
+    SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord, decode_texture_slot_record,
 };
+use crate::engine::scene_engine::SceneEnginePlan;
 use crate::engine::scene_engine::ingest::gscn::{
-    GscnGeometryFact, GscnLayerAlphaMaskRtMethod8MdlvGeometryFact, GscnMaterialFact,
-    GscnMeshResourceFact, GscnObjectFact, GscnObjectKind, GscnPuppetResourceFact, GscnResourceFact,
-    GscnSceneCounts, GscnSceneFacts,
-};
-use crate::engine::scene_engine::{
-    SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEnginePlan,
+    GscnGeometryFact, GscnObjectFact, GscnObjectKind, GscnSceneCounts, GscnSceneFacts,
 };
 use crate::renderer::RendererPlanError;
 
 use super::BINARY_TEXTURE_ROLE_BASE_COLOR;
 use super::effect_program::gscn_effect_programs;
 use super::facts::{
-    BinarySceneNames, BinarySceneResource, binary_name, binary_scene_names,
-    binary_scene_package_root, binary_scene_puppet_animation_layer_count, binary_scene_resources,
-    binary_scene_size, binary_scene_timeline_counts,
+    BinarySceneNames, BinarySceneResource, binary_scene_names, binary_scene_package_root,
+    binary_scene_puppet_animation_layer_count, binary_scene_resources, binary_scene_size,
+    binary_scene_timeline_counts,
 };
-use super::mdlv::binary_scene_mdlv_first_entry_geometry;
-use super::mesh::{
-    binary_scene_geometry_is_mesh_payload, binary_scene_mesh_vertices_indices,
-    binary_scene_puppet_active_sources, binary_scene_puppet_clipping_records,
-    binary_scene_puppet_clips, binary_scene_puppet_layers, binary_scene_puppet_skin,
-};
+use super::mesh::binary_scene_geometry_is_mesh_payload;
 use super::reader::BinarySceneReader;
 use super::topology::{
     BinarySceneRetainedRenderable, BinarySceneRetainedTopology, binary_scene_retained_topology,
+};
+
+mod material;
+mod resource_facts;
+
+use material::gscn_material_fact;
+use resource_facts::{
+    gscn_layer_alpha_mask_rt_method8_mdlv_geometries, gscn_mesh_and_puppet_resources,
+    gscn_resources,
 };
 
 pub(in crate::renderer) fn scene_engine_plan_from_gscn_path_with_properties(
@@ -90,156 +89,6 @@ pub(in crate::renderer) fn scene_engine_plan_from_gscn_path_with_properties(
         objects: gscn_objects(&mut reader, &names, &resources, &topology)?,
     }
     .into_plan())
-}
-
-fn gscn_resources(resources: &[BinarySceneResource]) -> Vec<GscnResourceFact> {
-    resources
-        .iter()
-        .map(|resource| GscnResourceFact {
-            id_name: (resource.id_name != SCENE_BINARY_NONE_ID).then_some(resource.id_name),
-            source: resource.source.clone(),
-            width: resource.width,
-            height: resource.height,
-            format: resource.format,
-            mip_count: resource.mip_count,
-            payload_bytes: resource.payload_bytes,
-        })
-        .collect()
-}
-
-fn gscn_mesh_and_puppet_resources(
-    reader: &mut BinarySceneReader,
-    names: &BinarySceneNames,
-    topology: &BinarySceneRetainedTopology,
-) -> Result<(Vec<GscnMeshResourceFact>, Vec<GscnPuppetResourceFact>), RendererPlanError> {
-    let mut seen_meshes = BTreeSet::new();
-    let mut seen_puppets = BTreeSet::new();
-    let mut mesh_resources = Vec::new();
-    let mut puppet_resources = Vec::new();
-
-    for renderable in &topology.renderables {
-        if !binary_scene_geometry_is_mesh_payload(renderable.geometry) {
-            continue;
-        }
-
-        if seen_meshes.insert(renderable.node.geometry_index) {
-            let (vertices, indices) =
-                binary_scene_mesh_vertices_indices(reader, renderable.geometry)?;
-            mesh_resources.push(GscnMeshResourceFact {
-                source_record: renderable.node.geometry_index,
-                vertices,
-                indices,
-            });
-        }
-
-        if renderable.node.puppet_index == SCENE_BINARY_NONE_ID
-            || !seen_puppets.insert(renderable.node.puppet_index)
-        {
-            continue;
-        }
-        let Some(puppet) = renderable.puppet_record else {
-            continue;
-        };
-        let skin = if puppet.bone_count > 0 {
-            Some(binary_scene_puppet_skin(reader, names, puppet, true)?)
-        } else {
-            None
-        };
-        let clipping_records = if puppet.clipping_record_count > 0 && skin.is_some() {
-            binary_scene_puppet_clipping_records(reader, names, puppet)?
-        } else {
-            Vec::new()
-        };
-        let clipping_active_sources = if puppet.active_source_count > 0 && skin.is_some() {
-            binary_scene_puppet_active_sources(reader, names, puppet)?
-        } else {
-            Vec::new()
-        };
-        puppet_resources.push(GscnPuppetResourceFact {
-            source_record: renderable.node.puppet_index,
-            skin,
-            clips: binary_scene_puppet_clips(reader, puppet)?,
-            layers: binary_scene_puppet_layers(reader, puppet)?,
-            clipping_records,
-            clipping_active_sources,
-        });
-    }
-
-    Ok((mesh_resources, puppet_resources))
-}
-
-fn gscn_layer_alpha_mask_rt_method8_mdlv_geometries(
-    names: &BinarySceneNames,
-    resources: &[BinarySceneResource],
-    topology: &BinarySceneRetainedTopology,
-) -> Result<Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>, RendererPlanError> {
-    let mut geometries = Vec::new();
-    for renderable in &topology.renderables {
-        let Some(puppet) = renderable.puppet_record else {
-            continue;
-        };
-        if puppet.clipping_record_count == 0 {
-            continue;
-        }
-        let Some(puppet_source) = binary_name(names, renderable.node.puppet_source_name) else {
-            continue;
-        };
-        let Some(resource) = resources
-            .iter()
-            .find(|resource| binary_scene_resource_matches_puppet_source(resource, puppet_source))
-        else {
-            return Err(RendererPlanError::PackageLoad(format!(
-                "binary scene object {} references puppet source {puppet_source:?} but no we-puppet-mdl resource matches it",
-                renderable.layer_index
-            )));
-        };
-        let Some(source) = &resource.source else {
-            continue;
-        };
-        let Some(geometry) = binary_scene_mdlv_first_entry_geometry(source)? else {
-            continue;
-        };
-        geometries.push(GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
-            object: crate::engine::scene_engine::SceneObjectId(
-                renderable.layer_index.min(u32::MAX as usize) as u32,
-            ),
-            entry_owner_index: geometry.entry_owner_index,
-            layout_key: geometry.layout_key,
-            vertex_stride_bytes: geometry.vertex_stride_bytes,
-            vertex_count: geometry.vertex_count,
-            index_count: geometry.index_count,
-            vertex_payload: geometry.vertex_payload,
-            index_payload: geometry.index_payload,
-            source_records: geometry.source_records,
-            subdraws: geometry.subdraws,
-        });
-    }
-    Ok(geometries)
-}
-
-fn binary_scene_resource_matches_puppet_source(
-    resource: &BinarySceneResource,
-    puppet_source: &str,
-) -> bool {
-    if resource.kind != 5 || resource.role.as_deref() != Some("we-puppet-mdl") {
-        return false;
-    }
-    let puppet_source = binary_scene_normalized_source_suffix(puppet_source);
-    resource
-        .original_source
-        .as_ref()
-        .or(resource.source.as_ref())
-        .is_some_and(|source| {
-            binary_scene_normalized_source_suffix(&source.to_string_lossy())
-                .ends_with(&puppet_source)
-        })
-}
-
-fn binary_scene_normalized_source_suffix(source: &str) -> String {
-    source
-        .replace('\\', "/")
-        .trim_start_matches("./")
-        .to_owned()
 }
 
 fn gscn_objects(
@@ -371,85 +220,6 @@ fn gscn_source_resource_index(
             continue;
         }
         return Ok(Some(slot.resource_index));
-    }
-    Ok(None)
-}
-
-fn gscn_material_fact(
-    reader: &mut BinarySceneReader,
-    names: &BinarySceneNames,
-    material: Option<SceneBinaryMaterialPassRecord>,
-) -> Result<GscnMaterialFact, RendererPlanError> {
-    Ok(GscnMaterialFact {
-        shader: gscn_effect_shader_name(reader, names, material)?,
-        blending: material
-            .and_then(|material| binary_name(names, material.blending_name))
-            .map(str::to_owned),
-        depth_test: material
-            .map(|material| gscn_depth_test(material.depth_test))
-            .unwrap_or(SceneDepthTest::Disabled),
-        depth_write: material
-            .map(|material| gscn_depth_write(material.depth_write))
-            .unwrap_or(false),
-        cull_mode: material
-            .map(|material| gscn_cull_mode(material.cull_mode))
-            .unwrap_or(SceneCullMode::None),
-        alpha_write: material
-            .map(|material| gscn_alpha_write(material.alpha_write))
-            .unwrap_or(SceneAlphaWriteMode::Default),
-    })
-}
-
-fn gscn_depth_test(code: u16) -> SceneDepthTest {
-    match code {
-        1 => SceneDepthTest::LessEqual,
-        2 => SceneDepthTest::Disabled,
-        _ => SceneDepthTest::Disabled,
-    }
-}
-
-fn gscn_depth_write(code: u16) -> bool {
-    matches!(code, 1)
-}
-
-fn gscn_cull_mode(code: u16) -> SceneCullMode {
-    match code {
-        2 => SceneCullMode::Back,
-        3 => SceneCullMode::Front,
-        _ => SceneCullMode::None,
-    }
-}
-
-fn gscn_alpha_write(code: u16) -> SceneAlphaWriteMode {
-    match code {
-        1 => SceneAlphaWriteMode::Enabled,
-        2 => SceneAlphaWriteMode::Disabled,
-        _ => SceneAlphaWriteMode::Default,
-    }
-}
-
-fn gscn_effect_shader_name(
-    reader: &mut BinarySceneReader,
-    names: &BinarySceneNames,
-    material: Option<SceneBinaryMaterialPassRecord>,
-) -> Result<Option<String>, RendererPlanError> {
-    if let Some(material) = material
-        && material.effect_pass_count > 0
-    {
-        let passes = reader.record_range(
-            SceneBinaryChunkKind::EffectPass,
-            reader.layout_record_size(SceneBinaryChunkKind::EffectPass)?,
-            material.first_effect_pass,
-            material.effect_pass_count,
-            decode_effect_pass_record,
-        )?;
-        if let Some(shader) = passes
-            .iter()
-            .rev()
-            .find_map(|pass| binary_name(names, pass.shader_name))
-        {
-            return Ok(Some(shader.to_owned()));
-        }
     }
     Ok(None)
 }
