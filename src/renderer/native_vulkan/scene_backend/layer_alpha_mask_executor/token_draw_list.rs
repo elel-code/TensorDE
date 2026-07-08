@@ -62,6 +62,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskTok
     pub device: &'a Device,
     pub command_buffer: vk::CommandBuffer,
     pub swapchain_target: NativeVulkanSceneSwapchainRenderTarget,
+    pub generated_swapchain_final_layout: vk::ImageLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -172,7 +173,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_alpha
 }
 
 impl NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan {
-    fn empty() -> Self {
+    pub(in crate::renderer::native_vulkan) fn empty() -> Self {
         Self {
             scheduled_step_count: 0,
             no_draw_step_count: 0,
@@ -190,7 +191,9 @@ impl NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordPlan {
         }
     }
 
-    fn from_steps(steps: Vec<NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordStep>) -> Self {
+    pub(in crate::renderer::native_vulkan) fn from_steps(
+        steps: Vec<NativeVulkanSceneLayerAlphaMaskTokenDrawListRecordStep>,
+    ) -> Self {
         let no_draw_step_count = steps
             .iter()
             .filter(|step| {
@@ -459,11 +462,16 @@ fn record_generated_consumer_step(
         vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
         "alpha-mask-generated-clippingtarget-source-sampled-read",
     )?;
+    let generated_final_layout = if generated.color_target == SceneGraphTarget::Swapchain {
+        context.generated_swapchain_final_layout
+    } else {
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
+    };
     let render_target = render_target_for_scene_target(
         frame_resources,
         context,
         generated.color_target,
-        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        generated_final_layout,
     )?;
     let target_scope_plan = native_vulkan_record_scene_render_target_begin(
         context.device,
