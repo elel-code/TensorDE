@@ -1,7 +1,7 @@
 use super::*;
 use crate::engine::scene_engine::{
-    SceneAlphaWriteMode, SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget,
-    SceneLayerCompositorOperation, SceneLayerCompositorTarget, SceneObjectId,
+    SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneGraphPipelineClass,
+    SceneGraphTarget, SceneLayerCompositorOperation, SceneLayerCompositorTarget, SceneObjectId,
 };
 
 #[test]
@@ -34,6 +34,7 @@ fn generated_consumer_pipeline_derives_clippingtarget_shader_variant_key() {
         NativeVulkanScenePipelineVertexLayout::SceneMeshV0
     );
     assert_eq!(binding.blend, SceneBlendContract::TranslucentAlpha);
+    assert_eq!(binding.cull_mode, SceneCullMode::Back);
     assert_eq!(binding.alpha_write, SceneAlphaWriteMode::Disabled);
     assert_eq!(binding.color_write_mask, "RGB");
     assert_eq!(binding.heap_bind_index, 4);
@@ -58,6 +59,7 @@ fn generated_consumer_pipeline_derives_clippingtarget_shader_variant_key() {
         SceneGraphPipelineClass::PuppetSkinning
     );
     assert_eq!(cache_key.blend, SceneBlendContract::TranslucentAlpha);
+    assert_eq!(cache_key.render_state.cull_mode, SceneCullMode::Back);
     assert_eq!(
         cache_key.render_state.alpha_write,
         SceneAlphaWriteMode::Disabled

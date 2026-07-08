@@ -9,8 +9,8 @@
 use serde::Serialize;
 
 use crate::engine::scene_engine::{
-    SceneAlphaWriteMode, SceneBlendContract, SceneGraphPipelineClass, SceneGraphTarget,
-    SceneLayerCompositorTarget, SceneMaterialRenderState, SceneObjectId,
+    SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneGraphPipelineClass,
+    SceneGraphTarget, SceneLayerCompositorTarget, SceneMaterialRenderState, SceneObjectId,
 };
 use crate::renderer::native_vulkan::scene_backend::pipeline::{
     NativeVulkanScenePipelineCacheKey, NativeVulkanScenePipelineShaderComboValue,
@@ -61,6 +61,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneLayerAlphaMaskGen
     pub pipeline_class: SceneGraphPipelineClass,
     pub vertex_layout: NativeVulkanScenePipelineVertexLayout,
     pub blend: SceneBlendContract,
+    pub cull_mode: SceneCullMode,
     pub alpha_write: SceneAlphaWriteMode,
     pub color_write_mask: &'static str,
     pub texture_slot_mask: u32,
@@ -235,6 +236,7 @@ impl NativeVulkanSceneLayerAlphaMaskGeneratedConsumerPipelineBindingPlan {
             shader_combo_values: self.shader_combo_values.clone(),
             blend: self.blend,
             render_state: SceneMaterialRenderState {
+                cull_mode: self.cull_mode,
                 alpha_write: self.alpha_write,
                 ..SceneMaterialRenderState::translucent_2d()
             },
@@ -267,6 +269,7 @@ fn generated_consumer_pipeline_binding(
             pipeline_class: target.pipeline_class,
             vertex_layout: target.vertex_layout,
             blend: SceneBlendContract::TranslucentAlpha,
+            cull_mode: SceneCullMode::Back,
             alpha_write: SceneAlphaWriteMode::Disabled,
             color_write_mask: "RGB",
             texture_slot_mask: CLIPPINGTARGET_TEXTURE_SLOT_MASK,
@@ -290,7 +293,7 @@ fn generated_consumer_pipeline_binding(
                 "validate_slot0_source_and_slot8_full_alpha_mask",
                 "select_resolved_layer_0x490_color_target_format",
                 "preserve_layer_0x490_rt_method_8_geometry_source",
-                "derive_rgb_only_alpha_over_generated_clippingtarget_pipeline_key",
+                "derive_rgb_only_alpha_over_back_cull_generated_clippingtarget_pipeline_key",
             ],
         },
     )

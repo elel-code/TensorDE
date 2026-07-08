@@ -61,6 +61,7 @@ pub struct NativeVulkanSceneMeshPipelineCreatePlan {
     pub depth_test: &'static str,
     pub depth_write: bool,
     pub cull_mode: &'static str,
+    pub front_face: &'static str,
     pub alpha_write: &'static str,
     pub dynamic_rendering_scope: &'static str,
 }
@@ -81,6 +82,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_mesh_pipeline_crea
         depth_test: scene_depth_test_label(key.render_state.depth_test),
         depth_write: key.render_state.depth_write,
         cull_mode: scene_cull_mode_label(key.render_state.cull_mode),
+        front_face: scene_front_face_label(),
         alpha_write: scene_alpha_write_label(key.render_state.alpha_write),
         dynamic_rendering_scope: "dynamic-rendering-no-render-pass",
     })
@@ -407,6 +409,10 @@ fn scene_cull_mode_label(cull_mode: SceneCullMode) -> &'static str {
         SceneCullMode::Front => "front",
         SceneCullMode::Back => "back",
     }
+}
+
+fn scene_front_face_label() -> &'static str {
+    "counter-clockwise"
 }
 
 fn scene_depth_compare_op(depth_test: SceneDepthTest) -> vk::CompareOp {
@@ -782,10 +788,21 @@ mod tests {
         assert_eq!(plan.depth_test, "disabled");
         assert_eq!(plan.depth_write, false);
         assert_eq!(plan.cull_mode, "nocull");
+        assert_eq!(plan.front_face, "counter-clockwise");
         assert_eq!(
             plan.dynamic_rendering_scope,
             "dynamic-rendering-no-render-pass"
         );
+    }
+
+    #[test]
+    fn mesh_pipeline_plan_preserves_back_cull_front_ccw_rasterizer_contract() {
+        let mut key = pipeline_key();
+        key.render_state.cull_mode = SceneCullMode::Back;
+        let plan = native_vulkan_scene_mesh_pipeline_create_plan(&key).unwrap();
+
+        assert_eq!(plan.cull_mode, "back");
+        assert_eq!(plan.front_face, "counter-clockwise");
     }
 
     #[test]
