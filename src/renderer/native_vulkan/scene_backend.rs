@@ -31,6 +31,7 @@ pub mod frame_submit;
 pub mod graph_executor;
 pub mod layer_alpha_mask_executor;
 pub mod layer_alpha_mask_resource_heap;
+pub mod layer_aux_clear_prep;
 pub mod layer_compositor_command_blocks;
 pub mod layer_compositor_recorder;
 pub mod layer_compositor_scheduler;

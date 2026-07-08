@@ -77,6 +77,9 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
+use super::layer_aux_clear_prep::{
+    NativeVulkanSceneLayerAuxClearPrepFramePlan, native_vulkan_plan_scene_layer_aux_clear_prep,
+};
 use super::layer_compositor_command_blocks::{
     NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs,
     NativeVulkanSceneLayerCompositorCommandBlockRecordPlan,
@@ -140,10 +143,11 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
     pub layer_alpha_mask_token_recording: NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    pub layer_aux_clear_prep: NativeVulkanSceneLayerAuxClearPrepFramePlan,
     pub layer_compositor_schedule: NativeVulkanSceneLayerCompositorSchedulePlan,
     pub layer_compositor_block_recording: NativeVulkanSceneLayerCompositorBlockRecordingPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 24],
+    pub command_order: [&'static str; 25],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,37 +373,38 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         &effect_context,
         &frame.effect_pass_graph,
     )?;
-    let (mesh, layer_compositor_effect_commands) = native_vulkan_record_scene_mesh_runtime_frame(
-        frame_resources,
-        NativeVulkanSceneMeshRuntimeFrameContext {
-            device: context.device,
-            command_buffer: context.command_buffer,
-            target: context.target,
-            target_formats: context.target_formats,
-            clear_color: context.clear_color,
-        },
-        frame,
-        mesh_graph_execution,
-        &layer_compositor_schedule,
-        NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs {
-            token_recording: &layer_alpha_mask_token_recording,
-            producer_targets: &layer_alpha_mask_producer_target_graph,
-            producer_pipelines: &layer_alpha_mask_producer_pipelines,
-            generated_commands: &layer_alpha_mask_generated_consumer_commands,
-            generated_pipelines: &layer_alpha_mask_generated_consumer_pipelines,
-            rt_method8_commands: &layer_alpha_mask_rt_method8_indexed_draw_commands,
-            resource_binds: &layer_alpha_mask_resource_binds,
-        },
-        NativeVulkanSceneLayerCompositorEffectBlockInputs {
-            context: NativeVulkanSceneEffectRuntimeFrameContext {
+    let (mesh, layer_compositor_effect_commands, layer_aux_clear_prep) =
+        native_vulkan_record_scene_mesh_runtime_frame(
+            frame_resources,
+            NativeVulkanSceneMeshRuntimeFrameContext {
                 device: context.device,
                 command_buffer: context.command_buffer,
+                target: context.target,
                 target_formats: context.target_formats,
+                clear_color: context.clear_color,
             },
-            graph: &frame.effect_pass_graph,
-            command_streams: &effect_command_streams,
-        },
-    )?;
+            frame,
+            mesh_graph_execution,
+            &layer_compositor_schedule,
+            NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs {
+                token_recording: &layer_alpha_mask_token_recording,
+                producer_targets: &layer_alpha_mask_producer_target_graph,
+                producer_pipelines: &layer_alpha_mask_producer_pipelines,
+                generated_commands: &layer_alpha_mask_generated_consumer_commands,
+                generated_pipelines: &layer_alpha_mask_generated_consumer_pipelines,
+                rt_method8_commands: &layer_alpha_mask_rt_method8_indexed_draw_commands,
+                resource_binds: &layer_alpha_mask_resource_binds,
+            },
+            NativeVulkanSceneLayerCompositorEffectBlockInputs {
+                context: NativeVulkanSceneEffectRuntimeFrameContext {
+                    device: context.device,
+                    command_buffer: context.command_buffer,
+                    target_formats: context.target_formats,
+                },
+                graph: &frame.effect_pass_graph,
+                command_streams: &effect_command_streams,
+            },
+        )?;
     let effects = native_vulkan_scene_effect_runtime_frame_from_recorded_commands(
         &frame.effect_pass_graph,
         effect_preflight,
@@ -440,6 +445,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_rt_method8_indexed_draw_commands,
         layer_alpha_mask_copy_back_commands,
         layer_alpha_mask_token_recording,
+        layer_aux_clear_prep,
         layer_compositor_schedule,
         layer_compositor_block_recording,
         mesh,
@@ -465,8 +471,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_rt_method8_indexed_draw_commands",
             "plan_layer_alpha_mask_copy_back_command_list",
             "plan_layer_alpha_mask_token_recording_contract",
-            "record_scene_mesh_graph_runtime",
             "plan_scene_layer_compositor_schedule",
+            "plan_scene_layer_aux_clear_prep",
+            "record_scene_mesh_graph_runtime",
             "plan_scene_layer_compositor_block_recording",
         ],
     })
@@ -568,6 +575,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
     (
         NativeVulkanSceneMeshRuntimeFramePlan<'a>,
         Vec<super::effect_executor::NativeVulkanSceneEffectRuntimeCommandPlan<'a>>,
+        NativeVulkanSceneLayerAuxClearPrepFramePlan,
     ),
     String,
 > {
@@ -593,6 +601,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         target_formats: context.target_formats,
         clear_color: context.clear_color,
     };
+    let aux_clear_prep =
+        native_vulkan_plan_scene_layer_aux_clear_prep(layer_compositor_schedule, &frame.residency)?;
     let (layer_compositor_command_blocks, layer_compositor_effect_commands, frame_plan) = {
         let command_block_output = native_vulkan_record_scene_layer_compositor_command_blocks(
             frame_resources,
@@ -600,6 +610,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
             frame,
             &graph_execution,
             layer_compositor_schedule,
+            &aux_clear_prep,
             alpha_inputs,
             effect_inputs,
         )?;
@@ -617,7 +628,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtim
         layer_compositor_command_blocks,
         frame_plan,
     );
-    Ok((mesh, layer_compositor_effect_commands))
+    Ok((mesh, layer_compositor_effect_commands, aux_clear_prep))
 }
 
 fn scene_effect_graph_command_count(

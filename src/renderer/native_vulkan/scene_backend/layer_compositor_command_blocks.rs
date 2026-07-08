@@ -43,6 +43,7 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskTokenRecordingKind,
     NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
 };
+use super::layer_aux_clear_prep::NativeVulkanSceneLayerAuxClearPrepFramePlan;
 use super::layer_compositor_scheduler::{
     NativeVulkanSceneLayerCompositorRecordingBlockKind,
     NativeVulkanSceneLayerCompositorSchedulePlan,
@@ -121,6 +122,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
     frame: &'a SceneFramePlan,
     graph_execution: &SceneGraphExecutionPlan,
     schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
+    aux_clear_prep: &NativeVulkanSceneLayerAuxClearPrepFramePlan,
     alpha_inputs: NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
     effect_inputs: NativeVulkanSceneLayerCompositorEffectBlockInputs<'a, '_, '_>,
 ) -> Result<NativeVulkanSceneLayerCompositorCommandBlockRecordOutput<'a>, String> {
@@ -132,8 +134,17 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_layer_compo
         });
     }
     if schedule.clear_prep_recorder_required_count != 0 {
+        if !native_vulkan_scene_layer_compositor_clear_prep_blocks_have_aux_plan(
+            schedule,
+            aux_clear_prep,
+        ) {
+            return Err(format!(
+                "scene layer compositor command-block recorder saw {} active aux clear-prep block(s), but layer_aux_clear_prep planned {}; 0x140207740 must be lowered through SceneLayerAuxCompositeTargets before recording",
+                schedule.clear_prep_recorder_required_count, aux_clear_prep.active_block_count
+            ));
+        }
         return Err(format!(
-            "scene layer compositor command-block recorder cannot record {} active aux clear-prep block(s): 0x140207740 requires explicit aux+0x3e8 target clear and aux material draws, so this must be implemented before present-frame recording",
+            "scene layer compositor command-block recorder has {} planned active aux clear-prep block(s), but Vulkan target/material resolver for 0x140207740 aux+0x3e8 clear and [aux+0x410]/[aux+0x408] draws is not wired yet",
             schedule.clear_prep_recorder_required_count
         ));
     }
@@ -734,6 +745,31 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_compositor_e
             .all(|stream| stream.layer_final_pass_count == 1)
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_layer_compositor_clear_prep_blocks_have_aux_plan(
+    schedule: &NativeVulkanSceneLayerCompositorSchedulePlan,
+    aux_clear_prep: &NativeVulkanSceneLayerAuxClearPrepFramePlan,
+) -> bool {
+    if schedule.clear_prep_recorder_required_count != aux_clear_prep.active_block_count
+        || schedule.clear_prep_recorder_required_count != aux_clear_prep.command_count
+    {
+        return false;
+    }
+    schedule
+        .recording_blocks
+        .iter()
+        .filter(|block| {
+            block.kind
+                == NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired
+        })
+        .all(|block| {
+            aux_clear_prep.commands.iter().any(|command| {
+                command.block_index == block.block_index
+                    && command.step_index_start == block.step_index_start
+                    && command.step_index_end == block.step_index_end
+            })
+        })
+}
+
 fn alpha_token_block_writes_swapchain(
     token_recording_step_index: Option<usize>,
     alpha_inputs: &NativeVulkanSceneLayerCompositorAlphaTokenBlockInputs<'_>,
@@ -948,8 +984,9 @@ mod tests {
         SceneAlphaWriteMode, SceneCullMode, SceneDepthTest, SceneEffectPassBlend,
         SceneEffectPassGraphCopy, SceneEffectPassGraphMaterialPass, SceneEffectPassGraphOutput,
         SceneEffectPassGraphSwap, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphPass,
-        SceneGraphPipelineClass, SceneLayerCompositorEntry, SceneLayerCompositorOperation,
-        SceneLayerCompositorRoute, SceneMaterialKey, SceneMaterialRenderState, SceneObjectId,
+        SceneGraphPipelineClass, SceneLayerAuxCompositeTargetsResidency, SceneLayerCompositorEntry,
+        SceneLayerCompositorOperation, SceneLayerCompositorRoute, SceneMaterialKey,
+        SceneMaterialRenderState, SceneObjectId, SceneResidentResource, SceneResourceResidencyPlan,
         we::WeEffectKind,
     };
 
@@ -1037,6 +1074,33 @@ mod tests {
 
         assert!(err.contains("0x140207740"));
         assert!(err.contains("aux+0x3e8"));
+    }
+
+    #[test]
+    fn clear_prep_blocks_require_matching_aux_clear_prep_plan() {
+        let object = SceneObjectId(7);
+        let schedule = active_clear_schedule(object);
+        let aux_plan =
+            super::super::layer_aux_clear_prep::native_vulkan_plan_scene_layer_aux_clear_prep(
+                &schedule,
+                &aux_residency(object),
+            )
+            .expect("aux clear prep plan");
+
+        assert!(
+            native_vulkan_scene_layer_compositor_clear_prep_blocks_have_aux_plan(
+                &schedule, &aux_plan
+            )
+        );
+
+        let empty =
+            super::super::layer_aux_clear_prep::NativeVulkanSceneLayerAuxClearPrepFramePlan::empty(
+            );
+        assert!(
+            !native_vulkan_scene_layer_compositor_clear_prep_blocks_have_aux_plan(
+                &schedule, &empty
+            )
+        );
     }
 
     #[test]
@@ -1429,6 +1493,49 @@ mod tests {
             command_order: vec!["test_object_final_producer"],
         }];
         plan
+    }
+
+    fn active_clear_schedule(
+        object: SceneObjectId,
+    ) -> NativeVulkanSceneLayerCompositorSchedulePlan {
+        let mut plan = schedule(vec![block(
+            0,
+            NativeVulkanSceneLayerCompositorRecordingBlockKind::LayerTargetClearPrepRecorderRequired,
+        )]);
+        plan.command_count = 1;
+        plan.clear_prep_recorder_required_count = 1;
+        plan.steps = vec![NativeVulkanSceneLayerCompositorScheduleStep {
+            global_command_index: 0,
+            layer_index: 0,
+            layer_command_index: 0,
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            entry: SceneLayerCompositorEntry::ClearPrepEntry50,
+            operation: SceneLayerCompositorOperation::ClearPrep,
+            scheduled_kind:
+                NativeVulkanSceneLayerCompositorScheduledKind::LayerTargetClearPrepRecorderRequired,
+            graph_pass_index: None,
+            graph_draw_index: None,
+            token_recording_step_index: None,
+            command_order: vec!["require_layer_target_clear_recorder"],
+        }];
+        plan
+    }
+
+    fn aux_residency(object: SceneObjectId) -> SceneResourceResidencyPlan {
+        SceneResourceResidencyPlan {
+            resources: vec![SceneResidentResource::LayerAuxCompositeTargets(
+                SceneLayerAuxCompositeTargetsResidency {
+                    object,
+                    clear_target_3e8: true,
+                    material_target_3f0: true,
+                    effect_target_3f8: true,
+                    generated_material_408: true,
+                    clear_material_410: true,
+                    clear_prep_ready: true,
+                },
+            )],
+        }
     }
 
     fn object_final_pair_schedule(
