@@ -37,6 +37,7 @@ mod rt_method8_command;
 mod rt_method8_geometry;
 mod rt_method8_payload;
 mod rt_method8_slices;
+mod token_recording;
 mod token_schedule;
 
 use crate::engine::scene_engine::{
@@ -124,6 +125,10 @@ pub(in crate::renderer::native_vulkan) use rt_method8_payload::{
 pub(in crate::renderer::native_vulkan) use rt_method8_slices::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
+};
+pub(in crate::renderer::native_vulkan) use token_recording::{
+    NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    native_vulkan_plan_scene_layer_alpha_mask_token_recording,
 };
 pub(in crate::renderer::native_vulkan) use token_schedule::{
     NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,

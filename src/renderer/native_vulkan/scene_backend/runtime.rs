@@ -53,7 +53,8 @@ use super::layer_alpha_mask_executor::{
     NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvGeometryBufferRequirementPlan,
     NativeVulkanSceneLayerAlphaMaskRtMethod8MdlvIndexSliceRequirementPlan,
-    NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
+    NativeVulkanSceneLayerAlphaMaskRuntimePlan, NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
+    NativeVulkanSceneLayerAlphaMaskTokenSchedulePlan,
     native_vulkan_plan_scene_layer_alpha_mask_copy_back_runtime_commands,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_draws,
     native_vulkan_plan_scene_layer_alpha_mask_generated_consumer_pipelines_from_targets,
@@ -71,6 +72,7 @@ use super::layer_alpha_mask_executor::{
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_geometry_buffers,
     native_vulkan_plan_scene_layer_alpha_mask_rt_method8_mdlv_index_slices,
     native_vulkan_plan_scene_layer_alpha_mask_runtime_frame,
+    native_vulkan_plan_scene_layer_alpha_mask_token_recording,
     native_vulkan_plan_scene_layer_alpha_mask_token_schedule,
 };
 use super::pipeline_warmup::NativeVulkanSceneMeshPipelineWarmupPlan;
@@ -120,8 +122,9 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneRuntimeFramePlan<
         NativeVulkanSceneLayerAlphaMaskRtMethod8IndexedDrawCommandPlan,
     pub layer_alpha_mask_copy_back_commands:
         NativeVulkanSceneLayerAlphaMaskCopyBackRuntimeCommandPlan,
+    pub layer_alpha_mask_token_recording: NativeVulkanSceneLayerAlphaMaskTokenRecordingPlan,
     pub mesh: NativeVulkanSceneMeshRuntimeFramePlan<'a>,
-    pub command_order: [&'static str; 21],
+    pub command_order: [&'static str; 22],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -309,6 +312,15 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             frame_resources,
             &layer_alpha_mask_resource_binds,
         )?;
+    let layer_alpha_mask_token_recording =
+        native_vulkan_plan_scene_layer_alpha_mask_token_recording(
+            &layer_alpha_mask_token_schedule,
+            &layer_alpha_mask_producer_draws,
+            &layer_alpha_mask_producer_target_graph,
+            &layer_alpha_mask_generated_consumer_commands,
+            &layer_alpha_mask_rt_method8_indexed_draw_commands,
+            &layer_alpha_mask_copy_back_commands,
+        )?;
     let mesh = native_vulkan_record_scene_mesh_runtime_frame(
         frame_resources,
         NativeVulkanSceneMeshRuntimeFrameContext {
@@ -340,6 +352,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
         layer_alpha_mask_recorder_requirements,
         layer_alpha_mask_rt_method8_indexed_draw_commands,
         layer_alpha_mask_copy_back_commands,
+        layer_alpha_mask_token_recording,
         mesh,
         command_order: [
             "record_scene_effect_graph_runtime",
@@ -362,6 +375,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_runtime_fra
             "plan_layer_alpha_mask_recorder_requirements",
             "plan_layer_alpha_mask_rt_method8_indexed_draw_commands",
             "plan_layer_alpha_mask_copy_back_command_list",
+            "plan_layer_alpha_mask_token_recording_contract",
             "record_scene_mesh_graph_runtime",
         ],
     })
