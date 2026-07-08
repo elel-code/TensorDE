@@ -8,16 +8,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 const SPIRV_MAGIC: u32 = 0x0723_0203;
+const OP_TYPE_IMAGE: u16 = 25;
+const OP_TYPE_SAMPLED_IMAGE: u16 = 27;
+const OP_TYPE_POINTER: u16 = 32;
 const OP_DECORATE: u16 = 71;
 const OP_VARIABLE: u16 = 59;
 const DECORATION_BINDING: u32 = 33;
 const DECORATION_RESOURCE_GROUP: u32 = 34;
+const STORAGE_CLASS_UNIFORM_CONSTANT: u32 = 0;
 const STORAGE_CLASS_UNIFORM: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneSpirvResourceReflection {
     pub uniform_buffer_bindings: BTreeSet<u32>,
-    pub command_order: [&'static str; 4],
+    pub sampled_image_bindings: BTreeSet<u32>,
+    pub command_order: [&'static str; 6],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneSpirvTypeKind {
+    Image,
+    SampledImage,
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_reflect_scene_spirv_resources(
@@ -31,7 +42,10 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_reflect_scene_spirv_reso
     }
     let mut bindings = BTreeMap::<u32, u32>::new();
     let mut resource_groups = BTreeMap::<u32, u32>::new();
+    let mut type_kinds = BTreeMap::<u32, SceneSpirvTypeKind>::new();
+    let mut pointer_types = BTreeMap::<u32, u32>::new();
     let mut uniform_variables = BTreeSet::<u32>::new();
+    let mut sampled_image_variables = BTreeSet::<u32>::new();
     let mut cursor = 5usize;
     while cursor < words.len() {
         let instruction = words[cursor];
@@ -52,10 +66,19 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_reflect_scene_spirv_reso
         }
         let operands = &words[cursor + 1..end];
         match opcode {
+            OP_TYPE_IMAGE => reflect_type_image(operands, &mut type_kinds),
+            OP_TYPE_SAMPLED_IMAGE => reflect_type_sampled_image(operands, &mut type_kinds),
+            OP_TYPE_POINTER => reflect_type_pointer(operands, &mut pointer_types),
             OP_DECORATE => {
                 reflect_decoration(label, operands, &mut bindings, &mut resource_groups)?
             }
-            OP_VARIABLE => reflect_variable(operands, &mut uniform_variables),
+            OP_VARIABLE => reflect_variable(
+                operands,
+                &type_kinds,
+                &pointer_types,
+                &mut uniform_variables,
+                &mut sampled_image_variables,
+            ),
             _ => {}
         }
         cursor = end;
@@ -63,26 +86,67 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_reflect_scene_spirv_reso
 
     let mut uniform_buffer_bindings = BTreeSet::new();
     for variable in uniform_variables {
-        let Some(binding) = bindings.get(&variable).copied() else {
-            continue;
-        };
-        let resource_group = resource_groups.get(&variable).copied().unwrap_or(0);
-        if resource_group != 0 {
-            return Err(format!(
-                "{label} uniform variable {variable} uses SPIR-V resource group {resource_group}; scene descriptor heap only accepts group 0"
-            ));
+        if let Some(binding) = reflected_resource_binding(
+            label,
+            variable,
+            "uniform variable",
+            &bindings,
+            &resource_groups,
+        )? {
+            uniform_buffer_bindings.insert(binding);
         }
-        uniform_buffer_bindings.insert(binding);
+    }
+    let mut sampled_image_bindings = BTreeSet::new();
+    for variable in sampled_image_variables {
+        if let Some(binding) = reflected_resource_binding(
+            label,
+            variable,
+            "sampled image variable",
+            &bindings,
+            &resource_groups,
+        )? {
+            sampled_image_bindings.insert(binding);
+        }
     }
     Ok(NativeVulkanSceneSpirvResourceReflection {
         uniform_buffer_bindings,
+        sampled_image_bindings,
         command_order: [
             "scan_spirv_decorations",
+            "scan_spirv_resource_types",
             "scan_spirv_uniform_variables",
-            "join_uniform_variables_to_binding_decorations",
+            "scan_spirv_sampled_image_variables",
+            "join_resource_variables_to_binding_decorations",
             "reject_nonzero_resource_groups",
         ],
     })
+}
+
+fn reflect_type_image(operands: &[u32], type_kinds: &mut BTreeMap<u32, SceneSpirvTypeKind>) {
+    if let Some(result_id) = operands.first().copied() {
+        type_kinds.insert(result_id, SceneSpirvTypeKind::Image);
+    }
+}
+
+fn reflect_type_sampled_image(
+    operands: &[u32],
+    type_kinds: &mut BTreeMap<u32, SceneSpirvTypeKind>,
+) {
+    if let Some(result_id) = operands.first().copied() {
+        type_kinds.insert(result_id, SceneSpirvTypeKind::SampledImage);
+    }
+}
+
+fn reflect_type_pointer(operands: &[u32], pointer_types: &mut BTreeMap<u32, u32>) {
+    if operands.len() < 3 {
+        return;
+    }
+    let result_id = operands[0];
+    let storage_class = operands[1];
+    let pointee_type = operands[2];
+    if storage_class == STORAGE_CLASS_UNIFORM_CONSTANT || storage_class == STORAGE_CLASS_UNIFORM {
+        pointer_types.insert(result_id, pointee_type);
+    }
 }
 
 fn reflect_decoration(
@@ -114,15 +178,61 @@ fn reflect_decoration(
     Ok(())
 }
 
-fn reflect_variable(operands: &[u32], uniform_variables: &mut BTreeSet<u32>) {
+fn reflect_variable(
+    operands: &[u32],
+    type_kinds: &BTreeMap<u32, SceneSpirvTypeKind>,
+    pointer_types: &BTreeMap<u32, u32>,
+    uniform_variables: &mut BTreeSet<u32>,
+    sampled_image_variables: &mut BTreeSet<u32>,
+) {
     if operands.len() < 3 {
         return;
     }
+    let result_type_id = operands[0];
     let result_id = operands[1];
     let storage_class = operands[2];
     if storage_class == STORAGE_CLASS_UNIFORM {
         uniform_variables.insert(result_id);
+    } else if storage_class == STORAGE_CLASS_UNIFORM_CONSTANT
+        && pointer_type_is_sampled_image(result_type_id, type_kinds, pointer_types)
+    {
+        sampled_image_variables.insert(result_id);
     }
+}
+
+fn pointer_type_is_sampled_image(
+    pointer_type_id: u32,
+    type_kinds: &BTreeMap<u32, SceneSpirvTypeKind>,
+    pointer_types: &BTreeMap<u32, u32>,
+) -> bool {
+    pointer_types
+        .get(&pointer_type_id)
+        .and_then(|pointee| type_kinds.get(pointee))
+        .is_some_and(|kind| {
+            matches!(
+                kind,
+                SceneSpirvTypeKind::Image | SceneSpirvTypeKind::SampledImage
+            )
+        })
+}
+
+fn reflected_resource_binding(
+    label: &'static str,
+    variable: u32,
+    kind: &'static str,
+    bindings: &BTreeMap<u32, u32>,
+    resource_groups: &BTreeMap<u32, u32>,
+) -> Result<Option<u32>, String> {
+    let Some(binding) = bindings.get(&variable).copied() else {
+        return Ok(None);
+    };
+    let resource_group = resource_groups.get(&variable).copied().unwrap_or(0);
+    if resource_group != 0 {
+        return Err(format!(
+            "{label} {kind} {variable} uses SPIR-V resource group {resource_group}; scene descriptor heap only accepts group 0"
+        ));
+    }
+    Ok(Some(binding))
 }
 
 #[cfg(test)]
@@ -141,10 +251,29 @@ mod tests {
             native_vulkan_reflect_scene_spirv_resources(&words, "test").expect("reflection");
 
         assert_eq!(reflection.uniform_buffer_bindings, BTreeSet::from([5]));
+        assert!(reflection.sampled_image_bindings.is_empty());
     }
 
     #[test]
-    fn spirv_reflection_rejects_nonzero_resource_group_uniforms() {
+    fn spirv_reflection_extracts_sampled_image_binding() {
+        let words = spirv_words(vec![
+            instr(OP_TYPE_IMAGE, &[3, 1, 2, 0, 0, 0, 1]),
+            instr(OP_TYPE_SAMPLED_IMAGE, &[4, 3]),
+            instr(OP_TYPE_POINTER, &[5, STORAGE_CLASS_UNIFORM_CONSTANT, 4]),
+            instr(OP_DECORATE, &[7, DECORATION_BINDING, 2]),
+            instr(OP_DECORATE, &[7, DECORATION_RESOURCE_GROUP, 0]),
+            instr(OP_VARIABLE, &[5, 7, STORAGE_CLASS_UNIFORM_CONSTANT]),
+        ]);
+
+        let reflection =
+            native_vulkan_reflect_scene_spirv_resources(&words, "test").expect("reflection");
+
+        assert_eq!(reflection.sampled_image_bindings, BTreeSet::from([2]));
+        assert!(reflection.uniform_buffer_bindings.is_empty());
+    }
+
+    #[test]
+    fn spirv_reflection_rejects_nonzero_resource_group_uniforms_and_textures() {
         let words = spirv_words(vec![
             instr(OP_DECORATE, &[7, DECORATION_BINDING, 5]),
             instr(OP_DECORATE, &[7, DECORATION_RESOURCE_GROUP, 1]),
@@ -153,6 +282,18 @@ mod tests {
 
         let err = native_vulkan_reflect_scene_spirv_resources(&words, "test")
             .expect_err("group 1 must fail");
+
+        assert!(err.contains("resource group 1"));
+
+        let words = spirv_words(vec![
+            instr(OP_TYPE_SAMPLED_IMAGE, &[4, 3]),
+            instr(OP_TYPE_POINTER, &[5, STORAGE_CLASS_UNIFORM_CONSTANT, 4]),
+            instr(OP_DECORATE, &[7, DECORATION_BINDING, 2]),
+            instr(OP_DECORATE, &[7, DECORATION_RESOURCE_GROUP, 1]),
+            instr(OP_VARIABLE, &[5, 7, STORAGE_CLASS_UNIFORM_CONSTANT]),
+        ]);
+        let err = native_vulkan_reflect_scene_spirv_resources(&words, "test")
+            .expect_err("group 1 texture must fail");
 
         assert!(err.contains("resource group 1"));
     }
