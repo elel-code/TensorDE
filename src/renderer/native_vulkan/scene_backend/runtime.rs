@@ -19,7 +19,8 @@ use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
     SceneFramePlan, SceneGraphExecutionPlan, SceneGraphPipelineClass, SceneGraphTarget,
-    SceneLayerCompositorPlan, SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneObjectId,
+    SceneLayerCompositorLayer, SceneLayerCompositorOperation, SceneLayerCompositorPlan,
+    SceneLayerCompositorRoute, SceneLayerCompositorTarget, SceneObjectId,
 };
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 
@@ -518,12 +519,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_resolve_scene_layer_490_
     let layer = layer_compositor.layer_for_object(object).ok_or_else(|| {
         format!("scene layer alpha-mask generated consumer target resolver missing layer for object {object:?}")
     })?;
-    let color_target = match layer.route {
-        SceneLayerCompositorRoute::DirectSwapchain => SceneGraphTarget::Swapchain,
-        SceneLayerCompositorRoute::ObjectFinalMeshComposite => {
-            SceneGraphTarget::ObjectFinal(object)
-        }
-    };
+    let color_target = native_vulkan_scene_layer_490_color_graph_target(layer)?;
     let format = target_formats.format(color_target)?;
     let (width, height) = if color_target == SceneGraphTarget::Swapchain {
         (swapchain_extent.width, swapchain_extent.height)
@@ -546,6 +542,49 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_resolve_scene_layer_490_
         height,
         pipeline_class: SceneGraphPipelineClass::PuppetSkinning,
     })
+}
+
+fn native_vulkan_scene_layer_490_color_graph_target(
+    layer: &SceneLayerCompositorLayer,
+) -> Result<SceneGraphTarget, String> {
+    match layer.route {
+        SceneLayerCompositorRoute::DirectSwapchain => Ok(SceneGraphTarget::Swapchain),
+        SceneLayerCompositorRoute::ObjectFinalMeshComposite => {
+            let source = layer
+                .commands
+                .iter()
+                .find(|command| {
+                    command.operation == SceneLayerCompositorOperation::FullLayerComposite
+                        && command.target == SceneLayerCompositorTarget::Swapchain
+                })
+                .and_then(|command| command.source)
+                .unwrap_or(SceneLayerCompositorTarget::ObjectFinal(layer.object));
+            scene_layer_color_target_from_compositor_target(layer.object, source)
+        }
+    }
+}
+
+fn scene_layer_color_target_from_compositor_target(
+    object: SceneObjectId,
+    target: SceneLayerCompositorTarget,
+) -> Result<SceneGraphTarget, String> {
+    match target {
+        SceneLayerCompositorTarget::Swapchain => Ok(SceneGraphTarget::Swapchain),
+        SceneLayerCompositorTarget::ObjectFinal(target_object) if target_object == object => {
+            Ok(SceneGraphTarget::ObjectFinal(target_object))
+        }
+        SceneLayerCompositorTarget::ImageLayerCompositeA(target_object)
+            if target_object == object =>
+        {
+            Ok(SceneGraphTarget::ImageLayerCompositeA(target_object))
+        }
+        SceneLayerCompositorTarget::ImageLayerSource(target_object) if target_object == object => {
+            Ok(SceneGraphTarget::ImageLayerSource(target_object))
+        }
+        _ => Err(format!(
+            "scene layer alpha-mask LayerTarget490 color target for object {object:?} cannot resolve layer source {target:?}"
+        )),
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_record_scene_mesh_runtime_frame<'a>(
@@ -677,7 +716,9 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneBlendContract, SceneGeometryId, SceneGraph, SceneGraphDraw, SceneGraphDrawFamilyPlan,
-        SceneGraphPass, SceneGraphTarget, SceneMaterialKey, SceneObjectId,
+        SceneGraphPass, SceneGraphTarget, SceneLayerCompositorBlendKey,
+        SceneLayerCompositorCommand, SceneLayerCompositorCondition, SceneLayerCompositorEntry,
+        SceneMaterialKey, SceneObjectId,
     };
 
     #[test]
@@ -760,6 +801,47 @@ mod tests {
         assert_eq!(plan.frame.passes[0].pass.draw_count, 1);
     }
 
+    #[test]
+    fn layer_490_color_target_follows_image_layer_final_source() {
+        let object = SceneObjectId(1530);
+        let layer = compositor_layer_with_final_source(
+            object,
+            Some(SceneLayerCompositorTarget::ImageLayerCompositeA(object)),
+        );
+
+        let target = native_vulkan_scene_layer_490_color_graph_target(&layer)
+            .expect("image-layer LayerTarget490 color target");
+
+        assert_eq!(target, SceneGraphTarget::ImageLayerCompositeA(object));
+    }
+
+    #[test]
+    fn layer_490_color_target_keeps_object_final_and_direct_routes() {
+        let object = SceneObjectId(7);
+        let object_final_layer = compositor_layer_with_final_source(
+            object,
+            Some(SceneLayerCompositorTarget::ObjectFinal(object)),
+        );
+        let direct_layer = SceneLayerCompositorLayer {
+            object,
+            route: SceneLayerCompositorRoute::DirectSwapchain,
+            uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
+            commands: Vec::new(),
+        };
+
+        assert_eq!(
+            native_vulkan_scene_layer_490_color_graph_target(&object_final_layer)
+                .expect("object-final LayerTarget490 color target"),
+            SceneGraphTarget::ObjectFinal(object)
+        );
+        assert_eq!(
+            native_vulkan_scene_layer_490_color_graph_target(&direct_layer)
+                .expect("direct LayerTarget490 color target"),
+            SceneGraphTarget::Swapchain
+        );
+    }
+
     fn mesh_graph(draws: Vec<SceneGraphDraw>) -> SceneGraph {
         SceneGraph {
             passes: vec![SceneGraphPass {
@@ -767,6 +849,26 @@ mod tests {
                 input: None,
                 output: SceneGraphTarget::Swapchain,
                 draws,
+            }],
+        }
+    }
+
+    fn compositor_layer_with_final_source(
+        object: SceneObjectId,
+        source: Option<SceneLayerCompositorTarget>,
+    ) -> SceneLayerCompositorLayer {
+        SceneLayerCompositorLayer {
+            object,
+            route: SceneLayerCompositorRoute::ObjectFinalMeshComposite,
+            uses_tokenized_subdraw: true,
+            has_active_aux_clear_target: false,
+            commands: vec![SceneLayerCompositorCommand {
+                entry: SceneLayerCompositorEntry::FullLayerCompositeEntry51,
+                operation: SceneLayerCompositorOperation::FullLayerComposite,
+                condition: SceneLayerCompositorCondition::Always,
+                source,
+                target: SceneLayerCompositorTarget::Swapchain,
+                blend_key: SceneLayerCompositorBlendKey::LowBlendNormalViaWrapper128,
             }],
         }
     }
