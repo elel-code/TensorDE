@@ -289,7 +289,7 @@ impl SceneBinaryLayoutPlan {
         self.records(
             container,
             SceneBinaryChunkKind::MaterialPass,
-            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::MaterialPass)?,
             decode_material_pass_record,
         )
     }
@@ -302,7 +302,7 @@ impl SceneBinaryLayoutPlan {
         self.record_at(
             container,
             SceneBinaryChunkKind::MaterialPass,
-            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            self.required_record_size(SceneBinaryChunkKind::MaterialPass)?,
             record_index,
             decode_material_pass_record,
         )

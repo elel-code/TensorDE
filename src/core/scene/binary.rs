@@ -37,21 +37,21 @@ pub use self::constants::{
     SCENE_BINARY_DEBUG_NAME_RECORD_SIZE, SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE,
     SCENE_BINARY_EFFECT_PASS_RECORD_SIZE, SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12,
     SCENE_BINARY_ENDIAN_LITTLE, SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MAGIC,
-    SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_NONE_ID,
-    SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO, SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY,
-    SCENE_BINARY_PARAMETER_ROLE_PASS_BIND, SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO,
-    SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT, SCENE_BINARY_PARAMETER_VALUE_BOOL,
-    SCENE_BINARY_PARAMETER_VALUE_FLOAT, SCENE_BINARY_PARAMETER_VALUE_INTEGER,
-    SCENE_BINARY_PARAMETER_VALUE_STRING, SCENE_BINARY_PARAMETER_VALUE_VEC2,
-    SCENE_BINARY_PARAMETER_VALUE_VEC3, SCENE_BINARY_PARAMETER_VALUE_VEC4,
-    SCENE_BINARY_RENDER_STATE_RECORD_SIZE, SCENE_BINARY_RETAINED_EFFECT_PARAMETER,
-    SCENE_BINARY_RETAINED_EFFECT_PASS, SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM,
-    SCENE_BINARY_RETAINED_GEOMETRY, SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE,
-    SCENE_BINARY_RETAINED_MATERIAL_PASS, SCENE_BINARY_RETAINED_PARTICLE_EMITTER,
-    SCENE_BINARY_RETAINED_PUPPET, SCENE_BINARY_RETAINED_RESOURCE,
-    SCENE_BINARY_RETAINED_TEXTURE_SLOT, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-    SCENE_BINARY_VERSION, SCENE_BINARY_VERSION_V12,
+    SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE_V12,
+    SCENE_BINARY_NONE_ID, SCENE_BINARY_PARAMETER_ROLE_EFFECT_FBO,
+    SCENE_BINARY_PARAMETER_ROLE_EFFECT_PROPERTY, SCENE_BINARY_PARAMETER_ROLE_PASS_BIND,
+    SCENE_BINARY_PARAMETER_ROLE_PASS_COMBO, SCENE_BINARY_PARAMETER_ROLE_PASS_CONSTANT,
+    SCENE_BINARY_PARAMETER_VALUE_BOOL, SCENE_BINARY_PARAMETER_VALUE_FLOAT,
+    SCENE_BINARY_PARAMETER_VALUE_INTEGER, SCENE_BINARY_PARAMETER_VALUE_STRING,
+    SCENE_BINARY_PARAMETER_VALUE_VEC2, SCENE_BINARY_PARAMETER_VALUE_VEC3,
+    SCENE_BINARY_PARAMETER_VALUE_VEC4, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+    SCENE_BINARY_RETAINED_EFFECT_PARAMETER, SCENE_BINARY_RETAINED_EFFECT_PASS,
+    SCENE_BINARY_RETAINED_EFFECT_UV_TRANSFORM, SCENE_BINARY_RETAINED_GEOMETRY,
+    SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_RETAINED_MATERIAL_PASS,
+    SCENE_BINARY_RETAINED_PARTICLE_EMITTER, SCENE_BINARY_RETAINED_PUPPET,
+    SCENE_BINARY_RETAINED_RESOURCE, SCENE_BINARY_RETAINED_TEXTURE_SLOT,
+    SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SCENE_BINARY_VERSION, SCENE_BINARY_VERSION_V12,
 };
 use self::constants::{
     SCENE_BINARY_DEFAULT_TRANSFORM_PROPERTY, SCENE_BINARY_TEXTURE_ROLE_ALPHA_MASK,
@@ -3007,6 +3007,12 @@ mod tests {
         );
         assert_eq!(
             layout
+                .required_record_size(SceneBinaryChunkKind::MaterialPass)
+                .unwrap(),
+            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE_V12
+        );
+        assert_eq!(
+            layout
                 .required_record_size(SceneBinaryChunkKind::EffectPass)
                 .unwrap(),
             SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12
@@ -3026,12 +3032,51 @@ mod tests {
         assert_eq!(node.fit, 1);
         assert_eq!(node.text_align, 0);
 
+        let mut effect_bytes = vec![0; SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12];
+        write_u32_at(&mut effect_bytes, 16, 9);
+        write_u32_at(&mut effect_bytes, 20, 3);
+        write_u32_at(&mut effect_bytes, 24, 2);
+        write_u32_at(&mut effect_bytes, 28, SCENE_BINARY_NONE_ID);
+        write_u32_at(&mut effect_bytes, 32, 1);
+        write_u32_at(&mut effect_bytes, 36, 11);
+        write_u32_at(&mut effect_bytes, 40, 5);
+        write_u16_at(&mut effect_bytes, 44, 0x10);
+        write_u16_at(&mut effect_bytes, 46, 0x11);
+        write_u16_at(&mut effect_bytes, 48, 0x12);
+        write_u16_at(&mut effect_bytes, 50, 0x13);
+        write_u16_at(&mut effect_bytes, 52, 0x14);
+        write_u16_at(&mut effect_bytes, 54, 0x15);
+        let effect = decode_effect_pass_record(&effect_bytes).expect("v12 effect pass");
+        assert_eq!(effect.command_name, SCENE_BINARY_NONE_ID);
+        assert_eq!(effect.source_name, SCENE_BINARY_NONE_ID);
+        assert_eq!(effect.target_name, SCENE_BINARY_NONE_ID);
+        assert_eq!(effect.pass_index, 9);
+        assert_eq!(effect.first_texture_slot, 3);
+        assert_eq!(effect.texture_slot_count, 2);
+        assert_eq!(effect.first_effect_uv_transform, SCENE_BINARY_NONE_ID);
+        assert_eq!(effect.effect_uv_transform_count, 1);
+        assert_eq!(effect.first_parameter, 11);
+        assert_eq!(effect.parameter_count, 5);
+        assert_eq!(effect.kind, 0x10);
+        assert_eq!(effect.evaluation_boundary, 0x11);
+        assert_eq!(effect.depth_test, 0x12);
+        assert_eq!(effect.depth_write, 0x13);
+        assert_eq!(effect.cull_mode, 0x14);
+        assert_eq!(effect.alpha_write, 0);
+        assert_eq!(effect.flags, 0x15);
+
         let effect = decode_effect_pass_record(&vec![0; SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12])
-            .expect("v12 effect pass");
+            .expect("v12 empty effect pass");
         assert_eq!(effect.kind, 0);
         assert_eq!(effect.evaluation_boundary, 0);
         assert_eq!(effect.depth_test, 0);
         assert_eq!(effect.flags, 0);
+
+        let mut material_bytes = vec![0; SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE_V12];
+        write_u16_at(&mut material_bytes, 54, 0x77);
+        let material = decode_material_pass_record(&material_bytes).expect("v12 material pass");
+        assert_eq!(material.alpha_write, 0);
+        assert_eq!(material.flags, 0x77);
 
         let mut puppet_bytes = vec![0; SCENE_BINARY_PUPPET_RECORD_SIZE_V12];
         write_u32_at(&mut puppet_bytes, 60, 31);
@@ -3097,6 +3142,10 @@ mod tests {
 
     fn write_u32_at(bytes: &mut [u8], offset: usize, value: u32) {
         bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+    }
+
+    fn write_u16_at(bytes: &mut [u8], offset: usize, value: u16) {
+        bytes[offset..offset + 2].copy_from_slice(&value.to_le_bytes());
     }
 
     #[test]

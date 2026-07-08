@@ -1,6 +1,7 @@
 use super::{
     SCENE_BINARY_EFFECT_PARAMETER_RECORD_SIZE, SCENE_BINARY_EFFECT_PASS_RECORD_SIZE,
-    SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
+    SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+    SCENE_BINARY_NONE_ID, SCENE_BINARY_RENDER_STATE_RECORD_SIZE,
     SCENE_BINARY_RETAINED_GPU_STATE_RECORD_SIZE, SCENE_BINARY_TEXTURE_SLOT_RECORD_SIZE,
     SceneBinaryError, read_f32, read_i64, read_u16, read_u16_or, read_u32, read_u64, write_f32,
     write_i64, write_u16, write_u32, write_u64,
@@ -253,14 +254,47 @@ pub(crate) fn decode_material_pass_record(
         depth_test: read_u16(bytes, 48)?,
         depth_write: read_u16(bytes, 50)?,
         cull_mode: read_u16(bytes, 52)?,
-        alpha_write: read_u16(bytes, 54)?,
-        flags: read_u16(bytes, 56)?,
+        alpha_write: if bytes.len() >= SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE {
+            read_u16(bytes, 54)?
+        } else {
+            0
+        },
+        flags: if bytes.len() >= SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE {
+            read_u16(bytes, 56)?
+        } else {
+            read_u16_or(bytes, 54, 0)?
+        },
     })
 }
 
 pub(crate) fn decode_effect_pass_record(
     bytes: &[u8],
 ) -> Result<SceneBinaryEffectPassRecord, SceneBinaryError> {
+    if bytes.len() == SCENE_BINARY_EFFECT_PASS_RECORD_SIZE_V12 {
+        return Ok(SceneBinaryEffectPassRecord {
+            owner_name: read_u32(bytes, 0)?,
+            effect_name: read_u32(bytes, 4)?,
+            shader_name: read_u32(bytes, 8)?,
+            blending_name: read_u32(bytes, 12)?,
+            command_name: SCENE_BINARY_NONE_ID,
+            source_name: SCENE_BINARY_NONE_ID,
+            target_name: SCENE_BINARY_NONE_ID,
+            pass_index: read_u32(bytes, 16)?,
+            first_texture_slot: read_u32(bytes, 20)?,
+            texture_slot_count: read_u32(bytes, 24)?,
+            first_effect_uv_transform: read_u32(bytes, 28)?,
+            effect_uv_transform_count: read_u32(bytes, 32)?,
+            first_parameter: read_u32(bytes, 36)?,
+            parameter_count: read_u32(bytes, 40)?,
+            kind: read_u16(bytes, 44)?,
+            evaluation_boundary: read_u16(bytes, 46)?,
+            depth_test: read_u16(bytes, 48)?,
+            depth_write: read_u16(bytes, 50)?,
+            cull_mode: read_u16(bytes, 52)?,
+            alpha_write: 0,
+            flags: read_u16(bytes, 54)?,
+        });
+    }
     Ok(SceneBinaryEffectPassRecord {
         owner_name: read_u32(bytes, 0)?,
         effect_name: read_u32(bytes, 4)?,

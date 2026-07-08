@@ -160,6 +160,16 @@ fn effect_float_constant(
         None => Ok(fallback),
         Some(SceneEffectConstantValue::Float(value)) => Ok(*value),
         Some(SceneEffectConstantValue::Integer(value)) => Ok(*value as f32),
+        Some(SceneEffectConstantValue::String(value)) => {
+            parse_float_string(value).ok_or_else(|| {
+                format!(
+                    "scene iris effect pass {} for object {:?} constant {name} expected float, got {:?}",
+                    pass.pass_index,
+                    pass.object,
+                    SceneEffectConstantValue::String(value.clone())
+                )
+            })
+        }
         Some(other) => Err(format!(
             "scene iris effect pass {} for object {:?} constant {name} expected float, got {other:?}",
             pass.pass_index, pass.object
@@ -177,6 +187,16 @@ fn effect_vec2_constant(
         Some(SceneEffectConstantValue::Vec2(value)) => Ok(*value),
         Some(SceneEffectConstantValue::Vec3(value)) => Ok([value[0], value[1]]),
         Some(SceneEffectConstantValue::Vec4(value)) => Ok([value[0], value[1]]),
+        Some(SceneEffectConstantValue::Float(value)) => Ok([*value, *value]),
+        Some(SceneEffectConstantValue::Integer(value)) => Ok([*value as f32, *value as f32]),
+        Some(SceneEffectConstantValue::String(value)) => parse_vec2_string(value).ok_or_else(|| {
+            format!(
+                "scene iris effect pass {} for object {:?} constant {name} expected vec2, got {:?}",
+                pass.pass_index,
+                pass.object,
+                SceneEffectConstantValue::String(value.clone())
+            )
+        }),
         Some(other) => Err(format!(
             "scene iris effect pass {} for object {:?} constant {name} expected vec2, got {other:?}",
             pass.pass_index, pass.object
@@ -194,11 +214,72 @@ fn effect_vec3_constant(
         Some(SceneEffectConstantValue::Vec3(value)) => Ok(*value),
         Some(SceneEffectConstantValue::Vec4(value)) => Ok([value[0], value[1], value[2]]),
         Some(SceneEffectConstantValue::Vec2(value)) => Ok([value[0], value[1], fallback[2]]),
+        Some(SceneEffectConstantValue::String(value)) => parse_color_or_vec3_string(value).ok_or_else(|| {
+            format!(
+                "scene iris effect pass {} for object {:?} constant {name} expected vec3, got {:?}",
+                pass.pass_index,
+                pass.object,
+                SceneEffectConstantValue::String(value.clone())
+            )
+        }),
         Some(other) => Err(format!(
             "scene iris effect pass {} for object {:?} constant {name} expected vec3, got {other:?}",
             pass.pass_index, pass.object
         )),
     }
+}
+
+fn parse_float_string(value: &str) -> Option<f32> {
+    let lanes = parse_numeric_lanes(value)?;
+    if lanes.len() == 1 {
+        Some(lanes[0])
+    } else {
+        None
+    }
+}
+
+fn parse_vec2_string(value: &str) -> Option<[f32; 2]> {
+    let lanes = parse_numeric_lanes(value)?;
+    if lanes.len() >= 2 {
+        Some([lanes[0], lanes[1]])
+    } else {
+        None
+    }
+}
+
+fn parse_color_or_vec3_string(value: &str) -> Option<[f32; 3]> {
+    let trimmed = value.trim();
+    if let Some(hex) = trimmed.strip_prefix('#')
+        && (hex.len() == 6 || hex.len() == 8)
+    {
+        let r = u8::from_str_radix(&hex[0..2], 16).ok()? as f32 / 255.0;
+        let g = u8::from_str_radix(&hex[2..4], 16).ok()? as f32 / 255.0;
+        let b = u8::from_str_radix(&hex[4..6], 16).ok()? as f32 / 255.0;
+        return Some([r, g, b]);
+    }
+    let lanes = parse_numeric_lanes(value)?;
+    if lanes.len() >= 3 {
+        Some([lanes[0], lanes[1], lanes[2]])
+    } else {
+        None
+    }
+}
+
+fn parse_numeric_lanes(value: &str) -> Option<Vec<f32>> {
+    let normalized = value.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut lanes = Vec::new();
+    for lane in normalized.split(|ch: char| ch.is_ascii_whitespace() || ch == ',') {
+        let lane = lane.trim();
+        if lane.is_empty() {
+            continue;
+        }
+        let value = lane.parse::<f32>().ok()?;
+        if !value.is_finite() {
+            return None;
+        }
+        lanes.push(value);
+    }
+    if lanes.is_empty() { None } else { Some(lanes) }
 }
 
 #[cfg(test)]
@@ -218,7 +299,7 @@ mod tests {
         pass.combos.insert("MASK".to_owned(), 1);
         pass.constants.insert(
             "scale".to_owned(),
-            SceneEffectConstantValue::Vec2([2.0, 3.0]),
+            SceneEffectConstantValue::String("2 3".to_owned()),
         );
         pass.constants
             .insert("speed".to_owned(), SceneEffectConstantValue::Float(1.5));
@@ -232,7 +313,7 @@ mod tests {
             .insert("phase".to_owned(), SceneEffectConstantValue::Float(-0.2));
         pass.constants.insert(
             "color".to_owned(),
-            SceneEffectConstantValue::Vec3([0.1, 0.2, 0.3]),
+            SceneEffectConstantValue::String("#1a334d".to_owned()),
         );
         let graph = SceneEffectPassGraphPlan {
             material_pass_count: 1,
@@ -259,7 +340,9 @@ mod tests {
         assert_eq!(record.rough, 0.25);
         assert_eq!(record.noise_amount, 0.75);
         assert_eq!(record.phase_offset, -0.2);
-        assert_eq!(record.eye_color, [0.1, 0.2, 0.3]);
+        assert!((record.eye_color[0] - (26.0 / 255.0)).abs() < f32::EPSILON);
+        assert!((record.eye_color[1] - (51.0 / 255.0)).abs() < f32::EPSILON);
+        assert!((record.eye_color[2] - (77.0 / 255.0)).abs() < f32::EPSILON);
         assert_eq!(record.mask_combo, 1);
         assert_eq!(record.background_combo, 1);
         assert_eq!(record.texture_resolution_slots, vec![1]);
@@ -299,7 +382,7 @@ mod tests {
         let mut pass = iris_pass();
         pass.constants.insert(
             "scale".to_owned(),
-            SceneEffectConstantValue::String("2 2".to_owned()),
+            SceneEffectConstantValue::String("wide".to_owned()),
         );
         let graph = SceneEffectPassGraphPlan {
             material_pass_count: 1,

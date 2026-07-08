@@ -7,14 +7,13 @@
 use std::sync::Arc;
 
 use crate::core::scene::binary::{
-    SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryGeometryRecord,
-    SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord, SceneBinaryParticleEmitterRecord,
-    SceneBinaryPuppetRecord, SceneBinaryTransformKeyframeRecord,
-    SceneBinaryTransformTimelineRecord, decode_geometry_record, decode_material_pass_record,
-    decode_node_record, decode_particle_emitter_record, decode_puppet_record,
-    decode_transform_keyframe_record, decode_transform_timeline_record,
+    SCENE_BINARY_GEOMETRY_RECORD_SIZE, SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
+    SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE, SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
+    SceneBinaryChunkKind, SceneBinaryGeometryRecord, SceneBinaryMaterialPassRecord,
+    SceneBinaryNodeRecord, SceneBinaryParticleEmitterRecord, SceneBinaryPuppetRecord,
+    SceneBinaryTransformKeyframeRecord, SceneBinaryTransformTimelineRecord, decode_geometry_record,
+    decode_material_pass_record, decode_node_record, decode_particle_emitter_record,
+    decode_puppet_record, decode_transform_keyframe_record, decode_transform_timeline_record,
 };
 use crate::renderer::RendererPlanError;
 
@@ -60,7 +59,7 @@ impl BinarySceneReader {
         }
         let records = Arc::new(self.records(
             SceneBinaryChunkKind::MaterialPass,
-            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
+            self.layout_record_size(SceneBinaryChunkKind::MaterialPass)?,
             decode_material_pass_record,
         )?);
         self.material_records_cache = Some(Arc::clone(&records));

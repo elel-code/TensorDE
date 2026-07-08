@@ -519,7 +519,7 @@ fn default_shader_name(kind: GscnObjectKind) -> &'static str {
         GscnObjectKind::SolidShape => "we/color",
         GscnObjectKind::Text => "we/text",
         GscnObjectKind::Path => "we/path",
-        GscnObjectKind::ParticleEmitter => "we/particle",
+        GscnObjectKind::ParticleEmitter => "we/genericparticle",
         GscnObjectKind::Image | GscnObjectKind::Generic => "we/genericimage4",
     }
 }

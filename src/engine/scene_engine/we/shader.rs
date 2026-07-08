@@ -19,6 +19,9 @@
 //! - `reverse-engineered/effects/iris.md`
 //! - `reverse-engineered/shaders/effects/iris.vert`
 //! - `reverse-engineered/shaders/effects/iris.frag`
+//! - `reverse-engineered/docs/particle-format.md`
+//! - `reverse-engineered/shaders/genericparticle.vert`
+//! - `reverse-engineered/shaders/genericparticle.frag`
 
 use super::vec4::WE_VEC4_BYTES;
 use super::{WeEffectKind, WeEffectOutputContract};
@@ -118,6 +121,7 @@ impl WeShaderInterface {
         match shader {
             "we/genericimage4" | "genericimage4" => Some(&GENERICIMAGE4_INTERFACE),
             "we/clippingmaskimage4" | "clippingmaskimage4" => Some(&CLIPPINGMASKIMAGE4_INTERFACE),
+            "we/genericparticle" | "genericparticle" => Some(&GENERICPARTICLE_INTERFACE),
             "util/minimalalpha" | "minimalalpha" => Some(&MINIMALALPHA_INTERFACE),
             "util/passthrough" | "passthrough" => Some(&PASSTHROUGH_INTERFACE),
             _ => None,
@@ -615,6 +619,160 @@ pub static PASSTHROUGH_INTERFACE: WeShaderInterface = WeShaderInterface {
     combos: PASSTHROUGH_COMBOS,
 };
 
+pub static GENERICPARTICLE_TEXTURES: &[WeShaderTextureSlot] = &[
+    WeShaderTextureSlot {
+        slot: 0,
+        name: "g_Texture0",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::Required,
+        reference: "reverse-engineered/shaders/genericparticle.frag:10",
+    },
+    WeShaderTextureSlot {
+        slot: 1,
+        name: "g_Texture1",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::ComboDependent,
+        reference: "reverse-engineered/shaders/genericparticle.frag:16",
+    },
+    WeShaderTextureSlot {
+        slot: 3,
+        name: "g_Texture3",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::RuntimeTarget,
+        reference: "reverse-engineered/shaders/genericparticle.frag:21",
+    },
+    WeShaderTextureSlot {
+        slot: 4,
+        name: "g_Texture4",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::RuntimeTarget,
+        reference: "reverse-engineered/shaders/genericparticle.frag:42",
+    },
+    WeShaderTextureSlot {
+        slot: 5,
+        name: "g_Texture5",
+        stage: WeShaderStage::Fragment,
+        requirement: WeShaderTextureRequirement::RuntimeTarget,
+        reference: "reverse-engineered/shaders/genericparticle.frag:47",
+    },
+];
+
+pub static GENERICPARTICLE_UNIFORMS: &[WeShaderUniform] = &[
+    WeShaderUniform {
+        name: "g_ModelViewProjectionMatrix",
+        kind: WeShaderUniformKind::Mat4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:66",
+    },
+    WeShaderUniform {
+        name: "g_Texture0Resolution",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:45",
+    },
+    WeShaderUniform {
+        name: "g_RenderVar1",
+        kind: WeShaderUniformKind::Vec4,
+        stage: WeShaderStage::Vertex,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:43",
+    },
+    WeShaderUniform {
+        name: "g_Overbright",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("ui_editor_properties_overbright"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:11",
+    },
+    WeShaderUniform {
+        name: "g_CutoutStart",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("ui_editor_properties_cutout_start"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:12",
+    },
+    WeShaderUniform {
+        name: "g_CutoutEnd",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("ui_editor_properties_cutout_end"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:13",
+    },
+    WeShaderUniform {
+        name: "g_CutoutOpacity",
+        kind: WeShaderUniformKind::Float,
+        stage: WeShaderStage::Fragment,
+        material_key: Some("ui_editor_properties_cutout_opacity"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:14",
+    },
+];
+
+pub static GENERICPARTICLE_COMBOS: &[WeShaderCombo] = &[
+    WeShaderCombo {
+        name: "LIGHTING",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_lighting"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:2",
+    },
+    WeShaderCombo {
+        name: "DOUBLESIDEDLIGHTING",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_double_sided_lighting"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:3",
+    },
+    WeShaderCombo {
+        name: "FOG",
+        default_value: 1,
+        material_key: Some("ui_editor_properties_fog"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:4",
+    },
+    WeShaderCombo {
+        name: "REFRACT",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_refract"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:5",
+    },
+    WeShaderCombo {
+        name: "CUTOUT",
+        default_value: 0,
+        material_key: Some("ui_editor_properties_cutout"),
+        reference: "reverse-engineered/shaders/genericparticle.frag:6",
+    },
+    WeShaderCombo {
+        name: "SPRITESHEET",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:47",
+    },
+    WeShaderCombo {
+        name: "SPRITESHEETBLEND",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.frag:68",
+    },
+    WeShaderCombo {
+        name: "TRAILRENDERER",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:62",
+    },
+    WeShaderCombo {
+        name: "THICKFORMAT",
+        default_value: 0,
+        material_key: None,
+        reference: "reverse-engineered/shaders/genericparticle.vert:8",
+    },
+];
+
+pub static GENERICPARTICLE_INTERFACE: WeShaderInterface = WeShaderInterface {
+    shader: "we/genericparticle",
+    textures: GENERICPARTICLE_TEXTURES,
+    uniforms: GENERICPARTICLE_UNIFORMS,
+    combos: GENERICPARTICLE_COMBOS,
+};
+
 pub static IRIS_TEXTURES: &[WeShaderTextureSlot] = &[
     WeShaderTextureSlot {
         slot: 0,
@@ -817,6 +975,25 @@ mod tests {
         assert!(interface.uniforms.iter().any(|uniform| {
             uniform.name == "g_ModelViewProjectionMatrix"
                 && uniform.kind == WeShaderUniformKind::Mat4
+        }));
+    }
+
+    #[test]
+    fn genericparticle_interface_tracks_particle_texture_slots_uniforms_and_combos() {
+        let interface = WeShaderInterface::for_shader("we/genericparticle").unwrap();
+
+        assert_eq!(interface.required_texture_slot_mask(), 0b1);
+        assert_eq!(interface.declared_texture_slot_mask(), 0b11_1011);
+        assert_eq!(
+            interface
+                .texture_slot_mask_for_material("we/genericparticle", 0b1)
+                .unwrap(),
+            0b1
+        );
+        assert!(interface.declares_combo("REFRACT"));
+        assert!(interface.declares_combo("SPRITESHEET"));
+        assert!(interface.uniforms.iter().any(|uniform| {
+            uniform.name == "g_Overbright" && uniform.kind == WeShaderUniformKind::Float
         }));
     }
 
