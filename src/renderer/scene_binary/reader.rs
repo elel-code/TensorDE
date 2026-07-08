@@ -11,16 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::core::scene::binary::{
-    SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE, SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-    SCENE_BINARY_HEADER_SIZE, SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-    SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE, SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
-    SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE, SceneBinaryChunkKind, SceneBinaryError,
-    SceneBinaryGeometryRecord, SceneBinaryLayoutPlan, SceneBinaryMaterialPassRecord,
-    SceneBinaryNodeRecord, SceneBinaryParticleEmitterRecord, SceneBinaryPuppetRecord,
-    SceneBinaryTransformKeyframeRecord, SceneBinaryTransformTimelineRecord, decode_geometry_record,
-    decode_material_pass_record, decode_node_record, decode_particle_emitter_record,
-    decode_puppet_record, decode_scene_binary_header_table, decode_transform_keyframe_record,
-    decode_transform_timeline_record,
+    SCENE_BINARY_CHUNK_DESCRIPTOR_SIZE, SCENE_BINARY_HEADER_SIZE, SceneBinaryChunkKind,
+    SceneBinaryError, SceneBinaryGeometryRecord, SceneBinaryLayoutPlan,
+    SceneBinaryMaterialPassRecord, SceneBinaryNodeRecord, SceneBinaryParticleEmitterRecord,
+    SceneBinaryPuppetRecord, SceneBinaryTransformKeyframeRecord,
+    SceneBinaryTransformTimelineRecord, decode_scene_binary_header_table,
 };
 use crate::core::scene::{
     SceneMesh, ScenePuppetAnimationClip, ScenePuppetAnimationLayer, ScenePuppetAttachmentDelta,
@@ -33,8 +28,8 @@ use super::facts::binary_scene_package_root;
 mod cache;
 mod io;
 mod record_stream;
+mod records;
 
-use cache::binary_scene_cached_record_at;
 pub(super) use cache::binary_scene_cached_record_slice;
 use io::{binary_scene_read_exact_at, binary_scene_read_u32, binary_scene_read_u64};
 use record_stream::binary_scene_read_record_range;
@@ -205,163 +200,6 @@ impl BinarySceneReader {
             first_record,
             record_count,
             decode,
-        )
-    }
-
-    pub(super) fn node_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryNodeRecord>>, RendererPlanError> {
-        if let Some(records) = self.node_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::NodeTable,
-            self.layout_record_size(SceneBinaryChunkKind::NodeTable)?,
-            decode_node_record,
-        )?);
-        self.node_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    fn geometry_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryGeometryRecord>>, RendererPlanError> {
-        if let Some(records) = self.geometry_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::Geometry,
-            SCENE_BINARY_GEOMETRY_RECORD_SIZE,
-            decode_geometry_record,
-        )?);
-        self.geometry_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    fn material_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryMaterialPassRecord>>, RendererPlanError> {
-        if let Some(records) = self.material_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::MaterialPass,
-            SCENE_BINARY_MATERIAL_PASS_RECORD_SIZE,
-            decode_material_pass_record,
-        )?);
-        self.material_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    fn particle_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryParticleEmitterRecord>>, RendererPlanError> {
-        if let Some(records) = self.particle_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::ParticleEmitter,
-            SCENE_BINARY_PARTICLE_EMITTER_RECORD_SIZE,
-            decode_particle_emitter_record,
-        )?);
-        self.particle_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    fn puppet_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryPuppetRecord>>, RendererPlanError> {
-        if let Some(records) = self.puppet_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::Puppet,
-            self.layout_record_size(SceneBinaryChunkKind::Puppet)?,
-            decode_puppet_record,
-        )?);
-        self.puppet_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    pub(super) fn transform_timeline_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryTransformTimelineRecord>>, RendererPlanError> {
-        if let Some(records) = self.transform_timeline_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::TransformTimeline,
-            SCENE_BINARY_TRANSFORM_TIMELINE_RECORD_SIZE,
-            decode_transform_timeline_record,
-        )?);
-        self.transform_timeline_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    pub(super) fn transform_keyframe_records_cached(
-        &mut self,
-    ) -> Result<Arc<Vec<SceneBinaryTransformKeyframeRecord>>, RendererPlanError> {
-        if let Some(records) = self.transform_keyframe_records_cache.as_ref() {
-            return Ok(Arc::clone(records));
-        }
-        let records = Arc::new(self.records(
-            SceneBinaryChunkKind::TransformKeyframes,
-            SCENE_BINARY_TRANSFORM_KEYFRAME_RECORD_SIZE,
-            decode_transform_keyframe_record,
-        )?);
-        self.transform_keyframe_records_cache = Some(Arc::clone(&records));
-        Ok(records)
-    }
-
-    pub(super) fn geometry_record_cached(
-        &mut self,
-        record_index: u32,
-    ) -> Result<SceneBinaryGeometryRecord, RendererPlanError> {
-        let records = self.geometry_records_cached()?;
-        binary_scene_cached_record_at(
-            &records,
-            SceneBinaryChunkKind::Geometry,
-            record_index,
-            self.chunk_count(SceneBinaryChunkKind::Geometry),
-        )
-    }
-
-    pub(super) fn material_record_cached(
-        &mut self,
-        record_index: u32,
-    ) -> Result<SceneBinaryMaterialPassRecord, RendererPlanError> {
-        let records = self.material_records_cached()?;
-        binary_scene_cached_record_at(
-            &records,
-            SceneBinaryChunkKind::MaterialPass,
-            record_index,
-            self.chunk_count(SceneBinaryChunkKind::MaterialPass),
-        )
-    }
-
-    pub(super) fn particle_record_cached(
-        &mut self,
-        record_index: u32,
-    ) -> Result<SceneBinaryParticleEmitterRecord, RendererPlanError> {
-        let records = self.particle_records_cached()?;
-        binary_scene_cached_record_at(
-            &records,
-            SceneBinaryChunkKind::ParticleEmitter,
-            record_index,
-            self.chunk_count(SceneBinaryChunkKind::ParticleEmitter),
-        )
-    }
-
-    pub(super) fn puppet_record_cached(
-        &mut self,
-        record_index: u32,
-    ) -> Result<SceneBinaryPuppetRecord, RendererPlanError> {
-        let records = self.puppet_records_cached()?;
-        binary_scene_cached_record_at(
-            &records,
-            SceneBinaryChunkKind::Puppet,
-            record_index,
-            self.chunk_count(SceneBinaryChunkKind::Puppet),
         )
     }
 }
