@@ -220,8 +220,14 @@ fn object_has_puppet_clipping(resources: &[SceneResource], object: &SceneObject)
     })
 }
 
-fn object_has_active_aux_clear_target(_resources: &[SceneResource], _object: &SceneObject) -> bool {
-    false
+fn object_has_active_aux_clear_target(resources: &[SceneResource], object: &SceneObject) -> bool {
+    resources.iter().any(|resource| {
+        matches!(
+            resource,
+            SceneResource::LayerAuxCompositeTargets { targets }
+                if targets.object == object.id && targets.clear_prep_ready()
+        )
+    })
 }
 
 fn image_layer_target_for_object(
@@ -369,9 +375,9 @@ mod tests {
     use super::*;
     use crate::engine::scene_engine::{
         SceneEffectFboFormat, SceneEffectPassBlend, SceneEffectPassGraphMaterialPass,
-        SceneEffectPassGraphOutput, SceneEffectPassGraphTarget, SceneFinalCompositorPlan,
-        SceneGeometryId, SceneGraphTarget, SceneMaterialContract, SceneObjectGeometry,
-        SceneResourceId, we::WeEffectKind,
+        SceneEffectPassGraphOutput, SceneEffectPassGraphTarget, SceneFinalCompositorObjectInput,
+        SceneFinalCompositorPlan, SceneGeometryId, SceneGraphTarget, SceneMaterialContract,
+        SceneObjectGeometry, SceneResourceId, we::WeEffectKind,
     };
 
     #[test]
@@ -569,6 +575,63 @@ mod tests {
                 && command.target == SceneLayerCompositorTarget::LayerTarget490
                 && command.blend_key
                     == SceneLayerCompositorBlendKey::SubdrawBlendByteToGeneratedMaterial1f0
+        }));
+    }
+
+    #[test]
+    fn layer_compositor_marks_active_aux_clear_prep_only_from_complete_aux_fact() {
+        let object = object(SceneObjectId(77));
+        let final_compositor = SceneFinalCompositorPlan {
+            object_final_count: 1,
+            pass_count: 0,
+            object_finals: vec![object.id],
+            object_inputs: vec![SceneFinalCompositorObjectInput {
+                object: object.id,
+                input: SceneGraphTarget::ObjectFinal(object.id),
+            }],
+            passes: Vec::new(),
+            command_order: SceneFinalCompositorPlan::empty().command_order,
+        };
+        let incomplete = SceneResource::LayerAuxCompositeTargets {
+            targets: crate::engine::scene_engine::SceneLayerAuxCompositeTargets {
+                object: object.id,
+                clear_target_3e8: true,
+                material_target_3f0: true,
+                effect_target_3f8: false,
+                generated_material_408: true,
+                clear_material_410: true,
+            },
+        };
+
+        let incomplete_plan = SceneLayerCompositorPlan::from_scene(
+            &[incomplete],
+            std::slice::from_ref(&object),
+            &SceneEffectPassGraphPlan::empty(),
+            &final_compositor,
+        );
+        assert!(!incomplete_plan.layers[0].has_active_aux_clear_target);
+
+        let complete = SceneResource::LayerAuxCompositeTargets {
+            targets: crate::engine::scene_engine::SceneLayerAuxCompositeTargets {
+                object: object.id,
+                clear_target_3e8: true,
+                material_target_3f0: true,
+                effect_target_3f8: true,
+                generated_material_408: true,
+                clear_material_410: true,
+            },
+        };
+        let complete_plan = SceneLayerCompositorPlan::from_scene(
+            &[complete],
+            &[object],
+            &SceneEffectPassGraphPlan::empty(),
+            &final_compositor,
+        );
+
+        assert!(complete_plan.layers[0].has_active_aux_clear_target);
+        assert!(complete_plan.layers[0].commands.iter().any(|command| {
+            command.entry == SceneLayerCompositorEntry::ClearPrepEntry50
+                && command.operation == SceneLayerCompositorOperation::ClearPrep
         }));
     }
 

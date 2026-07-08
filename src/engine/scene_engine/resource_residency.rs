@@ -37,6 +37,7 @@ pub enum SceneResidentResource {
     Buffer(SceneBufferResidency),
     MeshGeometry(SceneMeshResidency),
     LayerAlphaMaskRtMethod8MdlvGeometry(SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency),
+    LayerAuxCompositeTargets(SceneLayerAuxCompositeTargetsResidency),
     PuppetRig(ScenePuppetRigResidency),
 }
 
@@ -92,6 +93,17 @@ impl From<&SceneResource> for SceneResidentResource {
                         subdraw_count: geometry.subdraws.len().min(u32::MAX as usize) as u32,
                     },
                 )
+            }
+            SceneResource::LayerAuxCompositeTargets { targets } => {
+                Self::LayerAuxCompositeTargets(SceneLayerAuxCompositeTargetsResidency {
+                    object: targets.object,
+                    clear_target_3e8: targets.clear_target_3e8,
+                    material_target_3f0: targets.material_target_3f0,
+                    effect_target_3f8: targets.effect_target_3f8,
+                    generated_material_408: targets.generated_material_408,
+                    clear_material_410: targets.clear_material_410,
+                    clear_prep_ready: targets.clear_prep_ready(),
+                })
             }
             SceneResource::PuppetRig {
                 id,
@@ -211,6 +223,17 @@ pub struct SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency {
     pub index_bytes: u64,
     pub source_record_count: u32,
     pub subdraw_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct SceneLayerAuxCompositeTargetsResidency {
+    pub object: SceneObjectId,
+    pub clear_target_3e8: bool,
+    pub material_target_3f0: bool,
+    pub effect_target_3f8: bool,
+    pub generated_material_408: bool,
+    pub clear_material_410: bool,
+    pub clear_prep_ready: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -263,6 +263,7 @@ impl NativeVulkanSceneResourceStorage {
                         );
                     }
                 }
+                SceneResidentResource::LayerAuxCompositeTargets(_) => {}
                 SceneResidentResource::PuppetRig(puppet) => {
                     if self.puppet_rigs.get(&puppet.id) != Some(&puppet) {
                         self.puppet_rigs.insert(puppet.id, puppet);
@@ -431,6 +432,7 @@ impl NativeVulkanSceneActiveResources {
                         },
                     );
                 }
+                SceneResidentResource::LayerAuxCompositeTargets(_) => {}
                 SceneResidentResource::PuppetRig(puppet) => {
                     active.puppet_rigs.insert(puppet.id);
                 }

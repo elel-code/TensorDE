@@ -14,8 +14,8 @@ use crate::core::scene::{
     SceneMeshSkin, SceneMeshVertex, ScenePuppetAnimationClip, ScenePuppetAnimationLayer,
 };
 
-use super::ScenePuppetClippingProgram;
 use super::object::SceneObjectId;
+use super::{SceneLayerAuxCompositeTargets, ScenePuppetClippingProgram};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 pub struct SceneResourceId(pub u32);
@@ -58,6 +58,9 @@ pub enum SceneResource {
     },
     LayerAlphaMaskRtMethod8MdlvGeometry {
         geometry: SceneLayerAlphaMaskRtMethod8MdlvGeometry,
+    },
+    LayerAuxCompositeTargets {
+        targets: SceneLayerAuxCompositeTargets,
     },
     PuppetRig {
         id: ScenePuppetId,

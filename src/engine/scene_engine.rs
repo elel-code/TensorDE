@@ -20,6 +20,7 @@ pub mod graph;
 pub mod graph_execution;
 pub mod image_layer_targets;
 pub mod ingest;
+pub mod layer_aux;
 pub mod layer_compositor;
 pub mod material;
 pub mod object;
@@ -70,6 +71,13 @@ pub use image_layer_targets::{
     SceneImageLayerPassTarget, SceneImageLayerTargetPlan, image_layer_pass_target,
     image_layer_prefill_target,
 };
+pub use layer_aux::{
+    SceneLayerAuxCompositeTargets, WE_AUX_CLEAR_PREP_VMA, WE_AUX_CLEAR_TARGET_CREATE_VMA,
+    WE_AUX_CLEAR_TARGET_RELEASE_ZERO_VMA, WE_AUX_CLEAR_TARGET_STORE_VMA,
+    WE_LAYER_AUX_CLEAR_MATERIAL_OFFSET, WE_LAYER_AUX_CLEAR_TARGET_OFFSET,
+    WE_LAYER_AUX_EFFECT_TARGET_OFFSET, WE_LAYER_AUX_GENERATED_MATERIAL_OFFSET,
+    WE_LAYER_AUX_MATERIAL_TARGET_OFFSET,
+};
 pub use layer_compositor::{
     SceneLayerCompositorBlendKey, SceneLayerCompositorCommand, SceneLayerCompositorCondition,
     SceneLayerCompositorEntry, SceneLayerCompositorLayer, SceneLayerCompositorOperation,
@@ -104,9 +112,9 @@ pub use resource_gpu_layout::{
     SCENE_GPU_PUPPET_TRANSFORM_BYTES, scene_gpu_record_bytes,
 };
 pub use resource_residency::{
-    SceneBufferResidency, SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency, SceneMeshResidency,
-    ScenePuppetRigResidency, SceneResidentResource, SceneResourceResidencyPlan,
-    SceneTextureResidency,
+    SceneBufferResidency, SceneLayerAlphaMaskRtMethod8MdlvGeometryResidency,
+    SceneLayerAuxCompositeTargetsResidency, SceneMeshResidency, ScenePuppetRigResidency,
+    SceneResidentResource, SceneResourceResidencyPlan, SceneTextureResidency,
 };
 pub use shader_uniforms::{SceneGenericImage4MaterialUniformRecord, SceneShaderUniformFramePlan};
 pub use timeline::{SceneSampleClock, SceneTimelineSample};

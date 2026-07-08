@@ -20,9 +20,9 @@ use super::super::{
     SceneAlphaWriteMode, SceneBlendContract, SceneCullMode, SceneDepthTest, SceneEnginePlan,
     SceneGeometryId, SceneLayerAlphaMaskRtMethod8MdlvGeometry,
     SceneLayerAlphaMaskRtMethod8MdlvSourceRecord, SceneLayerAlphaMaskRtMethod8MdlvSubdraw,
-    SceneMaterialContract, SceneMaterialRenderState, SceneObject, SceneObjectEffectProgram,
-    SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram, ScenePuppetId, SceneResource,
-    SceneResourceId, SceneTextureFormat,
+    SceneLayerAuxCompositeTargets, SceneMaterialContract, SceneMaterialRenderState, SceneObject,
+    SceneObjectEffectProgram, SceneObjectGeometry, SceneObjectId, ScenePuppetClippingProgram,
+    ScenePuppetId, SceneResource, SceneResourceId, SceneTextureFormat,
 };
 use crate::engine::scene_engine::SceneEffectProgram;
 
@@ -37,6 +37,7 @@ pub struct GscnSceneFacts {
     pub mesh_resources: Vec<GscnMeshResourceFact>,
     pub layer_alpha_mask_rt_method8_mdlv_geometries:
         Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>,
+    pub layer_aux_composite_targets: Vec<GscnLayerAuxCompositeTargetFact>,
     pub puppet_resources: Vec<GscnPuppetResourceFact>,
     pub objects: Vec<GscnObjectFact>,
 }
@@ -81,6 +82,16 @@ pub struct GscnLayerAlphaMaskRtMethod8MdlvGeometryFact {
     pub index_payload: Vec<u8>,
     pub source_records: Vec<SceneLayerAlphaMaskRtMethod8MdlvSourceRecord>,
     pub subdraws: Vec<SceneLayerAlphaMaskRtMethod8MdlvSubdraw>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GscnLayerAuxCompositeTargetFact {
+    pub object: SceneObjectId,
+    pub clear_target_3e8: bool,
+    pub material_target_3f0: bool,
+    pub effect_target_3f8: bool,
+    pub generated_material_408: bool,
+    pub clear_material_410: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -158,6 +169,7 @@ impl GscnSceneFacts {
             resources: texture_resources,
             mesh_resources,
             layer_alpha_mask_rt_method8_mdlv_geometries,
+            layer_aux_composite_targets,
             puppet_resources,
             objects: object_facts,
         } = self;
@@ -175,6 +187,7 @@ impl GscnSceneFacts {
             geometry_facts,
             &geometry_ids,
             layer_alpha_mask_rt_method8_mdlv_geometries,
+            layer_aux_composite_targets,
             puppet_facts,
             &puppet_ids,
         );
@@ -281,6 +294,7 @@ fn engine_resources(
     geometry_facts: BTreeMap<u32, GscnMeshResourceFact>,
     geometry_ids: &BTreeMap<u32, SceneGeometryId>,
     layer_alpha_mask_rt_method8_mdlv_geometries: Vec<GscnLayerAlphaMaskRtMethod8MdlvGeometryFact>,
+    layer_aux_composite_targets: Vec<GscnLayerAuxCompositeTargetFact>,
     puppet_facts: BTreeMap<u32, GscnPuppetResourceFact>,
     puppet_ids: &BTreeMap<u32, ScenePuppetId>,
 ) -> Vec<SceneResource> {
@@ -330,6 +344,18 @@ fn engine_resources(
                 },
             }),
     );
+    output.extend(layer_aux_composite_targets.into_iter().map(|fact| {
+        SceneResource::LayerAuxCompositeTargets {
+            targets: SceneLayerAuxCompositeTargets {
+                object: fact.object,
+                clear_target_3e8: fact.clear_target_3e8,
+                material_target_3f0: fact.material_target_3f0,
+                effect_target_3f8: fact.effect_target_3f8,
+                generated_material_408: fact.generated_material_408,
+                clear_material_410: fact.clear_material_410,
+            },
+        }
+    }));
     output.extend(
         puppet_facts
             .into_iter()
@@ -588,6 +614,14 @@ mod tests {
                     subdraws: Vec::new(),
                 },
             ],
+            layer_aux_composite_targets: vec![GscnLayerAuxCompositeTargetFact {
+                object: SceneObjectId(0),
+                clear_target_3e8: true,
+                material_target_3f0: true,
+                effect_target_3f8: true,
+                generated_material_408: true,
+                clear_material_410: true,
+            }],
             puppet_resources: vec![GscnPuppetResourceFact {
                 source_record: 3,
                 skin: None,
@@ -674,7 +708,7 @@ mod tests {
         }
         .into_plan();
 
-        assert_eq!(plan.resources.len(), 5);
+        assert_eq!(plan.resources.len(), 6);
         assert_eq!(plan.objects.len(), 2);
         assert_eq!(plan.effects.len(), 0);
         let SceneResource::Texture {
@@ -722,13 +756,18 @@ mod tests {
         assert_eq!(geometry.vertex_stride_bytes, 20);
         assert_eq!(geometry.vertex_payload.len(), 80);
         assert_eq!(geometry.index_payload.len(), 12);
+        let SceneResource::LayerAuxCompositeTargets { targets } = &plan.resources[4] else {
+            panic!("expected layer aux composite target resource");
+        };
+        assert_eq!(targets.object, SceneObjectId(0));
+        assert!(targets.clear_prep_ready());
         let SceneResource::PuppetRig {
             id,
             clips,
             layers,
             clipping,
             ..
-        } = &plan.resources[4]
+        } = &plan.resources[5]
         else {
             panic!("expected puppet rig resource");
         };

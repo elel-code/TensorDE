@@ -53,7 +53,9 @@ impl NativeVulkanSceneGpuUploadPlan {
         let mut uploads = Vec::new();
         for resource in resources {
             match resource {
-                SceneResource::Texture { .. } | SceneResource::Buffer { .. } => {}
+                SceneResource::Texture { .. }
+                | SceneResource::Buffer { .. }
+                | SceneResource::LayerAuxCompositeTargets { .. } => {}
                 SceneResource::MeshGeometry {
                     id,
                     vertices,
