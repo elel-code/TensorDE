@@ -9,6 +9,7 @@ use crate::engine::scene_engine::{
 use crate::renderer::native_vulkan::scene_backend::effect_descriptors::NativeVulkanSceneEffectTextureDescriptorFramePlan;
 use crate::renderer::native_vulkan::scene_backend::effect_uniforms::{
     NativeVulkanSceneEffectUniformGpuBufferBinding, NativeVulkanSceneEffectUniformKey,
+    NativeVulkanSceneEffectUniformStage,
 };
 use crate::renderer::native_vulkan::scene_backend::texture_descriptors::{
     NativeVulkanSceneTextureDescriptorFormat, NativeVulkanSceneTextureDescriptorVkFormat,
@@ -84,7 +85,8 @@ fn effect_resource_heap_plan_packs_sampled_image_sets() {
         }
     ));
     assert_eq!(plan.pass_bindings[0].effect_pass_index, 0);
-    assert_eq!(plan.pass_bindings[0].effect_uniform, None);
+    assert_eq!(plan.pass_bindings[0].effect_uniform_buffer_count, 0);
+    assert!(plan.pass_bindings[0].effect_uniforms.is_empty());
     assert_eq!(plan.pass_bindings[0].base_resource_heap_offset, 0);
     assert_eq!(plan.pass_bindings[0].base_sampler_heap_offset, Some(0));
     assert_eq!(
@@ -168,20 +170,25 @@ fn effect_resource_heap_plan_packs_iris_uniform_before_textures() {
     )
     .expect("effect resource heap plan");
 
-    assert_eq!(plan.resource_descriptor_count, 3);
+    assert_eq!(plan.resource_descriptor_count, 4);
     assert_eq!(plan.sampler_descriptor_count, 2);
+    assert_eq!(plan.pass_bindings[0].effect_uniform_buffer_count, 2);
     assert_eq!(
-        plan.pass_bindings[0].effect_uniform,
-        Some(iris_uniform_key())
+        plan.pass_bindings[0].effect_uniforms,
+        vec![
+            iris_uniform_key(NativeVulkanSceneEffectUniformStage::Vertex),
+            iris_uniform_key(NativeVulkanSceneEffectUniformStage::Fragment),
+        ]
     );
-    assert_eq!(plan.pass_bindings[0].resource_descriptor_count, 3);
+    assert_eq!(plan.pass_bindings[0].resource_descriptor_count, 4);
     assert_eq!(plan.pass_bindings[0].texture_count, 2);
     assert_eq!(
         plan.pass_bindings[0].shader_mappings,
         vec![
-            "WE effect uniform payload -> effect-heap-slice-offset0".to_owned(),
-            "we.texture_slot0.g_Texture0 -> effect-heap-slice-offset1".to_owned(),
-            "we.texture_slot1.g_Texture1 -> effect-heap-slice-offset2".to_owned(),
+            "WE effects/iris VS slot2 uniform payload -> effect-heap-slice-offset0".to_owned(),
+            "WE effects/iris PS slot3 uniform payload -> effect-heap-slice-offset1".to_owned(),
+            "we.texture_slot0.g_Texture0 -> effect-heap-slice-offset2".to_owned(),
+            "we.texture_slot1.g_Texture1 -> effect-heap-slice-offset3".to_owned(),
         ]
     );
     assert!(matches!(
@@ -189,19 +196,40 @@ fn effect_resource_heap_plan_packs_iris_uniform_before_textures() {
         NativeVulkanSceneEffectResourceHeapEntryRole::WeEffectUniformPayload {
             buffer_handle: 0x4200,
             device_address: 0x4280,
-            bytes: 64,
+            bytes: 48,
             payload_hash: 0x1234,
+            heap_slice_uniform_ordinal: 0,
+            ..
+        }
+    ));
+    assert!(matches!(
+        plan.entries[1].role,
+        NativeVulkanSceneEffectResourceHeapEntryRole::WeEffectUniformPayload {
+            buffer_handle: 0x4300,
+            device_address: 0x4380,
+            bytes: 16,
+            payload_hash: 0x5678,
+            heap_slice_uniform_ordinal: 1,
             ..
         }
     ));
     assert_eq!(plan.entries[0].sampler_descriptor_index, None);
-    assert_eq!(plan.entries[1].sampler_descriptor_index, Some(0));
-    assert_eq!(plan.entries[2].sampler_descriptor_index, Some(1));
+    assert_eq!(plan.entries[1].sampler_descriptor_index, None);
+    assert_eq!(plan.entries[2].sampler_descriptor_index, Some(0));
+    assert_eq!(plan.entries[3].sampler_descriptor_index, Some(1));
     assert!(matches!(
         plan.bindings[0],
         NativeVulkanSceneEffectResourceHeapDescriptorBinding::UniformBuffer {
             device_address: 0x4280,
-            bytes: 64,
+            bytes: 48,
+            ..
+        }
+    ));
+    assert!(matches!(
+        plan.bindings[1],
+        NativeVulkanSceneEffectResourceHeapDescriptorBinding::UniformBuffer {
+            device_address: 0x4380,
+            bytes: 16,
             ..
         }
     ));
@@ -324,27 +352,40 @@ fn iris_uniform_record() -> SceneIrisEffectUniformRecord {
     }
 }
 
-fn iris_uniform_key() -> NativeVulkanSceneEffectUniformKey {
+fn iris_uniform_key(
+    stage: NativeVulkanSceneEffectUniformStage,
+) -> NativeVulkanSceneEffectUniformKey {
     NativeVulkanSceneEffectUniformKey {
         effect_pass_index: 0,
         object: SceneObjectId(7),
         shader: "effects/iris".to_owned(),
+        stage,
     }
 }
 
 fn effect_uniform_binding(
     key: &NativeVulkanSceneEffectUniformKey,
 ) -> Result<NativeVulkanSceneEffectUniformGpuBufferBinding, String> {
-    if key != &iris_uniform_key() {
-        return Err(format!("unexpected uniform key {key:?}"));
-    }
+    let (buffer, device_address, bytes, payload_hash) = match key.stage {
+        NativeVulkanSceneEffectUniformStage::Vertex
+            if key == &iris_uniform_key(NativeVulkanSceneEffectUniformStage::Vertex) =>
+        {
+            (vk::Buffer::from_raw(0x4200), 0x4280, 48, 0x1234)
+        }
+        NativeVulkanSceneEffectUniformStage::Fragment
+            if key == &iris_uniform_key(NativeVulkanSceneEffectUniformStage::Fragment) =>
+        {
+            (vk::Buffer::from_raw(0x4300), 0x4380, 16, 0x5678)
+        }
+        _ => return Err(format!("unexpected uniform key {key:?}")),
+    };
     Ok(NativeVulkanSceneEffectUniformGpuBufferBinding {
         key: key.clone(),
-        buffer: vk::Buffer::from_raw(0x4200),
-        device_address: 0x4280,
+        buffer,
+        device_address,
         record_index: 0,
-        bytes: 64,
-        payload_hash: 0x1234,
+        bytes,
+        payload_hash,
     })
 }
 

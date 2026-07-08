@@ -39,7 +39,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineKey
     #[serde(skip)]
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
-    pub has_effect_uniform: bool,
+    pub effect_uniform_buffer_count: usize,
     pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
 }
 
@@ -66,7 +66,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectPipelineCac
     pub alpha_write: SceneAlphaWriteMode,
     pub target_format: vk::Format,
     pub texture_slot_mask: u32,
-    pub has_effect_uniform: bool,
+    pub effect_uniform_buffer_count: usize,
     pub raster_geometry: NativeVulkanSceneEffectRasterGeometry,
 }
 
@@ -138,7 +138,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
             alpha_write: pass.alpha_write,
             target_format,
             texture_slot_mask,
-            has_effect_uniform: false,
+            effect_uniform_buffer_count: 0,
             raster_geometry: NativeVulkanSceneEffectRasterGeometry::FullscreenTriangle,
         })
     }
@@ -169,7 +169,7 @@ impl<'a> NativeVulkanSceneEffectPipelineKey<'a> {
                 pass.pass_index, pass.object, key.texture_slot_mask, resource_heap_mask
             ));
         }
-        key.has_effect_uniform = resource_heap.has_effect_uniform;
+        key.effect_uniform_buffer_count = resource_heap.effect_uniform_buffer_count;
         Ok(key)
     }
 }
@@ -189,7 +189,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             alpha_write: key.alpha_write,
             target_format: key.target_format,
             texture_slot_mask: key.texture_slot_mask,
-            has_effect_uniform: key.has_effect_uniform,
+            effect_uniform_buffer_count: key.effect_uniform_buffer_count,
             raster_geometry: key.raster_geometry,
         }
     }
@@ -208,7 +208,7 @@ impl NativeVulkanSceneEffectPipelineCacheKey {
             alpha_write: self.alpha_write,
             target_format: self.target_format,
             texture_slot_mask: self.texture_slot_mask,
-            has_effect_uniform: self.has_effect_uniform,
+            effect_uniform_buffer_count: self.effect_uniform_buffer_count,
             raster_geometry: self.raster_geometry,
         }
     }
@@ -781,12 +781,13 @@ mod tests {
             effect_pass_index: 2,
             object: SceneObjectId(7),
             heap_slice_index: 11,
-            effect_uniform: None,
-            effect_uniform_buffer_handle: None,
-            effect_uniform_device_address: None,
-            effect_uniform_record_index: None,
-            effect_uniform_bytes: None,
-            effect_uniform_payload_hash: None,
+            effect_uniform_buffer_count: 0,
+            effect_uniforms: Vec::new(),
+            effect_uniform_buffer_handles: Vec::new(),
+            effect_uniform_device_addresses: Vec::new(),
+            effect_uniform_record_indices: Vec::new(),
+            effect_uniform_bytes: Vec::new(),
+            effect_uniform_payload_hashes: Vec::new(),
             texture_set,
             base_resource_descriptor_index: 4,
             resource_descriptor_count: 1,

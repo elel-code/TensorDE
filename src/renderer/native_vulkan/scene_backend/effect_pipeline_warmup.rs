@@ -165,7 +165,7 @@ fn effect_resource_heap_pass_bind_plan(
         effect_pass_index: binding.effect_pass_index,
         object: binding.object,
         heap_slice_index: binding.heap_slice_index,
-        has_effect_uniform: binding.effect_uniform.is_some(),
+        effect_uniform_buffer_count: binding.effect_uniform_buffer_count,
         texture_set: binding.texture_set.clone(),
         base_resource_descriptor_index: binding.base_resource_descriptor_index,
         resource_descriptor_count: binding.resource_descriptor_count,

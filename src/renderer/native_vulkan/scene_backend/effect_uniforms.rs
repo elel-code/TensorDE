@@ -15,8 +15,9 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk;
 
 use crate::engine::scene_engine::{
-    SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES, SceneEffectUniformFramePlan, SceneIrisEffectUniformRecord,
-    SceneObjectId, WE_VEC4_BYTES, WeVec4,
+    SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES, SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES,
+    SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES, SceneEffectUniformFramePlan,
+    SceneIrisEffectUniformRecord, SceneObjectId, WE_VEC4_BYTES, WeVec4,
 };
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaRecordedBufferUpload,
@@ -35,6 +36,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectUniformKey 
     pub effect_pass_index: usize,
     pub object: SceneObjectId,
     pub shader: String,
+    pub stage: NativeVulkanSceneEffectUniformStage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectUniformStage {
+    Vertex,
+    Fragment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -58,7 +66,6 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectUniformUplo
     pub record_count: usize,
     pub iris_record_count: usize,
     pub total_bytes: u64,
-    pub record_bytes: u64,
     pub payload_layout: &'static str,
     #[serde(skip)]
     uploads: Vec<NativeVulkanSceneEffectUniformUpload>,
@@ -106,21 +113,20 @@ impl NativeVulkanSceneEffectUniformUploadPlan {
     ) -> Result<Self, String> {
         let mut uploads = Vec::new();
         for record in &plan.iris_records {
-            uploads.push(iris_effect_uniform_upload(record, texture_descriptors)?);
+            uploads.extend(iris_effect_uniform_uploads(record, texture_descriptors)?);
         }
         Ok(Self {
             record_count: uploads.len(),
             iris_record_count: plan.iris_record_count,
-            total_bytes: u64::try_from(uploads.len())
+            total_bytes: u64::try_from(plan.iris_record_count)
                 .unwrap_or(u64::MAX)
                 .saturating_mul(SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES),
-            record_bytes: SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES,
-            payload_layout: "iris-effect-uniform-v0-four-vec4",
+            payload_layout: "iris-effect-uniform-v1-vs-slot2-ps-slot3",
             uploads,
             command_order: [
                 "read_engine_effect_uniform_frame_plan",
                 "resolve_effect_texture_resolution_uniforms",
-                "pack_iris_effect_uniform_payloads",
+                "pack_iris_effect_uniform_stage_payloads",
                 "diff_retained_effect_uniform_records",
                 "prepare_effect_uniform_gpu_upload",
             ],
@@ -311,19 +317,20 @@ struct NativeVulkanSceneEffectUniformGpuBufferRetirement {
     buffer: NativeVulkanVulkanaliaBuffer,
 }
 
-fn iris_effect_uniform_upload(
+fn iris_effect_uniform_uploads(
     record: &SceneIrisEffectUniformRecord,
     texture_descriptors: &NativeVulkanSceneEffectTextureDescriptorFramePlan,
-) -> Result<NativeVulkanSceneEffectUniformUpload, String> {
+) -> Result<[NativeVulkanSceneEffectUniformUpload; 2], String> {
     let texture1_resolution = if record.texture_resolution_slots.contains(&1) {
         let descriptor = effect_pass_texture_descriptor(texture_descriptors, record, 1)?;
         texture_resolution_vec4(descriptor)
     } else {
         WeVec4::ZERO
     };
-    let mut payload = Vec::with_capacity(SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES as usize);
+    let mut vertex_payload =
+        Vec::with_capacity(SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES as usize);
     push_we_vec4(
-        &mut payload,
+        &mut vertex_payload,
         record,
         "g_Time/g_Speed/g_Rough/g_NoiseAmount",
         WeVec4::from_lanes([
@@ -334,7 +341,7 @@ fn iris_effect_uniform_upload(
         ]),
     )?;
     push_we_vec4(
-        &mut payload,
+        &mut vertex_payload,
         record,
         "g_Scale/g_PhaseOffset/MASK",
         WeVec4::from_lanes([
@@ -345,13 +352,15 @@ fn iris_effect_uniform_upload(
         ]),
     )?;
     push_we_vec4(
-        &mut payload,
+        &mut vertex_payload,
         record,
         "g_Texture1Resolution",
         texture1_resolution,
     )?;
+    let mut fragment_payload =
+        Vec::with_capacity(SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES as usize);
     push_we_vec4(
-        &mut payload,
+        &mut fragment_payload,
         record,
         "g_EyeColor/BACKGROUND",
         WeVec4::from_lanes([
@@ -361,22 +370,44 @@ fn iris_effect_uniform_upload(
             record.background_combo as f32,
         ]),
     )?;
-    let key = NativeVulkanSceneEffectUniformKey {
+    let vertex_bytes = u64::try_from(vertex_payload.len()).unwrap_or(u64::MAX);
+    if vertex_bytes != SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES {
+        return Err(format!(
+            "scene iris vertex effect uniform upload for pass {} object {:?} has {vertex_bytes} bytes, expected {SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES}",
+            record.effect_pass_index, record.object
+        ));
+    }
+    let fragment_bytes = u64::try_from(fragment_payload.len()).unwrap_or(u64::MAX);
+    if fragment_bytes != SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES {
+        return Err(format!(
+            "scene iris fragment effect uniform upload for pass {} object {:?} has {fragment_bytes} bytes, expected {SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES}",
+            record.effect_pass_index, record.object
+        ));
+    }
+    Ok([
+        NativeVulkanSceneEffectUniformUpload {
+            key: iris_effect_uniform_key(record, NativeVulkanSceneEffectUniformStage::Vertex),
+            record_index: record.record_index,
+            payload: vertex_payload,
+        },
+        NativeVulkanSceneEffectUniformUpload {
+            key: iris_effect_uniform_key(record, NativeVulkanSceneEffectUniformStage::Fragment),
+            record_index: record.record_index,
+            payload: fragment_payload,
+        },
+    ])
+}
+
+fn iris_effect_uniform_key(
+    record: &SceneIrisEffectUniformRecord,
+    stage: NativeVulkanSceneEffectUniformStage,
+) -> NativeVulkanSceneEffectUniformKey {
+    NativeVulkanSceneEffectUniformKey {
         effect_pass_index: record.effect_pass_index,
         object: record.object,
         shader: record.shader.clone(),
-    };
-    let actual_bytes = u64::try_from(payload.len()).unwrap_or(u64::MAX);
-    if actual_bytes != SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES {
-        return Err(format!(
-            "scene iris effect uniform upload for {key:?} has {actual_bytes} bytes, expected {SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES}"
-        ));
+        stage,
     }
-    Ok(NativeVulkanSceneEffectUniformUpload {
-        key,
-        record_index: record.record_index,
-        payload,
-    })
 }
 
 fn effect_pass_texture_descriptor<'a>(
@@ -446,9 +477,15 @@ fn effect_uniform_upload_record(
     upload: &NativeVulkanSceneEffectUniformUpload,
 ) -> Result<NativeVulkanSceneEffectUniformRecord, String> {
     let actual_bytes = u64::try_from(upload.payload.len()).unwrap_or(u64::MAX);
-    if actual_bytes != SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES {
+    let expected_bytes = match upload.key.stage {
+        NativeVulkanSceneEffectUniformStage::Vertex => SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
+        NativeVulkanSceneEffectUniformStage::Fragment => {
+            SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES
+        }
+    };
+    if actual_bytes != expected_bytes {
         return Err(format!(
-            "scene effect uniform upload for {:?} has {actual_bytes} bytes, expected {SCENE_GPU_IRIS_EFFECT_UNIFORM_BYTES}",
+            "scene effect uniform upload for {:?} has {actual_bytes} bytes, expected {expected_bytes}",
             upload.key
         ));
     }
@@ -457,7 +494,14 @@ fn effect_uniform_upload_record(
         record_index: upload.record_index,
         bytes: actual_bytes,
         payload_hash: scene_stable_byte_hash(&upload.payload),
-        payload_layout: "iris-effect-uniform-v0-four-vec4",
+        payload_layout: match upload.key.stage {
+            NativeVulkanSceneEffectUniformStage::Vertex => {
+                "iris-effect-vs-slot2-uniform-v1-three-vec4"
+            }
+            NativeVulkanSceneEffectUniformStage::Fragment => {
+                "iris-effect-ps-slot3-uniform-v1-one-vec4"
+            }
+        },
     })
 }
 
@@ -509,24 +553,38 @@ mod tests {
         )
         .expect("effect uniform upload plan");
 
-        assert_eq!(plan.record_count, 1);
+        assert_eq!(plan.record_count, 2);
         assert_eq!(plan.total_bytes, 64);
-        let upload = &plan.uploads()[0];
-        assert_eq!(upload.payload.len(), 64);
         assert_eq!(
-            &upload.payload[0..16],
+            plan.payload_layout,
+            "iris-effect-uniform-v1-vs-slot2-ps-slot3"
+        );
+        let vertex_upload = &plan.uploads()[0];
+        let fragment_upload = &plan.uploads()[1];
+        assert_eq!(
+            vertex_upload.key.stage,
+            NativeVulkanSceneEffectUniformStage::Vertex
+        );
+        assert_eq!(
+            fragment_upload.key.stage,
+            NativeVulkanSceneEffectUniformStage::Fragment
+        );
+        assert_eq!(vertex_upload.payload.len(), 48);
+        assert_eq!(fragment_upload.payload.len(), 16);
+        assert_eq!(
+            &vertex_upload.payload[0..16],
             we_vec4_bytes(WeVec4::from_lanes([1.25, 1.5, 0.25, 0.75])).as_slice()
         );
         assert_eq!(
-            &upload.payload[16..32],
+            &vertex_upload.payload[16..32],
             we_vec4_bytes(WeVec4::from_lanes([2.0, 3.0, -0.2, 1.0])).as_slice()
         );
         assert_eq!(
-            &upload.payload[32..48],
+            &vertex_upload.payload[32..48],
             we_vec4_bytes(WeVec4::from_lanes([256.0, 128.0, 1.0 / 256.0, 1.0 / 128.0])).as_slice()
         );
         assert_eq!(
-            &upload.payload[48..64],
+            &fragment_upload.payload[0..16],
             we_vec4_bytes(WeVec4::from_lanes([0.1, 0.2, 0.3, 1.0])).as_slice()
         );
     }

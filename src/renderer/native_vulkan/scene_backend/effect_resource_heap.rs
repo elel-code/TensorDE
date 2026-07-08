@@ -25,6 +25,7 @@ use serde::Serialize;
 use vulkanalia::vk::{self, Handle};
 
 use crate::engine::scene_engine::{
+    SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES, SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES,
     SceneEffectUniformFramePlan, SceneGraphTarget, SceneIrisEffectUniformRecord, SceneObjectId,
     SceneResourceId,
 };
@@ -42,6 +43,7 @@ use super::effect_descriptors::{
 };
 use super::effect_uniforms::{
     NativeVulkanSceneEffectUniformGpuBufferBinding, NativeVulkanSceneEffectUniformKey,
+    NativeVulkanSceneEffectUniformStage,
 };
 use super::offscreen_targets::NativeVulkanSceneOffscreenTargetBinding;
 use super::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
@@ -98,6 +100,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHea
 pub(in crate::renderer::native_vulkan) enum NativeVulkanSceneEffectResourceHeapEntryRole {
     WeEffectUniformPayload {
         uniform: NativeVulkanSceneEffectUniformKey,
+        heap_slice_uniform_ordinal: usize,
         buffer_handle: u64,
         device_address: u64,
         record_index: usize,
@@ -124,12 +127,13 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanSceneEffectResourceHea
     pub effect_pass_index: usize,
     pub object: SceneObjectId,
     pub heap_slice_index: usize,
-    pub effect_uniform: Option<NativeVulkanSceneEffectUniformKey>,
-    pub effect_uniform_buffer_handle: Option<u64>,
-    pub effect_uniform_device_address: Option<u64>,
-    pub effect_uniform_record_index: Option<usize>,
-    pub effect_uniform_bytes: Option<u64>,
-    pub effect_uniform_payload_hash: Option<u64>,
+    pub effect_uniform_buffer_count: usize,
+    pub effect_uniforms: Vec<NativeVulkanSceneEffectUniformKey>,
+    pub effect_uniform_buffer_handles: Vec<u64>,
+    pub effect_uniform_device_addresses: Vec<u64>,
+    pub effect_uniform_record_indices: Vec<usize>,
+    pub effect_uniform_bytes: Vec<u64>,
+    pub effect_uniform_payload_hashes: Vec<u64>,
     pub texture_set: NativeVulkanSceneEffectTextureSetKey,
     pub base_resource_descriptor_index: usize,
     pub base_resource_heap_offset: u64,
@@ -172,7 +176,7 @@ struct NativeVulkanSceneEffectHeapSliceLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct NativeVulkanSceneEffectHeapSliceKey {
-    effect_uniform: Option<NativeVulkanSceneEffectHeapSliceUniformKey>,
+    effect_uniforms: Vec<NativeVulkanSceneEffectHeapSliceUniformKey>,
     texture_set: NativeVulkanSceneEffectTextureSetKey,
 }
 
@@ -233,22 +237,23 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
         let mut sampler_descriptor_count = 0usize;
 
         for (effect_pass_index, pass_descriptors) in descriptors_by_pass.iter().enumerate() {
-            let effect_uniform = uniform_records_by_pass
+            let effect_uniforms = uniform_records_by_pass
                 .get(effect_pass_index)
                 .and_then(|record| record.as_ref())
-                .map(|record| effect_uniform_binding_from_record(record, &effect_uniform_buffer))
+                .map(|record| effect_uniform_bindings_from_record(record, &effect_uniform_buffer))
                 .transpose()?;
-            if pass_descriptors.is_empty() && effect_uniform.is_none() {
+            let effect_uniforms = effect_uniforms.unwrap_or_default();
+            if pass_descriptors.is_empty() && effect_uniforms.is_empty() {
                 continue;
             }
-            let object = effect_heap_pass_object(
-                effect_pass_index,
-                pass_descriptors,
-                effect_uniform.as_ref(),
-            )?;
+            let object =
+                effect_heap_pass_object(effect_pass_index, pass_descriptors, &effect_uniforms)?;
             let texture_set = effect_texture_set_key(pass_descriptors);
             let heap_slice_key = NativeVulkanSceneEffectHeapSliceKey {
-                effect_uniform: effect_uniform.as_ref().map(effect_heap_slice_uniform_key),
+                effect_uniforms: effect_uniforms
+                    .iter()
+                    .map(effect_heap_slice_uniform_key)
+                    .collect(),
                 texture_set: texture_set.clone(),
             };
             let slice = if let Some(slice) = heap_slice_lookup.get(&heap_slice_key).copied() {
@@ -258,7 +263,7 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
                 let base_resource_descriptor_index = descriptor_kinds.len();
                 let base_sampler_descriptor_index =
                     (!pass_descriptors.is_empty()).then_some(sampler_descriptor_count);
-                if let Some(uniform) = effect_uniform.as_ref() {
+                for (uniform_ordinal, uniform) in effect_uniforms.iter().enumerate() {
                     push_effect_uniform_descriptor(
                         &mut descriptor_kinds,
                         &mut pending_entries,
@@ -266,6 +271,7 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
                         heap_slice_index,
                         effect_pass_index,
                         object,
+                        uniform_ordinal,
                         uniform,
                     )?;
                 }
@@ -298,18 +304,36 @@ impl NativeVulkanSceneEffectResourceHeapFramePlan {
                 heap_slice_lookup.insert(heap_slice_key, slice);
                 slice
             };
-            let uniform = effect_uniform.as_ref();
             pass_bindings.push(NativeVulkanSceneEffectResourceHeapPassBinding {
                 effect_pass_index,
                 object,
                 heap_slice_index: slice.heap_slice_index,
-                effect_uniform: uniform.map(|binding| binding.key.clone()),
-                effect_uniform_buffer_handle: uniform.map(|binding| binding.buffer.as_raw()),
-                effect_uniform_device_address: uniform.map(|binding| binding.device_address),
-                effect_uniform_record_index: uniform.map(|binding| binding.record_index),
-                effect_uniform_bytes: uniform.map(|binding| binding.bytes),
-                effect_uniform_payload_hash: uniform.map(|binding| binding.payload_hash),
-                shader_mappings: effect_heap_slice_shader_mappings(&texture_set, uniform.is_some()),
+                effect_uniform_buffer_count: effect_uniforms.len(),
+                effect_uniforms: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.key.clone())
+                    .collect(),
+                effect_uniform_buffer_handles: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.buffer.as_raw())
+                    .collect(),
+                effect_uniform_device_addresses: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.device_address)
+                    .collect(),
+                effect_uniform_record_indices: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.record_index)
+                    .collect(),
+                effect_uniform_bytes: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.bytes)
+                    .collect(),
+                effect_uniform_payload_hashes: effect_uniforms
+                    .iter()
+                    .map(|binding| binding.payload_hash)
+                    .collect(),
+                shader_mappings: effect_heap_slice_shader_mappings(&texture_set, &effect_uniforms),
                 texture_set,
                 base_resource_descriptor_index: slice.base_resource_descriptor_index,
                 base_resource_heap_offset: 0,
@@ -390,6 +414,7 @@ fn push_effect_uniform_descriptor(
     heap_slice_index: usize,
     effect_pass_index: usize,
     object: SceneObjectId,
+    heap_slice_uniform_ordinal: usize,
     uniform: &NativeVulkanSceneEffectUniformGpuBufferBinding,
 ) -> Result<(), String> {
     validate_effect_uniform_binding(effect_pass_index, object, uniform)?;
@@ -412,12 +437,13 @@ fn push_effect_uniform_descriptor(
         object,
         role: NativeVulkanSceneEffectResourceHeapEntryRole::WeEffectUniformPayload {
             uniform: uniform.key.clone(),
+            heap_slice_uniform_ordinal,
             buffer_handle: uniform.buffer.as_raw(),
             device_address: uniform.device_address,
             record_index: uniform.record_index,
             bytes: uniform.bytes,
             payload_hash: uniform.payload_hash,
-            shader_mapping: "WE effect uniform payload -> effect-heap-slice-offset0".to_owned(),
+            shader_mapping: effect_uniform_shader_mapping(&uniform.key, heap_slice_uniform_ordinal),
         },
     });
     Ok(())
@@ -539,28 +565,37 @@ fn effect_uniform_records_by_pass(
     Ok(records)
 }
 
-fn effect_uniform_binding_from_record(
+fn effect_uniform_bindings_from_record(
     record: &SceneIrisEffectUniformRecord,
     effect_uniform_buffer: &impl Fn(
         &NativeVulkanSceneEffectUniformKey,
     )
         -> Result<NativeVulkanSceneEffectUniformGpuBufferBinding, String>,
-) -> Result<NativeVulkanSceneEffectUniformGpuBufferBinding, String> {
-    let key = NativeVulkanSceneEffectUniformKey {
-        effect_pass_index: record.effect_pass_index,
-        object: record.object,
-        shader: record.shader.clone(),
-    };
-    effect_uniform_buffer(&key)
+) -> Result<Vec<NativeVulkanSceneEffectUniformGpuBufferBinding>, String> {
+    [
+        NativeVulkanSceneEffectUniformStage::Vertex,
+        NativeVulkanSceneEffectUniformStage::Fragment,
+    ]
+    .into_iter()
+    .map(|stage| {
+        let key = NativeVulkanSceneEffectUniformKey {
+            effect_pass_index: record.effect_pass_index,
+            object: record.object,
+            shader: record.shader.clone(),
+            stage,
+        };
+        effect_uniform_buffer(&key)
+    })
+    .collect()
 }
 
 fn effect_heap_pass_object(
     effect_pass_index: usize,
     descriptors: &[&NativeVulkanSceneEffectTextureDescriptorBinding],
-    uniform: Option<&NativeVulkanSceneEffectUniformGpuBufferBinding>,
+    uniforms: &[NativeVulkanSceneEffectUniformGpuBufferBinding],
 ) -> Result<SceneObjectId, String> {
     let texture_object = descriptors.first().map(|descriptor| descriptor.object);
-    let uniform_object = uniform.map(|binding| binding.key.object);
+    let uniform_object = effect_uniform_object(effect_pass_index, uniforms)?;
     match (texture_object, uniform_object) {
         (Some(texture_object), Some(uniform_object)) if texture_object != uniform_object => {
             Err(format!(
@@ -574,6 +609,24 @@ fn effect_heap_pass_object(
     }
 }
 
+fn effect_uniform_object(
+    effect_pass_index: usize,
+    uniforms: &[NativeVulkanSceneEffectUniformGpuBufferBinding],
+) -> Result<Option<SceneObjectId>, String> {
+    let Some(first) = uniforms.first() else {
+        return Ok(None);
+    };
+    for uniform in uniforms {
+        if uniform.key.object != first.key.object {
+            return Err(format!(
+                "scene effect resource heap pass {effect_pass_index} object mismatch between effect uniform buffers {:?} and {:?}",
+                first.key.object, uniform.key.object
+            ));
+        }
+    }
+    Ok(Some(first.key.object))
+}
+
 fn effect_heap_slice_uniform_key(
     binding: &NativeVulkanSceneEffectUniformGpuBufferBinding,
 ) -> NativeVulkanSceneEffectHeapSliceUniformKey {
@@ -584,6 +637,20 @@ fn effect_heap_slice_uniform_key(
         bytes: binding.bytes,
         payload_hash: binding.payload_hash,
     }
+}
+
+fn effect_uniform_shader_mapping(
+    key: &NativeVulkanSceneEffectUniformKey,
+    heap_slice_uniform_ordinal: usize,
+) -> String {
+    let stage = match key.stage {
+        NativeVulkanSceneEffectUniformStage::Vertex => "VS slot2",
+        NativeVulkanSceneEffectUniformStage::Fragment => "PS slot3",
+    };
+    format!(
+        "WE {} {stage} uniform payload -> effect-heap-slice-offset{heap_slice_uniform_ordinal}",
+        key.shader
+    )
 }
 
 fn validate_effect_uniform_binding(
@@ -620,6 +687,22 @@ fn validate_effect_uniform_binding(
             "scene effect resource heap uniform {:?} has zero byte range",
             binding.key
         ));
+    }
+    if binding.key.shader == "effects/iris" {
+        let expected = match binding.key.stage {
+            NativeVulkanSceneEffectUniformStage::Vertex => {
+                SCENE_GPU_IRIS_EFFECT_VERTEX_UNIFORM_BYTES
+            }
+            NativeVulkanSceneEffectUniformStage::Fragment => {
+                SCENE_GPU_IRIS_EFFECT_FRAGMENT_UNIFORM_BYTES
+            }
+        };
+        if binding.bytes != expected {
+            return Err(format!(
+                "scene effect resource heap iris uniform {:?} has {} bytes, expected {}",
+                binding.key, binding.bytes, expected
+            ));
+        }
     }
     Ok(())
 }

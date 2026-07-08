@@ -17,6 +17,9 @@ use super::super::effect_descriptors::{
     NativeVulkanSceneEffectTextureDescriptorBinding,
     NativeVulkanSceneEffectTextureDescriptorFramePlan,
 };
+use super::super::effect_uniforms::{
+    NativeVulkanSceneEffectUniformGpuBufferBinding, NativeVulkanSceneEffectUniformStage,
+};
 use super::super::texture_descriptors::NativeVulkanSceneTextureDescriptorSource;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -163,14 +166,14 @@ fn effect_pass_input_descriptor_source(
 
 pub(super) fn effect_heap_slice_shader_mappings(
     texture_set: &NativeVulkanSceneEffectTextureSetKey,
-    has_effect_uniform: bool,
+    effect_uniforms: &[NativeVulkanSceneEffectUniformGpuBufferBinding],
 ) -> Vec<String> {
-    let mut mappings = if has_effect_uniform {
-        vec!["WE effect uniform payload -> effect-heap-slice-offset0".to_owned()]
-    } else {
-        Vec::new()
-    };
-    let texture_base = usize::from(has_effect_uniform);
+    let mut mappings = effect_uniforms
+        .iter()
+        .enumerate()
+        .map(|(ordinal, uniform)| effect_uniform_shader_mapping(uniform, ordinal))
+        .collect::<Vec<_>>();
+    let texture_base = effect_uniforms.len();
     mappings.extend(
         texture_set
             .bindings
@@ -185,6 +188,20 @@ pub(super) fn effect_heap_slice_shader_mappings(
             }),
     );
     mappings
+}
+
+fn effect_uniform_shader_mapping(
+    uniform: &NativeVulkanSceneEffectUniformGpuBufferBinding,
+    ordinal: usize,
+) -> String {
+    let stage = match uniform.key.stage {
+        NativeVulkanSceneEffectUniformStage::Vertex => "VS slot2",
+        NativeVulkanSceneEffectUniformStage::Fragment => "PS slot3",
+    };
+    format!(
+        "WE {} {stage} uniform payload -> effect-heap-slice-offset{ordinal}",
+        uniform.key.shader
+    )
 }
 
 pub(super) fn binding_shader_mapping(slot: u32) -> String {
