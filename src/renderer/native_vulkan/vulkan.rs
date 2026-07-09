@@ -18,8 +18,6 @@ use self::core::profiles;
 use self::present::clear as present_clear;
 use self::present::render as render_present;
 use self::present::render_descriptors as render_present_descriptors;
-use self::present::scene as scene_present;
-use self::present::scene_prepare;
 use self::present::swapchain;
 use self::video::bitstream_buffer as video_bitstream_buffer;
 use self::video::decode_submit as video_decode_submit;
@@ -92,6 +90,7 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     native_vulkan_vulkanalia_descriptor_heap_resource_plan,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_sampled_image_binding_mapping,
+    native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_resource_uniform_buffer_binding_mapping,
     native_vulkan_vulkanalia_descriptor_heap_sampler_bind_info,
@@ -106,6 +105,7 @@ pub(in crate::renderer::native_vulkan) use descriptor_heap::{
     native_vulkan_vulkanalia_destroy_descriptor_heap_uniform_buffer_resources,
     native_vulkan_vulkanalia_write_descriptor_heap_image_sampler,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler,
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_uniform_buffer,
     native_vulkan_vulkanalia_write_descriptor_heap_uniform_buffer,
 };
@@ -145,15 +145,6 @@ pub use render_present::{
     NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot,
 };
 pub use render_present_descriptors::NativeVulkanVulkanaliaDecodedImagePresentSamplerSnapshot;
-pub use scene_prepare::{
-    NativeVulkanVulkanaliaScenePipelinePrepareSnapshot, NativeVulkanVulkanaliaScenePrepareSnapshot,
-    NativeVulkanVulkanaliaScenePrepareSubmitSnapshot,
-    NativeVulkanVulkanaliaSceneResourcePrepareSnapshot,
-};
-pub use scene_present::{
-    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
-    run_native_vulkan_vulkanalia_scene_present,
-};
 #[allow(unused_imports)]
 pub use swapchain::{
     NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,

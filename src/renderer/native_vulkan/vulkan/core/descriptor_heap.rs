@@ -113,6 +113,7 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapUniformBufferPlanInput {
 pub enum NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind {
     SampledImage,
     UniformBuffer,
+    StorageBuffer,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -215,6 +216,7 @@ pub struct NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot {
     pub resource_descriptor_count: usize,
     pub sampled_image_count: usize,
     pub uniform_buffer_count: usize,
+    pub storage_buffer_count: usize,
     pub sampler_count: usize,
     pub resource_descriptor_kinds: Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     pub resource_descriptor_offsets: Vec<u64>,
@@ -521,6 +523,13 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
             **kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
         })
         .count();
+    let storage_buffer_count = input
+        .resource_descriptors
+        .iter()
+        .filter(|kind| {
+            **kind == NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer
+        })
+        .count();
     let resource_descriptor_offsets = mixed_resource_descriptor_offsets(
         &input.resource_descriptors,
         properties.image_descriptor_alignment,
@@ -577,6 +586,9 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
             NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
                 properties.buffer_descriptor_size > 0 && buffer_descriptor_stride > 0
             }
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer => {
+                properties.buffer_descriptor_size > 0 && buffer_descriptor_stride > 0
+            }
         });
     let sampler_descriptor_sizes_ready = input.sampler_count == 0
         || (properties.sampler_descriptor_size > 0 && sampler_descriptor_stride > 0);
@@ -616,6 +628,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resource_descriptor_count: input.resource_descriptors.len(),
         sampled_image_count,
         uniform_buffer_count,
+        storage_buffer_count,
         sampler_count: input.sampler_count,
         resource_descriptor_kinds: input.resource_descriptors,
         resource_descriptor_offsets,
@@ -1019,6 +1032,66 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descrip
     Ok(())
 }
 
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
+    device: &Device,
+    resources: &mut VulkanaliaDescriptorHeapResourceResources,
+    resource_descriptor_index: usize,
+    device_address: vk::DeviceAddress,
+    range: u64,
+) -> Result<(), String> {
+    if device_address == 0 {
+        return Err(
+            "descriptor heap mixed storage buffer requires non-zero device address".to_owned(),
+        );
+    }
+    if range == 0 {
+        return Err("descriptor heap mixed storage buffer requires non-zero range".to_owned());
+    }
+    validate_mixed_resource_descriptor_kind(
+        resources,
+        resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+    )?;
+    let resource_offset = mixed_resource_descriptor_offset(resources, resource_descriptor_index)?;
+    let descriptor_size = resources.plan.buffer_descriptor_size;
+    let address_range = vk::DeviceAddressRangeEXT::builder()
+        .address(device_address)
+        .size(range)
+        .build();
+    let resource_info = vk::ResourceDescriptorInfoEXT::builder()
+        .type_(vk::DescriptorType::STORAGE_BUFFER)
+        .data(vk::ResourceDescriptorDataEXT {
+            address_range: &address_range,
+        })
+        .build();
+    let resource_range = heap_host_address_range(
+        &resources.resource_heap,
+        resource_offset,
+        descriptor_size,
+        "mixed-resource-heap",
+    )?;
+
+    unsafe {
+        device
+            .write_resource_descriptors_ext(&[resource_info], &[resource_range])
+            .map_err(|err| {
+                format!("vkWriteResourceDescriptorsEXT(vulkanalia mixed storage buffer): {err:?}")
+            })?;
+    }
+    flush_descriptor_heap_buffer(
+        device,
+        &resources.resource_heap,
+        resource_offset,
+        descriptor_size,
+    )?;
+
+    resources.snapshot.resource_descriptors_written = resources
+        .snapshot
+        .resource_descriptors_written
+        .saturating_add(1);
+    Ok(())
+}
+
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
     device: &Device,
     resources: &mut VulkanaliaDescriptorHeapResourceResources,
@@ -1238,6 +1311,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "descriptor heap mixed base uniform descriptor index {base_resource_descriptor_index} has no resource offset"
             )
         })?;
+    let base_heap_offset = align_down(base_heap_offset, plan.resource_heap_alignment);
     let heap_offset = plan
         .resource_descriptor_offsets
         .get(resource_descriptor_index)
@@ -1268,6 +1342,68 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
             binding,
             vk::SpirvResourceTypeFlagsEXT::UNIFORM_BUFFER,
+            vk::DescriptorMappingSourceDataEXT {
+                constant_offset: source,
+            },
+        ),
+    )
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
+    plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    binding: u32,
+    base_resource_descriptor_index: usize,
+    resource_descriptor_index: usize,
+) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        base_resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+    )?;
+    validate_mixed_plan_descriptor_kind(
+        plan,
+        resource_descriptor_index,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+    )?;
+    let base_heap_offset = *plan
+        .resource_descriptor_offsets
+        .get(base_resource_descriptor_index)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed base storage descriptor index {base_resource_descriptor_index} has no resource offset"
+            )
+        })?;
+    let base_heap_offset = align_down(base_heap_offset, plan.resource_heap_alignment);
+    let heap_offset = plan
+        .resource_descriptor_offsets
+        .get(resource_descriptor_index)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed storage descriptor index {resource_descriptor_index} has no resource offset"
+            )
+        })?
+        .checked_sub(base_heap_offset)
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap mixed storage descriptor index {resource_descriptor_index} precedes heap-slice base {base_resource_descriptor_index}"
+            )
+        })?;
+    let heap_offset = u32::try_from(heap_offset)
+        .map_err(|_| "descriptor heap mixed relative storage offset exceeds u32".to_owned())?;
+    let heap_array_stride = u32::try_from(plan.buffer_descriptor_stride)
+        .map_err(|_| "descriptor heap mixed storage-buffer stride exceeds u32".to_owned())?;
+    let source = vk::DescriptorMappingSourceConstantOffsetEXT::builder()
+        .heap_offset(heap_offset)
+        .heap_array_stride(heap_array_stride)
+        .sampler_heap_offset(0)
+        .sampler_heap_array_stride(0)
+        .build();
+
+    Ok(
+        native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
+            binding,
+            vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
             vk::DescriptorMappingSourceDataEXT {
                 constant_offset: source,
             },
@@ -1344,6 +1480,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "descriptor heap mixed base resource descriptor index {base_resource_descriptor_index} has no resource offset"
             )
         })?;
+    let base_heap_offset = align_down(base_heap_offset, plan.resource_heap_alignment);
     let heap_offset = plan
         .resource_descriptor_offsets
         .get(resource_descriptor_index)
@@ -1367,6 +1504,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "descriptor heap mixed base sampler descriptor index {base_sampler_descriptor_index} has no sampler offset"
             )
         })?;
+    let base_sampler_heap_offset =
+        align_down(base_sampler_heap_offset, plan.sampler_heap_alignment);
     let sampler_heap_offset = plan
         .sampler_descriptor_offsets
         .get(sampler_descriptor_index)
@@ -1434,6 +1573,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "descriptor heap sampled-image base resource descriptor index {base_resource_descriptor_index} has no resource offset"
             )
         })?;
+    let base_heap_offset = align_down(base_heap_offset, plan.resource_heap_alignment);
     let heap_offset = plan
         .resource_descriptor_offsets
         .get(resource_descriptor_index)
@@ -1457,6 +1597,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
                 "descriptor heap sampled-image base sampler descriptor index {base_sampler_descriptor_index} has no sampler offset"
             )
         })?;
+    let base_sampler_heap_offset =
+        align_down(base_sampler_heap_offset, plan.sampler_heap_alignment);
     let sampler_heap_offset = plan
         .sampler_descriptor_offsets
         .get(sampler_descriptor_index)
@@ -1540,6 +1682,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resources.plan.resource_heap_reserved_range_offset,
         resources.plan.resource_heap_reserved_range_size,
         descriptor_offset,
+        resources.plan.resource_heap_alignment,
         "mixed-resource",
     )
 }
@@ -1600,6 +1743,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resources.plan.sampler_heap_reserved_range_offset,
         resources.plan.sampler_heap_reserved_range_size,
         descriptor_offset,
+        resources.plan.sampler_heap_alignment,
         "mixed-sampler",
     )
 }
@@ -1620,6 +1764,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resources.plan.resource_heap_reserved_range_offset,
         resources.plan.resource_heap_reserved_range_size,
         descriptor_offset,
+        resources.plan.resource_heap_alignment,
         "uniform-buffer-resource",
     )
 }
@@ -1638,6 +1783,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resources.plan.resource_heap_reserved_range_offset,
         resources.plan.resource_heap_reserved_range_size,
         descriptor_offset,
+        resources.plan.resource_heap_alignment,
         "resource",
     )
 }
@@ -1673,6 +1819,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
         resources.plan.sampler_heap_reserved_range_offset,
         resources.plan.sampler_heap_reserved_range_size,
         descriptor_offset,
+        resources.plan.sampler_heap_alignment,
         "sampler",
     )
 }
@@ -1682,6 +1829,7 @@ fn descriptor_heap_indexed_bind_info(
     reserved_range_offset: u64,
     reserved_range_size: u64,
     descriptor_offset: u64,
+    heap_range_alignment: u64,
     role: &'static str,
 ) -> Result<vk::BindHeapInfoEXT, String> {
     if descriptor_offset > reserved_range_offset {
@@ -1689,14 +1837,15 @@ fn descriptor_heap_indexed_bind_info(
             "{role} descriptor offset {descriptor_offset} exceeds reserved range offset {reserved_range_offset}"
         ));
     }
+    let heap_range_offset = align_down(descriptor_offset, heap_range_alignment);
     let heap_size = heap
         .snapshot
         .requested_bytes
-        .checked_sub(descriptor_offset)
+        .checked_sub(heap_range_offset)
         .ok_or_else(|| format!("{role} descriptor offset exceeds heap size"))?;
     let address = heap
         .device_address
-        .checked_add(descriptor_offset)
+        .checked_add(heap_range_offset)
         .ok_or_else(|| format!("{role} descriptor heap device address overflows"))?;
     Ok(vk::BindHeapInfoEXT::builder()
         .heap_range(
@@ -1705,7 +1854,7 @@ fn descriptor_heap_indexed_bind_info(
                 .size(heap_size)
                 .build(),
         )
-        .reserved_range_offset(reserved_range_offset - descriptor_offset)
+        .reserved_range_offset(reserved_range_offset - heap_range_offset)
         .reserved_range_size(reserved_range_size)
         .build())
 }
@@ -2085,6 +2234,9 @@ fn resource_descriptor_alignment_for_kind(
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
             buffer_descriptor_alignment
         }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer => {
+            buffer_descriptor_alignment
+        }
     }
 }
 
@@ -2098,6 +2250,9 @@ fn resource_descriptor_stride_for_kind(
             image_descriptor_stride
         }
         NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer => {
+            buffer_descriptor_stride
+        }
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer => {
             buffer_descriptor_stride
         }
     }
@@ -2117,6 +2272,13 @@ fn align_up(value: u64, alignment: u64) -> u64 {
     } else {
         value.saturating_add(alignment - remainder)
     }
+}
+
+fn align_down(value: u64, alignment: u64) -> u64 {
+    if alignment <= 1 {
+        return value;
+    }
+    value - (value % alignment)
 }
 
 #[cfg(test)]
@@ -2470,6 +2632,66 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_heap_indexed_bind_info_aligns_heap_range_base_down() {
+        let heap = test_descriptor_heap_buffer(0x1000, 256);
+
+        let bind = descriptor_heap_indexed_bind_info(&heap, 192, 64, 80, 32, "test")
+            .expect("aligned bind info");
+
+        assert_eq!(bind.heap_range.address, 0x1040);
+        assert_eq!(bind.heap_range.size, 192);
+        assert_eq!(bind.reserved_range_offset, 128);
+        assert_eq!(bind.reserved_range_size, 64);
+    }
+
+    #[test]
+    fn mixed_resource_relative_mapping_uses_aligned_heap_slice_base() {
+        let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
+            NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
+                resource_descriptors: vec![
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
+                    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::SampledImage,
+                ],
+                sampler_count: 2,
+                properties: NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot {
+                    resource_heap_alignment: 64,
+                    sampler_heap_alignment: 32,
+                    max_resource_heap_size: 4096,
+                    min_resource_heap_reserved_range: 0,
+                    max_sampler_heap_size: 4096,
+                    min_sampler_heap_reserved_range: 0,
+                    image_descriptor_size: 24,
+                    image_descriptor_alignment: 32,
+                    buffer_descriptor_size: 16,
+                    buffer_descriptor_alignment: 16,
+                    sampler_descriptor_size: 12,
+                    sampler_descriptor_alignment: 16,
+                    ..NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot::default()
+                },
+            },
+        );
+
+        assert_eq!(snapshot.resource_descriptor_offsets, vec![0, 32, 64]);
+        let uniform =
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                &snapshot, 3, 1, 1,
+            )
+            .expect("relative uniform mapping");
+        let texture =
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping(
+                &snapshot, 4, 1, 2, 1, 1,
+            )
+            .expect("relative image mapping");
+
+        unsafe {
+            assert_eq!(uniform.source_data.constant_offset.heap_offset, 32);
+            assert_eq!(texture.source_data.constant_offset.heap_offset, 64);
+            assert_eq!(texture.source_data.constant_offset.sampler_heap_offset, 16);
+        }
+    }
+
+    #[test]
     fn mixed_resource_relative_uniform_mapping_rejects_non_uniform_base() {
         let snapshot = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
             NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
@@ -2571,5 +2793,34 @@ mod tests {
             snapshot.blocking_reason,
             Some("sampler-count-must-match-sampled-image-count")
         );
+    }
+
+    fn test_descriptor_heap_buffer(
+        device_address: vk::DeviceAddress,
+        requested_bytes: u64,
+    ) -> VulkanaliaDescriptorHeapBuffer {
+        VulkanaliaDescriptorHeapBuffer {
+            buffer: vk::Buffer::null(),
+            memory: vk::DeviceMemory::null(),
+            mapped_ptr: std::ptr::null_mut(),
+            mapped_size: requested_bytes,
+            device_address,
+            host_coherent: true,
+            snapshot: NativeVulkanVulkanaliaDescriptorHeapBufferSnapshot {
+                role: "test",
+                buffer_created: true,
+                memory_bound: true,
+                mapped: true,
+                device_address_nonzero: device_address != 0,
+                requested_bytes,
+                memory_size: requested_bytes,
+                memory_alignment: 32,
+                memory_type_bits: 1,
+                selected_memory_type_index: 0,
+                selected_memory_property_flags: vec!["host-visible"],
+                usage_flags: vec!["descriptor-buffer"],
+                host_coherent: true,
+            },
+        }
     }
 }

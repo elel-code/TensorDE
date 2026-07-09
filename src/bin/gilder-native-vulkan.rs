@@ -1,13 +1,7 @@
 #[cfg(feature = "native-vulkan-renderer")]
-use gilder::core::{FitMode, ScenePathFillRule};
+use gilder::core::FitMode;
 #[cfg(feature = "native-vulkan-renderer")]
 use gilder::renderer::native_vulkan::NativeVulkanClearColor;
-#[cfg(feature = "native-vulkan-renderer")]
-use gilder::renderer::scene_engine_plan_from_gscn_path_with_properties;
-#[cfg(feature = "native-vulkan-renderer")]
-use serde_json::Value;
-#[cfg(feature = "native-vulkan-renderer")]
-use std::collections::BTreeMap;
 #[cfg(feature = "native-vulkan-renderer")]
 use std::path::{Path, PathBuf};
 
@@ -130,9 +124,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
         NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
-        default_scene_shader_artifact_root, native_vulkan_video_duration_playback_frames,
-        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
-        run_scene, run_static_image, wallpaper_type_support_matrix,
+        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
+        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_static_image,
+        wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
@@ -161,7 +155,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut mode = NativeVulkanCliMode::All;
     let mut options = NativeVulkanOptions::default();
-    let mut target_fps_set = false;
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
@@ -169,18 +162,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut _fit_set = false;
     let mut background = None::<String>;
     let mut _scene_color = None::<String>;
-    let mut _scene_text = None::<String>;
-    let mut _scene_text_color = None::<String>;
-    let mut _scene_text_font_size = None::<f64>;
-    let mut _scene_path_data = None::<String>;
-    let mut _scene_path_fill_rule = ScenePathFillRule::default();
-    let mut _scene_stroke_color = None::<String>;
-    let mut _scene_stroke_width = None::<f64>;
-    let mut scene_video_layer = false;
-    let mut _scene_root = None::<PathBuf>;
-    let mut scene_properties = BTreeMap::<String, Value>::new();
-    let mut scene_snapshot_time_ms = 0u64;
-    let mut scene_shader_artifact_root = default_scene_shader_artifact_root();
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
@@ -258,8 +239,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 video_session_options.allocate_video_images = true;
             }
             "--run-clear" => mode = NativeVulkanCliMode::RunClear,
-            "--scene-runtime-snapshot" => mode = NativeVulkanCliMode::SceneRuntimeSnapshot,
-            "--run-scene" => mode = NativeVulkanCliMode::RunScene,
             "--run-static" => mode = NativeVulkanCliMode::RunStatic,
             "--run-video" => mode = NativeVulkanCliMode::RunVideo,
             "--json" => mode = NativeVulkanCliMode::All,
@@ -300,11 +279,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--target-fps" => {
                 options.target_max_fps =
                     args.next().map(|value| value.parse::<u32>()).transpose()?;
-                target_fps_set = true;
             }
             "--no-fps-limit" => {
                 options.target_max_fps = None;
-                target_fps_set = true;
             }
             "--color" => {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
@@ -317,7 +294,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
             }
             "--scene-video" => {
-                scene_video_layer = true;
+                return Err("--scene-video was removed with the old scene CLI".into());
             }
             "--poster" => {
                 let _ = args.next().ok_or("--poster requires a path")?;
@@ -330,69 +307,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--background" => {
                 background = Some(args.next().ok_or("--background requires #rrggbb")?);
             }
-            "--text" => {
-                _scene_text = Some(args.next().ok_or("--text requires a value")?);
-            }
-            "--text-color" => {
-                _scene_text_color = Some(args.next().ok_or("--text-color requires #rrggbb")?);
-            }
-            "--font-size" => {
-                let font_size = args
-                    .next()
-                    .map(|value| value.parse::<f64>())
-                    .transpose()?
-                    .ok_or("--font-size requires a number")?;
-                if !font_size.is_finite() || font_size <= 0.0 {
-                    return Err("--font-size must be finite and greater than zero".into());
-                }
-                _scene_text_font_size = Some(font_size);
-            }
-            "--path-data" => {
-                _scene_path_data = Some(args.next().ok_or("--path-data requires SVG path data")?);
-            }
-            "--path-fill-rule" => {
-                _scene_path_fill_rule = parse_scene_path_fill_rule(
-                    &args
-                        .next()
-                        .ok_or("--path-fill-rule requires nonzero or evenodd")?,
-                )?;
-            }
-            "--stroke-color" => {
-                _scene_stroke_color = Some(args.next().ok_or("--stroke-color requires #rrggbb")?);
-            }
-            "--stroke-width" => {
-                let stroke_width = args
-                    .next()
-                    .map(|value| value.parse::<f64>())
-                    .transpose()?
-                    .ok_or("--stroke-width requires a number")?;
-                if !stroke_width.is_finite() || stroke_width <= 0.0 {
-                    return Err("--stroke-width must be finite and greater than zero".into());
-                }
-                _scene_stroke_width = Some(stroke_width);
-            }
-            "--scene-time-ms" | "--snapshot-time-ms" => {
-                scene_snapshot_time_ms = args
-                    .next()
-                    .map(|value| value.parse::<u64>())
-                    .transpose()?
-                    .ok_or("--scene-time-ms requires milliseconds")?;
-            }
-            "--scene-root" => {
-                _scene_root = Some(PathBuf::from(
-                    args.next().ok_or("--scene-root requires PATH")?,
-                ));
+            "--text" | "--text-color" | "--font-size" | "--path-data" | "--path-fill-rule"
+            | "--stroke-color" | "--stroke-width" | "--scene-time-ms" | "--snapshot-time-ms"
+            | "--scene-root" => {
+                return Err(format!("{arg} was removed with the old scene CLI").into());
             }
             "--scene-shader-artifact-root" => {
-                scene_shader_artifact_root = args
-                    .next()
-                    .ok_or("--scene-shader-artifact-root requires PATH")?
-                    .into();
+                return Err(
+                    "--scene-shader-artifact-root was removed; scene shaders are engine built-ins"
+                        .into(),
+                );
             }
             "--scene-property" => {
-                let value = args.next().ok_or("--scene-property requires KEY=VALUE")?;
-                let (key, value) = parse_scene_property_assignment(&value)?;
-                scene_properties.insert(key, value);
+                return Err("--scene-property was removed with the old scene CLI".into());
             }
             "--loop" => {}
             "--no-loop" => {}
@@ -501,14 +428,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.host.layer.as_str()
         )
         .into());
-    }
-
-    if matches!(
-        mode,
-        NativeVulkanCliMode::RunScene | NativeVulkanCliMode::SceneRuntimeSnapshot
-    ) && !target_fps_set
-    {
-        options.target_max_fps = None;
     }
 
     let duration_playback_frames = if duration_set {
@@ -645,47 +564,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             )?)
         }
         NativeVulkanCliMode::RunClear => json!(run_clear(options, duration)?),
-        NativeVulkanCliMode::SceneRuntimeSnapshot => {
-            let source = source
-                .as_ref()
-                .ok_or("--scene-runtime-snapshot requires --source <scene.gscn>")?;
-            if !source.is_file() {
-                return Err(format!("scene source does not exist: {}", source.display()).into());
-            }
-            if scene_video_layer || !scene_cli_source_is_gscn(source) {
-                return Err(
-                    "--scene-runtime-snapshot only accepts the new .gscn scene-engine path".into(),
-                );
-            }
-            let plan = scene_engine_plan_from_gscn_path_with_properties(
-                source.clone(),
-                scene_snapshot_time_ms,
-                Some(&scene_properties),
-            )?;
-            json!(scene_engine_cli_snapshot_from_engine_plan(plan)?)
-        }
-        NativeVulkanCliMode::RunScene => {
-            let source = source
-                .as_ref()
-                .ok_or("--run-scene requires --source <scene.gscn> on the new scene engine path")?;
-            if !source.is_file() {
-                return Err(format!("scene source does not exist: {}", source.display()).into());
-            }
-            if scene_video_layer || !scene_cli_source_is_gscn(source) {
-                return Err("--run-scene only accepts the new .gscn scene-engine path".into());
-            }
-            let plan = scene_engine_plan_from_gscn_path_with_properties(
-                source.clone(),
-                scene_snapshot_time_ms,
-                Some(&scene_properties),
-            )?;
-            json!(run_scene(
-                options,
-                duration,
-                scene_shader_artifact_root,
-                plan
-            )?)
-        }
         NativeVulkanCliMode::RunStatic => {
             let source = source.ok_or("--run-static requires --source")?;
             if !source.is_file() {
@@ -693,7 +571,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             if !native_vulkan_static_source_is_gtex(&source) {
                 return Err(format!(
-                    "--run-static requires a native .gtex BC7 source {}; convert PNG/JPG offline with gilder-convert image-gtex",
+                    "--run-static requires a native .gtex BC7 source {}; image conversion must be rebuilt through the new scene engine binary resource format",
                     source.display()
                 )
                 .into());
@@ -876,85 +754,6 @@ fn parse_color(value: &str) -> Result<NativeVulkanClearColor, Box<dyn std::error
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
-fn parse_scene_property_assignment(
-    assignment: &str,
-) -> Result<(String, Value), Box<dyn std::error::Error>> {
-    let Some((key, value)) = assignment.split_once('=') else {
-        return Err("--scene-property expects KEY=VALUE".into());
-    };
-    let key = key.trim();
-    if key.is_empty() {
-        return Err("--scene-property key must not be empty".into());
-    }
-    let value = value.trim();
-    let parsed = match value.to_ascii_lowercase().as_str() {
-        "true" | "on" | "yes" => Value::Bool(true),
-        "false" | "off" | "no" => Value::Bool(false),
-        _ => value
-            .parse::<f64>()
-            .ok()
-            .and_then(serde_json::Number::from_f64)
-            .map(Value::Number)
-            .unwrap_or_else(|| Value::String(value.to_owned())),
-    };
-    Ok((key.to_owned(), parsed))
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-fn scene_cli_source_is_gscn(path: &Path) -> bool {
-    path.extension().and_then(|extension| extension.to_str()) == Some("gscn")
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-#[derive(Debug, serde::Serialize)]
-struct SceneEngineCliSnapshot {
-    engine: &'static str,
-    references: [&'static str; 4],
-    layer_count: usize,
-    resource_count: usize,
-    object_count: usize,
-    effect_program_count: usize,
-    frame: gilder::engine::scene_engine::SceneFramePlan,
-    recorded_commands: Vec<gilder::engine::scene_engine::RenderingDeviceCommand>,
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-fn scene_engine_cli_snapshot_from_engine_plan(
-    plan: gilder::engine::scene_engine::SceneEnginePlan,
-) -> Result<SceneEngineCliSnapshot, Box<dyn std::error::Error>> {
-    use gilder::engine::scene_engine::{RenderingDevice, RenderingServer};
-    use gilder::renderer::native_vulkan::{
-        NativeVulkanRendererSceneRender, NativeVulkanRenderingDevice,
-    };
-
-    let resource_count = plan.resources.len();
-    let object_count = plan.objects.len();
-    let effect_program_count = plan.effects.len();
-    let context = plan.frame_context();
-    let mut server = RenderingServer::new();
-    server.replace_scene(plan.resources, plan.objects, plan.effects);
-    let renderer = NativeVulkanRendererSceneRender::new();
-    let frame = server.draw(&renderer, context)?;
-    let mut device = NativeVulkanRenderingDevice::new();
-    device.record_scene_frame(&frame);
-    Ok(SceneEngineCliSnapshot {
-        engine: "rendering-server/renderer-scene-render/rendering-device",
-        references: [
-            "reverse-engineered/docs/scene-format.md",
-            "reverse-engineered/docs/effect-format.md",
-            "reverse-engineered/docs/material-format.md",
-            "reverse-engineered/docs/exe/blend-and-render.md",
-        ],
-        layer_count: object_count,
-        resource_count,
-        object_count,
-        effect_program_count,
-        frame,
-        recorded_commands: device.into_commands(),
-    })
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
 fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
     match value {
         "cover" => Ok(FitMode::Cover),
@@ -963,15 +762,6 @@ fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
         "tile" => Ok(FitMode::Tile),
         "center" => Ok(FitMode::Center),
         other => Err(format!("unsupported fit mode: {other}")),
-    }
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-fn parse_scene_path_fill_rule(value: &str) -> Result<ScenePathFillRule, String> {
-    match value {
-        "nonzero" | "non-zero" | "winding" => Ok(ScenePathFillRule::Nonzero),
-        "evenodd" | "even-odd" => Ok(ScenePathFillRule::Evenodd),
-        other => Err(format!("unsupported path fill rule: {other}")),
     }
 }
 
@@ -1006,9 +796,7 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresent,
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
-    SceneRuntimeSnapshot,
     RunClear,
-    RunScene,
     RunStatic,
     RunVideo,
     RunVulkanaliaReadyPrefixVideo,
@@ -1017,7 +805,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--scene-runtime-snapshot|--run-clear|--run-scene|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -1036,16 +824,12 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --decode-av1-ready-prefix N configures the legacy Vulkanalia compatibility route with N visible AV1 temporal units.\n\
 --playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
---scene-runtime-snapshot builds a new engine snapshot from --source <scene.gscn> and exits before presenting.\n\
---run-scene accepts only --source <scene.gscn> on the new scene-engine path and presents through the new Vulkan scene runtime.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
-         [--source PATH] [--scene-root PATH] [--scene-video] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb] [--text TEXT] [--text-color #rrggbb] [--font-size PX]\n\
-         [--path-data SVG_PATH] [--path-fill-rule nonzero|evenodd] [--stroke-color #rrggbb] [--stroke-width PX]\n\
-         [--scene-time-ms MS] [--scene-property KEY=VALUE] [--scene-shader-artifact-root PATH]\n\
+         [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
          [--video-codec h264|h265|h265-main-10|av1|av1-main-10] [--width PX] [--height PX]\n\

@@ -4,8 +4,6 @@
 pub mod native_vulkan;
 #[cfg(feature = "native-wayland-renderer")]
 pub mod native_wayland;
-#[cfg(feature = "native-vulkan-renderer")]
-mod scene_binary;
 
 use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPolicy};
 use crate::core::manifest::{Manifest, Variant};
@@ -291,55 +289,6 @@ pub enum WallpaperRenderPlan {
     Video(VideoWallpaperPlan),
     Slideshow(SlideshowWallpaperPlan),
     Scene(SceneWallpaperPlan),
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-pub fn scene_wallpaper_plan_from_gscn_path(
-    output_name: String,
-    source_path: PathBuf,
-    target_max_fps: Option<u32>,
-    snapshot_time_ms: u64,
-    fit_override: Option<FitMode>,
-) -> Result<SceneWallpaperPlan, RendererPlanError> {
-    scene_binary::scene_wallpaper_plan_from_gscn_path(
-        output_name,
-        source_path,
-        target_max_fps,
-        snapshot_time_ms,
-        fit_override,
-    )
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-pub fn scene_wallpaper_plan_from_gscn_path_with_properties(
-    output_name: String,
-    source_path: PathBuf,
-    target_max_fps: Option<u32>,
-    snapshot_time_ms: u64,
-    fit_override: Option<FitMode>,
-    render_properties: Option<&BTreeMap<String, Value>>,
-) -> Result<SceneWallpaperPlan, RendererPlanError> {
-    scene_binary::scene_wallpaper_plan_from_gscn_path_with_properties(
-        output_name,
-        source_path,
-        target_max_fps,
-        snapshot_time_ms,
-        fit_override,
-        render_properties,
-    )
-}
-
-#[cfg(feature = "native-vulkan-renderer")]
-pub fn scene_engine_plan_from_gscn_path_with_properties(
-    source_path: PathBuf,
-    snapshot_time_ms: u64,
-    render_properties: Option<&BTreeMap<String, Value>>,
-) -> Result<crate::engine::scene_engine::SceneEnginePlan, RendererPlanError> {
-    scene_binary::scene_engine_plan_from_gscn_path_with_properties(
-        source_path,
-        snapshot_time_ms,
-        render_properties,
-    )
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1656,44 +1605,15 @@ fn scene_wallpaper_plan(
     _cursor_parallax_input_ready: bool,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let source_path = source.join_to(&package.root);
-    if source_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("gscn"))
-    {
-        #[cfg(not(feature = "native-vulkan-renderer"))]
-        {
-            let _ = (
-                &output_name,
-                manifest_max_fps,
-                performance,
-                fit_override,
-                render_properties,
-            );
-            return Err(RendererPlanError::PackageLoad(format!(
-                "scene manifest source {} requires the native-vulkan-renderer feature to load binary .gscn scenes",
-                source_path.display()
-            )));
-        }
-        #[cfg(feature = "native-vulkan-renderer")]
-        {
-            let target_max_fps = effective_max_fps(manifest_max_fps, performance.max_fps);
-            let mut plan = scene_wallpaper_plan_from_gscn_path_with_properties(
-                output_name,
-                source_path,
-                target_max_fps,
-                0,
-                fit_override,
-                render_properties,
-            )?;
-            plan.manifest_max_fps = manifest_max_fps;
-            plan.target_max_fps = target_max_fps;
-            return Ok(plan);
-        }
-    }
-
+    let _ = (
+        output_name,
+        manifest_max_fps,
+        performance,
+        fit_override,
+        render_properties,
+    );
     Err(RendererPlanError::PackageLoad(format!(
-        "scene manifest source {} must be a binary .gscn scene; JSON .gscene.json runtime scenes were removed",
+        "scene manifest source {} cannot be rendered until convert emits the new Gilder scene engine binary format",
         source_path.display()
     )))
 }
@@ -4438,116 +4358,6 @@ exit 0
         );
     }
 
-    #[cfg(feature = "native-vulkan-renderer")]
-    #[test]
-    fn gscn_particle_emitter_with_texture_uses_meshless_retained_marker() {
-        let test_dir = TestDir::new("gilder-gscn-textured-particle-marker");
-        let assets_dir = test_dir.path.join("assets");
-        fs::create_dir_all(&assets_dir).unwrap();
-        let scene_path = assets_dir.join("scene.gscn");
-        write_test_binary_scene(
-            &scene_path,
-            r##"{
-              "version": 1,
-              "resources": [
-                {
-                  "id": "spark",
-                  "type": "image",
-                  "source": "assets/spark.gtex",
-                  "width": 16,
-                  "height": 16
-                }
-              ],
-              "nodes": [
-                {
-                  "id": "spark-emitter",
-                  "type": "particle-emitter",
-                  "resource": "spark",
-                  "opacity": 0.5,
-                  "properties": {
-                    "particle": {
-                      "count": 3,
-                      "seed": 1,
-                      "lifetime_ms": 1000,
-                      "loop": true,
-                      "width": 6.0,
-                      "height": 8.0,
-                      "speed": 0.0,
-                      "spread_deg": 0.0,
-                      "gravity_x": 0.0,
-                      "gravity_y": 0.0,
-                      "fade": false,
-                      "color": "#aabbcc"
-                    }
-                  }
-                }
-              ]
-            }"##,
-        );
-
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("eDP-1".to_owned(), scene_path, None, 250, None)
-                .unwrap();
-
-        assert_eq!(plan.layers.len(), 1);
-        let layer = &plan.layers[0];
-        assert_eq!(layer.id, "spark-emitter");
-        assert_eq!(layer.kind, SceneNodeKind::Image);
-        assert_eq!(layer.width, Some(6.0));
-        assert_eq!(layer.height, Some(8.0));
-        assert!(
-            layer.mesh.is_none(),
-            "retained particle marker should not carry CPU quad vertices"
-        );
-    }
-
-    #[cfg(feature = "native-vulkan-renderer")]
-    #[test]
-    fn gscn_particle_emitter_without_texture_does_not_expand_cpu_layers() {
-        let test_dir = TestDir::new("gilder-gscn-untextured-particle-cleanup");
-        let assets_dir = test_dir.path.join("assets");
-        fs::create_dir_all(&assets_dir).unwrap();
-        let scene_path = assets_dir.join("scene.gscn");
-        write_test_binary_scene(
-            &scene_path,
-            r##"{
-              "version": 1,
-              "nodes": [
-                {
-                  "id": "solid-emitter",
-                  "type": "particle-emitter",
-                  "properties": {
-                    "particle": {
-                      "count": 64,
-                      "seed": 7,
-                      "lifetime_ms": 1000,
-                      "loop": true,
-                      "shape": "rectangle",
-                      "width": 4.0,
-                      "height": 4.0,
-                      "speed": 1.0,
-                      "spread_deg": 45.0,
-                      "gravity_x": 0.0,
-                      "gravity_y": 0.0,
-                      "fade": true,
-                      "color": "#ffffff"
-                    }
-                  }
-                }
-              ]
-            }"##,
-        );
-
-        let plan =
-            scene_wallpaper_plan_from_gscn_path("eDP-1".to_owned(), scene_path, None, 250, None)
-                .unwrap();
-
-        assert!(
-            plan.layers.is_empty(),
-            "untextured particles should not fall back to per-particle CPU layers"
-        );
-    }
-
     #[test]
     fn builds_slideshow_sync_plan_with_effective_fps() {
         let test_dir = TestDir::new("gilder-slideshow-plan");
@@ -4598,11 +4408,9 @@ exit 0
         let static_package = test_dir.path.join("static-demo.gwpdir");
         let video_package = test_dir.path.join("video-demo.gwpdir");
         let slideshow_package = test_dir.path.join("slideshow-demo.gwpdir");
-        let scene_package = test_dir.path.join("scene-demo.gwpdir");
         write_minimal_static_variant_gwpdir(&static_package);
         write_minimal_video_gwpdir(&video_package);
         write_minimal_slideshow_gwpdir(&slideshow_package);
-        write_minimal_scene_gwpdir(&scene_package);
         let mut config = GilderConfig::default();
         config.outputs.insert(
             "eDP-1".to_owned(),
@@ -4625,19 +4433,11 @@ exit 0
                 ..OutputConfig::default()
             },
         );
-        config.outputs.insert(
-            "DP-2".to_owned(),
-            OutputConfig {
-                wallpaper: Some(scene_package.display().to_string()),
-                ..OutputConfig::default()
-            },
-        );
         let desktop = DesktopSnapshot {
             outputs: vec![
                 DesktopOutput::virtual_output("eDP-1"),
                 DesktopOutput::virtual_output("HDMI-A-1"),
                 DesktopOutput::virtual_output("DP-1"),
-                DesktopOutput::virtual_output("DP-2"),
             ],
             ..DesktopSnapshot::default()
         };
@@ -4653,12 +4453,12 @@ exit 0
         assert_eq!(sync.plans.len(), 1);
         assert_eq!(sync.video_plans.len(), 1);
         assert_eq!(sync.slideshow_plans.len(), 1);
-        assert_eq!(sync.scene_plans.len(), 1);
+        assert!(sync.scene_plans.is_empty());
         assert_eq!(sync.cache.planned_static_image_resources, 1);
         assert_eq!(sync.cache.planned_video_poster_resources, 1);
         assert_eq!(sync.cache.planned_slideshow_image_resources, 2);
-        assert_eq!(sync.cache.planned_scene_image_resources, 1);
-        let expected_image_resource_count = 4;
+        assert_eq!(sync.cache.planned_scene_image_resources, 0);
+        let expected_image_resource_count = 3;
         assert_eq!(
             sync.cache.planned_image_resource_references,
             expected_image_resource_count
@@ -4679,17 +4479,14 @@ exit 0
             + fs::metadata(slideshow_package.join("assets/b.svg"))
                 .unwrap()
                 .len();
-        let scene_bytes = fs::metadata(scene_package.join("assets/background.svg"))
-            .unwrap()
-            .len();
         assert_eq!(sync.cache.planned_static_image_resource_bytes, static_bytes);
         assert_eq!(sync.cache.planned_video_poster_resource_bytes, poster_bytes);
         assert_eq!(
             sync.cache.planned_slideshow_image_resource_bytes,
             slideshow_bytes
         );
-        assert_eq!(sync.cache.planned_scene_image_resource_bytes, scene_bytes);
-        let expected_image_resource_bytes = static_bytes + slideshow_bytes + scene_bytes;
+        assert_eq!(sync.cache.planned_scene_image_resource_bytes, 0);
+        let expected_image_resource_bytes = static_bytes + slideshow_bytes;
         assert_eq!(
             sync.cache.planned_image_resource_reference_bytes,
             expected_image_resource_bytes
@@ -5546,29 +5343,12 @@ void main() {}
     fn write_minimal_scene_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
-        fs::write(path.join("assets/background.svg"), b"<svg/>").unwrap();
+        fs::write(
+            path.join("assets/scene.gseb"),
+            b"GILDER-SCENE-ENGINE-BINARY\n",
+        )
+        .unwrap();
         fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
-        write_test_binary_scene(
-            &path.join("assets/scene.gscn"),
-            r##"{
-              "version": 1,
-              "resources": [
-                {
-                  "id": "background-resource",
-                  "type": "image",
-                  "source": "assets/background.svg"
-                }
-              ],
-              "nodes": [
-                {
-                  "id": "background",
-                  "type": "image",
-                  "resource": "background-resource",
-                  "fit": "cover"
-                }
-              ]
-            }"##,
-        );
         let manifest = json!({
             "format": crate::core::FORMAT_NAME,
             "format_version": crate::core::FORMAT_VERSION,
@@ -5581,7 +5361,7 @@ void main() {}
             },
             "entry": {
                 "type": "scene",
-                "source": "assets/scene.gscn",
+                "source": "assets/scene.gseb",
                 "max_fps": 60
             }
         });
@@ -5590,13 +5370,6 @@ void main() {}
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
-    }
-
-    fn write_test_binary_scene(path: &Path, document: &str) {
-        let document: crate::core::SceneDocument = serde_json::from_str(document).unwrap();
-        document.validate().unwrap();
-        let bytes = crate::core::scene::binary::encode_scene_binary_document(0, &document).unwrap();
-        fs::write(path, bytes).unwrap();
     }
 
     fn remove_entry_poster(path: &Path) {

@@ -6,7 +6,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
-pub mod binary;
 mod effects;
 
 use self::effects::{
@@ -885,7 +884,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
-        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
+        parent_puppet_attachment_poses: Option<&BTreeMap<String, ScenePuppetAttachmentPose>>,
         options: SceneSnapshotBuildOptions,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
@@ -939,7 +938,7 @@ impl SceneNode {
             }
         }
 
-        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
+        transform = self.apply_puppet_attachment_pose(transform, parent_puppet_attachment_poses);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -948,8 +947,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
-        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
-        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
+        let puppet_attachment_poses = self.snapshot_puppet_attachment_poses(time_ms);
+        let child_puppet_attachment_poses = puppet_attachment_poses.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_snapshot_layers(
                 time_ms, transform, opacity, resources, visibility, options, output,
@@ -967,7 +966,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
-                    child_puppet_attachment_deltas,
+                    child_puppet_attachment_poses,
                     options,
                     output,
                 );
@@ -1066,7 +1065,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
-                child_puppet_attachment_deltas,
+                child_puppet_attachment_poses,
                 options,
                 output,
             );
@@ -1087,7 +1086,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
-        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
+        parent_puppet_attachment_poses: Option<&BTreeMap<String, ScenePuppetAttachmentPose>>,
         output: &mut Vec<SceneSnapshotSampledImageLayer>,
     ) {
         if !self.visible
@@ -1158,7 +1157,7 @@ impl SceneNode {
             }
         }
 
-        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
+        transform = self.apply_puppet_attachment_pose(transform, parent_puppet_attachment_poses);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -1167,8 +1166,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
-        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
-        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
+        let puppet_attachment_poses = self.snapshot_puppet_attachment_poses(time_ms);
+        let child_puppet_attachment_poses = puppet_attachment_poses.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_sampled_image_snapshot_layers(
                 time_ms,
@@ -1193,7 +1192,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
-                    child_puppet_attachment_deltas,
+                    child_puppet_attachment_poses,
                     output,
                 );
             }
@@ -1265,7 +1264,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
-                child_puppet_attachment_deltas,
+                child_puppet_attachment_poses,
                 output,
             );
         }
@@ -1284,7 +1283,7 @@ impl SceneNode {
         resolve_property: &impl Fn(&str) -> Option<f64>,
         resolve_text_property: &impl Fn(&str) -> Option<String>,
         visibility: Option<SceneSnapshotVisibility>,
-        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
+        parent_puppet_attachment_poses: Option<&BTreeMap<String, ScenePuppetAttachmentPose>>,
         output: &mut Vec<SceneSnapshotLayer>,
     ) {
         if !self.visible
@@ -1337,7 +1336,7 @@ impl SceneNode {
             }
         }
 
-        self.apply_puppet_attachment_delta(&mut transform, parent_puppet_attachment_deltas);
+        transform = self.apply_puppet_attachment_pose(transform, parent_puppet_attachment_poses);
         if let Some(depth) = self.parallax_depth
             && depth.is_finite()
         {
@@ -1346,8 +1345,8 @@ impl SceneNode {
         }
         let transform = parent_transform.compose(transform);
         let opacity = (parent_opacity * opacity).clamp(0.0, 1.0);
-        let puppet_attachment_deltas = self.snapshot_puppet_attachment_deltas(time_ms);
-        let child_puppet_attachment_deltas = puppet_attachment_deltas.as_ref();
+        let puppet_attachment_poses = self.snapshot_puppet_attachment_poses(time_ms);
+        let child_puppet_attachment_poses = puppet_attachment_poses.as_ref();
         if self.kind == SceneNodeKind::ParticleEmitter
             && self.push_particle_solid_snapshot_layers(
                 time_ms, transform, opacity, resources, visibility, output,
@@ -1365,7 +1364,7 @@ impl SceneNode {
                     resolve_property,
                     resolve_text_property,
                     visibility,
-                    child_puppet_attachment_deltas,
+                    child_puppet_attachment_poses,
                     output,
                 );
             }
@@ -1446,7 +1445,7 @@ impl SceneNode {
                 resolve_property,
                 resolve_text_property,
                 visibility,
-                child_puppet_attachment_deltas,
+                child_puppet_attachment_poses,
                 output,
             );
         }
@@ -1799,30 +1798,28 @@ impl SceneNode {
         mesh.puppet_animation_frame_debug(&self.puppet_animation_layers, time_ms)
     }
 
-    fn snapshot_puppet_attachment_deltas(
+    fn snapshot_puppet_attachment_poses(
         &self,
         time_ms: u64,
-    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentPose>> {
         self.mesh
             .as_ref()?
-            .sample_puppet_attachment_deltas(&self.puppet_animation_layers, time_ms)
+            .sample_puppet_attachment_poses(&self.puppet_animation_layers, time_ms)
     }
 
-    fn apply_puppet_attachment_delta(
+    fn apply_puppet_attachment_pose(
         &self,
-        transform: &mut SceneTransform,
-        parent_puppet_attachment_deltas: Option<&BTreeMap<String, ScenePuppetAttachmentDelta>>,
-    ) {
+        transform: SceneTransform,
+        parent_puppet_attachment_poses: Option<&BTreeMap<String, ScenePuppetAttachmentPose>>,
+    ) -> SceneTransform {
         let Some(attachment) = self.puppet_attachment.as_deref() else {
-            return;
+            return transform;
         };
-        let Some(delta) = parent_puppet_attachment_deltas.and_then(|deltas| deltas.get(attachment))
+        let Some(pose) = parent_puppet_attachment_poses.and_then(|poses| poses.get(attachment))
         else {
-            return;
+            return transform;
         };
-        transform.x += delta.x;
-        transform.y += delta.y;
-        transform.rotation_deg += delta.rotation_deg;
+        pose.transform().compose(transform)
     }
 
     fn subtree_has_dynamic_solid_runtime(&self) -> bool {
@@ -3650,6 +3647,12 @@ impl SceneMesh {
 
     pub(crate) fn puppet_inverse_bind_world(&self) -> Option<Vec<[f64; 16]>> {
         let skin = self.skin.as_ref()?;
+        Self::puppet_inverse_bind_world_for_skin(skin)
+    }
+
+    pub(crate) fn puppet_inverse_bind_world_for_skin(
+        skin: &SceneMeshSkin,
+    ) -> Option<Vec<[f64; 16]>> {
         let bind_world = scene_puppet_world_matrices(
             skin.bones.iter().map(|bone| bone.parent),
             skin.bones.iter().map(|bone| bone.bind.matrix()),
@@ -3843,26 +3846,26 @@ impl SceneMesh {
         frames
     }
 
-    pub(crate) fn sample_puppet_attachment_deltas(
+    pub(crate) fn sample_puppet_attachment_poses(
         &self,
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
-    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
-        self.sample_puppet_attachment_deltas_with_clips(&self.puppet_clips, layers, time_ms)
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentPose>> {
+        self.sample_puppet_attachment_poses_with_clips(&self.puppet_clips, layers, time_ms)
     }
 
-    pub(crate) fn sample_puppet_attachment_deltas_with_clips(
+    pub(crate) fn sample_puppet_attachment_poses_with_clips(
         &self,
         clips: &[ScenePuppetAnimationClip],
         layers: &[ScenePuppetAnimationLayer],
         time_ms: u64,
-    ) -> Option<BTreeMap<String, ScenePuppetAttachmentDelta>> {
-        let (skin, _local_pose, bind_world, pose_world) =
+    ) -> Option<BTreeMap<String, ScenePuppetAttachmentPose>> {
+        let (skin, _local_pose, _bind_world, pose_world) =
             self.sample_puppet_pose_world_with_clips(clips, layers, time_ms)?;
         if skin.attachments.is_empty() {
             return None;
         }
-        let mut deltas = BTreeMap::new();
+        let mut poses = BTreeMap::new();
         for attachment in &skin.attachments {
             let bone_index = attachment.bone_index;
             let pose_point = scene_puppet_transform_point_3d(
@@ -3871,18 +3874,17 @@ impl SceneMesh {
                 attachment.local_position[1],
                 attachment.local_position[2],
             );
-            let bind_angle = scene_puppet_matrix_rotation_z(*bind_world.get(bone_index)?)?;
             let pose_angle = scene_puppet_matrix_rotation_z(*pose_world.get(bone_index)?)?;
-            deltas.insert(
+            poses.insert(
                 attachment.name.clone(),
-                ScenePuppetAttachmentDelta {
-                    x: pose_point[0] - attachment.bind_position[0],
-                    y: pose_point[1] - attachment.bind_position[1],
-                    rotation_deg: scene_puppet_angle_delta(bind_angle, pose_angle).to_degrees(),
+                ScenePuppetAttachmentPose {
+                    x: pose_point[0],
+                    y: pose_point[1],
+                    rotation_deg: pose_angle.to_degrees(),
                 },
             );
         }
-        (!deltas.is_empty()).then_some(deltas)
+        (!poses.is_empty()).then_some(poses)
     }
 
     fn sample_puppet_pose_world_with_clips(
@@ -3916,38 +3918,49 @@ impl SceneMesh {
         time_ms: u64,
     ) -> Option<(&SceneMeshSkin, Vec<ScenePuppetTransform>)> {
         let skin = self.skin.as_ref()?;
-        if skin.bones.is_empty() {
-            return None;
-        }
-        let mut local_pose = skin.bones.iter().map(|bone| bone.bind).collect::<Vec<_>>();
-        let mut has_layer = false;
-        for layer in layers {
-            if !layer.visible || layer.blend <= 0.0 {
-                continue;
-            }
-            let clip = clips.iter().find(|clip| clip.id == layer.clip_id)?;
-            let sampled = clip.sample(layer, time_ms, skin.bones.len())?;
-            let blend = layer.blend.clamp(0.0, 1.0);
-            for (bone_index, transform) in sampled.iter().enumerate() {
-                let bind = skin.bones.get(bone_index)?.bind;
-                if layer.lock_transforms {
-                    local_pose[bone_index] = local_pose[bone_index].blend_opacity_only(
-                        bind,
-                        *transform,
-                        blend,
-                        layer.additive,
-                    );
-                } else if layer.additive {
-                    local_pose[bone_index] =
-                        local_pose[bone_index].additive_blend(bind, *transform, blend);
-                } else {
-                    local_pose[bone_index] = local_pose[bone_index].lerp(*transform, blend);
-                }
-            }
-            has_layer = true;
-        }
-        has_layer.then_some((skin, local_pose))
+        let local_pose = scene_puppet_local_pose_for_skin(skin, clips, layers, time_ms, true)?;
+        Some((skin, local_pose))
     }
+}
+
+fn scene_puppet_local_pose_for_skin(
+    skin: &SceneMeshSkin,
+    clips: &[ScenePuppetAnimationClip],
+    layers: &[ScenePuppetAnimationLayer],
+    time_ms: u64,
+    require_active_layer: bool,
+) -> Option<Vec<ScenePuppetTransform>> {
+    if skin.bones.is_empty() {
+        return None;
+    }
+    let mut local_pose = skin.bones.iter().map(|bone| bone.bind).collect::<Vec<_>>();
+    let mut has_layer = false;
+    for layer in layers {
+        if !layer.visible || layer.blend <= 0.0 {
+            continue;
+        }
+        let clip = clips.iter().find(|clip| clip.id == layer.clip_id)?;
+        let sampled = clip.sample(layer, time_ms, skin.bones.len())?;
+        let blend = layer.blend.clamp(0.0, 1.0);
+        for (bone_index, transform) in sampled.iter().enumerate() {
+            let bind = skin.bones.get(bone_index)?.bind;
+            if layer.lock_transforms {
+                local_pose[bone_index] = local_pose[bone_index].blend_opacity_only(
+                    bind,
+                    *transform,
+                    blend,
+                    layer.additive,
+                );
+            } else if layer.additive {
+                local_pose[bone_index] =
+                    local_pose[bone_index].additive_blend(bind, *transform, blend);
+            } else {
+                local_pose[bone_index] = local_pose[bone_index].lerp(*transform, blend);
+            }
+        }
+        has_layer = true;
+    }
+    (!require_active_layer || has_layer).then_some(local_pose)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -4132,10 +4145,24 @@ impl SceneMeshSkinAttachment {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ScenePuppetAttachmentDelta {
+pub(crate) struct ScenePuppetAttachmentPose {
     pub(crate) x: f64,
     pub(crate) y: f64,
     pub(crate) rotation_deg: f64,
+}
+
+impl ScenePuppetAttachmentPose {
+    fn transform(self) -> SceneTransform {
+        SceneTransform {
+            x: self.x,
+            y: self.y,
+            scale_x: 1.0,
+            scale_y: 1.0,
+            rotation_deg: self.rotation_deg,
+            anchor_x: 0.5,
+            anchor_y: 0.5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -4256,8 +4283,17 @@ impl ScenePuppetAnimationClip {
                 self.bones.len()
             )));
         }
+        let expected_sample_count = usize::try_from(self.frame_count)
+            .ok()
+            .and_then(|frame_count| frame_count.checked_add(1))
+            .ok_or_else(|| {
+                SceneError::invalid(format!(
+                    "scene node {node_id:?} puppet clip {} frame_count overflows sample count",
+                    self.id
+                ))
+            })?;
         for (bone_index, bone) in self.bones.iter().enumerate() {
-            bone.validate(node_id, self.id, bone_index)?;
+            bone.validate(node_id, self.id, bone_index, expected_sample_count)?;
         }
         Ok(())
     }
@@ -4297,8 +4333,9 @@ impl ScenePuppetAnimationClip {
         } else {
             frame = frame.clamp(0.0, duration_frames);
         }
-        let frame0 = frame.floor().min(duration_frames) as usize;
-        let frame1 = (frame0 + 1).min(self.frame_count as usize);
+        let last_sample_index = self.frame_count as usize;
+        let frame0 = frame.floor().min(last_sample_index as f64) as usize;
+        let frame1 = (frame0 + 1).min(last_sample_index);
         let mix = (frame - frame0 as f64).clamp(0.0, 1.0);
         Some(ScenePuppetAnimationFrameTiming {
             frame,
@@ -4316,10 +4353,17 @@ pub struct ScenePuppetAnimationBone {
 }
 
 impl ScenePuppetAnimationBone {
-    fn validate(&self, node_id: &str, clip_id: u32, bone_index: usize) -> Result<(), SceneError> {
-        if self.frames.len() < 2 {
+    fn validate(
+        &self,
+        node_id: &str,
+        clip_id: u32,
+        bone_index: usize,
+        expected_sample_count: usize,
+    ) -> Result<(), SceneError> {
+        if self.frames.len() != expected_sample_count {
             return Err(SceneError::invalid(format!(
-                "scene node {node_id:?} puppet clip {clip_id} bone {bone_index} must contain at least two sampled frames"
+                "scene node {node_id:?} puppet clip {clip_id} bone {bone_index} must contain frame_count + 1 ({expected_sample_count}) sampled frames, found {}",
+                self.frames.len()
             )));
         }
         for (frame_index, frame) in self.frames.iter().enumerate() {
@@ -6027,7 +6071,7 @@ mod tests {
     }
 
     #[test]
-    fn puppet_attachment_children_follow_sampled_bone_pose() {
+    fn puppet_attachment_children_use_sampled_attachment_pose() {
         let document: SceneDocument = serde_json::from_value(json!({
             "resources": [
                 {
@@ -6084,7 +6128,7 @@ mod tests {
                                     "name": "eye",
                                     "bone_index": 1,
                                     "local_position": [10.0, 0.0, 0.0],
-                                    "bind_position": [20.0, 0.0, 0.0]
+                                    "bind_position": [999.0, 999.0, 0.0]
                                 }
                             ]
                         },
@@ -6121,7 +6165,7 @@ mod tests {
                             "resource": "resource-eye",
                             "width": 8,
                             "height": 4,
-                            "transform": { "x": 20.0, "y": 0.0 },
+                            "transform": { "x": 0.0, "y": 0.0 },
                             "puppet_attachment": "eye"
                         }
                     ]

@@ -1,7 +1,6 @@
 use super::format::{FORMAT_VERSION, MANIFEST_FILE, MANIFEST_TOML_FILE};
-use super::manifest::{Manifest, ManifestError, WallpaperEntry};
+use super::manifest::{Manifest, ManifestError};
 use super::path::PackagePath;
-use super::scene::binary::{SceneBinaryError, decode_scene_binary_container};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
@@ -47,8 +46,6 @@ pub fn load_gwpdir(root: impl AsRef<Path>) -> Result<WallpaperPackage, PackageLo
         .validate()
         .map_err(PackageLoadError::InvalidManifest)?;
     validate_referenced_resources(root, &manifest)?;
-    validate_scene_resources(root, &manifest)?;
-
     Ok(WallpaperPackage {
         root: root.to_path_buf(),
         manifest,
@@ -318,74 +315,6 @@ fn validate_referenced_resources(root: &Path, manifest: &Manifest) -> Result<(),
     Ok(())
 }
 
-fn validate_scene_resources(root: &Path, manifest: &Manifest) -> Result<(), PackageLoadError> {
-    let WallpaperEntry::Scene { source, .. } = &manifest.entry else {
-        return Ok(());
-    };
-    let path = source.join_to(root);
-    if !source
-        .as_str()
-        .rsplit_once('.')
-        .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("gscn"))
-    {
-        return Err(PackageLoadError::UnsupportedSceneSource {
-            package_path: source.clone(),
-            path,
-        });
-    }
-    validate_binary_scene_resources(root, &path)
-}
-
-fn validate_binary_scene_resources(root: &Path, path: &Path) -> Result<(), PackageLoadError> {
-    let bytes = fs::read(path).map_err(|source| PackageLoadError::ReadScene {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let layout = decode_scene_binary_container(&bytes).map_err(|source| {
-        PackageLoadError::InvalidBinaryScene {
-            path: path.to_path_buf(),
-            source,
-        }
-    })?;
-    let names =
-        layout
-            .debug_names(&bytes)
-            .map_err(|source| PackageLoadError::InvalidBinaryScene {
-                path: path.to_path_buf(),
-                source,
-            })?;
-    let resources =
-        layout
-            .resource_records(&bytes)
-            .map_err(|source| PackageLoadError::InvalidBinaryScene {
-                path: path.to_path_buf(),
-                source,
-            })?;
-    for resource in resources {
-        let resource = resource.map_err(|source| PackageLoadError::InvalidBinaryScene {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let Some(source) = names.name(resource.source_name).map_err(|source| {
-            PackageLoadError::InvalidBinaryScene {
-                path: path.to_path_buf(),
-                source,
-            }
-        })?
-        else {
-            continue;
-        };
-        let Ok(package_path) = PackagePath::new(source.to_owned()) else {
-            continue;
-        };
-        let path = package_path.join_to(root);
-        if !path.exists() {
-            return Err(PackageLoadError::MissingSceneResource { package_path, path });
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug)]
 pub enum ManifestParseError {
     Json(serde_json::Error),
@@ -430,23 +359,7 @@ pub enum PackageLoadError {
         source: ManifestParseError,
     },
     InvalidManifest(ManifestError),
-    ReadScene {
-        path: PathBuf,
-        source: io::Error,
-    },
-    UnsupportedSceneSource {
-        package_path: PackagePath,
-        path: PathBuf,
-    },
-    InvalidBinaryScene {
-        path: PathBuf,
-        source: SceneBinaryError,
-    },
     MissingResource {
-        package_path: PackagePath,
-        path: PathBuf,
-    },
-    MissingSceneResource {
         package_path: PackagePath,
         path: PathBuf,
     },
@@ -502,29 +415,9 @@ impl fmt::Display for PackageLoadError {
                 write!(f, "failed to parse manifest {}: {source}", path.display())
             }
             Self::InvalidManifest(source) => write!(f, "invalid manifest: {source}"),
-            Self::ReadScene { path, source } => {
-                write!(
-                    f,
-                    "failed to read binary scene {}: {source}",
-                    path.display()
-                )
-            }
-            Self::UnsupportedSceneSource { package_path, .. } => write!(
-                f,
-                "scene source {package_path} must be a binary .gscn scene"
-            ),
-            Self::InvalidBinaryScene { path, source } => {
-                write!(f, "invalid binary scene {}: {source}", path.display())
-            }
             Self::MissingResource { package_path, path } => write!(
                 f,
                 "manifest references missing resource {} at {}",
-                package_path,
-                path.display()
-            ),
-            Self::MissingSceneResource { package_path, path } => write!(
-                f,
-                "scene document references missing resource {} at {}",
                 package_path,
                 path.display()
             ),
@@ -540,13 +433,9 @@ impl std::error::Error for PackageLoadError {
             }
             Self::ParseManifest { source, .. } => Some(source),
             Self::InvalidManifest(source) => Some(source),
-            Self::ReadScene { source, .. } => Some(source),
-            Self::InvalidBinaryScene { source, .. } => Some(source),
-            Self::NotDirectory(_)
-            | Self::MissingManifest { .. }
-            | Self::MissingResource { .. }
-            | Self::UnsupportedSceneSource { .. }
-            | Self::MissingSceneResource { .. } => None,
+            Self::NotDirectory(_) | Self::MissingManifest { .. } | Self::MissingResource { .. } => {
+                None
+            }
         }
     }
 }
@@ -721,135 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn loads_scene_gwpdir_and_validates_scene_document_resources() {
-        let package_dir = TestPackageDir::new("scene");
-        package_dir.write_file(
-            MANIFEST_FILE,
-            r#"
-            {
-              "format": "gilder.wallpaper",
-              "format_version": 1,
-              "id": "org.example.scene",
-              "version": "1.0.0",
-              "title": "Scene",
-              "kind": "scene",
-              "entry": {
-                "type": "scene",
-                "source": "assets/scene.gscn"
-              }
-            }
-            "#,
-        );
-        package_dir.write_binary_scene(
-            "assets/scene.gscn",
-            r##"
-            {
-              "version": 1,
-              "source": {
-                "metadata": "metadata/source-scene.json"
-              },
-              "resources": [
-                {
-                  "id": "resource-background",
-                  "type": "image",
-                  "source": "assets/background.svg"
-                }
-              ],
-              "nodes": [
-                {
-                  "id": "node-background",
-                  "type": "image",
-                  "resource": "resource-background"
-                }
-              ]
-            }
-            "##,
-        );
-        package_dir.write_file("assets/background.svg", "<svg></svg>");
-        package_dir.write_file("metadata/source-scene.json", "{}");
-
-        let package = load_gwpdir(package_dir.path()).unwrap();
-
-        assert_eq!(package.manifest.id, "org.example.scene");
-    }
-
-    #[test]
-    fn rejects_scene_gwpdir_with_missing_scene_resource() {
-        let package_dir = TestPackageDir::new("scene-missing-resource");
-        package_dir.write_file(
-            MANIFEST_FILE,
-            r#"
-            {
-              "format": "gilder.wallpaper",
-              "format_version": 1,
-              "id": "org.example.scene-missing",
-              "version": "1.0.0",
-              "title": "Scene Missing",
-              "kind": "scene",
-              "entry": {
-                "type": "scene",
-                "source": "assets/scene.gscn"
-              }
-            }
-            "#,
-        );
-        package_dir.write_binary_scene(
-            "assets/scene.gscn",
-            r##"
-            {
-              "resources": [
-                {
-                  "id": "resource-background",
-                  "type": "image",
-                  "source": "assets/missing.svg"
-                }
-              ],
-              "nodes": [
-                {
-                  "id": "node-background",
-                  "type": "image",
-                  "resource": "resource-background"
-                }
-              ]
-            }
-            "##,
-        );
-
-        assert!(matches!(
-            load_gwpdir(package_dir.path()),
-            Err(PackageLoadError::MissingSceneResource { .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_scene_gwpdir_with_json_scene_source() {
-        let package_dir = TestPackageDir::new("scene-json-source");
-        package_dir.write_file(
-            MANIFEST_FILE,
-            r#"
-            {
-              "format": "gilder.wallpaper",
-              "format_version": 1,
-              "id": "org.example.scene-json-source",
-              "version": "1.0.0",
-              "title": "Scene JSON Source",
-              "kind": "scene",
-              "entry": {
-                "type": "scene",
-                "source": "assets/scene.json"
-              }
-            }
-            "#,
-        );
-        package_dir.write_file("assets/scene.json", r#"{"nodes":[]}"#);
-
-        assert!(matches!(
-            load_gwpdir(package_dir.path()),
-            Err(PackageLoadError::UnsupportedSceneSource { .. })
-        ));
-    }
-
-    #[test]
     fn packs_and_unpacks_gwp_archive() {
         let package_dir = TestPackageDir::new("archive-source");
         package_dir.write_file(
@@ -971,19 +731,6 @@ mod tests {
                 fs::create_dir_all(parent).unwrap();
             }
             fs::write(path, contents).unwrap();
-        }
-
-        fn write_binary_scene(&self, relative_path: &str, document: &str) {
-            let document: crate::core::scene::SceneDocument =
-                serde_json::from_str(document).unwrap();
-            document.validate().unwrap();
-            let bytes =
-                crate::core::scene::binary::encode_scene_binary_document(0, &document).unwrap();
-            let path = self.path.join(relative_path);
-            if let Some(parent) = path.parent() {
-                fs::create_dir_all(parent).unwrap();
-            }
-            fs::write(path, bytes).unwrap();
         }
 
         fn remove(&self) {

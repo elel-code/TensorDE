@@ -9,5 +9,4 @@ pub mod frame;
 pub mod render_graph;
 pub mod resources;
 pub mod scene;
-pub mod scene_engine;
 pub mod telemetry;

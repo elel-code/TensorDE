@@ -10,7 +10,10 @@ Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。�
 ## 当前原则
 
 - 不保留旧 GStreamer display-sink、decoded-frame CPU copy、旧式 Vulkan 绑定表 fallback。
-- scene runtime、binary ingest、draw-pass/effect graph、旧 shader wrapper 和旧 smoke 脚本已删除。
+- scene runtime、旧 binary ingest、draw-pass/effect graph、旧 shader wrapper、旧 convert
+  和旧 smoke 脚本已删除。
+- Wallpaper Engine convert 必须输出 Gilder 自有的新 scene engine 二进制格式；不能只打包
+  WE 原始目录，也不能恢复旧 `.gscn` 或 runtime shader artifact。
 - 0 兼容旧代码和旧字段；不接受 CPU compatibility renderer、mesh blocker、隐藏 fallback、
   样本特化修复或临时补丁。
 - 4K 240Hz 和 10 秒 host dirty/retained memory < 40 MiB 是性能硬门槛。
@@ -25,15 +28,12 @@ Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。�
 
 - `src/bin/gilderd.rs`：daemon 入口。
 - `src/bin/gilderctl.rs`：daemon CLI。
-- `src/bin/gilder-convert.rs`：Wallpaper Engine 转换和打包工具。
+- `src/bin/gilder-convert.rs`：当前只保留 Gilder 包 pack/unpack；WE 转换等待新 scene engine
+  二进制格式定义。
 - `src/bin/gilder-native-vulkan.rs`：原生 Vulkan 诊断入口。
-- `src/engine/scene_engine/`：新的 scene engine 边界。
-- `src/renderer/native_vulkan/scene_backend/`：新的 native Vulkan scene backend。
 - `src/renderer/native_vulkan/video/`：FFmpeg demux、Vulkan HW decode、pacing 和 evidence helper。
 - `src/renderer/native_vulkan/vulkan/`：Vulkanalia backend。
-- `docs/gilder-scene-engine-architecture.md`：scene 全面重写架构。
-- `docs/native-vulkan-video-ffmpeg-mainline.md`：FFmpeg Vulkan video 主线。
-- `docs/packaging.md`：发行说明。
+- `docs/gilder-scene-engine-architecture.md`：scene 全面重写约束总纲。
 
 ## 常用命令
 
@@ -45,7 +45,7 @@ cargo test --features native-vulkan-video
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
-cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
+cargo run --bin gilder-convert -- pack ./source.gwpdir ./out.gwp
 ```
 
 ## Python 入口
