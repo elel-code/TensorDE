@@ -6,7 +6,7 @@ use crate::config::VideoDecoderPolicy;
 use crate::core::{
     FitMode, SceneNodeKind, SceneSize, SceneSystems, SceneTextureRegion, SceneTransform, Transition,
 };
-use crate::engine::scene::RendererSceneRenderPlan;
+use crate::engine::scene::SceneEngineRenderPlan;
 use crate::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -63,7 +63,7 @@ pub enum NativeVulkanRenderItem {
         property_binding_count: usize,
         cursor_parallax_input_ready: bool,
         dynamic_topology_required: bool,
-        scene_engine: Option<RendererSceneRenderPlan>,
+        scene_engine: Option<SceneEngineRenderPlan>,
         scene_scenescript_binding_count: usize,
         scene_material_graph_count: usize,
         scene_material_graph_resource_count: usize,
@@ -213,6 +213,11 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::scene::{
+        INVALID_MATERIAL_ID, RendererSceneRenderPlan, SceneMaterialHandle, SceneObjectHandle,
+        SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+        SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
+    };
 
     #[test]
     fn static_wallpaper_lowers_to_single_image_scene_layer() {
@@ -278,28 +283,67 @@ mod tests {
             property_binding_count: 0,
             cursor_parallax_input_ready: false,
             scene_input_properties: Default::default(),
-            scene_engine: Some(RendererSceneRenderPlan {
-                object_count: 1,
-                resource_count: 1,
-                texture_count: 0,
-                material_count: 1,
-                mesh_count: 1,
-                mesh_vertex_count: 4,
-                mesh_index_count: 6,
-                effect_count: 0,
-                render_graph_count: 1,
-                render_pass_count: 1,
-                render_binding_count: 0,
-                image_target_count: 0,
-                shader_contract_count: 1,
-                resource_payload_bytes: 2,
-                descriptor_heap_required: true,
-                descriptor_heap_resource_count: 1,
-                descriptor_heap_sampled_image_count: 0,
-                descriptor_heap_uniform_buffer_count: 1,
-                descriptor_heap_storage_buffer_count: 0,
-                descriptor_heap_sampler_count: 0,
-                fifo_latest_ready_present_required: true,
+            scene_engine: Some(SceneEngineRenderPlan {
+                renderer_scene_render: RendererSceneRenderPlan {
+                    object_count: 1,
+                    visible_object_count: 1,
+                    resource_count: 1,
+                    texture_count: 0,
+                    material_count: 1,
+                    mesh_count: 1,
+                    visible_mesh_binding_count: 1,
+                    mesh_vertex_count: 4,
+                    mesh_index_count: 6,
+                    puppet_binding_count: 0,
+                    visible_puppet_binding_count: 0,
+                    attachment_link_count: 0,
+                    effect_count: 0,
+                    render_graph_count: 1,
+                    render_pass_count: 1,
+                    render_binding_count: 0,
+                    image_target_count: 0,
+                    shader_contract_count: 1,
+                    resource_payload_bytes: 2,
+                    descriptor_heap_required: true,
+                    descriptor_heap_resource_count: 1,
+                    descriptor_heap_sampled_image_count: 0,
+                    descriptor_heap_uniform_buffer_count: 1,
+                    descriptor_heap_storage_buffer_count: 0,
+                    descriptor_heap_sampler_count: 0,
+                    fifo_latest_ready_present_required: true,
+                },
+                rendering_device_graph: SceneRenderingDeviceGraphPlan {
+                    pass_nodes: vec![SceneRenderingDevicePassNode {
+                        graph_index: 0,
+                        pass_record_index: 0,
+                        pass_id: 0,
+                        role: SceneRenderPassKind::BaseMaterial,
+                        target: SceneRenderTargetKind::SceneColor,
+                        binding_start: 0,
+                        binding_count: 0,
+                        mesh_draw_start: 0,
+                        mesh_draw_count: 1,
+                    }],
+                    mesh_draws: vec![SceneRenderingDeviceMeshDraw {
+                        mesh_index: 0,
+                        object: SceneObjectHandle(0),
+                        material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                        vertex_start: 0,
+                        vertex_count: 4,
+                        index_start: 0,
+                        index_count: 6,
+                    }],
+                    resolved_object_count: 1,
+                    resolved_visible_object_count: 1,
+                    resolved_attachment_link_count: 0,
+                    descriptor_heap_required: true,
+                    descriptor_heap_resource_count: 1,
+                    descriptor_heap_sampled_image_count: 0,
+                    descriptor_heap_uniform_buffer_count: 1,
+                    descriptor_heap_storage_buffer_count: 0,
+                    descriptor_heap_sampler_count: 0,
+                    fifo_latest_ready_present_required: true,
+                },
             }),
             scene_scenescript_binding_count: 0,
             scene_material_graph_count: 1,
@@ -335,9 +379,24 @@ mod tests {
         assert_eq!(scene_mesh_vertex_count, 4);
         assert_eq!(scene_mesh_index_count, 6);
         let scene_engine = scene_engine.expect("scene engine render plan");
-        assert_eq!(scene_engine.mesh_count, 1);
-        assert_eq!(scene_engine.descriptor_heap_resource_count, 1);
-        assert!(scene_engine.fifo_latest_ready_present_required);
+        assert_eq!(scene_engine.renderer_scene_render.mesh_count, 1);
+        assert_eq!(
+            scene_engine
+                .renderer_scene_render
+                .descriptor_heap_resource_count,
+            1
+        );
+        assert!(
+            scene_engine
+                .renderer_scene_render
+                .fifo_latest_ready_present_required
+        );
+        assert_eq!(scene_engine.rendering_device_graph.pass_nodes.len(), 1);
+        assert_eq!(scene_engine.rendering_device_graph.mesh_draws.len(), 1);
+        assert_eq!(
+            scene_engine.rendering_device_graph.mesh_draws[0].index_count,
+            6
+        );
     }
 }
 
@@ -368,7 +427,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         property_binding_count: plan.property_binding_count,
         cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
         dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
-        scene_engine: plan.scene_engine,
+        scene_engine: plan.scene_engine.clone(),
         scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
         scene_material_graph_count: plan.scene_material_graph_count,
         scene_material_graph_resource_count: plan.scene_material_graph_resource_count,

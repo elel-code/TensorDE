@@ -237,6 +237,42 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         })
         .collect();
     let mesh_indices = ir.mesh_indices.clone();
+    let puppets = ir
+        .puppets
+        .iter()
+        .map(|puppet| ScenePuppetRecord {
+            object: SceneObjectHandle(puppet.object),
+            resource: SceneResourceId(puppet.resource),
+            mesh_start: puppet.mesh_start,
+            mesh_count: puppet.mesh_count,
+            bone_start: puppet.bone_start,
+            bone_count: puppet.bone_count,
+            attachment_start: puppet.attachment_start,
+            attachment_count: puppet.attachment_count,
+        })
+        .collect();
+    let puppet_bones = ir
+        .puppet_bones
+        .iter()
+        .map(|bone| ScenePuppetBoneRecord {
+            puppet: bone.puppet,
+            bone_index: bone.bone_index,
+            flags: bone.flags,
+            parent_index: bone.parent_index,
+            local_matrix: bone.local_matrix,
+            info: strings.optional_id(&bone.info),
+        })
+        .collect();
+    let puppet_attachments = ir
+        .puppet_attachments
+        .iter()
+        .map(|attachment| ScenePuppetAttachmentRecord {
+            puppet: attachment.puppet,
+            bone_index: attachment.bone_index,
+            name: strings.id(&attachment.name),
+            local_matrix: attachment.local_matrix,
+        })
+        .collect();
 
     let effects = ir
         .effects
@@ -328,6 +364,9 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         meshes,
         mesh_vertices,
         mesh_indices,
+        puppets,
+        puppet_bones,
+        puppet_attachments,
         effects,
         effect_passes,
         effect_bindings,
@@ -743,6 +782,9 @@ mod tests {
                 },
             ],
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
+            puppets: Vec::new(),
+            puppet_bones: Vec::new(),
+            puppet_attachments: Vec::new(),
             effects: Vec::new(),
             effect_passes: Vec::new(),
             effect_bindings: Vec::new(),

@@ -118,15 +118,16 @@ fn native_vulkan_static_source_is_gtex(source: &Path) -> bool {
 
 #[cfg(feature = "native-vulkan-renderer")]
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    use gilder::engine::scene::SceneStorage;
     use gilder::renderer::StaticWallpaperPlan;
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     use gilder::renderer::native_vulkan::{
         NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
         NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
-        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
-        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_static_image,
-        wallpaper_type_support_matrix,
+        native_vulkan_scene_backend_plan, native_vulkan_video_duration_playback_frames,
+        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
+        run_scene, run_static_image, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
@@ -193,6 +194,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--probe-vulkanalia-video-present-session" => {
                 mode = NativeVulkanCliMode::ProbeVulkanaliaVideoPresentSession
             }
+            "--scene-backend-plan" => mode = NativeVulkanCliMode::SceneBackendPlan,
+            "--run-scene" => mode = NativeVulkanCliMode::RunScene,
             "--run-vulkanalia-ready-prefix-video" => {
                 mode = NativeVulkanCliMode::RunVulkanaliaReadyPrefixVideo
             }
@@ -482,6 +485,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             )?)
         }
+        NativeVulkanCliMode::SceneBackendPlan => {
+            let source = source.ok_or("--scene-backend-plan requires --source <file.gscene>")?;
+            if !source.is_file() {
+                return Err(format!("scene source does not exist: {}", source.display()).into());
+            }
+            let file = std::fs::File::open(&source)?;
+            let storage = SceneStorage::from_binary_reader(file)?;
+            json!(native_vulkan_scene_backend_plan(&storage))
+        }
         NativeVulkanCliMode::ProbeVulkanaliaVideoSession => {
             if video_session_options.decode_h264_ready_prefix_frames > 0
                 || video_session_options.decode_h265_ready_prefix_frames > 0
@@ -591,6 +603,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     background,
                 },
             )?)
+        }
+        NativeVulkanCliMode::RunScene => {
+            let source = source.ok_or("--run-scene requires --source <file.gscene>")?;
+            if !source.is_file() {
+                return Err(format!("scene source does not exist: {}", source.display()).into());
+            }
+            json!(run_scene(options, duration, source)?)
         }
         NativeVulkanCliMode::RunVideo => {
             let source = source.ok_or("--run-video requires --source")?;
@@ -796,8 +815,10 @@ enum NativeVulkanCliMode {
     ProbeVulkanaliaVideoPresent,
     ProbeVulkanaliaVideoPresentSession,
     ProbeVulkanaliaVideoSession,
+    SceneBackendPlan,
     RunClear,
     RunStatic,
+    RunScene,
     RunVideo,
     RunVulkanaliaReadyPrefixVideo,
 }
@@ -805,7 +826,7 @@ enum NativeVulkanCliMode {
 #[cfg(feature = "native-vulkan-renderer")]
 fn print_usage() {
     println!(
-        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--run-clear|--run-static|--run-video|--run-vulkanalia-ready-prefix-video]\n\
+        "Usage: gilder-native-vulkan [--json|--capabilities|--contract|--type-support|--probe-surface|--probe-video|--probe-vulkanalia|--probe-vulkanalia-swapchain|--probe-vulkanalia-video-present|--probe-vulkanalia-video-present-session|--probe-vulkanalia-video-session|--scene-backend-plan|--run-clear|--run-static|--run-scene|--run-video|--run-vulkanalia-ready-prefix-video]\n\
 \n\
 Print native Vulkan spike capabilities and backend contract.\n\
 --probe-surface creates a layer-shell Wayland surface and VK_KHR_wayland_surface, then exits.\n\
@@ -815,6 +836,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --probe-vulkanalia-video-present creates one Vulkanalia device with video-decode and graphics/present queues plus a Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-present-session creates one Vulkanalia video+present device, video session, sampled DPB/output image, and Wayland swapchain, then exits.\n\
 --probe-vulkanalia-video-session creates and binds a Vulkanalia Vulkan Video session for --video-codec, then exits.\n\
+--scene-backend-plan reads --source file.gscene and prints the native Vulkan scene storage/pipeline/executor plan, then exits.\n\
 --allocate-video-images extends --probe-vulkanalia-video-session with codec-matching 2-plane 4:2:0 DPB/output sampled image allocation.\n\
 --allocate-bitstream-buffer extends --probe-vulkanalia-video-session with an FFmpeg-sized mapped VIDEO_DECODE_SRC slices buffer.\n\
 --create-empty-session-parameters extends --probe-vulkanalia-video-session with an H.264/H.265 empty capacity VkVideoSessionParametersKHR smoke.\n\
@@ -825,6 +847,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
+--run-scene reads --source file.gscene, validates the scene engine backend plan and runs the FIFO latest ready scene present loop.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\

@@ -556,6 +556,36 @@ pub struct SceneMeshVertexRecord {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenePuppetRecord {
+    pub object: SceneObjectHandle,
+    pub resource: SceneResourceId,
+    pub mesh_start: u32,
+    pub mesh_count: u32,
+    pub bone_start: u32,
+    pub bone_count: u32,
+    pub attachment_start: u32,
+    pub attachment_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetBoneRecord {
+    pub puppet: u32,
+    pub bone_index: u32,
+    pub flags: u32,
+    pub parent_index: i32,
+    pub local_matrix: [f32; 16],
+    pub info: SceneStringId,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAttachmentRecord {
+    pub puppet: u32,
+    pub bone_index: u32,
+    pub name: SceneStringId,
+    pub local_matrix: [f32; 16],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneEffectRecord {
     pub id: SceneEffectHandle,
     pub resource: SceneResourceId,

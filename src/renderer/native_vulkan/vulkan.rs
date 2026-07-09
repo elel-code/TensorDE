@@ -6,6 +6,7 @@
 
 mod core;
 mod present;
+mod scene;
 mod video;
 
 use self::core::buffer;
@@ -19,6 +20,7 @@ use self::present::clear as present_clear;
 use self::present::render as render_present;
 use self::present::render_descriptors as render_present_descriptors;
 use self::present::swapchain;
+use self::scene as vulkan_scene;
 use self::video::bitstream_buffer as video_bitstream_buffer;
 use self::video::decode_submit as video_decode_submit;
 use self::video::decode_submit_av1 as video_decode_submit_av1;
@@ -264,3 +266,7 @@ pub use video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
 };
 pub use video_surface_host::NativeVulkanVideoSurfaceHostSnapshot;
+pub(in crate::renderer::native_vulkan) use vulkan_scene::{
+    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
+    run_native_vulkan_vulkanalia_scene_present,
+};

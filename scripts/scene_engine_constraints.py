@@ -7,16 +7,51 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
+MAX_RUST_FILE_LINES = 2000
 
 
 def main() -> int:
     failures: list[str] = []
 
-    rust_files = list(SRC.rglob("*.rs"))
+    rust_files = list(ROOT.rglob("*.rs"))
+    oversized_rust_files = [
+        (path, line_count(path)) for path in rust_files if line_count(path) > MAX_RUST_FILE_LINES
+    ]
+    if oversized_rust_files:
+        failures.append(
+            "Rust files must be <= "
+            + str(MAX_RUST_FILE_LINES)
+            + " lines: "
+            + ", ".join(
+                f"{display(path)}={count}" for path, count in oversized_rust_files
+            )
+        )
+
     mod_rs = [path for path in rust_files if path.name == "mod.rs"]
     if mod_rs:
         failures.append("mod.rs files are forbidden: " + ", ".join(display(path) for path in mod_rs))
+
+    mechanical_split_files = [path for path in rust_files if "__split" in path.name]
+    if mechanical_split_files:
+        failures.append(
+            "mechanical split Rust filenames are forbidden; use semantic names: "
+            + ", ".join(display(path) for path in mechanical_split_files)
+        )
+
+    same_name_module_dirs = [
+        ROOT / "src/convert/we_ingest",
+        ROOT / "src/engine/scene",
+        ROOT / "src/renderer/native_vulkan",
+        ROOT / "src/renderer/native_vulkan/scene",
+    ]
+    missing_same_name_pairs = [
+        path for path in same_name_module_dirs if not path.is_dir() or not path.with_suffix(".rs").is_file()
+    ]
+    if missing_same_name_pairs:
+        failures.append(
+            "scene modules must use same-name file+directory layout: "
+            + ", ".join(display(path.with_suffix(".rs")) + " + " + display(path) for path in missing_same_name_pairs)
+        )
 
     old_scene_files = [
         ROOT / "src/core/scene/binary.rs",
@@ -69,6 +104,13 @@ def main() -> int:
         ROOT / "src/engine/scene/rendering_device_graph.rs",
         ROOT / "src/renderer/native_vulkan/scene.rs",
         ROOT / "src/renderer/native_vulkan/scene/backend_plan.rs",
+        ROOT / "src/renderer/native_vulkan/scene/resource_storage.rs",
+        ROOT / "src/renderer/native_vulkan/scene/pipeline_cache.rs",
+        ROOT / "src/renderer/native_vulkan/scene/render_graph_executor.rs",
+        ROOT / "src/renderer/native_vulkan/scene/runtime.rs",
+        ROOT / "src/renderer/native_vulkan/scene/shader_catalog.rs",
+        ROOT / "scripts/scene_engine_cli_smoke.py",
+        ROOT / "scripts/scene_engine_runtime_smoke.py",
     ]
     missing = [path for path in required if not path.exists()]
     if missing:
@@ -82,13 +124,19 @@ def main() -> int:
         return 1
 
     print("scene-engine-constraints: ok")
-    print("checked: no mod.rs, no old scene compatibility files, no shader artifact runtime refs")
+    print(f"checked: Rust files are <= {MAX_RUST_FILE_LINES} lines")
+    print("checked: no mod.rs, no mechanical split names, and scene modules use same-name file+directory layout")
+    print("checked: no old scene compatibility files, no shader artifact runtime refs")
     print("checked: native Vulkan scene path has no legacy descriptor-set binding tokens")
     return 0
 
 
 def read_text(path: Path) -> str:
     return path.read_text(encoding="utf-8", errors="replace")
+
+
+def line_count(path: Path) -> int:
+    return len(read_text(path).splitlines())
 
 
 def display(path: Path) -> str:

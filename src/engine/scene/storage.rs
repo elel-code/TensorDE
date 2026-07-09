@@ -91,6 +91,28 @@ impl SceneStorage {
         &self.document.meshes
     }
 
+    pub fn puppets(&self) -> &[ScenePuppetRecord] {
+        &self.document.puppets
+    }
+
+    pub fn puppet_attachments(&self, puppet: &ScenePuppetRecord) -> &[ScenePuppetAttachmentRecord] {
+        let start = puppet.attachment_start as usize;
+        let end = start.saturating_add(puppet.attachment_count as usize);
+        self.document
+            .puppet_attachments
+            .get(start..end)
+            .expect("scene storage validates puppet attachment ranges")
+    }
+
+    pub fn puppet_bones(&self, puppet: &ScenePuppetRecord) -> &[ScenePuppetBoneRecord] {
+        let start = puppet.bone_start as usize;
+        let end = start.saturating_add(puppet.bone_count as usize);
+        self.document
+            .puppet_bones
+            .get(start..end)
+            .expect("scene storage validates puppet bone ranges")
+    }
+
     pub fn mesh_vertices(&self, mesh: &SceneMeshRecord) -> &[SceneMeshVertexRecord] {
         let start = mesh.vertex_start as usize;
         let end = start.saturating_add(mesh.vertex_count as usize);
@@ -349,6 +371,67 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
                     vertex_count: mesh.vertex_count,
                 });
             }
+        }
+    }
+    for (puppet_index, puppet) in document.puppets.iter().enumerate() {
+        validate_range("puppet.object", puppet.object.0, 1, document.objects.len())?;
+        validate_optional_resource(document, "puppet.resource", puppet.resource)?;
+        validate_range(
+            "puppet.mesh_range",
+            puppet.mesh_start,
+            puppet.mesh_count,
+            document.meshes.len(),
+        )?;
+        validate_range(
+            "puppet.bone_range",
+            puppet.bone_start,
+            puppet.bone_count,
+            document.puppet_bones.len(),
+        )?;
+        validate_range(
+            "puppet.attachment_range",
+            puppet.attachment_start,
+            puppet.attachment_count,
+            document.puppet_attachments.len(),
+        )?;
+        for bone in document
+            .puppet_bones
+            .iter()
+            .skip(puppet.bone_start as usize)
+            .take(puppet.bone_count as usize)
+        {
+            validate_range("puppet_bone.puppet", bone.puppet, 1, document.puppets.len())?;
+            if bone.puppet as usize != puppet_index {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "puppet_bone.puppet_owner",
+                    start: bone.puppet,
+                    count: 1,
+                    len: puppet_index,
+                });
+            }
+            validate_string(document, "puppet_bone.info", bone.info)?;
+        }
+        for attachment in document
+            .puppet_attachments
+            .iter()
+            .skip(puppet.attachment_start as usize)
+            .take(puppet.attachment_count as usize)
+        {
+            validate_range(
+                "puppet_attachment.puppet",
+                attachment.puppet,
+                1,
+                document.puppets.len(),
+            )?;
+            if attachment.puppet as usize != puppet_index {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "puppet_attachment.puppet_owner",
+                    start: attachment.puppet,
+                    count: 1,
+                    len: puppet_index,
+                });
+            }
+            validate_string(document, "puppet_attachment.name", attachment.name)?;
         }
     }
     for effect in &document.effects {

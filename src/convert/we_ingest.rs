@@ -21,11 +21,13 @@ use crate::engine::scene::{RenderingServer, SceneStorage, write_scene_binary};
 mod ingest;
 pub mod ir;
 mod lower;
+mod mdl;
 mod pkg;
 mod tex;
 
 pub use ingest::{WeIngestError, ingest_wallpaper_engine_project};
 pub use lower::{WeLowerError, lower_ir_to_scene_binary};
+pub use mdl::{MdlMeshEntry, MdlMeshVertex, MdlModel, MdlParseError, parse_mdl_model};
 pub use pkg::{ScenePackage, ScenePackageEntry, ScenePackageError};
 pub use tex::{TexMetadata, TexParseError, parse_tex_metadata};
 
@@ -194,7 +196,8 @@ mod tests {
         assert_eq!(summary.mesh_vertex_count, 4);
         assert_eq!(summary.mesh_index_count, 6);
         assert_eq!(summary.shader_contract_count, 1);
-        assert_eq!(summary.descriptor_heap_resource_count, 1);
+        assert_eq!(summary.descriptor_heap_resource_count, 3);
+        assert_eq!(summary.descriptor_heap_sampler_count, 1);
         assert!(summary.fifo_latest_ready_present_required);
         assert!(output.is_file());
 

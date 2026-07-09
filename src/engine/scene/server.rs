@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use super::abi::*;
 use super::rendering_device_graph::SceneRenderingDeviceGraphPlan;
+use super::semantic_world::{ResolvedSemanticFrame, SceneSemanticWorld, SceneSemanticWorldError};
 use super::storage::SceneStorage;
 
 #[derive(Debug, Clone, Copy)]
@@ -29,6 +30,21 @@ impl<'a> RenderingServer<'a> {
     }
 
     pub fn renderer_scene_render_plan(self) -> RendererSceneRenderPlan {
+        self.try_renderer_scene_render_plan()
+            .expect("scene semantic frame must resolve before render planning")
+    }
+
+    pub fn try_renderer_scene_render_plan(
+        self,
+    ) -> Result<RendererSceneRenderPlan, SceneSemanticWorldError> {
+        let semantic_frame = self.resolved_semantic_frame()?;
+        Ok(self.renderer_scene_render_plan_from_semantic_frame(&semantic_frame))
+    }
+
+    fn renderer_scene_render_plan_from_semantic_frame(
+        self,
+        semantic_frame: &ResolvedSemanticFrame,
+    ) -> RendererSceneRenderPlan {
         let render_pass_count = self
             .storage
             .render_graphs()
@@ -62,12 +78,17 @@ impl<'a> RenderingServer<'a> {
             .sum();
         RendererSceneRenderPlan {
             object_count: self.storage.objects().len(),
+            visible_object_count: semantic_frame.visible_object_count,
             resource_count: self.storage.resources().len(),
             texture_count: self.storage.document().textures.len(),
             material_count: self.storage.materials().len(),
             mesh_count: self.storage.meshes().len(),
+            visible_mesh_binding_count: semantic_frame.visible_mesh_binding_count,
             mesh_vertex_count: self.storage.document().mesh_vertices.len(),
             mesh_index_count: self.storage.document().mesh_indices.len(),
+            puppet_binding_count: self.storage.puppets().len(),
+            visible_puppet_binding_count: semantic_frame.visible_puppet_binding_count,
+            attachment_link_count: semantic_frame.attachment_links.len(),
             effect_count: self.storage.effects().len(),
             render_graph_count: self.storage.render_graphs().len(),
             render_pass_count,
@@ -87,7 +108,51 @@ impl<'a> RenderingServer<'a> {
     }
 
     pub fn rendering_device_graph_plan(self) -> SceneRenderingDeviceGraphPlan {
-        SceneRenderingDeviceGraphPlan::from_storage(self.storage, self.renderer_scene_render_plan())
+        self.try_rendering_device_graph_plan()
+            .expect("scene semantic frame must resolve before graph planning")
+    }
+
+    pub fn try_rendering_device_graph_plan(
+        self,
+    ) -> Result<SceneRenderingDeviceGraphPlan, SceneSemanticWorldError> {
+        let semantic_frame = self
+            .resolved_semantic_frame()?;
+        let render_plan = self.renderer_scene_render_plan_from_semantic_frame(&semantic_frame);
+        Ok(SceneRenderingDeviceGraphPlan::from_storage_with_semantic_frame(
+            self.storage,
+            render_plan,
+            &semantic_frame,
+        ))
+    }
+
+    pub fn scene_engine_render_plan(self) -> SceneEngineRenderPlan {
+        self.try_scene_engine_render_plan()
+            .expect("scene semantic frame must resolve before render planning")
+    }
+
+    pub fn try_scene_engine_render_plan(
+        self,
+    ) -> Result<SceneEngineRenderPlan, SceneSemanticWorldError> {
+        let semantic_frame = self.resolved_semantic_frame()?;
+        let renderer_scene_render =
+            self.renderer_scene_render_plan_from_semantic_frame(&semantic_frame);
+        let rendering_device_graph = SceneRenderingDeviceGraphPlan::from_storage_with_semantic_frame(
+            self.storage,
+            renderer_scene_render,
+            &semantic_frame,
+        );
+        Ok(SceneEngineRenderPlan {
+            renderer_scene_render,
+            rendering_device_graph,
+        })
+    }
+
+    pub fn semantic_world(self) -> Result<SceneSemanticWorld<'a>, SceneSemanticWorldError> {
+        SceneSemanticWorld::from_storage(self.storage)
+    }
+
+    pub fn resolved_semantic_frame(self) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.semantic_world()?.resolve_frame()
     }
 
     pub fn object_render_graph(
@@ -125,12 +190,17 @@ impl<'a> SceneObjectRenderGraph<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RendererSceneRenderPlan {
     pub object_count: usize,
+    pub visible_object_count: usize,
     pub resource_count: usize,
     pub texture_count: usize,
     pub material_count: usize,
     pub mesh_count: usize,
+    pub visible_mesh_binding_count: usize,
     pub mesh_vertex_count: usize,
     pub mesh_index_count: usize,
+    pub puppet_binding_count: usize,
+    pub visible_puppet_binding_count: usize,
+    pub attachment_link_count: usize,
     pub effect_count: usize,
     pub render_graph_count: usize,
     pub render_pass_count: usize,
@@ -145,6 +215,12 @@ pub struct RendererSceneRenderPlan {
     pub descriptor_heap_storage_buffer_count: u32,
     pub descriptor_heap_sampler_count: u32,
     pub fifo_latest_ready_present_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneEngineRenderPlan {
+    pub renderer_scene_render: RendererSceneRenderPlan,
+    pub rendering_device_graph: SceneRenderingDeviceGraphPlan,
 }
 
 impl RendererSceneRenderPlan {
@@ -167,5 +243,14 @@ mod tests {
         assert!(plan.is_executable_boundary_ready());
         assert_eq!(plan.object_count, 0);
         assert_eq!(plan.resource_payload_bytes, 0);
+
+        let scene_engine = RenderingServer::new(&storage).scene_engine_render_plan();
+        assert_eq!(scene_engine.renderer_scene_render.object_count, 0);
+        assert!(scene_engine.rendering_device_graph.pass_nodes.is_empty());
+
+        let semantic_frame = RenderingServer::new(&storage)
+            .resolved_semantic_frame()
+            .expect("resolved semantic frame");
+        assert!(semantic_frame.objects.is_empty());
     }
 }

@@ -10,6 +10,7 @@
 pub mod abi;
 pub mod binary;
 pub mod rendering_device_graph;
+pub mod semantic_world;
 pub mod server;
 pub mod storage;
 
@@ -21,7 +22,15 @@ pub use binary::{
 pub use rendering_device_graph::{
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
 };
-pub use server::{RendererSceneRenderPlan, RenderingServer, SceneObjectRenderGraph};
+pub use semantic_world::{
+    MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
+    ResolvedAttachmentLink, ResolvedObjectState, ResolvedSemanticFrame, SceneSemanticWorld,
+    SceneSemanticWorldError, SemanticEntity, SemanticEntityRecord, SemanticMeshBinding,
+    SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
+};
+pub use server::{
+    RendererSceneRenderPlan, RenderingServer, SceneEngineRenderPlan, SceneObjectRenderGraph,
+};
 pub use storage::{SceneStorage, SceneStorageError};
 
 use serde::{Deserialize, Serialize};

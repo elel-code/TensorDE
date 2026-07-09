@@ -36,6 +36,9 @@ pub struct SceneBinaryDocument {
     pub meshes: Vec<SceneMeshRecord>,
     pub mesh_vertices: Vec<SceneMeshVertexRecord>,
     pub mesh_indices: Vec<u32>,
+    pub puppets: Vec<ScenePuppetRecord>,
+    pub puppet_bones: Vec<ScenePuppetBoneRecord>,
+    pub puppet_attachments: Vec<ScenePuppetAttachmentRecord>,
     pub effects: Vec<SceneEffectRecord>,
     pub effect_passes: Vec<SceneEffectPassRecord>,
     pub effect_bindings: Vec<SceneEffectBindingRecord>,
@@ -68,6 +71,9 @@ impl Default for SceneBinaryDocument {
             meshes: Vec::new(),
             mesh_vertices: Vec::new(),
             mesh_indices: Vec::new(),
+            puppets: Vec::new(),
+            puppet_bones: Vec::new(),
+            puppet_attachments: Vec::new(),
             effects: Vec::new(),
             effect_passes: Vec::new(),
             effect_bindings: Vec::new(),
@@ -238,6 +244,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     ensure_chunk_count(&chunks, CHUNK_MATERIAL, "materials", materials.len())?;
     let (meshes, mesh_vertices, mesh_indices) = decode_meshes(chunk_payload(&chunks, CHUNK_MESH)?)?;
     ensure_chunk_count(&chunks, CHUNK_MESH, "mesh", meshes.len())?;
+    let (puppets, puppet_bones, puppet_attachments) =
+        decode_puppets(chunk_payload(&chunks, CHUNK_PUPPET)?)?;
+    ensure_chunk_count(&chunks, CHUNK_PUPPET, "puppet", puppets.len())?;
     let (effects, effect_passes, effect_bindings, effect_combos, effect_fbos) =
         decode_effects(chunk_payload(&chunks, CHUNK_EFFECT)?)?;
     ensure_chunk_count(&chunks, CHUNK_EFFECT, "effects", effects.len())?;
@@ -266,7 +275,6 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     )?;
     for &(kind, name) in &[
         (CHUNK_TIMELINE, "timeline"),
-        (CHUNK_PUPPET, "puppet"),
         (CHUNK_PARTICLE, "particle"),
         (CHUNK_AUDIO, "audio"),
         (CHUNK_SCRIPT_BINDING, "script binding"),
@@ -290,6 +298,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         meshes,
         mesh_vertices,
         mesh_indices,
+        puppets,
+        puppet_bones,
+        puppet_attachments,
         effects,
         effect_passes,
         effect_bindings,
@@ -435,7 +446,15 @@ fn encode_chunks(
             )?,
         },
         empty_count_chunk(CHUNK_TIMELINE),
-        empty_count_chunk(CHUNK_PUPPET),
+        SceneEncodedChunk {
+            kind: CHUNK_PUPPET,
+            item_count: checked_u32(document.puppets.len(), "puppet count")?,
+            data: encode_puppets(
+                &document.puppets,
+                &document.puppet_bones,
+                &document.puppet_attachments,
+            )?,
+        },
         empty_count_chunk(CHUNK_PARTICLE),
         empty_count_chunk(CHUNK_AUDIO),
         empty_count_chunk(CHUNK_SCRIPT_BINDING),
@@ -937,6 +956,115 @@ fn decode_meshes(
         indices.push(decoder.u32()?);
     }
     Ok((meshes, vertices, indices))
+}
+
+fn encode_puppets(
+    puppets: &[ScenePuppetRecord],
+    bones: &[ScenePuppetBoneRecord],
+    attachments: &[ScenePuppetAttachmentRecord],
+) -> Result<Vec<u8>, SceneBinaryError> {
+    let mut out = Vec::new();
+    put_u32(&mut out, checked_u32(puppets.len(), "puppet count")?);
+    for record in puppets {
+        put_u32(&mut out, record.object.0);
+        put_u32(&mut out, record.resource.0);
+        put_u32(&mut out, record.mesh_start);
+        put_u32(&mut out, record.mesh_count);
+        put_u32(&mut out, record.bone_start);
+        put_u32(&mut out, record.bone_count);
+        put_u32(&mut out, record.attachment_start);
+        put_u32(&mut out, record.attachment_count);
+    }
+    put_u32(&mut out, checked_u32(bones.len(), "puppet bone count")?);
+    for record in bones {
+        put_u32(&mut out, record.puppet);
+        put_u32(&mut out, record.bone_index);
+        put_u32(&mut out, record.flags);
+        put_i32(&mut out, record.parent_index);
+        for value in record.local_matrix {
+            put_f32(&mut out, value);
+        }
+        put_string_id(&mut out, record.info);
+    }
+    put_u32(
+        &mut out,
+        checked_u32(attachments.len(), "puppet attachment count")?,
+    );
+    for record in attachments {
+        put_u32(&mut out, record.puppet);
+        put_u32(&mut out, record.bone_index);
+        put_string_id(&mut out, record.name);
+        for value in record.local_matrix {
+            put_f32(&mut out, value);
+        }
+    }
+    Ok(out)
+}
+
+fn decode_puppets(
+    data: &[u8],
+) -> Result<
+    (
+        Vec<ScenePuppetRecord>,
+        Vec<ScenePuppetBoneRecord>,
+        Vec<ScenePuppetAttachmentRecord>,
+    ),
+    SceneBinaryError,
+> {
+    let mut decoder = Decoder::new(data);
+    let puppet_count = decoder.u32()? as usize;
+    let mut puppets = Vec::with_capacity(puppet_count);
+    for _ in 0..puppet_count {
+        puppets.push(ScenePuppetRecord {
+            object: SceneObjectHandle(decoder.u32()?),
+            resource: decoder.resource_id()?,
+            mesh_start: decoder.u32()?,
+            mesh_count: decoder.u32()?,
+            bone_start: decoder.u32()?,
+            bone_count: decoder.u32()?,
+            attachment_start: decoder.u32()?,
+            attachment_count: decoder.u32()?,
+        });
+    }
+    let bone_count = decoder.u32()? as usize;
+    let mut bones = Vec::with_capacity(bone_count);
+    for _ in 0..bone_count {
+        let mut local_matrix = [0.0; 16];
+        let puppet = decoder.u32()?;
+        let bone_index = decoder.u32()?;
+        let flags = decoder.u32()?;
+        let parent_index = decoder.i32()?;
+        for item in &mut local_matrix {
+            *item = decoder.f32()?;
+        }
+        let info = decoder.string_id()?;
+        bones.push(ScenePuppetBoneRecord {
+            puppet,
+            bone_index,
+            flags,
+            parent_index,
+            local_matrix,
+            info,
+        });
+    }
+    let attachment_count = decoder.u32()? as usize;
+    let mut attachments = Vec::with_capacity(attachment_count);
+    for _ in 0..attachment_count {
+        let mut local_matrix = [0.0; 16];
+        let puppet = decoder.u32()?;
+        let bone_index = decoder.u32()?;
+        let name = decoder.string_id()?;
+        for item in &mut local_matrix {
+            *item = decoder.f32()?;
+        }
+        attachments.push(ScenePuppetAttachmentRecord {
+            puppet,
+            bone_index,
+            name,
+            local_matrix,
+        });
+    }
+    Ok((puppets, bones, attachments))
 }
 
 fn encode_effects(
@@ -1458,6 +1586,8 @@ mod tests {
                 "scene.json".to_owned(),
                 "models/a.json".to_owned(),
                 "loose".to_owned(),
+                "eye".to_owned(),
+                "eye-bone".to_owned(),
             ],
             project: SceneProjectRecord {
                 title: SceneStringId(0),
@@ -1533,6 +1663,32 @@ mod tests {
             },
         ]);
         document.mesh_indices.extend([0, 1, 2, 0, 2, 3]);
+        document.puppets.push(ScenePuppetRecord {
+            object: SceneObjectHandle(0),
+            resource: SceneResourceId(0),
+            mesh_start: 0,
+            mesh_count: 1,
+            bone_start: 0,
+            bone_count: 1,
+            attachment_start: 0,
+            attachment_count: 1,
+        });
+        document.puppet_bones.push(ScenePuppetBoneRecord {
+            puppet: 0,
+            bone_index: 41,
+            flags: 3,
+            parent_index: -1,
+            local_matrix: [1.0; 16],
+            info: SceneStringId(6),
+        });
+        document
+            .puppet_attachments
+            .push(ScenePuppetAttachmentRecord {
+                puppet: 0,
+                bone_index: 41,
+                name: SceneStringId(5),
+                local_matrix: [1.0; 16],
+            });
 
         let mut bytes = Vec::new();
         write_scene_binary(&document, &mut bytes).expect("write scene binary");
@@ -1549,6 +1705,15 @@ mod tests {
         assert_eq!(decoded.meshes[0].width, 64.0);
         assert_eq!(decoded.mesh_vertices.len(), 4);
         assert_eq!(decoded.mesh_indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(decoded.puppets[0].bone_count, 1);
+        assert_eq!(decoded.puppet_bones[0].bone_index, 41);
+        assert_eq!(decoded.puppet_bones[0].parent_index, -1);
+        assert_eq!(decoded.puppets[0].attachment_count, 1);
+        assert_eq!(decoded.puppet_attachments[0].bone_index, 41);
+        assert_eq!(
+            decoded.strings[decoded.puppet_attachments[0].name.0 as usize],
+            "eye"
+        );
     }
 
     #[test]

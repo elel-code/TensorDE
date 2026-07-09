@@ -10,8 +10,31 @@
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
 mod backend_plan;
+mod pipeline_cache;
+mod render_graph_executor;
+mod resource_storage;
+mod runtime;
+mod shader_catalog;
 
 pub use backend_plan::{
     NativeVulkanSceneBackendPlan, NativeVulkanSceneDescriptorHeapPlan,
     NativeVulkanSceneMeshUploadPlan, native_vulkan_scene_backend_plan,
+    native_vulkan_scene_backend_plan_from_render_item,
+};
+pub use pipeline_cache::{
+    NativeVulkanScenePipelineCacheEntry, NativeVulkanScenePipelineCachePlan,
+    native_vulkan_scene_pipeline_cache_plan,
+};
+pub use render_graph_executor::{
+    NativeVulkanSceneRenderGraphCommand, NativeVulkanSceneRenderGraphCommandKind,
+    NativeVulkanSceneRenderGraphExecutorPlan, native_vulkan_scene_render_graph_executor_plan,
+};
+pub use resource_storage::{
+    NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
+    NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneShaderHeapSlice,
+    native_vulkan_scene_resource_storage_plan,
+};
+pub use runtime::{NativeVulkanSceneRuntimeSnapshot, run_scene};
+pub use shader_catalog::{
+    BuiltinSceneShader, native_vulkan_scene_shader_catalog, native_vulkan_scene_shader_for_key,
 };

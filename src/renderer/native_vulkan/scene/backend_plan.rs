@@ -14,6 +14,17 @@ use serde::Serialize;
 use crate::engine::scene::{
     RendererSceneRenderPlan, RenderingServer, SceneRenderingDeviceGraphPlan, SceneStorage,
 };
+use crate::renderer::native_vulkan::present::render_item::NativeVulkanRenderItem;
+
+use super::pipeline_cache::{
+    NativeVulkanScenePipelineCachePlan, native_vulkan_scene_pipeline_cache_plan,
+};
+use super::render_graph_executor::{
+    NativeVulkanSceneRenderGraphExecutorPlan, native_vulkan_scene_render_graph_executor_plan,
+};
+use super::resource_storage::{
+    NativeVulkanSceneResourceStoragePlan, native_vulkan_scene_resource_storage_plan,
+};
 
 const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 20;
 const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
@@ -22,11 +33,13 @@ const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
 pub struct NativeVulkanSceneBackendPlan {
     pub renderer_scene_render: RendererSceneRenderPlan,
     pub rendering_device_graph: SceneRenderingDeviceGraphPlan,
+    pub resource_storage: NativeVulkanSceneResourceStoragePlan,
+    pub pipeline_cache: NativeVulkanScenePipelineCachePlan,
+    pub render_graph_executor: NativeVulkanSceneRenderGraphExecutorPlan,
     pub descriptor_heap: NativeVulkanSceneDescriptorHeapPlan,
     pub mesh_upload: NativeVulkanSceneMeshUploadPlan,
-    pub render_graph_executor: &'static str,
     pub present_mode: &'static str,
-    pub legacy_descriptor_sets_forbidden: bool,
+    pub legacy_binding_forbidden: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -51,12 +64,27 @@ pub struct NativeVulkanSceneMeshUploadPlan {
 
 pub fn native_vulkan_scene_backend_plan(storage: &SceneStorage) -> NativeVulkanSceneBackendPlan {
     let rendering_server = RenderingServer::new(storage);
-    let renderer_scene_render = rendering_server.renderer_scene_render_plan();
-    let rendering_device_graph = rendering_server.rendering_device_graph_plan();
+    let scene_engine = rendering_server.scene_engine_render_plan();
+    let renderer_scene_render = scene_engine.renderer_scene_render;
+    let rendering_device_graph = scene_engine.rendering_device_graph;
+    let resource_storage = native_vulkan_scene_resource_storage_plan(
+        storage,
+        renderer_scene_render,
+        &rendering_device_graph,
+    );
+    let pipeline_cache = native_vulkan_scene_pipeline_cache_plan(storage, &resource_storage);
+    let render_graph_executor = native_vulkan_scene_render_graph_executor_plan(
+        &rendering_device_graph,
+        &resource_storage,
+        &pipeline_cache,
+    );
 
     NativeVulkanSceneBackendPlan {
         renderer_scene_render,
         rendering_device_graph,
+        resource_storage,
+        pipeline_cache,
+        render_graph_executor,
         descriptor_heap: NativeVulkanSceneDescriptorHeapPlan {
             resource_descriptor_count: renderer_scene_render.descriptor_heap_resource_count,
             sampled_image_descriptor_count: renderer_scene_render
@@ -80,20 +108,52 @@ pub fn native_vulkan_scene_backend_plan(storage: &SceneStorage) -> NativeVulkanS
                 .saturating_mul(SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES),
             device_address_required: renderer_scene_render.mesh_count > 0,
         },
-        render_graph_executor: "renderer/native_vulkan/scene/render_graph_executor",
         present_mode: "fifo-latest-ready",
-        legacy_descriptor_sets_forbidden: true,
+        legacy_binding_forbidden: true,
     }
+}
+
+pub fn native_vulkan_scene_backend_plan_from_render_item(
+    item: &NativeVulkanRenderItem,
+) -> Result<Option<NativeVulkanSceneBackendPlan>, String> {
+    let NativeVulkanRenderItem::Scene {
+        scene_source: Some(scene_source),
+        ..
+    } = item
+    else {
+        return Ok(None);
+    };
+    if !scene_source
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gscene"))
+    {
+        return Ok(None);
+    }
+
+    let file = std::fs::File::open(scene_source)
+        .map_err(|err| format!("open scene engine binary {}: {err}", scene_source.display()))?;
+    let storage = SceneStorage::from_binary_reader(file).map_err(|err| {
+        format!(
+            "load scene engine binary {} into native Vulkan scene storage: {err}",
+            scene_source.display()
+        )
+    })?;
+    Ok(Some(native_vulkan_scene_backend_plan(&storage)))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{FitMode, SceneSystems};
     use crate::engine::scene::{
-        INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneMaterialHandle,
-        SceneMeshRecord, SceneMeshVertexRecord, SceneObjectHandle, SceneObjectKind,
-        SceneObjectRecord, SceneResourceId, SceneShaderContractRecord, SceneStorage, SceneStringId,
-        SceneVec3,
+        INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SCENE_DEFAULT_FEATURE_FLAGS, SceneBinaryDocument,
+        SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,
+        SceneMeshVertexRecord, SceneObjectHandle, SceneObjectKind, SceneObjectRecord,
+        ScenePipelineBlend, SceneProjectRecord, SceneRenderGraphRecord, SceneRenderPassKind,
+        SceneRenderPassRecord, SceneRenderTargetKind, SceneResourceId, SceneResourceKind,
+        SceneResourceRecord, SceneShaderContractRecord, SceneStorage, SceneStringId, SceneVec3,
+        write_scene_binary,
     };
 
     #[test]
@@ -192,7 +252,7 @@ mod tests {
         let storage = SceneStorage::from_document(document).expect("storage");
         let plan = native_vulkan_scene_backend_plan(&storage);
 
-        assert!(plan.legacy_descriptor_sets_forbidden);
+        assert!(plan.legacy_binding_forbidden);
         assert_eq!(plan.present_mode, "fifo-latest-ready");
         assert_eq!(plan.descriptor_heap.resource_descriptor_count, 3);
         assert_eq!(plan.descriptor_heap.sampled_image_descriptor_count, 2);
@@ -201,11 +261,220 @@ mod tests {
         assert_eq!(plan.descriptor_heap.sampler_descriptor_count, 2);
         assert_eq!(plan.rendering_device_graph.pass_nodes.len(), 0);
         assert_eq!(plan.rendering_device_graph.mesh_draws.len(), 0);
+        assert_eq!(
+            plan.resource_storage.descriptor_heap.descriptor_model,
+            "VK_EXT_descriptor_heap"
+        );
+        assert_eq!(plan.pipeline_cache.pipeline_count, 1);
+        assert_eq!(
+            plan.render_graph_executor.executor_status,
+            "scene-render-graph-ready-without-mesh-draws"
+        );
         assert_eq!(plan.mesh_upload.mesh_count, 1);
         assert_eq!(plan.mesh_upload.vertex_count, 4);
         assert_eq!(plan.mesh_upload.index_count, 6);
         assert_eq!(plan.mesh_upload.vertex_buffer_bytes, 80);
         assert_eq!(plan.mesh_upload.index_buffer_bytes, 24);
         assert!(plan.mesh_upload.device_address_required);
+    }
+
+    #[test]
+    fn scene_backend_plan_loads_gscene_from_native_render_item() {
+        let root = std::env::temp_dir().join(format!(
+            "gilder-native-scene-item-plan-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("tmp");
+        let scene_path = root.join("scene.gscene");
+        let document = minimal_scene_backend_document();
+        let mut bytes = Vec::new();
+        write_scene_binary(&document, &mut bytes).expect("write scene binary");
+        std::fs::write(&scene_path, bytes).expect("scene file");
+        let item = NativeVulkanRenderItem::Scene {
+            output_name: "HDMI-A-1".to_owned(),
+            scene_source: Some(scene_path.clone()),
+            display: None,
+            display_image: None,
+            display_color: None,
+            manifest_max_fps: None,
+            layer_count: 0,
+            layers: Vec::new(),
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
+            bound_properties: Vec::new(),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            puppet_animation_layer_count: 0,
+            property_binding_count: 0,
+            cursor_parallax_input_ready: false,
+            dynamic_topology_required: true,
+            scene_engine: None,
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 1,
+            scene_material_graph_resource_count: 1,
+            scene_effect_graph_count: 1,
+            scene_mesh_count: 1,
+            scene_mesh_vertex_count: 4,
+            scene_mesh_index_count: 6,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            target_max_fps: None,
+            renderer_status: "scene-engine-binary-ready-for-rendering-device-graph",
+        };
+
+        let plan = native_vulkan_scene_backend_plan_from_render_item(&item)
+            .expect("backend plan")
+            .expect("scene item plan");
+
+        assert_eq!(plan.renderer_scene_render.mesh_count, 1);
+        assert_eq!(plan.rendering_device_graph.mesh_draws.len(), 1);
+        assert_eq!(plan.render_graph_executor.draw_count, 1);
+        assert_eq!(plan.present_mode, "fifo-latest-ready");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn minimal_scene_backend_document() -> SceneBinaryDocument {
+        SceneBinaryDocument {
+            feature_flags: SCENE_DEFAULT_FEATURE_FLAGS,
+            strings: vec![
+                "Scene Demo".to_owned(),
+                "scene".to_owned(),
+                "scene.json".to_owned(),
+                "materials/layer.json".to_owned(),
+                "genericimage4".to_owned(),
+                "genericimage4|blend=normal".to_owned(),
+                "loose-file".to_owned(),
+            ],
+            project: SceneProjectRecord {
+                title: SceneStringId(0),
+                wallpaper_type: SceneStringId(1),
+                scene_file: SceneStringId(2),
+                preview: SceneStringId::NONE,
+                properties_json: SceneStringId::NONE,
+                logical_width: 1920,
+                logical_height: 1080,
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                ambient_color: [0.3, 0.3, 0.3, 1.0],
+                skylight_color: [0.3, 0.3, 0.3, 1.0],
+                camera_eye: SceneVec3::default(),
+                camera_center: SceneVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+                camera_up: SceneVec3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            },
+            resources: vec![SceneResourceRecord {
+                id: SceneResourceId(0),
+                kind: SceneResourceKind::MaterialJson,
+                path: SceneStringId(3),
+                source: SceneStringId(6),
+                payload_offset: 0,
+                payload_len: 2,
+            }],
+            resource_payload: b"{}".to_vec(),
+            objects: vec![SceneObjectRecord {
+                id: SceneObjectHandle(0),
+                we_id: 7,
+                name: SceneStringId::NONE,
+                kind: SceneObjectKind::Image,
+                resource: SceneResourceId::NONE,
+                material: SceneMaterialHandle(0),
+                parent_we_id: INVALID_OBJECT_ID,
+                attachment: SceneStringId::NONE,
+                origin: SceneVec3::default(),
+                angles: SceneVec3::default(),
+                scale: SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                visible: true,
+                color_blend_mode: 0,
+                sort_order: 0,
+                effect_start: u32::MAX,
+                effect_count: 0,
+                render_graph: 0,
+            }],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId(0),
+                pass_start: 0,
+                pass_count: 0,
+            }],
+            meshes: vec![SceneMeshRecord {
+                object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(0),
+                vertex_start: 0,
+                vertex_count: 4,
+                index_start: 0,
+                index_count: 6,
+                width: 64.0,
+                height: 32.0,
+                bounds_min: SceneVec3 {
+                    x: -32.0,
+                    y: -16.0,
+                    z: 0.0,
+                },
+                bounds_max: SceneVec3 {
+                    x: 32.0,
+                    y: 16.0,
+                    z: 0.0,
+                },
+            }],
+            mesh_vertices: vec![
+                SceneMeshVertexRecord {
+                    position: SceneVec3 {
+                        x: -32.0,
+                        y: -16.0,
+                        z: 0.0,
+                    },
+                    uv: [0.0, 1.0],
+                };
+                4
+            ],
+            mesh_indices: vec![0, 1, 2, 0, 2, 3],
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(0),
+                pass_start: 0,
+                pass_count: 1,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 0,
+                role: SceneRenderPassKind::BaseMaterial,
+                object: SceneObjectHandle(0),
+                pass_index: 0,
+                shader_key: SceneStringId(4),
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+            }],
+            shader_contracts: vec![SceneShaderContractRecord {
+                shader_key: SceneStringId(4),
+                pipeline_key: SceneStringId(5),
+                texture_slot_mask: 0,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 1,
+                sampler_heap_count: 0,
+            }],
+            ..SceneBinaryDocument::default()
+        }
     }
 }

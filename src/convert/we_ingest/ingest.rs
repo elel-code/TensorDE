@@ -26,6 +26,7 @@ use crate::engine::scene::abi::{
 };
 
 use super::ir::*;
+use super::mdl::{MdlMeshEntry, parse_mdl_model};
 use super::pkg::{ScenePackage, ScenePackageError};
 use super::tex::{TexParseError, parse_tex_metadata};
 
@@ -258,6 +259,9 @@ struct WeIrBuilder {
     meshes: Vec<WeIrMesh>,
     mesh_vertices: Vec<WeIrMeshVertex>,
     mesh_indices: Vec<u32>,
+    puppets: Vec<WeIrPuppet>,
+    puppet_bones: Vec<WeIrPuppetBone>,
+    puppet_attachments: Vec<WeIrPuppetAttachment>,
     effects: Vec<WeIrEffect>,
     effect_by_path: BTreeMap<String, u32>,
     effect_passes: Vec<WeIrEffectPass>,
@@ -296,6 +300,9 @@ impl WeIrBuilder {
             meshes: Vec::new(),
             mesh_vertices: Vec::new(),
             mesh_indices: Vec::new(),
+            puppets: Vec::new(),
+            puppet_bones: Vec::new(),
+            puppet_attachments: Vec::new(),
             effects: Vec::new(),
             effect_by_path: BTreeMap::new(),
             effect_passes: Vec::new(),
@@ -326,6 +333,9 @@ impl WeIrBuilder {
             meshes: self.meshes,
             mesh_vertices: self.mesh_vertices,
             mesh_indices: self.mesh_indices,
+            puppets: self.puppets,
+            puppet_bones: self.puppet_bones,
+            puppet_attachments: self.puppet_attachments,
             effects: self.effects,
             effect_passes: self.effect_passes,
             effect_bindings: self.effect_bindings,
@@ -414,6 +424,48 @@ impl WeIrBuilder {
             resource = self.add_optional_resource(&image_path, image_kind)?;
             if image_kind == SceneResourceKind::Mdl {
                 kind = SceneAbiObjectKind::Puppet;
+                if let Some(resource_handle) = resource {
+                    let payload = self.resources[resource_handle as usize].payload.clone();
+                    match parse_mdl_model(&payload) {
+                        Ok(model) => {
+                            let material_handles =
+                                self.add_mdl_materials(handle, &image_path, &model.material_paths)?;
+                            material = material_handles.first().copied().flatten();
+                            let (mesh_start, mesh_count) = self.add_mdl_meshes(
+                                handle,
+                                &image_path,
+                                &model.entries,
+                                &material_handles,
+                            );
+                            self.add_mdl_puppet(
+                                handle,
+                                resource_handle,
+                                mesh_start,
+                                mesh_count,
+                                &model.bones,
+                                &model.attachments,
+                            );
+                        }
+                        Err(err) => {
+                            self.unsupported.push(WeIrUnsupported {
+                                object: Some(handle),
+                                pass_index: None,
+                                feature: format!("mdl-parse-failed:{image_path}:{err}"),
+                                expected_subsystem: "convert/we_ingest MDLV0023 mesh parser"
+                                    .to_owned(),
+                                containment: "object-kept-without-mdl-mesh".to_owned(),
+                            });
+                        }
+                    }
+                } else {
+                    self.unsupported.push(WeIrUnsupported {
+                        object: Some(handle),
+                        pass_index: None,
+                        feature: format!("missing-mdl-resource:{image_path}"),
+                        expected_subsystem: "convert/we_ingest asset source".to_owned(),
+                        containment: "object-kept-without-resource".to_owned(),
+                    });
+                }
             } else if let Some(resource_handle) = resource {
                 let payload = self.resources[resource_handle as usize].payload.clone();
                 match parse_json_bytes(&image_path, &payload) {
@@ -522,6 +574,149 @@ impl WeIrBuilder {
             render_graph,
         });
         Ok(())
+    }
+
+    fn add_mdl_materials(
+        &mut self,
+        object: u32,
+        image_path: &str,
+        material_paths: &[String],
+    ) -> Result<Vec<Option<u32>>, WeIngestError> {
+        if material_paths.is_empty() {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(object),
+                pass_index: None,
+                feature: format!("mdl-has-no-material-paths:{image_path}"),
+                expected_subsystem: "convert/we_ingest MDLV0023 material table".to_owned(),
+                containment: "mdl-meshes-kept-without-material".to_owned(),
+            });
+            return Ok(Vec::new());
+        }
+
+        material_paths
+            .iter()
+            .map(|path| self.add_material(path).map(Some))
+            .collect()
+    }
+
+    fn add_mdl_meshes(
+        &mut self,
+        object: u32,
+        image_path: &str,
+        entries: &[MdlMeshEntry],
+        material_handles: &[Option<u32>],
+    ) -> (u32, u32) {
+        let mesh_start = self.meshes.len() as u32;
+        if entries.is_empty() {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(object),
+                pass_index: None,
+                feature: format!("mdl-has-no-mesh-entries:{image_path}"),
+                expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
+                containment: "object-kept-without-mdl-mesh".to_owned(),
+            });
+            return (mesh_start, 0);
+        }
+
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if entry.vertices.is_empty() || entry.indices.is_empty() {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: Some(entry_index as u32),
+                    feature: format!("mdl-empty-mesh-entry:{image_path}:{entry_index}"),
+                    expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
+                    containment: "empty-entry-skipped".to_owned(),
+                });
+                continue;
+            }
+            let invalid_index = entry
+                .indices
+                .iter()
+                .copied()
+                .find(|index| *index >= entry.vertices.len() as u32);
+            if let Some(index) = invalid_index {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: Some(entry_index as u32),
+                    feature: format!(
+                        "mdl-mesh-index-out-of-range:{image_path}:{entry_index}:{index}"
+                    ),
+                    expected_subsystem: "convert/we_ingest MDLV0023 index block".to_owned(),
+                    containment: "invalid-entry-skipped".to_owned(),
+                });
+                continue;
+            }
+
+            let (bounds_min, bounds_max) = mdl_entry_vertex_bounds(entry);
+            let vertex_start = self.mesh_vertices.len() as u32;
+            let index_start = self.mesh_indices.len() as u32;
+            self.mesh_vertices
+                .extend(entry.vertices.iter().map(|vertex| WeIrMeshVertex {
+                    position: vertex.position,
+                    uv: vertex.uv,
+                }));
+            self.mesh_indices.extend(entry.indices.iter().copied());
+            let material = material_handles
+                .get(entry_index)
+                .copied()
+                .flatten()
+                .or_else(|| material_handles.first().copied().flatten());
+            self.meshes.push(WeIrMesh {
+                object,
+                material,
+                vertex_start,
+                vertex_count: entry.vertices.len() as u32,
+                index_start,
+                index_count: entry.indices.len() as u32,
+                width: bounds_max.x - bounds_min.x,
+                height: bounds_max.y - bounds_min.y,
+                bounds_min,
+                bounds_max,
+            });
+        }
+        (mesh_start, self.meshes.len() as u32 - mesh_start)
+    }
+
+    fn add_mdl_puppet(
+        &mut self,
+        object: u32,
+        resource: u32,
+        mesh_start: u32,
+        mesh_count: u32,
+        bones: &[super::mdl::MdlBone],
+        attachments: &[super::mdl::MdlAttachment],
+    ) {
+        let puppet = self.puppets.len() as u32;
+        let bone_start = self.puppet_bones.len() as u32;
+        let attachment_start = self.puppet_attachments.len() as u32;
+        for bone in bones {
+            self.puppet_bones.push(WeIrPuppetBone {
+                puppet,
+                bone_index: bone.bone_index,
+                flags: u32::from(bone.flags),
+                parent_index: bone.parent_index,
+                local_matrix: bone.local_matrix,
+                info: bone.info.clone(),
+            });
+        }
+        for attachment in attachments {
+            self.puppet_attachments.push(WeIrPuppetAttachment {
+                puppet,
+                bone_index: attachment.bone_index,
+                name: attachment.name.clone(),
+                local_matrix: attachment.local_matrix,
+            });
+        }
+        self.puppets.push(WeIrPuppet {
+            object,
+            resource,
+            mesh_start,
+            mesh_count,
+            bone_start,
+            bone_count: self.puppet_bones.len() as u32 - bone_start,
+            attachment_start,
+            attachment_count: self.puppet_attachments.len() as u32 - attachment_start,
+        });
     }
 
     fn add_material(&mut self, path: &str) -> Result<u32, WeIngestError> {
@@ -1043,7 +1238,6 @@ impl WeIrBuilder {
                 .iter()
                 .skip(pass.texture_start as usize)
                 .take(pass.texture_count as usize)
-                .filter(|texture| texture.resource.is_some())
                 .collect::<Vec<_>>();
             let constants = self
                 .material_constants
@@ -1052,10 +1246,7 @@ impl WeIrBuilder {
                 .take(pass.constant_count as usize)
                 .map(|constant| constant.name.clone())
                 .collect::<Vec<_>>();
-            let texture_slot_mask = textures
-                .iter()
-                .filter(|texture| texture.slot < 32)
-                .fold(0u32, |mask, texture| mask | (1 << texture.slot));
+            let texture_slot_mask = declared_texture_slot_mask(&pass.shader_key, &textures);
             let pipeline_key = format!(
                 "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
                 pass.shader_key,
@@ -1067,17 +1258,97 @@ impl WeIrBuilder {
             if !seen.insert(pipeline_key.clone()) {
                 continue;
             }
-            let uniform_count = 1 + u32::from(!constants.is_empty());
+            let uniform_count =
+                shader_uniform_buffer_count(&pass.shader_key, !constants.is_empty());
+            let texture_count = texture_slot_mask.count_ones();
             self.shader_contracts.push(WeIrShaderContract {
                 shader_key: pass.shader_key.clone(),
                 pipeline_key,
                 texture_slot_mask,
                 constants,
-                resource_heap_count: textures.len() as u32 + uniform_count,
-                sampler_heap_count: textures.len() as u32,
+                resource_heap_count: texture_count + uniform_count,
+                sampler_heap_count: texture_count,
             });
         }
     }
+}
+
+fn mdl_entry_vertex_bounds(entry: &MdlMeshEntry) -> (SceneVec3, SceneVec3) {
+    let mut min = entry.vertices[0].position;
+    let mut max = entry.vertices[0].position;
+    for vertex in &entry.vertices[1..] {
+        min.x = min.x.min(vertex.position.x);
+        min.y = min.y.min(vertex.position.y);
+        min.z = min.z.min(vertex.position.z);
+        max.x = max.x.max(vertex.position.x);
+        max.y = max.y.max(vertex.position.y);
+        max.z = max.z.max(vertex.position.z);
+    }
+    (min, max)
+}
+
+fn declared_texture_slot_mask(shader_key: &str, textures: &[&WeIrMaterialTexture]) -> u32 {
+    let mut mask = textures
+        .iter()
+        .filter(|texture| texture.slot < 32)
+        .fold(0u32, |mask, texture| mask | (1 << texture.slot));
+    let key = shader_key.to_ascii_lowercase();
+    if mesh_shader_uses_slot_zero(&key) {
+        mask |= 1;
+    }
+    if key.contains("clippingmaskimage4") {
+        mask |= 1 << 1;
+    }
+    if key.contains("clippingtarget") {
+        mask |= 1 << 8;
+    }
+    if let Some(slot_count) = effect_shader_slot_count(&key) {
+        for slot in 0..slot_count.min(32) {
+            mask |= 1 << slot;
+        }
+    }
+    mask
+}
+
+fn mesh_shader_uses_slot_zero(key: &str) -> bool {
+    key.contains("genericimage")
+        || key.contains("genericparticle")
+        || key.contains("clippingmaskimage")
+        || key == "minimalalpha"
+        || key.starts_with("minimalalpha__")
+        || key == "passthrough"
+        || key.starts_with("passthrough__")
+}
+
+fn effect_shader_slot_count(key: &str) -> Option<u32> {
+    let (_, slots) = key.split_once("__slots_")?;
+    let digits = slots
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
+fn shader_uniform_buffer_count(shader_key: &str, has_constants: bool) -> u32 {
+    let key = shader_key.to_ascii_lowercase();
+    if mesh_shader_needs_draw_and_material_uniforms(&key) {
+        2
+    } else {
+        1 + u32::from(has_constants)
+    }
+}
+
+fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
+    key.contains("genericimage")
+        || key == "color"
+        || key.starts_with("color__")
+        || key == "we/color"
+        || key.starts_with("we/color__")
+        || key == "text"
+        || key.starts_with("text__")
+        || key == "we/text"
+        || key.starts_with("we/text__")
+        || key.contains("genericparticle")
 }
 
 fn push_instance_texture_overrides(pass: &Value, binds: &mut BTreeMap<u32, String>) {
@@ -1322,7 +1593,113 @@ mod tests {
         assert_eq!(ir.meshes[0].width, 64.0);
         assert_eq!(ir.meshes[0].height, 64.0);
         assert_eq!(ir.render_graphs.len(), 1);
+        assert_eq!(ir.shader_contracts.len(), 1);
+        assert_eq!(ir.shader_contracts[0].texture_slot_mask, 1);
+        assert_eq!(ir.shader_contracts[0].resource_heap_count, 3);
+        assert_eq!(ir.shader_contracts[0].sampler_heap_count, 1);
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn ingests_mdlv0023_mesh_into_ir_material_and_mesh_records() {
+        let root =
+            std::env::temp_dir().join(format!("gilder-we-mdl-ingest-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("models")).expect("models");
+        fs::create_dir_all(root.join("materials")).expect("materials");
+        fs::write(
+            root.join("project.json"),
+            r#"{"type":"scene","file":"scene.json","title":"MDL Demo"}"#,
+        )
+        .expect("project");
+        fs::write(
+            root.join("scene.json"),
+            r#"{"objects":[{"id":9,"name":"puppet","image":"models/puppet.mdl"}]}"#,
+        )
+        .expect("scene");
+        fs::write(root.join("models/puppet.mdl"), test_mdlv0023()).expect("mdl");
+        fs::write(
+            root.join("materials/puppet.json"),
+            r#"{"passes":[{"shader":"genericimage4","textures":[null]}]}"#,
+        )
+        .expect("material");
+
+        let ir = ingest_wallpaper_engine_project(&root).expect("ir");
+
+        assert_eq!(ir.objects[0].kind, SceneAbiObjectKind::Puppet);
+        assert_eq!(ir.objects[0].material, Some(0));
+        assert_eq!(ir.materials.len(), 1);
+        assert_eq!(ir.meshes.len(), 1);
+        assert_eq!(ir.meshes[0].vertex_count, 3);
+        assert_eq!(ir.meshes[0].index_count, 3);
+        assert_eq!(ir.mesh_indices, [0, 1, 2]);
+        assert_eq!(ir.mesh_vertices[2].position.x, 1.0);
+        assert_eq!(ir.mesh_vertices[2].uv, [1.0, 0.0]);
+        assert_eq!(ir.puppets.len(), 1);
+        assert_eq!(ir.puppets[0].mesh_count, 1);
+        assert_eq!(ir.puppets[0].attachment_count, 1);
+        assert_eq!(ir.puppet_attachments[0].bone_index, 41);
+        assert_eq!(ir.puppet_attachments[0].name, "eye");
+        assert_eq!(ir.render_graphs.len(), 1);
+        assert_eq!(ir.shader_contracts.len(), 1);
+        assert!(ir.unsupported.is_empty());
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    fn test_mdlv0023() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"MDLV0023\0");
+        push_u32(&mut bytes, 0x0180_0009);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 1);
+        bytes.extend_from_slice(b"materials/puppet.json\0");
+        push_u32(&mut bytes, 0);
+        for value in [0.0_f32, 0.0, 0.0, 1.0, 1.0, 0.0] {
+            push_f32(&mut bytes, value);
+        }
+        push_u32(&mut bytes, 0x0180_000f);
+        let mut vertices = Vec::new();
+        push_mdl_vertex(&mut vertices, [0.0, 0.0, 0.0], [0.0, 1.0]);
+        push_mdl_vertex(&mut vertices, [1.0, 0.0, 0.0], [1.0, 1.0]);
+        push_mdl_vertex(&mut vertices, [1.0, 1.0, 0.0], [1.0, 1.0]);
+        push_u32(&mut bytes, vertices.len() as u32);
+        bytes.extend_from_slice(&vertices);
+        push_u32(&mut bytes, 6);
+        for index in [0_u16, 1, 2] {
+            bytes.extend_from_slice(&index.to_le_bytes());
+        }
+        bytes.extend_from_slice(b"MDAT0001\0");
+        push_u32(&mut bytes, 0);
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&41_u16.to_le_bytes());
+        bytes.extend_from_slice(b"eye\0");
+        for index in 0..16 {
+            let value = if index == 0 || index == 5 || index == 10 || index == 15 {
+                1.0
+            } else {
+                0.0
+            };
+            push_f32(&mut bytes, value);
+        }
+        bytes
+    }
+
+    fn push_mdl_vertex(out: &mut Vec<u8>, position: [f32; 3], uv: [f32; 2]) {
+        for value in position {
+            push_f32(out, value);
+        }
+        out.resize(out.len() + 60, 0);
+        push_f32(out, uv[0]);
+        push_f32(out, uv[1]);
+    }
+
+    fn push_u32(out: &mut Vec<u8>, value: u32) {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+
+    fn push_f32(out: &mut Vec<u8>, value: f32) {
+        out.extend_from_slice(&value.to_le_bytes());
     }
 }

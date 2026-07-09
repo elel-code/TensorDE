@@ -36,6 +36,9 @@ pub struct WeSceneIr {
     pub meshes: Vec<WeIrMesh>,
     pub mesh_vertices: Vec<WeIrMeshVertex>,
     pub mesh_indices: Vec<u32>,
+    pub puppets: Vec<WeIrPuppet>,
+    pub puppet_bones: Vec<WeIrPuppetBone>,
+    pub puppet_attachments: Vec<WeIrPuppetAttachment>,
     pub effects: Vec<WeIrEffect>,
     pub effect_passes: Vec<WeIrEffectPass>,
     pub effect_bindings: Vec<WeIrEffectBinding>,
@@ -193,6 +196,36 @@ pub struct WeIrMesh {
 pub struct WeIrMeshVertex {
     pub position: SceneVec3,
     pub uv: [f32; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrPuppet {
+    pub object: u32,
+    pub resource: u32,
+    pub mesh_start: u32,
+    pub mesh_count: u32,
+    pub bone_start: u32,
+    pub bone_count: u32,
+    pub attachment_start: u32,
+    pub attachment_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrPuppetBone {
+    pub puppet: u32,
+    pub bone_index: u32,
+    pub flags: u32,
+    pub parent_index: i32,
+    pub local_matrix: [f32; 16],
+    pub info: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrPuppetAttachment {
+    pub puppet: u32,
+    pub bone_index: u32,
+    pub name: String,
+    pub local_matrix: [f32; 16],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

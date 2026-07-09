@@ -48,6 +48,10 @@ pub struct NativeVulkanVulkanaliaClearPresentSnapshot {
     pub runtime_elapsed_ms: u64,
     pub frames_presented: u64,
     pub average_present_fps: f64,
+    pub present_delta_min_micros: Option<u64>,
+    pub present_delta_max_micros: Option<u64>,
+    pub present_delta_over_6250us_count: u64,
+    pub present_delta_over_8334us_count: u64,
     pub clear_color: NativeVulkanClearColor,
     pub selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot,
     pub device_extensions: NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
@@ -257,6 +261,11 @@ fn with_vulkanalia_clear_present(
         .map(|fps| Duration::from_secs_f64(1.0 / fps as f64));
     let mut next_frame = Instant::now();
     let mut frames_presented = 0u64;
+    let mut last_present_completed_at = None::<Instant>;
+    let mut present_delta_min_micros = None::<u64>;
+    let mut present_delta_max_micros = None::<u64>;
+    let mut present_delta_over_6250us_count = 0u64;
+    let mut present_delta_over_8334us_count = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
     while Instant::now() < deadline {
         unsafe {
@@ -307,6 +316,26 @@ fn with_vulkanalia_clear_present(
                 .queue_present_khr(present_device.queue, &present_info)
                 .map_err(|err| format!("vkQueuePresentKHR(vulkanalia clear present): {err:?}"))?;
         }
+        let present_completed_at = Instant::now();
+        if let Some(last_present_completed_at) = last_present_completed_at {
+            let delta_micros = present_completed_at
+                .duration_since(last_present_completed_at)
+                .as_micros()
+                .min(u64::MAX as u128) as u64;
+            present_delta_min_micros = Some(
+                present_delta_min_micros.map_or(delta_micros, |value| value.min(delta_micros)),
+            );
+            present_delta_max_micros = Some(
+                present_delta_max_micros.map_or(delta_micros, |value| value.max(delta_micros)),
+            );
+            if delta_micros > 6_250 {
+                present_delta_over_6250us_count = present_delta_over_6250us_count.saturating_add(1);
+            }
+            if delta_micros > 8_334 {
+                present_delta_over_8334us_count = present_delta_over_8334us_count.saturating_add(1);
+            }
+        }
+        last_present_completed_at = Some(present_completed_at);
         frames_presented += 1;
 
         if let Some(interval) = frame_interval {
@@ -344,6 +373,10 @@ fn with_vulkanalia_clear_present(
         } else {
             frames_presented as f64 / elapsed.as_secs_f64()
         },
+        present_delta_min_micros,
+        present_delta_max_micros,
+        present_delta_over_6250us_count,
+        present_delta_over_8334us_count,
         clear_color: options.clear_color,
         selected_queue: NativeVulkanVulkanaliaPresentQueueSnapshot {
             physical_device_index: selection.physical_device_index,

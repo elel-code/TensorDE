@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::abi::*;
+use super::semantic_world::ResolvedSemanticFrame;
 use super::server::RendererSceneRenderPlan;
 use super::storage::SceneStorage;
 
@@ -16,6 +17,9 @@ use super::storage::SceneStorage;
 pub struct SceneRenderingDeviceGraphPlan {
     pub pass_nodes: Vec<SceneRenderingDevicePassNode>,
     pub mesh_draws: Vec<SceneRenderingDeviceMeshDraw>,
+    pub resolved_object_count: usize,
+    pub resolved_visible_object_count: usize,
+    pub resolved_attachment_link_count: usize,
     pub descriptor_heap_required: bool,
     pub descriptor_heap_resource_count: u32,
     pub descriptor_heap_sampled_image_count: u32,
@@ -30,13 +34,25 @@ impl SceneRenderingDeviceGraphPlan {
         storage: &SceneStorage,
         render_plan: RendererSceneRenderPlan,
     ) -> Self {
+        let semantic_frame = super::semantic_world::SceneSemanticWorld::from_storage(storage)
+            .expect("scene semantic world must build for graph planning")
+            .resolve_frame()
+            .expect("scene semantic frame must resolve for graph planning");
+        Self::from_storage_with_semantic_frame(storage, render_plan, &semantic_frame)
+    }
+
+    pub(crate) fn from_storage_with_semantic_frame(
+        storage: &SceneStorage,
+        render_plan: RendererSceneRenderPlan,
+        semantic_frame: &ResolvedSemanticFrame,
+    ) -> Self {
         let mut pass_nodes = Vec::new();
         let mut mesh_draws = Vec::new();
 
         for (graph_index, graph) in storage.render_graphs().iter().enumerate() {
             for (local_pass_index, pass) in storage.render_graph_passes(graph).iter().enumerate() {
                 let mesh_draw_start = mesh_draws.len() as u32;
-                if pass_draws_object_mesh(pass) {
+                if pass_draws_object_mesh(pass) && pass_object_is_visible(semantic_frame, pass) {
                     for (mesh_index, mesh) in storage.meshes().iter().enumerate() {
                         if mesh.object == pass.object {
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
@@ -68,6 +84,9 @@ impl SceneRenderingDeviceGraphPlan {
         Self {
             pass_nodes,
             mesh_draws,
+            resolved_object_count: semantic_frame.objects.len(),
+            resolved_visible_object_count: semantic_frame.visible_object_count,
+            resolved_attachment_link_count: semantic_frame.attachment_links.len(),
             descriptor_heap_required: render_plan.descriptor_heap_required,
             descriptor_heap_resource_count: render_plan.descriptor_heap_resource_count,
             descriptor_heap_sampled_image_count: render_plan.descriptor_heap_sampled_image_count,
@@ -111,6 +130,15 @@ fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
                 | SceneRenderPassKind::EffectMaterial
                 | SceneRenderPassKind::ColorBlendPassthrough
         )
+}
+
+fn pass_object_is_visible(
+    semantic_frame: &ResolvedSemanticFrame,
+    pass: &SceneRenderPassRecord,
+) -> bool {
+    semantic_frame
+        .object(pass.object)
+        .is_some_and(|object| object.resolved_visible)
 }
 
 #[cfg(test)]
