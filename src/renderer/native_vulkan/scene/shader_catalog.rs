@@ -1,0 +1,59 @@
+//! Built-in scene shader catalog.
+//!
+//! References:
+//! - `docs/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/docs/shader-conventions.md`
+//! - `reverse-engineered/shaders/**`
+//! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
+
+include!(concat!(env!("OUT_DIR"), "/gilder_scene_shader_catalog.rs"));
+
+pub fn native_vulkan_scene_shader_catalog() -> &'static [BuiltinSceneShader] {
+    BUILTIN_SCENE_SHADERS
+}
+
+pub fn native_vulkan_scene_shader_for_key(key: &str) -> Option<&'static BuiltinSceneShader> {
+    let key = key.trim();
+    if key.is_empty() {
+        return None;
+    }
+    find_builtin_scene_shader(key)
+        .or_else(|| find_we_builtin_scene_shader(key))
+        .or_else(|| {
+            key.rsplit_once('/')
+                .and_then(|(_, basename)| find_builtin_scene_shader(basename))
+        })
+        .or_else(|| {
+            key.rsplit_once('/')
+                .and_then(|(_, basename)| find_we_builtin_scene_shader(basename))
+        })
+}
+
+fn find_builtin_scene_shader(key: &str) -> Option<&'static BuiltinSceneShader> {
+    BUILTIN_SCENE_SHADERS
+        .iter()
+        .find(|shader| shader.key.eq_ignore_ascii_case(key))
+}
+
+fn find_we_builtin_scene_shader(key: &str) -> Option<&'static BuiltinSceneShader> {
+    if key.contains('/') {
+        return None;
+    }
+    let we_key = format!("we/{key}");
+    find_builtin_scene_shader(&we_key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shader_catalog_resolves_we_material_names_without_runtime_files() {
+        let shader = native_vulkan_scene_shader_for_key("genericimage4")
+            .expect("genericimage4 built-in shader");
+        assert_eq!(shader.key, "we/genericimage4");
+        assert!(!shader.vertex_spirv.is_empty());
+        assert!(!shader.fragment_spirv.is_empty());
+        assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
+    }
+}

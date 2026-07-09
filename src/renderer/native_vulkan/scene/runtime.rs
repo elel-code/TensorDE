@@ -1,0 +1,279 @@
+//! Native Vulkan scene present runtime boundary.
+//!
+//! References:
+//! - `docs/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/docs/exe/blend-and-render.md`
+//! - `reverse-engineered/docs/exe/global-uniforms.md`
+//! - `references/godot/servers/rendering/renderer_scene_render.*`
+//! - `references/godot/servers/rendering/rendering_device_graph.*`
+//! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use serde::Serialize;
+
+use crate::engine::scene::SceneStorage;
+use crate::renderer::native_vulkan::{
+    NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
+    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
+    run_native_vulkan_vulkanalia_scene_present,
+};
+
+use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneRuntimeSnapshot {
+    pub binding: &'static str,
+    pub route: &'static str,
+    pub source: PathBuf,
+    pub backend_plan: NativeVulkanSceneBackendPlan,
+    pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
+    pub frames_presented: u64,
+    pub average_present_fps: f64,
+    pub present_delta_min_micros: Option<u64>,
+    pub present_delta_max_micros: Option<u64>,
+    pub present_delta_over_6250us_count: u64,
+    pub present_delta_over_8334us_count: u64,
+    pub descriptor_model: &'static str,
+    pub present_mode: &'static str,
+    pub render_graph_draw_count: usize,
+    pub mesh_draw_count: usize,
+    pub mesh_draw_recording_ready: bool,
+    pub mesh_draw_recorded_this_run: bool,
+    pub runtime_status: &'static str,
+}
+
+pub fn run_scene(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    source: PathBuf,
+) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
+    let file = std::fs::File::open(&source).map_err(|err| {
+        NativeVulkanError::Scene(format!(
+            "open scene engine binary {}: {err}",
+            source.display()
+        ))
+    })?;
+    let storage = SceneStorage::from_binary_reader(file).map_err(|err| {
+        NativeVulkanError::Scene(format!(
+            "load scene engine binary {} into scene runtime storage: {err}",
+            source.display()
+        ))
+    })?;
+    let backend_plan = native_vulkan_scene_backend_plan(&storage);
+    validate_scene_runtime_plan(&backend_plan)?;
+
+    let present =
+        run_native_vulkan_vulkanalia_scene_present(NativeVulkanVulkanaliaScenePresentOptions {
+            host: options.host,
+            wait_configure_roundtrips: options.wait_configure_roundtrips,
+            duration,
+            target_max_fps: options.target_max_fps,
+            clear_color: scene_clear_color(&storage),
+            storage: storage.clone(),
+        })
+        .map_err(NativeVulkanError::Scene)?;
+    let mesh_draw_recording_ready = backend_plan.render_graph_executor.draw_count > 0
+        && backend_plan.pipeline_cache.shader_catalog_hit_count
+            == backend_plan.pipeline_cache.pipeline_count
+        && backend_plan
+            .resource_storage
+            .mesh_buffer
+            .device_address_required;
+
+    Ok(NativeVulkanSceneRuntimeSnapshot {
+        binding: "vulkanalia",
+        route: "scene-engine-fifo-latest-ready-present-runtime",
+        source,
+        frames_presented: present.frames_presented,
+        average_present_fps: present.average_present_fps,
+        present_delta_min_micros: present.present_delta_min_micros,
+        present_delta_max_micros: present.present_delta_max_micros,
+        present_delta_over_6250us_count: present.present_delta_over_6250us_count,
+        present_delta_over_8334us_count: present.present_delta_over_8334us_count,
+        descriptor_model: "VK_EXT_descriptor_heap",
+        present_mode: backend_plan.present_mode,
+        render_graph_draw_count: backend_plan.render_graph_executor.draw_count,
+        mesh_draw_count: backend_plan.rendering_device_graph.mesh_draws.len(),
+        mesh_draw_recording_ready,
+        mesh_draw_recorded_this_run: present.mesh_draw_recorded,
+        runtime_status: if mesh_draw_recording_ready {
+            "scene-engine-vulkan-mesh-draw-recorded"
+        } else {
+            "scene-engine-present-loop-ready-without-mesh-draws"
+        },
+        backend_plan,
+        present,
+    })
+}
+
+fn validate_scene_runtime_plan(
+    backend_plan: &NativeVulkanSceneBackendPlan,
+) -> Result<(), NativeVulkanError> {
+    if backend_plan.present_mode != "fifo-latest-ready" {
+        return Err(NativeVulkanError::Scene(
+            "scene runtime requires FIFO latest ready present".to_owned(),
+        ));
+    }
+    if backend_plan.pipeline_cache.shader_catalog_hit_count
+        != backend_plan.pipeline_cache.pipeline_count
+    {
+        return Err(NativeVulkanError::Scene(format!(
+            "scene runtime missing built-in shader catalog entries: {}",
+            backend_plan.pipeline_cache.missing_shader_keys.join(", ")
+        )));
+    }
+    if backend_plan.rendering_device_graph.descriptor_heap_required
+        && backend_plan
+            .resource_storage
+            .descriptor_heap
+            .descriptor_model
+            != "VK_EXT_descriptor_heap"
+    {
+        return Err(NativeVulkanError::Scene(
+            "scene runtime requires VK_EXT_descriptor_heap resource binding".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn scene_clear_color(storage: &SceneStorage) -> NativeVulkanClearColor {
+    let [r, g, b, a] = storage.project().clear_color;
+    NativeVulkanClearColor { r, g, b, a }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::scene::{RendererSceneRenderPlan, SceneRenderingDeviceGraphPlan};
+    use crate::renderer::native_vulkan::scene::{
+        NativeVulkanSceneDescriptorHeapPlan, NativeVulkanSceneMeshUploadPlan,
+    };
+    use crate::renderer::native_vulkan::scene::{
+        NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
+        NativeVulkanScenePipelineCachePlan, NativeVulkanSceneRenderGraphExecutorPlan,
+        NativeVulkanSceneResourceStoragePlan,
+    };
+
+    #[test]
+    fn scene_runtime_plan_rejects_missing_builtin_shader_catalog_entries() {
+        let mut plan = empty_backend_plan();
+        plan.pipeline_cache.pipeline_count = 1;
+        plan.pipeline_cache.missing_shader_keys = vec!["not-built-in".to_owned()];
+
+        let err = validate_scene_runtime_plan(&plan).unwrap_err();
+
+        assert!(err.to_string().contains("missing built-in shader catalog"));
+    }
+
+    fn empty_backend_plan() -> NativeVulkanSceneBackendPlan {
+        NativeVulkanSceneBackendPlan {
+            renderer_scene_render: RendererSceneRenderPlan {
+                object_count: 0,
+                visible_object_count: 0,
+                resource_count: 0,
+                texture_count: 0,
+                material_count: 0,
+                mesh_count: 0,
+                visible_mesh_binding_count: 0,
+                mesh_vertex_count: 0,
+                mesh_index_count: 0,
+                puppet_binding_count: 0,
+                visible_puppet_binding_count: 0,
+                attachment_link_count: 0,
+                effect_count: 0,
+                render_graph_count: 0,
+                render_pass_count: 0,
+                render_binding_count: 0,
+                image_target_count: 0,
+                shader_contract_count: 0,
+                resource_payload_bytes: 0,
+                descriptor_heap_required: true,
+                descriptor_heap_resource_count: 0,
+                descriptor_heap_sampled_image_count: 0,
+                descriptor_heap_uniform_buffer_count: 0,
+                descriptor_heap_storage_buffer_count: 0,
+                descriptor_heap_sampler_count: 0,
+                fifo_latest_ready_present_required: true,
+            },
+            rendering_device_graph: SceneRenderingDeviceGraphPlan {
+                pass_nodes: Vec::new(),
+                mesh_draws: Vec::new(),
+                resolved_object_count: 0,
+                resolved_visible_object_count: 0,
+                resolved_attachment_link_count: 0,
+                descriptor_heap_required: true,
+                descriptor_heap_resource_count: 0,
+                descriptor_heap_sampled_image_count: 0,
+                descriptor_heap_uniform_buffer_count: 0,
+                descriptor_heap_storage_buffer_count: 0,
+                descriptor_heap_sampler_count: 0,
+                fifo_latest_ready_present_required: true,
+            },
+            resource_storage: NativeVulkanSceneResourceStoragePlan {
+                resource_record_count: 0,
+                texture_record_count: 0,
+                material_record_count: 0,
+                effect_record_count: 0,
+                resource_payload_bytes: 0,
+                mesh_buffer: NativeVulkanSceneMeshBufferPlan {
+                    mesh_count: 0,
+                    vertex_count: 0,
+                    index_count: 0,
+                    vertex_buffer_bytes: 0,
+                    index_buffer_bytes: 0,
+                    draw_count: 0,
+                    device_address_required: false,
+                },
+                descriptor_heap: NativeVulkanSceneHeapStoragePlan {
+                    descriptor_model: "VK_EXT_descriptor_heap",
+                    resource_descriptor_count: 0,
+                    sampled_image_descriptor_count: 0,
+                    uniform_buffer_descriptor_count: 0,
+                    storage_buffer_descriptor_count: 0,
+                    sampler_descriptor_count: 0,
+                    shader_contract_count: 0,
+                },
+                shader_heap_slices: Vec::new(),
+                payload_residency: "scene-resource-payload-offset-slices",
+                mesh_residency: "device-addressable-scene-mesh-buffers",
+            },
+            pipeline_cache: NativeVulkanScenePipelineCachePlan {
+                pipeline_count: 0,
+                entries: Vec::new(),
+                shader_catalog_entry_count: 0,
+                shader_catalog_hit_count: 0,
+                missing_shader_keys: Vec::new(),
+                cache_model: "pipeline-key-hash-cache",
+                shader_catalog_source: "built-in-scene-shader-catalog",
+            },
+            render_graph_executor: NativeVulkanSceneRenderGraphExecutorPlan {
+                command_count: 0,
+                draw_count: 0,
+                commands: Vec::new(),
+                heap_binding_model: "VK_EXT_descriptor_heap",
+                present_mode: "fifo-latest-ready",
+                executor_status: "scene-render-graph-empty",
+            },
+            descriptor_heap: NativeVulkanSceneDescriptorHeapPlan {
+                resource_descriptor_count: 0,
+                sampled_image_descriptor_count: 0,
+                uniform_buffer_descriptor_count: 0,
+                storage_buffer_descriptor_count: 0,
+                sampler_descriptor_count: 0,
+                shader_contract_count: 0,
+            },
+            mesh_upload: NativeVulkanSceneMeshUploadPlan {
+                mesh_count: 0,
+                vertex_count: 0,
+                index_count: 0,
+                vertex_buffer_bytes: 0,
+                index_buffer_bytes: 0,
+                device_address_required: false,
+            },
+            present_mode: "fifo-latest-ready",
+            legacy_binding_forbidden: true,
+        }
+    }
+}
