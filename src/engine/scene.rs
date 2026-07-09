@@ -20,8 +20,9 @@ pub use binary::{
     write_scene_binary,
 };
 pub use rendering_device_graph::{
-    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
-    SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+    SceneRenderingDevicePassNode, SceneRenderingDevicePuppetBoneMatrix,
+    SceneRenderingDevicePuppetBonePalette, SceneRenderingDeviceSampledBinding,
     SceneRenderingDeviceTargetAllocation,
 };
 pub use semantic_world::{

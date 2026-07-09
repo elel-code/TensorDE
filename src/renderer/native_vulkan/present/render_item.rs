@@ -333,7 +333,9 @@ mod tests {
                         mesh_draw_count: 1,
                     }],
                     target_allocations: Vec::new(),
+                    sampled_bindings: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
+                        primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                         mesh_index: 0,
                         resolved_object_index: 0,
                         clip_transform: identity_clip_transform(),

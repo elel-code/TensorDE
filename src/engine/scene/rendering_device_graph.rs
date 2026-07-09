@@ -17,6 +17,7 @@ use super::storage::SceneStorage;
 pub struct SceneRenderingDeviceGraphPlan {
     pub pass_nodes: Vec<SceneRenderingDevicePassNode>,
     pub target_allocations: Vec<SceneRenderingDeviceTargetAllocation>,
+    pub sampled_bindings: Vec<SceneRenderingDeviceSampledBinding>,
     pub mesh_draws: Vec<SceneRenderingDeviceMeshDraw>,
     pub puppet_bone_palettes: Vec<SceneRenderingDevicePuppetBonePalette>,
     pub puppet_bone_matrices: Vec<SceneRenderingDevicePuppetBoneMatrix>,
@@ -44,6 +45,7 @@ impl SceneRenderingDeviceGraphPlan {
         semantic_frame: &ResolvedSemanticFrame,
     ) -> Self {
         let mut pass_nodes = Vec::new();
+        let mut sampled_bindings = Vec::new();
         let mut mesh_draws = Vec::new();
         let puppet_bone_palettes = semantic_frame
             .puppet_bone_palettes
@@ -69,6 +71,7 @@ impl SceneRenderingDeviceGraphPlan {
 
         for (graph_index, graph) in storage.render_graphs().iter().enumerate() {
             for (local_pass_index, pass) in storage.render_graph_passes(graph).iter().enumerate() {
+                let pass_node_index = pass_nodes.len() as u32;
                 let mesh_draw_start = mesh_draws.len() as u32;
                 let pass_object_state = visible_pass_object(semantic_frame, pass);
                 if let (true, Some(pass_object_state)) =
@@ -78,6 +81,7 @@ impl SceneRenderingDeviceGraphPlan {
                     for (mesh_index, mesh) in storage.meshes().iter().enumerate() {
                         if mesh.object == pass.object {
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
+                                primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                                 mesh_index: mesh_index as u32,
                                 resolved_object_index,
                                 clip_transform: scene_clip_transform(
@@ -102,6 +106,23 @@ impl SceneRenderingDeviceGraphPlan {
                         }
                     }
                 }
+                if mesh_draws.len() == mesh_draw_start as usize
+                    && pass_draws_fullscreen_utility(storage, pass, pass_object_state)
+                {
+                    mesh_draws.push(fullscreen_utility_draw(pass, pass_object_state));
+                }
+                let mesh_draw_count = mesh_draws.len() as u32 - mesh_draw_start;
+                sampled_bindings.extend(storage.render_pass_bindings(pass).iter().filter_map(
+                    |binding| {
+                        sampled_binding(
+                            graph_index as u32,
+                            pass_node_index,
+                            mesh_draw_start,
+                            mesh_draw_count,
+                            binding,
+                        )
+                    },
+                ));
                 pass_nodes.push(SceneRenderingDevicePassNode {
                     graph_index: graph_index as u32,
                     pass_record_index: graph.pass_start + local_pass_index as u32,
@@ -112,7 +133,7 @@ impl SceneRenderingDeviceGraphPlan {
                     binding_start: pass.binding_start,
                     binding_count: pass.binding_count,
                     mesh_draw_start,
-                    mesh_draw_count: mesh_draws.len() as u32 - mesh_draw_start,
+                    mesh_draw_count,
                 });
             }
         }
@@ -129,6 +150,7 @@ impl SceneRenderingDeviceGraphPlan {
         Self {
             pass_nodes,
             target_allocations,
+            sampled_bindings,
             mesh_draws,
             puppet_bone_palettes,
             puppet_bone_matrices,
@@ -149,6 +171,17 @@ impl SceneRenderingDeviceGraphPlan {
             fifo_latest_ready_present_required: render_plan.fifo_latest_ready_present_required,
         }
     }
+
+    pub fn fullscreen_utility_draw_count(&self) -> usize {
+        self.mesh_draws
+            .iter()
+            .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
+            .count()
+    }
+
+    pub fn uses_fullscreen_utility_primitive(&self) -> bool {
+        self.fullscreen_utility_draw_count() != 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,6 +200,7 @@ pub struct SceneRenderingDevicePassNode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceTargetAllocation {
+    pub graph_index: u32,
     pub target: SceneRenderTargetKind,
     pub target_name: SceneStringId,
     pub first_write_pass_id: u32,
@@ -174,8 +208,39 @@ pub struct SceneRenderingDeviceTargetAllocation {
     pub physical_slot: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneRenderingDeviceSampledBinding {
+    pub pass_node_index: u32,
+    pub graph_index: u32,
+    pub mesh_draw_start: u32,
+    pub mesh_draw_count: u32,
+    pub kind: SceneRenderBindingKind,
+    pub slot: u32,
+    pub target: SceneRenderTargetKind,
+    pub target_name: SceneStringId,
+}
+
+impl SceneRenderingDeviceSampledBinding {
+    pub fn logical_target(self) -> Option<(u32, SceneRenderTargetKind, SceneStringId)> {
+        match self.kind {
+            SceneRenderBindingKind::PreviousGraphTarget => Some((
+                self.graph_index,
+                SceneRenderTargetKind::ImageLocalMain,
+                SceneStringId::NONE,
+            )),
+            SceneRenderBindingKind::GraphTarget
+            | SceneRenderBindingKind::NamedFboBind
+            | SceneRenderBindingKind::EffectTarget => {
+                Some((self.graph_index, self.target, self.target_name))
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceMeshDraw {
+    pub primitive: SceneRenderingDeviceDrawPrimitive,
     pub mesh_index: u32,
     pub resolved_object_index: u32,
     pub clip_transform: [[f32; 4]; 4],
@@ -187,6 +252,13 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub vertex_count: u32,
     pub index_start: u32,
     pub index_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneRenderingDeviceDrawPrimitive {
+    ObjectMesh,
+    FullscreenTriangle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -225,6 +297,61 @@ fn visible_pass_object<'frame>(
         .filter(|object| object.resolved_visible)
 }
 
+fn pass_draws_fullscreen_utility(
+    storage: &SceneStorage,
+    pass: &SceneRenderPassRecord,
+    pass_object_state: Option<&ResolvedObjectState>,
+) -> bool {
+    if !matches!(
+        pass.role,
+        SceneRenderPassKind::EffectMaterial
+            | SceneRenderPassKind::ColorBlendPassthrough
+            | SceneRenderPassKind::SceneComposite
+    ) {
+        return false;
+    }
+    if pass.object.0 != INVALID_OBJECT_ID && pass_object_state.is_none() {
+        return false;
+    }
+    storage
+        .string(pass.shader_key)
+        .is_some_and(shader_uses_fullscreen_utility_primitive)
+}
+
+fn shader_uses_fullscreen_utility_primitive(shader_key: &str) -> bool {
+    let key = shader_key.to_ascii_lowercase();
+    key.starts_with("effects/")
+        || key.starts_with("workshop/")
+        || key == "minimalalpha"
+        || key.starts_with("minimalalpha__")
+        || key == "passthrough"
+        || key.starts_with("passthrough__")
+        || key.contains("composelayer")
+        || key.contains("flattexture")
+}
+
+fn fullscreen_utility_draw(
+    pass: &SceneRenderPassRecord,
+    pass_object_state: Option<&ResolvedObjectState>,
+) -> SceneRenderingDeviceMeshDraw {
+    SceneRenderingDeviceMeshDraw {
+        primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        mesh_index: INVALID_OBJECT_ID,
+        resolved_object_index: pass_object_state
+            .map(|object| object.object_index)
+            .unwrap_or(INVALID_OBJECT_ID),
+        clip_transform: identity_clip_transform(),
+        skinning_palette_start: INVALID_OBJECT_ID,
+        skinning_palette_count: 0,
+        object: pass.object,
+        material: pass.material,
+        vertex_start: 0,
+        vertex_count: 3,
+        index_start: 0,
+        index_count: 3,
+    }
+}
+
 fn scene_clip_transform(project: &SceneProjectRecord, world_matrix: [f32; 16]) -> [[f32; 4]; 4] {
     let width = project.logical_width.max(1) as f32;
     let height = project.logical_height.max(1) as f32;
@@ -253,6 +380,15 @@ fn scene_clip_transform(project: &SceneProjectRecord, world_matrix: [f32; 16]) -
             world_matrix[11],
             world_matrix[15],
         ],
+    ]
+}
+
+fn identity_clip_transform() -> [[f32; 4]; 4] {
+    [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
     ]
 }
 
@@ -298,8 +434,39 @@ fn pass_draw_material(
     }
 }
 
+fn sampled_binding(
+    graph_index: u32,
+    pass_node_index: u32,
+    mesh_draw_start: u32,
+    mesh_draw_count: u32,
+    binding: &SceneRenderBindingRecord,
+) -> Option<SceneRenderingDeviceSampledBinding> {
+    matches!(
+        binding.kind,
+        SceneRenderBindingKind::SourceTexture
+            | SceneRenderBindingKind::TextureSlot
+            | SceneRenderBindingKind::AlphaTextureSlot
+            | SceneRenderBindingKind::PreviousGraphTarget
+            | SceneRenderBindingKind::GraphTarget
+            | SceneRenderBindingKind::NamedFboBind
+            | SceneRenderBindingKind::EffectTarget
+            | SceneRenderBindingKind::VideoFrame
+    )
+    .then_some(SceneRenderingDeviceSampledBinding {
+        pass_node_index,
+        graph_index,
+        mesh_draw_start,
+        mesh_draw_count,
+        kind: binding.kind,
+        slot: binding.slot,
+        target: binding.target,
+        target_name: binding.name,
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TargetAllocationState {
+    graph_index: u32,
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
     first_write_pass_id: u32,
@@ -308,14 +475,29 @@ struct TargetAllocationState {
     last_use_order: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TargetAllocationCompatibility {
+    format: SceneStringId,
+    width_divisor_milli: u32,
+    height_divisor_milli: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PhysicalTargetState {
+    last_use_order: u32,
+    compatibility: TargetAllocationCompatibility,
+    reusable: bool,
+}
+
 fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceTargetAllocation> {
     let mut states = Vec::<TargetAllocationState>::new();
     let mut pass_order = 0u32;
-    for graph in storage.render_graphs() {
+    for (graph_index, graph) in storage.render_graphs().iter().enumerate() {
         for pass in storage.render_graph_passes(graph) {
             if graph_target_is_allocatable(pass.target) {
                 record_target_write(
                     &mut states,
+                    graph_index as u32,
                     pass.target,
                     pass.target_name,
                     pass.id,
@@ -324,7 +506,14 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
             }
             for binding in storage.render_pass_bindings(pass) {
                 if let Some((target, name)) = binding_target_read(binding) {
-                    record_target_read(&mut states, target, name, pass.id, pass_order);
+                    record_target_read(
+                        &mut states,
+                        graph_index as u32,
+                        target,
+                        name,
+                        pass.id,
+                        pass_order,
+                    );
                 }
             }
             pass_order = pass_order.saturating_add(1);
@@ -334,21 +523,34 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
         left.first_write_order
             .cmp(&right.first_write_order)
             .then_with(|| left.target.to_u32().cmp(&right.target.to_u32()))
+            .then_with(|| left.graph_index.cmp(&right.graph_index))
             .then_with(|| left.target_name.0.cmp(&right.target_name.0))
     });
-    let mut physical_last_use = Vec::<u32>::new();
+    let mut physical_targets = Vec::<PhysicalTargetState>::new();
     states
         .into_iter()
         .map(|state| {
-            let slot = physical_last_use
+            let compatibility = target_allocation_compatibility(storage, state);
+            let reusable = target_is_transient_aliasable(state.target);
+            let slot = physical_targets
                 .iter()
-                .position(|last_use| *last_use < state.first_write_order)
+                .position(|physical| {
+                    reusable
+                        && physical.reusable
+                        && physical.last_use_order < state.first_write_order
+                        && physical.compatibility == compatibility
+                })
                 .unwrap_or_else(|| {
-                    physical_last_use.push(0);
-                    physical_last_use.len() - 1
+                    physical_targets.push(PhysicalTargetState {
+                        last_use_order: 0,
+                        compatibility,
+                        reusable,
+                    });
+                    physical_targets.len() - 1
                 });
-            physical_last_use[slot] = state.last_use_order;
+            physical_targets[slot].last_use_order = state.last_use_order;
             SceneRenderingDeviceTargetAllocation {
+                graph_index: state.graph_index,
                 target: state.target,
                 target_name: state.target_name,
                 first_write_pass_id: state.first_write_pass_id,
@@ -359,23 +561,56 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
         .collect()
 }
 
+fn target_is_transient_aliasable(target: SceneRenderTargetKind) -> bool {
+    matches!(
+        target,
+        SceneRenderTargetKind::ImageLocalMain
+            | SceneRenderTargetKind::ImageLocalSub
+            | SceneRenderTargetKind::Temporary
+    )
+}
+
+fn target_allocation_compatibility(
+    storage: &SceneStorage,
+    state: TargetAllocationState,
+) -> TargetAllocationCompatibility {
+    storage
+        .document()
+        .image_targets
+        .iter()
+        .find(|target| target.role == state.target && target.name == state.target_name)
+        .map(|target| TargetAllocationCompatibility {
+            format: target.format,
+            width_divisor_milli: target.width_divisor_milli.max(1),
+            height_divisor_milli: target.height_divisor_milli.max(1),
+        })
+        .unwrap_or(TargetAllocationCompatibility {
+            format: SceneStringId::NONE,
+            width_divisor_milli: 1_000,
+            height_divisor_milli: 1_000,
+        })
+}
+
 fn record_target_write(
     states: &mut Vec<TargetAllocationState>,
+    graph_index: u32,
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
     pass_id: u32,
     pass_order: u32,
 ) {
-    if let Some(state) = states
-        .iter_mut()
-        .find(|state| state.target == target && state.target_name == target_name)
-    {
+    if let Some(state) = states.iter_mut().find(|state| {
+        state.graph_index == graph_index
+            && state.target == target
+            && state.target_name == target_name
+    }) {
         state.first_write_pass_id = state.first_write_pass_id.min(pass_id);
         state.last_use_pass_id = state.last_use_pass_id.max(pass_id);
         state.first_write_order = state.first_write_order.min(pass_order);
         state.last_use_order = state.last_use_order.max(pass_order);
     } else {
         states.push(TargetAllocationState {
+            graph_index,
             target,
             target_name,
             first_write_pass_id: pass_id,
@@ -388,15 +623,17 @@ fn record_target_write(
 
 fn record_target_read(
     states: &mut [TargetAllocationState],
+    graph_index: u32,
     target: SceneRenderTargetKind,
     target_name: SceneStringId,
     pass_id: u32,
     pass_order: u32,
 ) {
-    if let Some(state) = states
-        .iter_mut()
-        .find(|state| state.target == target && state.target_name == target_name)
-    {
+    if let Some(state) = states.iter_mut().find(|state| {
+        state.graph_index == graph_index
+            && state.target == target
+            && state.target_name == target_name
+    }) {
         state.last_use_pass_id = state.last_use_pass_id.max(pass_id);
         state.last_use_order = state.last_use_order.max(pass_order);
     }
@@ -686,8 +923,8 @@ mod tests {
                 scene_color_pass_reading_fbo(3, 1, 1),
             ],
             render_bindings: vec![
-                named_fbo_binding(SceneStringId(0)),
-                named_fbo_binding(SceneStringId(1)),
+                named_fbo_binding(SceneStringId(0), 0),
+                named_fbo_binding(SceneStringId(1), 2),
             ],
             ..SceneBinaryDocument::default()
         };
@@ -705,6 +942,116 @@ mod tests {
         assert_eq!(graph.target_allocations[1].last_use_pass_id, 3);
         assert_eq!(graph.graph_physical_target_count, 2);
         assert_eq!(graph.graph_aliased_target_count, 0);
+        assert_eq!(graph.sampled_bindings.len(), 2);
+        assert_eq!(graph.sampled_bindings[0].pass_node_index, 1);
+        assert_eq!(graph.sampled_bindings[0].slot, 0);
+        assert_eq!(graph.sampled_bindings[1].pass_node_index, 2);
+        assert_eq!(graph.sampled_bindings[1].slot, 2);
+        assert_eq!(
+            graph.sampled_bindings[1].logical_target(),
+            Some((0, SceneRenderTargetKind::NamedFbo, SceneStringId(1)))
+        );
+    }
+
+    #[test]
+    fn rendering_device_graph_does_not_alias_incompatible_effect_target_images() {
+        let document = SceneBinaryDocument {
+            strings: vec![
+                "fbo_a".to_owned(),
+                "fbo_b".to_owned(),
+                "rgba8".to_owned(),
+                "rgba16f".to_owned(),
+            ],
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(INVALID_OBJECT_ID),
+                pass_start: 0,
+                pass_count: 4,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![
+                named_fbo_pass(1, 0, SceneStringId(0), 0, 0),
+                scene_color_pass_reading_fbo(2, 0, 1),
+                named_fbo_pass(3, 2, SceneStringId(1), 1, 0),
+                scene_color_pass_reading_fbo(4, 1, 1),
+            ],
+            render_bindings: vec![
+                named_fbo_binding(SceneStringId(0), 0),
+                named_fbo_binding(SceneStringId(1), 0),
+            ],
+            image_targets: vec![
+                SceneImageTargetRecord {
+                    name: SceneStringId(0),
+                    role: SceneRenderTargetKind::NamedFbo,
+                    format: SceneStringId(2),
+                    width_divisor_milli: 1_000,
+                    height_divisor_milli: 1_000,
+                },
+                SceneImageTargetRecord {
+                    name: SceneStringId(1),
+                    role: SceneRenderTargetKind::NamedFbo,
+                    format: SceneStringId(3),
+                    width_divisor_milli: 2_000,
+                    height_divisor_milli: 2_000,
+                },
+            ],
+            ..SceneBinaryDocument::default()
+        };
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+
+        assert_eq!(graph.target_allocations.len(), 2);
+        assert_eq!(graph.graph_physical_target_count, 2);
+        assert_eq!(graph.graph_aliased_target_count, 0);
+        assert_eq!(graph.target_allocations[0].physical_slot, 0);
+        assert_eq!(graph.target_allocations[1].physical_slot, 1);
+    }
+
+    #[test]
+    fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object_mesh() {
+        let document = SceneBinaryDocument {
+            strings: vec!["effects/opacity__SLOTS_1".to_owned(), "fbo_a".to_owned()],
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(INVALID_OBJECT_ID),
+                pass_start: 0,
+                pass_count: 1,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 5,
+                role: SceneRenderPassKind::EffectMaterial,
+                object: SceneObjectHandle(INVALID_OBJECT_ID),
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                pass_index: 0,
+                shader_key: SceneStringId(0),
+                target: SceneRenderTargetKind::NamedFbo,
+                target_name: SceneStringId(1),
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+            }],
+            ..SceneBinaryDocument::default()
+        };
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+
+        assert_eq!(graph.pass_nodes[0].mesh_draw_start, 0);
+        assert_eq!(graph.pass_nodes[0].mesh_draw_count, 1);
+        assert_eq!(graph.mesh_draws.len(), 1);
+        assert_eq!(
+            graph.mesh_draws[0].primitive,
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        );
+        assert_eq!(graph.mesh_draws[0].vertex_count, 3);
+        assert_eq!(graph.mesh_draws[0].index_count, 3);
+        assert_eq!(
+            graph.mesh_draws[0].clip_transform,
+            identity_clip_transform()
+        );
     }
 
     fn named_fbo_pass(
@@ -744,10 +1091,10 @@ mod tests {
         }
     }
 
-    fn named_fbo_binding(name: SceneStringId) -> SceneRenderBindingRecord {
+    fn named_fbo_binding(name: SceneStringId, slot: u32) -> SceneRenderBindingRecord {
         SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::NamedFboBind,
-            slot: 0,
+            slot,
             target: SceneRenderTargetKind::NamedFbo,
             name,
         }

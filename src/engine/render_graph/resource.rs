@@ -76,12 +76,14 @@ pub(super) fn texture_binding_resource_key(
                 object_index.unwrap_or(usize::MAX)
             )
         }
-        TextureBindingRole::PreviousGraphTarget => "target:previous-graph-target".to_owned(),
-        TextureBindingRole::GraphTarget { role, name } => {
+        TextureBindingRole::PreviousGraphTarget { .. } => "target:previous-graph-target".to_owned(),
+        TextureBindingRole::GraphTarget { role, name, .. } => {
             render_target_resource_key(*role, name.as_deref())
         }
-        TextureBindingRole::NamedFboBind { name } => format!("target:named-fbo:{name}"),
-        TextureBindingRole::EffectTarget { name } => format!("target:first-class-effect:{name}"),
+        TextureBindingRole::NamedFboBind { name, .. } => format!("target:named-fbo:{name}"),
+        TextureBindingRole::EffectTarget { name, .. } => {
+            format!("target:first-class-effect:{name}")
+        }
         TextureBindingRole::VideoFrame { media_instance } => {
             format!("external-video-frame:{media_instance}")
         }

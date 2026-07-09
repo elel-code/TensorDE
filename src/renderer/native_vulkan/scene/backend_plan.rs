@@ -74,6 +74,14 @@ pub fn native_vulkan_scene_backend_plan_at(
     let scene_engine = rendering_server.scene_engine_render_plan_at(scene_time_seconds);
     let renderer_scene_render = scene_engine.renderer_scene_render;
     let rendering_device_graph = scene_engine.rendering_device_graph;
+    let utility_vertex_count =
+        usize::from(rendering_device_graph.uses_fullscreen_utility_primitive()) * 3;
+    let mesh_upload_vertex_count = renderer_scene_render
+        .mesh_vertex_count
+        .saturating_add(utility_vertex_count);
+    let mesh_upload_index_count = renderer_scene_render
+        .mesh_index_count
+        .saturating_add(utility_vertex_count);
     let resource_storage = native_vulkan_scene_resource_storage_plan(
         storage,
         renderer_scene_render,
@@ -105,15 +113,14 @@ pub fn native_vulkan_scene_backend_plan_at(
         },
         mesh_upload: NativeVulkanSceneMeshUploadPlan {
             mesh_count: renderer_scene_render.mesh_count,
-            vertex_count: renderer_scene_render.mesh_vertex_count,
-            index_count: renderer_scene_render.mesh_index_count,
-            vertex_buffer_bytes: renderer_scene_render
-                .mesh_vertex_count
+            vertex_count: mesh_upload_vertex_count,
+            index_count: mesh_upload_index_count,
+            vertex_buffer_bytes: mesh_upload_vertex_count
                 .saturating_mul(SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES),
-            index_buffer_bytes: renderer_scene_render
-                .mesh_index_count
+            index_buffer_bytes: mesh_upload_index_count
                 .saturating_mul(SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES),
-            device_address_required: renderer_scene_render.mesh_count > 0,
+            device_address_required: renderer_scene_render.mesh_count > 0
+                || utility_vertex_count != 0,
         },
         present_mode: "fifo-latest-ready",
         legacy_binding_forbidden: true,

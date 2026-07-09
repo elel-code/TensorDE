@@ -1390,8 +1390,8 @@ fn encode_image_targets(targets: &[SceneImageTargetRecord]) -> Vec<u8> {
         put_string_id(&mut out, record.name);
         put_u32(&mut out, record.role.to_u32());
         put_string_id(&mut out, record.format);
-        put_u32(&mut out, record.scale_x_milli);
-        put_u32(&mut out, record.scale_y_milli);
+        put_u32(&mut out, record.width_divisor_milli);
+        put_u32(&mut out, record.height_divisor_milli);
     }
     out
 }
@@ -1410,8 +1410,8 @@ fn decode_image_targets(data: &[u8]) -> Result<Vec<SceneImageTargetRecord>, Scen
             name,
             role,
             format: decoder.string_id()?,
-            scale_x_milli: decoder.u32()?,
-            scale_y_milli: decoder.u32()?,
+            width_divisor_milli: decoder.u32()?,
+            height_divisor_milli: decoder.u32()?,
         });
     }
     Ok(records)

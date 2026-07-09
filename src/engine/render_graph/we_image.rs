@@ -97,7 +97,8 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             };
         }
         if node.bindings.is_empty() {
-            node.bindings.push(TextureBindingRole::PreviousGraphTarget);
+            node.bindings
+                .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
         }
         if node.shader.is_none() && !effect_command_has_no_shader(effect) {
             graph.unsupported.push(UnsupportedGraphBoundary {
@@ -201,15 +202,17 @@ fn effect_command_has_no_shader(contract: &WeEffectPassContract) -> bool {
 
 fn we_binding_role(slot: u32, binding: &str) -> TextureBindingRole {
     if matches!(binding, "previous" | "_previous" | "$previous") {
-        TextureBindingRole::PreviousGraphTarget
+        TextureBindingRole::PreviousGraphTarget { slot }
     } else if matches!(binding, "source" | "g_Texture0") {
         TextureBindingRole::SourceTexture
     } else if binding.starts_with("_rt_") || binding.starts_with("_alias_") {
         TextureBindingRole::EffectTarget {
+            slot,
             name: binding.to_owned(),
         }
     } else if binding.starts_with("fbo_") {
         TextureBindingRole::NamedFboBind {
+            slot,
             name: binding.to_owned(),
         }
     } else {
@@ -332,6 +335,11 @@ mod tests {
         assert!(
             graph.passes[1]
                 .bindings
+                .contains(&TextureBindingRole::PreviousGraphTarget { slot: 1 })
+        );
+        assert!(
+            graph.passes[1]
+                .bindings
                 .contains(&TextureBindingRole::PassConstant {
                     name: "speed".to_owned()
                 })
@@ -339,6 +347,14 @@ mod tests {
         assert_eq!(graph.passes[1].target, RenderTargetRole::NamedFbo);
         assert_eq!(graph.passes[2].role, RenderPassRole::ColorBlendPassthrough);
         assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+        assert!(
+            graph.passes[2]
+                .bindings
+                .contains(&TextureBindingRole::NamedFboBind {
+                    slot: 1,
+                    name: "fbo_velocity".to_owned(),
+                })
+        );
         assert!(
             graph
                 .resource_uses()

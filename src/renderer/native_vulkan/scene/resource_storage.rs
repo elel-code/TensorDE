@@ -93,6 +93,14 @@ pub fn native_vulkan_scene_resource_storage_plan(
     rendering_device_graph: &SceneRenderingDeviceGraphPlan,
 ) -> NativeVulkanSceneResourceStoragePlan {
     let shader_heap_slices = shader_heap_slices(storage.document().shader_contracts.as_slice());
+    let utility_vertex_count =
+        usize::from(rendering_device_graph.uses_fullscreen_utility_primitive()) * 3;
+    let vertex_count = renderer_scene_render
+        .mesh_vertex_count
+        .saturating_add(utility_vertex_count);
+    let index_count = renderer_scene_render
+        .mesh_index_count
+        .saturating_add(utility_vertex_count);
     NativeVulkanSceneResourceStoragePlan {
         resource_record_count: renderer_scene_render.resource_count,
         texture_record_count: renderer_scene_render.texture_count,
@@ -101,16 +109,13 @@ pub fn native_vulkan_scene_resource_storage_plan(
         resource_payload_bytes: renderer_scene_render.resource_payload_bytes,
         mesh_buffer: NativeVulkanSceneMeshBufferPlan {
             mesh_count: renderer_scene_render.mesh_count,
-            vertex_count: renderer_scene_render.mesh_vertex_count,
-            index_count: renderer_scene_render.mesh_index_count,
-            vertex_buffer_bytes: renderer_scene_render
-                .mesh_vertex_count
-                .saturating_mul(SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES),
-            index_buffer_bytes: renderer_scene_render
-                .mesh_index_count
-                .saturating_mul(SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES),
+            vertex_count,
+            index_count,
+            vertex_buffer_bytes: vertex_count.saturating_mul(SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES),
+            index_buffer_bytes: index_count.saturating_mul(SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES),
             draw_count: rendering_device_graph.mesh_draws.len(),
-            device_address_required: renderer_scene_render.mesh_count > 0,
+            device_address_required: renderer_scene_render.mesh_count > 0
+                || rendering_device_graph.uses_fullscreen_utility_primitive(),
         },
         skinning_buffer: NativeVulkanSceneSkinningBufferPlan {
             palette_count: rendering_device_graph.puppet_bone_palettes.len(),
@@ -267,6 +272,7 @@ mod tests {
         let graph = SceneRenderingDeviceGraphPlan {
             target_allocations: vec![
                 SceneRenderingDeviceTargetAllocation {
+                    graph_index: 0,
                     target: SceneRenderTargetKind::NamedFbo,
                     target_name: SceneStringId(0),
                     first_write_pass_id: 1,
@@ -274,6 +280,7 @@ mod tests {
                     physical_slot: 0,
                 },
                 SceneRenderingDeviceTargetAllocation {
+                    graph_index: 0,
                     target: SceneRenderTargetKind::FirstClassEffectTarget,
                     target_name: SceneStringId(1),
                     first_write_pass_id: 3,
@@ -300,6 +307,7 @@ mod tests {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
+            sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

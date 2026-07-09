@@ -723,8 +723,8 @@ pub struct SceneImageTargetRecord {
     pub name: SceneStringId,
     pub role: SceneRenderTargetKind,
     pub format: SceneStringId,
-    pub scale_x_milli: u32,
-    pub scale_y_milli: u32,
+    pub width_divisor_milli: u32,
+    pub height_divisor_milli: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

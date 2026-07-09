@@ -12,15 +12,20 @@ pub enum TextureBindingRole {
     AlphaTextureSlot {
         slot: u32,
     },
-    PreviousGraphTarget,
+    PreviousGraphTarget {
+        slot: u32,
+    },
     GraphTarget {
+        slot: u32,
         role: RenderTargetRole,
         name: Option<String>,
     },
     NamedFboBind {
+        slot: u32,
         name: String,
     },
     EffectTarget {
+        slot: u32,
         name: String,
     },
     VideoFrame {

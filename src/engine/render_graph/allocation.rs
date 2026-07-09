@@ -306,6 +306,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -316,6 +317,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("b".to_owned()),
                     }],
@@ -343,6 +345,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -353,6 +356,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("b".to_owned()),
                     }],
@@ -381,10 +385,12 @@ mod tests {
                     None,
                     vec![
                         TextureBindingRole::GraphTarget {
+                            slot: 0,
                             role: RenderTargetRole::ImageLocalMain,
                             name: Some("a".to_owned()),
                         },
                         TextureBindingRole::GraphTarget {
+                            slot: 1,
                             role: RenderTargetRole::ImageLocalMain,
                             name: Some("b".to_owned()),
                         },
@@ -411,6 +417,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -424,6 +431,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("b".to_owned()),
                     }],
@@ -452,6 +460,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -465,6 +474,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("b".to_owned()),
                     }],
@@ -493,6 +503,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -506,6 +517,7 @@ mod tests {
                     RenderTargetRole::SceneColor,
                     None,
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("b".to_owned()),
                     }],

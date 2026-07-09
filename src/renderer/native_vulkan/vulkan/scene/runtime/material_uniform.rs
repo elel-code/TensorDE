@@ -154,7 +154,7 @@ mod tests {
     use crate::engine::scene::{
         SceneBinaryDocument, SceneCullMode, SceneDepthTest, SceneMaterialConstantRecord,
         SceneMaterialHandle, SceneMaterialPassRecord, SceneMaterialRecord, ScenePipelineBlend,
-        SceneResourceId, SceneStringId,
+        SceneRenderingDeviceDrawPrimitive, SceneResourceId, SceneStringId,
     };
 
     #[test]
@@ -226,6 +226,7 @@ mod tests {
 
     fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {
         SceneRenderingDeviceMeshDraw {
+            primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
             mesh_index: 0,
             resolved_object_index: 0,
             clip_transform: [[0.0; 4]; 4],

@@ -1070,11 +1070,11 @@ impl WeIrBuilder {
                 scale,
             });
             self.image_targets.push(WeIrImageTarget {
+                role: image_target_role(&name),
                 name,
                 format,
-                role: "first-class-effect-target".to_owned(),
-                scale_x_milli: scale_to_milli(scale),
-                scale_y_milli: scale_to_milli(scale),
+                width_divisor_milli: scale_divisor_to_milli(scale),
+                height_divisor_milli: scale_divisor_to_milli(scale),
             });
         }
         let fbo_count = self.effect_fbos.len() as u32 - fbo_start;
@@ -1678,7 +1678,15 @@ fn scene_blend_from_color_blend_mode(value: i32) -> SceneBlendMode {
     }
 }
 
-fn scale_to_milli(value: f32) -> u32 {
+fn image_target_role(name: &str) -> WeIrImageTargetRole {
+    if name.starts_with("fbo_") {
+        WeIrImageTargetRole::NamedFbo
+    } else {
+        WeIrImageTargetRole::FirstClassEffectTarget
+    }
+}
+
+fn scale_divisor_to_milli(value: f32) -> u32 {
     if value.is_finite() && value > 0.0 {
         (value * 1000.0).round().clamp(1.0, u32::MAX as f32) as u32
     } else {
@@ -1689,6 +1697,20 @@ fn scale_to_milli(value: f32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effect_image_target_role_and_scale_follow_we_fbo_semantics() {
+        assert_eq!(
+            image_target_role("fbo_velocity"),
+            WeIrImageTargetRole::NamedFbo
+        );
+        assert_eq!(
+            image_target_role("_rt_QuarterCompoBuffer1"),
+            WeIrImageTargetRole::FirstClassEffectTarget
+        );
+        assert_eq!(scale_divisor_to_milli(4.0), 4_000);
+        assert_eq!(scale_divisor_to_milli(1.0), 1_000);
+    }
 
     #[test]
     fn ingests_minimal_loose_scene_project() {

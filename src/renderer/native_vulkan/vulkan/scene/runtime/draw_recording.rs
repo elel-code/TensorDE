@@ -8,7 +8,7 @@ use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
 
 use crate::engine::scene::{
-    SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+    SceneRenderTargetKind, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
 };
 use crate::renderer::native_vulkan::{
     native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor,
@@ -21,6 +21,19 @@ use super::SceneGpuResources;
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawRange {
     pub start: u32,
     pub count: u32,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
+    pub primitive: SceneRenderingDeviceDrawPrimitive,
+    pub pipeline_index: u32,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub vertex_offset: i32,
+    pub resource_descriptor_base: usize,
+    pub sampler_descriptor_base: usize,
+    pub skinning_byte_offset: u64,
+    pub skinning_byte_count: u64,
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
@@ -50,6 +63,29 @@ pub(in crate::renderer::native_vulkan) fn draw_range_count(ranges: &[SceneGpuDra
         .sum()
 }
 
+pub(in crate::renderer::native_vulkan) fn record_scene_draw_extent(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    extent: vk::Extent2D,
+) {
+    let viewport = vk::Viewport::builder()
+        .x(0.0)
+        .y(0.0)
+        .width(extent.width as f32)
+        .height(extent.height as f32)
+        .min_depth(0.0)
+        .max_depth(1.0)
+        .build();
+    let scissor = vk::Rect2D::builder()
+        .offset(vk::Offset2D { x: 0, y: 0 })
+        .extent(extent)
+        .build();
+    unsafe {
+        device.cmd_set_viewport(command_buffer, 0, &[viewport]);
+        device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -60,11 +96,6 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
         return Ok(());
     }
     unsafe {
-        device.cmd_bind_pipeline(
-            command_buffer,
-            vk::PipelineBindPoint::GRAPHICS,
-            scene.pipeline,
-        );
         let vertex_buffers = [scene.vertex_buffer.buffer];
         let vertex_offsets = [0u64];
         device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
@@ -110,14 +141,30 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
             }
         }
         unsafe {
-            device.cmd_draw_indexed(
-                command_buffer,
-                draw.index_count,
-                1,
-                draw.first_index,
-                draw.vertex_offset,
-                0,
-            );
+            let pipeline = scene
+                .pipelines
+                .entries
+                .get(draw.pipeline_index as usize)
+                .ok_or_else(|| {
+                    format!("scene draw references missing pipeline {}", draw.pipeline_index)
+                })?
+                .pipeline;
+            device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
+            match draw.primitive {
+                SceneRenderingDeviceDrawPrimitive::ObjectMesh => {
+                    device.cmd_draw_indexed(
+                        command_buffer,
+                        draw.index_count,
+                        1,
+                        draw.first_index,
+                        draw.vertex_offset,
+                        0,
+                    );
+                }
+                SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => {
+                    device.cmd_draw(command_buffer, 3, 1, 0, 0);
+                }
+            }
         }
     }
     Ok(())

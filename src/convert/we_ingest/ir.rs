@@ -319,9 +319,16 @@ pub struct WeIrEffectFbo {
 pub struct WeIrImageTarget {
     pub name: String,
     pub format: String,
-    pub role: String,
-    pub scale_x_milli: u32,
-    pub scale_y_milli: u32,
+    pub role: WeIrImageTargetRole,
+    pub width_divisor_milli: u32,
+    pub height_divisor_milli: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrImageTargetRole {
+    NamedFbo,
+    FirstClassEffectTarget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

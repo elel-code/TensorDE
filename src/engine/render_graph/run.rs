@@ -519,10 +519,12 @@ mod tests {
                     None,
                     vec![
                         TextureBindingRole::GraphTarget {
+                            slot: 0,
                             role: RenderTargetRole::ImageLocalMain,
                             name: Some("a".to_owned()),
                         },
                         TextureBindingRole::GraphTarget {
+                            slot: 1,
                             role: RenderTargetRole::ImageLocalSub,
                             name: Some("b".to_owned()),
                         },
@@ -578,6 +580,7 @@ mod tests {
                     RenderTargetRole::ImageLocalMain,
                     Some("a"),
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -610,6 +613,7 @@ mod tests {
                     RenderTargetRole::ImageLocalSub,
                     Some("b"),
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalMain,
                         name: Some("a".to_owned()),
                     }],
@@ -619,6 +623,7 @@ mod tests {
                     RenderTargetRole::ImageLocalMain,
                     Some("a"),
                     vec![TextureBindingRole::GraphTarget {
+                        slot: 0,
                         role: RenderTargetRole::ImageLocalSub,
                         name: Some("b".to_owned()),
                     }],

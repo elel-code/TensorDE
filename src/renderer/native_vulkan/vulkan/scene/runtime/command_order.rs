@@ -7,10 +7,12 @@
 pub(in crate::renderer::native_vulkan) fn scene_command_order(
     no_sampled_slots: bool,
     skinning_buffer_enabled: bool,
+    pipeline_variant_enabled: bool,
     effect_targets_enabled: bool,
     effect_target_copy_enabled: bool,
     effect_target_swap_enabled: bool,
     effect_target_mesh_draw_enabled: bool,
+    effect_target_fullscreen_draw_enabled: bool,
 ) -> Vec<&'static str> {
     let mut order = vec![
         "create_scene_vertex_buffer",
@@ -46,6 +48,9 @@ pub(in crate::renderer::native_vulkan) fn scene_command_order(
     if effect_target_mesh_draw_enabled {
         order.push("cmd_draw_indexed_effect_target_meshes");
     }
+    if effect_target_fullscreen_draw_enabled {
+        order.push("cmd_draw_effect_target_fullscreen_triangle");
+    }
     if effect_target_copy_enabled {
         order.push("cmd_copy_effect_target_image");
     }
@@ -56,12 +61,28 @@ pub(in crate::renderer::native_vulkan) fn scene_command_order(
         "cmd_begin_rendering",
         "cmd_bind_resource_heap_ext",
         "cmd_bind_sampler_heap_ext_when_sampled_slots_exist",
-        "cmd_bind_scene_mesh_pipeline",
+        "cmd_bind_scene_pass_pipeline",
         "cmd_bind_scene_mesh_vertex_index_buffers",
         "cmd_draw_indexed_scene_meshes",
         "cmd_end_rendering",
         "queue_submit2",
         "queue_present_khr",
     ]);
+    if pipeline_variant_enabled {
+        order.push("scene_pipeline_variant_selection_per_draw");
+    }
     order
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn command_order_reports_per_draw_pipeline_variant_selection() {
+        let order = scene_command_order(false, false, true, false, false, false, false, false);
+
+        assert!(order.contains(&"cmd_bind_scene_pass_pipeline"));
+        assert!(order.contains(&"scene_pipeline_variant_selection_per_draw"));
+    }
 }

@@ -384,10 +384,15 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         .iter()
         .map(|target| SceneImageTargetRecord {
             name: strings.id(&target.name),
-            role: SceneRenderTargetKind::FirstClassEffectTarget,
+            role: match target.role {
+                WeIrImageTargetRole::NamedFbo => SceneRenderTargetKind::NamedFbo,
+                WeIrImageTargetRole::FirstClassEffectTarget => {
+                    SceneRenderTargetKind::FirstClassEffectTarget
+                }
+            },
             format: strings.optional_id(&target.format),
-            scale_x_milli: target.scale_x_milli,
-            scale_y_milli: target.scale_y_milli,
+            width_divisor_milli: target.width_divisor_milli,
+            height_divisor_milli: target.height_divisor_milli,
         })
         .collect();
 
@@ -597,27 +602,27 @@ fn lower_binding(
             target: SceneRenderTargetKind::SceneColor,
             name: SceneStringId::NONE,
         },
-        TextureBindingRole::PreviousGraphTarget => SceneRenderBindingRecord {
+        TextureBindingRole::PreviousGraphTarget { slot } => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::PreviousGraphTarget,
-            slot: 0,
+            slot: *slot,
             target: SceneRenderTargetKind::ImageLocalMain,
             name: SceneStringId::NONE,
         },
-        TextureBindingRole::GraphTarget { role, name } => SceneRenderBindingRecord {
+        TextureBindingRole::GraphTarget { slot, role, name } => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::GraphTarget,
-            slot: 0,
+            slot: *slot,
             target: lower_render_target(*role),
             name: strings.optional_id(name.as_deref().unwrap_or_default()),
         },
-        TextureBindingRole::NamedFboBind { name } => SceneRenderBindingRecord {
+        TextureBindingRole::NamedFboBind { slot, name } => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::NamedFboBind,
-            slot: 0,
+            slot: *slot,
             target: SceneRenderTargetKind::NamedFbo,
             name: strings.id(name),
         },
-        TextureBindingRole::EffectTarget { name } => SceneRenderBindingRecord {
+        TextureBindingRole::EffectTarget { slot, name } => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::EffectTarget,
-            slot: 0,
+            slot: *slot,
             target: SceneRenderTargetKind::FirstClassEffectTarget,
             name: strings.id(name),
         },
@@ -741,6 +746,28 @@ impl StringInterner {
 mod tests {
     use super::*;
     use crate::engine::scene::SceneResourceKind;
+
+    #[test]
+    fn lower_target_bindings_preserve_we_texture_slots() {
+        let mut strings = StringInterner::default();
+        let previous = lower_binding(
+            &TextureBindingRole::PreviousGraphTarget { slot: 2 },
+            &mut strings,
+        );
+        let named = lower_binding(
+            &TextureBindingRole::NamedFboBind {
+                slot: 7,
+                name: "fbo_velocity".to_owned(),
+            },
+            &mut strings,
+        );
+
+        assert_eq!(previous.kind, SceneRenderBindingKind::PreviousGraphTarget);
+        assert_eq!(previous.slot, 2);
+        assert_eq!(named.kind, SceneRenderBindingKind::NamedFboBind);
+        assert_eq!(named.slot, 7);
+        assert_eq!(strings.strings[named.name.0 as usize], "fbo_velocity");
+    }
 
     #[test]
     fn lower_ir_uses_payload_chunk_and_string_handles() {

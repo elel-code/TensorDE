@@ -209,6 +209,7 @@ mod tests {
             rendering_device_graph: SceneRenderingDeviceGraphPlan {
                 pass_nodes: Vec::new(),
                 target_allocations: Vec::new(),
+                sampled_bindings: Vec::new(),
                 mesh_draws: Vec::new(),
                 puppet_bone_palettes: Vec::new(),
                 puppet_bone_matrices: Vec::new(),
