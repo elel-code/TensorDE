@@ -4,3 +4,5 @@
 //! converter must emit Gilder's new scene engine binary format; the deleted WE
 //! converter and its legacy `.gscn`/runtime outputs are not a compatibility
 //! surface.
+
+pub mod we_ingest;

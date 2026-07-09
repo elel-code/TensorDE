@@ -9,7 +9,7 @@ use crate::config::{CacheConfig, GilderConfig, PerformanceConfig, VideoDecoderPo
 use crate::core::manifest::{Manifest, Variant};
 use crate::core::scene::{
     SceneAudioCueCondition, SceneEffectFbo, SceneEffectUvTransform, SceneLayerCompositeKey,
-    SceneMesh, SceneNativeEffectMotion,
+    SceneMesh, SceneNativeEffectMotion, SceneSystemStatus,
 };
 use crate::core::{
     FitMode, PackagePath, PlaylistItem, PlaylistPowerCondition, PlaylistSelection, PlaylistWeekday,
@@ -18,6 +18,7 @@ use crate::core::{
     WallpaperPackage,
 };
 use crate::desktop::{CompositorKind, DesktopOutput, DesktopSnapshot, PowerState};
+use crate::engine::scene::{RendererSceneRenderPlan, RenderingServer, SceneStorage};
 use crate::policy::{PerformanceDecision, RenderMode};
 use crate::state::{AppState, OutputState, WallpaperAssignment};
 use serde::{Deserialize, Serialize};
@@ -94,6 +95,8 @@ pub struct SceneWallpaperPlan {
     pub cursor_parallax_input_ready: bool,
     #[serde(default)]
     pub scene_input_properties: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scene_engine: Option<RendererSceneRenderPlan>,
     #[serde(default)]
     pub scene_scenescript_binding_count: usize,
     #[serde(default)]
@@ -102,6 +105,12 @@ pub struct SceneWallpaperPlan {
     pub scene_material_graph_resource_count: usize,
     #[serde(default)]
     pub scene_effect_graph_count: usize,
+    #[serde(default)]
+    pub scene_mesh_count: usize,
+    #[serde(default)]
+    pub scene_mesh_vertex_count: usize,
+    #[serde(default)]
+    pub scene_mesh_index_count: usize,
     #[serde(default)]
     pub scene_audio_response_binding_count: usize,
     #[serde(default)]
@@ -1602,20 +1611,86 @@ fn scene_wallpaper_plan(
     fit_override: Option<FitMode>,
     _render_target: Option<RenderTargetSize>,
     render_properties: Option<&BTreeMap<String, Value>>,
-    _cursor_parallax_input_ready: bool,
+    cursor_parallax_input_ready: bool,
 ) -> Result<SceneWallpaperPlan, RendererPlanError> {
     let source_path = source.join_to(&package.root);
-    let _ = (
+    let file = fs::File::open(&source_path).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to open scene engine binary {}: {err}",
+            source_path.display()
+        ))
+    })?;
+    let storage = SceneStorage::from_binary_reader(file).map_err(|err| {
+        RendererPlanError::PackageLoad(format!(
+            "failed to load scene engine binary {}: {err}",
+            source_path.display()
+        ))
+    })?;
+    let render_plan = RenderingServer::new(&storage).renderer_scene_render_plan();
+    let scene_size = if storage.project().logical_width > 0 && storage.project().logical_height > 0
+    {
+        Some(SceneSize {
+            width: storage.project().logical_width,
+            height: storage.project().logical_height,
+        })
+    } else {
+        None
+    };
+    let mut scene_systems = SceneSystems::default();
+    if render_plan.render_graph_count > 0 || render_plan.shader_contract_count > 0 {
+        scene_systems.shader_material_graph = SceneSystemStatus::Ready;
+    }
+
+    Ok(SceneWallpaperPlan {
         output_name,
+        source: Some(source_path),
         manifest_max_fps,
-        performance,
-        fit_override,
-        render_properties,
-    );
-    Err(RendererPlanError::PackageLoad(format!(
-        "scene manifest source {} cannot be rendered until convert emits the new Gilder scene engine binary format",
-        source_path.display()
-    )))
+        target_max_fps: effective_max_fps(manifest_max_fps, performance.max_fps),
+        snapshot_time_ms: 0,
+        scene_size,
+        scene_fit: effective_fit(FitMode::Cover, fit_override),
+        scene_systems,
+        audio_cue_count: 0,
+        bound_properties: Vec::new(),
+        timeline_animation_count: 0,
+        timeline_animated_layer_count: 0,
+        puppet_animation_layer_count: 0,
+        property_binding_count: 0,
+        cursor_parallax_input_ready,
+        scene_input_properties: render_properties.cloned().unwrap_or_default(),
+        scene_engine: Some(render_plan),
+        scene_scenescript_binding_count: 0,
+        scene_material_graph_count: render_plan.material_count,
+        scene_material_graph_resource_count: render_plan.resource_count,
+        scene_effect_graph_count: render_plan.render_graph_count,
+        scene_mesh_count: render_plan.mesh_count,
+        scene_mesh_vertex_count: render_plan.mesh_vertex_count,
+        scene_mesh_index_count: render_plan.mesh_index_count,
+        scene_audio_response_binding_count: 0,
+        unsupported_scene_features: scene_engine_unsupported_features(&storage),
+        display: None,
+        layers: Vec::new(),
+    })
+}
+
+fn scene_engine_unsupported_features(storage: &SceneStorage) -> Vec<String> {
+    storage
+        .document()
+        .unsupported
+        .iter()
+        .map(|unsupported| {
+            let feature = storage
+                .string(unsupported.feature)
+                .unwrap_or("<invalid-feature>");
+            let containment = storage
+                .string(unsupported.containment)
+                .unwrap_or("<invalid-containment>");
+            format!(
+                "scene-engine:{}:object={}:pass={}:{}",
+                feature, unsupported.object.0, unsupported.pass_index, containment
+            )
+        })
+        .collect()
 }
 
 fn effective_fit(manifest_fit: FitMode, output_fit: Option<FitMode>) -> FitMode {
@@ -2527,7 +2602,7 @@ mod tests {
         PowerPolicy, VideoDecoderPolicy,
     };
     use crate::core::pack_gwp;
-    use crate::desktop::{DesktopOutput, PowerState};
+    use crate::desktop::{DesktopCursorParallax, DesktopOutput, PowerState};
     use crate::policy::{DecisionReason, PerformanceDecision, RenderMode};
     use crate::state::{OutputState, WallpaperAssignment};
     use serde_json::json;
@@ -4359,6 +4434,69 @@ exit 0
     }
 
     #[test]
+    fn scene_engine_binary_builds_scene_render_plan() {
+        let test_dir = TestDir::new("gilder-scene-engine-binary-plan");
+        let package_dir = test_dir.path.join("scene-demo.gwpdir");
+        write_minimal_scene_gwpdir(&package_dir);
+        let mut config = GilderConfig::default();
+        config.performance.background_max_fps = 30;
+        config.default_wallpaper = Some(package_dir.display().to_string());
+        let desktop = DesktopSnapshot {
+            outputs: vec![DesktopOutput {
+                focused: false,
+                cursor_parallax: Some(DesktopCursorParallax { x: 0.5, y: 0.25 }),
+                ..DesktopOutput::virtual_output("eDP-1")
+            }],
+            ..DesktopSnapshot::default()
+        };
+
+        let sync = static_render_sync_plan_with_config(
+            &config,
+            &desktop,
+            &AppState::default(),
+            test_dir.path.join("cache"),
+        );
+
+        assert!(sync.errors.is_empty());
+        assert_eq!(sync.scene_plans.len(), 1);
+        let plan = &sync.scene_plans[0];
+        assert!(
+            plan.source
+                .as_ref()
+                .is_some_and(|source| source.ends_with("assets/scene.gscene"))
+        );
+        assert_eq!(plan.manifest_max_fps, Some(60));
+        assert_eq!(plan.target_max_fps, Some(30));
+        assert_eq!(
+            plan.scene_size,
+            Some(SceneSize {
+                width: 1920,
+                height: 1080
+            })
+        );
+        assert_eq!(plan.scene_material_graph_count, 1);
+        assert_eq!(plan.scene_material_graph_resource_count, 1);
+        assert_eq!(plan.scene_effect_graph_count, 1);
+        assert_eq!(plan.scene_mesh_count, 1);
+        assert_eq!(plan.scene_mesh_vertex_count, 4);
+        assert_eq!(plan.scene_mesh_index_count, 6);
+        let scene_engine = plan.scene_engine.expect("scene engine render plan");
+        assert_eq!(scene_engine.mesh_count, 1);
+        assert_eq!(scene_engine.mesh_vertex_count, 4);
+        assert_eq!(scene_engine.mesh_index_count, 6);
+        assert_eq!(scene_engine.descriptor_heap_resource_count, 1);
+        assert_eq!(scene_engine.descriptor_heap_sampled_image_count, 0);
+        assert!(scene_engine.fifo_latest_ready_present_required);
+        assert_eq!(
+            plan.scene_systems.shader_material_graph,
+            SceneSystemStatus::Ready
+        );
+        assert!(plan.cursor_parallax_input_ready);
+        assert!(plan.layers.is_empty());
+        assert_eq!(sync.decisions[0].action, StaticRenderAction::Render);
+    }
+
+    #[test]
     fn builds_slideshow_sync_plan_with_effective_fps() {
         let test_dir = TestDir::new("gilder-slideshow-plan");
         let package_dir = test_dir.path.join("slideshow-demo.gwpdir");
@@ -5343,11 +5481,9 @@ void main() {}
     fn write_minimal_scene_gwpdir(path: &Path) {
         fs::create_dir_all(path.join("assets")).unwrap();
         fs::create_dir_all(path.join("previews")).unwrap();
-        fs::write(
-            path.join("assets/scene.gseb"),
-            b"GILDER-SCENE-ENGINE-BINARY\n",
-        )
-        .unwrap();
+        let scene_binary = minimal_scene_engine_binary();
+        let mut scene_file = fs::File::create(path.join("assets/scene.gscene")).unwrap();
+        crate::engine::scene::write_scene_binary(&scene_binary, &mut scene_file).unwrap();
         fs::write(path.join("previews/poster.svg"), b"<svg/>").unwrap();
         let manifest = json!({
             "format": crate::core::FORMAT_NAME,
@@ -5361,7 +5497,7 @@ void main() {}
             },
             "entry": {
                 "type": "scene",
-                "source": "assets/scene.gseb",
+                "source": "assets/scene.gscene",
                 "max_fps": 60
             }
         });
@@ -5370,6 +5506,178 @@ void main() {}
             serde_json::to_vec_pretty(&manifest).unwrap(),
         )
         .unwrap();
+    }
+
+    fn minimal_scene_engine_binary() -> crate::engine::scene::SceneBinaryDocument {
+        use crate::engine::scene::{
+            SCENE_DEFAULT_FEATURE_FLAGS, SceneBinaryDocument, SceneMaterialHandle,
+            SceneMaterialRecord, SceneMeshRecord, SceneMeshVertexRecord, SceneObjectHandle,
+            SceneObjectKind, SceneObjectRecord, SceneProjectRecord, SceneRenderGraphRecord,
+            SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind, SceneResourceId,
+            SceneResourceKind, SceneResourceRecord, SceneShaderContractRecord, SceneStringId,
+            SceneVec3,
+        };
+
+        SceneBinaryDocument {
+            feature_flags: SCENE_DEFAULT_FEATURE_FLAGS,
+            strings: vec![
+                "Scene Demo".to_owned(),
+                "scene".to_owned(),
+                "scene.json".to_owned(),
+                "materials/layer.json".to_owned(),
+                "genericimage4".to_owned(),
+                "genericimage4|blend=normal".to_owned(),
+                "loose-file".to_owned(),
+            ],
+            project: SceneProjectRecord {
+                title: SceneStringId(0),
+                wallpaper_type: SceneStringId(1),
+                scene_file: SceneStringId(2),
+                preview: SceneStringId::NONE,
+                properties_json: SceneStringId::NONE,
+                logical_width: 1920,
+                logical_height: 1080,
+                clear_color: [0.0, 0.0, 0.0, 1.0],
+                ambient_color: [0.3, 0.3, 0.3, 1.0],
+                skylight_color: [0.3, 0.3, 0.3, 1.0],
+                camera_eye: SceneVec3::default(),
+                camera_center: SceneVec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+                camera_up: SceneVec3 {
+                    x: 0.0,
+                    y: 1.0,
+                    z: 0.0,
+                },
+            },
+            resources: vec![SceneResourceRecord {
+                id: SceneResourceId(0),
+                kind: SceneResourceKind::MaterialJson,
+                path: SceneStringId(3),
+                source: SceneStringId(6),
+                payload_offset: 0,
+                payload_len: 2,
+            }],
+            resource_payload: b"{}".to_vec(),
+            objects: vec![SceneObjectRecord {
+                id: SceneObjectHandle(0),
+                we_id: 7,
+                name: SceneStringId::NONE,
+                kind: SceneObjectKind::Image,
+                resource: SceneResourceId::NONE,
+                material: SceneMaterialHandle(0),
+                parent_we_id: crate::engine::scene::INVALID_OBJECT_ID,
+                attachment: SceneStringId::NONE,
+                origin: SceneVec3::default(),
+                angles: SceneVec3::default(),
+                scale: SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                visible: true,
+                color_blend_mode: 0,
+                sort_order: 0,
+                effect_start: u32::MAX,
+                effect_count: 0,
+                render_graph: 0,
+            }],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId(0),
+                pass_start: 0,
+                pass_count: 0,
+            }],
+            meshes: vec![SceneMeshRecord {
+                object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(0),
+                vertex_start: 0,
+                vertex_count: 4,
+                index_start: 0,
+                index_count: 6,
+                width: 64.0,
+                height: 32.0,
+                bounds_min: SceneVec3 {
+                    x: -32.0,
+                    y: -16.0,
+                    z: 0.0,
+                },
+                bounds_max: SceneVec3 {
+                    x: 32.0,
+                    y: 16.0,
+                    z: 0.0,
+                },
+            }],
+            mesh_vertices: vec![
+                SceneMeshVertexRecord {
+                    position: SceneVec3 {
+                        x: -32.0,
+                        y: -16.0,
+                        z: 0.0,
+                    },
+                    uv: [0.0, 1.0],
+                },
+                SceneMeshVertexRecord {
+                    position: SceneVec3 {
+                        x: 32.0,
+                        y: -16.0,
+                        z: 0.0,
+                    },
+                    uv: [1.0, 1.0],
+                },
+                SceneMeshVertexRecord {
+                    position: SceneVec3 {
+                        x: 32.0,
+                        y: 16.0,
+                        z: 0.0,
+                    },
+                    uv: [1.0, 0.0],
+                },
+                SceneMeshVertexRecord {
+                    position: SceneVec3 {
+                        x: -32.0,
+                        y: 16.0,
+                        z: 0.0,
+                    },
+                    uv: [0.0, 0.0],
+                },
+            ],
+            mesh_indices: vec![0, 1, 2, 0, 2, 3],
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(0),
+                pass_start: 0,
+                pass_count: 1,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 0,
+                role: SceneRenderPassKind::BaseMaterial,
+                object: SceneObjectHandle(0),
+                pass_index: 0,
+                shader_key: SceneStringId(4),
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: crate::engine::scene::ScenePipelineBlend::Normal,
+                depth_test: crate::engine::scene::SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: crate::engine::scene::SceneCullMode::None,
+            }],
+            shader_contracts: vec![SceneShaderContractRecord {
+                shader_key: SceneStringId(4),
+                pipeline_key: SceneStringId(5),
+                texture_slot_mask: 0,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 1,
+                sampler_heap_count: 0,
+            }],
+            ..SceneBinaryDocument::default()
+        }
     }
 
     fn remove_entry_poster(path: &Path) {

@@ -1,3 +1,29 @@
+//! Backend-independent scene engine boundary.
+//!
+//! References:
+//! - `docs/gilder-scene-engine-architecture.md`
+//! - `reverse-engineered/docs/project-format.md`
+//! - `reverse-engineered/docs/scene-format.md`
+//! - `references/godot/servers/rendering/rendering_server_default.*`
+//! - `references/godot/servers/rendering/storage/*`
+
+pub mod abi;
+pub mod binary;
+pub mod rendering_device_graph;
+pub mod server;
+pub mod storage;
+
+pub use abi::*;
+pub use binary::{
+    SceneBinaryDocument, SceneBinaryError, read_scene_binary, read_scene_binary_bytes,
+    write_scene_binary,
+};
+pub use rendering_device_graph::{
+    SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
+};
+pub use server::{RendererSceneRenderPlan, RenderingServer, SceneObjectRenderGraph};
+pub use storage::{SceneStorage, SceneStorageError};
+
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -6,7 +32,7 @@ pub struct SceneObjectId(pub u32);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum SceneObjectKind {
+pub enum ScenePoseObjectKind {
     Solid,
     Image,
     Text,

@@ -6,6 +6,7 @@ use crate::config::VideoDecoderPolicy;
 use crate::core::{
     FitMode, SceneNodeKind, SceneSize, SceneSystems, SceneTextureRegion, SceneTransform, Transition,
 };
+use crate::engine::scene::RendererSceneRenderPlan;
 use crate::renderer::{
     SceneDisplayPlan, SceneRenderLayer, SceneWallpaperPlan, SlideshowWallpaperPlan,
     StaticRenderSyncPlan, StaticWallpaperPlan, VideoWallpaperPlan,
@@ -62,10 +63,14 @@ pub enum NativeVulkanRenderItem {
         property_binding_count: usize,
         cursor_parallax_input_ready: bool,
         dynamic_topology_required: bool,
+        scene_engine: Option<RendererSceneRenderPlan>,
         scene_scenescript_binding_count: usize,
         scene_material_graph_count: usize,
         scene_material_graph_resource_count: usize,
         scene_effect_graph_count: usize,
+        scene_mesh_count: usize,
+        scene_mesh_vertex_count: usize,
+        scene_mesh_index_count: usize,
         scene_audio_response_binding_count: usize,
         unsupported_scene_features: Vec<String>,
         snapshot_time_ms: u64,
@@ -157,10 +162,14 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_static_scene_item(
         property_binding_count: 0,
         cursor_parallax_input_ready: false,
         dynamic_topology_required: false,
+        scene_engine: None,
         scene_scenescript_binding_count: 0,
         scene_material_graph_count: 0,
         scene_material_graph_resource_count: 0,
         scene_effect_graph_count: 0,
+        scene_mesh_count: 0,
+        scene_mesh_vertex_count: 0,
+        scene_mesh_index_count: 0,
         scene_audio_response_binding_count: 0,
         unsupported_scene_features: Vec::new(),
         snapshot_time_ms: 0,
@@ -249,6 +258,87 @@ mod tests {
         assert!(bound_properties.is_empty());
         assert_eq!(renderer_status, NATIVE_VULKAN_STATIC_SCENE_RENDERER_STATUS);
     }
+
+    #[test]
+    fn scene_engine_binary_item_reports_rendering_device_graph_status() {
+        let plan = SceneWallpaperPlan {
+            output_name: "HDMI-A-1".to_owned(),
+            source: Some(PathBuf::from("/tmp/scene.gscene")),
+            manifest_max_fps: Some(60),
+            target_max_fps: Some(30),
+            snapshot_time_ms: 0,
+            scene_size: None,
+            scene_fit: FitMode::Cover,
+            scene_systems: SceneSystems::default(),
+            audio_cue_count: 0,
+            bound_properties: Vec::new(),
+            timeline_animation_count: 0,
+            timeline_animated_layer_count: 0,
+            puppet_animation_layer_count: 0,
+            property_binding_count: 0,
+            cursor_parallax_input_ready: false,
+            scene_input_properties: Default::default(),
+            scene_engine: Some(RendererSceneRenderPlan {
+                object_count: 1,
+                resource_count: 1,
+                texture_count: 0,
+                material_count: 1,
+                mesh_count: 1,
+                mesh_vertex_count: 4,
+                mesh_index_count: 6,
+                effect_count: 0,
+                render_graph_count: 1,
+                render_pass_count: 1,
+                render_binding_count: 0,
+                image_target_count: 0,
+                shader_contract_count: 1,
+                resource_payload_bytes: 2,
+                descriptor_heap_required: true,
+                descriptor_heap_resource_count: 1,
+                descriptor_heap_sampled_image_count: 0,
+                descriptor_heap_uniform_buffer_count: 1,
+                descriptor_heap_storage_buffer_count: 0,
+                descriptor_heap_sampler_count: 0,
+                fifo_latest_ready_present_required: true,
+            }),
+            scene_scenescript_binding_count: 0,
+            scene_material_graph_count: 1,
+            scene_material_graph_resource_count: 1,
+            scene_effect_graph_count: 1,
+            scene_mesh_count: 1,
+            scene_mesh_vertex_count: 4,
+            scene_mesh_index_count: 6,
+            scene_audio_response_binding_count: 0,
+            unsupported_scene_features: Vec::new(),
+            display: None,
+            layers: Vec::new(),
+        };
+
+        let item = native_vulkan_scene_item(&plan);
+
+        let NativeVulkanRenderItem::Scene {
+            renderer_status,
+            scene_mesh_count,
+            scene_mesh_vertex_count,
+            scene_mesh_index_count,
+            scene_engine,
+            ..
+        } = item
+        else {
+            panic!("scene plan should lower to a scene render item");
+        };
+        assert_eq!(
+            renderer_status,
+            "scene-engine-binary-ready-for-rendering-device-graph"
+        );
+        assert_eq!(scene_mesh_count, 1);
+        assert_eq!(scene_mesh_vertex_count, 4);
+        assert_eq!(scene_mesh_index_count, 6);
+        let scene_engine = scene_engine.expect("scene engine render plan");
+        assert_eq!(scene_engine.mesh_count, 1);
+        assert_eq!(scene_engine.descriptor_heap_resource_count, 1);
+        assert!(scene_engine.fifo_latest_ready_present_required);
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
@@ -278,17 +368,35 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_scene_item(
         property_binding_count: plan.property_binding_count,
         cursor_parallax_input_ready: plan.cursor_parallax_input_ready,
         dynamic_topology_required: native_vulkan_scene_plan_requires_dynamic_topology(plan),
+        scene_engine: plan.scene_engine,
         scene_scenescript_binding_count: plan.scene_scenescript_binding_count,
         scene_material_graph_count: plan.scene_material_graph_count,
         scene_material_graph_resource_count: plan.scene_material_graph_resource_count,
         scene_effect_graph_count: plan.scene_effect_graph_count,
+        scene_mesh_count: plan.scene_mesh_count,
+        scene_mesh_vertex_count: plan.scene_mesh_vertex_count,
+        scene_mesh_index_count: plan.scene_mesh_index_count,
         scene_audio_response_binding_count: plan.scene_audio_response_binding_count,
         unsupported_scene_features: plan.unsupported_scene_features.clone(),
         snapshot_time_ms: plan.snapshot_time_ms,
         scene_size: plan.scene_size,
         scene_fit: plan.scene_fit,
         target_max_fps: plan.target_max_fps,
-        renderer_status: "deterministic-scene-snapshot-ready-for-vulkan-passes",
+        renderer_status: native_vulkan_scene_renderer_status(plan),
+    }
+}
+
+fn native_vulkan_scene_renderer_status(plan: &SceneWallpaperPlan) -> &'static str {
+    if plan.layers.is_empty()
+        && plan
+            .source
+            .as_ref()
+            .and_then(|source| source.extension())
+            .is_some_and(|extension| extension == "gscene")
+    {
+        "scene-engine-binary-ready-for-rendering-device-graph"
+    } else {
+        "deterministic-scene-snapshot-ready-for-vulkan-passes"
     }
 }
 

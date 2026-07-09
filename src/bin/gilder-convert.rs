@@ -27,6 +27,39 @@ fn run() -> Result<(), String> {
             println!("unpacked {}", dest.display());
             Ok(())
         }
+        [cmd, source, dest] if cmd == "wallpaper-engine" => {
+            let source = PathBuf::from(source);
+            let dest = PathBuf::from(dest);
+            let summary =
+                gilder::convert::we_ingest::convert_wallpaper_engine_project_to_scene_binary(
+                    &source, &dest,
+                )
+                .map_err(|err| {
+                    format!(
+                        "failed to convert Wallpaper Engine project {}: {err}",
+                        source.display()
+                    )
+                })?;
+            println!(
+                "converted {} -> {} (objects={}, resources={}, materials={}, effects={}, meshes={} vertices={} indices={}, graphs={}, shaders={}, heap_resources={}, heap_samplers={}, fifo_latest_ready={}, payload={} bytes)",
+                source.display(),
+                dest.display(),
+                summary.object_count,
+                summary.resource_count,
+                summary.material_count,
+                summary.effect_count,
+                summary.mesh_count,
+                summary.mesh_vertex_count,
+                summary.mesh_index_count,
+                summary.render_graph_count,
+                summary.shader_contract_count,
+                summary.descriptor_heap_resource_count,
+                summary.descriptor_heap_sampler_count,
+                summary.fifo_latest_ready_present_required,
+                summary.resource_payload_bytes
+            );
+            Ok(())
+        }
         _ => Err(help_text()),
     }
 }
@@ -36,8 +69,9 @@ fn help_text() -> String {
         "usage:",
         "  gilder-convert pack <source.gwpdir> <dest.gwp>",
         "  gilder-convert unpack <source.gwp> <dest.gwpdir>",
+        "  gilder-convert wallpaper-engine <project-root> <dest.gscene>",
         "",
-        "Wallpaper Engine conversion is removed until the new Gilder scene engine binary format is defined.",
+        "Wallpaper Engine scene conversion emits the new Gilder scene engine binary format.",
         "Pack accepts .gwpdir manifests in JSON or TOML and writes canonical JSON into .gwp archives.",
     ]
     .join("\n")

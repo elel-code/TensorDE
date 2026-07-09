@@ -27,13 +27,12 @@ Gilder 是面向 niri、Hyprland 等独立 compositor 的原生壁纸引擎。�
 - `src/bin/gilderctl.rs`：daemon CLI。
 - `src/bin/gilder-convert.rs`：Wallpaper Engine 转换和打包工具。
 - `src/bin/gilder-native-vulkan.rs`：原生 Vulkan 诊断入口。
-- `src/engine/scene_engine/`：新的 scene engine 边界。
-- `src/renderer/native_vulkan/scene_backend/`：新的 native Vulkan scene backend。
+- `src/convert/we_ingest/`：WE project、scene.pkg、tex、material、effect、mdl 冷路径 ingest。
+- `src/engine/scene/`：新 scene engine ABI、binary、storage 和 RenderingServer 边界。
+- `src/renderer/native_vulkan/scene/`：native Vulkan scene descriptor heap/render graph 计划边界。
 - `src/renderer/native_vulkan/video/`：FFmpeg demux、Vulkan HW decode、pacing 和 evidence helper。
 - `src/renderer/native_vulkan/vulkan/`：Vulkanalia backend。
 - `docs/gilder-scene-engine-architecture.md`：scene 全面重写架构。
-- `docs/native-vulkan-video-ffmpeg-mainline.md`：FFmpeg Vulkan video 主线。
-- `docs/packaging.md`：发行说明。
 
 ## 常用命令
 
@@ -45,7 +44,7 @@ cargo test --features native-vulkan-video
 cargo run --bin gilderd
 cargo run --bin gilderctl -- ping
 cargo run --bin gilderctl -- outputs
-cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gwpdir
+cargo run --bin gilder-convert -- wallpaper-engine /path/to/we/project ./out.gscene
 ```
 
 ## Python 入口

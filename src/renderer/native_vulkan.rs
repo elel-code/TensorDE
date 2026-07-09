@@ -108,6 +108,7 @@ mod interop;
 mod labels;
 mod pipeline;
 mod present;
+mod scene;
 mod video;
 mod vulkan;
 
@@ -158,6 +159,10 @@ pub use ffmpeg_hw::{
 pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContract};
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
+pub use scene::{
+    NativeVulkanSceneBackendPlan, NativeVulkanSceneDescriptorHeapPlan,
+    NativeVulkanSceneMeshUploadPlan, native_vulkan_scene_backend_plan,
+};
 pub use static_image_present_runtime::{run_static_image, run_static_image_vulkanalia};
 pub use video_codec::NativeVulkanVideoSessionCodec;
 #[cfg(feature = "native-vulkan-video")]
@@ -12313,10 +12318,14 @@ mod tests {
                 property_binding_count: 1,
                 cursor_parallax_input_ready: true,
                 scene_input_properties: Default::default(),
+                scene_engine: None,
                 scene_scenescript_binding_count: 0,
                 scene_material_graph_count: 0,
                 scene_material_graph_resource_count: 0,
                 scene_effect_graph_count: 0,
+                scene_mesh_count: 0,
+                scene_mesh_vertex_count: 0,
+                scene_mesh_index_count: 0,
                 scene_audio_response_binding_count: 0,
                 unsupported_scene_features: Vec::new(),
                 display: Some(SceneDisplayPlan::Color {
