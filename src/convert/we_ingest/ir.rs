@@ -29,6 +29,10 @@ pub struct WeSceneIr {
     pub textures: Vec<WeIrTexture>,
     pub objects: Vec<WeIrObject>,
     pub object_effects: Vec<WeIrObjectEffect>,
+    pub object_animation_layers: Vec<WeIrObjectAnimationLayer>,
+    pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
+    pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
+    pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
     pub materials: Vec<WeIrMaterial>,
     pub material_passes: Vec<WeIrMaterialPass>,
     pub material_textures: Vec<WeIrMaterialTexture>,
@@ -138,6 +142,45 @@ pub struct WeIrObjectEffect {
     pub effect: u32,
     pub instance_id: u32,
     pub visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrObjectAnimationLayer {
+    pub object: u32,
+    pub animation_id: u32,
+    pub layer_index: u32,
+    pub additive: bool,
+    pub autosort: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrPuppetAnimationClip {
+    pub puppet: u32,
+    pub clip_id: u32,
+    pub flags: u32,
+    pub name: String,
+    pub playback: String,
+    pub fps: f32,
+    pub frame_count: u32,
+    pub frame_metadata: u32,
+    pub track_start: u32,
+    pub track_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrPuppetAnimationTrack {
+    pub clip: u32,
+    pub bone_index: u32,
+    pub track_flags: u32,
+    pub sample_start: u32,
+    pub sample_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrPuppetAnimationTransformSample {
+    pub translation: SceneVec3,
+    pub rotation: SceneVec3,
+    pub scale: SceneVec3,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -334,6 +334,8 @@ pub enum SceneRenderPassKind {
     BaseMaterial,
     EffectMaterial,
     ColorBlendPassthrough,
+    CopyTarget,
+    SwapTargetReferences,
     VideoSample,
     Particle,
     TextPath,
@@ -349,11 +351,13 @@ impl SceneRenderPassKind {
             Self::BaseMaterial => 2,
             Self::EffectMaterial => 3,
             Self::ColorBlendPassthrough => 4,
-            Self::VideoSample => 5,
-            Self::Particle => 6,
-            Self::TextPath => 7,
-            Self::SceneComposite => 8,
-            Self::DebugEvidence => 9,
+            Self::CopyTarget => 5,
+            Self::SwapTargetReferences => 6,
+            Self::VideoSample => 7,
+            Self::Particle => 8,
+            Self::TextPath => 9,
+            Self::SceneComposite => 10,
+            Self::DebugEvidence => 11,
             Self::Unsupported => 0xffff,
         }
     }
@@ -364,11 +368,13 @@ impl SceneRenderPassKind {
             2 => Some(Self::BaseMaterial),
             3 => Some(Self::EffectMaterial),
             4 => Some(Self::ColorBlendPassthrough),
-            5 => Some(Self::VideoSample),
-            6 => Some(Self::Particle),
-            7 => Some(Self::TextPath),
-            8 => Some(Self::SceneComposite),
-            9 => Some(Self::DebugEvidence),
+            5 => Some(Self::CopyTarget),
+            6 => Some(Self::SwapTargetReferences),
+            7 => Some(Self::VideoSample),
+            8 => Some(Self::Particle),
+            9 => Some(Self::TextPath),
+            10 => Some(Self::SceneComposite),
+            11 => Some(Self::DebugEvidence),
             0xffff => Some(Self::Unsupported),
             _ => None,
         }
@@ -495,6 +501,45 @@ pub struct SceneObjectEffectRecord {
     pub effect: SceneEffectHandle,
     pub instance_id: u32,
     pub visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneObjectAnimationLayerRecord {
+    pub object: SceneObjectHandle,
+    pub animation_id: u32,
+    pub layer_index: u32,
+    pub additive: bool,
+    pub autosort: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationClipRecord {
+    pub puppet: u32,
+    pub clip_id: u32,
+    pub flags: u32,
+    pub name: SceneStringId,
+    pub playback: SceneStringId,
+    pub fps: f32,
+    pub frame_count: u32,
+    pub frame_metadata: u32,
+    pub track_start: u32,
+    pub track_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationTrackRecord {
+    pub clip: u32,
+    pub bone_index: u32,
+    pub track_flags: u32,
+    pub sample_start: u32,
+    pub sample_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct ScenePuppetAnimationTransformSampleRecord {
+    pub translation: SceneVec3,
+    pub rotation: SceneVec3,
+    pub scale: SceneVec3,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -643,6 +688,7 @@ pub struct SceneRenderPassRecord {
     pub id: u32,
     pub role: SceneRenderPassKind,
     pub object: SceneObjectHandle,
+    pub material: SceneMaterialHandle,
     pub pass_index: u32,
     pub shader_key: SceneStringId,
     pub target: SceneRenderTargetKind,

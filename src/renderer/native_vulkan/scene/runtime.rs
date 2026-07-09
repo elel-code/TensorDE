@@ -150,6 +150,9 @@ mod tests {
     use crate::renderer::native_vulkan::scene::{
         NativeVulkanSceneDescriptorHeapPlan, NativeVulkanSceneMeshUploadPlan,
     };
+    use super::super::resource_storage::{
+        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneSkinningBufferPlan,
+    };
     use crate::renderer::native_vulkan::scene::{
         NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
         NativeVulkanScenePipelineCachePlan, NativeVulkanSceneRenderGraphExecutorPlan,
@@ -181,8 +184,14 @@ mod tests {
                 mesh_index_count: 0,
                 puppet_binding_count: 0,
                 visible_puppet_binding_count: 0,
+                puppet_bone_palette_count: 0,
+                puppet_bone_matrix_count: 0,
+                visible_puppet_bone_matrix_count: 0,
                 attachment_link_count: 0,
                 effect_count: 0,
+                visible_effect_instance_count: 0,
+                visible_effect_pass_count: 0,
+                visible_effect_fbo_count: 0,
                 render_graph_count: 0,
                 render_pass_count: 0,
                 render_binding_count: 0,
@@ -199,16 +208,24 @@ mod tests {
             },
             rendering_device_graph: SceneRenderingDeviceGraphPlan {
                 pass_nodes: Vec::new(),
+                target_allocations: Vec::new(),
                 mesh_draws: Vec::new(),
+                puppet_bone_palettes: Vec::new(),
+                puppet_bone_matrices: Vec::new(),
                 resolved_object_count: 0,
                 resolved_visible_object_count: 0,
                 resolved_attachment_link_count: 0,
+                resolved_visible_effect_instance_count: 0,
+                resolved_visible_effect_pass_count: 0,
+                resolved_visible_effect_fbo_count: 0,
                 descriptor_heap_required: true,
                 descriptor_heap_resource_count: 0,
                 descriptor_heap_sampled_image_count: 0,
                 descriptor_heap_uniform_buffer_count: 0,
                 descriptor_heap_storage_buffer_count: 0,
                 descriptor_heap_sampler_count: 0,
+                graph_physical_target_count: 0,
+                graph_aliased_target_count: 0,
                 fifo_latest_ready_present_required: true,
             },
             resource_storage: NativeVulkanSceneResourceStoragePlan {
@@ -225,6 +242,20 @@ mod tests {
                     index_buffer_bytes: 0,
                     draw_count: 0,
                     device_address_required: false,
+                },
+                skinning_buffer: NativeVulkanSceneSkinningBufferPlan {
+                    palette_count: 0,
+                    bone_matrix_count: 0,
+                    bone_matrix_buffer_bytes: 0,
+                    storage_buffer_required: false,
+                },
+                effect_target_storage: NativeVulkanSceneEffectTargetStoragePlan {
+                    logical_target_count: 0,
+                    physical_target_count: 0,
+                    aliased_target_count: 0,
+                    named_fbo_count: 0,
+                    first_class_effect_target_count: 0,
+                    dynamic_rendering_image_required: false,
                 },
                 descriptor_heap: NativeVulkanSceneHeapStoragePlan {
                     descriptor_model: "VK_EXT_descriptor_heap",

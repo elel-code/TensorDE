@@ -158,6 +158,53 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             visible: effect.visible,
         })
         .collect();
+    let object_animation_layers = ir
+        .object_animation_layers
+        .iter()
+        .map(|layer| SceneObjectAnimationLayerRecord {
+            object: SceneObjectHandle(layer.object),
+            animation_id: layer.animation_id,
+            layer_index: layer.layer_index,
+            additive: layer.additive,
+            autosort: layer.autosort,
+        })
+        .collect();
+    let puppet_animation_clips = ir
+        .puppet_animation_clips
+        .iter()
+        .map(|clip| ScenePuppetAnimationClipRecord {
+            puppet: clip.puppet,
+            clip_id: clip.clip_id,
+            flags: clip.flags,
+            name: strings.optional_id(&clip.name),
+            playback: strings.optional_id(&clip.playback),
+            fps: clip.fps,
+            frame_count: clip.frame_count,
+            frame_metadata: clip.frame_metadata,
+            track_start: clip.track_start,
+            track_count: clip.track_count,
+        })
+        .collect();
+    let puppet_animation_tracks = ir
+        .puppet_animation_tracks
+        .iter()
+        .map(|track| ScenePuppetAnimationTrackRecord {
+            clip: track.clip,
+            bone_index: track.bone_index,
+            track_flags: track.track_flags,
+            sample_start: track.sample_start,
+            sample_count: track.sample_count,
+        })
+        .collect();
+    let puppet_animation_transform_samples = ir
+        .puppet_animation_transform_samples
+        .iter()
+        .map(|sample| ScenePuppetAnimationTransformSampleRecord {
+            translation: sample.translation,
+            rotation: sample.rotation,
+            scale: sample.scale,
+        })
+        .collect();
 
     let materials = ir
         .materials
@@ -357,6 +404,10 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         textures,
         objects,
         object_effects,
+        object_animation_layers,
+        puppet_animation_clips,
+        puppet_animation_tracks,
+        puppet_animation_transform_samples,
         materials,
         material_passes,
         material_textures,
@@ -437,6 +488,11 @@ fn lower_render_graphs(
                     pass.object_index
                         .map(|index| index as u32)
                         .unwrap_or(INVALID_OBJECT_ID),
+                ),
+                material: SceneMaterialHandle(
+                    pass.material_index
+                        .map(|index| index as u32)
+                        .unwrap_or(INVALID_MATERIAL_ID),
                 ),
                 pass_index: pass.pass_index,
                 shader_key: strings.optional_id(pass.shader.as_deref().unwrap_or_default()),
@@ -598,6 +654,8 @@ fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
         RenderPassRole::BaseMaterial => SceneRenderPassKind::BaseMaterial,
         RenderPassRole::EffectMaterial => SceneRenderPassKind::EffectMaterial,
         RenderPassRole::ColorBlendPassthrough => SceneRenderPassKind::ColorBlendPassthrough,
+        RenderPassRole::CopyTarget => SceneRenderPassKind::CopyTarget,
+        RenderPassRole::SwapTargetReferences => SceneRenderPassKind::SwapTargetReferences,
         RenderPassRole::VideoSample => SceneRenderPassKind::VideoSample,
         RenderPassRole::Particle => SceneRenderPassKind::Particle,
         RenderPassRole::TextPath => SceneRenderPassKind::TextPath,
@@ -723,6 +781,10 @@ mod tests {
             textures: Vec::new(),
             objects: Vec::new(),
             object_effects: Vec::new(),
+            object_animation_layers: Vec::new(),
+            puppet_animation_clips: Vec::new(),
+            puppet_animation_tracks: Vec::new(),
+            puppet_animation_transform_samples: Vec::new(),
             materials: Vec::new(),
             material_passes: Vec::new(),
             material_textures: Vec::new(),

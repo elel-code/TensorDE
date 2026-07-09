@@ -1,0 +1,124 @@
+//! Scene mesh draw recording shared by swapchain and effect-target passes.
+//!
+//! References:
+//! - `docs/gilder-scene-engine-architecture.md`
+//! - `references/godot/servers/rendering/rendering_device_graph.*`
+
+use vulkanalia::prelude::v1_4::*;
+use vulkanalia::vk::{self, ExtDescriptorHeapExtensionDeviceCommands};
+
+use crate::engine::scene::{
+    SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+};
+use crate::renderer::native_vulkan::{
+    native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor,
+    native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor,
+};
+
+use super::SceneGpuResources;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct SceneGpuDrawRange {
+    pub start: u32,
+    pub count: u32,
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
+    graph: &SceneRenderingDeviceGraphPlan,
+) -> Vec<SceneGpuDrawRange> {
+    graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| {
+            pass.mesh_draw_count != 0
+                && matches!(
+                    pass.target,
+                    SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
+                )
+        })
+        .map(|pass| SceneGpuDrawRange {
+            start: pass.mesh_draw_start,
+            count: pass.mesh_draw_count,
+        })
+        .collect()
+}
+
+pub(in crate::renderer::native_vulkan) fn draw_range_count(ranges: &[SceneGpuDrawRange]) -> usize {
+    ranges
+        .iter()
+        .map(|range| range.count as usize)
+        .sum()
+}
+
+pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene: &SceneGpuResources,
+    ranges: &[SceneGpuDrawRange],
+) -> Result<(), String> {
+    if ranges.is_empty() {
+        return Ok(());
+    }
+    unsafe {
+        device.cmd_bind_pipeline(
+            command_buffer,
+            vk::PipelineBindPoint::GRAPHICS,
+            scene.pipeline,
+        );
+        let vertex_buffers = [scene.vertex_buffer.buffer];
+        let vertex_offsets = [0u64];
+        device.cmd_bind_vertex_buffers(command_buffer, 0, &vertex_buffers, &vertex_offsets);
+        device.cmd_bind_index_buffer(
+            command_buffer,
+            scene.index_buffer.buffer,
+            0,
+            vk::IndexType::UINT32,
+        );
+        for range in ranges {
+            record_scene_mesh_draws(device, command_buffer, scene, *range)?;
+        }
+    }
+    Ok(())
+}
+
+pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene: &SceneGpuResources,
+    range: SceneGpuDrawRange,
+) -> Result<(), String> {
+    let start = range.start as usize;
+    let count = range.count as usize;
+    let end = start.saturating_add(count);
+    for draw in scene.draw_commands.get(start..end).unwrap_or(&[]) {
+        let resource_bind =
+            native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
+                &scene.descriptor_heap,
+                draw.resource_descriptor_base,
+            )?;
+        unsafe {
+            device.cmd_bind_resource_heap_ext(command_buffer, &resource_bind);
+        }
+        if !scene.sampled_slots.is_empty() {
+            let sampler_bind =
+                native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor(
+                    &scene.descriptor_heap,
+                    draw.sampler_descriptor_base,
+                )?;
+            unsafe {
+                device.cmd_bind_sampler_heap_ext(command_buffer, &sampler_bind);
+            }
+        }
+        unsafe {
+            device.cmd_draw_indexed(
+                command_buffer,
+                draw.index_count,
+                1,
+                draw.first_index,
+                draw.vertex_offset,
+                0,
+            );
+        }
+    }
+    Ok(())
+}

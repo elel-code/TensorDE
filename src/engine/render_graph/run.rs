@@ -427,6 +427,8 @@ fn render_graph_pass_priority(pass: &RenderPassNode) -> u32 {
         RenderPassRole::BaseMaterial
         | RenderPassRole::EffectMaterial
         | RenderPassRole::ColorBlendPassthrough
+        | RenderPassRole::CopyTarget
+        | RenderPassRole::SwapTargetReferences
         | RenderPassRole::VideoSample
         | RenderPassRole::Particle
         | RenderPassRole::TextPath
@@ -485,6 +487,7 @@ mod tests {
             id,
             role: RenderPassRole::EffectMaterial,
             object_index: Some(7),
+            material_index: None,
             pass_index: id,
             shader: None,
             target,

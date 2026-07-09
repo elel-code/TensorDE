@@ -8,6 +8,7 @@
 
 use super::super::abi::*;
 use super::components::MeshBindingComponent;
+use super::effect::ResolvedObjectEffectState;
 use super::entity::SemanticEntity;
 
 pub const INVALID_RESOLVED_INDEX: u32 = u32::MAX;
@@ -15,16 +16,26 @@ pub const INVALID_RESOLVED_INDEX: u32 = u32::MAX;
 #[derive(Debug, Clone, PartialEq)]
 pub struct ResolvedSemanticFrame {
     pub objects: Vec<ResolvedObjectState>,
+    pub object_effects: Vec<ResolvedObjectEffectState>,
     pub attachment_links: Vec<ResolvedAttachmentLink>,
+    pub puppet_bone_palettes: Vec<ResolvedPuppetBonePalette>,
+    pub puppet_bone_matrices: Vec<ResolvedPuppetBoneMatrix>,
     pub visible_object_count: usize,
     pub visible_mesh_binding_count: usize,
+    pub visible_effect_instance_count: usize,
+    pub visible_effect_pass_count: usize,
+    pub visible_effect_fbo_count: usize,
     pub visible_puppet_binding_count: usize,
+    pub visible_puppet_bone_matrix_count: usize,
 }
 
 impl ResolvedSemanticFrame {
-    pub fn from_objects(
+    pub fn from_resolved_parts(
         objects: Vec<ResolvedObjectState>,
+        object_effects: Vec<ResolvedObjectEffectState>,
         attachment_links: Vec<ResolvedAttachmentLink>,
+        puppet_bone_palettes: Vec<ResolvedPuppetBonePalette>,
+        puppet_bone_matrices: Vec<ResolvedPuppetBoneMatrix>,
     ) -> Self {
         let visible_object_count = objects
             .iter()
@@ -35,24 +46,67 @@ impl ResolvedSemanticFrame {
             .filter(|object| object.resolved_visible)
             .map(|object| object.mesh_binding_count as usize)
             .sum();
+        let visible_effect_instance_count = object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .count();
+        let visible_effect_pass_count = object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .map(|effect| effect.pass_count as usize)
+            .sum();
+        let visible_effect_fbo_count = object_effects
+            .iter()
+            .filter(|effect| effect.resolved_visible)
+            .map(|effect| effect.fbo_count as usize)
+            .sum();
         let visible_puppet_binding_count = objects
             .iter()
             .filter(|object| {
                 object.resolved_visible && object.puppet_index != INVALID_RESOLVED_INDEX
             })
             .count();
+        let visible_puppet_bone_matrix_count = puppet_bone_palettes
+            .iter()
+            .filter(|palette| palette.resolved_visible)
+            .map(|palette| palette.bone_count as usize)
+            .sum();
         Self {
             objects,
+            object_effects,
             attachment_links,
+            puppet_bone_palettes,
+            puppet_bone_matrices,
             visible_object_count,
             visible_mesh_binding_count,
+            visible_effect_instance_count,
+            visible_effect_pass_count,
+            visible_effect_fbo_count,
             visible_puppet_binding_count,
+            visible_puppet_bone_matrix_count,
         }
     }
 
     pub fn object(&self, object: SceneObjectHandle) -> Option<&ResolvedObjectState> {
         self.objects.iter().find(|state| state.object == object)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedPuppetBonePalette {
+    pub object: SceneObjectHandle,
+    pub puppet_index: u32,
+    pub bone_start: u32,
+    pub bone_count: u32,
+    pub resolved_visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedPuppetBoneMatrix {
+    pub puppet_index: u32,
+    pub bone_index: u32,
+    pub parent_index: i32,
+    pub matrix: [f32; 16],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

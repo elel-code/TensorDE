@@ -214,9 +214,10 @@ fn native_vulkan_slideshow_item(plan: &SlideshowWallpaperPlan) -> NativeVulkanRe
 mod tests {
     use super::*;
     use crate::engine::scene::{
-        INVALID_MATERIAL_ID, RendererSceneRenderPlan, SceneMaterialHandle, SceneObjectHandle,
-        SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
-        SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
+        INVALID_MATERIAL_ID, INVALID_OBJECT_ID, RendererSceneRenderPlan, SceneMaterialHandle,
+        SceneObjectHandle, SceneRenderPassKind, SceneRenderTargetKind,
+        SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+        SceneRenderingDevicePassNode,
     };
 
     #[test]
@@ -296,8 +297,14 @@ mod tests {
                     mesh_index_count: 6,
                     puppet_binding_count: 0,
                     visible_puppet_binding_count: 0,
+                    puppet_bone_palette_count: 0,
+                    puppet_bone_matrix_count: 0,
+                    visible_puppet_bone_matrix_count: 0,
                     attachment_link_count: 0,
                     effect_count: 0,
+                    visible_effect_instance_count: 0,
+                    visible_effect_pass_count: 0,
+                    visible_effect_fbo_count: 0,
                     render_graph_count: 1,
                     render_pass_count: 1,
                     render_binding_count: 0,
@@ -319,13 +326,19 @@ mod tests {
                         pass_id: 0,
                         role: SceneRenderPassKind::BaseMaterial,
                         target: SceneRenderTargetKind::SceneColor,
+                        target_name: crate::engine::scene::SceneStringId::NONE,
                         binding_start: 0,
                         binding_count: 0,
                         mesh_draw_start: 0,
                         mesh_draw_count: 1,
                     }],
+                    target_allocations: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                         mesh_index: 0,
+                        resolved_object_index: 0,
+                        clip_transform: identity_clip_transform(),
+                        skinning_palette_start: INVALID_OBJECT_ID,
+                        skinning_palette_count: 0,
                         object: SceneObjectHandle(0),
                         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                         vertex_start: 0,
@@ -333,15 +346,22 @@ mod tests {
                         index_start: 0,
                         index_count: 6,
                     }],
+                    puppet_bone_palettes: Vec::new(),
+                    puppet_bone_matrices: Vec::new(),
                     resolved_object_count: 1,
                     resolved_visible_object_count: 1,
                     resolved_attachment_link_count: 0,
+                    resolved_visible_effect_instance_count: 0,
+                    resolved_visible_effect_pass_count: 0,
+                    resolved_visible_effect_fbo_count: 0,
                     descriptor_heap_required: true,
                     descriptor_heap_resource_count: 1,
                     descriptor_heap_sampled_image_count: 0,
                     descriptor_heap_uniform_buffer_count: 1,
                     descriptor_heap_storage_buffer_count: 0,
                     descriptor_heap_sampler_count: 0,
+                    graph_physical_target_count: 0,
+                    graph_aliased_target_count: 0,
                     fifo_latest_ready_present_required: true,
                 },
             }),
@@ -397,6 +417,15 @@ mod tests {
             scene_engine.rendering_device_graph.mesh_draws[0].index_count,
             6
         );
+    }
+
+    fn identity_clip_transform() -> [[f32; 4]; 4] {
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
     }
 }
 

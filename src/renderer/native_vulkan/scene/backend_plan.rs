@@ -29,7 +29,7 @@ use super::resource_storage::{
 const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 20;
 const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneBackendPlan {
     pub renderer_scene_render: RendererSceneRenderPlan,
     pub rendering_device_graph: SceneRenderingDeviceGraphPlan,
@@ -63,8 +63,15 @@ pub struct NativeVulkanSceneMeshUploadPlan {
 }
 
 pub fn native_vulkan_scene_backend_plan(storage: &SceneStorage) -> NativeVulkanSceneBackendPlan {
+    native_vulkan_scene_backend_plan_at(storage, 0.0)
+}
+
+pub fn native_vulkan_scene_backend_plan_at(
+    storage: &SceneStorage,
+    scene_time_seconds: f32,
+) -> NativeVulkanSceneBackendPlan {
     let rendering_server = RenderingServer::new(storage);
-    let scene_engine = rendering_server.scene_engine_render_plan();
+    let scene_engine = rendering_server.scene_engine_render_plan_at(scene_time_seconds);
     let renderer_scene_render = scene_engine.renderer_scene_render;
     let rendering_device_graph = scene_engine.rendering_device_graph;
     let resource_storage = native_vulkan_scene_resource_storage_plan(
@@ -454,6 +461,7 @@ mod tests {
                 id: 0,
                 role: SceneRenderPassKind::BaseMaterial,
                 object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                 pass_index: 0,
                 shader_key: SceneStringId(4),
                 target: SceneRenderTargetKind::SceneColor,

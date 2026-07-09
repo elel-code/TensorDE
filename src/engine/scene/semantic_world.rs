@@ -8,17 +8,25 @@
 //! - `references/godot/servers/rendering/storage/*`
 
 pub mod components;
+pub mod effect;
 pub mod entity;
 pub mod indexes;
 pub mod matrix;
 pub mod resolved_frame;
+pub mod timeline;
 
 pub use components::{
     MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
     SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
 };
+pub use effect::{
+    ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
+};
 pub use entity::{SemanticEntity, SemanticEntityRecord};
-pub use resolved_frame::{ResolvedAttachmentLink, ResolvedObjectState, ResolvedSemanticFrame};
+pub use resolved_frame::{
+    ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
+    ResolvedPuppetBonePalette, ResolvedSemanticFrame,
+};
 
 use std::fmt;
 
@@ -26,9 +34,11 @@ use components::{
     material_binding_from_object, parent_from_object, puppet_binding_from_record,
     transform_from_object, visibility_from_object,
 };
+use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
 use matrix::{multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
+use timeline::sampled_puppet_bone_local_matrix;
 
 use super::abi::*;
 use super::storage::SceneStorage;
@@ -43,8 +53,10 @@ pub struct SceneSemanticWorld<'a> {
     visibility: Vec<Option<VisibilityComponent>>,
     material_bindings: Vec<Option<MaterialBindingComponent>>,
     mesh_components: Vec<Option<MeshBindingComponent>>,
+    object_effect_components: Vec<Option<ObjectEffectBindingComponent>>,
     puppet_components: Vec<Option<PuppetBindingComponent>>,
     mesh_bindings: Vec<SemanticMeshBinding>,
+    object_effect_bindings: Vec<SemanticObjectEffectBinding>,
 }
 
 impl<'a> SceneSemanticWorld<'a> {
@@ -59,13 +71,20 @@ impl<'a> SceneSemanticWorld<'a> {
             visibility: Vec::with_capacity(object_count),
             material_bindings: Vec::with_capacity(object_count),
             mesh_components: Vec::with_capacity(object_count),
+            object_effect_components: Vec::with_capacity(object_count),
             puppet_components: Vec::with_capacity(object_count),
             mesh_bindings: Vec::with_capacity(storage.meshes().len()),
+            object_effect_bindings: storage
+                .object_effects()
+                .iter()
+                .map(SemanticObjectEffectBinding::from_record)
+                .collect(),
         };
 
         for (object_index, object) in storage.objects().iter().enumerate() {
             world.push_object(object_index, object)?;
         }
+        world.validate_object_effect_ranges()?;
         world.validate_mesh_objects()?;
         for entity_index in 0..world.entities.len() {
             let object = world.entities[entity_index].object;
@@ -137,6 +156,25 @@ impl<'a> SceneSemanticWorld<'a> {
         self.mesh_bindings.get(start..end).unwrap_or(&[])
     }
 
+    pub fn object_effect_component(
+        &self,
+        object: SceneObjectHandle,
+    ) -> Option<&ObjectEffectBindingComponent> {
+        self.component_for_object(object, &self.object_effect_components)
+    }
+
+    pub fn object_effect_bindings(
+        &self,
+        object: SceneObjectHandle,
+    ) -> &[SemanticObjectEffectBinding] {
+        let Some(component) = self.object_effect_component(object) else {
+            return &[];
+        };
+        let start = component.binding_start as usize;
+        let end = start + component.binding_count as usize;
+        self.object_effect_bindings.get(start..end).unwrap_or(&[])
+    }
+
     pub fn puppet_binding(&self, object: SceneObjectHandle) -> Option<&PuppetBindingComponent> {
         self.component_for_object(object, &self.puppet_components)
     }
@@ -164,6 +202,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 .filter(|component| component.visible)
                 .count(),
             mesh_binding_count: self.mesh_bindings.len(),
+            effect_binding_count: self.object_effect_bindings.len(),
             puppet_binding_count: self
                 .puppet_components
                 .iter()
@@ -173,6 +212,13 @@ impl<'a> SceneSemanticWorld<'a> {
     }
 
     pub fn resolve_frame(&self) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.resolve_frame_at(0.0)
+    }
+
+    pub fn resolve_frame_at(
+        &self,
+        scene_time_seconds: f32,
+    ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
         let mut states = vec![None; self.entities.len()];
         let mut visits = vec![ResolveVisitState::Unvisited; self.entities.len()];
         let mut attachment_links = Vec::new();
@@ -183,6 +229,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 &mut visits,
                 &mut states,
                 &mut attachment_links,
+                scene_time_seconds,
             )?;
         }
 
@@ -190,9 +237,15 @@ impl<'a> SceneSemanticWorld<'a> {
             .into_iter()
             .map(|state| state.expect("resolve_entity populates every requested object"))
             .collect::<Vec<_>>();
-        Ok(ResolvedSemanticFrame::from_objects(
+        let object_effects = self.resolve_object_effects(&objects)?;
+        let (puppet_bone_palettes, puppet_bone_matrices) =
+            self.resolve_puppet_bone_palettes(&objects, scene_time_seconds)?;
+        Ok(ResolvedSemanticFrame::from_resolved_parts(
             objects,
+            object_effects,
             attachment_links,
+            puppet_bone_palettes,
+            puppet_bone_matrices,
         ))
     }
 
@@ -235,7 +288,29 @@ impl<'a> SceneSemanticWorld<'a> {
         self.material_bindings
             .push(material_binding_from_object(object));
         self.mesh_components.push(None);
+        self.object_effect_components
+            .push(object_effect_binding_from_object(object));
         self.puppet_components.push(None);
+        Ok(())
+    }
+
+    fn validate_object_effect_ranges(&self) -> Result<(), SceneSemanticWorldError> {
+        for object in self.storage.objects() {
+            for (range_index, effect) in self
+                .storage
+                .object_effects_for_object(object)
+                .iter()
+                .enumerate()
+            {
+                if effect.object != object.id {
+                    return Err(SceneSemanticWorldError::ObjectEffectRangeMismatch {
+                        object: object.id,
+                        range_index,
+                        effect_object: effect.object,
+                    });
+                }
+            }
+        }
         Ok(())
     }
 
@@ -315,6 +390,7 @@ impl<'a> SceneSemanticWorld<'a> {
         visits: &mut [ResolveVisitState],
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
+        scene_time_seconds: f32,
     ) -> Result<ResolvedObjectState, SceneSemanticWorldError> {
         match visits[entity_index] {
             ResolveVisitState::Resolved => {
@@ -373,6 +449,7 @@ impl<'a> SceneSemanticWorld<'a> {
             visits,
             states,
             attachment_links,
+            scene_time_seconds,
         )?;
         let state = ResolvedObjectState {
             entity: entity_record.entity,
@@ -402,6 +479,7 @@ impl<'a> SceneSemanticWorld<'a> {
         visits: &mut [ResolveVisitState],
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
+        scene_time_seconds: f32,
     ) -> Result<(SceneObjectHandle, bool, [f32; 16]), SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
             if object.attachment.is_some() {
@@ -419,15 +497,24 @@ impl<'a> SceneSemanticWorld<'a> {
                 parent_we_id: object.parent_we_id,
             },
         )?;
-        let parent_state =
-            self.resolve_entity(parent_entity.index(), visits, states, attachment_links)?;
+        let parent_state = self.resolve_entity(
+            parent_entity.index(),
+            visits,
+            states,
+            attachment_links,
+            scene_time_seconds,
+        )?;
         let mut parent_anchor = parent_state.world_matrix;
 
         if object.attachment.is_some() {
-            let (link, attachment_matrix) =
-                self.resolve_attachment_link(object.id, parent_state.object, object.attachment);
-            if let Some(attachment_matrix) = attachment_matrix {
-                parent_anchor = multiply_matrix(&parent_state.world_matrix, &attachment_matrix);
+            let (link, attachment_anchor) = self.resolve_attachment_link_at(
+                object.id,
+                &parent_state,
+                object.attachment,
+                scene_time_seconds,
+            );
+            if let Some(attachment_anchor) = attachment_anchor {
+                parent_anchor = attachment_anchor;
             }
             attachment_links.push(link);
         }
@@ -439,12 +526,14 @@ impl<'a> SceneSemanticWorld<'a> {
         ))
     }
 
-    fn resolve_attachment_link(
+    fn resolve_attachment_link_at(
         &self,
         child: SceneObjectHandle,
-        parent: SceneObjectHandle,
+        parent_state: &ResolvedObjectState,
         attachment: SceneStringId,
+        scene_time_seconds: f32,
     ) -> (ResolvedAttachmentLink, Option<[f32; 16]>) {
+        let parent = parent_state.object;
         let Some(parent_puppet) = self.puppet_binding(parent) else {
             return (
                 ResolvedAttachmentLink::unresolved(child, parent, attachment),
@@ -476,7 +565,12 @@ impl<'a> SceneSemanticWorld<'a> {
                         parent_puppet.puppet_index,
                         record.bone_index,
                     ),
-                    Some(record.local_matrix),
+                    self.resolve_puppet_attachment_anchor(
+                        parent_state,
+                        puppet,
+                        record,
+                        scene_time_seconds,
+                    ),
                 );
             }
         }
@@ -489,6 +583,196 @@ impl<'a> SceneSemanticWorld<'a> {
             ),
             None,
         )
+    }
+
+    fn resolve_puppet_bone_palettes(
+        &self,
+        objects: &[ResolvedObjectState],
+        scene_time_seconds: f32,
+    ) -> Result<
+        (
+            Vec<ResolvedPuppetBonePalette>,
+            Vec<ResolvedPuppetBoneMatrix>,
+        ),
+        SceneSemanticWorldError,
+    > {
+        let mut palettes = Vec::new();
+        let mut matrices = Vec::new();
+        for object in objects {
+            if object.puppet_index == INVALID_RESOLVED_INDEX {
+                continue;
+            }
+            let puppet = self
+                .storage
+                .puppets()
+                .get(object.puppet_index as usize)
+                .ok_or(SceneSemanticWorldError::MissingPuppetRecord {
+                    object: object.object,
+                    puppet_index: object.puppet_index,
+                })?;
+            let bone_start = u32::try_from(matrices.len()).map_err(|_| {
+                SceneSemanticWorldError::TooManyPuppetBones {
+                    count: matrices.len(),
+                }
+            })?;
+            let local_start = matrices.len();
+            for bone in self.storage.puppet_bones(puppet) {
+                let parent_matrix = if bone.parent_index >= 0 {
+                    matrices[local_start..]
+                        .iter()
+                        .find(|matrix: &&ResolvedPuppetBoneMatrix| {
+                            matrix.bone_index == bone.parent_index as u32
+                        })
+                        .map(|matrix| matrix.matrix)
+                } else {
+                    None
+                };
+                let base_matrix = parent_matrix.unwrap_or(object.world_matrix);
+                let local_matrix = sampled_puppet_bone_local_matrix(
+                    self.storage,
+                    object.object,
+                    object.puppet_index,
+                    bone,
+                    scene_time_seconds,
+                );
+                matrices.push(ResolvedPuppetBoneMatrix {
+                    puppet_index: object.puppet_index,
+                    bone_index: bone.bone_index,
+                    parent_index: bone.parent_index,
+                    matrix: multiply_matrix(&base_matrix, &local_matrix),
+                });
+            }
+            let bone_count = u32::try_from(matrices.len() - local_start).map_err(|_| {
+                SceneSemanticWorldError::TooManyPuppetBones {
+                    count: matrices.len(),
+                }
+            })?;
+            palettes.push(ResolvedPuppetBonePalette {
+                object: object.object,
+                puppet_index: object.puppet_index,
+                bone_start,
+                bone_count,
+                resolved_visible: object.resolved_visible,
+            });
+        }
+        Ok((palettes, matrices))
+    }
+
+    fn resolve_object_effects(
+        &self,
+        objects: &[ResolvedObjectState],
+    ) -> Result<Vec<ResolvedObjectEffectState>, SceneSemanticWorldError> {
+        let mut effects = Vec::new();
+        for object in objects {
+            let Some(component) = self
+                .object_effect_components
+                .get(object.entity.index())
+                .and_then(Option::as_ref)
+            else {
+                continue;
+            };
+            let start = component.binding_start as usize;
+            let end = start.saturating_add(component.binding_count as usize);
+            let Some(bindings) = self.object_effect_bindings.get(start..end) else {
+                return Err(SceneSemanticWorldError::ObjectEffectRangeOutOfBounds {
+                    object: object.object,
+                    start: component.binding_start,
+                    count: component.binding_count,
+                    len: self.object_effect_bindings.len(),
+                });
+            };
+            for binding in bindings {
+                let effect_index = binding.effect.0;
+                let effect = self.storage.effects().get(effect_index as usize).ok_or(
+                    SceneSemanticWorldError::MissingEffectRecord {
+                        object: object.object,
+                        effect: binding.effect,
+                    },
+                )?;
+                effects.push(ResolvedObjectEffectState {
+                    entity: object.entity,
+                    object: object.object,
+                    object_index: object.object_index,
+                    effect: binding.effect,
+                    effect_index,
+                    instance_id: binding.instance_id,
+                    self_visible: binding.visible,
+                    object_resolved_visible: object.resolved_visible,
+                    resolved_visible: binding.visible && object.resolved_visible,
+                    pass_start: effect.pass_start,
+                    pass_count: effect.pass_count,
+                    fbo_start: effect.fbo_start,
+                    fbo_count: effect.fbo_count,
+                });
+            }
+        }
+        Ok(effects)
+    }
+
+    fn resolve_puppet_attachment_anchor(
+        &self,
+        parent_state: &ResolvedObjectState,
+        puppet: &ScenePuppetRecord,
+        attachment: &ScenePuppetAttachmentRecord,
+        scene_time_seconds: f32,
+    ) -> Option<[f32; 16]> {
+        self.resolve_puppet_bone_world_matrix(
+            parent_state.object,
+            parent_state.world_matrix,
+            parent_state.puppet_index,
+            puppet,
+            attachment.bone_index,
+            scene_time_seconds,
+        )
+        .map(|bone_matrix| multiply_matrix(&bone_matrix, &attachment.local_matrix))
+        .or_else(|| {
+            Some(multiply_matrix(
+                &parent_state.world_matrix,
+                &attachment.local_matrix,
+            ))
+        })
+    }
+
+    fn resolve_puppet_bone_world_matrix(
+        &self,
+        object: SceneObjectHandle,
+        object_world_matrix: [f32; 16],
+        puppet_index: u32,
+        puppet: &ScenePuppetRecord,
+        bone_index: u32,
+        scene_time_seconds: f32,
+    ) -> Option<[f32; 16]> {
+        let bones = self.storage.puppet_bones(puppet);
+        let mut matrices = Vec::<ResolvedPuppetBoneMatrix>::with_capacity(bones.len());
+        for bone in bones {
+            let parent_matrix = if bone.parent_index >= 0 {
+                matrices
+                    .iter()
+                    .find(|matrix| matrix.bone_index == bone.parent_index as u32)
+                    .map(|matrix| matrix.matrix)
+            } else {
+                None
+            };
+            let base_matrix = parent_matrix.unwrap_or(object_world_matrix);
+            let local_matrix = sampled_puppet_bone_local_matrix(
+                self.storage,
+                object,
+                puppet_index,
+                bone,
+                scene_time_seconds,
+            );
+            let matrix = multiply_matrix(&base_matrix, &local_matrix);
+            matrices.push(ResolvedPuppetBoneMatrix {
+                puppet_index,
+                bone_index: bone.bone_index,
+                parent_index: bone.parent_index,
+                matrix,
+            });
+            if bone.bone_index == bone_index {
+                return Some(matrix);
+            }
+        }
+        None
     }
 
     fn component_for_object<'components, T>(
@@ -524,6 +808,21 @@ pub enum SceneSemanticWorldError {
     DuplicateWeId {
         we_id: u32,
     },
+    ObjectEffectRangeMismatch {
+        object: SceneObjectHandle,
+        range_index: usize,
+        effect_object: SceneObjectHandle,
+    },
+    ObjectEffectRangeOutOfBounds {
+        object: SceneObjectHandle,
+        start: u32,
+        count: u32,
+        len: usize,
+    },
+    MissingEffectRecord {
+        object: SceneObjectHandle,
+        effect: SceneEffectHandle,
+    },
     MissingObjectForMesh {
         mesh_index: usize,
         object: SceneObjectHandle,
@@ -534,6 +833,13 @@ pub enum SceneSemanticWorldError {
     },
     DuplicatePuppetBinding {
         object: SceneObjectHandle,
+    },
+    TooManyPuppetBones {
+        count: usize,
+    },
+    MissingPuppetRecord {
+        object: SceneObjectHandle,
+        puppet_index: u32,
     },
     MissingObjectRecord {
         object: SceneObjectHandle,
@@ -582,6 +888,30 @@ impl fmt::Display for SceneSemanticWorldError {
             Self::DuplicateWeId { we_id } => {
                 write!(f, "scene semantic WE object id {we_id} is duplicated")
             }
+            Self::ObjectEffectRangeMismatch {
+                object,
+                range_index,
+                effect_object,
+            } => write!(
+                f,
+                "scene semantic object {} effect range item {range_index} points at object {}",
+                object.0, effect_object.0
+            ),
+            Self::ObjectEffectRangeOutOfBounds {
+                object,
+                start,
+                count,
+                len,
+            } => write!(
+                f,
+                "scene semantic object {} effect range [{start}, {start}+{count}) exceeds effect binding count {len}",
+                object.0
+            ),
+            Self::MissingEffectRecord { object, effect } => write!(
+                f,
+                "scene semantic object {} references missing effect record {}",
+                object.0, effect.0
+            ),
             Self::MissingObjectForMesh { mesh_index, object } => write!(
                 f,
                 "scene semantic mesh {mesh_index} references missing object {}",
@@ -598,6 +928,18 @@ impl fmt::Display for SceneSemanticWorldError {
             Self::DuplicatePuppetBinding { object } => write!(
                 f,
                 "scene semantic object {} has more than one puppet binding",
+                object.0
+            ),
+            Self::TooManyPuppetBones { count } => write!(
+                f,
+                "scene semantic world has too many resolved puppet bones: {count}"
+            ),
+            Self::MissingPuppetRecord {
+                object,
+                puppet_index,
+            } => write!(
+                f,
+                "scene semantic object {} references missing puppet record {puppet_index}",
                 object.0
             ),
             Self::MissingObjectRecord {
@@ -705,7 +1047,62 @@ mod tests {
         assert_eq!(inputs.object_count, 2);
         assert_eq!(inputs.visible_object_count, 2);
         assert_eq!(inputs.mesh_binding_count, 3);
+        assert_eq!(inputs.effect_binding_count, 0);
         assert_eq!(inputs.puppet_binding_count, 1);
+    }
+
+    #[test]
+    fn resolve_frame_carries_object_effect_visibility_and_pass_ranges() {
+        let mut document = semantic_document();
+        document.effects.push(SceneEffectRecord {
+            id: SceneEffectHandle(0),
+            resource: SceneResourceId::NONE,
+            replacement_key: SceneStringId::NONE,
+            pass_start: 0,
+            pass_count: 2,
+            fbo_start: 0,
+            fbo_count: 1,
+        });
+        document.effect_passes = vec![effect_pass(0), effect_pass(1)];
+        document.effect_fbos.push(SceneEffectFboRecord {
+            name: SceneStringId::NONE,
+            format: SceneStringId::NONE,
+            scale: 1.0,
+        });
+        document.object_effects.push(SceneObjectEffectRecord {
+            object: SceneObjectHandle(0),
+            effect: SceneEffectHandle(0),
+            instance_id: 77,
+            visible: true,
+        });
+        document.object_effects.push(SceneObjectEffectRecord {
+            object: SceneObjectHandle(1),
+            effect: SceneEffectHandle(0),
+            instance_id: 78,
+            visible: false,
+        });
+        document.objects[0].effect_start = 0;
+        document.objects[0].effect_count = 1;
+        document.objects[1].effect_start = 1;
+        document.objects[1].effect_count = 1;
+
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+        let image_effects = world.object_effect_bindings(SceneObjectHandle(0));
+        let frame = world.resolve_frame().expect("resolved frame");
+
+        assert_eq!(image_effects.len(), 1);
+        assert_eq!(image_effects[0].instance_id, 77);
+        assert_eq!(frame.object_effects.len(), 2);
+        assert_eq!(frame.visible_effect_instance_count, 1);
+        assert_eq!(frame.visible_effect_pass_count, 2);
+        assert_eq!(frame.visible_effect_fbo_count, 1);
+        assert!(frame.object_effects[0].resolved_visible);
+        assert_eq!(frame.object_effects[0].pass_start, 0);
+        assert_eq!(frame.object_effects[0].pass_count, 2);
+        assert_eq!(frame.object_effects[0].fbo_start, 0);
+        assert_eq!(frame.object_effects[0].fbo_count, 1);
+        assert!(!frame.object_effects[1].resolved_visible);
     }
 
     #[test]
@@ -718,7 +1115,11 @@ mod tests {
 
         assert_eq!(frame.visible_object_count, 2);
         assert_eq!(frame.visible_mesh_binding_count, 2);
+        assert_eq!(frame.visible_effect_instance_count, 0);
         assert_eq!(frame.visible_puppet_binding_count, 1);
+        assert_eq!(frame.puppet_bone_palettes.len(), 1);
+        assert_eq!(frame.puppet_bone_matrices.len(), 1);
+        assert_eq!(frame.visible_puppet_bone_matrix_count, 1);
         assert_eq!(child.parent, SceneObjectHandle(0));
         assert!(child.resolved_visible);
         assert_eq!(child.mesh_binding_start, 1);
@@ -726,8 +1127,71 @@ mod tests {
         assert_eq!(link.parent_puppet_index, 0);
         assert_eq!(link.bone_index, 41);
         assert!(link.resolved);
+        assert_eq!(frame.puppet_bone_palettes[0].object, SceneObjectHandle(0));
+        assert_eq!(frame.puppet_bone_palettes[0].bone_count, 1);
+        assert_eq!(frame.puppet_bone_matrices[0].bone_index, 41);
+        assert_close(frame.puppet_bone_matrices[0].matrix[12], 10.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[13], 20.0);
         assert_close(child.world_matrix[12], 17.0);
         assert_close(child.world_matrix[13], 30.0);
+    }
+
+    #[test]
+    fn resolve_frame_samples_puppet_animation_for_skinning_and_attachment() {
+        let mut document = attachment_document();
+        document
+            .strings
+            .extend(["blink".to_owned(), "loop".to_owned()]);
+        document
+            .object_animation_layers
+            .push(SceneObjectAnimationLayerRecord {
+                object: SceneObjectHandle(0),
+                animation_id: 475,
+                layer_index: 0,
+                additive: false,
+                autosort: false,
+            });
+        document
+            .puppet_animation_transform_samples
+            .push(animation_sample([1.0, 2.0, 0.0]));
+        document
+            .puppet_animation_transform_samples
+            .push(animation_sample([30.0, 40.0, 0.0]));
+        document
+            .puppet_animation_tracks
+            .push(ScenePuppetAnimationTrackRecord {
+                clip: 0,
+                bone_index: 41,
+                track_flags: 0,
+                sample_start: 0,
+                sample_count: 2,
+            });
+        document
+            .puppet_animation_clips
+            .push(ScenePuppetAnimationClipRecord {
+                puppet: 0,
+                clip_id: 475,
+                flags: 0,
+                name: SceneStringId(2),
+                playback: SceneStringId(3),
+                fps: 30.0,
+                frame_count: 1,
+                frame_metadata: 0,
+                track_start: 0,
+                track_count: 1,
+            });
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+
+        let frame = world
+            .resolve_frame_at(1.0 / 30.0)
+            .expect("resolved animated frame");
+        let child = frame.object(SceneObjectHandle(1)).expect("child state");
+
+        assert_close(frame.puppet_bone_matrices[0].matrix[12], 40.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[13], 60.0);
+        assert_close(child.world_matrix[12], 47.0);
+        assert_close(child.world_matrix[13], 70.0);
     }
 
     #[test]
@@ -1106,6 +1570,21 @@ mod tests {
         }
     }
 
+    fn effect_pass(pass_index: u32) -> SceneEffectPassRecord {
+        SceneEffectPassRecord {
+            effect: SceneEffectHandle(0),
+            pass_index,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            command: SceneStringId::NONE,
+            source: SceneStringId::NONE,
+            target: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            combo_start: 0,
+            combo_count: 0,
+        }
+    }
+
     fn identity_matrix() -> [f32; 16] {
         [
             1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
@@ -1117,6 +1596,22 @@ mod tests {
         matrix[12] = x;
         matrix[13] = y;
         matrix
+    }
+
+    fn animation_sample(translation: [f32; 3]) -> ScenePuppetAnimationTransformSampleRecord {
+        ScenePuppetAnimationTransformSampleRecord {
+            translation: SceneVec3 {
+                x: translation[0],
+                y: translation[1],
+                z: translation[2],
+            },
+            rotation: SceneVec3::default(),
+            scale: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+        }
     }
 
     fn assert_close(actual: f32, expected: f32) {

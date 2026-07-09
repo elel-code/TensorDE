@@ -277,6 +277,7 @@ mod tests {
             id,
             role: RenderPassRole::EffectMaterial,
             object_index: Some(7),
+            material_index: None,
             pass_index: id,
             shader: None,
             target,

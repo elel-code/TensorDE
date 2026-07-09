@@ -251,6 +251,10 @@ struct WeIrBuilder {
     texture_by_path: BTreeMap<String, u32>,
     objects: Vec<WeIrObject>,
     object_effects: Vec<WeIrObjectEffect>,
+    object_animation_layers: Vec<WeIrObjectAnimationLayer>,
+    puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
+    puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
+    puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
     materials: Vec<WeIrMaterial>,
     material_by_path: BTreeMap<String, u32>,
     material_passes: Vec<WeIrMaterialPass>,
@@ -292,6 +296,10 @@ impl WeIrBuilder {
             texture_by_path: BTreeMap::new(),
             objects: Vec::new(),
             object_effects: Vec::new(),
+            object_animation_layers: Vec::new(),
+            puppet_animation_clips: Vec::new(),
+            puppet_animation_tracks: Vec::new(),
+            puppet_animation_transform_samples: Vec::new(),
             materials: Vec::new(),
             material_by_path: BTreeMap::new(),
             material_passes: Vec::new(),
@@ -326,6 +334,10 @@ impl WeIrBuilder {
             textures: self.textures,
             objects: self.objects,
             object_effects: self.object_effects,
+            object_animation_layers: self.object_animation_layers,
+            puppet_animation_clips: self.puppet_animation_clips,
+            puppet_animation_tracks: self.puppet_animation_tracks,
+            puppet_animation_transform_samples: self.puppet_animation_transform_samples,
             materials: self.materials,
             material_passes: self.material_passes,
             material_textures: self.material_textures,
@@ -444,6 +456,7 @@ impl WeIrBuilder {
                                 mesh_count,
                                 &model.bones,
                                 &model.attachments,
+                                &model.animations,
                             );
                         }
                         Err(err) => {
@@ -551,6 +564,7 @@ impl WeIrBuilder {
                 color_blend_mode,
             )
         });
+        self.add_object_animation_layers(handle, value);
 
         self.objects.push(WeIrObject {
             handle,
@@ -574,6 +588,34 @@ impl WeIrBuilder {
             render_graph,
         });
         Ok(())
+    }
+
+    fn add_object_animation_layers(&mut self, object: u32, value: &Value) {
+        for (local_index, layer) in value
+            .get("animationlayers")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let Some(animation_id) = value_u32(layer.get("animation")) else {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: None,
+                    feature: "animation-layer-missing-animation-id".to_owned(),
+                    expected_subsystem: "convert/we_ingest animationlayers parser".to_owned(),
+                    containment: "animation-layer-skipped".to_owned(),
+                });
+                continue;
+            };
+            self.object_animation_layers.push(WeIrObjectAnimationLayer {
+                object,
+                animation_id,
+                layer_index: value_u32(layer.get("index")).unwrap_or(local_index as u32),
+                additive: bound_bool(layer.get("additive")).unwrap_or(false),
+                autosort: bound_bool(layer.get("autosort")).unwrap_or(false),
+            });
+        }
     }
 
     fn add_mdl_materials(
@@ -685,6 +727,7 @@ impl WeIrBuilder {
         mesh_count: u32,
         bones: &[super::mdl::MdlBone],
         attachments: &[super::mdl::MdlAttachment],
+        animations: &[super::mdl::MdlAnimationClip],
     ) {
         let puppet = self.puppets.len() as u32;
         let bone_start = self.puppet_bones.len() as u32;
@@ -707,6 +750,10 @@ impl WeIrBuilder {
                 local_matrix: attachment.local_matrix,
             });
         }
+        let clip_start = self.puppet_animation_clips.len() as u32;
+        for animation in animations {
+            self.push_mdl_puppet_animation(puppet, animation);
+        }
         self.puppets.push(WeIrPuppet {
             object,
             resource,
@@ -716,6 +763,54 @@ impl WeIrBuilder {
             bone_count: self.puppet_bones.len() as u32 - bone_start,
             attachment_start,
             attachment_count: self.puppet_attachments.len() as u32 - attachment_start,
+        });
+        let clip_count = self.puppet_animation_clips.len() as u32 - clip_start;
+        if clip_count != 0 && bones.is_empty() {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(object),
+                pass_index: None,
+                feature: "mdla-animation-without-mdls-bone-table".to_owned(),
+                expected_subsystem: "convert/we_ingest MDLA0006 animation lowering".to_owned(),
+                containment: "animation-records-kept-with-track-ordinal-bone-indices".to_owned(),
+            });
+        }
+    }
+
+    fn push_mdl_puppet_animation(&mut self, puppet: u32, animation: &super::mdl::MdlAnimationClip) {
+        let clip = self.puppet_animation_clips.len() as u32;
+        let track_start = self.puppet_animation_tracks.len() as u32;
+        for track in &animation.tracks {
+            let sample_start = self.puppet_animation_transform_samples.len() as u32;
+            self.puppet_animation_transform_samples
+                .extend(
+                    track
+                        .samples
+                        .iter()
+                        .map(|sample| WeIrPuppetAnimationTransformSample {
+                            translation: sample.translation,
+                            rotation: sample.rotation,
+                            scale: sample.scale,
+                        }),
+                );
+            self.puppet_animation_tracks.push(WeIrPuppetAnimationTrack {
+                clip,
+                bone_index: track.bone_index,
+                track_flags: track.track_flags,
+                sample_start,
+                sample_count: self.puppet_animation_transform_samples.len() as u32 - sample_start,
+            });
+        }
+        self.puppet_animation_clips.push(WeIrPuppetAnimationClip {
+            puppet,
+            clip_id: animation.clip_id,
+            flags: animation.flags,
+            name: animation.name.clone(),
+            playback: animation.playback.clone(),
+            fps: animation.fps,
+            frame_count: animation.frame_count,
+            frame_metadata: animation.frame_metadata,
+            track_start,
+            track_count: self.puppet_animation_tracks.len() as u32 - track_start,
         });
     }
 
@@ -1090,7 +1185,8 @@ impl WeIrBuilder {
         color_blend_mode: i32,
     ) -> u32 {
         let graph_index = self.render_graphs.len() as u32;
-        let material = &self.materials[material as usize];
+        let base_material_handle = material;
+        let material = &self.materials[base_material_handle as usize];
         let base_pass = self
             .material_passes
             .get(material.pass_start as usize)
@@ -1106,6 +1202,8 @@ impl WeIrBuilder {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let base_pass_constants =
+            material_pass_constant_names(&self.material_constants, base_pass.as_ref());
         let mut effect_passes = Vec::new();
         for (effect_handle, instance) in effect_instances {
             self.push_effect_contracts_for_instance(
@@ -1117,6 +1215,7 @@ impl WeIrBuilder {
         }
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: object as usize,
+            base_material_index: Some(base_material_handle as usize),
             base_shader: base_pass.and_then(|pass| {
                 if pass.shader_key.is_empty() {
                     None
@@ -1125,6 +1224,7 @@ impl WeIrBuilder {
                 }
             }),
             base_texture_slots,
+            base_pass_constants,
             final_scene_blend: scene_blend_from_color_blend_mode(color_blend_mode),
             effect_passes,
         });
@@ -1156,6 +1256,8 @@ impl WeIrBuilder {
                 .material
                 .and_then(|material| self.materials.get(material as usize))
                 .and_then(|material| self.material_passes.get(material.pass_start as usize));
+            let mut pass_constants =
+                material_pass_constant_names(&self.material_constants, material_pass);
             let mut binds = BTreeMap::new();
             for binding in self
                 .effect_bindings
@@ -1187,11 +1289,14 @@ impl WeIrBuilder {
                 .and_then(|passes| passes.get(local_index as usize))
             {
                 push_instance_combo_overrides(instance_pass, &mut combos);
+                push_instance_constant_overrides(instance_pass, &mut pass_constants);
             }
             out.push(WeEffectPassContract {
                 object_index: object as usize,
+                material_index: effect_pass.material.map(|material| material as usize),
                 effect_file: effect_file.clone(),
                 pass_index: local_index,
+                command: non_empty_string(&effect_pass.command),
                 shader: material_pass.and_then(|pass| {
                     if pass.shader_key.is_empty() {
                         None
@@ -1199,12 +1304,14 @@ impl WeIrBuilder {
                         Some(pass.shader_key.clone())
                     }
                 }),
+                source: non_empty_string(&effect_pass.source),
                 target: if effect_pass.target.is_empty() {
                     None
                 } else {
                     Some(effect_pass.target.clone())
                 },
                 binds,
+                pass_constants,
                 material_blending: material_pass
                     .map(|pass| pipeline_blend_string(pass.pipeline_blend)),
                 depthtest: material_pass.map(|pass| match pass.depth_test {
@@ -1375,6 +1482,35 @@ fn push_instance_combo_overrides(pass: &Value, combos: &mut BTreeMap<String, i64
             }
         }
     }
+}
+
+fn material_pass_constant_names(
+    constants: &[WeIrMaterialConstant],
+    pass: Option<&WeIrMaterialPass>,
+) -> Vec<String> {
+    let Some(pass) = pass else {
+        return Vec::new();
+    };
+    constants
+        .iter()
+        .skip(pass.constant_start as usize)
+        .take(pass.constant_count as usize)
+        .map(|constant| constant.name.clone())
+        .collect()
+}
+
+fn push_instance_constant_overrides(pass: &Value, constants: &mut Vec<String>) {
+    if let Some(instance_constants) = pass.get("constantshadervalues").and_then(Value::as_object) {
+        for name in instance_constants.keys() {
+            if !constants.iter().any(|constant| constant == name) {
+                constants.push(name.clone());
+            }
+        }
+    }
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 fn parse_json_bytes(path: &str, bytes: &[u8]) -> Result<Value, WeIngestError> {
@@ -1568,7 +1704,7 @@ mod tests {
         .expect("project");
         fs::write(
             root.join("scene.json"),
-            r#"{"general":{"orthogonalprojection":{"width":1920,"height":1080}},"objects":[{"id":7,"name":"layer","image":"models/layer.json","origin":"1 2 0"}]}"#,
+            r#"{"general":{"orthogonalprojection":{"width":1920,"height":1080}},"objects":[{"id":7,"name":"layer","image":"models/layer.json","origin":"1 2 0","animationlayers":[{"animation":475,"index":2,"additive":true,"autosort":true}]}]}"#,
         )
         .expect("scene");
         fs::write(
@@ -1578,7 +1714,7 @@ mod tests {
         .expect("model");
         fs::write(
             root.join("materials/layer.json"),
-            r#"{"passes":[{"shader":"genericimage4","blending":"translucent","textures":[null]}]}"#,
+            r#"{"passes":[{"shader":"genericimage4","blending":"translucent","textures":[null],"constantshadervalues":{"tint":[0.2,0.4,0.6,1.0]}}]}"#,
         )
         .expect("material");
 
@@ -1586,6 +1722,11 @@ mod tests {
         assert_eq!(ir.project.title, "Demo");
         assert_eq!(ir.scene.logical_width, 1920);
         assert_eq!(ir.objects.len(), 1);
+        assert_eq!(ir.object_animation_layers.len(), 1);
+        assert_eq!(ir.object_animation_layers[0].animation_id, 475);
+        assert_eq!(ir.object_animation_layers[0].layer_index, 2);
+        assert!(ir.object_animation_layers[0].additive);
+        assert!(ir.object_animation_layers[0].autosort);
         assert_eq!(ir.materials.len(), 1);
         assert_eq!(ir.meshes.len(), 1);
         assert_eq!(ir.mesh_vertices.len(), 4);
@@ -1593,6 +1734,11 @@ mod tests {
         assert_eq!(ir.meshes[0].width, 64.0);
         assert_eq!(ir.meshes[0].height, 64.0);
         assert_eq!(ir.render_graphs.len(), 1);
+        assert!(ir.render_graphs[0].passes[0].bindings.contains(
+            &crate::engine::render_graph::TextureBindingRole::PassConstant {
+                name: "tint".to_owned()
+            }
+        ));
         assert_eq!(ir.shader_contracts.len(), 1);
         assert_eq!(ir.shader_contracts[0].texture_slot_mask, 1);
         assert_eq!(ir.shader_contracts[0].resource_heap_count, 3);
@@ -1641,6 +1787,12 @@ mod tests {
         assert_eq!(ir.puppets[0].attachment_count, 1);
         assert_eq!(ir.puppet_attachments[0].bone_index, 41);
         assert_eq!(ir.puppet_attachments[0].name, "eye");
+        assert_eq!(ir.puppet_animation_clips.len(), 1);
+        assert_eq!(ir.puppet_animation_clips[0].clip_id, 475);
+        assert_eq!(ir.puppet_animation_tracks.len(), 1);
+        assert_eq!(ir.puppet_animation_tracks[0].bone_index, 41);
+        assert_eq!(ir.puppet_animation_transform_samples.len(), 2);
+        assert_eq!(ir.puppet_animation_transform_samples[1].translation.x, 4.0);
         assert_eq!(ir.render_graphs.len(), 1);
         assert_eq!(ir.shader_contracts.len(), 1);
         assert!(ir.unsupported.is_empty());
@@ -1670,6 +1822,47 @@ mod tests {
         for index in [0_u16, 1, 2] {
             bytes.extend_from_slice(&index.to_le_bytes());
         }
+        bytes.extend_from_slice(b"MDLS0004");
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 41);
+        bytes.push(0);
+        bytes.extend_from_slice(&(-1_i32).to_le_bytes());
+        push_u32(&mut bytes, 64);
+        for index in 0..16 {
+            let value = if index == 0 || index == 5 || index == 10 || index == 15 {
+                1.0
+            } else {
+                0.0
+            };
+            push_f32(&mut bytes, value);
+        }
+        bytes.extend_from_slice(b"eye-bone\0");
+        bytes.extend_from_slice(b"MDLA0006");
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 475);
+        push_u32(&mut bytes, 0);
+        bytes.extend_from_slice(b"blink\0");
+        bytes.extend_from_slice(b"loop\0");
+        push_f32(&mut bytes, 30.0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 1);
+        push_u32(&mut bytes, 0);
+        push_u32(&mut bytes, 72);
+        push_transform_sample(
+            &mut bytes,
+            [1.0, 2.0, 3.0],
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        );
+        push_transform_sample(
+            &mut bytes,
+            [4.0, 5.0, 6.0],
+            [0.0, 0.0, 1.0],
+            [2.0, 2.0, 2.0],
+        );
         bytes.extend_from_slice(b"MDAT0001\0");
         push_u32(&mut bytes, 0);
         bytes.extend_from_slice(&1_u16.to_le_bytes());
@@ -1693,6 +1886,17 @@ mod tests {
         out.resize(out.len() + 60, 0);
         push_f32(out, uv[0]);
         push_f32(out, uv[1]);
+    }
+
+    fn push_transform_sample(
+        out: &mut Vec<u8>,
+        translation: [f32; 3],
+        rotation: [f32; 3],
+        scale: [f32; 3],
+    ) {
+        for value in translation.into_iter().chain(rotation).chain(scale) {
+            push_f32(out, value);
+        }
     }
 
     fn push_u32(out: &mut Vec<u8>, value: u32) {

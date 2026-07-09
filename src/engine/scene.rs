@@ -21,12 +21,15 @@ pub use binary::{
 };
 pub use rendering_device_graph::{
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
+    SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
+    SceneRenderingDeviceTargetAllocation,
 };
 pub use semantic_world::{
-    MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
-    ResolvedAttachmentLink, ResolvedObjectState, ResolvedSemanticFrame, SceneSemanticWorld,
+    MaterialBindingComponent, MeshBindingComponent, ObjectEffectBindingComponent, ParentComponent,
+    PuppetBindingComponent, ResolvedAttachmentLink, ResolvedObjectEffectState, ResolvedObjectState,
+    ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld,
     SceneSemanticWorldError, SemanticEntity, SemanticEntityRecord, SemanticMeshBinding,
-    SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
+    SemanticObjectEffectBinding, SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
 };
 pub use server::{
     RendererSceneRenderPlan, RenderingServer, SceneEngineRenderPlan, SceneObjectRenderGraph,

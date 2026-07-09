@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 use crate::engine::scene::{
-    SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+    SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan, SceneStringId,
 };
 
 use super::pipeline_cache::NativeVulkanScenePipelineCachePlan;
@@ -31,6 +31,9 @@ pub struct NativeVulkanSceneRenderGraphCommand {
     pub kind: NativeVulkanSceneRenderGraphCommandKind,
     pub pass_role: SceneRenderPassKind,
     pub target: SceneRenderTargetKind,
+    pub target_name: SceneStringId,
+    pub binding_start: u32,
+    pub binding_count: u32,
     pub mesh_draw_start: u32,
     pub mesh_draw_count: u32,
 }
@@ -42,7 +45,10 @@ pub enum NativeVulkanSceneRenderGraphCommandKind {
     BindDescriptorHeap,
     BindPipeline,
     DrawMesh,
+    CopyTarget,
+    SwapTargetReferences,
     EndTarget,
+    RestoreTarget,
 }
 
 pub fn native_vulkan_scene_render_graph_executor_plan(
@@ -52,48 +58,52 @@ pub fn native_vulkan_scene_render_graph_executor_plan(
 ) -> NativeVulkanSceneRenderGraphExecutorPlan {
     let mut commands = Vec::new();
     for (index, pass) in graph.pass_nodes.iter().enumerate() {
+        if pass.role == SceneRenderPassKind::CopyTarget {
+            commands.push(command(index, NativeVulkanSceneRenderGraphCommandKind::CopyTarget, pass));
+            continue;
+        }
+        if pass.role == SceneRenderPassKind::SwapTargetReferences {
+            commands.push(command(
+                index,
+                NativeVulkanSceneRenderGraphCommandKind::SwapTargetReferences,
+                pass,
+            ));
+            continue;
+        }
         commands.push(command(
             index,
             NativeVulkanSceneRenderGraphCommandKind::BeginTarget,
-            pass.role,
-            pass.target,
-            pass.mesh_draw_start,
-            pass.mesh_draw_count,
+            pass,
         ));
         commands.push(command(
             index,
             NativeVulkanSceneRenderGraphCommandKind::BindDescriptorHeap,
-            pass.role,
-            pass.target,
-            pass.mesh_draw_start,
-            pass.mesh_draw_count,
+            pass,
         ));
         commands.push(command(
             index,
             NativeVulkanSceneRenderGraphCommandKind::BindPipeline,
-            pass.role,
-            pass.target,
-            pass.mesh_draw_start,
-            pass.mesh_draw_count,
+            pass,
         ));
         if pass.mesh_draw_count > 0 {
             commands.push(command(
                 index,
                 NativeVulkanSceneRenderGraphCommandKind::DrawMesh,
-                pass.role,
-                pass.target,
-                pass.mesh_draw_start,
-                pass.mesh_draw_count,
+                pass,
             ));
         }
         commands.push(command(
             index,
             NativeVulkanSceneRenderGraphCommandKind::EndTarget,
-            pass.role,
-            pass.target,
-            pass.mesh_draw_start,
-            pass.mesh_draw_count,
+            pass,
         ));
+        if target_requires_restore(pass.target) {
+            commands.push(command(
+                index,
+                NativeVulkanSceneRenderGraphCommandKind::RestoreTarget,
+                pass,
+            ));
+        }
     }
 
     let draw_count = graph.mesh_draws.len();
@@ -110,19 +120,26 @@ pub fn native_vulkan_scene_render_graph_executor_plan(
 fn command(
     pass_node_index: usize,
     kind: NativeVulkanSceneRenderGraphCommandKind,
-    pass_role: SceneRenderPassKind,
-    target: SceneRenderTargetKind,
-    mesh_draw_start: u32,
-    mesh_draw_count: u32,
+    pass: &crate::engine::scene::SceneRenderingDevicePassNode,
 ) -> NativeVulkanSceneRenderGraphCommand {
     NativeVulkanSceneRenderGraphCommand {
         pass_node_index: pass_node_index as u32,
         kind,
-        pass_role,
-        target,
-        mesh_draw_start,
-        mesh_draw_count,
+        pass_role: pass.role,
+        target: pass.target,
+        target_name: pass.target_name,
+        binding_start: pass.binding_start,
+        binding_count: pass.binding_count,
+        mesh_draw_start: pass.mesh_draw_start,
+        mesh_draw_count: pass.mesh_draw_count,
     }
+}
+
+fn target_requires_restore(target: SceneRenderTargetKind) -> bool {
+    !matches!(
+        target,
+        SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
+    )
 }
 
 fn executor_status(
@@ -145,8 +162,8 @@ fn executor_status(
 mod tests {
     use super::super::pipeline_cache::NativeVulkanScenePipelineCachePlan;
     use super::super::resource_storage::{
-        NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
-        NativeVulkanSceneResourceStoragePlan,
+        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
+        NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneSkinningBufferPlan,
     };
     use super::*;
     use crate::engine::scene::{
@@ -163,13 +180,19 @@ mod tests {
                 pass_id: 1,
                 role: SceneRenderPassKind::BaseMaterial,
                 target: SceneRenderTargetKind::SceneColor,
+                target_name: crate::engine::scene::SceneStringId::NONE,
                 binding_start: 0,
                 binding_count: 0,
                 mesh_draw_start: 0,
                 mesh_draw_count: 1,
             }],
+            target_allocations: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 mesh_index: 0,
+                resolved_object_index: 0,
+                clip_transform: identity_clip_transform(),
+                skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
+                skinning_palette_count: 0,
                 object: crate::engine::scene::SceneObjectHandle(0),
                 material: crate::engine::scene::SceneMaterialHandle(
                     crate::engine::scene::INVALID_MATERIAL_ID,
@@ -179,15 +202,22 @@ mod tests {
                 index_start: 0,
                 index_count: 6,
             }],
+            puppet_bone_palettes: Vec::new(),
+            puppet_bone_matrices: Vec::new(),
             resolved_object_count: 1,
             resolved_visible_object_count: 1,
             resolved_attachment_link_count: 0,
+            resolved_visible_effect_instance_count: 0,
+            resolved_visible_effect_pass_count: 0,
+            resolved_visible_effect_fbo_count: 0,
             descriptor_heap_required: true,
             descriptor_heap_resource_count: 1,
             descriptor_heap_sampled_image_count: 0,
             descriptor_heap_uniform_buffer_count: 1,
             descriptor_heap_storage_buffer_count: 0,
             descriptor_heap_sampler_count: 0,
+            graph_physical_target_count: 0,
+            graph_aliased_target_count: 0,
             fifo_latest_ready_present_required: true,
         };
         let resource_storage = NativeVulkanSceneResourceStoragePlan {
@@ -204,6 +234,20 @@ mod tests {
                 index_buffer_bytes: 24,
                 draw_count: 1,
                 device_address_required: true,
+            },
+            skinning_buffer: NativeVulkanSceneSkinningBufferPlan {
+                palette_count: 0,
+                bone_matrix_count: 0,
+                bone_matrix_buffer_bytes: 0,
+                storage_buffer_required: false,
+            },
+            effect_target_storage: NativeVulkanSceneEffectTargetStoragePlan {
+                logical_target_count: 0,
+                physical_target_count: 0,
+                aliased_target_count: 0,
+                named_fbo_count: 0,
+                first_class_effect_target_count: 0,
+                dynamic_rendering_image_required: false,
             },
             descriptor_heap: NativeVulkanSceneHeapStoragePlan {
                 descriptor_model: "VK_EXT_descriptor_heap",
@@ -248,5 +292,155 @@ mod tests {
             plan.executor_status,
             "scene-render-graph-ready-for-vulkan-recording"
         );
+    }
+
+    #[test]
+    fn executor_commandizes_copy_swap_and_target_restore_passes() {
+        let graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![
+                SceneRenderingDevicePassNode {
+                    graph_index: 0,
+                    pass_record_index: 0,
+                    pass_id: 1,
+                    role: SceneRenderPassKind::CopyTarget,
+                    target: SceneRenderTargetKind::NamedFbo,
+                    target_name: crate::engine::scene::SceneStringId(0),
+                    binding_start: 0,
+                    binding_count: 1,
+                    mesh_draw_start: 0,
+                    mesh_draw_count: 0,
+                },
+                SceneRenderingDevicePassNode {
+                    graph_index: 0,
+                    pass_record_index: 1,
+                    pass_id: 2,
+                    role: SceneRenderPassKind::SwapTargetReferences,
+                    target: SceneRenderTargetKind::NamedFbo,
+                    target_name: crate::engine::scene::SceneStringId(1),
+                    binding_start: 1,
+                    binding_count: 1,
+                    mesh_draw_start: 0,
+                    mesh_draw_count: 0,
+                },
+                SceneRenderingDevicePassNode {
+                    graph_index: 0,
+                    pass_record_index: 2,
+                    pass_id: 3,
+                    role: SceneRenderPassKind::EffectMaterial,
+                    target: SceneRenderTargetKind::FirstClassEffectTarget,
+                    target_name: crate::engine::scene::SceneStringId(2),
+                    binding_start: 2,
+                    binding_count: 1,
+                    mesh_draw_start: 0,
+                    mesh_draw_count: 0,
+                },
+            ],
+            target_allocations: Vec::new(),
+            mesh_draws: Vec::new(),
+            puppet_bone_palettes: Vec::new(),
+            puppet_bone_matrices: Vec::new(),
+            resolved_object_count: 0,
+            resolved_visible_object_count: 0,
+            resolved_attachment_link_count: 0,
+            resolved_visible_effect_instance_count: 0,
+            resolved_visible_effect_pass_count: 0,
+            resolved_visible_effect_fbo_count: 0,
+            descriptor_heap_required: true,
+            descriptor_heap_resource_count: 1,
+            descriptor_heap_sampled_image_count: 0,
+            descriptor_heap_uniform_buffer_count: 1,
+            descriptor_heap_storage_buffer_count: 0,
+            descriptor_heap_sampler_count: 0,
+            graph_physical_target_count: 1,
+            graph_aliased_target_count: 0,
+            fifo_latest_ready_present_required: true,
+        };
+
+        let plan = native_vulkan_scene_render_graph_executor_plan(
+            &graph,
+            &empty_resource_storage(),
+            &pipeline_cache_with_count(1),
+        );
+
+        assert_eq!(
+            plan.commands[0].kind,
+            NativeVulkanSceneRenderGraphCommandKind::CopyTarget
+        );
+        assert_eq!(plan.commands[0].binding_start, 0);
+        assert_eq!(
+            plan.commands[1].kind,
+            NativeVulkanSceneRenderGraphCommandKind::SwapTargetReferences
+        );
+        assert!(
+            plan.commands
+                .iter()
+                .any(|command| command.kind == NativeVulkanSceneRenderGraphCommandKind::RestoreTarget)
+        );
+    }
+
+    fn empty_resource_storage() -> NativeVulkanSceneResourceStoragePlan {
+        NativeVulkanSceneResourceStoragePlan {
+            resource_record_count: 0,
+            texture_record_count: 0,
+            material_record_count: 0,
+            effect_record_count: 0,
+            resource_payload_bytes: 0,
+            mesh_buffer: NativeVulkanSceneMeshBufferPlan {
+                mesh_count: 0,
+                vertex_count: 0,
+                index_count: 0,
+                vertex_buffer_bytes: 0,
+                index_buffer_bytes: 0,
+                draw_count: 0,
+                device_address_required: false,
+            },
+            skinning_buffer: NativeVulkanSceneSkinningBufferPlan {
+                palette_count: 0,
+                bone_matrix_count: 0,
+                bone_matrix_buffer_bytes: 0,
+                storage_buffer_required: false,
+            },
+            effect_target_storage: NativeVulkanSceneEffectTargetStoragePlan {
+                logical_target_count: 0,
+                physical_target_count: 0,
+                aliased_target_count: 0,
+                named_fbo_count: 0,
+                first_class_effect_target_count: 0,
+                dynamic_rendering_image_required: false,
+            },
+            descriptor_heap: NativeVulkanSceneHeapStoragePlan {
+                descriptor_model: "VK_EXT_descriptor_heap",
+                resource_descriptor_count: 1,
+                sampled_image_descriptor_count: 0,
+                uniform_buffer_descriptor_count: 1,
+                storage_buffer_descriptor_count: 0,
+                sampler_descriptor_count: 0,
+                shader_contract_count: 1,
+            },
+            shader_heap_slices: Vec::new(),
+            payload_residency: "scene-resource-payload-offset-slices",
+            mesh_residency: "device-addressable-scene-mesh-buffers",
+        }
+    }
+
+    fn pipeline_cache_with_count(pipeline_count: usize) -> NativeVulkanScenePipelineCachePlan {
+        NativeVulkanScenePipelineCachePlan {
+            pipeline_count,
+            entries: Vec::new(),
+            shader_catalog_entry_count: 1,
+            shader_catalog_hit_count: pipeline_count,
+            missing_shader_keys: Vec::new(),
+            cache_model: "pipeline-key-hash-cache",
+            shader_catalog_source: "built-in-scene-shader-catalog",
+        }
+    }
+
+    fn identity_clip_transform() -> [[f32; 4]; 4] {
+        [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ]
     }
 }

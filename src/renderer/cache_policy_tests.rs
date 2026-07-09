@@ -1275,6 +1275,7 @@ void main() {}
                 id: 0,
                 role: SceneRenderPassKind::BaseMaterial,
                 object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(crate::engine::scene::INVALID_MATERIAL_ID),
                 pass_index: 0,
                 shader_key: SceneStringId(4),
                 target: SceneRenderTargetKind::SceneColor,

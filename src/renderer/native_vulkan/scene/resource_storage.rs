@@ -17,6 +17,7 @@ use crate::engine::scene::{
 
 const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 20;
 const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
+const SCENE_PUPPET_BONE_MATRIX_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneResourceStoragePlan {
@@ -26,10 +27,30 @@ pub struct NativeVulkanSceneResourceStoragePlan {
     pub effect_record_count: usize,
     pub resource_payload_bytes: usize,
     pub mesh_buffer: NativeVulkanSceneMeshBufferPlan,
+    pub skinning_buffer: NativeVulkanSceneSkinningBufferPlan,
+    pub effect_target_storage: NativeVulkanSceneEffectTargetStoragePlan,
     pub descriptor_heap: NativeVulkanSceneHeapStoragePlan,
     pub shader_heap_slices: Vec<NativeVulkanSceneShaderHeapSlice>,
     pub payload_residency: &'static str,
     pub mesh_residency: &'static str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneSkinningBufferPlan {
+    pub palette_count: usize,
+    pub bone_matrix_count: usize,
+    pub bone_matrix_buffer_bytes: usize,
+    pub storage_buffer_required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NativeVulkanSceneEffectTargetStoragePlan {
+    pub logical_target_count: usize,
+    pub physical_target_count: usize,
+    pub aliased_target_count: usize,
+    pub named_fbo_count: usize,
+    pub first_class_effect_target_count: usize,
+    pub dynamic_rendering_image_required: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -91,6 +112,16 @@ pub fn native_vulkan_scene_resource_storage_plan(
             draw_count: rendering_device_graph.mesh_draws.len(),
             device_address_required: renderer_scene_render.mesh_count > 0,
         },
+        skinning_buffer: NativeVulkanSceneSkinningBufferPlan {
+            palette_count: rendering_device_graph.puppet_bone_palettes.len(),
+            bone_matrix_count: rendering_device_graph.puppet_bone_matrices.len(),
+            bone_matrix_buffer_bytes: rendering_device_graph
+                .puppet_bone_matrices
+                .len()
+                .saturating_mul(SCENE_PUPPET_BONE_MATRIX_BYTES),
+            storage_buffer_required: !rendering_device_graph.puppet_bone_matrices.is_empty(),
+        },
+        effect_target_storage: effect_target_storage_plan(rendering_device_graph),
         descriptor_heap: NativeVulkanSceneHeapStoragePlan {
             descriptor_model: "VK_EXT_descriptor_heap",
             resource_descriptor_count: renderer_scene_render.descriptor_heap_resource_count,
@@ -106,6 +137,33 @@ pub fn native_vulkan_scene_resource_storage_plan(
         shader_heap_slices,
         payload_residency: "scene-resource-payload-offset-slices",
         mesh_residency: "device-addressable-scene-mesh-buffers",
+    }
+}
+
+fn effect_target_storage_plan(
+    graph: &SceneRenderingDeviceGraphPlan,
+) -> NativeVulkanSceneEffectTargetStoragePlan {
+    let named_fbo_count = graph
+        .target_allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.target == crate::engine::scene::SceneRenderTargetKind::NamedFbo
+        })
+        .count();
+    let first_class_effect_target_count = graph
+        .target_allocations
+        .iter()
+        .filter(|allocation| {
+            allocation.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
+        })
+        .count();
+    NativeVulkanSceneEffectTargetStoragePlan {
+        logical_target_count: graph.target_allocations.len(),
+        physical_target_count: graph.graph_physical_target_count as usize,
+        aliased_target_count: graph.graph_aliased_target_count as usize,
+        named_fbo_count,
+        first_class_effect_target_count,
+        dynamic_rendering_image_required: !graph.target_allocations.is_empty(),
     }
 }
 
@@ -142,7 +200,8 @@ fn shader_heap_slices(
 mod tests {
     use super::*;
     use crate::engine::scene::{
-        RenderingServer, SceneBinaryDocument, SceneShaderContractRecord, SceneStorage,
+        RenderingServer, SceneBinaryDocument, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
+        SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord, SceneStorage,
         SceneStringId,
     };
 
@@ -199,5 +258,66 @@ mod tests {
             plan.payload_residency,
             "scene-resource-payload-offset-slices"
         );
+    }
+
+    #[test]
+    fn resource_storage_tracks_effect_target_image_allocation_pressure() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument::default()).expect("storage");
+        let render_plan = RenderingServer::new(&storage).renderer_scene_render_plan();
+        let graph = SceneRenderingDeviceGraphPlan {
+            target_allocations: vec![
+                SceneRenderingDeviceTargetAllocation {
+                    target: SceneRenderTargetKind::NamedFbo,
+                    target_name: SceneStringId(0),
+                    first_write_pass_id: 1,
+                    last_use_pass_id: 2,
+                    physical_slot: 0,
+                },
+                SceneRenderingDeviceTargetAllocation {
+                    target: SceneRenderTargetKind::FirstClassEffectTarget,
+                    target_name: SceneStringId(1),
+                    first_write_pass_id: 3,
+                    last_use_pass_id: 4,
+                    physical_slot: 0,
+                },
+            ],
+            graph_physical_target_count: 1,
+            graph_aliased_target_count: 1,
+            ..empty_graph_plan()
+        };
+
+        let plan = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
+
+        assert_eq!(plan.effect_target_storage.logical_target_count, 2);
+        assert_eq!(plan.effect_target_storage.physical_target_count, 1);
+        assert_eq!(plan.effect_target_storage.aliased_target_count, 1);
+        assert_eq!(plan.effect_target_storage.named_fbo_count, 1);
+        assert_eq!(plan.effect_target_storage.first_class_effect_target_count, 1);
+        assert!(plan.effect_target_storage.dynamic_rendering_image_required);
+    }
+
+    fn empty_graph_plan() -> SceneRenderingDeviceGraphPlan {
+        SceneRenderingDeviceGraphPlan {
+            pass_nodes: Vec::new(),
+            target_allocations: Vec::new(),
+            mesh_draws: Vec::new(),
+            puppet_bone_palettes: Vec::new(),
+            puppet_bone_matrices: Vec::new(),
+            resolved_object_count: 0,
+            resolved_visible_object_count: 0,
+            resolved_attachment_link_count: 0,
+            resolved_visible_effect_instance_count: 0,
+            resolved_visible_effect_pass_count: 0,
+            resolved_visible_effect_fbo_count: 0,
+            descriptor_heap_required: true,
+            descriptor_heap_resource_count: 0,
+            descriptor_heap_sampled_image_count: 0,
+            descriptor_heap_uniform_buffer_count: 0,
+            descriptor_heap_storage_buffer_count: 0,
+            descriptor_heap_sampler_count: 0,
+            graph_physical_target_count: 0,
+            graph_aliased_target_count: 0,
+            fifo_latest_ready_present_required: true,
+        }
     }
 }

@@ -16,6 +16,10 @@ use std::io::{self, Read, Write};
 
 use super::abi::*;
 
+mod timeline;
+
+use timeline::{SceneTimelineRecords, decode_timelines, encode_timelines};
+
 const HEADER_LEN: usize = 36;
 const CHUNK_ENTRY_LEN: usize = 32;
 
@@ -29,6 +33,10 @@ pub struct SceneBinaryDocument {
     pub textures: Vec<SceneTextureRecord>,
     pub objects: Vec<SceneObjectRecord>,
     pub object_effects: Vec<SceneObjectEffectRecord>,
+    pub object_animation_layers: Vec<SceneObjectAnimationLayerRecord>,
+    pub puppet_animation_clips: Vec<ScenePuppetAnimationClipRecord>,
+    pub puppet_animation_tracks: Vec<ScenePuppetAnimationTrackRecord>,
+    pub puppet_animation_transform_samples: Vec<ScenePuppetAnimationTransformSampleRecord>,
     pub materials: Vec<SceneMaterialRecord>,
     pub material_passes: Vec<SceneMaterialPassRecord>,
     pub material_textures: Vec<SceneMaterialTextureRecord>,
@@ -64,6 +72,10 @@ impl Default for SceneBinaryDocument {
             textures: Vec::new(),
             objects: Vec::new(),
             object_effects: Vec::new(),
+            object_animation_layers: Vec::new(),
+            puppet_animation_clips: Vec::new(),
+            puppet_animation_tracks: Vec::new(),
+            puppet_animation_transform_samples: Vec::new(),
             materials: Vec::new(),
             material_passes: Vec::new(),
             material_textures: Vec::new(),
@@ -250,6 +262,18 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let (effects, effect_passes, effect_bindings, effect_combos, effect_fbos) =
         decode_effects(chunk_payload(&chunks, CHUNK_EFFECT)?)?;
     ensure_chunk_count(&chunks, CHUNK_EFFECT, "effects", effects.len())?;
+    let SceneTimelineRecords {
+        object_animation_layers,
+        puppet_animation_clips,
+        puppet_animation_tracks,
+        puppet_animation_transform_samples,
+    } = decode_timelines(chunk_payload(&chunks, CHUNK_TIMELINE)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_TIMELINE,
+        "timeline animation layers",
+        object_animation_layers.len() + puppet_animation_clips.len(),
+    )?;
     let (render_graphs, render_passes, render_bindings, unsupported) =
         decode_render_graphs(chunk_payload(&chunks, CHUNK_RENDER_GRAPH)?)?;
     ensure_chunk_count(
@@ -274,7 +298,6 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts.len(),
     )?;
     for &(kind, name) in &[
-        (CHUNK_TIMELINE, "timeline"),
         (CHUNK_PARTICLE, "particle"),
         (CHUNK_AUDIO, "audio"),
         (CHUNK_SCRIPT_BINDING, "script binding"),
@@ -291,6 +314,10 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         textures,
         objects,
         object_effects,
+        object_animation_layers,
+        puppet_animation_clips,
+        puppet_animation_tracks,
+        puppet_animation_transform_samples,
         materials,
         material_passes,
         material_textures,
@@ -445,7 +472,22 @@ fn encode_chunks(
                 &document.effect_fbos,
             )?,
         },
-        empty_count_chunk(CHUNK_TIMELINE),
+        SceneEncodedChunk {
+            kind: CHUNK_TIMELINE,
+            item_count: checked_u32(
+                document
+                    .object_animation_layers
+                    .len()
+                    .saturating_add(document.puppet_animation_clips.len()),
+                "timeline primary record count",
+            )?,
+            data: encode_timelines(
+                &document.object_animation_layers,
+                &document.puppet_animation_clips,
+                &document.puppet_animation_tracks,
+                &document.puppet_animation_transform_samples,
+            )?,
+        },
         SceneEncodedChunk {
             kind: CHUNK_PUPPET,
             item_count: checked_u32(document.puppets.len(), "puppet count")?,
@@ -1207,6 +1249,7 @@ fn encode_render_graphs(
         put_u32(&mut out, record.id);
         put_u32(&mut out, record.role.to_u32());
         put_u32(&mut out, record.object.0);
+        put_u32(&mut out, record.material.0);
         put_u32(&mut out, record.pass_index);
         put_string_id(&mut out, record.shader_key);
         put_u32(&mut out, record.target.to_u32());
@@ -1271,6 +1314,7 @@ fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, SceneBinaryErr
             SceneBinaryError::InvalidChunkValue("render pass role", role_raw),
         )?;
         let object = SceneObjectHandle(decoder.u32()?);
+        let material = SceneMaterialHandle(decoder.u32()?);
         let pass_index = decoder.u32()?;
         let shader_key = decoder.string_id()?;
         let target_raw = decoder.u32()?;
@@ -1281,6 +1325,7 @@ fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, SceneBinaryErr
             id,
             role,
             object,
+            material,
             pass_index,
             shader_key,
             target,
@@ -1588,6 +1633,8 @@ mod tests {
                 "loose".to_owned(),
                 "eye".to_owned(),
                 "eye-bone".to_owned(),
+                "blink".to_owned(),
+                "loop".to_owned(),
             ],
             project: SceneProjectRecord {
                 title: SceneStringId(0),
@@ -1608,6 +1655,53 @@ mod tests {
             payload_offset: 0,
             payload_len: 4,
         });
+        document
+            .object_animation_layers
+            .push(SceneObjectAnimationLayerRecord {
+                object: SceneObjectHandle(0),
+                animation_id: 475,
+                layer_index: 2,
+                additive: true,
+                autosort: false,
+            });
+        document.puppet_animation_transform_samples.push(
+            ScenePuppetAnimationTransformSampleRecord {
+                translation: SceneVec3 {
+                    x: 1.0,
+                    y: 2.0,
+                    z: 3.0,
+                },
+                rotation: SceneVec3::default(),
+                scale: SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+            },
+        );
+        document
+            .puppet_animation_tracks
+            .push(ScenePuppetAnimationTrackRecord {
+                clip: 0,
+                bone_index: 41,
+                track_flags: 7,
+                sample_start: 0,
+                sample_count: 1,
+            });
+        document
+            .puppet_animation_clips
+            .push(ScenePuppetAnimationClipRecord {
+                puppet: 0,
+                clip_id: 475,
+                flags: 3,
+                name: SceneStringId(7),
+                playback: SceneStringId(8),
+                fps: 30.0,
+                frame_count: 1,
+                frame_metadata: 99,
+                track_start: 0,
+                track_count: 1,
+            });
         document.meshes.push(SceneMeshRecord {
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
@@ -1702,6 +1796,15 @@ mod tests {
         assert_eq!(decoded.project.logical_width, 1920);
         assert_eq!(decoded.resources[0].payload_len, 4);
         assert_eq!(decoded.resource_payload, vec![1, 2, 3, 4]);
+        assert_eq!(decoded.object_animation_layers[0].animation_id, 475);
+        assert!(decoded.object_animation_layers[0].additive);
+        assert_eq!(decoded.puppet_animation_clips[0].clip_id, 475);
+        assert_eq!(decoded.puppet_animation_clips[0].track_count, 1);
+        assert_eq!(decoded.puppet_animation_tracks[0].bone_index, 41);
+        assert_eq!(
+            decoded.puppet_animation_transform_samples[0].translation.y,
+            2.0
+        );
         assert_eq!(decoded.meshes[0].width, 64.0);
         assert_eq!(decoded.mesh_vertices.len(), 4);
         assert_eq!(decoded.mesh_indices, vec![0, 1, 2, 0, 2, 3]);

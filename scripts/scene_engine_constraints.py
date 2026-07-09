@@ -96,6 +96,23 @@ def main() -> int:
             + ", ".join(found_descriptor_set_tokens)
         )
 
+    architecture_doc = read_text(ROOT / "docs/gilder-scene-engine-architecture.md")
+    required_scene_effect_doc_markers = [
+        "### Scene 能力与特效同步推进",
+        "ResolvedSemanticFrame",
+        "constantshadervalues",
+        "first-class effect target",
+        "copy/swap",
+    ]
+    missing_scene_effect_doc_markers = [
+        marker for marker in required_scene_effect_doc_markers if marker not in architecture_doc
+    ]
+    if missing_scene_effect_doc_markers:
+        failures.append(
+            "architecture doc must keep scene capability and effect co-development markers: "
+            + ", ".join(missing_scene_effect_doc_markers)
+        )
+
     required = [
         ROOT / "src/convert/we_ingest.rs",
         ROOT / "src/convert/we_ingest/ir.rs",
@@ -128,6 +145,7 @@ def main() -> int:
     print("checked: no mod.rs, no mechanical split names, and scene modules use same-name file+directory layout")
     print("checked: no old scene compatibility files, no shader artifact runtime refs")
     print("checked: native Vulkan scene path has no legacy descriptor-set binding tokens")
+    print("checked: scene capability and effect co-development remains documented")
     return 0
 
 

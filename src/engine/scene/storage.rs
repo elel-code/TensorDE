@@ -79,12 +79,63 @@ impl SceneStorage {
         &self.document.objects
     }
 
+    pub fn object_animation_layers(&self) -> &[SceneObjectAnimationLayerRecord] {
+        &self.document.object_animation_layers
+    }
+
+    pub fn puppet_animation_clips(&self) -> &[ScenePuppetAnimationClipRecord] {
+        &self.document.puppet_animation_clips
+    }
+
+    pub fn puppet_animation_tracks(
+        &self,
+        clip: &ScenePuppetAnimationClipRecord,
+    ) -> &[ScenePuppetAnimationTrackRecord] {
+        let start = clip.track_start as usize;
+        let end = start.saturating_add(clip.track_count as usize);
+        self.document
+            .puppet_animation_tracks
+            .get(start..end)
+            .expect("scene storage validates puppet animation track ranges")
+    }
+
+    pub fn puppet_animation_transform_samples(
+        &self,
+        track: &ScenePuppetAnimationTrackRecord,
+    ) -> &[ScenePuppetAnimationTransformSampleRecord] {
+        let start = track.sample_start as usize;
+        let end = start.saturating_add(track.sample_count as usize);
+        self.document
+            .puppet_animation_transform_samples
+            .get(start..end)
+            .expect("scene storage validates puppet animation sample ranges")
+    }
+
     pub fn materials(&self) -> &[SceneMaterialRecord] {
         &self.document.materials
     }
 
     pub fn effects(&self) -> &[SceneEffectRecord] {
         &self.document.effects
+    }
+
+    pub fn object_effects(&self) -> &[SceneObjectEffectRecord] {
+        &self.document.object_effects
+    }
+
+    pub fn object_effects_for_object(
+        &self,
+        object: &SceneObjectRecord,
+    ) -> &[SceneObjectEffectRecord] {
+        if object.effect_count == 0 {
+            return &[];
+        }
+        let start = object.effect_start as usize;
+        let end = start.saturating_add(object.effect_count as usize);
+        self.document
+            .object_effects
+            .get(start..end)
+            .expect("scene storage validates object effect ranges")
     }
 
     pub fn meshes(&self) -> &[SceneMeshRecord] {
@@ -305,6 +356,51 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
             document.effects.len(),
         )?;
     }
+    for layer in &document.object_animation_layers {
+        validate_range(
+            "object_animation_layer.object",
+            layer.object.0,
+            1,
+            document.objects.len(),
+        )?;
+    }
+    for (clip_index, clip) in document.puppet_animation_clips.iter().enumerate() {
+        validate_range(
+            "puppet_animation_clip.puppet",
+            clip.puppet,
+            1,
+            document.puppets.len(),
+        )?;
+        validate_string(document, "puppet_animation_clip.name", clip.name)?;
+        validate_string(document, "puppet_animation_clip.playback", clip.playback)?;
+        validate_range(
+            "puppet_animation_clip.track_range",
+            clip.track_start,
+            clip.track_count,
+            document.puppet_animation_tracks.len(),
+        )?;
+        for track in document
+            .puppet_animation_tracks
+            .iter()
+            .skip(clip.track_start as usize)
+            .take(clip.track_count as usize)
+        {
+            if track.clip as usize != clip_index {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "puppet_animation_track.clip_owner",
+                    start: track.clip,
+                    count: 1,
+                    len: clip_index,
+                });
+            }
+            validate_range(
+                "puppet_animation_track.sample_range",
+                track.sample_start,
+                track.sample_count,
+                document.puppet_animation_transform_samples.len(),
+            )?;
+        }
+    }
     for material in &document.materials {
         validate_optional_resource(document, "material.resource", material.resource)?;
         validate_range(
@@ -483,6 +579,7 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
         )?;
     }
     for pass in &document.render_passes {
+        validate_optional_material(document, "render_pass.material", pass.material)?;
         validate_string(document, "render_pass.shader_key", pass.shader_key)?;
         validate_string(document, "render_pass.target_name", pass.target_name)?;
         validate_range(

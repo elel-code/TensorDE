@@ -80,6 +80,7 @@ pub struct SemanticRenderPlanInputs {
     pub object_count: usize,
     pub visible_object_count: usize,
     pub mesh_binding_count: usize,
+    pub effect_binding_count: usize,
     pub puppet_binding_count: usize,
 }
 

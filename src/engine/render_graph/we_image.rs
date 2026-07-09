@@ -12,11 +12,15 @@ use super::target::RenderTargetRole;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeEffectPassContract {
     pub object_index: usize,
+    pub material_index: Option<usize>,
     pub effect_file: String,
     pub pass_index: u32,
+    pub command: Option<String>,
     pub shader: Option<String>,
+    pub source: Option<String>,
     pub target: Option<String>,
     pub binds: BTreeMap<u32, String>,
+    pub pass_constants: Vec<String>,
     pub material_blending: Option<String>,
     pub depthtest: Option<String>,
     pub depthwrite: Option<String>,
@@ -27,8 +31,10 @@ pub struct WeEffectPassContract {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeImageGraphContract {
     pub object_index: usize,
+    pub base_material_index: Option<usize>,
     pub base_shader: Option<String>,
     pub base_texture_slots: Vec<u32>,
+    pub base_pass_constants: Vec<String>,
     pub final_scene_blend: SceneBlendMode,
     pub effect_passes: Vec<WeEffectPassContract>,
 }
@@ -40,6 +46,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         id: 0,
         role: RenderPassRole::BaseMaterial,
         object_index: Some(contract.object_index),
+        material_index: contract.base_material_index,
         pass_index: 0,
         shader: contract.base_shader.clone(),
         target: if has_effects {
@@ -57,6 +64,13 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                     .iter()
                     .copied()
                     .map(|slot| TextureBindingRole::TextureSlot { slot }),
+            )
+            .chain(
+                contract
+                    .base_pass_constants
+                    .iter()
+                    .cloned()
+                    .map(|name| TextureBindingRole::PassConstant { name }),
             )
             .collect(),
         state: PassState {
@@ -85,7 +99,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         if node.bindings.is_empty() {
             node.bindings.push(TextureBindingRole::PreviousGraphTarget);
         }
-        if node.shader.is_none() {
+        if node.shader.is_none() && !effect_command_has_no_shader(effect) {
             graph.unsupported.push(UnsupportedGraphBoundary {
                 object_index: Some(contract.object_index),
                 pass_index: Some(effect.pass_index),
@@ -115,14 +129,16 @@ pub fn we_effect_pass_node(
         .as_deref()
         .is_some_and(|shader| shader.contains("effectpassthrough"))
         || contract.effect_file.contains("effectpassthrough");
+    let command_role = effect_command_role(contract.command.as_deref());
     RenderPassNode {
         id,
-        role: if color_blend_passthrough {
+        role: command_role.unwrap_or(if color_blend_passthrough {
             RenderPassRole::ColorBlendPassthrough
         } else {
             RenderPassRole::EffectMaterial
-        },
+        }),
         object_index: Some(contract.object_index),
+        material_index: contract.material_index,
         pass_index: contract.pass_index,
         shader: contract.shader.clone(),
         target: target_name
@@ -135,23 +151,20 @@ pub fn we_effect_pass_node(
         bindings: contract
             .binds
             .iter()
-            .map(|(slot, binding)| {
-                if matches!(binding.as_str(), "previous" | "_previous" | "$previous") {
-                    TextureBindingRole::PreviousGraphTarget
-                } else if matches!(binding.as_str(), "source" | "g_Texture0") {
-                    TextureBindingRole::SourceTexture
-                } else if binding.starts_with("_rt_") || binding.starts_with("_alias_") {
-                    TextureBindingRole::EffectTarget {
-                        name: binding.clone(),
-                    }
-                } else if binding.starts_with("fbo_") {
-                    TextureBindingRole::NamedFboBind {
-                        name: binding.clone(),
-                    }
-                } else {
-                    TextureBindingRole::TextureSlot { slot: *slot }
-                }
-            })
+            .map(|(slot, binding)| we_binding_role(*slot, binding))
+            .chain(
+                contract
+                    .source
+                    .iter()
+                    .map(|source| we_binding_role(0, source)),
+            )
+            .chain(
+                contract
+                    .pass_constants
+                    .iter()
+                    .cloned()
+                    .map(|name| TextureBindingRole::PassConstant { name }),
+            )
             .collect(),
         state: PassState {
             pipeline_blend: contract
@@ -168,6 +181,39 @@ pub fn we_effect_pass_node(
                 .is_some_and(|value| value.eq_ignore_ascii_case("enabled")),
             cull_mode: CullMode::from_we_cullmode(contract.cullmode.as_deref()),
         },
+    }
+}
+
+fn effect_command_role(command: Option<&str>) -> Option<RenderPassRole> {
+    let command = command?;
+    if command.eq_ignore_ascii_case("copy") {
+        Some(RenderPassRole::CopyTarget)
+    } else if command.eq_ignore_ascii_case("swap") {
+        Some(RenderPassRole::SwapTargetReferences)
+    } else {
+        None
+    }
+}
+
+fn effect_command_has_no_shader(contract: &WeEffectPassContract) -> bool {
+    effect_command_role(contract.command.as_deref()).is_some()
+}
+
+fn we_binding_role(slot: u32, binding: &str) -> TextureBindingRole {
+    if matches!(binding, "previous" | "_previous" | "$previous") {
+        TextureBindingRole::PreviousGraphTarget
+    } else if matches!(binding, "source" | "g_Texture0") {
+        TextureBindingRole::SourceTexture
+    } else if binding.starts_with("_rt_") || binding.starts_with("_alias_") {
+        TextureBindingRole::EffectTarget {
+            name: binding.to_owned(),
+        }
+    } else if binding.starts_with("fbo_") {
+        TextureBindingRole::NamedFboBind {
+            name: binding.to_owned(),
+        }
+    } else {
+        TextureBindingRole::TextureSlot { slot }
     }
 }
 
@@ -230,17 +276,23 @@ mod tests {
     fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: 7,
+            base_material_index: Some(3),
             base_shader: Some("genericimage4".to_owned()),
             base_texture_slots: vec![1],
+            base_pass_constants: vec!["tint".to_owned()],
             final_scene_blend: SceneBlendMode::Alpha,
             effect_passes: vec![
                 WeEffectPassContract {
                     object_index: 7,
+                    material_index: Some(4),
                     effect_file: "effects/waterflow/effect.json".to_owned(),
                     pass_index: 1,
+                    command: None,
                     shader: Some("effects/waterflow".to_owned()),
+                    source: None,
                     target: Some("fbo_velocity".to_owned()),
                     binds: [(1, "previous".to_owned())].into_iter().collect(),
+                    pass_constants: vec!["speed".to_owned()],
                     material_blending: Some("normal".to_owned()),
                     depthtest: Some("disabled".to_owned()),
                     depthwrite: Some("disabled".to_owned()),
@@ -249,11 +301,15 @@ mod tests {
                 },
                 WeEffectPassContract {
                     object_index: 7,
+                    material_index: Some(5),
                     effect_file: "materials/util/effectpassthrough.json".to_owned(),
                     pass_index: 2,
+                    command: None,
                     shader: Some("util/effectpassthrough".to_owned()),
+                    source: None,
                     target: None,
                     binds: [(1, "fbo_velocity".to_owned())].into_iter().collect(),
+                    pass_constants: Vec::new(),
                     material_blending: Some("normal".to_owned()),
                     depthtest: Some("disabled".to_owned()),
                     depthwrite: Some("disabled".to_owned()),
@@ -264,6 +320,22 @@ mod tests {
         });
 
         assert_eq!(graph.passes.len(), 3);
+        assert_eq!(graph.passes[0].material_index, Some(3));
+        assert!(
+            graph.passes[0]
+                .bindings
+                .contains(&TextureBindingRole::PassConstant {
+                    name: "tint".to_owned()
+                })
+        );
+        assert_eq!(graph.passes[1].material_index, Some(4));
+        assert!(
+            graph.passes[1]
+                .bindings
+                .contains(&TextureBindingRole::PassConstant {
+                    name: "speed".to_owned()
+                })
+        );
         assert_eq!(graph.passes[1].target, RenderTargetRole::NamedFbo);
         assert_eq!(graph.passes[2].role, RenderPassRole::ColorBlendPassthrough);
         assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
@@ -278,6 +350,64 @@ mod tests {
                 .derived_barriers()
                 .iter()
                 .any(|barrier| barrier.resource_key == "target:named-fbo:fbo_velocity")
+        );
+    }
+
+    #[test]
+    fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 9,
+            base_material_index: None,
+            base_shader: Some("genericimage4".to_owned()),
+            base_texture_slots: Vec::new(),
+            base_pass_constants: Vec::new(),
+            final_scene_blend: SceneBlendMode::Alpha,
+            effect_passes: vec![
+                WeEffectPassContract {
+                    object_index: 9,
+                    material_index: None,
+                    effect_file: "effects/fluid/effect.json".to_owned(),
+                    pass_index: 1,
+                    command: Some("copy".to_owned()),
+                    shader: None,
+                    source: Some("fbo_src".to_owned()),
+                    target: Some("fbo_dst".to_owned()),
+                    binds: BTreeMap::new(),
+                    pass_constants: Vec::new(),
+                    material_blending: None,
+                    depthtest: None,
+                    depthwrite: None,
+                    cullmode: None,
+                    combos: BTreeMap::new(),
+                },
+                WeEffectPassContract {
+                    object_index: 9,
+                    material_index: None,
+                    effect_file: "effects/fluid/effect.json".to_owned(),
+                    pass_index: 2,
+                    command: Some("swap".to_owned()),
+                    shader: None,
+                    source: Some("fbo_a".to_owned()),
+                    target: Some("fbo_b".to_owned()),
+                    binds: BTreeMap::new(),
+                    pass_constants: Vec::new(),
+                    material_blending: None,
+                    depthtest: None,
+                    depthwrite: None,
+                    cullmode: None,
+                    combos: BTreeMap::new(),
+                },
+            ],
+        });
+
+        assert_eq!(graph.passes[1].role, RenderPassRole::CopyTarget);
+        assert_eq!(graph.passes[2].role, RenderPassRole::SwapTargetReferences);
+        assert!(graph.unsupported.is_empty());
+        assert!(
+            graph
+                .resource_uses()
+                .iter()
+                .any(|use_| use_.resource_key == "target:named-fbo:fbo_src")
         );
     }
 }
