@@ -161,6 +161,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
     let mut capture_frame = None::<PathBuf>;
+    let mut capture_frame_number = 1u64;
+    let mut capture_frame_number_set = false;
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
@@ -301,6 +303,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--capture-frame" => {
                 capture_frame = Some(parse_capture_frame_path(args.next())?);
             }
+            "--capture-frame-number" => {
+                capture_frame_number = parse_capture_frame_number(args.next())?;
+                capture_frame_number_set = true;
+            }
             "--scene-video" => {
                 return Err("--scene-video was removed with the old scene CLI".into());
             }
@@ -439,6 +445,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if capture_frame.is_some() && mode != NativeVulkanCliMode::RunScene {
         return Err("--capture-frame requires --run-scene".into());
+    }
+    if capture_frame.is_none() && capture_frame_number_set {
+        return Err("--capture-frame-number requires --capture-frame".into());
     }
 
     let duration_playback_frames = if duration_set {
@@ -621,7 +630,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 options,
                 duration,
                 source,
-                NativeVulkanSceneRunOptions { capture_frame },
+                NativeVulkanSceneRunOptions {
+                    capture_frame,
+                    capture_frame_number,
+                },
             )?)
         }
         NativeVulkanCliMode::RunVideo => {
@@ -806,6 +818,16 @@ fn parse_capture_frame_path(value: Option<String>) -> Result<PathBuf, &'static s
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_capture_frame_number(value: Option<String>) -> Result<u64, &'static str> {
+    value
+        .ok_or("--capture-frame-number requires a positive frame number")?
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or("--capture-frame-number requires a positive frame number")
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn parse_decoder_policy(
     value: &str,
 ) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
@@ -869,11 +891,12 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-scene reads --source file.gscene, validates the scene engine backend plan and runs the FIFO latest ready scene present loop.\n\
---capture-frame PATH writes the first completed --run-scene frame directly from the Vulkan swapchain as an RGBA8 PNG.\n\
+--capture-frame PATH writes a completed --run-scene frame directly from the Vulkan swapchain as an RGBA8 PNG.\n\
+--capture-frame-number N selects the 1-based submitted frame captured by --capture-frame; the default is 1.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
-         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH]\n\
+         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
@@ -905,6 +928,15 @@ mod tests {
         assert_eq!(
             parse_capture_frame_path(None).unwrap_err(),
             "--capture-frame requires a path"
+        );
+    }
+
+    #[test]
+    fn capture_frame_number_is_positive_and_one_based() {
+        assert_eq!(parse_capture_frame_number(Some("45".to_owned())), Ok(45));
+        assert_eq!(
+            parse_capture_frame_number(Some("0".to_owned())),
+            Err("--capture-frame-number requires a positive frame number")
         );
     }
 }

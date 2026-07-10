@@ -68,6 +68,7 @@ fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         "effects/opacity",
         "effects/waterwaves",
         "effects/waterripple",
+        "workshop/2790231929/effects/foliagesway",
     ]
     .iter()
     .any(|shader| {
@@ -115,6 +116,10 @@ mod tests {
         );
         assert_eq!(
             shader_uniform_buffer_count("effects/waterwaves__SLOTS_1", false),
+            2
+        );
+        assert_eq!(
+            shader_uniform_buffer_count("workshop/2790231929/effects/foliagesway__SLOTS_1", true),
             2
         );
     }

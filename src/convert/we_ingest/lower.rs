@@ -163,6 +163,8 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
                 origin: object.origin,
                 angles: object.angles,
                 scale: object.scale,
+                color: object.color,
+                alpha: object.alpha,
                 visible: object.visible,
                 color_blend_mode: object.color_blend_mode,
                 sort_order: object.sort_order,

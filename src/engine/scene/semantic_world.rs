@@ -18,6 +18,7 @@ pub mod timeline;
 pub use components::{
     MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
     SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
+    VisualComponent,
 };
 pub use effect::{
     ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
@@ -32,7 +33,7 @@ use std::fmt;
 
 use components::{
     material_binding_from_object, parent_from_object, puppet_binding_from_record,
-    transform_from_object, visibility_from_object,
+    transform_from_object, visibility_from_object, visual_from_object,
 };
 use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
@@ -51,12 +52,30 @@ pub struct SceneSemanticWorld<'a> {
     transforms: Vec<Option<TransformComponent>>,
     parents: Vec<Option<ParentComponent>>,
     visibility: Vec<Option<VisibilityComponent>>,
+    visuals: Vec<Option<VisualComponent>>,
     material_bindings: Vec<Option<MaterialBindingComponent>>,
     mesh_components: Vec<Option<MeshBindingComponent>>,
     object_effect_components: Vec<Option<ObjectEffectBindingComponent>>,
     puppet_components: Vec<Option<PuppetBindingComponent>>,
     mesh_bindings: Vec<SemanticMeshBinding>,
     object_effect_bindings: Vec<SemanticObjectEffectBinding>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ResolvedParentState {
+    parent: SceneObjectHandle,
+    inherited_visible: bool,
+    inherited_color: SceneVec3,
+    inherited_alpha: f32,
+    world_matrix: [f32; 16],
+}
+
+fn multiply_color(left: SceneVec3, right: SceneVec3) -> SceneVec3 {
+    SceneVec3 {
+        x: left.x * right.x,
+        y: left.y * right.y,
+        z: left.z * right.z,
+    }
 }
 
 impl<'a> SceneSemanticWorld<'a> {
@@ -69,6 +88,7 @@ impl<'a> SceneSemanticWorld<'a> {
             transforms: Vec::with_capacity(object_count),
             parents: Vec::with_capacity(object_count),
             visibility: Vec::with_capacity(object_count),
+            visuals: Vec::with_capacity(object_count),
             material_bindings: Vec::with_capacity(object_count),
             mesh_components: Vec::with_capacity(object_count),
             object_effect_components: Vec::with_capacity(object_count),
@@ -137,6 +157,10 @@ impl<'a> SceneSemanticWorld<'a> {
 
     pub fn visibility(&self, object: SceneObjectHandle) -> Option<&VisibilityComponent> {
         self.component_for_object(object, &self.visibility)
+    }
+
+    pub fn visual(&self, object: SceneObjectHandle) -> Option<&VisualComponent> {
+        self.component_for_object(object, &self.visuals)
     }
 
     pub fn material_binding(&self, object: SceneObjectHandle) -> Option<&MaterialBindingComponent> {
@@ -285,6 +309,7 @@ impl<'a> SceneSemanticWorld<'a> {
         self.transforms.push(Some(transform_from_object(object)));
         self.parents.push(parent_from_object(object));
         self.visibility.push(Some(visibility_from_object(object)));
+        self.visuals.push(Some(visual_from_object(object)));
         self.material_bindings
             .push(material_binding_from_object(object));
         self.mesh_components.push(None);
@@ -429,6 +454,13 @@ impl<'a> SceneSemanticWorld<'a> {
             .ok_or(SceneSemanticWorldError::MissingVisibility {
                 object: entity_record.object,
             })?;
+        let visual = self
+            .visuals
+            .get(entity_index)
+            .and_then(Option::as_ref)
+            .ok_or(SceneSemanticWorldError::MissingVisual {
+                object: entity_record.object,
+            })?;
         let local_matrix = transform_matrix(transform);
         let mesh_range = self
             .mesh_components
@@ -443,7 +475,7 @@ impl<'a> SceneSemanticWorld<'a> {
             .map(|puppet| puppet.puppet_index)
             .unwrap_or(INVALID_RESOLVED_INDEX);
 
-        let (parent, inherited_visible, world_matrix) = self.resolve_parented_transform(
+        let parent_state = self.resolve_parented_transform(
             object,
             local_matrix,
             visits,
@@ -455,13 +487,17 @@ impl<'a> SceneSemanticWorld<'a> {
             entity: entity_record.entity,
             object: entity_record.object,
             object_index: entity_record.object_index,
-            parent,
+            parent: parent_state.parent,
             parent_we_id: object.parent_we_id,
             attachment: object.attachment,
             local_matrix,
-            world_matrix,
+            world_matrix: parent_state.world_matrix,
             self_visible: visibility.visible,
-            resolved_visible: visibility.visible && inherited_visible,
+            resolved_visible: visibility.visible && parent_state.inherited_visible,
+            self_color: visual.color,
+            resolved_color: multiply_color(visual.color, parent_state.inherited_color),
+            self_alpha: visual.alpha,
+            resolved_alpha: (visual.alpha * parent_state.inherited_alpha).clamp(0.0, 1.0),
             sort_order: visibility.sort_order,
             mesh_binding_start: mesh_range.binding_start,
             mesh_binding_count: mesh_range.binding_count,
@@ -480,7 +516,7 @@ impl<'a> SceneSemanticWorld<'a> {
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         scene_time_seconds: f32,
-    ) -> Result<(SceneObjectHandle, bool, [f32; 16]), SceneSemanticWorldError> {
+    ) -> Result<ResolvedParentState, SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
             if object.attachment.is_some() {
                 return Err(SceneSemanticWorldError::AttachmentWithoutParent {
@@ -488,7 +524,17 @@ impl<'a> SceneSemanticWorld<'a> {
                     attachment: object.attachment,
                 });
             }
-            return Ok((SceneObjectHandle(INVALID_OBJECT_ID), true, local_matrix));
+            return Ok(ResolvedParentState {
+                parent: SceneObjectHandle(INVALID_OBJECT_ID),
+                inherited_visible: true,
+                inherited_color: SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                inherited_alpha: 1.0,
+                world_matrix: local_matrix,
+            });
         }
 
         let parent_entity = self.index.entity_for_we_id(object.parent_we_id).ok_or(
@@ -519,11 +565,13 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment_links.push(link);
         }
 
-        Ok((
-            parent_state.object,
-            parent_state.resolved_visible,
-            multiply_matrix(&parent_anchor, &local_matrix),
-        ))
+        Ok(ResolvedParentState {
+            parent: parent_state.object,
+            inherited_visible: parent_state.resolved_visible,
+            inherited_color: parent_state.resolved_color,
+            inherited_alpha: parent_state.resolved_alpha,
+            world_matrix: multiply_matrix(&parent_anchor, &local_matrix),
+        })
     }
 
     fn resolve_attachment_link_at(
@@ -880,6 +928,9 @@ pub enum SceneSemanticWorldError {
     MissingVisibility {
         object: SceneObjectHandle,
     },
+    MissingVisual {
+        object: SceneObjectHandle,
+    },
     MissingParentObject {
         object: SceneObjectHandle,
         parent_we_id: u32,
@@ -994,6 +1045,11 @@ impl fmt::Display for SceneSemanticWorldError {
                 "scene semantic object {} is missing a visibility component",
                 object.0
             ),
+            Self::MissingVisual { object } => write!(
+                f,
+                "scene semantic object {} is missing a visual component",
+                object.0
+            ),
             Self::MissingParentObject {
                 object,
                 parent_we_id,
@@ -1053,6 +1109,39 @@ mod tests {
         assert_eq!(mesh_bindings[0].mesh_index, 0);
         assert_eq!(mesh_bindings[1].mesh_index, 2);
         assert_eq!(mesh_bindings[0].vertex_count, 4);
+    }
+
+    #[test]
+    fn resolve_frame_multiplies_parent_and_child_visual_state() {
+        let mut document = semantic_document();
+        document.objects[0].color = SceneVec3 {
+            x: 0.5,
+            y: 0.75,
+            z: 1.0,
+        };
+        document.objects[0].alpha = 0.5;
+        document.objects[1].color = SceneVec3 {
+            x: 0.2,
+            y: 0.4,
+            z: 0.8,
+        };
+        document.objects[1].alpha = 0.4;
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let frame = SceneSemanticWorld::from_storage(&storage)
+            .expect("semantic world")
+            .resolve_frame()
+            .expect("resolved frame");
+
+        let child = frame.object(SceneObjectHandle(1)).expect("child");
+        assert_eq!(
+            child.resolved_color,
+            SceneVec3 {
+                x: 0.1,
+                y: 0.3,
+                z: 0.8,
+            }
+        );
+        assert!((child.resolved_alpha - 0.2).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -1448,6 +1537,12 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            color: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            alpha: 1.0,
             visible: true,
             color_blend_mode: 0,
             sort_order: 3,
@@ -1474,6 +1569,12 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            color: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            alpha: 1.0,
             visible: true,
             color_blend_mode: 0,
             sort_order: 4,
@@ -1504,6 +1605,12 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            color: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            alpha: 1.0,
             visible: true,
             color_blend_mode: 0,
             sort_order: 1,
@@ -1534,6 +1641,12 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            color: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            alpha: 1.0,
             visible: true,
             color_blend_mode: 0,
             sort_order: 2,
@@ -1560,6 +1673,12 @@ mod tests {
                 y: 1.0,
                 z: 1.0,
             },
+            color: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            alpha: 1.0,
             visible: true,
             color_blend_mode: 0,
             sort_order: 0,

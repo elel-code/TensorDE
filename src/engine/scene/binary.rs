@@ -736,6 +736,8 @@ fn encode_scene_objects(
         put_vec3(&mut out, record.origin);
         put_vec3(&mut out, record.angles);
         put_vec3(&mut out, record.scale);
+        put_vec3(&mut out, record.color);
+        put_f32(&mut out, record.alpha);
         put_bool(&mut out, record.visible);
         put_i32(&mut out, record.color_blend_mode);
         put_i32(&mut out, record.sort_order);
@@ -781,6 +783,8 @@ fn decode_scene_objects(
             origin: decoder.vec3()?,
             angles: decoder.vec3()?,
             scale: decoder.vec3()?,
+            color: decoder.vec3()?,
+            alpha: decoder.f32()?,
             visible: decoder.bool()?,
             color_blend_mode: decoder.i32()?,
             sort_order: decoder.i32()?,
@@ -1733,6 +1737,35 @@ mod tests {
                 track_start: 0,
                 track_count: 1,
             });
+        document.objects.push(SceneObjectRecord {
+            id: SceneObjectHandle(0),
+            we_id: 7,
+            name: SceneStringId::NONE,
+            kind: SceneObjectKind::Puppet,
+            resource: SceneResourceId(0),
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            parent_we_id: INVALID_OBJECT_ID,
+            attachment: SceneStringId::NONE,
+            origin: SceneVec3::default(),
+            angles: SceneVec3::default(),
+            scale: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            color: SceneVec3 {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3,
+            },
+            alpha: 0.4,
+            visible: true,
+            color_blend_mode: 2,
+            sort_order: 0,
+            effect_start: u32::MAX,
+            effect_count: 0,
+            render_graph: u32::MAX,
+        });
         document.meshes.push(SceneMeshRecord {
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
@@ -1839,6 +1872,8 @@ mod tests {
         assert_eq!(decoded.object_animation_layers[0].animation_id, 475);
         assert!(decoded.object_animation_layers[0].additive);
         assert_eq!(decoded.object_animation_layers[0].initial_progress, 0.94);
+        assert_eq!(decoded.objects[0].color.x, 0.1);
+        assert_eq!(decoded.objects[0].alpha, 0.4);
         assert_eq!(decoded.puppet_animation_clips[0].clip_id, 475);
         assert_eq!(decoded.puppet_animation_clips[0].track_count, 1);
         assert_eq!(decoded.puppet_animation_tracks[0].bone_index, 41);

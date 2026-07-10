@@ -563,11 +563,12 @@ impl WeIrBuilder {
             attachment: bound_string(value.get("attachment")).unwrap_or_default(),
             origin: parse_vec3(value.get("origin")).unwrap_or_default(),
             angles: parse_vec3(value.get("angles")).unwrap_or_default(),
-            scale: parse_vec3(value.get("scale")).unwrap_or(SceneVec3 {
-                x: 1.0,
-                y: 1.0,
-                z: 1.0,
-            }),
+            scale: parse_vec3(value.get("scale")).unwrap_or(SceneVec3::ONE),
+            color: parse_vec3(value.get("color")).unwrap_or(SceneVec3::ONE),
+            alpha: value_f32(value.get("alpha"))
+                .filter(|alpha| alpha.is_finite())
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0),
             visible: bound_bool(value.get("visible")).unwrap_or(true),
             color_blend_mode,
             sort_order: value_i32(value.get("sortorder")).unwrap_or(index as i32),
@@ -1832,7 +1833,7 @@ mod tests {
         .expect("project");
         fs::write(
             root.join("scene.json"),
-            r#"{"objects":[{"id":9,"name":"puppet","image":"models/puppet.json"}]}"#,
+            r#"{"objects":[{"id":9,"name":"puppet","image":"models/puppet.json","color":"0.1 0.2 0.3","alpha":0.4}]}"#,
         )
         .expect("scene");
         fs::write(
@@ -1851,6 +1852,15 @@ mod tests {
 
         assert_eq!(ir.objects[0].kind, SceneAbiObjectKind::Puppet);
         assert_eq!(ir.objects[0].material, Some(0));
+        assert_eq!(
+            ir.objects[0].color,
+            SceneVec3 {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3
+            }
+        );
+        assert_eq!(ir.objects[0].alpha, 0.4);
         assert_eq!(ir.materials.len(), 1);
         assert_eq!(ir.meshes.len(), 1);
         assert_eq!(ir.meshes[0].vertex_count, 3);

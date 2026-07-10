@@ -108,6 +108,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub clear_color: NativeVulkanClearColor,
     pub storage: SceneStorage,
     pub capture_frame: Option<PathBuf>,
+    pub capture_frame_number: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -496,6 +497,7 @@ fn with_scene_present(
             path,
             swapchain_plan.extent,
             swapchain_plan.format.format,
+            options.capture_frame_number,
         ) {
             Ok(capture) => Some(capture),
             Err(err) => {
@@ -580,9 +582,13 @@ fn with_scene_present(
             .get(image_index)
             .copied()
             .ok_or_else(|| format!("swapchain image index {image_index} has no command buffer"))?;
-        let pending_frame_capture = frame_capture
+        let frame_number = frames_presented.saturating_add(1);
+        let capture_this_frame = frame_capture
             .as_ref()
-            .filter(|capture| capture.is_pending());
+            .is_some_and(|capture| capture.should_capture(frame_number));
+        let pending_frame_capture = capture_this_frame
+            .then(|| frame_capture.as_ref())
+            .flatten();
 
         record_scene_present_command_buffer(
             device,
@@ -617,16 +623,13 @@ fn with_scene_present(
                 .queue_present_khr(present_device.queue, &present_info)
                 .map_err(|err| format!("vkQueuePresentKHR(vulkanalia scene present): {err:?}"))?;
         }
-        if let Some(capture) = frame_capture
-            .as_mut()
-            .filter(|capture| capture.is_pending())
-        {
+        if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
             unsafe {
                 device.wait_for_fences(&[in_flight], true, u64::MAX).map_err(|err| {
                     format!("vkWaitForFences(vulkanalia scene frame capture): {err:?}")
                 })?;
             }
-            capture.read_completed_frame(device, frames_presented.saturating_add(1))?;
+            capture.read_completed_frame(device, frame_number)?;
         }
         let present_completed_at = Instant::now();
         if let Some(last_present_completed_at) = last_present_completed_at {
@@ -1776,6 +1779,12 @@ mod tests {
             clip_transform: [[0.0; 4]; 4],
             skinning_palette_start: 2,
             skinning_palette_count: 3,
+            resolved_color: crate::engine::scene::SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            resolved_alpha: 1.0,
             object: SceneObjectHandle(0),
             material: SceneMaterialHandle(INVALID_MATERIAL_ID),
             vertex_start: 0,

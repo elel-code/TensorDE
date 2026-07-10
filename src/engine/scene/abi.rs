@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 6;
+pub const SCENE_BINARY_VERSION: u32 = 7;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
@@ -110,6 +110,14 @@ pub struct SceneVec3 {
     pub x: f32,
     pub y: f32,
     pub z: f32,
+}
+
+impl SceneVec3 {
+    pub const ONE: Self = Self {
+        x: 1.0,
+        y: 1.0,
+        z: 1.0,
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -593,6 +601,8 @@ pub struct SceneObjectRecord {
     pub origin: SceneVec3,
     pub angles: SceneVec3,
     pub scale: SceneVec3,
+    pub color: SceneVec3,
+    pub alpha: f32,
     pub visible: bool,
     pub color_blend_mode: i32,
     pub sort_order: i32,

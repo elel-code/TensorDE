@@ -178,7 +178,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "workshop/2790231929/effects/foliagesway__SLOTS_3",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "workshop/2790231929/effects/foliagesway__SLOTS_5",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2790231929/effects/foliagesway__SLOTS_7",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -252,6 +260,7 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
             "effects/iris" => "Iris",
             "effects/opacity" => "Opacity",
+            "workshop/2790231929/effects/foliagesway" => "FoliageSway",
             "effects/waterwaves" => "WaterWaves",
             "effects/waterripple" | "workshop/2790231929/effects/waterripple" => "WaterRipple",
             _ => "None",
@@ -711,6 +720,9 @@ void main() {{
 }
 
 fn effect_fragment_source(shader: &str, texture_slot_mask: u32) -> String {
+    if shader == "workshop/2790231929/effects/foliagesway" {
+        return foliage_sway_fragment_source(texture_slot_mask);
+    }
     if shader == "effects/waterwaves" {
         return waterwaves_fragment_source(texture_slot_mask);
     }
@@ -833,6 +845,82 @@ fn effect_sampler_declarations(texture_slot_mask: u32) -> String {
         }
     }
     samplers
+}
+
+fn foliage_sway_fragment_source(texture_slot_mask: u32) -> String {
+    let samplers = effect_sampler_declarations(texture_slot_mask);
+    let noise_sample = if texture_slot_mask & (1 << 2) != 0 {
+        "float noise = texture(g_Texture2, v_TexCoord * u_Effect.g_PowerNoiseScaleRatioDirection.y).g;"
+    } else {
+        "float noise = valueNoise(v_TexCoord * max(u_Effect.g_PowerNoiseScaleRatioDirection.y, 0.0001) * 64.0);"
+    };
+    let mask_sample = if texture_slot_mask & (1 << 1) != 0 {
+        "float mask = texture(g_Texture1, v_TexCoord).r;"
+    } else {
+        "float mask = 1.0;"
+    };
+    format!(
+        r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 0) out vec4 o_Color;
+{samplers}layout(set = 0, binding = 3) uniform FoliageSwayUniform {{
+    vec4 g_TimeSpeedStrengthPhase;
+    vec4 g_PowerNoiseScaleRatioDirection;
+    vec4 g_Texture0Resolution;
+    vec4 g_Reserved;
+}} u_Effect;
+vec2 rotateVec2(vec2 v, float r) {{
+    vec2 cs = vec2(cos(r), sin(r));
+    return vec2(v.x * cs.x - v.y * cs.y, v.x * cs.y + v.y * cs.x);
+}}
+float hash12(vec2 p) {{
+    vec3 p3 = fract(vec3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return fract((p3.x + p3.y) * p3.z);
+}}
+float valueNoise(vec2 p) {{
+    vec2 cell = floor(p);
+    vec2 local = fract(p);
+    local = local * local * (3.0 - 2.0 * local);
+    return mix(
+        mix(hash12(cell), hash12(cell + vec2(1.0, 0.0)), local.x),
+        mix(hash12(cell + vec2(0.0, 1.0)), hash12(cell + vec2(1.0)), local.x),
+        local.y);
+}}
+vec4 shapedSine(vec4 phase, float power) {{
+    vec4 wave = sin(phase);
+    return pow(abs(wave), vec4(max(power, 0.0001))) * sign(wave);
+}}
+void main() {{
+    float width = max(u_Effect.g_Texture0Resolution.z, 1.0);
+    float height = max(u_Effect.g_Texture0Resolution.w, 1.0);
+    float ratio = max(u_Effect.g_PowerNoiseScaleRatioDirection.z, 0.0001);
+    float aspect = max(width / height * ratio, 0.0001);
+    float direction = u_Effect.g_PowerNoiseScaleRatioDirection.w;
+    vec2 offsetScale = rotateVec2(vec2(1.0 / aspect, aspect), direction);
+    vec2 phasePosition = rotateVec2(v_TexCoord, direction);
+    {noise_sample}
+    {mask_sample}
+    float phase = (noise * 6.283185307179586
+        + phasePosition.x * 10.0
+        + phasePosition.y * 5.0) * u_Effect.g_TimeSpeedStrengthPhase.w;
+    float time = u_Effect.g_TimeSpeedStrengthPhase.x
+        * u_Effect.g_TimeSpeedStrengthPhase.y;
+    vec4 sines = shapedSine(
+        phase + time * vec4(1.0, -0.16161616, 0.0083333, -0.00019841),
+        u_Effect.g_PowerNoiseScaleRatioDirection.x);
+    vec4 cosines = shapedSine(
+        0.4 + phase + time * vec4(-0.5, 0.041666666, -0.0013888889, 0.000024801587),
+        u_Effect.g_PowerNoiseScaleRatioDirection.x);
+    float amplitude = u_Effect.g_TimeSpeedStrengthPhase.z
+        * u_Effect.g_TimeSpeedStrengthPhase.z * 0.005 * mask;
+    vec2 offset = offsetScale * vec2(
+        dot(sines, vec4(amplitude)),
+        dot(cosines, vec4(amplitude)));
+    o_Color = texture(g_Texture0, v_TexCoord + offset);
+}}
+"#
+    )
 }
 
 fn waterwaves_fragment_source(texture_slot_mask: u32) -> String {

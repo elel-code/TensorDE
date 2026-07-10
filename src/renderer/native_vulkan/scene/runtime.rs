@@ -23,9 +23,19 @@ use crate::renderer::native_vulkan::{
 
 use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeVulkanSceneRunOptions {
     pub capture_frame: Option<PathBuf>,
+    pub capture_frame_number: u64,
+}
+
+impl Default for NativeVulkanSceneRunOptions {
+    fn default() -> Self {
+        Self {
+            capture_frame: None,
+            capture_frame_number: 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -75,6 +85,11 @@ pub fn run_scene_with_options(
             "scene frame capture requires a non-zero runtime duration".to_owned(),
         ));
     }
+    if scene_options.capture_frame.is_some() && scene_options.capture_frame_number == 0 {
+        return Err(NativeVulkanError::Scene(
+            "scene frame capture number must be at least 1".to_owned(),
+        ));
+    }
     let file = std::fs::File::open(&source).map_err(|err| {
         NativeVulkanError::Scene(format!(
             "open scene engine binary {}: {err}",
@@ -99,6 +114,7 @@ pub fn run_scene_with_options(
             clear_color: scene_clear_color(&storage),
             storage: storage.clone(),
             capture_frame: scene_options.capture_frame,
+            capture_frame_number: scene_options.capture_frame_number,
         })
         .map_err(NativeVulkanError::Scene)?;
     let frame_capture = present.frame_capture.clone();

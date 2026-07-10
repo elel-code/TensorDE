@@ -27,6 +27,12 @@ pub struct VisibilityComponent {
     pub sort_order: i32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct VisualComponent {
+    pub color: SceneVec3,
+    pub alpha: f32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MaterialBindingComponent {
     pub material: SceneMaterialHandle,
@@ -107,6 +113,13 @@ pub fn visibility_from_object(object: &SceneObjectRecord) -> VisibilityComponent
         visible: object.visible,
         color_blend_mode: object.color_blend_mode,
         sort_order: object.sort_order,
+    }
+}
+
+pub fn visual_from_object(object: &SceneObjectRecord) -> VisualComponent {
+    VisualComponent {
+        color: object.color,
+        alpha: object.alpha,
     }
 }
 

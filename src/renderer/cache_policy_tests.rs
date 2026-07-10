@@ -1196,6 +1196,12 @@ void main() {}
                     y: 1.0,
                     z: 1.0,
                 },
+                color: SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                alpha: 1.0,
                 visible: true,
                 color_blend_mode: 0,
                 sort_order: 0,

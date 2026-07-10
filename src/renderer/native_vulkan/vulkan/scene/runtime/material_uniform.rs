@@ -30,7 +30,7 @@ pub(super) fn pack_scene_material_uniforms(
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
     for draw in draws {
-        for value in material_uniform_values(storage, draw.material, scene_time_seconds) {
+        for value in material_uniform_values(storage, draw, scene_time_seconds) {
             payload.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -39,10 +39,10 @@ pub(super) fn pack_scene_material_uniforms(
 
 fn material_uniform_values(
     storage: &SceneStorage,
-    material: SceneMaterialHandle,
+    draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let Some(pass) = first_material_pass(storage, material) else {
+    let Some(pass) = first_material_pass(storage, draw.material) else {
         return [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     };
     let shader_key = storage.string(pass.shader_key).unwrap_or_default();
@@ -52,9 +52,14 @@ fn material_uniform_values(
     let parameters = MaterialParameters { storage, pass };
     match layout {
         BuiltinSceneParameterLayout::None => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
-        BuiltinSceneParameterLayout::StandardMaterial => standard_material_values(&parameters),
+        BuiltinSceneParameterLayout::StandardMaterial => {
+            standard_material_values(&parameters, draw.resolved_color, draw.resolved_alpha)
+        }
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
+        BuiltinSceneParameterLayout::FoliageSway => {
+            foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::WaterWaves => {
             waterwaves_values(&parameters, shader_key, scene_time_seconds)
         }
@@ -146,6 +151,8 @@ impl MaterialParameters<'_> {
 
 fn standard_material_values(
     parameters: &MaterialParameters<'_>,
+    resolved_color: crate::engine::scene::SceneVec3,
+    resolved_alpha: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[..4].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
@@ -155,6 +162,10 @@ fn standard_material_values(
         &parameters.values(&["color4", "g_color4", "color", "tint"]),
         4,
     );
+    values[0] *= resolved_color.x;
+    values[1] *= resolved_color.y;
+    values[2] *= resolved_color.z;
+    values[3] *= resolved_alpha;
     values[4] = parameters.scalar(&["roughness"], 0.0);
     values[5] = parameters.scalar(&["metallic"], 0.0);
     set_vector(
@@ -189,6 +200,58 @@ fn opacity_values(
     values[0] = parameters.scalar(&["alpha", "opacity"], 1.0);
     values[4..8].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
     values
+}
+
+fn foliage_sway_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = scene_time_seconds;
+    values[1] = parameters.scalar(&["speeduv", "speed"], 5.0);
+    values[2] = parameters.scalar(&["strength"], 0.4);
+    values[3] = parameters.scalar(&["phase"], 0.5);
+    values[4] = parameters.scalar(&["power"], 1.0);
+    values[5] = parameters.scalar(&["scale", "noisescale"], 0.05);
+    values[6] = parameters.scalar(&["ratio"], 0.3);
+    values[7] = parameters.scalar(&["scrolldirection", "direction"], 0.0);
+    values[8..12].copy_from_slice(&object_source_texture_resolution(storage, draw.object));
+    values
+}
+
+fn object_source_texture_resolution(
+    storage: &SceneStorage,
+    object: crate::engine::scene::SceneObjectHandle,
+) -> [f32; 4] {
+    let mesh = storage.meshes().iter().find(|mesh| mesh.object == object);
+    if let Some(texture) = mesh
+        .and_then(|mesh| storage.material(mesh.material))
+        .and_then(|material| storage.material_passes(material).first())
+        .and_then(|pass| {
+            storage
+                .material_pass_textures(pass)
+                .iter()
+                .find(|texture| texture.slot == 0)
+        })
+        .and_then(|binding| storage.texture(binding.resource))
+    {
+        return [
+            texture.width.max(1) as f32,
+            texture.height.max(1) as f32,
+            texture.storage_width.max(1) as f32,
+            texture.storage_height.max(1) as f32,
+        ];
+    }
+    if let Some(mesh) = mesh {
+        let width = mesh.width.max(1.0);
+        let height = mesh.height.max(1.0);
+        return [width, height, width, height];
+    }
+    let width = storage.project().logical_width.max(1) as f32;
+    let height = storage.project().logical_height.max(1) as f32;
+    [width, height, width, height]
 }
 
 fn waterwaves_values(
@@ -350,6 +413,28 @@ mod tests {
     }
 
     #[test]
+    fn standard_material_multiplies_resolved_object_shadow_tint_and_alpha() {
+        let storage = storage_with_constants(
+            "genericimage4",
+            &[("tint", "[0.8,0.6,0.4,0.5]")],
+        );
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.resolved_color = crate::engine::scene::SceneVec3 {
+            x: 0.25,
+            y: 0.5,
+            z: 0.75,
+        };
+        draw.resolved_alpha = 0.3;
+
+        let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+        assert_eq!(f32_from_payload(&payload, 0), 0.2);
+        assert_eq!(f32_from_payload(&payload, 4), 0.3);
+        assert!((f32_from_payload(&payload, 8) - 0.3).abs() < f32::EPSILON);
+        assert_eq!(f32_from_payload(&payload, 12), 0.15);
+    }
+
+    #[test]
     fn waterwaves_uniform_uses_named_lanes_and_scene_time() {
         let storage = storage_with_constants(
             "effects/waterwaves__SLOTS_3__DUALWAVES_1",
@@ -374,6 +459,36 @@ mod tests {
         assert_eq!(f32_from_payload(&payload, 16), -0.9);
         assert_eq!(f32_from_payload(&payload, 20), 3.0);
         assert_eq!(f32_from_payload(&payload, 36), 1.0);
+    }
+
+    #[test]
+    fn foliage_sway_uniform_uses_authored_uv_motion_parameters() {
+        let storage = storage_with_constants(
+            "workshop/2790231929/effects/foliagesway__SLOTS_1",
+            &[
+                ("speeduv", "5.0"),
+                ("strength", "0.5"),
+                ("phase", "2.0"),
+                ("power", "2.0"),
+                ("scale", "0.05"),
+                ("ratio", "2.11"),
+                ("scrolldirection", "0.25"),
+            ],
+        );
+        let payload = pack_scene_material_uniforms(
+            &storage,
+            &[draw_with_material(SceneMaterialHandle(0))],
+            3.5,
+        );
+
+        assert_eq!(f32_from_payload(&payload, 0), 3.5);
+        assert_eq!(f32_from_payload(&payload, 4), 5.0);
+        assert_eq!(f32_from_payload(&payload, 8), 0.5);
+        assert_eq!(f32_from_payload(&payload, 12), 2.0);
+        assert_eq!(f32_from_payload(&payload, 16), 2.0);
+        assert_eq!(f32_from_payload(&payload, 20), 0.05);
+        assert_eq!(f32_from_payload(&payload, 24), 2.11);
+        assert_eq!(f32_from_payload(&payload, 28), 0.25);
     }
 
     #[test]
@@ -441,6 +556,12 @@ mod tests {
             clip_transform: [[0.0; 4]; 4],
             skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
             skinning_palette_count: 0,
+            resolved_color: crate::engine::scene::SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            resolved_alpha: 1.0,
             object: crate::engine::scene::SceneObjectHandle(0),
             material,
             vertex_start: 0,

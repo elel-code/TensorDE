@@ -12,6 +12,7 @@ pub enum BuiltinSceneParameterLayout {
     StandardMaterial,
     Iris,
     Opacity,
+    FoliageSway,
     WaterWaves,
     WaterRipple,
 }
@@ -26,7 +27,10 @@ impl BuiltinSceneParameterLayout {
     }
 
     pub const fn uses_scene_time(self) -> bool {
-        matches!(self, Self::Iris | Self::WaterWaves | Self::WaterRipple)
+        matches!(
+            self,
+            Self::Iris | Self::FoliageSway | Self::WaterWaves | Self::WaterRipple
+        )
     }
 }
 
@@ -98,6 +102,14 @@ mod tests {
                 .expect("waterwaves shader")
                 .parameter_layout,
             BuiltinSceneParameterLayout::WaterWaves
+        );
+        assert_eq!(
+            native_vulkan_scene_shader_for_key(
+                "workshop/2790231929/effects/foliagesway__SLOTS_1"
+            )
+            .expect("foliage sway shader")
+            .parameter_layout,
+            BuiltinSceneParameterLayout::FoliageSway
         );
     }
 }

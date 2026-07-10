@@ -143,6 +143,8 @@ pub struct WeIrObject {
     pub origin: SceneVec3,
     pub angles: SceneVec3,
     pub scale: SceneVec3,
+    pub color: SceneVec3,
+    pub alpha: f32,
     pub visible: bool,
     pub color_blend_mode: i32,
     pub sort_order: i32,

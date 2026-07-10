@@ -217,6 +217,12 @@ mod tests {
                 clip_transform: identity_clip_transform(),
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
+                resolved_color: crate::engine::scene::SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                resolved_alpha: 1.0,
                 object: crate::engine::scene::SceneObjectHandle(0),
                 material: crate::engine::scene::SceneMaterialHandle(
                     crate::engine::scene::INVALID_MATERIAL_ID,
@@ -343,6 +349,12 @@ mod tests {
                 clip_transform: identity_clip_transform(),
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
+                resolved_color: crate::engine::scene::SceneVec3 {
+                    x: 1.0,
+                    y: 1.0,
+                    z: 1.0,
+                },
+                resolved_alpha: 1.0,
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),

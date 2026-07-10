@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a 10s scene-engine native Vulkan smoke and record pacing/memory evidence."""
+"""Run a release, capture-disabled scene smoke and record pacing/memory evidence."""
 
 from __future__ import annotations
 
@@ -45,9 +45,19 @@ def main() -> int:
                 str(output),
             ]
         )
-        run(["cargo", "build", "--features", "native-vulkan-renderer", "--bin", "gilder-native-vulkan"])
+        run(
+            [
+                "cargo",
+                "build",
+                "--release",
+                "--features",
+                "native-vulkan-renderer",
+                "--bin",
+                "gilder-native-vulkan",
+            ]
+        )
 
-        binary = ROOT / "target/debug/gilder-native-vulkan"
+        binary = ROOT / "target/release/gilder-native-vulkan"
         runtime = subprocess.Popen(
             [
                 str(binary),
@@ -83,6 +93,8 @@ def main() -> int:
             "runtime_report": "scene-runtime.stdout.json",
             "samples": "scene-runtime-samples.json",
             "duration_seconds": args.duration,
+            "build_profile": "release",
+            "frame_capture": report.get("frame_capture"),
             "frames_presented": report["frames_presented"],
             "average_present_fps": report["average_present_fps"],
             "present_delta_min_micros": report["present_delta_min_micros"],
@@ -106,6 +118,8 @@ def main() -> int:
 
         if report["present_mode"] != "fifo-latest-ready":
             raise AssertionError(report["present_mode"])
+        if report.get("frame_capture") is not None:
+            raise AssertionError("performance smoke must run with frame capture disabled")
         if report["frames_presented"] <= 0:
             raise AssertionError(report["frames_presented"])
         if report["descriptor_model"] != "VK_EXT_descriptor_heap":

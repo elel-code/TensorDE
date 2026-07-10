@@ -33,6 +33,7 @@ pub(super) struct SceneFrameCapture {
     path: PathBuf,
     extent: vk::Extent2D,
     source_format: vk::Format,
+    target_frame_number: u64,
     byte_count: u64,
     readback_buffer: NativeVulkanVulkanaliaBuffer,
     captured_frame: Option<SceneFrameCapturePixels>,
@@ -51,7 +52,11 @@ impl SceneFrameCapture {
         path: PathBuf,
         extent: vk::Extent2D,
         source_format: vk::Format,
+        target_frame_number: u64,
     ) -> Result<Self, String> {
+        if target_frame_number == 0 {
+            return Err("scene frame capture number must be at least 1".to_owned());
+        }
         scene_frame_capture_channel_order(source_format)?;
         let byte_count = scene_frame_capture_byte_count(extent)?;
         let readback_buffer = native_vulkan_vulkanalia_create_buffer(
@@ -67,6 +72,7 @@ impl SceneFrameCapture {
             path,
             extent,
             source_format,
+            target_frame_number,
             byte_count,
             readback_buffer,
             captured_frame: None,
@@ -76,6 +82,10 @@ impl SceneFrameCapture {
 
     pub(super) fn is_pending(&self) -> bool {
         self.captured_frame.is_none() && self.snapshot.is_none()
+    }
+
+    pub(super) fn should_capture(&self, frame_number: u64) -> bool {
+        self.is_pending() && frame_number == self.target_frame_number
     }
 
     pub(super) fn record_swapchain_copy(
