@@ -29,7 +29,9 @@ pub use ingest::{WeIngestError, ingest_wallpaper_engine_project};
 pub use lower::{WeLowerError, lower_ir_to_scene_binary};
 pub use mdl::{MdlMeshEntry, MdlMeshVertex, MdlModel, MdlParseError, parse_mdl_model};
 pub use pkg::{ScenePackage, ScenePackageEntry, ScenePackageError};
-pub use tex::{TexMetadata, TexParseError, parse_tex_metadata};
+pub use tex::{
+    TexMetadata, TexParseError, TexUpload, TexUploadMip, decode_tex_upload, parse_tex_metadata,
+};
 
 pub fn convert_wallpaper_engine_project_to_scene_binary(
     project_root: impl AsRef<Path>,
@@ -60,6 +62,18 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
         mesh_count: render_plan.mesh_count,
         mesh_vertex_count: render_plan.mesh_vertex_count,
         mesh_index_count: render_plan.mesh_index_count,
+        puppet_count: storage.puppets().len(),
+        puppet_bone_count: storage.document().puppet_bones.len(),
+        puppet_animation_clip_count: storage.puppet_animation_clips().len(),
+        puppet_animation_track_count: storage.document().puppet_animation_tracks.len(),
+        puppet_animation_transform_sample_count: storage
+            .document()
+            .puppet_animation_transform_samples
+            .len(),
+        puppet_animation_opacity_sample_count: storage
+            .document()
+            .puppet_animation_opacity_samples
+            .len(),
         render_graph_count: render_plan.render_graph_count,
         shader_contract_count: render_plan.shader_contract_count,
         descriptor_heap_resource_count: render_plan.descriptor_heap_resource_count,
@@ -79,6 +93,12 @@ pub struct WeConvertSummary {
     pub mesh_count: usize,
     pub mesh_vertex_count: usize,
     pub mesh_index_count: usize,
+    pub puppet_count: usize,
+    pub puppet_bone_count: usize,
+    pub puppet_animation_clip_count: usize,
+    pub puppet_animation_track_count: usize,
+    pub puppet_animation_transform_sample_count: usize,
+    pub puppet_animation_opacity_sample_count: usize,
     pub render_graph_count: usize,
     pub shader_contract_count: usize,
     pub descriptor_heap_resource_count: u32,
@@ -195,6 +215,8 @@ mod tests {
         assert_eq!(summary.mesh_count, 1);
         assert_eq!(summary.mesh_vertex_count, 4);
         assert_eq!(summary.mesh_index_count, 6);
+        assert_eq!(summary.puppet_count, 0);
+        assert_eq!(summary.puppet_animation_clip_count, 0);
         assert_eq!(summary.shader_contract_count, 1);
         assert_eq!(summary.descriptor_heap_resource_count, 3);
         assert_eq!(summary.descriptor_heap_sampler_count, 1);

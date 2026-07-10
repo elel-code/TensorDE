@@ -62,7 +62,8 @@ pub(in crate::renderer::native_vulkan) use buffer::{
     NativeVulkanVulkanaliaBufferSnapshot, NativeVulkanVulkanaliaRecordedBufferUpload,
     native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
-    native_vulkan_vulkanalia_destroy_buffer,
+    native_vulkan_vulkanalia_destroy_buffer, native_vulkan_vulkanalia_read_host_buffer,
+    native_vulkan_vulkanalia_write_host_buffer,
 };
 pub use descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapImageSamplerPlanSnapshot;
 #[allow(unused_imports)]
@@ -266,6 +267,7 @@ pub use video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
 };
 pub use video_surface_host::NativeVulkanVideoSurfaceHostSnapshot;
+pub use vulkan_scene::NativeVulkanSceneFrameCaptureSnapshot;
 pub(in crate::renderer::native_vulkan) use vulkan_scene::{
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,

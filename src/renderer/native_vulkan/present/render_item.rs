@@ -334,6 +334,7 @@ mod tests {
                     }],
                     target_allocations: Vec::new(),
                     sampled_bindings: Vec::new(),
+                    material_sampled_bindings: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                         primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                         mesh_index: 0,

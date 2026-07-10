@@ -8,6 +8,7 @@
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
 //! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
+use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -28,6 +29,7 @@ use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaImageMipUpload, NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot,
     NativeVulkanVulkanaliaPresentQueueSnapshot, NativeVulkanVulkanaliaRecordedImageUpload,
     NativeVulkanVulkanaliaSwapchainSnapshot, VulkanaliaDescriptorHeapResourceResources,
+    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES,
     native_vulkan_scene_backend_plan, native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_descriptor_heap_resource_resources,
     native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
@@ -57,23 +59,35 @@ use super::super::present::swapchain::{
 };
 
 mod command_order;
+mod draw_uniform;
 mod draw_recording;
 mod effect_target;
+mod frame_capture;
+mod frame_state;
 mod fullscreen_primitive;
+mod graph_execution;
 mod material_uniform;
 mod pipeline;
 mod sampled_binding;
+mod scene_texture;
 
 use command_order::scene_command_order;
+use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
 use draw_recording::{
-    SceneGpuDrawCommand, SceneGpuDrawRange, draw_range_count, record_scene_draw_extent,
-    record_scene_mesh_draw_ranges, scene_color_draw_ranges,
+    SceneGpuDrawCommand, SceneGpuGraphDrawRange, draw_range_count, scene_color_draw_ranges,
+};
+pub use frame_capture::NativeVulkanSceneFrameCaptureSnapshot;
+use frame_capture::SceneFrameCapture;
+use frame_state::{
+    SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers,
 };
 use fullscreen_primitive::{
     append_fullscreen_triangle_indices, append_fullscreen_triangle_vertices,
     graph_uses_fullscreen_utility_primitive,
 };
-use material_uniform::pack_scene_material_uniforms;
+use material_uniform::{
+    SCENE_MATERIAL_UNIFORM_BYTES, material_parameter_layout, pack_scene_material_uniforms,
+};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines, destroy_scene_pipelines,
     scene_pipeline_descriptor_layout, scene_pipeline_indices_for_draws,
@@ -82,10 +96,7 @@ use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,
 };
 
-const SCENE_MESH_VERTEX_STRIDE_BYTES: u32 = 20;
-const SCENE_DRAW_TRANSFORM_BYTES: u64 = 64;
-const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 48;
-const SCENE_PUPPET_BONE_MATRIX_BYTES: u64 = 64;
+const SCENE_MESH_VERTEX_STRIDE_BYTES: u32 = 52;
 const SCENE_WHITE_TEXTURE_BYTES: &[u8] = &[255, 255, 255, 255];
 
 #[derive(Debug, Clone, PartialEq)]
@@ -96,6 +107,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub target_max_fps: Option<u32>,
     pub clear_color: NativeVulkanClearColor,
     pub storage: SceneStorage,
+    pub capture_frame: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -134,15 +146,24 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub transform_uniform_bytes: u64,
     pub material_uniform_bytes: u64,
     pub skinning_storage_bytes: u64,
+    pub scene_texture_image_count: usize,
+    pub scene_texture_memory_bytes: u64,
     pub sampled_fallback_texture_count: usize,
     pub sampled_fallback_descriptor_count: usize,
+    pub sampled_scene_texture_descriptor_count: usize,
     pub sampled_effect_target_descriptor_count: usize,
     pub effect_target_reference_cycle_length: usize,
+    pub transform_uniform_update_count: u64,
+    pub effect_uniform_update_count: u64,
+    pub skinning_storage_update_count: u64,
     pub scene_pipeline_count: usize,
     pub mesh_draw_count: usize,
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
+    #[serde(skip)]
+    pub(in crate::renderer::native_vulkan) frame_capture:
+        Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
 struct SceneGpuResources {
@@ -152,11 +173,13 @@ struct SceneGpuResources {
     material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<NativeVulkanVulkanaliaBuffer>,
     white_upload: Option<NativeVulkanVulkanaliaRecordedImageUpload>,
+    scene_textures: Vec<scene_texture::SceneTextureImageResource>,
     effect_targets: Vec<effect_target::SceneEffectTargetImageResource>,
     effect_target_command_plan: effect_target::SceneEffectTargetCommandPlan,
     effect_target_commands: Vec<effect_target::SceneEffectTargetCommand>,
     effect_target_allocations: Vec<crate::engine::scene::SceneRenderingDeviceTargetAllocation>,
-    scene_color_draw_ranges: Vec<SceneGpuDrawRange>,
+    scene_color_draw_ranges: Vec<SceneGpuGraphDrawRange>,
+    graph_execution_order: Vec<u32>,
     descriptor_heap: VulkanaliaDescriptorHeapResourceResources,
     descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     pipelines: ScenePipelineResources,
@@ -164,6 +187,8 @@ struct SceneGpuResources {
     sampled_slots: Vec<u32>,
     sampled_binding_cycle: Vec<SceneSampledImageBindingPlan>,
     material_uniform_enabled: bool,
+    frame_topology: SceneFrameTopology,
+    dynamic_effect_uniforms: bool,
 }
 
 pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_present(
@@ -365,6 +390,10 @@ fn with_scene_present(
         swapchain_plan.format.format,
         swapchain_plan.extent,
         &present_device.feature_selection.descriptor_heap_properties,
+        present_device.feature_selection.blend_operation_advanced_enabled,
+        present_device
+            .feature_selection
+            .blend_operation_advanced_coherent_operations,
     ) {
         Ok(resources) => resources,
         Err(err) => {
@@ -397,6 +426,7 @@ fn with_scene_present(
         }
         return Err(err);
     }
+    release_scene_upload_staging(device, &mut scene_resources);
     let semaphore_info = vk::SemaphoreCreateInfo::builder();
     let image_available = match unsafe { device.create_semaphore(&semaphore_info, None) } {
         Ok(semaphore) => semaphore,
@@ -459,6 +489,38 @@ fn with_scene_present(
             return Err(format!("vkCreateFence(vulkanalia scene present): {err:?}"));
         }
     };
+    let mut frame_capture = if let Some(path) = options.capture_frame.clone() {
+        match SceneFrameCapture::create(
+            device,
+            &memory_properties,
+            path,
+            swapchain_plan.extent,
+            swapchain_plan.format.format,
+        ) {
+            Ok(capture) => Some(capture),
+            Err(err) => {
+                unsafe {
+                    device.destroy_fence(in_flight, None);
+                    for semaphore in render_finished {
+                        device.destroy_semaphore(semaphore, None);
+                    }
+                    device.destroy_semaphore(image_available, None);
+                    for view in swapchain_views {
+                        device.destroy_image_view(view, None);
+                    }
+                }
+                destroy_scene_gpu_resources(device, scene_resources);
+                unsafe {
+                    device.destroy_command_pool(command_pool, None);
+                    device.destroy_swapchain_khr(swapchain, None);
+                    present_device.device.destroy_device(None);
+                }
+                return Err(err);
+            }
+        }
+    } else {
+        None
+    };
 
     let started_at = Instant::now();
     let deadline = started_at + options.duration;
@@ -473,6 +535,9 @@ fn with_scene_present(
     let mut present_delta_max_micros = None::<u64>;
     let mut present_delta_over_6250us_count = 0u64;
     let mut present_delta_over_8334us_count = 0u64;
+    let mut transform_uniform_update_count = 0u64;
+    let mut effect_uniform_update_count = 0u64;
+    let mut skinning_storage_update_count = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
 
     while Instant::now() < deadline {
@@ -484,6 +549,23 @@ fn with_scene_present(
                 .reset_fences(&[in_flight])
                 .map_err(|err| format!("vkResetFences(vulkanalia scene present): {err:?}"))?;
         }
+        let scene_time_seconds = started_at.elapsed().as_secs_f32();
+        let frame_update = write_scene_frame_buffers(
+            device,
+            &options.storage,
+            &scene_resources.frame_topology,
+            &scene_resources.transform_buffer,
+            scene_resources.material_buffer.as_ref(),
+            scene_resources.skinning_buffer.as_ref(),
+            scene_resources.dynamic_effect_uniforms,
+            scene_time_seconds,
+        )?;
+        transform_uniform_update_count = transform_uniform_update_count
+            .saturating_add(u64::from(frame_update.transform_uniform_updated));
+        effect_uniform_update_count = effect_uniform_update_count
+            .saturating_add(u64::from(frame_update.material_uniform_updated));
+        skinning_storage_update_count = skinning_storage_update_count
+            .saturating_add(u64::from(frame_update.skinning_storage_updated));
         let reference_phase = frames_presented as usize % scene_resources.sampled_binding_cycle.len();
         write_scene_frame_sampled_descriptors(device, &mut scene_resources, reference_phase)?;
         let (image_index, _) = unsafe {
@@ -498,6 +580,9 @@ fn with_scene_present(
             .get(image_index)
             .copied()
             .ok_or_else(|| format!("swapchain image index {image_index} has no command buffer"))?;
+        let pending_frame_capture = frame_capture
+            .as_ref()
+            .filter(|capture| capture.is_pending());
 
         record_scene_present_command_buffer(
             device,
@@ -509,6 +594,7 @@ fn with_scene_present(
             options.clear_color,
             &scene_resources,
             reference_phase,
+            pending_frame_capture,
         )?;
         image_layouts[image_index] = vk::ImageLayout::PRESENT_SRC_KHR;
         submit_scene_present_command_buffer2(
@@ -530,6 +616,17 @@ fn with_scene_present(
             device
                 .queue_present_khr(present_device.queue, &present_info)
                 .map_err(|err| format!("vkQueuePresentKHR(vulkanalia scene present): {err:?}"))?;
+        }
+        if let Some(capture) = frame_capture
+            .as_mut()
+            .filter(|capture| capture.is_pending())
+        {
+            unsafe {
+                device.wait_for_fences(&[in_flight], true, u64::MAX).map_err(|err| {
+                    format!("vkWaitForFences(vulkanalia scene frame capture): {err:?}")
+                })?;
+            }
+            capture.read_completed_frame(device, frames_presented.saturating_add(1))?;
         }
         let present_completed_at = Instant::now();
         if let Some(last_present_completed_at) = last_present_completed_at {
@@ -565,6 +662,9 @@ fn with_scene_present(
     }
     let _ = unsafe { device.device_wait_idle() };
     let elapsed = started_at.elapsed();
+    let frame_capture_write_error = frame_capture
+        .as_mut()
+        .and_then(|capture| capture.write_png().err());
     let vertex_buffer_bytes = scene_resources.vertex_buffer.snapshot.requested_bytes;
     let index_buffer_bytes = scene_resources.index_buffer.snapshot.requested_bytes;
     let transform_uniform_bytes = scene_resources.transform_buffer.snapshot.requested_bytes;
@@ -581,6 +681,10 @@ fn with_scene_present(
         .sampled_binding_cycle
         .first()
         .map_or(0, |plan| plan.fallback_descriptor_count);
+    let sampled_scene_texture_descriptor_count = scene_resources
+        .sampled_binding_cycle
+        .first()
+        .map_or(0, |plan| plan.scene_texture_descriptor_count);
     let sampled_effect_target_descriptor_count = scene_resources
         .sampled_binding_cycle
         .first()
@@ -590,6 +694,9 @@ fn with_scene_present(
         .descriptor_heap_plan
         .resource_descriptor_count;
     let descriptor_heap_sampler_count = scene_resources.descriptor_heap_plan.sampler_count;
+    let scene_texture_image_count = scene_resources.scene_textures.len();
+    let scene_texture_memory_bytes =
+        scene_texture::scene_texture_memory_bytes(&scene_resources.scene_textures);
     let effect_target_physical_image_count = scene_resources.effect_targets.len();
     let effect_target_memory_bytes =
         effect_target::effect_target_memory_bytes(&scene_resources.effect_targets);
@@ -610,10 +717,18 @@ fn with_scene_present(
     let scene_pipeline_count = scene_resources.pipelines.entries.len();
     let mesh_draw_count = scene_resources.draw_commands.len();
     let mesh_draw_recorded = mesh_draw_count > 0;
+    let frame_capture_requested = frame_capture.is_some();
+    let frame_capture_snapshot = frame_capture
+        .as_ref()
+        .and_then(SceneFrameCapture::snapshot)
+        .cloned();
     let command_order = scene_command_order(
         scene_resources.sampled_slots.is_empty(),
+        sampled_fallback_texture_count != 0,
+        scene_texture_image_count != 0,
         scene_resources.skinning_buffer.is_some(),
         scene_pipeline_count > 1,
+        scene_resources.dynamic_effect_uniforms,
         effect_target_dynamic_rendering_recorded,
         effect_target_copy_command_count > 0,
         effect_target_swap_reference_count > 0,
@@ -631,11 +746,23 @@ fn with_scene_present(
             device.destroy_image_view(view, None);
         }
     }
+    if let Some(capture) = frame_capture.take() {
+        capture.destroy(device);
+    }
     destroy_scene_gpu_resources(device, scene_resources);
     unsafe {
         device.destroy_command_pool(command_pool, None);
         device.destroy_swapchain_khr(swapchain, None);
         present_device.device.destroy_device(None);
+    }
+    if let Some(err) = frame_capture_write_error {
+        return Err(err);
+    }
+    if frame_capture_requested && frame_capture_snapshot.is_none() {
+        return Err(
+            "scene frame capture requested, but the runtime ended before presenting a frame"
+                .to_owned(),
+        );
     }
 
     Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
@@ -701,15 +828,22 @@ fn with_scene_present(
         transform_uniform_bytes,
         material_uniform_bytes,
         skinning_storage_bytes,
+        scene_texture_image_count,
+        scene_texture_memory_bytes,
         sampled_fallback_texture_count,
         sampled_fallback_descriptor_count,
+        sampled_scene_texture_descriptor_count,
         sampled_effect_target_descriptor_count,
         effect_target_reference_cycle_length,
+        transform_uniform_update_count,
+        effect_uniform_update_count,
+        skinning_storage_update_count,
         scene_pipeline_count,
         mesh_draw_count,
         mesh_draw_recorded,
         command_order,
         present_backend: "vulkanalia-scene-present-runtime",
+        frame_capture: frame_capture_snapshot,
     })
 }
 
@@ -721,6 +855,8 @@ fn create_scene_gpu_resources(
     target_format: vk::Format,
     extent: vk::Extent2D,
     descriptor_heap_properties: &crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
+    advanced_blend_enabled: bool,
+    advanced_blend_coherent: bool,
 ) -> Result<SceneGpuResources, String> {
     let backend_plan = native_vulkan_scene_backend_plan(storage);
     if backend_plan.rendering_device_graph.mesh_draws.is_empty() {
@@ -751,6 +887,8 @@ fn create_scene_gpu_resources(
     );
     let effect_target_allocations = backend_plan.rendering_device_graph.target_allocations.clone();
     let scene_color_ranges = scene_color_draw_ranges(&backend_plan.rendering_device_graph);
+    let graph_execution_order =
+        graph_execution::scene_graph_execution_order(&backend_plan.rendering_device_graph);
     let pipeline_indices = scene_pipeline_indices_for_draws(
         storage,
         &backend_plan.rendering_device_graph,
@@ -762,15 +900,29 @@ fn create_scene_gpu_resources(
         graph_uses_fullscreen_utility_primitive(&backend_plan.rendering_device_graph);
     let vertex_payload = pack_scene_vertices(storage, include_fullscreen_utility);
     let index_payload = pack_scene_indices(storage, include_fullscreen_utility);
-    let transform_payload = pack_scene_transforms(&backend_plan.rendering_device_graph.mesh_draws);
+    let transform_payload = pack_scene_draw_uniforms(
+        storage,
+        &backend_plan.rendering_device_graph.mesh_draws,
+        0.0,
+    );
     let material_payload = descriptor_layout
         .material_uniform_enabled
         .then(|| {
-            pack_scene_material_uniforms(storage, &backend_plan.rendering_device_graph.mesh_draws)
+            pack_scene_material_uniforms(
+                storage,
+                &backend_plan.rendering_device_graph.mesh_draws,
+                0.0,
+            )
         });
+    let dynamic_effect_uniforms = backend_plan
+        .rendering_device_graph
+        .mesh_draws
+        .iter()
+        .any(|draw| material_parameter_layout(storage, draw.material).uses_scene_time());
     let skinning_payload = descriptor_layout
         .skinning_storage_enabled
-        .then(|| pack_scene_skinning_matrices(&backend_plan.rendering_device_graph));
+        .then(|| pack_scene_skinning_palette(&backend_plan.rendering_device_graph));
+    let frame_topology = SceneFrameTopology::from_graph(&backend_plan.rendering_device_graph);
 
     let vertex_buffer = native_vulkan_vulkanalia_create_buffer(
         device,
@@ -965,6 +1117,35 @@ fn create_scene_gpu_resources(
         setup_command_buffer,
         &effect_targets,
     );
+    let scene_textures = match scene_texture::create_scene_texture_images(
+        device,
+        memory_properties,
+        setup_command_buffer,
+        storage,
+        &sampled_binding_cycle,
+    ) {
+        Ok(textures) => textures,
+        Err(err) => {
+            effect_target::destroy_scene_effect_target_images(device, effect_targets);
+            native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+                device,
+                descriptor_heap,
+            );
+            if let Some(upload) = white_upload {
+                destroy_recorded_image_upload(device, upload);
+            }
+            if let Some(buffer) = material_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            if let Some(buffer) = skinning_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            return Err(err);
+        }
+    };
 
     if let Err(err) = write_scene_descriptors(
         device,
@@ -974,9 +1155,11 @@ fn create_scene_gpu_resources(
         material_buffer.as_ref(),
         skinning_buffer.as_ref(),
         white_upload.as_ref().map(|upload| &upload.image),
+        &scene_textures,
         &effect_targets,
         sampled_binding_plan,
     ) {
+        scene_texture::destroy_scene_texture_images(device, scene_textures);
         effect_target::destroy_scene_effect_target_images(device, effect_targets);
         native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
             device,
@@ -1005,9 +1188,12 @@ fn create_scene_gpu_resources(
         &descriptor_heap_plan,
         &descriptor_layout,
         &effect_target_plans,
+        advanced_blend_enabled,
+        advanced_blend_coherent,
     ) {
         Ok(resources) => resources,
         Err(err) => {
+            scene_texture::destroy_scene_texture_images(device, scene_textures);
             effect_target::destroy_scene_effect_target_images(device, effect_targets);
             native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
                 device,
@@ -1036,11 +1222,13 @@ fn create_scene_gpu_resources(
         material_buffer,
         skinning_buffer,
         white_upload,
+        scene_textures,
         effect_targets,
         effect_target_command_plan,
         effect_target_commands,
         effect_target_allocations,
         scene_color_draw_ranges: scene_color_ranges,
+        graph_execution_order,
         descriptor_heap,
         descriptor_heap_plan,
         pipelines: pipeline_resources,
@@ -1048,6 +1236,8 @@ fn create_scene_gpu_resources(
         sampled_slots: descriptor_layout.sampled_slots,
         sampled_binding_cycle,
         material_uniform_enabled: descriptor_layout.material_uniform_enabled,
+        frame_topology,
+        dynamic_effect_uniforms,
     })
 }
 
@@ -1059,6 +1249,7 @@ fn write_scene_descriptors(
     material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     white_image: Option<&NativeVulkanVulkanaliaImage>,
+    scene_textures: &[scene_texture::SceneTextureImageResource],
     effect_targets: &[effect_target::SceneEffectTargetImageResource],
     sampled_binding_plan: &SceneSampledImageBindingPlan,
 ) -> Result<(), String> {
@@ -1069,8 +1260,8 @@ fn write_scene_descriptors(
             draw.resource_descriptor_base,
             transform_buffer
                 .device_address
-                .saturating_add(draw_index as u64 * SCENE_DRAW_TRANSFORM_BYTES),
-            SCENE_DRAW_TRANSFORM_BYTES,
+                .saturating_add(draw_index as u64 * SCENE_DRAW_UNIFORM_BYTES),
+            SCENE_DRAW_UNIFORM_BYTES,
         )?;
         let mut resource_descriptor_index = draw.resource_descriptor_base + 1;
         if let Some(material_buffer) = material_buffer {
@@ -1102,6 +1293,7 @@ fn write_scene_descriptors(
         descriptor_heap,
         draw_commands,
         white_image,
+        scene_textures,
         effect_targets,
         sampled_binding_plan,
         material_buffer.is_some(),
@@ -1123,6 +1315,7 @@ fn write_scene_frame_sampled_descriptors(
         &mut scene.descriptor_heap,
         &scene.draw_commands,
         scene.white_upload.as_ref().map(|upload| &upload.image),
+        &scene.scene_textures,
         &scene.effect_targets,
         sampled_binding_plan,
         scene.material_uniform_enabled,
@@ -1135,13 +1328,14 @@ fn write_scene_sampled_descriptors(
     descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
     draw_commands: &[SceneGpuDrawCommand],
     white_image: Option<&NativeVulkanVulkanaliaImage>,
+    scene_textures: &[scene_texture::SceneTextureImageResource],
     effect_targets: &[effect_target::SceneEffectTargetImageResource],
     sampled_binding_plan: &SceneSampledImageBindingPlan,
     material_uniform_enabled: bool,
     skinning_storage_enabled: bool,
 ) -> Result<(), String> {
     let fallback_image_view_info = white_image.map(scene_white_image_view_info);
-    let sampler_info = scene_sampled_sampler_info();
+    let fallback_sampler_info = scene_sampled_sampler_info();
     for (draw_index, draw) in draw_commands.iter().enumerate() {
         let resource_descriptor_index = draw.resource_descriptor_base
             + 1
@@ -1155,10 +1349,26 @@ fn write_scene_sampled_descriptors(
                         "scene draw {draw_index} sampled descriptor {sampled_index} has no binding plan"
                     )
                 })?;
-            let image_view_info = match source {
-                SceneSampledImageSource::FallbackWhite => fallback_image_view_info.ok_or_else(|| {
-                    "scene fallback sampled binding has no fallback texture".to_owned()
-                })?,
+            let (image_view_info, sampler_info) = match source {
+                SceneSampledImageSource::FallbackWhite => (
+                    fallback_image_view_info.ok_or_else(|| {
+                        "scene fallback sampled binding has no fallback texture".to_owned()
+                    })?,
+                    fallback_sampler_info,
+                ),
+                SceneSampledImageSource::SceneTexture { resource } => {
+                    let texture = scene_texture::scene_texture_image(scene_textures, resource)
+                        .ok_or_else(|| {
+                            format!(
+                                "scene sampled texture resource {} has no GPU image",
+                                resource.0
+                            )
+                        })?;
+                    (
+                        scene_texture::scene_texture_image_view_info(texture),
+                        scene_texture::scene_texture_sampler_info(texture),
+                    )
+                }
                 SceneSampledImageSource::EffectTarget { physical_slot } => {
                     let resource = effect_targets
                         .iter()
@@ -1168,7 +1378,10 @@ fn write_scene_sampled_descriptors(
                                 "scene sampled effect target physical slot {physical_slot} has no image"
                             )
                         })?;
-                    effect_target::effect_target_sampled_image_view_info(resource)
+                    (
+                        effect_target::effect_target_sampled_image_view_info(resource),
+                        fallback_sampler_info,
+                    )
                 }
             };
             native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
@@ -1195,6 +1408,7 @@ fn record_scene_present_command_buffer(
     clear_color: NativeVulkanClearColor,
     scene: &SceneGpuResources,
     reference_phase: usize,
+    frame_capture: Option<&SceneFrameCapture>,
 ) -> Result<(), String> {
     unsafe {
         device
@@ -1206,99 +1420,28 @@ fn record_scene_present_command_buffer(
         device
             .begin_command_buffer(command_buffer, &begin_info)
             .map_err(|err| format!("vkBeginCommandBuffer(vulkanalia scene present): {err:?}"))?;
-
-        let mut record_effect_draws = |draw_start, draw_count| {
-            record_scene_mesh_draw_ranges(
-                device,
-                command_buffer,
-                scene,
-                &[SceneGpuDrawRange {
-                    start: draw_start,
-                    count: draw_count,
-                }],
-            )
-        };
-        effect_target::record_scene_effect_target_passes(
+    }
+    graph_execution::record_scene_graphs_to_swapchain(
+        device,
+        command_buffer,
+        swapchain_image,
+        swapchain_view,
+        old_layout,
+        extent,
+        clear_color,
+        scene,
+        reference_phase,
+    )?;
+    if let Some(capture) = frame_capture {
+        capture.record_swapchain_copy(device, command_buffer, swapchain_image);
+    } else {
+        graph_execution::transition_swapchain_to_present(
             device,
             command_buffer,
-            &scene.effect_target_commands,
-            &scene.effect_target_allocations,
-            &scene
-                .sampled_binding_cycle
-                .get(reference_phase)
-                .ok_or_else(|| {
-                    format!("scene sampled binding phase {reference_phase} is missing")
-                })?
-                .initial_reference_physical_slots,
-            &scene.effect_targets,
-            &mut record_effect_draws,
-        )?;
-
-        let to_attachment = vk::ImageMemoryBarrier2::builder()
-            .src_stage_mask(match old_layout {
-                vk::ImageLayout::UNDEFINED => vk::PipelineStageFlags2::TOP_OF_PIPE,
-                _ => vk::PipelineStageFlags2::ALL_COMMANDS,
-            })
-            .src_access_mask(vk::AccessFlags2::empty())
-            .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .dst_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .old_layout(old_layout)
-            .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(swapchain_image)
-            .subresource_range(color_subresource_range())
-            .build();
-        let to_attachment_barriers = [to_attachment];
-        let to_attachment_dependency = vk::DependencyInfo::builder()
-            .image_memory_barriers(&to_attachment_barriers)
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &to_attachment_dependency);
-
-        let clear_value = vk::ClearValue {
-            color: vk::ClearColorValue {
-                float32: [clear_color.r, clear_color.g, clear_color.b, clear_color.a],
-            },
-        };
-        let color_attachment = vk::RenderingAttachmentInfo::builder()
-            .image_view(swapchain_view)
-            .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .load_op(vk::AttachmentLoadOp::CLEAR)
-            .store_op(vk::AttachmentStoreOp::STORE)
-            .clear_value(clear_value)
-            .build();
-        let color_attachments = [color_attachment];
-        let render_area = vk::Rect2D::builder()
-            .offset(vk::Offset2D { x: 0, y: 0 })
-            .extent(extent)
-            .build();
-        let rendering_info = vk::RenderingInfo::builder()
-            .render_area(render_area)
-            .layer_count(1)
-            .color_attachments(&color_attachments)
-            .build();
-        device.cmd_begin_rendering(command_buffer, &rendering_info);
-        record_scene_draw_extent(device, command_buffer, extent);
-        record_scene_mesh_draw_ranges(device, command_buffer, scene, &scene.scene_color_draw_ranges)?;
-        device.cmd_end_rendering(command_buffer);
-
-        let to_present = vk::ImageMemoryBarrier2::builder()
-            .src_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
-            .src_access_mask(vk::AccessFlags2::COLOR_ATTACHMENT_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::BOTTOM_OF_PIPE)
-            .dst_access_mask(vk::AccessFlags2::empty())
-            .old_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
-            .new_layout(vk::ImageLayout::PRESENT_SRC_KHR)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(swapchain_image)
-            .subresource_range(color_subresource_range())
-            .build();
-        let to_present_barriers = [to_present];
-        let to_present_dependency = vk::DependencyInfo::builder()
-            .image_memory_barriers(&to_present_barriers)
-            .build();
-        device.cmd_pipeline_barrier2(command_buffer, &to_present_dependency);
+            swapchain_image,
+        );
+    }
+    unsafe {
         device
             .end_command_buffer(command_buffer)
             .map_err(|err| format!("vkEndCommandBuffer(vulkanalia scene present): {err:?}"))?;
@@ -1458,11 +1601,16 @@ fn scene_descriptor_plan_inputs(
 
 fn scene_draw_skinning_range(draw: &SceneRenderingDeviceMeshDraw) -> (u64, u64) {
     if draw.skinning_palette_count == 0 {
-        return (0, SCENE_PUPPET_BONE_MATRIX_BYTES);
+        return (
+            0,
+            NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
+        );
     }
     (
-        draw.skinning_palette_start.saturating_add(1) as u64 * SCENE_PUPPET_BONE_MATRIX_BYTES,
-        draw.skinning_palette_count as u64 * SCENE_PUPPET_BONE_MATRIX_BYTES,
+        draw.skinning_palette_start.saturating_add(1) as u64
+            * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
+        draw.skinning_palette_count as u64
+            * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64,
     )
 }
 
@@ -1480,6 +1628,12 @@ fn pack_scene_vertices(storage: &SceneStorage, include_fullscreen_utility: bool)
         ] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        for index in vertex.blend_indices {
+            payload.extend_from_slice(&index.to_le_bytes());
+        }
+        for weight in vertex.blend_weights {
+            payload.extend_from_slice(&weight.to_le_bytes());
+        }
     }
     if include_fullscreen_utility {
         append_fullscreen_triangle_vertices(&mut payload);
@@ -1496,51 +1650,6 @@ fn pack_scene_indices(storage: &SceneStorage, include_fullscreen_utility: bool) 
         append_fullscreen_triangle_indices(&mut payload);
     }
     payload
-}
-
-fn pack_scene_transforms(draws: &[SceneRenderingDeviceMeshDraw]) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(draws.len() * SCENE_DRAW_TRANSFORM_BYTES as usize);
-    for draw in draws {
-        for row in draw.clip_transform {
-            for value in row {
-                payload.extend_from_slice(&value.to_le_bytes());
-            }
-        }
-    }
-    payload
-}
-
-fn pack_scene_skinning_matrices(
-    graph: &crate::engine::scene::SceneRenderingDeviceGraphPlan,
-) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(
-        graph
-            .puppet_bone_matrices
-            .len()
-            .saturating_add(1)
-            * SCENE_PUPPET_BONE_MATRIX_BYTES as usize,
-    );
-    push_scene_skinning_matrix(
-        &mut payload,
-        [
-            [1.0, 0.0, 0.0, 0.0],
-            [0.0, 1.0, 0.0, 0.0],
-            [0.0, 0.0, 1.0, 0.0],
-            [0.0, 0.0, 0.0, 1.0],
-        ],
-    );
-    for matrix in &graph.puppet_bone_matrices {
-        push_scene_skinning_matrix(&mut payload, matrix.matrix);
-    }
-    payload
-}
-
-fn push_scene_skinning_matrix(payload: &mut Vec<u8>, matrix: [[f32; 4]; 4]) {
-    for row in matrix {
-        for value in row {
-            payload.extend_from_slice(&value.to_le_bytes());
-        }
-    }
 }
 
 fn create_white_texture_upload(
@@ -1596,6 +1705,7 @@ fn destroy_scene_gpu_resources(device: &Device, resources: SceneGpuResources) {
         device,
         resources.descriptor_heap,
     );
+    scene_texture::destroy_scene_texture_images(device, resources.scene_textures);
     effect_target::destroy_scene_effect_target_images(device, resources.effect_targets);
     if let Some(upload) = resources.white_upload {
         destroy_recorded_image_upload(device, upload);
@@ -1615,8 +1725,19 @@ fn destroy_recorded_image_upload(
     device: &Device,
     upload: NativeVulkanVulkanaliaRecordedImageUpload,
 ) {
-    native_vulkan_vulkanalia_destroy_buffer(device, upload.staging);
+    if let Some(staging) = upload.staging {
+        native_vulkan_vulkanalia_destroy_buffer(device, staging);
+    }
     native_vulkan_vulkanalia_destroy_image(device, upload.image);
+}
+
+fn release_scene_upload_staging(device: &Device, resources: &mut SceneGpuResources) {
+    if let Some(upload) = &mut resources.white_upload
+        && let Some(staging) = upload.staging.take()
+    {
+        native_vulkan_vulkanalia_destroy_buffer(device, staging);
+    }
+    scene_texture::release_scene_texture_staging(device, &mut resources.scene_textures);
 }
 
 fn color_subresource_range() -> vk::ImageSubresourceRange {
@@ -1642,39 +1763,9 @@ fn identity_component_mapping() -> vk::ComponentMapping {
 mod tests {
     use super::*;
     use crate::engine::scene::{
-        INVALID_MATERIAL_ID, SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceGraphPlan,
-        SceneRenderingDeviceDrawPrimitive, SceneRenderingDevicePuppetBoneMatrix,
+        INVALID_MATERIAL_ID, SceneMaterialHandle, SceneObjectHandle,
+        SceneRenderingDeviceDrawPrimitive,
     };
-
-    #[test]
-    fn transform_upload_uses_graph_clip_transform() {
-        let draw = SceneRenderingDeviceMeshDraw {
-            primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
-            mesh_index: 0,
-            resolved_object_index: 7,
-            clip_transform: [
-                [1.0, 2.0, 3.0, 4.0],
-                [5.0, 6.0, 7.0, 8.0],
-                [9.0, 10.0, 11.0, 12.0],
-                [13.0, 14.0, 15.0, 16.0],
-            ],
-            skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
-            skinning_palette_count: 0,
-            object: SceneObjectHandle(0),
-            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
-            vertex_start: 0,
-            vertex_count: 4,
-            index_start: 0,
-            index_count: 6,
-        };
-
-        let payload = pack_scene_transforms(&[draw]);
-
-        assert_eq!(payload.len(), SCENE_DRAW_TRANSFORM_BYTES as usize);
-        assert_eq!(f32::from_le_bytes(payload[0..4].try_into().unwrap()), 1.0);
-        assert_eq!(f32::from_le_bytes(payload[12..16].try_into().unwrap()), 4.0);
-        assert_eq!(f32::from_le_bytes(payload[60..64].try_into().unwrap()), 16.0);
-    }
 
     #[test]
     fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
@@ -1710,75 +1801,12 @@ mod tests {
         );
         assert_eq!(
             commands[0].skinning_byte_offset,
-            3 * SCENE_PUPPET_BONE_MATRIX_BYTES
+            3 * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64
         );
         assert_eq!(
             commands[0].skinning_byte_count,
-            3 * SCENE_PUPPET_BONE_MATRIX_BYTES
+            3 * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES as u64
         );
         assert_eq!(commands[0].pipeline_index, 2);
-    }
-
-    #[test]
-    fn skinning_payload_prefixes_identity_fallback_matrix() {
-        let graph = SceneRenderingDeviceGraphPlan {
-            pass_nodes: Vec::new(),
-            target_allocations: Vec::new(),
-            sampled_bindings: Vec::new(),
-            mesh_draws: Vec::new(),
-            puppet_bone_palettes: Vec::new(),
-            puppet_bone_matrices: vec![SceneRenderingDevicePuppetBoneMatrix {
-                puppet_index: 0,
-                bone_index: 41,
-                parent_index: -1,
-                matrix: [
-                    [1.0, 2.0, 3.0, 4.0],
-                    [5.0, 6.0, 7.0, 8.0],
-                    [9.0, 10.0, 11.0, 12.0],
-                    [13.0, 14.0, 15.0, 16.0],
-                ],
-            }],
-            resolved_object_count: 0,
-            resolved_visible_object_count: 0,
-            resolved_attachment_link_count: 0,
-            resolved_visible_effect_instance_count: 0,
-            resolved_visible_effect_pass_count: 0,
-            resolved_visible_effect_fbo_count: 0,
-            descriptor_heap_required: true,
-            descriptor_heap_resource_count: 0,
-            descriptor_heap_sampled_image_count: 0,
-            descriptor_heap_uniform_buffer_count: 0,
-            descriptor_heap_storage_buffer_count: 1,
-            descriptor_heap_sampler_count: 0,
-            graph_physical_target_count: 0,
-            graph_aliased_target_count: 0,
-            fifo_latest_ready_present_required: true,
-        };
-
-        let payload = pack_scene_skinning_matrices(&graph);
-
-        assert_eq!(
-            payload.len(),
-            2 * SCENE_PUPPET_BONE_MATRIX_BYTES as usize
-        );
-        assert_eq!(f32_from_payload(&payload, 0), 1.0);
-        assert_eq!(f32_from_payload(&payload, 20), 1.0);
-        assert_eq!(f32_from_payload(&payload, 40), 1.0);
-        assert_eq!(f32_from_payload(&payload, 60), 1.0);
-        assert_eq!(
-            f32_from_payload(&payload, SCENE_PUPPET_BONE_MATRIX_BYTES as usize),
-            1.0
-        );
-        assert_eq!(
-            f32_from_payload(
-                &payload,
-                SCENE_PUPPET_BONE_MATRIX_BYTES as usize + 60
-            ),
-            16.0
-        );
-    }
-
-    fn f32_from_payload(payload: &[u8], offset: usize) -> f32 {
-        f32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
     }
 }

@@ -16,17 +16,24 @@ use serde::Serialize;
 use crate::engine::scene::SceneStorage;
 use crate::renderer::native_vulkan::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
+    NativeVulkanSceneFrameCaptureSnapshot,
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,
 };
 
 use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NativeVulkanSceneRunOptions {
+    pub capture_frame: Option<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneRuntimeSnapshot {
     pub binding: &'static str,
     pub route: &'static str,
     pub source: PathBuf,
+    pub frame_capture: Option<NativeVulkanSceneFrameCaptureSnapshot>,
     pub backend_plan: NativeVulkanSceneBackendPlan,
     pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
     pub frames_presented: u64,
@@ -49,6 +56,25 @@ pub fn run_scene(
     duration: Duration,
     source: PathBuf,
 ) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
+    run_scene_with_options(
+        options,
+        duration,
+        source,
+        NativeVulkanSceneRunOptions::default(),
+    )
+}
+
+pub fn run_scene_with_options(
+    options: NativeVulkanOptions,
+    duration: Duration,
+    source: PathBuf,
+    scene_options: NativeVulkanSceneRunOptions,
+) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
+    if scene_options.capture_frame.is_some() && duration.is_zero() {
+        return Err(NativeVulkanError::Scene(
+            "scene frame capture requires a non-zero runtime duration".to_owned(),
+        ));
+    }
     let file = std::fs::File::open(&source).map_err(|err| {
         NativeVulkanError::Scene(format!(
             "open scene engine binary {}: {err}",
@@ -72,8 +98,10 @@ pub fn run_scene(
             target_max_fps: options.target_max_fps,
             clear_color: scene_clear_color(&storage),
             storage: storage.clone(),
+            capture_frame: scene_options.capture_frame,
         })
         .map_err(NativeVulkanError::Scene)?;
+    let frame_capture = present.frame_capture.clone();
     let mesh_draw_recording_ready = backend_plan.render_graph_executor.draw_count > 0
         && backend_plan.pipeline_cache.shader_catalog_hit_count
             == backend_plan.pipeline_cache.pipeline_count
@@ -86,6 +114,7 @@ pub fn run_scene(
         binding: "vulkanalia",
         route: "scene-engine-fifo-latest-ready-present-runtime",
         source,
+        frame_capture,
         frames_presented: present.frames_presented,
         average_present_fps: present.average_present_fps,
         present_delta_min_micros: present.present_delta_min_micros,
@@ -210,6 +239,7 @@ mod tests {
                 pass_nodes: Vec::new(),
                 target_allocations: Vec::new(),
                 sampled_bindings: Vec::new(),
+                material_sampled_bindings: Vec::new(),
                 mesh_draws: Vec::new(),
                 puppet_bone_palettes: Vec::new(),
                 puppet_bone_matrices: Vec::new(),

@@ -26,7 +26,7 @@ use super::resource_storage::{
     NativeVulkanSceneResourceStoragePlan, native_vulkan_scene_resource_storage_plan,
 };
 
-const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 20;
+const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 52;
 const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -234,6 +234,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -242,6 +244,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [1.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -250,6 +254,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [1.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -258,6 +264,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
             ],
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
@@ -287,7 +295,7 @@ mod tests {
         assert_eq!(plan.mesh_upload.mesh_count, 1);
         assert_eq!(plan.mesh_upload.vertex_count, 4);
         assert_eq!(plan.mesh_upload.index_count, 6);
-        assert_eq!(plan.mesh_upload.vertex_buffer_bytes, 80);
+        assert_eq!(plan.mesh_upload.vertex_buffer_bytes, 208);
         assert_eq!(plan.mesh_upload.index_buffer_bytes, 24);
         assert!(plan.mesh_upload.device_address_required);
     }
@@ -453,6 +461,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 };
                 4
             ],
@@ -476,6 +486,7 @@ mod tests {
                 binding_start: 0,
                 binding_count: 0,
                 pipeline_blend: ScenePipelineBlend::Normal,
+                scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,

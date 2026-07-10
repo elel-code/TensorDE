@@ -14,7 +14,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 1;
+pub const SCENE_BINARY_VERSION: u32 = 6;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
@@ -32,6 +32,8 @@ pub const CHUNK_SCENE_OBJECT: u32 = u32::from_le_bytes(*b"OBJT");
 pub const CHUNK_RESOURCE: u32 = u32::from_le_bytes(*b"RSRC");
 pub const CHUNK_RESOURCE_PAYLOAD: u32 = u32::from_le_bytes(*b"PAYL");
 pub const CHUNK_TEXTURE: u32 = u32::from_le_bytes(*b"TEXR");
+pub const CHUNK_TEXTURE_MIP: u32 = u32::from_le_bytes(*b"TXMP");
+pub const CHUNK_TEXTURE_PAYLOAD: u32 = u32::from_le_bytes(*b"TXPD");
 pub const CHUNK_MATERIAL: u32 = u32::from_le_bytes(*b"MTRL");
 pub const CHUNK_EFFECT: u32 = u32::from_le_bytes(*b"EFFT");
 pub const CHUNK_TIMELINE: u32 = u32::from_le_bytes(*b"TMLN");
@@ -51,6 +53,8 @@ pub const REQUIRED_SCENE_CHUNKS: &[u32] = &[
     CHUNK_RESOURCE,
     CHUNK_RESOURCE_PAYLOAD,
     CHUNK_TEXTURE,
+    CHUNK_TEXTURE_MIP,
+    CHUNK_TEXTURE_PAYLOAD,
     CHUNK_MATERIAL,
     CHUNK_EFFECT,
     CHUNK_TIMELINE,
@@ -212,6 +216,51 @@ pub enum ScenePipelineBlend {
     Additive,
     Disabled,
     AlphaToCoverage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneCompositeBlend {
+    Alpha,
+    Normal,
+    Additive,
+    Multiply,
+    Screen,
+    Max,
+    Modulate,
+    HslColor,
+    AlphaToCoverage,
+}
+
+impl SceneCompositeBlend {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Alpha => 0,
+            Self::Normal => 1,
+            Self::Additive => 2,
+            Self::Multiply => 3,
+            Self::Screen => 4,
+            Self::Max => 5,
+            Self::Modulate => 6,
+            Self::HslColor => 7,
+            Self::AlphaToCoverage => 8,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Alpha),
+            1 => Some(Self::Normal),
+            2 => Some(Self::Additive),
+            3 => Some(Self::Multiply),
+            4 => Some(Self::Screen),
+            5 => Some(Self::Max),
+            6 => Some(Self::Modulate),
+            7 => Some(Self::HslColor),
+            8 => Some(Self::AlphaToCoverage),
+            _ => None,
+        }
+    }
 }
 
 impl ScenePipelineBlend {
@@ -462,16 +511,73 @@ pub struct SceneResourceRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SceneTextureRecord {
     pub resource: SceneResourceId,
-    pub format: u32,
+    pub format: SceneTextureFormat,
+    pub source_runtime_format: u32,
+    pub payload_format: u32,
+    pub sampler_flags: u32,
     pub width: u32,
     pub height: u32,
     pub storage_width: u32,
     pub storage_height: u32,
+    pub mip_start: u32,
     pub mip_count: u32,
     pub texv_tag: SceneStringId,
     pub texb_tag: SceneStringId,
     pub payload_offset: u64,
     pub payload_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneTextureMipRecord {
+    pub width: u32,
+    pub height: u32,
+    pub payload_offset: u64,
+    pub payload_len: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneTextureFormat {
+    Rgba8Unorm,
+    Rg8Unorm,
+    R8Unorm,
+    Bc1RgbaUnormBlock,
+    Bc2UnormBlock,
+    Bc3UnormBlock,
+    Bc4UnormBlock,
+    Bc5UnormBlock,
+    Bc7UnormBlock,
+}
+
+impl SceneTextureFormat {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Rgba8Unorm => 0,
+            Self::Rg8Unorm => 1,
+            Self::R8Unorm => 2,
+            Self::Bc1RgbaUnormBlock => 3,
+            Self::Bc2UnormBlock => 4,
+            Self::Bc3UnormBlock => 5,
+            Self::Bc4UnormBlock => 6,
+            Self::Bc5UnormBlock => 7,
+            Self::Bc7UnormBlock => 8,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(Self::Rgba8Unorm),
+            1 => Some(Self::Rg8Unorm),
+            2 => Some(Self::R8Unorm),
+            3 => Some(Self::Bc1RgbaUnormBlock),
+            4 => Some(Self::Bc2UnormBlock),
+            5 => Some(Self::Bc3UnormBlock),
+            6 => Some(Self::Bc4UnormBlock),
+            7 => Some(Self::Bc5UnormBlock),
+            8 => Some(Self::Bc7UnormBlock),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -503,13 +609,17 @@ pub struct SceneObjectEffectRecord {
     pub visible: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneObjectAnimationLayerRecord {
     pub object: SceneObjectHandle,
     pub animation_id: u32,
     pub layer_index: u32,
     pub additive: bool,
     pub autosort: bool,
+    pub visible: bool,
+    pub playback_rate: f32,
+    pub blend_weight: f32,
+    pub initial_progress: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -533,6 +643,9 @@ pub struct ScenePuppetAnimationTrackRecord {
     pub track_flags: u32,
     pub sample_start: u32,
     pub sample_count: u32,
+    pub opacity_flags: u32,
+    pub opacity_sample_start: u32,
+    pub opacity_sample_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -598,6 +711,8 @@ pub struct SceneMeshRecord {
 pub struct SceneMeshVertexRecord {
     pub position: SceneVec3,
     pub uv: [f32; 2],
+    pub blend_indices: [u32; 4],
+    pub blend_weights: [f32; 4],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -616,10 +731,11 @@ pub struct ScenePuppetRecord {
 pub struct ScenePuppetBoneRecord {
     pub puppet: u32,
     pub bone_index: u32,
-    pub flags: u32,
+    pub name: SceneStringId,
+    pub simulation_type: i32,
     pub parent_index: i32,
-    pub local_matrix: [f32; 16],
-    pub info: SceneStringId,
+    pub local_bind_matrix: [f32; 16],
+    pub simulation_json: SceneStringId,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -696,6 +812,7 @@ pub struct SceneRenderPassRecord {
     pub binding_start: u32,
     pub binding_count: u32,
     pub pipeline_blend: ScenePipelineBlend,
+    pub scene_blend: SceneCompositeBlend,
     pub depth_test: SceneDepthTest,
     pub depth_write: bool,
     pub cull_mode: SceneCullMode,

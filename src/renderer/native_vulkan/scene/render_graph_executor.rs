@@ -209,6 +209,7 @@ mod tests {
             }],
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                 mesh_index: 0,
@@ -334,6 +335,7 @@ mod tests {
             }],
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
@@ -425,6 +427,7 @@ mod tests {
             ],
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

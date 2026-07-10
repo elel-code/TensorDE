@@ -11,6 +11,13 @@
 //! - `reverse-engineered/docs/exe/scene-and-object.md`
 //! - `reverse-engineered/docs/exe/blend-and-render.md`
 
+mod animation_layer;
+mod image_plane;
+mod material_instance;
+mod puppet_material;
+mod shader_contract;
+mod texture_resolver;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fs;
@@ -28,7 +35,16 @@ use crate::engine::scene::abi::{
 use super::ir::*;
 use super::mdl::{MdlMeshEntry, parse_mdl_model};
 use super::pkg::{ScenePackage, ScenePackageError};
-use super::tex::{TexParseError, parse_tex_metadata};
+use super::tex::{TexParseError, block_compression::transcode_texture_upload, decode_tex_upload};
+use animation_layer::animation_layer_initial_progress;
+use image_plane::image_plane_extent;
+use material_instance::{
+    effect_shader_variant_key, instance_texture_paths, material_pass_constant_names,
+    material_texture_bindings, merged_material_constants, push_instance_combo_overrides,
+    push_instance_texture_overrides,
+};
+use shader_contract::{declared_texture_slot_mask, shader_uniform_buffer_count};
+use texture_resolver::texture_candidates;
 
 pub fn ingest_wallpaper_engine_project(
     project_root: impl AsRef<Path>,
@@ -255,8 +271,10 @@ struct WeIrBuilder {
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
+    puppet_animation_opacity_samples: Vec<f32>,
     materials: Vec<WeIrMaterial>,
     material_by_path: BTreeMap<String, u32>,
+    puppet_material_by_base: BTreeMap<u32, u32>,
     material_passes: Vec<WeIrMaterialPass>,
     material_textures: Vec<WeIrMaterialTexture>,
     material_constants: Vec<WeIrMaterialConstant>,
@@ -300,8 +318,10 @@ impl WeIrBuilder {
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
+            puppet_animation_opacity_samples: Vec::new(),
             materials: Vec::new(),
             material_by_path: BTreeMap::new(),
+            puppet_material_by_base: BTreeMap::new(),
             material_passes: Vec::new(),
             material_textures: Vec::new(),
             material_constants: Vec::new(),
@@ -338,6 +358,7 @@ impl WeIrBuilder {
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
+            puppet_animation_opacity_samples: self.puppet_animation_opacity_samples,
             materials: self.materials,
             material_passes: self.material_passes,
             material_textures: self.material_textures,
@@ -436,54 +457,13 @@ impl WeIrBuilder {
             resource = self.add_optional_resource(&image_path, image_kind)?;
             if image_kind == SceneResourceKind::Mdl {
                 kind = SceneAbiObjectKind::Puppet;
-                if let Some(resource_handle) = resource {
-                    let payload = self.resources[resource_handle as usize].payload.clone();
-                    match parse_mdl_model(&payload) {
-                        Ok(model) => {
-                            let material_handles =
-                                self.add_mdl_materials(handle, &image_path, &model.material_paths)?;
-                            material = material_handles.first().copied().flatten();
-                            let (mesh_start, mesh_count) = self.add_mdl_meshes(
-                                handle,
-                                &image_path,
-                                &model.entries,
-                                &material_handles,
-                            );
-                            self.add_mdl_puppet(
-                                handle,
-                                resource_handle,
-                                mesh_start,
-                                mesh_count,
-                                &model.bones,
-                                &model.attachments,
-                                &model.animations,
-                            );
-                        }
-                        Err(err) => {
-                            self.unsupported.push(WeIrUnsupported {
-                                object: Some(handle),
-                                pass_index: None,
-                                feature: format!("mdl-parse-failed:{image_path}:{err}"),
-                                expected_subsystem: "convert/we_ingest MDLV0023 mesh parser"
-                                    .to_owned(),
-                                containment: "object-kept-without-mdl-mesh".to_owned(),
-                            });
-                        }
-                    }
-                } else {
-                    self.unsupported.push(WeIrUnsupported {
-                        object: Some(handle),
-                        pass_index: None,
-                        feature: format!("missing-mdl-resource:{image_path}"),
-                        expected_subsystem: "convert/we_ingest asset source".to_owned(),
-                        containment: "object-kept-without-resource".to_owned(),
-                    });
-                }
+                material = self.add_mdl_model(handle, &image_path, resource)?;
             } else if let Some(resource_handle) = resource {
                 let payload = self.resources[resource_handle as usize].payload.clone();
                 match parse_json_bytes(&image_path, &payload) {
                     Ok(model_json) => {
-                        kind = if model_json.get("puppet").is_some() {
+                        let puppet_path = bound_string(model_json.get("puppet"));
+                        kind = if puppet_path.is_some() {
                             SceneAbiObjectKind::Puppet
                         } else {
                             SceneAbiObjectKind::Image
@@ -493,10 +473,14 @@ impl WeIrBuilder {
                         {
                             material = Some(self.add_material(&material_path)?);
                         }
-                        if kind == SceneAbiObjectKind::Image {
-                            let width = value_f32(model_json.get("width")).unwrap_or(0.0);
-                            let height = value_f32(model_json.get("height")).unwrap_or(0.0);
-                            if width > 0.0 && height > 0.0 {
+                        if let Some(puppet_path) = puppet_path {
+                            let mdl_resource =
+                                self.add_optional_resource(&puppet_path, SceneResourceKind::Mdl)?;
+                            let mdl_material =
+                                self.add_mdl_model(handle, &puppet_path, mdl_resource)?;
+                            material = mdl_material.or(material);
+                        } else {
+                            if let Some((width, height)) = image_plane_extent(&model_json, value) {
                                 self.add_image_plane_mesh(handle, material, width, height);
                             } else {
                                 self.unsupported.push(WeIrUnsupported {
@@ -556,14 +540,16 @@ impl WeIrBuilder {
         }
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
-        let render_graph = material.map(|material_handle| {
-            self.add_render_graph_for_object(
+        let render_graph = if let Some(material_handle) = material {
+            Some(self.add_render_graph_for_object(
                 handle,
                 material_handle,
                 &effect_instances,
                 color_blend_mode,
-            )
-        });
+            )?)
+        } else {
+            None
+        };
         self.add_object_animation_layers(handle, value);
 
         self.objects.push(WeIrObject {
@@ -614,8 +600,59 @@ impl WeIrBuilder {
                 layer_index: value_u32(layer.get("index")).unwrap_or(local_index as u32),
                 additive: bound_bool(layer.get("additive")).unwrap_or(false),
                 autosort: bound_bool(layer.get("autosort")).unwrap_or(false),
+                visible: bound_bool(layer.get("visible")).unwrap_or(true),
+                playback_rate: value_f32(layer.get("rate")).unwrap_or(1.0),
+                blend_weight: value_f32(layer.get("blend")).unwrap_or(1.0),
+                initial_progress: animation_layer_initial_progress(layer),
             });
         }
+    }
+
+    fn add_mdl_model(
+        &mut self,
+        object: u32,
+        image_path: &str,
+        resource: Option<u32>,
+    ) -> Result<Option<u32>, WeIngestError> {
+        let Some(resource) = resource else {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(object),
+                pass_index: None,
+                feature: format!("missing-mdl-resource:{image_path}"),
+                expected_subsystem: "convert/we_ingest asset source".to_owned(),
+                containment: "object-kept-without-resource".to_owned(),
+            });
+            return Ok(None);
+        };
+        let payload = self.resources[resource as usize].payload.clone();
+        let model = match parse_mdl_model(&payload) {
+            Ok(model) => model,
+            Err(err) => {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: None,
+                    feature: format!("mdl-parse-failed:{image_path}:{err}"),
+                    expected_subsystem: "convert/we_ingest MDLV0023 mesh parser".to_owned(),
+                    containment: "object-kept-without-mdl-mesh".to_owned(),
+                });
+                return Ok(None);
+            }
+        };
+        let materials = self.add_mdl_materials(object, image_path, &model.material_paths)?;
+        let materials = self.specialize_puppet_materials(object, image_path, materials, &model);
+        let material = materials.first().copied().flatten();
+        let (mesh_start, mesh_count) =
+            self.add_mdl_meshes(object, image_path, &model.entries, &materials);
+        self.add_mdl_puppet(
+            object,
+            resource,
+            mesh_start,
+            mesh_count,
+            &model.bones,
+            &model.attachments,
+            &model.animations,
+        );
+        Ok(material)
     }
 
     fn add_mdl_materials(
@@ -696,6 +733,8 @@ impl WeIrBuilder {
                 .extend(entry.vertices.iter().map(|vertex| WeIrMeshVertex {
                     position: vertex.position,
                     uv: vertex.uv,
+                    blend_indices: vertex.blend_indices,
+                    blend_weights: vertex.blend_weights,
                 }));
             self.mesh_indices.extend(entry.indices.iter().copied());
             let material = material_handles
@@ -736,10 +775,11 @@ impl WeIrBuilder {
             self.puppet_bones.push(WeIrPuppetBone {
                 puppet,
                 bone_index: bone.bone_index,
-                flags: u32::from(bone.flags),
+                name: bone.name.clone(),
+                simulation_type: bone.simulation_type,
                 parent_index: bone.parent_index,
-                local_matrix: bone.local_matrix,
-                info: bone.info.clone(),
+                local_bind_matrix: bone.local_bind_matrix,
+                simulation_json: bone.simulation_json.clone(),
             });
         }
         for attachment in attachments {
@@ -781,6 +821,7 @@ impl WeIrBuilder {
         let track_start = self.puppet_animation_tracks.len() as u32;
         for track in &animation.tracks {
             let sample_start = self.puppet_animation_transform_samples.len() as u32;
+            let opacity_sample_start = self.puppet_animation_opacity_samples.len() as u32;
             self.puppet_animation_transform_samples
                 .extend(
                     track
@@ -792,12 +833,18 @@ impl WeIrBuilder {
                             scale: sample.scale,
                         }),
                 );
+            self.puppet_animation_opacity_samples
+                .extend(track.opacity_samples.iter().copied());
             self.puppet_animation_tracks.push(WeIrPuppetAnimationTrack {
                 clip,
                 bone_index: track.bone_index,
                 track_flags: track.track_flags,
                 sample_start,
                 sample_count: self.puppet_animation_transform_samples.len() as u32 - sample_start,
+                opacity_flags: track.opacity_flags,
+                opacity_sample_start,
+                opacity_sample_count: self.puppet_animation_opacity_samples.len() as u32
+                    - opacity_sample_start,
             });
         }
         self.puppet_animation_clips.push(WeIrPuppetAnimationClip {
@@ -831,7 +878,7 @@ impl WeIrBuilder {
             .into_iter()
             .flatten()
         {
-            self.add_material_pass(handle, pass)?;
+            self.add_material_pass(handle, &path, pass)?;
         }
         let pass_count = self.material_passes.len() as u32 - pass_start;
         if pass_count == 0 {
@@ -871,6 +918,8 @@ impl WeIrBuilder {
                     z: 0.0,
                 },
                 uv: [0.0, 1.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             WeIrMeshVertex {
                 position: SceneVec3 {
@@ -879,6 +928,8 @@ impl WeIrBuilder {
                     z: 0.0,
                 },
                 uv: [1.0, 1.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             WeIrMeshVertex {
                 position: SceneVec3 {
@@ -887,6 +938,8 @@ impl WeIrBuilder {
                     z: 0.0,
                 },
                 uv: [1.0, 0.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             WeIrMeshVertex {
                 position: SceneVec3 {
@@ -895,6 +948,8 @@ impl WeIrBuilder {
                     z: 0.0,
                 },
                 uv: [0.0, 0.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
         ]);
         self.mesh_indices.extend([0, 1, 2, 0, 2, 3]);
@@ -920,7 +975,12 @@ impl WeIrBuilder {
         });
     }
 
-    fn add_material_pass(&mut self, material: u32, pass: &Value) -> Result<(), WeIngestError> {
+    fn add_material_pass(
+        &mut self,
+        material: u32,
+        material_path: &str,
+        pass: &Value,
+    ) -> Result<(), WeIngestError> {
         let texture_start = self.material_textures.len() as u32;
         for (slot, texture) in pass
             .get("textures")
@@ -930,7 +990,7 @@ impl WeIrBuilder {
             .enumerate()
         {
             if let Some(path) = bound_string(Some(texture)) {
-                let resource = self.add_texture(&path)?;
+                let resource = self.add_texture(&path, Some(material_path))?;
                 self.material_textures.push(WeIrMaterialTexture {
                     slot: slot as u32,
                     resource,
@@ -982,14 +1042,14 @@ impl WeIrBuilder {
         Ok(())
     }
 
-    fn add_texture(&mut self, path: &str) -> Result<Option<u32>, WeIngestError> {
+    fn add_texture(
+        &mut self,
+        path: &str,
+        material_path: Option<&str>,
+    ) -> Result<Option<u32>, WeIngestError> {
         let original = normalize_we_path(path);
-        if let Some(resource) = self.texture_by_path.get(&original) {
-            return Ok(Some(*resource));
-        }
-        for candidate in texture_candidates(&original) {
+        for candidate in texture_candidates(&original, material_path) {
             if let Some(resource) = self.texture_by_path.get(&candidate).copied() {
-                self.texture_by_path.insert(original.clone(), resource);
                 return Ok(Some(resource));
             }
             let Some(asset) = self.source.read_optional_asset(&candidate)? else {
@@ -1002,17 +1062,32 @@ impl WeIrBuilder {
             };
             let resource = self.add_existing_resource(&candidate, kind, asset.source, asset.bytes);
             if candidate.ends_with(".tex") {
-                match parse_tex_metadata(&self.resources[resource as usize].payload) {
-                    Ok(meta) => self.textures.push(WeIrTexture {
+                match decode_tex_upload(&self.resources[resource as usize].payload)
+                    .and_then(|upload| transcode_texture_upload(&candidate, upload))
+                {
+                    Ok(upload) => self.textures.push(WeIrTexture {
                         resource,
-                        format: meta.format,
-                        width: meta.width,
-                        height: meta.height,
-                        storage_width: meta.storage_width,
-                        storage_height: meta.storage_height,
-                        mip_count: meta.mip_count,
-                        texv_tag: meta.texv_tag,
-                        texb_tag: meta.texb_tag,
+                        format: upload.format,
+                        source_runtime_format: upload.metadata.runtime_format,
+                        payload_format: upload.metadata.payload_format,
+                        sampler_flags: upload.metadata.sampler_flags,
+                        width: upload.metadata.width,
+                        height: upload.metadata.height,
+                        storage_width: upload.metadata.storage_width,
+                        storage_height: upload.metadata.storage_height,
+                        texv_tag: upload.metadata.texv_tag,
+                        texb_tag: upload.metadata.texb_tag,
+                        mips: upload
+                            .mips
+                            .into_iter()
+                            .map(|mip| WeIrTextureMip {
+                                width: mip.width,
+                                height: mip.height,
+                                payload_offset: mip.payload_offset,
+                                payload_len: mip.payload_len,
+                            })
+                            .collect(),
+                        upload_payload: upload.payload,
                     }),
                     Err(source) => {
                         self.unsupported.push(WeIrUnsupported {
@@ -1026,7 +1101,6 @@ impl WeIrBuilder {
                 }
             }
             self.texture_by_path.insert(candidate.clone(), resource);
-            self.texture_by_path.insert(original, resource);
             return Ok(Some(resource));
         }
         self.unsupported.push(WeIrUnsupported {
@@ -1183,7 +1257,7 @@ impl WeIrBuilder {
         material: u32,
         effect_instances: &[(u32, Value)],
         color_blend_mode: i32,
-    ) -> u32 {
+    ) -> Result<u32, WeIngestError> {
         let graph_index = self.render_graphs.len() as u32;
         let base_material_handle = material;
         let material = &self.materials[base_material_handle as usize];
@@ -1211,36 +1285,39 @@ impl WeIrBuilder {
                 *effect_handle,
                 instance,
                 &mut effect_passes,
-            );
+            )?;
         }
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),
-            base_shader: base_pass.and_then(|pass| {
+            base_shader: base_pass.as_ref().and_then(|pass| {
                 if pass.shader_key.is_empty() {
                     None
                 } else {
-                    Some(pass.shader_key)
+                    Some(pass.shader_key.clone())
                 }
             }),
+            base_material_blending: base_pass
+                .as_ref()
+                .map(|pass| pipeline_blend_string(pass.pipeline_blend)),
             base_texture_slots,
             base_pass_constants,
             final_scene_blend: scene_blend_from_color_blend_mode(color_blend_mode),
             effect_passes,
         });
         self.render_graphs.push(graph);
-        graph_index
+        Ok(graph_index)
     }
 
     fn push_effect_contracts_for_instance(
-        &self,
+        &mut self,
         object: u32,
         effect_handle: u32,
         instance: &Value,
         out: &mut Vec<WeEffectPassContract>,
-    ) {
-        let Some(effect) = self.effects.get(effect_handle as usize) else {
-            return;
+    ) -> Result<(), WeIngestError> {
+        let Some(effect) = self.effects.get(effect_handle as usize).cloned() else {
+            return Ok(());
         };
         let effect_file = self
             .resources
@@ -1249,15 +1326,28 @@ impl WeIrBuilder {
             .unwrap_or_default();
         for local_index in 0..effect.pass_count {
             let pass_index = effect.pass_start + local_index;
-            let Some(effect_pass) = self.effect_passes.get(pass_index as usize) else {
+            let Some(effect_pass) = self.effect_passes.get(pass_index as usize).cloned() else {
                 continue;
             };
-            let material_pass = effect_pass
+            let base_material = effect_pass
                 .material
                 .and_then(|material| self.materials.get(material as usize))
-                .and_then(|material| self.material_passes.get(material.pass_start as usize));
-            let mut pass_constants =
-                material_pass_constant_names(&self.material_constants, material_pass);
+                .cloned();
+            let material_pass = base_material
+                .as_ref()
+                .and_then(|material| self.material_passes.get(material.pass_start as usize))
+                .cloned();
+            let base_textures = material_pass
+                .as_ref()
+                .map(|pass| {
+                    self.material_textures
+                        .iter()
+                        .skip(pass.texture_start as usize)
+                        .take(pass.texture_count as usize)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
             let mut binds = BTreeMap::new();
             for binding in self
                 .effect_bindings
@@ -1267,12 +1357,16 @@ impl WeIrBuilder {
             {
                 binds.insert(binding.slot, binding.target.clone());
             }
-            if let Some(instance_pass) = instance
+            material_texture_bindings(&base_textures, &mut binds);
+            let instance_pass = instance
                 .get("passes")
                 .and_then(Value::as_array)
-                .and_then(|passes| passes.get(local_index as usize))
-            {
+                .and_then(|passes| passes.get(local_index as usize));
+            if let Some(instance_pass) = instance_pass {
                 push_instance_texture_overrides(instance_pass, &mut binds);
+            }
+            if material_pass.is_some() {
+                binds.entry(0).or_insert_with(|| "previous".to_owned());
             }
             let mut combos = BTreeMap::new();
             for combo in self
@@ -1283,27 +1377,43 @@ impl WeIrBuilder {
             {
                 combos.insert(combo.name.clone(), combo.value);
             }
-            if let Some(instance_pass) = instance
-                .get("passes")
-                .and_then(Value::as_array)
-                .and_then(|passes| passes.get(local_index as usize))
-            {
+            if let Some(instance_pass) = instance_pass {
                 push_instance_combo_overrides(instance_pass, &mut combos);
-                push_instance_constant_overrides(instance_pass, &mut pass_constants);
             }
+            let shader = material_pass.as_ref().and_then(|pass| {
+                (!pass.shader_key.is_empty())
+                    .then(|| effect_shader_variant_key(&pass.shader_key, &binds, &combos))
+            });
+            let (material_index, pass_constants) =
+                match (base_material, material_pass.clone(), shader.as_deref()) {
+                    (Some(material), Some(pass), Some(shader)) => {
+                        let material = self.add_effect_material_instance(
+                            material,
+                            pass,
+                            base_textures,
+                            instance_pass,
+                            shader,
+                        )?;
+                        let pass = self.materials.get(material as usize).and_then(|material| {
+                            self.material_passes.get(material.pass_start as usize)
+                        });
+                        (
+                            Some(material as usize),
+                            material_pass_constant_names(&self.material_constants, pass),
+                        )
+                    }
+                    _ => (
+                        effect_pass.material.map(|material| material as usize),
+                        Vec::new(),
+                    ),
+                };
             out.push(WeEffectPassContract {
                 object_index: object as usize,
-                material_index: effect_pass.material.map(|material| material as usize),
+                material_index,
                 effect_file: effect_file.clone(),
                 pass_index: local_index,
                 command: non_empty_string(&effect_pass.command),
-                shader: material_pass.and_then(|pass| {
-                    if pass.shader_key.is_empty() {
-                        None
-                    } else {
-                        Some(pass.shader_key.clone())
-                    }
-                }),
+                shader,
                 source: non_empty_string(&effect_pass.source),
                 target: if effect_pass.target.is_empty() {
                     None
@@ -1313,31 +1423,96 @@ impl WeIrBuilder {
                 binds,
                 pass_constants,
                 material_blending: material_pass
+                    .as_ref()
                     .map(|pass| pipeline_blend_string(pass.pipeline_blend)),
-                depthtest: material_pass.map(|pass| match pass.depth_test {
+                depthtest: material_pass.as_ref().map(|pass| match pass.depth_test {
                     SceneDepthTest::Enabled => "enabled".to_owned(),
                     SceneDepthTest::Disabled => "disabled".to_owned(),
                 }),
-                depthwrite: material_pass.map(|pass| {
+                depthwrite: material_pass.as_ref().map(|pass| {
                     if pass.depth_write {
                         "enabled".to_owned()
                     } else {
                         "disabled".to_owned()
                     }
                 }),
-                cullmode: material_pass.map(|pass| match pass.cull_mode {
+                cullmode: material_pass.as_ref().map(|pass| match pass.cull_mode {
                     SceneCullMode::Normal => "normal".to_owned(),
                     SceneCullMode::None => "nocull".to_owned(),
                 }),
                 combos,
             });
         }
+        Ok(())
+    }
+
+    fn add_effect_material_instance(
+        &mut self,
+        base_material: WeIrMaterial,
+        base_pass: WeIrMaterialPass,
+        base_textures: Vec<WeIrMaterialTexture>,
+        instance_pass: Option<&Value>,
+        shader_key: &str,
+    ) -> Result<u32, WeIngestError> {
+        let material_path = self
+            .resources
+            .get(base_material.resource as usize)
+            .map(|resource| resource.path.clone());
+        let mut textures = base_textures
+            .into_iter()
+            .map(|texture| (texture.slot, texture))
+            .collect::<BTreeMap<_, _>>();
+        for (slot, path) in instance_texture_paths(instance_pass) {
+            let resource = self.add_texture(&path, material_path.as_deref())?;
+            textures.insert(
+                slot,
+                WeIrMaterialTexture {
+                    slot,
+                    resource,
+                    path,
+                },
+            );
+        }
+        let base_constants = self
+            .material_constants
+            .iter()
+            .skip(base_pass.constant_start as usize)
+            .take(base_pass.constant_count as usize)
+            .cloned()
+            .collect::<Vec<_>>();
+        let constants = merged_material_constants(&base_constants, instance_pass);
+        let handle = self.materials.len() as u32;
+        let texture_start = self.material_textures.len() as u32;
+        self.material_textures.extend(textures.into_values());
+        let constant_start = self.material_constants.len() as u32;
+        self.material_constants.extend(constants);
+        let mut pass = base_pass;
+        pass.material = handle;
+        pass.shader_key = shader_key.to_owned();
+        pass.texture_start = texture_start;
+        pass.texture_count = self.material_textures.len() as u32 - texture_start;
+        pass.constant_start = constant_start;
+        pass.constant_count = self.material_constants.len() as u32 - constant_start;
+        let pass_start = self.material_passes.len() as u32;
+        self.material_passes.push(pass);
+        self.materials.push(WeIrMaterial {
+            handle,
+            resource: base_material.resource,
+            pass_start,
+            pass_count: 1,
+        });
+        Ok(handle)
     }
 
     fn build_shader_contracts(&mut self) {
+        let used_materials = self
+            .render_graphs
+            .iter()
+            .flat_map(|graph| graph.passes.iter().filter_map(|pass| pass.material_index))
+            .collect::<BTreeSet<_>>();
         let mut seen = BTreeSet::new();
         for pass in &self.material_passes {
-            if pass.shader_key.is_empty() {
+            if pass.shader_key.is_empty() || !used_materials.contains(&(pass.material as usize)) {
                 continue;
             }
             let textures = self
@@ -1392,121 +1567,6 @@ fn mdl_entry_vertex_bounds(entry: &MdlMeshEntry) -> (SceneVec3, SceneVec3) {
         max.z = max.z.max(vertex.position.z);
     }
     (min, max)
-}
-
-fn declared_texture_slot_mask(shader_key: &str, textures: &[&WeIrMaterialTexture]) -> u32 {
-    let mut mask = textures
-        .iter()
-        .filter(|texture| texture.slot < 32)
-        .fold(0u32, |mask, texture| mask | (1 << texture.slot));
-    let key = shader_key.to_ascii_lowercase();
-    if mesh_shader_uses_slot_zero(&key) {
-        mask |= 1;
-    }
-    if key.contains("clippingmaskimage4") {
-        mask |= 1 << 1;
-    }
-    if key.contains("clippingtarget") {
-        mask |= 1 << 8;
-    }
-    if let Some(slot_count) = effect_shader_slot_count(&key) {
-        for slot in 0..slot_count.min(32) {
-            mask |= 1 << slot;
-        }
-    }
-    mask
-}
-
-fn mesh_shader_uses_slot_zero(key: &str) -> bool {
-    key.contains("genericimage")
-        || key.contains("genericparticle")
-        || key.contains("clippingmaskimage")
-        || key == "minimalalpha"
-        || key.starts_with("minimalalpha__")
-        || key == "passthrough"
-        || key.starts_with("passthrough__")
-}
-
-fn effect_shader_slot_count(key: &str) -> Option<u32> {
-    let (_, slots) = key.split_once("__slots_")?;
-    let digits = slots
-        .chars()
-        .take_while(|ch| ch.is_ascii_digit())
-        .collect::<String>();
-    digits.parse().ok()
-}
-
-fn shader_uniform_buffer_count(shader_key: &str, has_constants: bool) -> u32 {
-    let key = shader_key.to_ascii_lowercase();
-    if mesh_shader_needs_draw_and_material_uniforms(&key) {
-        2
-    } else {
-        1 + u32::from(has_constants)
-    }
-}
-
-fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
-    key.contains("genericimage")
-        || key == "color"
-        || key.starts_with("color__")
-        || key == "we/color"
-        || key.starts_with("we/color__")
-        || key == "text"
-        || key.starts_with("text__")
-        || key == "we/text"
-        || key.starts_with("we/text__")
-        || key.contains("genericparticle")
-}
-
-fn push_instance_texture_overrides(pass: &Value, binds: &mut BTreeMap<u32, String>) {
-    for (slot, texture) in pass
-        .get("textures")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-    {
-        if let Some(path) = bound_string(Some(texture)) {
-            binds.insert(slot as u32, path);
-        } else if slot == 0 {
-            binds.insert(slot as u32, "previous".to_owned());
-        }
-    }
-}
-
-fn push_instance_combo_overrides(pass: &Value, combos: &mut BTreeMap<String, i64>) {
-    if let Some(instance_combos) = pass.get("combos").and_then(Value::as_object) {
-        for (name, value) in instance_combos {
-            if let Some(value) = value_i64(Some(value)) {
-                combos.insert(name.clone(), value);
-            }
-        }
-    }
-}
-
-fn material_pass_constant_names(
-    constants: &[WeIrMaterialConstant],
-    pass: Option<&WeIrMaterialPass>,
-) -> Vec<String> {
-    let Some(pass) = pass else {
-        return Vec::new();
-    };
-    constants
-        .iter()
-        .skip(pass.constant_start as usize)
-        .take(pass.constant_count as usize)
-        .map(|constant| constant.name.clone())
-        .collect()
-}
-
-fn push_instance_constant_overrides(pass: &Value, constants: &mut Vec<String>) {
-    if let Some(instance_constants) = pass.get("constantshadervalues").and_then(Value::as_object) {
-        for name in instance_constants.keys() {
-            if !constants.iter().any(|constant| constant == name) {
-                constants.push(name.clone());
-            }
-        }
-    }
 }
 
 fn non_empty_string(value: &str) -> Option<String> {
@@ -1618,17 +1678,6 @@ fn parse_color4(value: Option<&Value>, fallback: [f32; 4]) -> [f32; 4] {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned())
-}
-
-fn texture_candidates(path: &str) -> Vec<String> {
-    if Path::new(path).extension().is_some() {
-        vec![normalize_we_path(path)]
-    } else {
-        ["tex", "png", "jpg", "jpeg", "webp"]
-            .iter()
-            .map(|extension| format!("{path}.{extension}"))
-            .collect()
-    }
 }
 
 fn pipeline_blend_from_we(value: Option<&str>) -> ScenePipelineBlend {
@@ -1770,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn ingests_mdlv0023_mesh_into_ir_material_and_mesh_records() {
+    fn ingests_json_puppet_descriptor_into_mdl_ir_records() {
         let root =
             std::env::temp_dir().join(format!("gilder-we-mdl-ingest-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
@@ -1783,9 +1832,14 @@ mod tests {
         .expect("project");
         fs::write(
             root.join("scene.json"),
-            r#"{"objects":[{"id":9,"name":"puppet","image":"models/puppet.mdl"}]}"#,
+            r#"{"objects":[{"id":9,"name":"puppet","image":"models/puppet.json"}]}"#,
         )
         .expect("scene");
+        fs::write(
+            root.join("models/puppet.json"),
+            r#"{"material":"materials/puppet.json","puppet":"models/puppet.mdl"}"#,
+        )
+        .expect("model");
         fs::write(root.join("models/puppet.mdl"), test_mdlv0023()).expect("mdl");
         fs::write(
             root.join("materials/puppet.json"),
@@ -1803,16 +1857,16 @@ mod tests {
         assert_eq!(ir.meshes[0].index_count, 3);
         assert_eq!(ir.mesh_indices, [0, 1, 2]);
         assert_eq!(ir.mesh_vertices[2].position.x, 1.0);
-        assert_eq!(ir.mesh_vertices[2].uv, [1.0, 0.0]);
+        assert_eq!(ir.mesh_vertices[2].uv, [1.0, 1.0]);
         assert_eq!(ir.puppets.len(), 1);
         assert_eq!(ir.puppets[0].mesh_count, 1);
         assert_eq!(ir.puppets[0].attachment_count, 1);
-        assert_eq!(ir.puppet_attachments[0].bone_index, 41);
+        assert_eq!(ir.puppet_attachments[0].bone_index, 0);
         assert_eq!(ir.puppet_attachments[0].name, "eye");
         assert_eq!(ir.puppet_animation_clips.len(), 1);
         assert_eq!(ir.puppet_animation_clips[0].clip_id, 475);
         assert_eq!(ir.puppet_animation_tracks.len(), 1);
-        assert_eq!(ir.puppet_animation_tracks[0].bone_index, 41);
+        assert_eq!(ir.puppet_animation_tracks[0].bone_index, 0);
         assert_eq!(ir.puppet_animation_transform_samples.len(), 2);
         assert_eq!(ir.puppet_animation_transform_samples[1].translation.x, 4.0);
         assert_eq!(ir.render_graphs.len(), 1);
@@ -1847,9 +1901,9 @@ mod tests {
         bytes.extend_from_slice(b"MDLS0004");
         push_u32(&mut bytes, 0);
         push_u32(&mut bytes, 1);
-        push_u32(&mut bytes, 41);
-        bytes.push(0);
-        bytes.extend_from_slice(&(-1_i32).to_le_bytes());
+        bytes.extend_from_slice(b"eye-bone\0");
+        bytes.extend_from_slice(&0_i32.to_le_bytes());
+        push_u32(&mut bytes, u32::MAX);
         push_u32(&mut bytes, 64);
         for index in 0..16 {
             let value = if index == 0 || index == 5 || index == 10 || index == 15 {
@@ -1859,7 +1913,7 @@ mod tests {
             };
             push_f32(&mut bytes, value);
         }
-        bytes.extend_from_slice(b"eye-bone\0");
+        bytes.extend_from_slice(b"{}\0");
         bytes.extend_from_slice(b"MDLA0006");
         push_u32(&mut bytes, 0);
         push_u32(&mut bytes, 1);
@@ -1888,7 +1942,7 @@ mod tests {
         bytes.extend_from_slice(b"MDAT0001\0");
         push_u32(&mut bytes, 0);
         bytes.extend_from_slice(&1_u16.to_le_bytes());
-        bytes.extend_from_slice(&41_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
         bytes.extend_from_slice(b"eye\0");
         for index in 0..16 {
             let value = if index == 0 || index == 5 || index == 10 || index == 15 {

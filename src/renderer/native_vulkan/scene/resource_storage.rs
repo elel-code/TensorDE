@@ -15,9 +15,9 @@ use crate::engine::scene::{
     SceneStorage, SceneStringId,
 };
 
-const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 20;
+const SCENE_MESH_VERTEX_UPLOAD_STRIDE_BYTES: usize = 52;
 const SCENE_MESH_INDEX_UPLOAD_STRIDE_BYTES: usize = 4;
-const SCENE_PUPPET_BONE_MATRIX_BYTES: usize = 64;
+pub const NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES: usize = 80;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneResourceStoragePlan {
@@ -123,7 +123,10 @@ pub fn native_vulkan_scene_resource_storage_plan(
             bone_matrix_buffer_bytes: rendering_device_graph
                 .puppet_bone_matrices
                 .len()
-                .saturating_mul(SCENE_PUPPET_BONE_MATRIX_BYTES),
+                .saturating_add(usize::from(
+                    !rendering_device_graph.puppet_bone_matrices.is_empty(),
+                ))
+                .saturating_mul(NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES),
             storage_buffer_required: !rendering_device_graph.puppet_bone_matrices.is_empty(),
         },
         effect_target_storage: effect_target_storage_plan(rendering_device_graph),
@@ -206,8 +209,8 @@ mod tests {
     use super::*;
     use crate::engine::scene::{
         RenderingServer, SceneBinaryDocument, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
-        SceneRenderingDeviceTargetAllocation, SceneShaderContractRecord, SceneStorage,
-        SceneStringId,
+        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDeviceTargetAllocation,
+        SceneShaderContractRecord, SceneStorage, SceneStringId,
     };
 
     #[test]
@@ -303,11 +306,35 @@ mod tests {
         assert!(plan.effect_target_storage.dynamic_rendering_image_required);
     }
 
+    #[test]
+    fn skinning_storage_accounts_for_alpha_and_identity_fallback_entry() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument::default()).expect("storage");
+        let render_plan = RenderingServer::new(&storage).renderer_scene_render_plan();
+        let mut graph = empty_graph_plan();
+        graph.puppet_bone_matrices = vec![SceneRenderingDevicePuppetBoneMatrix {
+            puppet_index: 0,
+            bone_index: 0,
+            parent_index: -1,
+            matrix: [[0.0; 4]; 4],
+            alpha: 0.5,
+        }];
+
+        let plan = native_vulkan_scene_resource_storage_plan(&storage, render_plan, &graph);
+
+        assert_eq!(plan.skinning_buffer.bone_matrix_count, 1);
+        assert_eq!(
+            plan.skinning_buffer.bone_matrix_buffer_bytes,
+            2 * NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES
+        );
+        assert!(plan.skinning_buffer.storage_buffer_required);
+    }
+
     fn empty_graph_plan() -> SceneRenderingDeviceGraphPlan {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

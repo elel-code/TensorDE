@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     CullMode, DepthTestMode, PipelineBlendMode, RenderPassRole, RenderTargetRole,
     TextureBindingRole,
@@ -25,8 +26,10 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
 
     for resource in &ir.resources {
         let offset = resource_payload.len() as u64;
-        resource_payload.extend_from_slice(&resource.payload);
-        let len = resource.payload.len() as u64;
+        if resource.kind != SceneResourceKind::TextureTex {
+            resource_payload.extend_from_slice(&resource.payload);
+        }
+        let len = resource_payload.len() as u64 - offset;
         resource_payload_ranges.insert(resource.handle, (offset, len));
     }
 
@@ -65,29 +68,51 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let textures = ir
-        .textures
-        .iter()
-        .map(|texture| {
-            let (payload_offset, payload_len) = resource_payload_ranges
-                .get(&texture.resource)
-                .copied()
-                .unwrap_or((0, 0));
-            SceneTextureRecord {
-                resource: SceneResourceId(texture.resource),
-                format: texture.format,
-                width: texture.width,
-                height: texture.height,
-                storage_width: texture.storage_width,
-                storage_height: texture.storage_height,
-                mip_count: texture.mip_count,
-                texv_tag: strings.id(&texture.texv_tag),
-                texb_tag: strings.id(&texture.texb_tag),
-                payload_offset,
-                payload_len,
-            }
-        })
-        .collect();
+    let mut textures = Vec::with_capacity(ir.textures.len());
+    let mut texture_mips = Vec::new();
+    let mut texture_payload = Vec::new();
+    for texture in &ir.textures {
+        let mip_start = texture_mips.len() as u32;
+        let payload_offset = texture_payload.len() as u64;
+        for mip in &texture.mips {
+            let source_start = usize::try_from(mip.payload_offset)
+                .map_err(|_| WeLowerError::InvalidTextureMipRange(texture.resource))?;
+            let source_len = usize::try_from(mip.payload_len)
+                .map_err(|_| WeLowerError::InvalidTextureMipRange(texture.resource))?;
+            let source_end = source_start
+                .checked_add(source_len)
+                .ok_or(WeLowerError::InvalidTextureMipRange(texture.resource))?;
+            let source = texture
+                .upload_payload
+                .get(source_start..source_end)
+                .ok_or(WeLowerError::InvalidTextureMipRange(texture.resource))?;
+            let mip_payload_offset = texture_payload.len() as u64;
+            texture_payload.extend_from_slice(source);
+            texture_mips.push(SceneTextureMipRecord {
+                width: mip.width,
+                height: mip.height,
+                payload_offset: mip_payload_offset,
+                payload_len: source.len() as u64,
+            });
+        }
+        textures.push(SceneTextureRecord {
+            resource: SceneResourceId(texture.resource),
+            format: texture.format,
+            source_runtime_format: texture.source_runtime_format,
+            payload_format: texture.payload_format,
+            sampler_flags: texture.sampler_flags,
+            width: texture.width,
+            height: texture.height,
+            storage_width: texture.storage_width,
+            storage_height: texture.storage_height,
+            mip_start,
+            mip_count: texture.mips.len() as u32,
+            texv_tag: strings.id(&texture.texv_tag),
+            texb_tag: strings.id(&texture.texb_tag),
+            payload_offset,
+            payload_len: texture_payload.len() as u64 - payload_offset,
+        });
+    }
 
     let mut object_effects_by_object = BTreeMap::<u32, (u32, u32)>::new();
     for object in &ir.objects {
@@ -167,6 +192,10 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             layer_index: layer.layer_index,
             additive: layer.additive,
             autosort: layer.autosort,
+            visible: layer.visible,
+            playback_rate: layer.playback_rate,
+            blend_weight: layer.blend_weight,
+            initial_progress: layer.initial_progress,
         })
         .collect();
     let puppet_animation_clips = ir
@@ -194,6 +223,9 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             track_flags: track.track_flags,
             sample_start: track.sample_start,
             sample_count: track.sample_count,
+            opacity_flags: track.opacity_flags,
+            opacity_sample_start: track.opacity_sample_start,
+            opacity_sample_count: track.opacity_sample_count,
         })
         .collect();
     let puppet_animation_transform_samples = ir
@@ -205,6 +237,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             scale: sample.scale,
         })
         .collect();
+    let puppet_animation_opacity_samples = ir.puppet_animation_opacity_samples.clone();
 
     let materials = ir
         .materials
@@ -281,6 +314,8 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         .map(|vertex| SceneMeshVertexRecord {
             position: vertex.position,
             uv: vertex.uv,
+            blend_indices: vertex.blend_indices,
+            blend_weights: vertex.blend_weights,
         })
         .collect();
     let mesh_indices = ir.mesh_indices.clone();
@@ -304,10 +339,11 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         .map(|bone| ScenePuppetBoneRecord {
             puppet: bone.puppet,
             bone_index: bone.bone_index,
-            flags: bone.flags,
+            name: strings.optional_id(&bone.name),
+            simulation_type: bone.simulation_type,
             parent_index: bone.parent_index,
-            local_matrix: bone.local_matrix,
-            info: strings.optional_id(&bone.info),
+            local_bind_matrix: bone.local_bind_matrix,
+            simulation_json: strings.optional_id(&bone.simulation_json),
         })
         .collect();
     let puppet_attachments = ir
@@ -407,12 +443,15 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         resources,
         resource_payload,
         textures,
+        texture_mips,
+        texture_payload,
         objects,
         object_effects,
         object_animation_layers,
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
+        puppet_animation_opacity_samples,
         materials,
         material_passes,
         material_textures,
@@ -441,6 +480,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
 #[derive(Debug)]
 pub enum WeLowerError {
     MissingResourcePayload(u32),
+    InvalidTextureMipRange(u32),
 }
 
 impl std::fmt::Display for WeLowerError {
@@ -448,6 +488,12 @@ impl std::fmt::Display for WeLowerError {
         match self {
             Self::MissingResourcePayload(handle) => {
                 write!(f, "IR resource {handle} has no payload range")
+            }
+            Self::InvalidTextureMipRange(resource) => {
+                write!(
+                    f,
+                    "IR texture resource {resource} has an invalid mip payload range"
+                )
             }
         }
     }
@@ -506,6 +552,7 @@ fn lower_render_graphs(
                 binding_start,
                 binding_count: pass.bindings.len() as u32,
                 pipeline_blend: lower_pipeline_blend(pass.state.pipeline_blend),
+                scene_blend: lower_scene_blend(pass.state.scene_blend),
                 depth_test: lower_depth_test(pass.state.depth_test),
                 depth_write: pass.state.depth_write,
                 cull_mode: lower_cull_mode(pass.state.cull_mode),
@@ -693,6 +740,20 @@ fn lower_pipeline_blend(blend: PipelineBlendMode) -> ScenePipelineBlend {
     }
 }
 
+fn lower_scene_blend(blend: SceneBlendMode) -> SceneCompositeBlend {
+    match blend {
+        SceneBlendMode::Alpha => SceneCompositeBlend::Alpha,
+        SceneBlendMode::Normal => SceneCompositeBlend::Normal,
+        SceneBlendMode::Additive => SceneCompositeBlend::Additive,
+        SceneBlendMode::Multiply => SceneCompositeBlend::Multiply,
+        SceneBlendMode::Screen => SceneCompositeBlend::Screen,
+        SceneBlendMode::Max => SceneCompositeBlend::Max,
+        SceneBlendMode::Modulate => SceneCompositeBlend::Modulate,
+        SceneBlendMode::HslColor => SceneCompositeBlend::HslColor,
+        SceneBlendMode::AlphaToCoverage => SceneCompositeBlend::AlphaToCoverage,
+    }
+}
+
 fn lower_depth_test(depth: DepthTestMode) -> SceneDepthTest {
     match depth {
         DepthTestMode::Disabled => SceneDepthTest::Disabled,
@@ -746,6 +807,28 @@ impl StringInterner {
 mod tests {
     use super::*;
     use crate::engine::scene::SceneResourceKind;
+
+    #[test]
+    fn lower_scene_blend_preserves_all_typed_composite_modes() {
+        let cases = [
+            (SceneBlendMode::Alpha, SceneCompositeBlend::Alpha),
+            (SceneBlendMode::Normal, SceneCompositeBlend::Normal),
+            (SceneBlendMode::Additive, SceneCompositeBlend::Additive),
+            (SceneBlendMode::Multiply, SceneCompositeBlend::Multiply),
+            (SceneBlendMode::Screen, SceneCompositeBlend::Screen),
+            (SceneBlendMode::Max, SceneCompositeBlend::Max),
+            (SceneBlendMode::Modulate, SceneCompositeBlend::Modulate),
+            (SceneBlendMode::HslColor, SceneCompositeBlend::HslColor),
+            (
+                SceneBlendMode::AlphaToCoverage,
+                SceneCompositeBlend::AlphaToCoverage,
+            ),
+        ];
+
+        for (source, expected) in cases {
+            assert_eq!(lower_scene_blend(source), expected);
+        }
+    }
 
     #[test]
     fn lower_target_bindings_preserve_we_texture_slots() {
@@ -812,6 +895,7 @@ mod tests {
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
+            puppet_animation_opacity_samples: Vec::new(),
             materials: Vec::new(),
             material_passes: Vec::new(),
             material_textures: Vec::new(),
@@ -844,6 +928,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 WeIrMeshVertex {
                     position: SceneVec3 {
@@ -852,6 +938,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [1.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 WeIrMeshVertex {
                     position: SceneVec3 {
@@ -860,6 +948,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [1.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 WeIrMeshVertex {
                     position: SceneVec3 {
@@ -868,6 +958,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
             ],
             mesh_indices: vec![0, 1, 2, 0, 2, 3],

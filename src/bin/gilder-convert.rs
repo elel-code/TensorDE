@@ -41,7 +41,7 @@ fn run() -> Result<(), String> {
                     )
                 })?;
             println!(
-                "converted {} -> {} (objects={}, resources={}, materials={}, effects={}, meshes={} vertices={} indices={}, graphs={}, shaders={}, heap_resources={}, heap_samplers={}, fifo_latest_ready={}, payload={} bytes)",
+                "converted {} -> {} (objects={}, resources={}, materials={}, effects={}, meshes={} vertices={} indices={}, puppets={} bones={} clips={} tracks={} transform_samples={} opacity_samples={}, graphs={}, shaders={}, heap_resources={}, heap_samplers={}, fifo_latest_ready={}, payload={} bytes)",
                 source.display(),
                 dest.display(),
                 summary.object_count,
@@ -51,6 +51,12 @@ fn run() -> Result<(), String> {
                 summary.mesh_count,
                 summary.mesh_vertex_count,
                 summary.mesh_index_count,
+                summary.puppet_count,
+                summary.puppet_bone_count,
+                summary.puppet_animation_clip_count,
+                summary.puppet_animation_track_count,
+                summary.puppet_animation_transform_sample_count,
+                summary.puppet_animation_opacity_sample_count,
                 summary.render_graph_count,
                 summary.shader_contract_count,
                 summary.descriptor_heap_resource_count,

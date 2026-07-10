@@ -6,6 +6,30 @@
 //! - `reverse-engineered/shaders/**`
 //! - `src/renderer/native_vulkan/vulkan/core/descriptor_heap.rs`
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinSceneParameterLayout {
+    None,
+    StandardMaterial,
+    Iris,
+    Opacity,
+    WaterWaves,
+    WaterRipple,
+}
+
+impl BuiltinSceneParameterLayout {
+    pub const fn uses_material_uniform(self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub const fn uses_effect_draw_uniform(self) -> bool {
+        matches!(self, Self::Iris)
+    }
+
+    pub const fn uses_scene_time(self) -> bool {
+        matches!(self, Self::Iris | Self::WaterWaves | Self::WaterRipple)
+    }
+}
+
 include!(concat!(env!("OUT_DIR"), "/gilder_scene_shader_catalog.rs"));
 
 pub fn native_vulkan_scene_shader_catalog() -> &'static [BuiltinSceneShader] {
@@ -52,8 +76,28 @@ mod tests {
         let shader = native_vulkan_scene_shader_for_key("genericimage4")
             .expect("genericimage4 built-in shader");
         assert_eq!(shader.key, "we/genericimage4");
+        assert_eq!(
+            shader.parameter_layout,
+            BuiltinSceneParameterLayout::StandardMaterial
+        );
         assert!(!shader.vertex_spirv.is_empty());
         assert!(!shader.fragment_spirv.is_empty());
         assert!(native_vulkan_scene_shader_for_key("missing-shader").is_none());
+    }
+
+    #[test]
+    fn shader_catalog_carries_typed_effect_parameter_layouts() {
+        assert_eq!(
+            native_vulkan_scene_shader_for_key("effects/iris__SLOTS_3__MASK_1")
+                .expect("iris shader")
+                .parameter_layout,
+            BuiltinSceneParameterLayout::Iris
+        );
+        assert_eq!(
+            native_vulkan_scene_shader_for_key("effects/waterwaves__SLOTS_1")
+                .expect("waterwaves shader")
+                .parameter_layout,
+            BuiltinSceneParameterLayout::WaterWaves
+        );
     }
 }

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
-    SceneResourceKind, SceneVec3,
+    SceneResourceKind, SceneTextureFormat, SceneVec3,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -33,6 +33,7 @@ pub struct WeSceneIr {
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
+    pub puppet_animation_opacity_samples: Vec<f32>,
     pub materials: Vec<WeIrMaterial>,
     pub material_passes: Vec<WeIrMaterialPass>,
     pub material_textures: Vec<WeIrMaterialTexture>,
@@ -107,14 +108,26 @@ impl WeIrResourceSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeIrTexture {
     pub resource: u32,
-    pub format: u32,
+    pub format: SceneTextureFormat,
+    pub source_runtime_format: u32,
+    pub payload_format: u32,
+    pub sampler_flags: u32,
     pub width: u32,
     pub height: u32,
     pub storage_width: u32,
     pub storage_height: u32,
-    pub mip_count: u32,
     pub texv_tag: String,
     pub texb_tag: String,
+    pub mips: Vec<WeIrTextureMip>,
+    pub upload_payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrTextureMip {
+    pub width: u32,
+    pub height: u32,
+    pub payload_offset: u64,
+    pub payload_len: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -144,13 +157,17 @@ pub struct WeIrObjectEffect {
     pub visible: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeIrObjectAnimationLayer {
     pub object: u32,
     pub animation_id: u32,
     pub layer_index: u32,
     pub additive: bool,
     pub autosort: bool,
+    pub visible: bool,
+    pub playback_rate: f32,
+    pub blend_weight: f32,
+    pub initial_progress: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -174,6 +191,9 @@ pub struct WeIrPuppetAnimationTrack {
     pub track_flags: u32,
     pub sample_start: u32,
     pub sample_count: u32,
+    pub opacity_flags: u32,
+    pub opacity_sample_start: u32,
+    pub opacity_sample_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -239,6 +259,8 @@ pub struct WeIrMesh {
 pub struct WeIrMeshVertex {
     pub position: SceneVec3,
     pub uv: [f32; 2],
+    pub blend_indices: [u32; 4],
+    pub blend_weights: [f32; 4],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -257,10 +279,11 @@ pub struct WeIrPuppet {
 pub struct WeIrPuppetBone {
     pub puppet: u32,
     pub bone_index: u32,
-    pub flags: u32,
+    pub name: String,
+    pub simulation_type: i32,
     pub parent_index: i32,
-    pub local_matrix: [f32; 16],
-    pub info: String,
+    pub local_bind_matrix: [f32; 16],
+    pub simulation_json: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

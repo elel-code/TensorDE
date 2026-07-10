@@ -18,6 +18,7 @@ pub struct SceneRenderingDeviceGraphPlan {
     pub pass_nodes: Vec<SceneRenderingDevicePassNode>,
     pub target_allocations: Vec<SceneRenderingDeviceTargetAllocation>,
     pub sampled_bindings: Vec<SceneRenderingDeviceSampledBinding>,
+    pub material_sampled_bindings: Vec<SceneRenderingDeviceMaterialSampledBinding>,
     pub mesh_draws: Vec<SceneRenderingDeviceMeshDraw>,
     pub puppet_bone_palettes: Vec<SceneRenderingDevicePuppetBonePalette>,
     pub puppet_bone_matrices: Vec<SceneRenderingDevicePuppetBoneMatrix>,
@@ -66,6 +67,7 @@ impl SceneRenderingDeviceGraphPlan {
                 bone_index: matrix.bone_index,
                 parent_index: matrix.parent_index,
                 matrix: rows_from_column_major(matrix.matrix),
+                alpha: matrix.alpha,
             })
             .collect::<Vec<_>>();
 
@@ -138,6 +140,7 @@ impl SceneRenderingDeviceGraphPlan {
             }
         }
         let target_allocations = graph_target_allocations(storage);
+        let material_sampled_bindings = material_sampled_bindings(storage, &mesh_draws);
         let graph_physical_target_count = target_allocations
             .iter()
             .map(|allocation| allocation.physical_slot)
@@ -151,6 +154,7 @@ impl SceneRenderingDeviceGraphPlan {
             pass_nodes,
             target_allocations,
             sampled_bindings,
+            material_sampled_bindings,
             mesh_draws,
             puppet_bone_palettes,
             puppet_bone_matrices,
@@ -220,6 +224,13 @@ pub struct SceneRenderingDeviceSampledBinding {
     pub target_name: SceneStringId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneRenderingDeviceMaterialSampledBinding {
+    pub draw_index: u32,
+    pub slot: u32,
+    pub resource: SceneResourceId,
+}
+
 impl SceneRenderingDeviceSampledBinding {
     pub fn logical_target(self) -> Option<(u32, SceneRenderTargetKind, SceneStringId)> {
         match self.kind {
@@ -276,16 +287,11 @@ pub struct SceneRenderingDevicePuppetBoneMatrix {
     pub bone_index: u32,
     pub parent_index: i32,
     pub matrix: [[f32; 4]; 4],
+    pub alpha: f32,
 }
 
 fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
-    pass.object.0 != INVALID_OBJECT_ID
-        && matches!(
-            pass.role,
-            SceneRenderPassKind::BaseMaterial
-                | SceneRenderPassKind::EffectMaterial
-                | SceneRenderPassKind::ColorBlendPassthrough
-        )
+    pass.object.0 != INVALID_OBJECT_ID && pass.role == SceneRenderPassKind::BaseMaterial
 }
 
 fn visible_pass_object<'frame>(
@@ -357,16 +363,16 @@ fn scene_clip_transform(project: &SceneProjectRecord, world_matrix: [f32; 16]) -
     let height = project.logical_height.max(1) as f32;
     [
         [
-            2.0 * world_matrix[0] / width,
-            2.0 * world_matrix[4] / width,
-            2.0 * world_matrix[8] / width,
-            2.0 * world_matrix[12] / width,
+            2.0 * world_matrix[0] / width - world_matrix[3],
+            2.0 * world_matrix[4] / width - world_matrix[7],
+            2.0 * world_matrix[8] / width - world_matrix[11],
+            2.0 * world_matrix[12] / width - world_matrix[15],
         ],
         [
-            -2.0 * world_matrix[1] / height,
-            -2.0 * world_matrix[5] / height,
-            -2.0 * world_matrix[9] / height,
-            -2.0 * world_matrix[13] / height,
+            -2.0 * world_matrix[1] / height + world_matrix[3],
+            -2.0 * world_matrix[5] / height + world_matrix[7],
+            -2.0 * world_matrix[9] / height + world_matrix[11],
+            -2.0 * world_matrix[13] / height + world_matrix[15],
         ],
         [
             world_matrix[2],
@@ -432,6 +438,33 @@ fn pass_draw_material(
     } else {
         pass.material
     }
+}
+
+fn material_sampled_bindings(
+    storage: &SceneStorage,
+    draws: &[SceneRenderingDeviceMeshDraw],
+) -> Vec<SceneRenderingDeviceMaterialSampledBinding> {
+    let mut bindings = Vec::new();
+    for (draw_index, draw) in draws.iter().enumerate() {
+        let Some(material) = storage.material(draw.material) else {
+            continue;
+        };
+        let Some(pass) = storage.material_passes(material).first() else {
+            continue;
+        };
+        bindings.extend(
+            storage
+                .material_pass_textures(pass)
+                .iter()
+                .filter(|texture| storage.texture(texture.resource).is_some())
+                .map(|texture| SceneRenderingDeviceMaterialSampledBinding {
+                    draw_index: draw_index as u32,
+                    slot: texture.slot,
+                    resource: texture.resource,
+                }),
+        );
+    }
+    bindings
 }
 
 fn sampled_binding(
@@ -677,6 +710,22 @@ mod tests {
     };
 
     #[test]
+    fn scene_projection_maps_authored_bounds_to_vulkan_ndc() {
+        let mut project = SceneBinaryDocument::default().project;
+        project.logical_width = 3840;
+        project.logical_height = 2160;
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+
+        let transform = scene_clip_transform(&project, identity);
+
+        assert_eq!(transform[0], [2.0 / 3840.0, 0.0, 0.0, -1.0]);
+        assert_eq!(transform[1], [0.0, -2.0 / 2160.0, 0.0, 1.0]);
+        assert_eq!(transform[3], [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
     fn rendering_device_graph_plans_mesh_draws_and_heap_counts() {
         let document = SceneBinaryDocument {
             strings: vec!["shader".to_owned(), "pipeline".to_owned()],
@@ -778,6 +827,8 @@ mod tests {
                         z: 0.0,
                     },
                     uv: [0.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 };
                 8
             ],
@@ -795,12 +846,13 @@ mod tests {
             puppet_bones: vec![ScenePuppetBoneRecord {
                 puppet: 0,
                 bone_index: 41,
-                flags: 0,
+                name: SceneStringId::NONE,
+                simulation_type: 0,
                 parent_index: -1,
-                local_matrix: [
+                local_bind_matrix: [
                     1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
                 ],
-                info: SceneStringId::NONE,
+                simulation_json: SceneStringId::NONE,
             }],
             materials: vec![
                 SceneMaterialRecord {
@@ -845,6 +897,7 @@ mod tests {
                     binding_start: 0,
                     binding_count: 0,
                     pipeline_blend: ScenePipelineBlend::Normal,
+                    scene_blend: SceneCompositeBlend::Alpha,
                     depth_test: SceneDepthTest::Disabled,
                     depth_write: false,
                     cull_mode: SceneCullMode::None,
@@ -861,6 +914,7 @@ mod tests {
                     binding_start: 0,
                     binding_count: 0,
                     pipeline_blend: ScenePipelineBlend::Normal,
+                    scene_blend: SceneCompositeBlend::Alpha,
                     depth_test: SceneDepthTest::Disabled,
                     depth_write: false,
                     cull_mode: SceneCullMode::None,
@@ -1008,6 +1062,58 @@ mod tests {
     }
 
     #[test]
+    fn same_named_fbo_in_distinct_graphs_keeps_graph_scoped_identity() {
+        let document = SceneBinaryDocument {
+            strings: vec!["fbo_shared".to_owned()],
+            render_graphs: vec![
+                SceneRenderGraphRecord {
+                    object: SceneObjectHandle(INVALID_OBJECT_ID),
+                    pass_start: 0,
+                    pass_count: 2,
+                    unsupported_start: 0,
+                    unsupported_count: 0,
+                },
+                SceneRenderGraphRecord {
+                    object: SceneObjectHandle(INVALID_OBJECT_ID),
+                    pass_start: 2,
+                    pass_count: 2,
+                    unsupported_start: 0,
+                    unsupported_count: 0,
+                },
+            ],
+            render_passes: vec![
+                named_fbo_pass(1, 0, SceneStringId(0), 0, 0),
+                scene_color_pass_reading_fbo(2, 0, 1),
+                named_fbo_pass(1, 0, SceneStringId(0), 1, 0),
+                scene_color_pass_reading_fbo(2, 1, 1),
+            ],
+            render_bindings: vec![
+                named_fbo_binding(SceneStringId(0), 0),
+                named_fbo_binding(SceneStringId(0), 0),
+            ],
+            ..SceneBinaryDocument::default()
+        };
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+
+        assert_eq!(graph.target_allocations.len(), 2);
+        assert_eq!(graph.target_allocations[0].graph_index, 0);
+        assert_eq!(graph.target_allocations[1].graph_index, 1);
+        assert_ne!(
+            graph.target_allocations[0].physical_slot,
+            graph.target_allocations[1].physical_slot
+        );
+        assert_eq!(
+            graph.sampled_bindings[0].logical_target(),
+            Some((0, SceneRenderTargetKind::NamedFbo, SceneStringId(0)))
+        );
+        assert_eq!(
+            graph.sampled_bindings[1].logical_target(),
+            Some((1, SceneRenderTargetKind::NamedFbo, SceneStringId(0)))
+        );
+    }
+
+    #[test]
     fn rendering_device_graph_uses_fullscreen_utility_for_effect_pass_without_object_mesh() {
         let document = SceneBinaryDocument {
             strings: vec!["effects/opacity__SLOTS_1".to_owned(), "fbo_a".to_owned()],
@@ -1030,6 +1136,7 @@ mod tests {
                 binding_start: 0,
                 binding_count: 0,
                 pipeline_blend: ScenePipelineBlend::Normal,
+                scene_blend: SceneCompositeBlend::Alpha,
                 depth_test: SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: SceneCullMode::None,
@@ -1054,6 +1161,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn only_base_material_pass_draws_authored_object_mesh() {
+        let mut pass = named_fbo_pass(5, 0, SceneStringId(1), 0, 0);
+        pass.object = SceneObjectHandle(7);
+        assert!(!pass_draws_object_mesh(&pass));
+
+        pass.role = SceneRenderPassKind::ColorBlendPassthrough;
+        assert!(!pass_draws_object_mesh(&pass));
+
+        pass.role = SceneRenderPassKind::BaseMaterial;
+        assert!(pass_draws_object_mesh(&pass));
+    }
+
     fn named_fbo_pass(
         id: u32,
         pass_index: u32,
@@ -1073,6 +1193,7 @@ mod tests {
             binding_start,
             binding_count,
             pipeline_blend: ScenePipelineBlend::Normal,
+            scene_blend: SceneCompositeBlend::Alpha,
             depth_test: SceneDepthTest::Disabled,
             depth_write: false,
             cull_mode: SceneCullMode::None,

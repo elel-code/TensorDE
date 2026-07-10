@@ -7,6 +7,10 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/renderer/native_vulkan/video/demux_ffmpeg_shim.c");
 
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+    }
+
     if env::var_os("CARGO_FEATURE_NATIVE_VULKAN_RENDERER").is_some() {
         build_scene_shader_catalog();
     }
@@ -170,6 +174,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "workshop/2790231929/effects/foliagesway__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "workshop/2790231929/effects/foliagesway__SLOTS_5",
         family: SceneShaderFamily::Effect,
     },
@@ -202,6 +210,7 @@ fn build_scene_shader_catalog() {
     generated.push_str("    pub key: &'static str,\n");
     generated.push_str("    pub vertex_spirv: &'static [u32],\n");
     generated.push_str("    pub fragment_spirv: &'static [u32],\n");
+    generated.push_str("    pub parameter_layout: BuiltinSceneParameterLayout,\n");
     generated.push_str("}\n\n");
 
     let mut entries = String::new();
@@ -216,9 +225,10 @@ fn build_scene_shader_catalog() {
         let fragment_path = fragment_path
             .to_str()
             .expect("built-in scene fragment shader path must be UTF-8");
+        let parameter_layout = scene_shader_parameter_layout(*spec);
         entries.push_str(&format!(
-            "    BuiltinSceneShader {{ key: {:?}, vertex_spirv: vulkanalia::include_shader_code!({:?}), fragment_spirv: vulkanalia::include_shader_code!({:?}) }},\n",
-            spec.key, vertex_path, fragment_path
+            "    BuiltinSceneShader {{ key: {:?}, vertex_spirv: vulkanalia::include_shader_code!({:?}), fragment_spirv: vulkanalia::include_shader_code!({:?}), parameter_layout: BuiltinSceneParameterLayout::{parameter_layout} }},\n",
+            spec.key, vertex_path, fragment_path,
         ));
     }
 
@@ -228,6 +238,26 @@ fn build_scene_shader_catalog() {
 
     fs::write(out_dir.join("gilder_scene_shader_catalog.rs"), generated)
         .expect("write built-in scene shader catalog");
+}
+
+fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
+    match spec.family {
+        SceneShaderFamily::MeshGenericImage4
+        | SceneShaderFamily::MeshGenericImage4PuppetSkinning
+        | SceneShaderFamily::MeshColor
+        | SceneShaderFamily::MeshColorPuppetSkinning
+        | SceneShaderFamily::MeshText
+        | SceneShaderFamily::MeshTextPuppetSkinning
+        | SceneShaderFamily::MeshGenericParticle => "StandardMaterial",
+        SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
+            "effects/iris" => "Iris",
+            "effects/opacity" => "Opacity",
+            "effects/waterwaves" => "WaterWaves",
+            "effects/waterripple" | "workshop/2790231929/effects/waterripple" => "WaterRipple",
+            _ => "None",
+        },
+        _ => "None",
+    }
 }
 
 fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
@@ -339,6 +369,8 @@ fn scene_mesh_vertex_source() -> String {
 layout(location = 0) in vec2 a_Position;
 layout(location = 1) in vec2 a_TexCoord;
 layout(location = 2) in float a_Opacity;
+layout(location = 3) in uvec4 a_BlendIndices;
+layout(location = 4) in vec4 a_BlendWeights;
 layout(location = 0) out vec2 v_TexCoord;
 layout(location = 1) out float v_VertexAlpha;
 layout(set = 0, binding = 2) uniform SceneDrawTransform {
@@ -363,48 +395,42 @@ fn scene_puppet_skinning_vertex_source() -> String {
 layout(location = 0) in vec2 a_Position;
 layout(location = 1) in vec2 a_TexCoord;
 layout(location = 2) in float a_Opacity;
+layout(location = 3) in uvec4 a_BlendIndices;
+layout(location = 4) in vec4 a_BlendWeights;
 layout(location = 0) out vec2 v_TexCoord;
 layout(location = 1) out float v_VertexAlpha;
 layout(set = 0, binding = 2) uniform SceneDrawTransform {
     vec4 g_ModelViewProjectionMatrix[4];
 } g_Draw;
-struct GilderPuppetSkinVertex {
-    uvec4 a_BlendIndices;
-    vec4 a_BlendWeights;
-};
-layout(std430, set = 0, binding = 64) readonly buffer ScenePuppetSkinVertices {
-    GilderPuppetSkinVertex g_SkinVertices[];
-} g_Skin;
 struct GilderPuppetBonePalette {
-    vec4 column0;
-    vec4 column1;
-    vec4 column2;
-    vec4 column3;
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    vec4 row3;
     vec4 alpha;
 };
-layout(std430, set = 0, binding = 65) readonly buffer ScenePuppetBones {
+layout(std430, set = 0, binding = 4) readonly buffer ScenePuppetBones {
     GilderPuppetBonePalette g_Bones[];
 } g_Puppet;
 void main() {
     v_TexCoord = a_TexCoord;
     vec4 raw_position = vec4(a_Position.xy, 0.0, 1.0);
-    GilderPuppetSkinVertex skin = g_Skin.g_SkinVertices[gl_VertexIndex];
     vec4 skinned_position = vec4(0.0);
     float skinned_alpha = 0.0;
     float total_weight = 0.0;
     for (uint slot = 0u; slot < 4u; slot++) {
-        float weight = skin.a_BlendWeights[slot];
+        float weight = a_BlendWeights[slot];
         if (weight <= 0.0000001) {
             continue;
         }
-        uint bone_index = skin.a_BlendIndices[slot];
+        uint bone_index = a_BlendIndices[slot];
         GilderPuppetBonePalette bone = g_Puppet.g_Bones[bone_index];
-        mat4 bone_matrix = mat4(
-            bone.column0,
-            bone.column1,
-            bone.column2,
-            bone.column3);
-        skinned_position += (bone_matrix * raw_position) * weight;
+        vec4 bone_position = vec4(
+            dot(bone.row0, raw_position),
+            dot(bone.row1, raw_position),
+            dot(bone.row2, raw_position),
+            dot(bone.row3, raw_position));
+        skinned_position += bone_position * weight;
         skinned_alpha += bone.alpha.x * weight;
         total_weight += weight;
     }
@@ -412,7 +438,7 @@ void main() {
     v_VertexAlpha = a_Opacity;
     if (total_weight > 0.0000001) {
         local_position = skinned_position / total_weight;
-        v_VertexAlpha = skinned_alpha / total_weight;
+        v_VertexAlpha *= skinned_alpha / total_weight;
     }
     gl_Position = vec4(
         dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
@@ -429,49 +455,43 @@ fn scene_puppet_skinning_clippingtarget_vertex_source() -> String {
 layout(location = 0) in vec2 a_Position;
 layout(location = 1) in vec2 a_TexCoord;
 layout(location = 2) in float a_Opacity;
+layout(location = 3) in uvec4 a_BlendIndices;
+layout(location = 4) in vec4 a_BlendWeights;
 layout(location = 0) out vec2 v_TexCoord;
 layout(location = 1) out float v_VertexAlpha;
 layout(location = 2) out vec3 v_ScreenPos;
 layout(set = 0, binding = 2) uniform SceneDrawTransform {
     vec4 g_ModelViewProjectionMatrix[4];
 } g_Draw;
-struct GilderPuppetSkinVertex {
-    uvec4 a_BlendIndices;
-    vec4 a_BlendWeights;
-};
-layout(std430, set = 0, binding = 64) readonly buffer ScenePuppetSkinVertices {
-    GilderPuppetSkinVertex g_SkinVertices[];
-} g_Skin;
 struct GilderPuppetBonePalette {
-    vec4 column0;
-    vec4 column1;
-    vec4 column2;
-    vec4 column3;
+    vec4 row0;
+    vec4 row1;
+    vec4 row2;
+    vec4 row3;
     vec4 alpha;
 };
-layout(std430, set = 0, binding = 65) readonly buffer ScenePuppetBones {
+layout(std430, set = 0, binding = 4) readonly buffer ScenePuppetBones {
     GilderPuppetBonePalette g_Bones[];
 } g_Puppet;
 void main() {
     v_TexCoord = a_TexCoord;
     vec4 raw_position = vec4(a_Position.xy, 0.0, 1.0);
-    GilderPuppetSkinVertex skin = g_Skin.g_SkinVertices[gl_VertexIndex];
     vec4 skinned_position = vec4(0.0);
     float skinned_alpha = 0.0;
     float total_weight = 0.0;
     for (uint slot = 0u; slot < 4u; slot++) {
-        float weight = skin.a_BlendWeights[slot];
+        float weight = a_BlendWeights[slot];
         if (weight <= 0.0000001) {
             continue;
         }
-        uint bone_index = skin.a_BlendIndices[slot];
+        uint bone_index = a_BlendIndices[slot];
         GilderPuppetBonePalette bone = g_Puppet.g_Bones[bone_index];
-        mat4 bone_matrix = mat4(
-            bone.column0,
-            bone.column1,
-            bone.column2,
-            bone.column3);
-        skinned_position += (bone_matrix * raw_position) * weight;
+        vec4 bone_position = vec4(
+            dot(bone.row0, raw_position),
+            dot(bone.row1, raw_position),
+            dot(bone.row2, raw_position),
+            dot(bone.row3, raw_position));
+        skinned_position += bone_position * weight;
         skinned_alpha += bone.alpha.x * weight;
         total_weight += weight;
     }
@@ -479,7 +499,7 @@ void main() {
     v_VertexAlpha = a_Opacity;
     if (total_weight > 0.0000001) {
         local_position = skinned_position / total_weight;
-        v_VertexAlpha = skinned_alpha / total_weight;
+        v_VertexAlpha *= skinned_alpha / total_weight;
     }
     gl_Position = vec4(
         dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
@@ -682,7 +702,7 @@ void main() {{
         vec2(-1.0, 3.0)
     );
     vec2 position = positions[gl_VertexIndex];
-    vec2 uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+    vec2 uv = position * 0.5 + 0.5;
     v_TexCoord = uv;
     gl_Position = vec4(position, 0.0, 1.0);
 }}
@@ -752,7 +772,7 @@ void main() {{
         vec2(-1.0, 3.0)
     );
     vec2 position = positions[gl_VertexIndex];
-    vec2 uv = vec2(position.x * 0.5 + 0.5, 0.5 - position.y * 0.5);
+    vec2 uv = position * 0.5 + 0.5;
     v_TexCoord = uv.xyxy;
     {mask_uv}
 

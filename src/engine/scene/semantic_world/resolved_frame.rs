@@ -107,6 +107,7 @@ pub struct ResolvedPuppetBoneMatrix {
     pub bone_index: u32,
     pub parent_index: i32,
     pub matrix: [f32; 16],
+    pub alpha: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1237,6 +1237,8 @@ void main() {}
                         z: 0.0,
                     },
                     uv: [0.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -1245,6 +1247,8 @@ void main() {}
                         z: 0.0,
                     },
                     uv: [1.0, 1.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -1253,6 +1257,8 @@ void main() {}
                         z: 0.0,
                     },
                     uv: [1.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
                 SceneMeshVertexRecord {
                     position: SceneVec3 {
@@ -1261,6 +1267,8 @@ void main() {}
                         z: 0.0,
                     },
                     uv: [0.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 },
             ],
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
@@ -1283,6 +1291,7 @@ void main() {}
                 binding_start: 0,
                 binding_count: 0,
                 pipeline_blend: crate::engine::scene::ScenePipelineBlend::Normal,
+                scene_blend: crate::engine::scene::SceneCompositeBlend::Alpha,
                 depth_test: crate::engine::scene::SceneDepthTest::Disabled,
                 depth_write: false,
                 cull_mode: crate::engine::scene::SceneCullMode::None,

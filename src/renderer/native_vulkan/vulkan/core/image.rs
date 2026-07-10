@@ -62,7 +62,7 @@ unsafe impl Send for NativeVulkanVulkanaliaImage {}
 
 pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaRecordedImageUpload {
     pub(in crate::renderer::native_vulkan) image: NativeVulkanVulkanaliaImage,
-    pub(in crate::renderer::native_vulkan) staging: NativeVulkanVulkanaliaBuffer,
+    pub(in crate::renderer::native_vulkan) staging: Option<NativeVulkanVulkanaliaBuffer>,
     pub(in crate::renderer::native_vulkan) copy_recorded: bool,
 }
 
@@ -227,7 +227,7 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_sample
                     payload_uploaded: true,
                 },
             },
-            staging,
+            staging: Some(staging),
             copy_recorded: true,
         })
     })();

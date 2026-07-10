@@ -75,6 +75,44 @@ impl SceneStorage {
         self.document.resource_payload.get(start..end)
     }
 
+    pub fn textures(&self) -> &[SceneTextureRecord] {
+        &self.document.textures
+    }
+
+    pub fn texture(&self, resource: SceneResourceId) -> Option<&SceneTextureRecord> {
+        self.document
+            .textures
+            .iter()
+            .find(|texture| texture.resource == resource)
+    }
+
+    pub fn texture_mips(&self, texture: &SceneTextureRecord) -> &[SceneTextureMipRecord] {
+        let start = texture.mip_start as usize;
+        let end = start.saturating_add(texture.mip_count as usize);
+        self.document
+            .texture_mips
+            .get(start..end)
+            .expect("scene storage validates texture mip ranges")
+    }
+
+    pub fn texture_payload(&self, texture: &SceneTextureRecord) -> &[u8] {
+        let start = texture.payload_offset as usize;
+        let end = start.saturating_add(texture.payload_len as usize);
+        self.document
+            .texture_payload
+            .get(start..end)
+            .expect("scene storage validates texture payload ranges")
+    }
+
+    pub fn texture_mip_payload(&self, mip: &SceneTextureMipRecord) -> &[u8] {
+        let start = mip.payload_offset as usize;
+        let end = start.saturating_add(mip.payload_len as usize);
+        self.document
+            .texture_payload
+            .get(start..end)
+            .expect("scene storage validates texture mip payload ranges")
+    }
+
     pub fn objects(&self) -> &[SceneObjectRecord] {
         &self.document.objects
     }
@@ -111,8 +149,48 @@ impl SceneStorage {
             .expect("scene storage validates puppet animation sample ranges")
     }
 
+    pub fn puppet_animation_opacity_samples(
+        &self,
+        track: &ScenePuppetAnimationTrackRecord,
+    ) -> &[f32] {
+        let start = track.opacity_sample_start as usize;
+        let end = start.saturating_add(track.opacity_sample_count as usize);
+        self.document
+            .puppet_animation_opacity_samples
+            .get(start..end)
+            .expect("scene storage validates puppet animation opacity sample ranges")
+    }
+
     pub fn materials(&self) -> &[SceneMaterialRecord] {
         &self.document.materials
+    }
+
+    pub fn material(&self, handle: SceneMaterialHandle) -> Option<&SceneMaterialRecord> {
+        if handle.0 == INVALID_MATERIAL_ID {
+            return None;
+        }
+        self.document.materials.get(handle.0 as usize)
+    }
+
+    pub fn material_passes(&self, material: &SceneMaterialRecord) -> &[SceneMaterialPassRecord] {
+        let start = material.pass_start as usize;
+        let end = start.saturating_add(material.pass_count as usize);
+        self.document
+            .material_passes
+            .get(start..end)
+            .expect("scene storage validates material pass ranges")
+    }
+
+    pub fn material_pass_textures(
+        &self,
+        pass: &SceneMaterialPassRecord,
+    ) -> &[SceneMaterialTextureRecord] {
+        let start = pass.texture_start as usize;
+        let end = start.saturating_add(pass.texture_count as usize);
+        self.document
+            .material_textures
+            .get(start..end)
+            .expect("scene storage validates material texture ranges")
     }
 
     pub fn effects(&self) -> &[SceneEffectRecord] {
@@ -214,6 +292,10 @@ impl SceneStorage {
     pub fn resource_payload_bytes(&self) -> usize {
         self.document.resource_payload.len()
     }
+
+    pub fn texture_payload_bytes(&self) -> usize {
+        self.document.texture_payload.len()
+    }
 }
 
 #[derive(Debug)]
@@ -242,8 +324,28 @@ pub enum SceneStorageError {
         index: u32,
         vertex_count: u32,
     },
+    InvalidPuppetBlendWeight {
+        puppet: usize,
+        mesh: usize,
+        vertex: usize,
+        slot: usize,
+    },
+    InvalidPuppetBlendIndex {
+        puppet: usize,
+        mesh: usize,
+        vertex: usize,
+        slot: usize,
+        bone_index: u32,
+        bone_count: u32,
+    },
     InvalidPayloadRange {
         resource: SceneResourceId,
+        offset: u64,
+        len: u64,
+        payload_len: usize,
+    },
+    InvalidTexturePayloadRange {
+        texture: SceneResourceId,
         offset: u64,
         len: u64,
         payload_len: usize,
@@ -290,6 +392,26 @@ impl fmt::Display for SceneStorageError {
                 f,
                 "scene storage mesh {mesh} index {index} exceeds local vertex count {vertex_count}"
             ),
+            Self::InvalidPuppetBlendWeight {
+                puppet,
+                mesh,
+                vertex,
+                slot,
+            } => write!(
+                f,
+                "scene storage puppet {puppet} mesh {mesh} vertex {vertex} has an invalid blend weight in slot {slot}"
+            ),
+            Self::InvalidPuppetBlendIndex {
+                puppet,
+                mesh,
+                vertex,
+                slot,
+                bone_index,
+                bone_count,
+            } => write!(
+                f,
+                "scene storage puppet {puppet} mesh {mesh} vertex {vertex} blend slot {slot} references bone {bone_index} outside {bone_count} bones"
+            ),
             Self::InvalidPayloadRange {
                 resource,
                 offset,
@@ -299,6 +421,16 @@ impl fmt::Display for SceneStorageError {
                 f,
                 "scene storage resource {} payload range [{offset}, {offset}+{len}) exceeds payload chunk length {payload_len}",
                 resource.0
+            ),
+            Self::InvalidTexturePayloadRange {
+                texture,
+                offset,
+                len,
+                payload_len,
+            } => write!(
+                f,
+                "scene texture resource {} payload range [{offset}, {offset}+{len}) exceeds texture payload chunk length {payload_len}",
+                texture.0
             ),
         }
     }
@@ -323,6 +455,31 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
         validate_resource(document, "texture.resource", texture.resource)?;
         validate_string(document, "texture.texv_tag", texture.texv_tag)?;
         validate_string(document, "texture.texb_tag", texture.texb_tag)?;
+        validate_range(
+            "texture.mip_range",
+            texture.mip_start,
+            texture.mip_count,
+            document.texture_mips.len(),
+        )?;
+        validate_texture_payload(
+            document,
+            texture.resource,
+            texture.payload_offset,
+            texture.payload_len,
+        )?;
+        for mip in document
+            .texture_mips
+            .iter()
+            .skip(texture.mip_start as usize)
+            .take(texture.mip_count as usize)
+        {
+            validate_texture_payload(
+                document,
+                texture.resource,
+                mip.payload_offset,
+                mip.payload_len,
+            )?;
+        }
     }
     for object in &document.objects {
         validate_string(document, "object.name", object.name)?;
@@ -398,6 +555,12 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
                 track.sample_start,
                 track.sample_count,
                 document.puppet_animation_transform_samples.len(),
+            )?;
+            validate_range(
+                "puppet_animation_track.opacity_sample_range",
+                track.opacity_sample_start,
+                track.opacity_sample_count,
+                document.puppet_animation_opacity_samples.len(),
             )?;
         }
     }
@@ -490,6 +653,44 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
             puppet.attachment_count,
             document.puppet_attachments.len(),
         )?;
+        for (mesh_index, mesh) in document
+            .meshes
+            .iter()
+            .enumerate()
+            .skip(puppet.mesh_start as usize)
+            .take(puppet.mesh_count as usize)
+        {
+            for (vertex_index, vertex) in document
+                .mesh_vertices
+                .iter()
+                .skip(mesh.vertex_start as usize)
+                .take(mesh.vertex_count as usize)
+                .enumerate()
+            {
+                for slot in 0..4 {
+                    let weight = vertex.blend_weights[slot];
+                    if !weight.is_finite() || weight < 0.0 {
+                        return Err(SceneStorageError::InvalidPuppetBlendWeight {
+                            puppet: puppet_index,
+                            mesh: mesh_index,
+                            vertex: vertex_index,
+                            slot,
+                        });
+                    }
+                    let bone_index = vertex.blend_indices[slot];
+                    if weight > 1.0e-6 && bone_index >= puppet.bone_count {
+                        return Err(SceneStorageError::InvalidPuppetBlendIndex {
+                            puppet: puppet_index,
+                            mesh: mesh_index,
+                            vertex: vertex_index,
+                            slot,
+                            bone_index,
+                            bone_count: puppet.bone_count,
+                        });
+                    }
+                }
+            }
+        }
         for bone in document
             .puppet_bones
             .iter()
@@ -505,7 +706,12 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
                     len: puppet_index,
                 });
             }
-            validate_string(document, "puppet_bone.info", bone.info)?;
+            validate_string(document, "puppet_bone.name", bone.name)?;
+            validate_string(
+                document,
+                "puppet_bone.simulation_json",
+                bone.simulation_json,
+            )?;
         }
         for attachment in document
             .puppet_attachments
@@ -713,6 +919,32 @@ fn validate_payload(
     }
 }
 
+fn validate_texture_payload(
+    document: &SceneBinaryDocument,
+    texture: SceneResourceId,
+    offset: u64,
+    len: u64,
+) -> Result<(), SceneStorageError> {
+    let valid = usize::try_from(offset)
+        .ok()
+        .and_then(|start| {
+            usize::try_from(len)
+                .ok()
+                .and_then(|len| start.checked_add(len))
+        })
+        .is_some_and(|end| end <= document.texture_payload.len());
+    if valid {
+        Ok(())
+    } else {
+        Err(SceneStorageError::InvalidTexturePayloadRange {
+            texture,
+            offset,
+            len,
+            payload_len: document.texture_payload.len(),
+        })
+    }
+}
+
 fn validate_range(
     field: &'static str,
     start: u32,
@@ -872,6 +1104,8 @@ mod tests {
             SceneMeshVertexRecord {
                 position: SceneVec3::default(),
                 uv: [0.0, 0.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
         );
         document.mesh_indices = vec![0, 1, 2, 0, 2, 4];

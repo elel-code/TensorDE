@@ -23,6 +23,12 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawRange {
     pub count: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct SceneGpuGraphDrawRange {
+    pub graph_index: u32,
+    pub range: SceneGpuDrawRange,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub primitive: SceneRenderingDeviceDrawPrimitive,
@@ -38,7 +44,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
 
 pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
     graph: &SceneRenderingDeviceGraphPlan,
-) -> Vec<SceneGpuDrawRange> {
+) -> Vec<SceneGpuGraphDrawRange> {
     graph
         .pass_nodes
         .iter()
@@ -49,17 +55,22 @@ pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
                     SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
                 )
         })
-        .map(|pass| SceneGpuDrawRange {
-            start: pass.mesh_draw_start,
-            count: pass.mesh_draw_count,
+        .map(|pass| SceneGpuGraphDrawRange {
+            graph_index: pass.graph_index,
+            range: SceneGpuDrawRange {
+                start: pass.mesh_draw_start,
+                count: pass.mesh_draw_count,
+            },
         })
         .collect()
 }
 
-pub(in crate::renderer::native_vulkan) fn draw_range_count(ranges: &[SceneGpuDrawRange]) -> usize {
+pub(in crate::renderer::native_vulkan) fn draw_range_count(
+    ranges: &[SceneGpuGraphDrawRange],
+) -> usize {
     ranges
         .iter()
-        .map(|range| range.count as usize)
+        .map(|range| range.range.count as usize)
         .sum()
 }
 

@@ -6,8 +6,11 @@
 
 pub(in crate::renderer::native_vulkan) fn scene_command_order(
     no_sampled_slots: bool,
+    fallback_texture_enabled: bool,
+    scene_textures_enabled: bool,
     skinning_buffer_enabled: bool,
     pipeline_variant_enabled: bool,
+    dynamic_effect_uniforms_enabled: bool,
     effect_targets_enabled: bool,
     effect_target_copy_enabled: bool,
     effect_target_swap_enabled: bool,
@@ -24,9 +27,15 @@ pub(in crate::renderer::native_vulkan) fn scene_command_order(
         order.push("create_scene_skinning_storage_buffer");
     }
     if !no_sampled_slots {
+        order.push("create_descriptor_heap_sampler_buffer");
+    }
+    if fallback_texture_enabled {
+        order.push("upload_scene_fallback_texture");
+    }
+    if scene_textures_enabled {
         order.extend([
-            "create_descriptor_heap_sampler_buffer",
-            "upload_scene_fallback_texture",
+            "upload_scene_material_textures",
+            "release_scene_texture_staging_after_setup_submit",
         ]);
     }
     if effect_targets_enabled {
@@ -37,6 +46,13 @@ pub(in crate::renderer::native_vulkan) fn scene_command_order(
         order.push("write_descriptor_heap_skinning_storage_buffer_descriptors");
     }
     order.push("write_descriptor_heap_sampled_image_descriptors");
+    order.push("update_scene_transform_uniforms_per_frame");
+    if dynamic_effect_uniforms_enabled {
+        order.push("update_scene_effect_uniforms_per_frame");
+    }
+    if skinning_buffer_enabled {
+        order.push("update_scene_skinning_storage_per_frame");
+    }
     if effect_targets_enabled {
         order.extend([
             "cmd_effect_target_barriers",
@@ -80,9 +96,15 @@ mod tests {
 
     #[test]
     fn command_order_reports_per_draw_pipeline_variant_selection() {
-        let order = scene_command_order(false, false, true, false, false, false, false, false);
+        let order = scene_command_order(
+            false, true, true, true, true, true, false, false, false, false, false,
+        );
 
         assert!(order.contains(&"cmd_bind_scene_pass_pipeline"));
         assert!(order.contains(&"scene_pipeline_variant_selection_per_draw"));
+        assert!(order.contains(&"update_scene_transform_uniforms_per_frame"));
+        assert!(order.contains(&"update_scene_effect_uniforms_per_frame"));
+        assert!(order.contains(&"update_scene_skinning_storage_per_frame"));
+        assert!(order.contains(&"upload_scene_material_textures"));
     }
 }

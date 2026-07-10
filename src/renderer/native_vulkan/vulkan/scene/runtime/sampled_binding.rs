@@ -7,12 +7,14 @@
 
 use crate::engine::scene::{
     SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
-    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneStringId,
+    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneResourceId,
+    SceneStringId,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum SceneSampledImageSource {
     FallbackWhite,
+    SceneTexture { resource: SceneResourceId },
     EffectTarget { physical_slot: u32 },
 }
 
@@ -22,6 +24,7 @@ pub(in crate::renderer::native_vulkan) struct SceneSampledImageBindingPlan {
     pub sources: Vec<SceneSampledImageSource>,
     pub initial_reference_physical_slots: Vec<u32>,
     pub fallback_descriptor_count: usize,
+    pub scene_texture_descriptor_count: usize,
     pub effect_target_descriptor_count: usize,
 }
 
@@ -97,6 +100,7 @@ fn scene_sampled_image_binding_plan_for_references(
     let source_count = graph.mesh_draws.len().saturating_mul(sampled_slots.len());
     let mut sources = vec![SceneSampledImageSource::FallbackWhite; source_count];
     let initial_reference_physical_slots = reference_physical_slots(references);
+    lower_material_sampled_bindings(graph, sampled_slots, &mut sources)?;
 
     for (pass_node_index, pass) in graph.pass_nodes.iter().enumerate() {
         let pass_bindings = graph
@@ -128,13 +132,50 @@ fn scene_sampled_image_binding_plan_for_references(
         .iter()
         .filter(|source| matches!(source, SceneSampledImageSource::EffectTarget { .. }))
         .count();
+    let scene_texture_descriptor_count = sources
+        .iter()
+        .filter(|source| matches!(source, SceneSampledImageSource::SceneTexture { .. }))
+        .count();
     Ok(SceneSampledImageBindingPlan {
         sampled_slot_count: sampled_slots.len(),
         initial_reference_physical_slots,
-        fallback_descriptor_count: sources.len().saturating_sub(effect_target_descriptor_count),
+        fallback_descriptor_count: sources
+            .len()
+            .saturating_sub(effect_target_descriptor_count)
+            .saturating_sub(scene_texture_descriptor_count),
+        scene_texture_descriptor_count,
         effect_target_descriptor_count,
         sources,
     })
+}
+
+fn lower_material_sampled_bindings(
+    graph: &SceneRenderingDeviceGraphPlan,
+    sampled_slots: &[u32],
+    sources: &mut [SceneSampledImageSource],
+) -> Result<(), String> {
+    for binding in &graph.material_sampled_bindings {
+        let Some(sampled_index) = sampled_slots.iter().position(|slot| *slot == binding.slot) else {
+            continue;
+        };
+        let source_index = binding.draw_index as usize * sampled_slots.len() + sampled_index;
+        let source = sources.get_mut(source_index).ok_or_else(|| {
+            format!(
+                "scene material texture references missing draw {} sampled slot {}",
+                binding.draw_index, binding.slot
+            )
+        })?;
+        if !matches!(source, SceneSampledImageSource::FallbackWhite) {
+            return Err(format!(
+                "scene draw {} has duplicate material texture binding for sampled slot {}",
+                binding.draw_index, binding.slot
+            ));
+        }
+        *source = SceneSampledImageSource::SceneTexture {
+            resource: binding.resource,
+        };
+    }
+    Ok(())
 }
 
 fn reference_physical_slots(references: &[LogicalTargetReference]) -> Vec<u32> {
@@ -267,7 +308,8 @@ fn reference_index(
 mod tests {
     use super::*;
     use crate::engine::scene::{
-        SceneRenderBindingKind, SceneRenderingDeviceGraphPlan, SceneRenderingDevicePassNode,
+        SceneRenderBindingKind, SceneRenderingDeviceGraphPlan,
+        SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDevicePassNode,
         SceneRenderingDeviceSampledBinding,
     };
 
@@ -295,6 +337,18 @@ mod tests {
                 sampled_binding(1, 0, SceneStringId(0), 1, 0),
                 sampled_binding(2, 2, SceneStringId(0), 1, 1),
             ],
+            material_sampled_bindings: vec![
+                SceneRenderingDeviceMaterialSampledBinding {
+                    draw_index: 0,
+                    slot: 0,
+                    resource: SceneResourceId(7),
+                },
+                SceneRenderingDeviceMaterialSampledBinding {
+                    draw_index: 1,
+                    slot: 2,
+                    resource: SceneResourceId(8),
+                },
+            ],
             mesh_draws: vec![draw(), draw()],
             ..empty_graph_plan()
         };
@@ -303,10 +357,17 @@ mod tests {
         let cycle = scene_sampled_image_binding_cycle(&graph, &[0, 2]).expect("binding cycle");
 
         assert_eq!(plan.effect_target_descriptor_count, 2);
-        assert_eq!(plan.fallback_descriptor_count, 2);
+        assert_eq!(plan.scene_texture_descriptor_count, 1);
+        assert_eq!(plan.fallback_descriptor_count, 1);
         assert_eq!(cycle.len(), 2);
         assert_eq!(cycle[0].initial_reference_physical_slots, vec![0, 1, 2]);
         assert_eq!(cycle[1].initial_reference_physical_slots, vec![1, 0, 2]);
+        assert_eq!(
+            plan.source(0, 0),
+            Some(SceneSampledImageSource::SceneTexture {
+                resource: SceneResourceId(7)
+            })
+        );
         assert_eq!(
             plan.source(0, 1),
             Some(SceneSampledImageSource::EffectTarget { physical_slot: 1 })
@@ -401,6 +462,7 @@ mod tests {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

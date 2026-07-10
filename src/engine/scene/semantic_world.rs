@@ -36,9 +36,9 @@ use components::{
 };
 use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
-use matrix::{multiply_matrix, transform_matrix};
+use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
-use timeline::sampled_puppet_bone_local_matrix;
+use timeline::sampled_puppet_bone_local_state;
 
 use super::abi::*;
 use super::storage::SceneStorage;
@@ -616,30 +616,54 @@ impl<'a> SceneSemanticWorld<'a> {
                 }
             })?;
             let local_start = matrices.len();
+            let mut bind_world = Vec::<(u32, [f32; 16])>::new();
+            let mut animated_world = Vec::<(u32, [f32; 16])>::new();
             for bone in self.storage.puppet_bones(puppet) {
-                let parent_matrix = if bone.parent_index >= 0 {
-                    matrices[local_start..]
+                let bind_parent = if bone.parent_index >= 0 {
+                    bind_world
                         .iter()
-                        .find(|matrix: &&ResolvedPuppetBoneMatrix| {
-                            matrix.bone_index == bone.parent_index as u32
-                        })
-                        .map(|matrix| matrix.matrix)
+                        .find(|(index, _)| *index == bone.parent_index as u32)
+                        .map(|(_, matrix)| *matrix)
                 } else {
                     None
                 };
-                let base_matrix = parent_matrix.unwrap_or(object.world_matrix);
-                let local_matrix = sampled_puppet_bone_local_matrix(
+                let animated_parent = if bone.parent_index >= 0 {
+                    animated_world
+                        .iter()
+                        .find(|(index, _)| *index == bone.parent_index as u32)
+                        .map(|(_, matrix)| *matrix)
+                } else {
+                    None
+                };
+                let bind_matrix = multiply_matrix(
+                    &bind_parent.unwrap_or_else(identity_matrix),
+                    &bone.local_bind_matrix,
+                );
+                let animated_local = sampled_puppet_bone_local_state(
                     self.storage,
                     object.object,
                     object.puppet_index,
                     bone,
                     scene_time_seconds,
                 );
+                let animated_matrix = multiply_matrix(
+                    &animated_parent.unwrap_or_else(identity_matrix),
+                    &animated_local.matrix,
+                );
+                let inverse_bind = inverse_affine_matrix(&bind_matrix).ok_or(
+                    SceneSemanticWorldError::NonInvertiblePuppetBindMatrix {
+                        object: object.object,
+                        bone_index: bone.bone_index,
+                    },
+                )?;
+                bind_world.push((bone.bone_index, bind_matrix));
+                animated_world.push((bone.bone_index, animated_matrix));
                 matrices.push(ResolvedPuppetBoneMatrix {
                     puppet_index: object.puppet_index,
                     bone_index: bone.bone_index,
                     parent_index: bone.parent_index,
-                    matrix: multiply_matrix(&base_matrix, &local_matrix),
+                    matrix: multiply_matrix(&animated_matrix, &inverse_bind),
+                    alpha: animated_local.alpha,
                 });
             }
             let bone_count = u32::try_from(matrices.len() - local_start).map_err(|_| {
@@ -754,19 +778,20 @@ impl<'a> SceneSemanticWorld<'a> {
                 None
             };
             let base_matrix = parent_matrix.unwrap_or(object_world_matrix);
-            let local_matrix = sampled_puppet_bone_local_matrix(
+            let local_state = sampled_puppet_bone_local_state(
                 self.storage,
                 object,
                 puppet_index,
                 bone,
                 scene_time_seconds,
             );
-            let matrix = multiply_matrix(&base_matrix, &local_matrix);
+            let matrix = multiply_matrix(&base_matrix, &local_state.matrix);
             matrices.push(ResolvedPuppetBoneMatrix {
                 puppet_index,
                 bone_index: bone.bone_index,
                 parent_index: bone.parent_index,
                 matrix,
+                alpha: local_state.alpha,
             });
             if bone.bone_index == bone_index {
                 return Some(matrix);
@@ -840,6 +865,10 @@ pub enum SceneSemanticWorldError {
     MissingPuppetRecord {
         object: SceneObjectHandle,
         puppet_index: u32,
+    },
+    NonInvertiblePuppetBindMatrix {
+        object: SceneObjectHandle,
+        bone_index: u32,
     },
     MissingObjectRecord {
         object: SceneObjectHandle,
@@ -940,6 +969,11 @@ impl fmt::Display for SceneSemanticWorldError {
             } => write!(
                 f,
                 "scene semantic object {} references missing puppet record {puppet_index}",
+                object.0
+            ),
+            Self::NonInvertiblePuppetBindMatrix { object, bone_index } => write!(
+                f,
+                "scene semantic puppet object {} bone {bone_index} has a non-invertible bind matrix",
                 object.0
             ),
             Self::MissingObjectRecord {
@@ -1130,8 +1164,8 @@ mod tests {
         assert_eq!(frame.puppet_bone_palettes[0].object, SceneObjectHandle(0));
         assert_eq!(frame.puppet_bone_palettes[0].bone_count, 1);
         assert_eq!(frame.puppet_bone_matrices[0].bone_index, 41);
-        assert_close(frame.puppet_bone_matrices[0].matrix[12], 10.0);
-        assert_close(frame.puppet_bone_matrices[0].matrix[13], 20.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[12], 0.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[13], 0.0);
         assert_close(child.world_matrix[12], 17.0);
         assert_close(child.world_matrix[13], 30.0);
     }
@@ -1150,6 +1184,10 @@ mod tests {
                 layer_index: 0,
                 additive: false,
                 autosort: false,
+                visible: true,
+                playback_rate: 1.0,
+                blend_weight: 1.0,
+                initial_progress: 0.0,
             });
         document
             .puppet_animation_transform_samples
@@ -1158,6 +1196,9 @@ mod tests {
             .puppet_animation_transform_samples
             .push(animation_sample([30.0, 40.0, 0.0]));
         document
+            .puppet_animation_opacity_samples
+            .extend([1.0, 0.25]);
+        document
             .puppet_animation_tracks
             .push(ScenePuppetAnimationTrackRecord {
                 clip: 0,
@@ -1165,6 +1206,9 @@ mod tests {
                 track_flags: 0,
                 sample_start: 0,
                 sample_count: 2,
+                opacity_flags: 9,
+                opacity_sample_start: 0,
+                opacity_sample_count: 2,
             });
         document
             .puppet_animation_clips
@@ -1184,14 +1228,78 @@ mod tests {
         let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
 
         let frame = world
-            .resolve_frame_at(1.0 / 30.0)
+            .resolve_frame_at(1.0 / 60.0)
             .expect("resolved animated frame");
         let child = frame.object(SceneObjectHandle(1)).expect("child state");
 
-        assert_close(frame.puppet_bone_matrices[0].matrix[12], 40.0);
-        assert_close(frame.puppet_bone_matrices[0].matrix[13], 60.0);
-        assert_close(child.world_matrix[12], 47.0);
-        assert_close(child.world_matrix[13], 70.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[12], 15.5);
+        assert_close(frame.puppet_bone_matrices[0].matrix[13], 21.0);
+        assert_close(frame.puppet_bone_matrices[0].alpha, 0.625);
+        assert_close(child.world_matrix[12], 32.5);
+        assert_close(child.world_matrix[13], 51.0);
+        let graph = crate::engine::scene::RenderingServer::new(&storage)
+            .rendering_device_graph_plan_at(1.0 / 60.0);
+        assert_close(graph.puppet_bone_matrices[0].alpha, 0.625);
+    }
+
+    #[test]
+    fn resolve_frame_applies_additive_puppet_delta_from_bind_pose() {
+        let mut document = attachment_document();
+        document
+            .strings
+            .extend(["pose-delta".to_owned(), "single".to_owned()]);
+        document.puppet_bones[0].local_bind_matrix = translated_attachment_matrix(10.0, 20.0);
+        document
+            .object_animation_layers
+            .push(SceneObjectAnimationLayerRecord {
+                object: SceneObjectHandle(0),
+                animation_id: 549,
+                layer_index: 0,
+                additive: true,
+                autosort: false,
+                visible: true,
+                playback_rate: 1.0,
+                blend_weight: 1.0,
+                initial_progress: 0.0,
+            });
+        document
+            .puppet_animation_transform_samples
+            .push(animation_sample([13.0, 24.0, 0.0]));
+        document
+            .puppet_animation_tracks
+            .push(ScenePuppetAnimationTrackRecord {
+                clip: 0,
+                bone_index: 41,
+                track_flags: 0,
+                sample_start: 0,
+                sample_count: 1,
+                opacity_flags: 0,
+                opacity_sample_start: 0,
+                opacity_sample_count: 0,
+            });
+        document
+            .puppet_animation_clips
+            .push(ScenePuppetAnimationClipRecord {
+                puppet: 0,
+                clip_id: 549,
+                flags: 0,
+                name: SceneStringId(2),
+                playback: SceneStringId(3),
+                fps: 30.0,
+                frame_count: 1,
+                frame_metadata: 0,
+                track_start: 0,
+                track_count: 1,
+            });
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+        let frame = world.resolve_frame().expect("resolved additive frame");
+        let child = frame.object(SceneObjectHandle(1)).expect("child state");
+
+        assert_close(frame.puppet_bone_matrices[0].matrix[12], 3.0);
+        assert_close(frame.puppet_bone_matrices[0].matrix[13], 4.0);
+        assert_close(child.world_matrix[12], 30.0);
+        assert_close(child.world_matrix[13], 54.0);
     }
 
     #[test]
@@ -1224,6 +1332,8 @@ mod tests {
                 SceneMeshVertexRecord {
                     position: SceneVec3::default(),
                     uv: [0.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 };
                 12
             ],
@@ -1241,10 +1351,11 @@ mod tests {
             puppet_bones: vec![ScenePuppetBoneRecord {
                 puppet: 0,
                 bone_index: 41,
-                flags: 0,
+                name: SceneStringId(0),
+                simulation_type: 0,
                 parent_index: -1,
-                local_matrix: identity_matrix(),
-                info: SceneStringId(0),
+                local_bind_matrix: identity_matrix(),
+                simulation_json: SceneStringId::NONE,
             }],
             puppet_attachments: vec![ScenePuppetAttachmentRecord {
                 puppet: 0,
@@ -1271,6 +1382,8 @@ mod tests {
                 SceneMeshVertexRecord {
                     position: SceneVec3::default(),
                     uv: [0.0, 0.0],
+                    blend_indices: [0; 4],
+                    blend_weights: [0.0; 4],
                 };
                 8
             ],
@@ -1288,10 +1401,11 @@ mod tests {
             puppet_bones: vec![ScenePuppetBoneRecord {
                 puppet: 0,
                 bone_index: 41,
-                flags: 0,
+                name: SceneStringId(0),
+                simulation_type: 0,
                 parent_index: -1,
-                local_matrix: identity_matrix(),
-                info: SceneStringId(0),
+                local_bind_matrix: identity_matrix(),
+                simulation_json: SceneStringId::NONE,
             }],
             puppet_attachments: vec![ScenePuppetAttachmentRecord {
                 puppet: 0,

@@ -16,8 +16,10 @@ use std::io::{self, Read, Write};
 
 use super::abi::*;
 
+mod texture;
 mod timeline;
 
+use texture::{decode_texture_mips, decode_textures, encode_texture_mips, encode_textures};
 use timeline::{SceneTimelineRecords, decode_timelines, encode_timelines};
 
 const HEADER_LEN: usize = 36;
@@ -31,12 +33,15 @@ pub struct SceneBinaryDocument {
     pub resources: Vec<SceneResourceRecord>,
     pub resource_payload: Vec<u8>,
     pub textures: Vec<SceneTextureRecord>,
+    pub texture_mips: Vec<SceneTextureMipRecord>,
+    pub texture_payload: Vec<u8>,
     pub objects: Vec<SceneObjectRecord>,
     pub object_effects: Vec<SceneObjectEffectRecord>,
     pub object_animation_layers: Vec<SceneObjectAnimationLayerRecord>,
     pub puppet_animation_clips: Vec<ScenePuppetAnimationClipRecord>,
     pub puppet_animation_tracks: Vec<ScenePuppetAnimationTrackRecord>,
     pub puppet_animation_transform_samples: Vec<ScenePuppetAnimationTransformSampleRecord>,
+    pub puppet_animation_opacity_samples: Vec<f32>,
     pub materials: Vec<SceneMaterialRecord>,
     pub material_passes: Vec<SceneMaterialPassRecord>,
     pub material_textures: Vec<SceneMaterialTextureRecord>,
@@ -70,12 +75,15 @@ impl Default for SceneBinaryDocument {
             resources: Vec::new(),
             resource_payload: Vec::new(),
             textures: Vec::new(),
+            texture_mips: Vec::new(),
+            texture_payload: Vec::new(),
             objects: Vec::new(),
             object_effects: Vec::new(),
             object_animation_layers: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
+            puppet_animation_opacity_samples: Vec::new(),
             materials: Vec::new(),
             material_passes: Vec::new(),
             material_textures: Vec::new(),
@@ -248,6 +256,20 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     )?;
     let textures = decode_textures(chunk_payload(&chunks, CHUNK_TEXTURE)?)?;
     ensure_chunk_count(&chunks, CHUNK_TEXTURE, "textures", textures.len())?;
+    let texture_mips = decode_texture_mips(chunk_payload(&chunks, CHUNK_TEXTURE_MIP)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_TEXTURE_MIP,
+        "texture mips",
+        texture_mips.len(),
+    )?;
+    let texture_payload = chunk_payload(&chunks, CHUNK_TEXTURE_PAYLOAD)?.to_vec();
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_TEXTURE_PAYLOAD,
+        "texture payload owners",
+        textures.len(),
+    )?;
     let (objects, object_effects) =
         decode_scene_objects(chunk_payload(&chunks, CHUNK_SCENE_OBJECT)?)?;
     ensure_chunk_count(&chunks, CHUNK_SCENE_OBJECT, "scene objects", objects.len())?;
@@ -267,6 +289,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
+        puppet_animation_opacity_samples,
     } = decode_timelines(chunk_payload(&chunks, CHUNK_TIMELINE)?)?;
     ensure_chunk_count(
         &chunks,
@@ -312,12 +335,15 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         resources,
         resource_payload,
         textures,
+        texture_mips,
+        texture_payload,
         objects,
         object_effects,
         object_animation_layers,
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
+        puppet_animation_opacity_samples,
         materials,
         material_passes,
         material_textures,
@@ -443,6 +469,16 @@ fn encode_chunks(
             data: encode_textures(&document.textures),
         },
         SceneEncodedChunk {
+            kind: CHUNK_TEXTURE_MIP,
+            item_count: checked_u32(document.texture_mips.len(), "texture mip count")?,
+            data: encode_texture_mips(&document.texture_mips),
+        },
+        SceneEncodedChunk {
+            kind: CHUNK_TEXTURE_PAYLOAD,
+            item_count: checked_u32(document.textures.len(), "texture payload owner count")?,
+            data: document.texture_payload.clone(),
+        },
+        SceneEncodedChunk {
             kind: CHUNK_MATERIAL,
             item_count: checked_u32(document.materials.len(), "material count")?,
             data: encode_materials(
@@ -486,6 +522,7 @@ fn encode_chunks(
                 &document.puppet_animation_clips,
                 &document.puppet_animation_tracks,
                 &document.puppet_animation_transform_samples,
+                &document.puppet_animation_opacity_samples,
             )?,
         },
         SceneEncodedChunk {
@@ -674,47 +711,6 @@ fn decode_resources(data: &[u8]) -> Result<Vec<SceneResourceRecord>, SceneBinary
             kind,
             path: decoder.string_id()?,
             source: decoder.string_id()?,
-            payload_offset: decoder.u64()?,
-            payload_len: decoder.u64()?,
-        });
-    }
-    Ok(records)
-}
-
-fn encode_textures(textures: &[SceneTextureRecord]) -> Vec<u8> {
-    let mut out = Vec::new();
-    put_u32(&mut out, textures.len() as u32);
-    for record in textures {
-        put_resource_id(&mut out, record.resource);
-        put_u32(&mut out, record.format);
-        put_u32(&mut out, record.width);
-        put_u32(&mut out, record.height);
-        put_u32(&mut out, record.storage_width);
-        put_u32(&mut out, record.storage_height);
-        put_u32(&mut out, record.mip_count);
-        put_string_id(&mut out, record.texv_tag);
-        put_string_id(&mut out, record.texb_tag);
-        put_u64(&mut out, record.payload_offset);
-        put_u64(&mut out, record.payload_len);
-    }
-    out
-}
-
-fn decode_textures(data: &[u8]) -> Result<Vec<SceneTextureRecord>, SceneBinaryError> {
-    let mut decoder = Decoder::new(data);
-    let count = decoder.u32()? as usize;
-    let mut records = Vec::with_capacity(count);
-    for _ in 0..count {
-        records.push(SceneTextureRecord {
-            resource: decoder.resource_id()?,
-            format: decoder.u32()?,
-            width: decoder.u32()?,
-            height: decoder.u32()?,
-            storage_width: decoder.u32()?,
-            storage_height: decoder.u32()?,
-            mip_count: decoder.u32()?,
-            texv_tag: decoder.string_id()?,
-            texb_tag: decoder.string_id()?,
             payload_offset: decoder.u64()?,
             payload_len: decoder.u64()?,
         });
@@ -956,6 +952,12 @@ fn encode_meshes(
         put_vec3(&mut out, vertex.position);
         put_f32(&mut out, vertex.uv[0]);
         put_f32(&mut out, vertex.uv[1]);
+        for index in vertex.blend_indices {
+            put_u32(&mut out, index);
+        }
+        for weight in vertex.blend_weights {
+            put_f32(&mut out, weight);
+        }
     }
     put_u32(&mut out, checked_u32(indices.len(), "mesh index count")?);
     for index in indices {
@@ -990,6 +992,18 @@ fn decode_meshes(
         vertices.push(SceneMeshVertexRecord {
             position: decoder.vec3()?,
             uv: [decoder.f32()?, decoder.f32()?],
+            blend_indices: [
+                decoder.u32()?,
+                decoder.u32()?,
+                decoder.u32()?,
+                decoder.u32()?,
+            ],
+            blend_weights: [
+                decoder.f32()?,
+                decoder.f32()?,
+                decoder.f32()?,
+                decoder.f32()?,
+            ],
         });
     }
     let index_count = decoder.u32()? as usize;
@@ -1021,12 +1035,13 @@ fn encode_puppets(
     for record in bones {
         put_u32(&mut out, record.puppet);
         put_u32(&mut out, record.bone_index);
-        put_u32(&mut out, record.flags);
+        put_string_id(&mut out, record.name);
+        put_i32(&mut out, record.simulation_type);
         put_i32(&mut out, record.parent_index);
-        for value in record.local_matrix {
+        for value in record.local_bind_matrix {
             put_f32(&mut out, value);
         }
-        put_string_id(&mut out, record.info);
+        put_string_id(&mut out, record.simulation_json);
     }
     put_u32(
         &mut out,
@@ -1074,19 +1089,21 @@ fn decode_puppets(
         let mut local_matrix = [0.0; 16];
         let puppet = decoder.u32()?;
         let bone_index = decoder.u32()?;
-        let flags = decoder.u32()?;
+        let name = decoder.string_id()?;
+        let simulation_type = decoder.i32()?;
         let parent_index = decoder.i32()?;
         for item in &mut local_matrix {
             *item = decoder.f32()?;
         }
-        let info = decoder.string_id()?;
+        let simulation_json = decoder.string_id()?;
         bones.push(ScenePuppetBoneRecord {
             puppet,
             bone_index,
-            flags,
+            name,
+            simulation_type,
             parent_index,
-            local_matrix,
-            info,
+            local_bind_matrix: local_matrix,
+            simulation_json,
         });
     }
     let attachment_count = decoder.u32()? as usize;
@@ -1257,6 +1274,7 @@ fn encode_render_graphs(
         put_u32(&mut out, record.binding_start);
         put_u32(&mut out, record.binding_count);
         put_u32(&mut out, record.pipeline_blend.to_u32());
+        put_u32(&mut out, record.scene_blend.to_u32());
         put_u32(&mut out, record.depth_test.to_u32());
         put_bool(&mut out, record.depth_write);
         put_u32(&mut out, record.cull_mode.to_u32());
@@ -1336,6 +1354,11 @@ fn decode_render_graphs(data: &[u8]) -> Result<RenderGraphDecode, SceneBinaryErr
                 let value = decoder.u32()?;
                 ScenePipelineBlend::from_u32(value)
                     .ok_or(SceneBinaryError::InvalidChunkValue("pipeline blend", value))?
+            },
+            scene_blend: {
+                let value = decoder.u32()?;
+                SceneCompositeBlend::from_u32(value)
+                    .ok_or(SceneBinaryError::InvalidChunkValue("scene blend", value))?
             },
             depth_test: {
                 let value = decoder.u32()?;
@@ -1663,6 +1686,10 @@ mod tests {
                 layer_index: 2,
                 additive: true,
                 autosort: false,
+                visible: true,
+                playback_rate: 0.8,
+                blend_weight: 0.7,
+                initial_progress: 0.94,
             });
         document.puppet_animation_transform_samples.push(
             ScenePuppetAnimationTransformSampleRecord {
@@ -1679,6 +1706,7 @@ mod tests {
                 },
             },
         );
+        document.puppet_animation_opacity_samples.push(0.5);
         document
             .puppet_animation_tracks
             .push(ScenePuppetAnimationTrackRecord {
@@ -1687,6 +1715,9 @@ mod tests {
                 track_flags: 7,
                 sample_start: 0,
                 sample_count: 1,
+                opacity_flags: 9,
+                opacity_sample_start: 0,
+                opacity_sample_count: 1,
             });
         document
             .puppet_animation_clips
@@ -1730,6 +1761,8 @@ mod tests {
                     z: 0.0,
                 },
                 uv: [0.0, 1.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             SceneMeshVertexRecord {
                 position: SceneVec3 {
@@ -1738,6 +1771,8 @@ mod tests {
                     z: 0.0,
                 },
                 uv: [1.0, 1.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             SceneMeshVertexRecord {
                 position: SceneVec3 {
@@ -1746,6 +1781,8 @@ mod tests {
                     z: 0.0,
                 },
                 uv: [1.0, 0.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
             SceneMeshVertexRecord {
                 position: SceneVec3 {
@@ -1754,6 +1791,8 @@ mod tests {
                     z: 0.0,
                 },
                 uv: [0.0, 0.0],
+                blend_indices: [0; 4],
+                blend_weights: [0.0; 4],
             },
         ]);
         document.mesh_indices.extend([0, 1, 2, 0, 2, 3]);
@@ -1770,10 +1809,11 @@ mod tests {
         document.puppet_bones.push(ScenePuppetBoneRecord {
             puppet: 0,
             bone_index: 41,
-            flags: 3,
+            name: SceneStringId(6),
+            simulation_type: 3,
             parent_index: -1,
-            local_matrix: [1.0; 16],
-            info: SceneStringId(6),
+            local_bind_matrix: [1.0; 16],
+            simulation_json: SceneStringId::NONE,
         });
         document
             .puppet_attachments
@@ -1798,9 +1838,12 @@ mod tests {
         assert_eq!(decoded.resource_payload, vec![1, 2, 3, 4]);
         assert_eq!(decoded.object_animation_layers[0].animation_id, 475);
         assert!(decoded.object_animation_layers[0].additive);
+        assert_eq!(decoded.object_animation_layers[0].initial_progress, 0.94);
         assert_eq!(decoded.puppet_animation_clips[0].clip_id, 475);
         assert_eq!(decoded.puppet_animation_clips[0].track_count, 1);
         assert_eq!(decoded.puppet_animation_tracks[0].bone_index, 41);
+        assert_eq!(decoded.puppet_animation_tracks[0].opacity_flags, 9);
+        assert_eq!(decoded.puppet_animation_opacity_samples, [0.5]);
         assert_eq!(
             decoded.puppet_animation_transform_samples[0].translation.y,
             2.0
@@ -1841,5 +1884,45 @@ mod tests {
                 actual: 1,
             }
         ));
+    }
+
+    #[test]
+    fn scene_binary_round_trip_preserves_composite_blend() {
+        let document = SceneBinaryDocument {
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(0),
+                pass_start: 0,
+                pass_count: 1,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 0,
+                role: SceneRenderPassKind::SceneComposite,
+                object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                pass_index: 0,
+                shader_key: SceneStringId::NONE,
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                scene_blend: SceneCompositeBlend::Modulate,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+            }],
+            ..SceneBinaryDocument::default()
+        };
+        let mut bytes = Vec::new();
+
+        write_scene_binary(&document, &mut bytes).expect("write scene binary");
+        let decoded = read_scene_binary_bytes(&bytes).expect("read scene binary");
+
+        assert_eq!(
+            decoded.render_passes[0].scene_blend,
+            SceneCompositeBlend::Modulate
+        );
     }
 }

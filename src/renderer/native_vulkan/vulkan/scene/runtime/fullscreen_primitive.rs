@@ -15,13 +15,14 @@ pub(in crate::renderer::native_vulkan) fn graph_uses_fullscreen_utility_primitiv
 
 pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_vertices(payload: &mut Vec<u8>) {
     for (x, y, u, v) in [
-        (-1.0f32, -1.0f32, 0.0f32, 1.0f32),
-        (3.0f32, -1.0f32, 2.0f32, 1.0f32),
-        (-1.0f32, 3.0f32, 0.0f32, -1.0f32),
+        (-1.0f32, -1.0f32, 0.0f32, 0.0f32),
+        (3.0f32, -1.0f32, 2.0f32, 0.0f32),
+        (-1.0f32, 3.0f32, 0.0f32, 2.0f32),
     ] {
         for value in [x, y, u, v, 1.0] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&[0; 32]);
     }
 }
 
@@ -46,12 +47,15 @@ mod tests {
         append_fullscreen_triangle_vertices(&mut vertices);
         append_fullscreen_triangle_indices(&mut indices);
 
-        assert_eq!(vertices.len(), 3 * 20);
+        assert_eq!(vertices.len(), 3 * 52);
         assert_eq!(indices.len(), 3 * 4);
         assert_eq!(f32_at(&vertices, 0), -1.0);
-        assert_eq!(f32_at(&vertices, 20), 3.0);
-        assert_eq!(f32_at(&vertices, 44), 3.0);
-        assert_eq!(f32_at(&vertices, 48), 0.0);
+        assert_eq!(f32_at(&vertices, 52), 3.0);
+        assert_eq!(f32_at(&vertices, 60), 2.0);
+        assert_eq!(f32_at(&vertices, 108), 3.0);
+        assert_eq!(f32_at(&vertices, 112), 0.0);
+        assert_eq!(f32_at(&vertices, 116), 2.0);
+        assert_eq!(u32_at(&vertices, 20), 0);
         assert_eq!(u32_at(&indices, 8), 2);
     }
 
@@ -78,6 +82,7 @@ mod tests {
             }],
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             pass_nodes: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

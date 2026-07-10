@@ -123,11 +123,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::native_vulkan_video_playback_frame_count;
     use gilder::renderer::native_vulkan::{
-        NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSurfaceProbeOptions,
-        NativeVulkanVideoSessionSmokeOptions, backend_contract, capabilities,
-        native_vulkan_scene_backend_plan, native_vulkan_video_duration_playback_frames,
-        native_vulkan_video_run_route, probe_vulkan_video_decode, probe_wayland_surface, run_clear,
-        run_scene, run_static_image, wallpaper_type_support_matrix,
+        NativeVulkanAudioOutputPolicy, NativeVulkanOptions, NativeVulkanSceneRunOptions,
+        NativeVulkanSurfaceProbeOptions, NativeVulkanVideoSessionSmokeOptions, backend_contract,
+        capabilities, native_vulkan_scene_backend_plan,
+        native_vulkan_video_duration_playback_frames, native_vulkan_video_run_route,
+        probe_vulkan_video_decode, probe_wayland_surface, run_clear, run_scene_with_options,
+        run_static_image, wallpaper_type_support_matrix,
     };
     #[cfg(feature = "native-vulkan-video")]
     use gilder::renderer::native_vulkan::{
@@ -159,6 +160,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
+    let mut capture_frame = None::<PathBuf>;
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
@@ -296,6 +298,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--source" => {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
             }
+            "--capture-frame" => {
+                capture_frame = Some(parse_capture_frame_path(args.next())?);
+            }
             "--scene-video" => {
                 return Err("--scene-video was removed with the old scene CLI".into());
             }
@@ -431,6 +436,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             options.host.layer.as_str()
         )
         .into());
+    }
+    if capture_frame.is_some() && mode != NativeVulkanCliMode::RunScene {
+        return Err("--capture-frame requires --run-scene".into());
     }
 
     let duration_playback_frames = if duration_set {
@@ -609,7 +617,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !source.is_file() {
                 return Err(format!("scene source does not exist: {}", source.display()).into());
             }
-            json!(run_scene(options, duration, source)?)
+            json!(run_scene_with_options(
+                options,
+                duration,
+                source,
+                NativeVulkanSceneRunOptions { capture_frame },
+            )?)
         }
         NativeVulkanCliMode::RunVideo => {
             let source = source.ok_or("--run-video requires --source")?;
@@ -785,6 +798,14 @@ fn parse_fit_mode(value: &str) -> Result<FitMode, String> {
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_capture_frame_path(value: Option<String>) -> Result<PathBuf, &'static str> {
+    value
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or("--capture-frame requires a path")
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn parse_decoder_policy(
     value: &str,
 ) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
@@ -848,10 +869,11 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
 --run-scene reads --source file.gscene, validates the scene engine backend plan and runs the FIFO latest ready scene present loop.\n\
+--capture-frame PATH writes the first completed --run-scene frame directly from the Vulkan swapchain as an RGBA8 PNG.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
-         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b]\n\
+         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
@@ -864,4 +886,25 @@ Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-
          [--require-h265-ready-prefix N] [--playback-frames N]\n\
          [--start-offset-ms MS]"
     );
+}
+
+#[cfg(all(test, feature = "native-vulkan-renderer"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn capture_frame_path_accepts_a_png_destination() {
+        assert_eq!(
+            parse_capture_frame_path(Some("/tmp/scene.png".to_owned())).unwrap(),
+            PathBuf::from("/tmp/scene.png")
+        );
+    }
+
+    #[test]
+    fn capture_frame_path_requires_a_value() {
+        assert_eq!(
+            parse_capture_frame_path(None).unwrap_err(),
+            "--capture-frame requires a path"
+        );
+    }
 }

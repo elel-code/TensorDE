@@ -18,6 +18,7 @@ pub(super) struct SceneTimelineRecords {
     pub puppet_animation_clips: Vec<ScenePuppetAnimationClipRecord>,
     pub puppet_animation_tracks: Vec<ScenePuppetAnimationTrackRecord>,
     pub puppet_animation_transform_samples: Vec<ScenePuppetAnimationTransformSampleRecord>,
+    pub puppet_animation_opacity_samples: Vec<f32>,
 }
 
 pub(super) fn encode_timelines(
@@ -25,6 +26,7 @@ pub(super) fn encode_timelines(
     puppet_clips: &[ScenePuppetAnimationClipRecord],
     puppet_tracks: &[ScenePuppetAnimationTrackRecord],
     transform_samples: &[ScenePuppetAnimationTransformSampleRecord],
+    opacity_samples: &[f32],
 ) -> Result<Vec<u8>, SceneBinaryError> {
     let mut out = Vec::new();
     put_u32(
@@ -37,6 +39,10 @@ pub(super) fn encode_timelines(
         put_u32(&mut out, record.layer_index);
         put_bool(&mut out, record.additive);
         put_bool(&mut out, record.autosort);
+        put_bool(&mut out, record.visible);
+        put_f32(&mut out, record.playback_rate);
+        put_f32(&mut out, record.blend_weight);
+        put_f32(&mut out, record.initial_progress);
     }
     put_u32(
         &mut out,
@@ -64,6 +70,9 @@ pub(super) fn encode_timelines(
         put_u32(&mut out, record.track_flags);
         put_u32(&mut out, record.sample_start);
         put_u32(&mut out, record.sample_count);
+        put_u32(&mut out, record.opacity_flags);
+        put_u32(&mut out, record.opacity_sample_start);
+        put_u32(&mut out, record.opacity_sample_count);
     }
     put_u32(
         &mut out,
@@ -76,6 +85,16 @@ pub(super) fn encode_timelines(
         put_vec3(&mut out, record.translation);
         put_vec3(&mut out, record.rotation);
         put_vec3(&mut out, record.scale);
+    }
+    put_u32(
+        &mut out,
+        checked_u32(
+            opacity_samples.len(),
+            "puppet animation opacity sample count",
+        )?,
+    );
+    for sample in opacity_samples {
+        put_f32(&mut out, *sample);
     }
     Ok(out)
 }
@@ -91,6 +110,10 @@ pub(super) fn decode_timelines(data: &[u8]) -> Result<SceneTimelineRecords, Scen
             layer_index: decoder.u32()?,
             additive: decoder.bool()?,
             autosort: decoder.bool()?,
+            visible: decoder.bool()?,
+            playback_rate: decoder.f32()?,
+            blend_weight: decoder.f32()?,
+            initial_progress: decoder.f32()?,
         });
     }
     let clip_count = decoder.u32()? as usize;
@@ -118,6 +141,9 @@ pub(super) fn decode_timelines(data: &[u8]) -> Result<SceneTimelineRecords, Scen
             track_flags: decoder.u32()?,
             sample_start: decoder.u32()?,
             sample_count: decoder.u32()?,
+            opacity_flags: decoder.u32()?,
+            opacity_sample_start: decoder.u32()?,
+            opacity_sample_count: decoder.u32()?,
         });
     }
     let sample_count = decoder.u32()? as usize;
@@ -129,11 +155,17 @@ pub(super) fn decode_timelines(data: &[u8]) -> Result<SceneTimelineRecords, Scen
             scale: decoder.vec3()?,
         });
     }
+    let opacity_sample_count = decoder.u32()? as usize;
+    let mut puppet_animation_opacity_samples = Vec::with_capacity(opacity_sample_count);
+    for _ in 0..opacity_sample_count {
+        puppet_animation_opacity_samples.push(decoder.f32()?);
+    }
     Ok(SceneTimelineRecords {
         object_animation_layers,
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
+        puppet_animation_opacity_samples,
     })
 }
 

@@ -152,7 +152,21 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
             unsafe {
                 std::ptr::copy_nonoverlapping(payload.as_ptr(), mapped_ptr.cast(), payload.len());
             }
-            native_vulkan_vulkanalia_unmap_memory2(device, memory, role)?;
+            let flush_result = if host_coherent {
+                Ok(())
+            } else {
+                let range = vk::MappedMemoryRange::builder()
+                    .memory(memory)
+                    .offset(0)
+                    .size(vk::WHOLE_SIZE)
+                    .build();
+                unsafe { device.flush_mapped_memory_ranges(&[range]) }.map_err(|err| {
+                    format!("vkFlushMappedMemoryRanges(vulkanalia {role} initial upload): {err:?}")
+                })
+            };
+            let unmap_result = native_vulkan_vulkanalia_unmap_memory2(device, memory, role);
+            flush_result?;
+            unmap_result?;
             true
         } else {
             false
@@ -197,6 +211,102 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_buffer
         }
     }
     result
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_write_host_buffer(
+    device: &Device,
+    buffer: &NativeVulkanVulkanaliaBuffer,
+    payload: &[u8],
+) -> Result<(), String> {
+    let role = buffer.snapshot.role;
+    if payload.len() as u64 > buffer.snapshot.requested_bytes {
+        return Err(format!(
+            "{role} update payload {} exceeds requested buffer size {}",
+            payload.len(),
+            buffer.snapshot.requested_bytes
+        ));
+    }
+    if !buffer
+        .snapshot
+        .selected_memory_property_flags
+        .contains(&"host-visible")
+    {
+        return Err(format!("{role} update requires host-visible memory"));
+    }
+    let mapped_ptr = native_vulkan_vulkanalia_map_memory2(
+        device,
+        buffer.memory,
+        0,
+        buffer.snapshot.memory_size,
+        vk::MemoryMapFlags::empty(),
+        role,
+    )?;
+    unsafe {
+        std::ptr::copy_nonoverlapping(payload.as_ptr(), mapped_ptr.cast(), payload.len());
+    }
+    let flush_result = if buffer.snapshot.host_coherent {
+        Ok(())
+    } else {
+        let range = vk::MappedMemoryRange::builder()
+            .memory(buffer.memory)
+            .offset(0)
+            .size(vk::WHOLE_SIZE)
+            .build();
+        unsafe { device.flush_mapped_memory_ranges(&[range]) }
+            .map_err(|err| format!("vkFlushMappedMemoryRanges(vulkanalia {role}): {err:?}"))
+    };
+    let unmap_result = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, role);
+    flush_result?;
+    unmap_result
+}
+
+pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_read_host_buffer(
+    device: &Device,
+    buffer: &NativeVulkanVulkanaliaBuffer,
+    byte_count: u64,
+) -> Result<Vec<u8>, String> {
+    let role = buffer.snapshot.role;
+    if byte_count > buffer.snapshot.requested_bytes {
+        return Err(format!(
+            "{role} read byte count {byte_count} exceeds requested buffer size {}",
+            buffer.snapshot.requested_bytes
+        ));
+    }
+    if !buffer
+        .snapshot
+        .selected_memory_property_flags
+        .contains(&"host-visible")
+    {
+        return Err(format!("{role} read requires host-visible memory"));
+    }
+    let byte_count = usize::try_from(byte_count)
+        .map_err(|_| format!("{role} read byte count does not fit host address space"))?;
+    let mapped_ptr = native_vulkan_vulkanalia_map_memory2(
+        device,
+        buffer.memory,
+        0,
+        buffer.snapshot.memory_size,
+        vk::MemoryMapFlags::empty(),
+        role,
+    )?;
+    let invalidate_result = if buffer.snapshot.host_coherent {
+        Ok(())
+    } else {
+        let range = vk::MappedMemoryRange::builder()
+            .memory(buffer.memory)
+            .offset(0)
+            .size(vk::WHOLE_SIZE)
+            .build();
+        unsafe { device.invalidate_mapped_memory_ranges(&[range]) }
+            .map_err(|err| format!("vkInvalidateMappedMemoryRanges(vulkanalia {role}): {err:?}"))
+    };
+    let payload = invalidate_result.as_ref().ok().map(|()| unsafe {
+        std::slice::from_raw_parts(mapped_ptr.cast::<u8>(), byte_count).to_vec()
+    });
+    let unmap_result = native_vulkan_vulkanalia_unmap_memory2(device, buffer.memory, role);
+    invalidate_result?;
+    unmap_result?;
+    payload.ok_or_else(|| format!("{role} readback payload was not produced"))
 }
 
 pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload(

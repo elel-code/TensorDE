@@ -298,9 +298,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_initial_lay
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_passes(
+pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passes(
     device: &Device,
     command_buffer: vk::CommandBuffer,
+    graph_index: u32,
     commands: &[SceneEffectTargetCommand],
     target_allocations: &[SceneRenderingDeviceTargetAllocation],
     initial_reference_physical_slots: &[u32],
@@ -335,7 +336,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_passes(
         })
         .map(|reference| reference.key)
         .collect::<Vec<_>>();
-    for command in commands {
+    for command in commands
+        .iter()
+        .filter(|command| command.target.graph_index == graph_index)
+    {
         match command.kind {
             SceneEffectTargetCommandKind::Copy => {
                 record_copy_command(device, command_buffer, *command, resources, &references)?;
@@ -1116,6 +1120,7 @@ mod tests {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
             sampled_bindings: Vec::new(),
+            material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),

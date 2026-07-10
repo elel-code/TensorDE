@@ -20,7 +20,8 @@ pub use binary::{
     write_scene_binary,
 };
 pub use rendering_device_graph::{
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
+    SceneRenderingDeviceMaterialSampledBinding, SceneRenderingDeviceMeshDraw,
     SceneRenderingDevicePassNode, SceneRenderingDevicePuppetBoneMatrix,
     SceneRenderingDevicePuppetBonePalette, SceneRenderingDeviceSampledBinding,
     SceneRenderingDeviceTargetAllocation,

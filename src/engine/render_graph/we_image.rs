@@ -33,6 +33,7 @@ pub struct WeImageGraphContract {
     pub object_index: usize,
     pub base_material_index: Option<usize>,
     pub base_shader: Option<String>,
+    pub base_material_blending: Option<String>,
     pub base_texture_slots: Vec<u32>,
     pub base_pass_constants: Vec<String>,
     pub final_scene_blend: SceneBlendMode,
@@ -42,6 +43,7 @@ pub struct WeImageGraphContract {
 pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     let mut graph = RenderGraph::default();
     let has_effects = !contract.effect_passes.is_empty();
+    let final_pipeline_blend = final_pipeline_blend(contract);
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::BaseMaterial,
@@ -74,6 +76,11 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             )
             .collect(),
         state: PassState {
+            pipeline_blend: if has_effects {
+                PipelineBlendMode::Normal
+            } else {
+                final_pipeline_blend
+            },
             scene_blend: if has_effects {
                 SceneBlendMode::Normal
             } else {
@@ -96,6 +103,9 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 RenderTargetRole::ImageLocalMain
             };
         }
+        if node.target == RenderTargetRole::SceneColor {
+            node.state.pipeline_blend = final_pipeline_blend;
+        }
         if node.bindings.is_empty() {
             node.bindings
                 .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
@@ -112,6 +122,18 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         graph.passes.push(node);
     }
     graph
+}
+
+fn final_pipeline_blend(contract: &WeImageGraphContract) -> PipelineBlendMode {
+    match contract.final_scene_blend {
+        SceneBlendMode::Additive => PipelineBlendMode::Additive,
+        SceneBlendMode::AlphaToCoverage => PipelineBlendMode::AlphaToCoverage,
+        _ => contract
+            .base_material_blending
+            .as_deref()
+            .map(PipelineBlendMode::from_we_material_blending)
+            .unwrap_or(PipelineBlendMode::Normal),
+    }
 }
 
 pub fn we_effect_pass_node(
@@ -281,6 +303,7 @@ mod tests {
             object_index: 7,
             base_material_index: Some(3),
             base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
             base_texture_slots: vec![1],
             base_pass_constants: vec!["tint".to_owned()],
             final_scene_blend: SceneBlendMode::Alpha,
@@ -347,6 +370,10 @@ mod tests {
         assert_eq!(graph.passes[1].target, RenderTargetRole::NamedFbo);
         assert_eq!(graph.passes[2].role, RenderPassRole::ColorBlendPassthrough);
         assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+        assert_eq!(
+            graph.passes[2].state.pipeline_blend,
+            PipelineBlendMode::Translucent
+        );
         assert!(
             graph.passes[2]
                 .bindings
@@ -375,6 +402,7 @@ mod tests {
             object_index: 9,
             base_material_index: None,
             base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: None,
             base_texture_slots: Vec::new(),
             base_pass_constants: Vec::new(),
             final_scene_blend: SceneBlendMode::Alpha,

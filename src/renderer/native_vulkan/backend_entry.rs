@@ -151,16 +151,20 @@ pub use interop::{NativeVulkanVideoInteropContract, NativeVulkanWebInteropContra
 use interop::{video_interop_contract, web_interop_contract};
 pub use render_item::{NativeVulkanRenderItem, render_items_from_sync_plan};
 pub use scene::{
-    BuiltinSceneShader, NativeVulkanSceneBackendPlan, NativeVulkanSceneDescriptorHeapPlan,
-    NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
+    BuiltinSceneParameterLayout, BuiltinSceneShader, NativeVulkanSceneBackendPlan,
+    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES,
+    NativeVulkanSceneDescriptorHeapPlan, NativeVulkanSceneHeapStoragePlan,
+    NativeVulkanSceneMeshBufferPlan,
     NativeVulkanSceneMeshUploadPlan, NativeVulkanScenePipelineCacheEntry,
     NativeVulkanScenePipelineCachePlan, NativeVulkanSceneRenderGraphCommand,
     NativeVulkanSceneRenderGraphCommandKind, NativeVulkanSceneRenderGraphExecutorPlan,
-    NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneRuntimeSnapshot,
+    NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneRunOptions,
+    NativeVulkanSceneRuntimeSnapshot,
     NativeVulkanSceneShaderHeapSlice, native_vulkan_scene_backend_plan,
     native_vulkan_scene_backend_plan_from_render_item, native_vulkan_scene_pipeline_cache_plan,
     native_vulkan_scene_render_graph_executor_plan, native_vulkan_scene_resource_storage_plan,
     native_vulkan_scene_shader_catalog, native_vulkan_scene_shader_for_key, run_scene,
+    run_scene_with_options,
 };
 pub use static_image_present_runtime::{run_static_image, run_static_image_vulkanalia};
 pub use video_codec::NativeVulkanVideoSessionCodec;
