@@ -118,6 +118,9 @@ fn scene_sampled_image_binding_plan_for_references(
             )?;
             continue;
         }
+        if pass.role == SceneRenderPassKind::CopyTarget {
+            continue;
+        }
         lower_pass_sampled_bindings(
             pass.mesh_draw_start,
             pass.mesh_draw_count,
@@ -382,6 +385,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn sampled_binding_plan_follows_lowered_ping_pong_previous_targets() {
+        let graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![
+                pass_node(0, SceneRenderPassKind::BaseMaterial, SceneStringId::NONE, 0, 1),
+                pass_node(1, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 1, 1),
+                pass_node(2, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 2, 1),
+                pass_node(3, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 3, 1),
+            ],
+            target_allocations: vec![
+                SceneRenderingDeviceTargetAllocation {
+                    graph_index: 0,
+                    target: SceneRenderTargetKind::ImageLocalMain,
+                    target_name: SceneStringId::NONE,
+                    first_write_pass_id: 0,
+                    last_use_pass_id: 3,
+                    physical_slot: 0,
+                    width: 0,
+                    height: 0,
+                },
+                SceneRenderingDeviceTargetAllocation {
+                    graph_index: 0,
+                    target: SceneRenderTargetKind::ImageLocalSub,
+                    target_name: SceneStringId::NONE,
+                    first_write_pass_id: 1,
+                    last_use_pass_id: 2,
+                    physical_slot: 1,
+                    width: 0,
+                    height: 0,
+                },
+            ],
+            sampled_bindings: vec![
+                previous_target_binding(1, 1, SceneRenderTargetKind::ImageLocalMain),
+                previous_target_binding(2, 2, SceneRenderTargetKind::ImageLocalSub),
+                previous_target_binding(3, 3, SceneRenderTargetKind::ImageLocalMain),
+            ],
+            mesh_draws: vec![draw(), draw(), draw(), draw()],
+            ..empty_graph_plan()
+        };
+
+        let plan = scene_sampled_image_binding_plan(&graph, &[0]).expect("ping-pong plan");
+
+        assert_eq!(
+            plan.source(1, 0),
+            Some(SceneSampledImageSource::EffectTarget { physical_slot: 0 })
+        );
+        assert_eq!(
+            plan.source(2, 0),
+            Some(SceneSampledImageSource::EffectTarget { physical_slot: 1 })
+        );
+        assert_eq!(
+            plan.source(3, 0),
+            Some(SceneSampledImageSource::EffectTarget { physical_slot: 0 })
+        );
+    }
+
     fn pass_node(
         pass_record_index: u32,
         role: SceneRenderPassKind,
@@ -414,6 +473,8 @@ mod tests {
             first_write_pass_id: 0,
             last_use_pass_id: 2,
             physical_slot,
+            width: 0,
+            height: 0,
         }
     }
 
@@ -436,12 +497,30 @@ mod tests {
         }
     }
 
+    fn previous_target_binding(
+        pass_node_index: u32,
+        draw_index: u32,
+        target: SceneRenderTargetKind,
+    ) -> SceneRenderingDeviceSampledBinding {
+        SceneRenderingDeviceSampledBinding {
+            pass_node_index,
+            graph_index: 0,
+            mesh_draw_start: draw_index,
+            mesh_draw_count: 1,
+            kind: crate::engine::scene::SceneRenderBindingKind::PreviousGraphTarget,
+            slot: 0,
+            target,
+            target_name: SceneStringId::NONE,
+        }
+    }
+
     fn draw() -> crate::engine::scene::SceneRenderingDeviceMeshDraw {
         crate::engine::scene::SceneRenderingDeviceMeshDraw {
             primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
             mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
             resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
             clip_transform: [[0.0; 4]; 4],
+            authored_source_extent: [0.0; 2],
             skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
             skinning_palette_count: 0,
             resolved_color: crate::engine::scene::SceneVec3 {
@@ -450,6 +529,7 @@ mod tests {
                 z: 1.0,
             },
             resolved_alpha: 1.0,
+            apply_resolved_visual: true,
             object: crate::engine::scene::SceneObjectHandle(
                 crate::engine::scene::INVALID_OBJECT_ID,
             ),

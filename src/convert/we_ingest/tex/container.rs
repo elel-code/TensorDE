@@ -100,10 +100,42 @@ fn parse_texb0004<'a>(
             width = cursor.u32("TEXB0004 level width")?;
             height = cursor.u32("TEXB0004 level height")?;
         }
-        levels.push(parse_wrapped_level(cursor, width, height)?);
+        levels.push(parse_texb0004_level(cursor, width, height)?);
     }
     let sampler_flags = payload_format | u32::from(level_count < 2) * 0x8;
     Ok((levels, sampler_flags))
+}
+
+fn parse_texb0004_level<'a>(
+    cursor: &mut Cursor<'a>,
+    width: u32,
+    height: u32,
+) -> Result<TexEncodedLevel<'a>, TexParseError> {
+    let stored_encoding = cursor.u32("TEXB0004 level encoding")?;
+    let decoded_size = cursor.u32("TEXB0004 level decoded size")?;
+    let encoded_size = cursor.u32("TEXB0004 level encoded size")?;
+    let payload = cursor.bytes(encoded_size as usize, "TEXB0004 level payload")?;
+    // TEXB0004 RGBA pattern/noise resources use encoding 0 for both stored
+    // data and LZ4. A nonzero decoded size that differs from the stored size
+    // is the unambiguous LZ4 discriminator. Encoding 1 is also observed on R8
+    // masks and retains the legacy LZ4 meaning.
+    let compression = if stored_encoding == 0 && decoded_size != 0 && decoded_size != encoded_size {
+        1
+    } else {
+        stored_encoding
+    };
+    if compression == 0 && decoded_size != 0 && decoded_size != encoded_size {
+        return Err(TexParseError::InvalidPayload(
+            "stored TEXB0004 level decoded and encoded sizes differ",
+        ));
+    }
+    Ok(TexEncodedLevel {
+        width,
+        height,
+        compression,
+        decoded_size,
+        payload,
+    })
 }
 
 fn parse_legacy_levels(
@@ -136,7 +168,7 @@ fn parse_legacy_levels(
         }
         let width = cursor.u32("legacy level width")?;
         let height = cursor.u32("legacy level height")?;
-        let level = parse_wrapped_level(&mut cursor, width, height)?;
+        let level = parse_legacy_level(&mut cursor, width, height)?;
         if cursor.offset > data_end {
             return Err(TexParseError::Truncated("legacy TEXB level payload"));
         }
@@ -145,15 +177,15 @@ fn parse_legacy_levels(
     Ok(levels)
 }
 
-fn parse_wrapped_level<'a>(
+fn parse_legacy_level<'a>(
     cursor: &mut Cursor<'a>,
     width: u32,
     height: u32,
 ) -> Result<TexEncodedLevel<'a>, TexParseError> {
-    let compression = cursor.u32("TEXB level compression")?;
-    let decoded_size = cursor.u32("TEXB level decoded size")?;
-    let encoded_size = cursor.u32("TEXB level encoded size")?;
-    let payload = cursor.bytes(encoded_size as usize, "TEXB level payload")?;
+    let compression = cursor.u32("legacy TEXB level compression")?;
+    let decoded_size = cursor.u32("legacy TEXB level decoded size")?;
+    let encoded_size = cursor.u32("legacy TEXB level encoded size")?;
+    let payload = cursor.bytes(encoded_size as usize, "legacy TEXB level payload")?;
     if compression == 0 && decoded_size != 0 && decoded_size != encoded_size {
         return Err(TexParseError::InvalidPayload(
             "stored level decoded and encoded sizes differ",

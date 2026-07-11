@@ -13,6 +13,7 @@ use vulkanalia::vk::{
 use crate::renderer::native_vulkan::{NativeVulkanClearColor, NativeVulkanVideoSessionCodec};
 use crate::renderer::native_wayland::{NativeWaylandHostOptions, NativeWaylandSurfaceHandles};
 
+use super::super::device_selection::ranked_physical_devices;
 use super::features::{
     NativeVulkanVulkanaliaCoreFeatureSnapshot,
     NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
@@ -453,8 +454,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn select_video_present_physical_
         native_vulkan_vulkanalia_video_decode_required_device_extensions_for_codecs(codecs)?;
     let mut rejected = Vec::new();
 
-    for (physical_device_index, physical_device) in physical_devices.iter().copied().enumerate() {
-        let properties = unsafe { instance.get_physical_device_properties(physical_device) };
+    for ranked in ranked_physical_devices(instance, physical_devices)? {
+        let physical_device_index = ranked.original_index;
+        let physical_device = ranked.physical_device;
+        let properties = ranked.properties;
         let physical_device_name = properties.device_name.to_string_lossy().into_owned();
         let device_extensions =
             unsafe { instance.enumerate_device_extension_properties(physical_device, None) }

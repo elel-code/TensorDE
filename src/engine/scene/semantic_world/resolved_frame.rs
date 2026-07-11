@@ -88,7 +88,9 @@ impl ResolvedSemanticFrame {
     }
 
     pub fn object(&self, object: SceneObjectHandle) -> Option<&ResolvedObjectState> {
-        self.objects.iter().find(|state| state.object == object)
+        self.objects
+            .get(object.0 as usize)
+            .filter(|state| state.object == object)
     }
 }
 

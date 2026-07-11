@@ -52,7 +52,7 @@ impl<'a> RenderingServer<'a> {
         Ok(self.renderer_scene_render_plan_from_semantic_frame(&semantic_frame))
     }
 
-    fn renderer_scene_render_plan_from_semantic_frame(
+    pub(crate) fn renderer_scene_render_plan_from_semantic_frame(
         self,
         semantic_frame: &ResolvedSemanticFrame,
     ) -> RendererSceneRenderPlan {

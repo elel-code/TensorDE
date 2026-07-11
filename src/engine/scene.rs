@@ -31,7 +31,8 @@ pub use semantic_world::{
     PuppetBindingComponent, ResolvedAttachmentLink, ResolvedObjectEffectState, ResolvedObjectState,
     ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld,
     SceneSemanticWorldError, SemanticEntity, SemanticEntityRecord, SemanticMeshBinding,
-    SemanticObjectEffectBinding, SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
+    SemanticObjectEffectBinding, SemanticRenderPlanInputs, TransformAnimationComponent,
+    TransformComponent, VisibilityComponent,
 };
 pub use server::{
     RendererSceneRenderPlan, RenderingServer, SceneEngineRenderPlan, SceneObjectRenderGraph,

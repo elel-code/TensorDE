@@ -122,9 +122,10 @@ fn with_vulkanalia_clear_present(
         unsafe {
             present_device.device.destroy_device(None);
         }
-        return Err(
-            "Vulkanalia clear present requires synchronization2 for QueueSubmit2".to_owned(),
-        );
+        return Err(format!(
+            "selected Vulkan device {:?} is missing synchronization2 required by clear QueueSubmit2",
+            selection.physical_device_name
+        ));
     }
 
     let swapchain_plan = match create_vulkanalia_swapchain_plan(

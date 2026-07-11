@@ -16,125 +16,18 @@ use std::io::{self, Read, Write};
 
 use super::abi::*;
 
+mod document;
 mod texture;
 mod timeline;
 
+pub use document::SceneBinaryDocument;
+#[cfg(test)]
+use document::empty_project_record;
 use texture::{decode_texture_mips, decode_textures, encode_texture_mips, encode_textures};
 use timeline::{SceneTimelineRecords, decode_timelines, encode_timelines};
 
 const HEADER_LEN: usize = 36;
 const CHUNK_ENTRY_LEN: usize = 32;
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct SceneBinaryDocument {
-    pub feature_flags: u64,
-    pub strings: Vec<String>,
-    pub project: SceneProjectRecord,
-    pub resources: Vec<SceneResourceRecord>,
-    pub resource_payload: Vec<u8>,
-    pub textures: Vec<SceneTextureRecord>,
-    pub texture_mips: Vec<SceneTextureMipRecord>,
-    pub texture_payload: Vec<u8>,
-    pub objects: Vec<SceneObjectRecord>,
-    pub object_effects: Vec<SceneObjectEffectRecord>,
-    pub object_animation_layers: Vec<SceneObjectAnimationLayerRecord>,
-    pub puppet_animation_clips: Vec<ScenePuppetAnimationClipRecord>,
-    pub puppet_animation_tracks: Vec<ScenePuppetAnimationTrackRecord>,
-    pub puppet_animation_transform_samples: Vec<ScenePuppetAnimationTransformSampleRecord>,
-    pub puppet_animation_opacity_samples: Vec<f32>,
-    pub materials: Vec<SceneMaterialRecord>,
-    pub material_passes: Vec<SceneMaterialPassRecord>,
-    pub material_textures: Vec<SceneMaterialTextureRecord>,
-    pub material_constants: Vec<SceneMaterialConstantRecord>,
-    pub meshes: Vec<SceneMeshRecord>,
-    pub mesh_vertices: Vec<SceneMeshVertexRecord>,
-    pub mesh_indices: Vec<u32>,
-    pub puppets: Vec<ScenePuppetRecord>,
-    pub puppet_bones: Vec<ScenePuppetBoneRecord>,
-    pub puppet_attachments: Vec<ScenePuppetAttachmentRecord>,
-    pub effects: Vec<SceneEffectRecord>,
-    pub effect_passes: Vec<SceneEffectPassRecord>,
-    pub effect_bindings: Vec<SceneEffectBindingRecord>,
-    pub effect_combos: Vec<SceneEffectComboRecord>,
-    pub effect_fbos: Vec<SceneEffectFboRecord>,
-    pub render_graphs: Vec<SceneRenderGraphRecord>,
-    pub render_passes: Vec<SceneRenderPassRecord>,
-    pub render_bindings: Vec<SceneRenderBindingRecord>,
-    pub unsupported: Vec<SceneUnsupportedRecord>,
-    pub image_targets: Vec<SceneImageTargetRecord>,
-    pub shader_contracts: Vec<SceneShaderContractRecord>,
-    pub shader_constant_names: Vec<SceneStringId>,
-}
-
-impl Default for SceneBinaryDocument {
-    fn default() -> Self {
-        Self {
-            feature_flags: SCENE_DEFAULT_FEATURE_FLAGS,
-            strings: Vec::new(),
-            project: empty_project_record(),
-            resources: Vec::new(),
-            resource_payload: Vec::new(),
-            textures: Vec::new(),
-            texture_mips: Vec::new(),
-            texture_payload: Vec::new(),
-            objects: Vec::new(),
-            object_effects: Vec::new(),
-            object_animation_layers: Vec::new(),
-            puppet_animation_clips: Vec::new(),
-            puppet_animation_tracks: Vec::new(),
-            puppet_animation_transform_samples: Vec::new(),
-            puppet_animation_opacity_samples: Vec::new(),
-            materials: Vec::new(),
-            material_passes: Vec::new(),
-            material_textures: Vec::new(),
-            material_constants: Vec::new(),
-            meshes: Vec::new(),
-            mesh_vertices: Vec::new(),
-            mesh_indices: Vec::new(),
-            puppets: Vec::new(),
-            puppet_bones: Vec::new(),
-            puppet_attachments: Vec::new(),
-            effects: Vec::new(),
-            effect_passes: Vec::new(),
-            effect_bindings: Vec::new(),
-            effect_combos: Vec::new(),
-            effect_fbos: Vec::new(),
-            render_graphs: Vec::new(),
-            render_passes: Vec::new(),
-            render_bindings: Vec::new(),
-            unsupported: Vec::new(),
-            image_targets: Vec::new(),
-            shader_contracts: Vec::new(),
-            shader_constant_names: Vec::new(),
-        }
-    }
-}
-
-fn empty_project_record() -> SceneProjectRecord {
-    SceneProjectRecord {
-        title: SceneStringId::NONE,
-        wallpaper_type: SceneStringId::NONE,
-        scene_file: SceneStringId::NONE,
-        preview: SceneStringId::NONE,
-        properties_json: SceneStringId::NONE,
-        logical_width: 0,
-        logical_height: 0,
-        clear_color: [0.0, 0.0, 0.0, 1.0],
-        ambient_color: [0.0, 0.0, 0.0, 1.0],
-        skylight_color: [0.0, 0.0, 0.0, 1.0],
-        camera_eye: SceneVec3::default(),
-        camera_center: SceneVec3 {
-            x: 0.0,
-            y: 0.0,
-            z: -1.0,
-        },
-        camera_up: SceneVec3 {
-            x: 0.0,
-            y: 1.0,
-            z: 0.0,
-        },
-    }
-}
 
 pub fn write_scene_binary(
     document: &SceneBinaryDocument,
@@ -194,7 +87,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         return Err(SceneBinaryError::InvalidMagic);
     }
     let version = read_u32_at(data, 8, "version")?;
-    if version != SCENE_BINARY_VERSION {
+    if !(SCENE_BINARY_MIN_READ_VERSION..=SCENE_BINARY_VERSION).contains(&version) {
         return Err(SceneBinaryError::UnsupportedVersion(version));
     }
     if data[12] != SCENE_BINARY_ENDIANNESS_LITTLE {
@@ -290,12 +183,17 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         puppet_animation_tracks,
         puppet_animation_transform_samples,
         puppet_animation_opacity_samples,
+        object_transform_tracks,
+        object_transform_channels,
+        object_transform_keyframes,
     } = decode_timelines(chunk_payload(&chunks, CHUNK_TIMELINE)?)?;
     ensure_chunk_count(
         &chunks,
         CHUNK_TIMELINE,
         "timeline animation layers",
-        object_animation_layers.len() + puppet_animation_clips.len(),
+        object_animation_layers.len()
+            + puppet_animation_clips.len()
+            + object_transform_tracks.len(),
     )?;
     let (render_graphs, render_passes, render_bindings, unsupported) =
         decode_render_graphs(chunk_payload(&chunks, CHUNK_RENDER_GRAPH)?)?;
@@ -340,6 +238,9 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         objects,
         object_effects,
         object_animation_layers,
+        object_transform_tracks,
+        object_transform_channels,
+        object_transform_keyframes,
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
@@ -514,7 +415,8 @@ fn encode_chunks(
                 document
                     .object_animation_layers
                     .len()
-                    .saturating_add(document.puppet_animation_clips.len()),
+                    .saturating_add(document.puppet_animation_clips.len())
+                    .saturating_add(document.object_transform_tracks.len()),
                 "timeline primary record count",
             )?,
             data: encode_timelines(
@@ -523,6 +425,9 @@ fn encode_chunks(
                 &document.puppet_animation_tracks,
                 &document.puppet_animation_transform_samples,
                 &document.puppet_animation_opacity_samples,
+                &document.object_transform_tracks,
+                &document.object_transform_channels,
+                &document.object_transform_keyframes,
             )?,
         },
         SceneEncodedChunk {
@@ -1695,6 +1600,42 @@ mod tests {
                 blend_weight: 0.7,
                 initial_progress: 0.94,
             });
+        document
+            .object_transform_tracks
+            .push(SceneObjectTransformTrackRecord {
+                object: SceneObjectHandle(0),
+                property: SceneObjectTransformProperty::Origin,
+                flags: SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE
+                    | SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP,
+                playback: SceneStringId(8),
+                fps: 30.0,
+                frame_count: 360,
+                channel_start: 0,
+                channel_count: 1,
+            });
+        document
+            .object_transform_channels
+            .push(SceneObjectTransformChannelRecord {
+                track: 0,
+                component: 0,
+                kind: SceneObjectTransformChannelKind::Keyframed,
+                offset: 0.0,
+                amplitude: 0.0,
+                frequency: 0.0,
+                phase: 0.0,
+                keyframe_start: 0,
+                keyframe_count: 1,
+            });
+        document
+            .object_transform_keyframes
+            .push(SceneObjectTransformKeyframeRecord {
+                frame: 180.0,
+                value: 24.32251,
+                back: [-1.0, 0.0],
+                front: [1.0, 0.0],
+                flags: SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED
+                    | SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED,
+            });
         document.puppet_animation_transform_samples.push(
             ScenePuppetAnimationTransformSampleRecord {
                 translation: SceneVec3 {
@@ -1872,6 +1813,12 @@ mod tests {
         assert_eq!(decoded.object_animation_layers[0].animation_id, 475);
         assert!(decoded.object_animation_layers[0].additive);
         assert_eq!(decoded.object_animation_layers[0].initial_progress, 0.94);
+        assert_eq!(
+            decoded.object_transform_tracks[0].property,
+            SceneObjectTransformProperty::Origin
+        );
+        assert_eq!(decoded.object_transform_channels[0].component, 0);
+        assert_eq!(decoded.object_transform_keyframes[0].value, 24.32251);
         assert_eq!(decoded.objects[0].color.x, 0.1);
         assert_eq!(decoded.objects[0].alpha, 0.4);
         assert_eq!(decoded.puppet_animation_clips[0].clip_id, 475);

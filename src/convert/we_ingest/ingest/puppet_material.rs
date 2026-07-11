@@ -107,6 +107,17 @@ fn puppet_skinning_shader_key(shader_key: &str) -> Option<String> {
     Some(variant)
 }
 
+pub(super) fn image_effects_use_authored_texture(shader_key: &str) -> bool {
+    let canonical = shader_key
+        .strip_prefix("we/")
+        .unwrap_or(shader_key)
+        .split("__")
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(canonical.as_str(), "genericimage2" | "genericimage4")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

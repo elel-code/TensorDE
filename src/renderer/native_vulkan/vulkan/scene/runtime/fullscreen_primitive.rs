@@ -67,6 +67,7 @@ mod tests {
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
                 resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
                 clip_transform: [[0.0; 4]; 4],
+                authored_source_extent: [0.0; 2],
                 skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
                 skinning_palette_count: 0,
                 resolved_color: crate::engine::scene::SceneVec3 {
@@ -75,6 +76,7 @@ mod tests {
                     z: 1.0,
                 },
                 resolved_alpha: 1.0,
+                apply_resolved_visual: true,
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),

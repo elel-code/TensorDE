@@ -281,6 +281,8 @@ mod tests {
                     first_write_pass_id: 1,
                     last_use_pass_id: 2,
                     physical_slot: 0,
+                    width: 0,
+                    height: 0,
                 },
                 SceneRenderingDeviceTargetAllocation {
                     graph_index: 0,
@@ -289,6 +291,8 @@ mod tests {
                     first_write_pass_id: 3,
                     last_use_pass_id: 4,
                     physical_slot: 0,
+                    width: 0,
+                    height: 0,
                 },
             ],
             graph_physical_target_count: 1,

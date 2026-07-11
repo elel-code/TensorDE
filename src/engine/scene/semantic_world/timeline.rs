@@ -11,9 +11,14 @@ use super::matrix::{
     identity_matrix, interpolate_affine_matrix, inverse_affine_matrix, multiply_matrix,
     transform_matrix_radians,
 };
+use super::transform_animation::TransformAnimationComponent;
 use crate::engine::scene::abi::{
-    SceneObjectHandle, ScenePuppetAnimationClipRecord, ScenePuppetAnimationTrackRecord,
-    ScenePuppetBoneRecord, SceneVec3,
+    SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED, SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED,
+    SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE, SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP,
+    SceneObjectHandle, SceneObjectTransformChannelKind, SceneObjectTransformChannelRecord,
+    SceneObjectTransformKeyframeRecord, SceneObjectTransformProperty,
+    SceneObjectTransformTrackRecord, ScenePuppetAnimationClipRecord,
+    ScenePuppetAnimationTrackRecord, ScenePuppetBoneRecord, SceneVec3,
 };
 use crate::engine::scene::storage::SceneStorage;
 
@@ -21,6 +26,198 @@ use crate::engine::scene::storage::SceneStorage;
 pub struct SampledPuppetBoneLocalState {
     pub matrix: [f32; 16],
     pub alpha: f32,
+}
+
+pub fn sampled_object_transform(
+    storage: &SceneStorage,
+    authored: &TransformComponent,
+    animation: Option<&TransformAnimationComponent>,
+    scene_time_seconds: f32,
+) -> TransformComponent {
+    let mut sampled = *authored;
+    let Some(animation) = animation else {
+        return sampled;
+    };
+    for &track_index in animation.track_indices() {
+        let Some(track) = storage.object_transform_tracks().get(track_index as usize) else {
+            continue;
+        };
+        for channel in storage.object_transform_channels(track) {
+            let Some(value) =
+                sample_object_transform_channel(storage, track, channel, scene_time_seconds)
+            else {
+                continue;
+            };
+            let property = transform_property_mut(&mut sampled, track.property);
+            let Some(component) = vec3_component_mut(property, channel.component) else {
+                continue;
+            };
+            if track.flags & SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE != 0 {
+                *component += value;
+            } else {
+                *component = value;
+            }
+        }
+    }
+    sampled
+}
+
+fn sample_object_transform_channel(
+    storage: &SceneStorage,
+    track: &SceneObjectTransformTrackRecord,
+    channel: &SceneObjectTransformChannelRecord,
+    scene_time_seconds: f32,
+) -> Option<f32> {
+    match channel.kind {
+        SceneObjectTransformChannelKind::Sine => {
+            let phase = scene_time_seconds * channel.frequency + channel.phase;
+            let value = channel.offset + phase.sin() * channel.amplitude;
+            value.is_finite().then_some(value)
+        }
+        SceneObjectTransformChannelKind::Keyframed => {
+            let keyframes = storage.object_transform_keyframes(channel);
+            let frame = object_track_frame(storage, track, scene_time_seconds)?;
+            sample_object_keyframes(track, keyframes, frame)
+        }
+    }
+}
+
+fn object_track_frame(
+    storage: &SceneStorage,
+    track: &SceneObjectTransformTrackRecord,
+    scene_time_seconds: f32,
+) -> Option<f32> {
+    if !track.fps.is_finite()
+        || track.fps <= 0.0
+        || track.frame_count == 0
+        || !scene_time_seconds.is_finite()
+    {
+        return None;
+    }
+    let frame_count = track.frame_count as f32;
+    let frame = scene_time_seconds.max(0.0) * track.fps;
+    let playback = storage.string(track.playback).unwrap_or("loop");
+    if playback.eq_ignore_ascii_case("single") {
+        Some(frame.min(frame_count))
+    } else if playback.eq_ignore_ascii_case("mirror") {
+        let position = frame % (frame_count * 2.0);
+        Some(if position > frame_count {
+            frame_count * 2.0 - position
+        } else {
+            position
+        })
+    } else {
+        Some(frame % frame_count)
+    }
+}
+
+fn sample_object_keyframes(
+    track: &SceneObjectTransformTrackRecord,
+    keyframes: &[SceneObjectTransformKeyframeRecord],
+    frame: f32,
+) -> Option<f32> {
+    let first = keyframes.first()?;
+    if keyframes.len() == 1 {
+        return Some(first.value);
+    }
+    for pair in keyframes.windows(2) {
+        if frame >= pair[0].frame && frame <= pair[1].frame {
+            return Some(interpolate_object_keyframes(
+                &pair[0],
+                pair[0].frame,
+                &pair[1],
+                pair[1].frame,
+                frame,
+            ));
+        }
+    }
+
+    let wrap_loop = track.flags & SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP != 0;
+    if !wrap_loop {
+        return Some(if frame < first.frame {
+            first.value
+        } else {
+            keyframes.last()?.value
+        });
+    }
+    let last = keyframes.last()?;
+    let frame_count = track.frame_count as f32;
+    if frame < first.frame {
+        Some(interpolate_object_keyframes(
+            last,
+            last.frame - frame_count,
+            first,
+            first.frame,
+            frame,
+        ))
+    } else {
+        Some(interpolate_object_keyframes(
+            last,
+            last.frame,
+            first,
+            first.frame + frame_count,
+            frame,
+        ))
+    }
+}
+
+fn interpolate_object_keyframes(
+    from: &SceneObjectTransformKeyframeRecord,
+    from_frame: f32,
+    to: &SceneObjectTransformKeyframeRecord,
+    to_frame: f32,
+    frame: f32,
+) -> f32 {
+    let duration = to_frame - from_frame;
+    if !duration.is_finite() || duration <= f32::EPSILON {
+        return to.value;
+    }
+    let t = ((frame - from_frame) / duration).clamp(0.0, 1.0);
+    let linear_slope = (to.value - from.value) / duration;
+    let from_slope = keyframe_slope(
+        from.front,
+        from.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED != 0,
+        linear_slope,
+    );
+    let to_slope = keyframe_slope(
+        to.back,
+        to.flags & SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED != 0,
+        linear_slope,
+    );
+    let t2 = t * t;
+    let t3 = t2 * t;
+    (2.0 * t3 - 3.0 * t2 + 1.0) * from.value
+        + (t3 - 2.0 * t2 + t) * duration * from_slope
+        + (-2.0 * t3 + 3.0 * t2) * to.value
+        + (t3 - t2) * duration * to_slope
+}
+
+fn keyframe_slope(handle: [f32; 2], enabled: bool, fallback: f32) -> f32 {
+    if enabled && handle[0].abs() > f32::EPSILON {
+        handle[1] / handle[0]
+    } else {
+        fallback
+    }
+}
+
+fn transform_property_mut(
+    transform: &mut TransformComponent,
+    property: SceneObjectTransformProperty,
+) -> &mut SceneVec3 {
+    match property {
+        SceneObjectTransformProperty::Origin => &mut transform.origin,
+        SceneObjectTransformProperty::Angles => &mut transform.angles,
+        SceneObjectTransformProperty::Scale => &mut transform.scale,
+    }
+}
+
+fn vec3_component_mut(value: &mut SceneVec3, component: u32) -> Option<&mut f32> {
+    match component {
+        0 => Some(&mut value.x),
+        1 => Some(&mut value.y),
+        2 => Some(&mut value.z),
+        _ => None,
+    }
 }
 
 pub fn sampled_puppet_bone_local_matrix(
@@ -266,5 +463,84 @@ mod tests {
             sample_window(Some("single"), 30.0, 5.0, 12, 13),
             Some((12, 12, 0.0))
         );
+    }
+
+    #[test]
+    fn wrapped_object_keyframes_interpolate_back_to_the_first_value() {
+        let track = SceneObjectTransformTrackRecord {
+            object: SceneObjectHandle(0),
+            property: SceneObjectTransformProperty::Origin,
+            flags: SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE | SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP,
+            playback: crate::engine::scene::abi::SceneStringId::NONE,
+            fps: 30.0,
+            frame_count: 360,
+            channel_start: 0,
+            channel_count: 1,
+        };
+        let keyframes = [
+            SceneObjectTransformKeyframeRecord {
+                frame: 0.0,
+                value: 0.0,
+                back: [-1.0, 0.0],
+                front: [1.0, 0.0],
+                flags: SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED
+                    | SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED,
+            },
+            SceneObjectTransformKeyframeRecord {
+                frame: 180.0,
+                value: 24.0,
+                back: [-1.0, 0.0],
+                front: [1.0, 0.0],
+                flags: SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED
+                    | SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED,
+            },
+        ];
+
+        assert_eq!(
+            sample_object_keyframes(&track, &keyframes, 180.0),
+            Some(24.0)
+        );
+        assert_eq!(
+            sample_object_keyframes(&track, &keyframes, 270.0),
+            Some(12.0)
+        );
+        assert_eq!(
+            sample_object_keyframes(&track, &keyframes, 360.0),
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn sine_channel_uses_engine_runtime_seconds() {
+        let storage = SceneStorage::from_document(
+            crate::engine::scene::binary::SceneBinaryDocument::default(),
+        )
+        .expect("empty storage");
+        let track = SceneObjectTransformTrackRecord {
+            object: SceneObjectHandle(0),
+            property: SceneObjectTransformProperty::Angles,
+            flags: 0,
+            playback: crate::engine::scene::abi::SceneStringId::NONE,
+            fps: 0.0,
+            frame_count: 0,
+            channel_start: 0,
+            channel_count: 1,
+        };
+        let channel = SceneObjectTransformChannelRecord {
+            track: 0,
+            component: 2,
+            kind: SceneObjectTransformChannelKind::Sine,
+            offset: 2.0,
+            amplitude: 8.0,
+            frequency: 0.5,
+            phase: 0.0,
+            keyframe_start: 0,
+            keyframe_count: 0,
+        };
+
+        let value =
+            sample_object_transform_channel(&storage, &track, &channel, std::f32::consts::PI)
+                .expect("sample");
+        assert!((value - 10.0).abs() < 1.0e-5);
     }
 }

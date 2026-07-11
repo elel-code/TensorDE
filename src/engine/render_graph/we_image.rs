@@ -36,22 +36,74 @@ pub struct WeImageGraphContract {
     pub base_material_blending: Option<String>,
     pub base_texture_slots: Vec<u32>,
     pub base_pass_constants: Vec<String>,
+    pub framebuffer_snapshot: Option<WeFramebufferSnapshotContract>,
     pub final_scene_blend: SceneBlendMode,
+    /// Execute image effects in normalized authored-texture coordinates.
+    pub effects_in_authored_texture_space: bool,
+    /// Apply image-space effects to the authored texture before the puppet mesh deforms it.
+    pub puppet_skinning_after_effects: bool,
     pub effect_passes: Vec<WeEffectPassContract>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeFramebufferSnapshotContract {
+    pub target_name: String,
+    pub texture_slot: u32,
+    pub composite_to_object_mesh: bool,
 }
 
 pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     let mut graph = RenderGraph::default();
     let has_effects = !contract.effect_passes.is_empty();
+    let composite_to_object_mesh = contract
+        .framebuffer_snapshot
+        .as_ref()
+        .is_some_and(|snapshot| snapshot.composite_to_object_mesh);
+    let has_offscreen_chain = has_effects || composite_to_object_mesh;
+    let authored_texture_effects = has_effects && contract.effects_in_authored_texture_space;
+    let puppet_skinning_after_effects =
+        authored_texture_effects && contract.puppet_skinning_after_effects;
     let final_pipeline_blend = final_pipeline_blend(contract);
+    if let Some(snapshot) = &contract.framebuffer_snapshot {
+        graph.passes.push(RenderPassNode {
+            id: 0,
+            role: RenderPassRole::CopyTarget,
+            object_index: Some(contract.object_index),
+            material_index: None,
+            pass_index: 0,
+            shader: None,
+            target: RenderTargetRole::FirstClassEffectTarget,
+            target_name: Some(snapshot.target_name.clone()),
+            target_extent: None,
+            target_format: Some("rgba_backbuffer".to_owned()),
+            bindings: vec![TextureBindingRole::GraphTarget {
+                slot: snapshot.texture_slot,
+                role: RenderTargetRole::SceneColor,
+                name: None,
+            }],
+            state: PassState::default(),
+        });
+    }
+    let base_pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
     graph.passes.push(RenderPassNode {
-        id: 0,
+        id: base_pass_id,
         role: RenderPassRole::BaseMaterial,
         object_index: Some(contract.object_index),
         material_index: contract.base_material_index,
         pass_index: 0,
-        shader: contract.base_shader.clone(),
-        target: if has_effects {
+        shader: if authored_texture_effects {
+            Some(
+                if puppet_skinning_after_effects {
+                    "we/puppet-effect-source"
+                } else {
+                    "we/image-effect-source"
+                }
+                .to_owned(),
+            )
+        } else {
+            contract.base_shader.clone()
+        },
+        target: if has_offscreen_chain {
             RenderTargetRole::ImageLocalMain
         } else {
             RenderTargetRole::SceneColor
@@ -74,14 +126,20 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                     .cloned()
                     .map(|name| TextureBindingRole::PassConstant { name }),
             )
+            .chain(contract.framebuffer_snapshot.iter().map(|snapshot| {
+                TextureBindingRole::EffectTarget {
+                    slot: snapshot.texture_slot,
+                    name: snapshot.target_name.clone(),
+                }
+            }))
             .collect(),
         state: PassState {
-            pipeline_blend: if has_effects {
-                PipelineBlendMode::Normal
+            pipeline_blend: if has_offscreen_chain {
+                base_pipeline_blend(contract)
             } else {
                 final_pipeline_blend
             },
-            scene_blend: if has_effects {
+            scene_blend: if has_offscreen_chain {
                 SceneBlendMode::Normal
             } else {
                 contract.final_scene_blend
@@ -90,13 +148,9 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         },
     });
     for (index, effect) in contract.effect_passes.iter().enumerate() {
-        let pass_id = (index + 1).min(u32::MAX as usize) as u32;
+        let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
         let mut node = we_effect_pass_node(pass_id, effect, contract.final_scene_blend);
-        if effect.target.is_none() && index + 1 == contract.effect_passes.len() {
-            node.target = RenderTargetRole::SceneColor;
-        } else if index + 1 < contract.effect_passes.len()
-            && node.target == RenderTargetRole::ImageLocalMain
-        {
+        if effect.target.is_none() && node.target == RenderTargetRole::ImageLocalMain {
             node.target = if index % 2 == 0 {
                 RenderTargetRole::ImageLocalSub
             } else {
@@ -121,18 +175,52 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         }
         graph.passes.push(node);
     }
+    if has_offscreen_chain {
+        let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
+        graph.passes.push(RenderPassNode {
+            id: pass_id,
+            role: RenderPassRole::SceneComposite,
+            object_index: Some(contract.object_index),
+            material_index: contract.base_material_index,
+            pass_index: pass_id,
+            shader: Some(
+                if puppet_skinning_after_effects {
+                    "we/puppet-effect-composite"
+                } else if authored_texture_effects {
+                    "we/image-effect-composite"
+                } else {
+                    "we/objectcomposite"
+                }
+                .to_owned(),
+            ),
+            target: RenderTargetRole::SceneColor,
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }],
+            state: PassState {
+                pipeline_blend: final_pipeline_blend,
+                scene_blend: contract.final_scene_blend,
+                ..PassState::default()
+            },
+        });
+    }
     graph
+}
+
+fn base_pipeline_blend(contract: &WeImageGraphContract) -> PipelineBlendMode {
+    contract
+        .base_material_blending
+        .as_deref()
+        .map(PipelineBlendMode::from_we_material_blending)
+        .unwrap_or(PipelineBlendMode::Normal)
 }
 
 fn final_pipeline_blend(contract: &WeImageGraphContract) -> PipelineBlendMode {
     match contract.final_scene_blend {
         SceneBlendMode::Additive => PipelineBlendMode::Additive,
         SceneBlendMode::AlphaToCoverage => PipelineBlendMode::AlphaToCoverage,
-        _ => contract
-            .base_material_blending
-            .as_deref()
-            .map(PipelineBlendMode::from_we_material_blending)
-            .unwrap_or(PipelineBlendMode::Normal),
+        _ => base_pipeline_blend(contract),
     }
 }
 
@@ -306,7 +394,10 @@ mod tests {
             base_material_blending: Some("translucent".to_owned()),
             base_texture_slots: vec![1],
             base_pass_constants: vec!["tint".to_owned()],
+            framebuffer_snapshot: None,
             final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: false,
+            puppet_skinning_after_effects: false,
             effect_passes: vec![
                 WeEffectPassContract {
                     object_index: 7,
@@ -345,7 +436,11 @@ mod tests {
             ],
         });
 
-        assert_eq!(graph.passes.len(), 3);
+        assert_eq!(graph.passes.len(), 4);
+        assert_eq!(
+            graph.passes[0].state.pipeline_blend,
+            PipelineBlendMode::Translucent
+        );
         assert_eq!(graph.passes[0].material_index, Some(3));
         assert!(
             graph.passes[0]
@@ -369,10 +464,10 @@ mod tests {
         );
         assert_eq!(graph.passes[1].target, RenderTargetRole::NamedFbo);
         assert_eq!(graph.passes[2].role, RenderPassRole::ColorBlendPassthrough);
-        assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+        assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalMain);
         assert_eq!(
             graph.passes[2].state.pipeline_blend,
-            PipelineBlendMode::Translucent
+            PipelineBlendMode::Normal
         );
         assert!(
             graph.passes[2]
@@ -381,6 +476,12 @@ mod tests {
                     slot: 1,
                     name: "fbo_velocity".to_owned(),
                 })
+        );
+        assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
+        assert_eq!(graph.passes[3].target, RenderTargetRole::SceneColor);
+        assert_eq!(
+            graph.passes[3].shader.as_deref(),
+            Some("we/objectcomposite")
         );
         assert!(
             graph
@@ -397,6 +498,91 @@ mod tests {
     }
 
     #[test]
+    fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 7,
+            base_material_index: Some(3),
+            base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: false,
+            puppet_skinning_after_effects: false,
+            effect_passes: vec![WeEffectPassContract {
+                object_index: 7,
+                material_index: Some(4),
+                effect_file: "effects/waterwaves/effect.json".to_owned(),
+                pass_index: 0,
+                command: None,
+                shader: Some("effects/waterwaves".to_owned()),
+                source: None,
+                target: None,
+                binds: BTreeMap::new(),
+                pass_constants: Vec::new(),
+                material_blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                combos: BTreeMap::new(),
+            }],
+        });
+
+        assert_eq!(
+            graph.passes[0].state.pipeline_blend,
+            PipelineBlendMode::Translucent
+        );
+        assert_eq!(graph.passes[0].target, RenderTargetRole::ImageLocalMain);
+        assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalSub);
+        assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
+        assert_eq!(graph.passes[2].target, RenderTargetRole::SceneColor);
+    }
+
+    #[test]
+    fn puppet_image_effects_run_before_skinning_composite() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 7,
+            base_material_index: Some(3),
+            base_shader: Some("we/genericimage4__PUPPETSKINNING_1".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: true,
+            puppet_skinning_after_effects: true,
+            effect_passes: vec![WeEffectPassContract {
+                object_index: 7,
+                material_index: Some(4),
+                effect_file: "effects/waterwaves/effect.json".to_owned(),
+                pass_index: 0,
+                command: None,
+                shader: Some("effects/waterwaves__SLOTS_3".to_owned()),
+                source: None,
+                target: None,
+                binds: [(0, "previous".to_owned())].into_iter().collect(),
+                pass_constants: Vec::new(),
+                material_blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                combos: BTreeMap::new(),
+            }],
+        });
+
+        assert_eq!(graph.passes.len(), 3);
+        assert_eq!(
+            graph.passes[0].shader.as_deref(),
+            Some("we/puppet-effect-source")
+        );
+        assert_eq!(
+            graph.passes[2].shader.as_deref(),
+            Some("we/puppet-effect-composite")
+        );
+    }
+
+    #[test]
     fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: 9,
@@ -405,7 +591,10 @@ mod tests {
             base_material_blending: None,
             base_texture_slots: Vec::new(),
             base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
             final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: false,
+            puppet_skinning_after_effects: false,
             effect_passes: vec![
                 WeEffectPassContract {
                     object_index: 9,
@@ -453,5 +642,89 @@ mod tests {
                 .iter()
                 .any(|use_| use_.resource_key == "target:named-fbo:fbo_src")
         );
+    }
+
+    #[test]
+    fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 11,
+            base_material_index: Some(4),
+            base_shader: Some("passthrough".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+                target_name: "_rt_FullFrameBuffer".to_owned(),
+                texture_slot: 0,
+                composite_to_object_mesh: false,
+            }),
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: false,
+            puppet_skinning_after_effects: false,
+            effect_passes: Vec::new(),
+        });
+
+        assert_eq!(graph.passes.len(), 2);
+        assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+        assert_eq!(
+            graph.passes[0].target,
+            RenderTargetRole::FirstClassEffectTarget
+        );
+        assert_eq!(graph.passes[1].role, RenderPassRole::BaseMaterial);
+        assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
+        assert!(
+            graph.passes[1]
+                .bindings
+                .contains(&TextureBindingRole::EffectTarget {
+                    slot: 0,
+                    name: "_rt_FullFrameBuffer".to_owned(),
+                })
+        );
+    }
+
+    #[test]
+    fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 12,
+            base_material_index: Some(5),
+            base_shader: Some("composelayer".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+                target_name: "_rt_FullFrameBuffer".to_owned(),
+                texture_slot: 0,
+                composite_to_object_mesh: true,
+            }),
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: false,
+            puppet_skinning_after_effects: false,
+            effect_passes: vec![WeEffectPassContract {
+                object_index: 12,
+                material_index: Some(6),
+                effect_file: "effects/opacity/effect.json".to_owned(),
+                pass_index: 0,
+                command: None,
+                shader: Some("effects/opacity__SLOTS_1".to_owned()),
+                source: None,
+                target: None,
+                binds: [(0, "previous".to_owned())].into_iter().collect(),
+                pass_constants: vec!["alpha".to_owned()],
+                material_blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                combos: BTreeMap::new(),
+            }],
+        });
+
+        assert_eq!(graph.passes.len(), 4);
+        assert_eq!(graph.passes[2].target, RenderTargetRole::ImageLocalSub);
+        assert_eq!(graph.passes[3].role, RenderPassRole::SceneComposite);
+        assert_eq!(
+            graph.passes[3].shader.as_deref(),
+            Some("we/objectcomposite")
+        );
+        assert_eq!(graph.passes[3].target, RenderTargetRole::SceneColor);
     }
 }

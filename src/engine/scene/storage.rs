@@ -121,6 +121,34 @@ impl SceneStorage {
         &self.document.object_animation_layers
     }
 
+    pub fn object_transform_tracks(&self) -> &[SceneObjectTransformTrackRecord] {
+        &self.document.object_transform_tracks
+    }
+
+    pub fn object_transform_channels(
+        &self,
+        track: &SceneObjectTransformTrackRecord,
+    ) -> &[SceneObjectTransformChannelRecord] {
+        let start = track.channel_start as usize;
+        let end = start.saturating_add(track.channel_count as usize);
+        self.document
+            .object_transform_channels
+            .get(start..end)
+            .expect("scene storage validates object transform channel ranges")
+    }
+
+    pub fn object_transform_keyframes(
+        &self,
+        channel: &SceneObjectTransformChannelRecord,
+    ) -> &[SceneObjectTransformKeyframeRecord] {
+        let start = channel.keyframe_start as usize;
+        let end = start.saturating_add(channel.keyframe_count as usize);
+        self.document
+            .object_transform_keyframes
+            .get(start..end)
+            .expect("scene storage validates object transform keyframe ranges")
+    }
+
     pub fn puppet_animation_clips(&self) -> &[ScenePuppetAnimationClipRecord] {
         &self.document.puppet_animation_clips
     }
@@ -293,8 +321,34 @@ impl SceneStorage {
         self.document.resource_payload.len()
     }
 
+    pub fn release_parsed_resource_payload(&mut self) -> usize {
+        let payload = std::mem::take(&mut self.document.resource_payload);
+        let released_bytes = payload.len();
+        for resource in &mut self.document.resources {
+            resource.payload_offset = 0;
+            resource.payload_len = 0;
+        }
+        drop(payload);
+        released_bytes
+    }
+
     pub fn texture_payload_bytes(&self) -> usize {
         self.document.texture_payload.len()
+    }
+
+    pub fn release_uploaded_texture_payload(&mut self) -> usize {
+        let payload = std::mem::take(&mut self.document.texture_payload);
+        let released_bytes = payload.len();
+        for texture in &mut self.document.textures {
+            texture.payload_offset = 0;
+            texture.payload_len = 0;
+        }
+        for mip in &mut self.document.texture_mips {
+            mip.payload_offset = 0;
+            mip.payload_len = 0;
+        }
+        drop(payload);
+        released_bytes
     }
 }
 
@@ -520,6 +574,48 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
             1,
             document.objects.len(),
         )?;
+    }
+    for (track_index, track) in document.object_transform_tracks.iter().enumerate() {
+        validate_range(
+            "object_transform_track.object",
+            track.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        validate_string(document, "object_transform_track.playback", track.playback)?;
+        validate_range(
+            "object_transform_track.channel_range",
+            track.channel_start,
+            track.channel_count,
+            document.object_transform_channels.len(),
+        )?;
+        for channel in document
+            .object_transform_channels
+            .iter()
+            .skip(track.channel_start as usize)
+            .take(track.channel_count as usize)
+        {
+            if channel.track as usize != track_index {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "object_transform_channel.track_owner",
+                    start: channel.track,
+                    count: 1,
+                    len: track_index,
+                });
+            }
+            validate_range(
+                "object_transform_channel.component",
+                channel.component,
+                1,
+                3,
+            )?;
+            validate_range(
+                "object_transform_channel.keyframe_range",
+                channel.keyframe_start,
+                channel.keyframe_count,
+                document.object_transform_keyframes.len(),
+            )?;
+        }
     }
     for (clip_index, clip) in document.puppet_animation_clips.iter().enumerate() {
         validate_range(
@@ -1001,13 +1097,73 @@ mod tests {
 
         let mut bytes = Vec::new();
         write_scene_binary(&document, &mut bytes).expect("write");
-        let storage = SceneStorage::from_binary_bytes(&bytes).expect("storage");
+        let mut storage = SceneStorage::from_binary_bytes(&bytes).expect("storage");
         let payload = storage
             .resource_payload(&storage.resources()[0])
             .expect("payload");
 
         assert_eq!(storage.string(SceneStringId(0)), Some("scene"));
         assert_eq!(payload, &[7, 8, 9]);
+        assert_eq!(storage.release_parsed_resource_payload(), 3);
+        assert_eq!(storage.resource_payload_bytes(), 0);
+        assert_eq!(
+            storage.resource_payload(&storage.resources()[0]),
+            Some(&[][..])
+        );
+        validate_document(storage.document()).expect("released storage remains valid");
+    }
+
+    #[test]
+    fn storage_releases_uploaded_texture_payload_but_keeps_texture_metadata() {
+        let resource = SceneResourceId(7);
+        let mut document = SceneBinaryDocument {
+            texture_payload: vec![1, 2, 3, 4, 5, 6],
+            ..SceneBinaryDocument::default()
+        };
+        document.resources.push(SceneResourceRecord {
+            id: resource,
+            kind: SceneResourceKind::TextureTex,
+            path: SceneStringId::NONE,
+            source: SceneStringId::NONE,
+            payload_offset: 0,
+            payload_len: 0,
+        });
+        document.textures.push(SceneTextureRecord {
+            resource,
+            format: SceneTextureFormat::R8Unorm,
+            source_runtime_format: 9,
+            payload_format: 0,
+            sampler_flags: 0,
+            width: 3,
+            height: 2,
+            storage_width: 4,
+            storage_height: 2,
+            mip_start: 0,
+            mip_count: 1,
+            texv_tag: SceneStringId::NONE,
+            texb_tag: SceneStringId::NONE,
+            payload_offset: 0,
+            payload_len: 6,
+        });
+        document.texture_mips.push(SceneTextureMipRecord {
+            width: 3,
+            height: 2,
+            payload_offset: 0,
+            payload_len: 6,
+        });
+        let mut storage = SceneStorage::from_document(document).expect("storage");
+
+        assert_eq!(storage.release_uploaded_texture_payload(), 6);
+        assert_eq!(storage.texture_payload_bytes(), 0);
+        assert_eq!(storage.textures()[0].width, 3);
+        assert_eq!(storage.textures()[0].storage_width, 4);
+        assert!(storage.texture_payload(&storage.textures()[0]).is_empty());
+        assert!(
+            storage
+                .texture_mip_payload(&storage.document.texture_mips[0])
+                .is_empty()
+        );
+        validate_document(storage.document()).expect("released storage remains valid");
     }
 
     #[test]

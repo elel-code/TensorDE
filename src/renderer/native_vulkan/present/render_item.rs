@@ -340,6 +340,7 @@ mod tests {
                         mesh_index: 0,
                         resolved_object_index: 0,
                         clip_transform: identity_clip_transform(),
+                        authored_source_extent: [0.0; 2],
                         skinning_palette_start: INVALID_OBJECT_ID,
                         skinning_palette_count: 0,
                         resolved_color: crate::engine::scene::SceneVec3 {
@@ -348,6 +349,7 @@ mod tests {
                             z: 1.0,
                         },
                         resolved_alpha: 1.0,
+                        apply_resolved_visual: true,
                         object: SceneObjectHandle(0),
                         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                         vertex_start: 0,

@@ -200,6 +200,59 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             initial_progress: layer.initial_progress,
         })
         .collect();
+    let object_transform_tracks = ir
+        .object_transform_tracks
+        .iter()
+        .map(|track| SceneObjectTransformTrackRecord {
+            object: SceneObjectHandle(track.object),
+            property: match track.property {
+                WeIrObjectTransformProperty::Origin => SceneObjectTransformProperty::Origin,
+                WeIrObjectTransformProperty::Angles => SceneObjectTransformProperty::Angles,
+                WeIrObjectTransformProperty::Scale => SceneObjectTransformProperty::Scale,
+            },
+            flags: u32::from(track.relative) * SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE
+                | u32::from(track.wrap_loop) * SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP,
+            playback: strings.optional_id(&track.playback),
+            fps: track.fps,
+            frame_count: track.frame_count,
+            channel_start: track.channel_start,
+            channel_count: track.channel_count,
+        })
+        .collect();
+    let object_transform_channels = ir
+        .object_transform_channels
+        .iter()
+        .map(|channel| SceneObjectTransformChannelRecord {
+            track: channel.track,
+            component: channel.component,
+            kind: match channel.kind {
+                WeIrObjectTransformChannelKind::Keyframed => {
+                    SceneObjectTransformChannelKind::Keyframed
+                }
+                WeIrObjectTransformChannelKind::Sine => SceneObjectTransformChannelKind::Sine,
+            },
+            offset: channel.offset,
+            amplitude: channel.amplitude,
+            frequency: channel.frequency,
+            phase: channel.phase,
+            keyframe_start: channel.keyframe_start,
+            keyframe_count: channel.keyframe_count,
+        })
+        .collect();
+    let object_transform_keyframes = ir
+        .object_transform_keyframes
+        .iter()
+        .map(|keyframe| SceneObjectTransformKeyframeRecord {
+            frame: keyframe.frame,
+            value: keyframe.value,
+            back: keyframe.back,
+            front: keyframe.front,
+            flags: u32::from(keyframe.back_enabled) * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED
+                | u32::from(keyframe.front_enabled) * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED
+                | u32::from(keyframe.back_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_MAGIC
+                | u32::from(keyframe.front_magic) * SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_MAGIC,
+        })
+        .collect();
     let puppet_animation_clips = ir
         .puppet_animation_clips
         .iter()
@@ -450,6 +503,9 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         objects,
         object_effects,
         object_animation_layers,
+        object_transform_tracks,
+        object_transform_channels,
+        object_transform_keyframes,
         puppet_animation_clips,
         puppet_animation_tracks,
         puppet_animation_transform_samples,
@@ -483,6 +539,11 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
 pub enum WeLowerError {
     MissingResourcePayload(u32),
     InvalidTextureMipRange(u32),
+    MissingPreviousGraphTarget {
+        graph_index: usize,
+        pass_id: u32,
+        slot: u32,
+    },
 }
 
 impl std::fmt::Display for WeLowerError {
@@ -497,6 +558,14 @@ impl std::fmt::Display for WeLowerError {
                     "IR texture resource {resource} has an invalid mip payload range"
                 )
             }
+            Self::MissingPreviousGraphTarget {
+                graph_index,
+                pass_id,
+                slot,
+            } => write!(
+                f,
+                "IR render graph {graph_index} pass {pass_id} samples previous target in slot {slot}, but no previous pass exists"
+            ),
         }
     }
 }
@@ -529,10 +598,20 @@ fn lower_render_graphs(
             .find_map(|pass| pass.object_index)
             .map(|index| index as u32)
             .unwrap_or(graph_index as u32);
-        for pass in &graph.passes {
+        for (local_pass_index, pass) in graph.passes.iter().enumerate() {
             let binding_start = bindings.len() as u32;
+            let previous_target = local_pass_index.checked_sub(1).map(|previous_index| {
+                let previous = &graph.passes[previous_index];
+                (previous.target, previous.target_name.as_deref())
+            });
             for binding in &pass.bindings {
-                bindings.push(lower_binding(binding, strings));
+                bindings.push(lower_binding(
+                    binding,
+                    previous_target,
+                    graph_index,
+                    pass.id,
+                    strings,
+                )?);
             }
             passes.push(SceneRenderPassRecord {
                 id: pass.id,
@@ -630,9 +709,12 @@ fn lower_shader_contracts(
 
 fn lower_binding(
     binding: &TextureBindingRole,
+    previous_target: Option<(RenderTargetRole, Option<&str>)>,
+    graph_index: usize,
+    pass_id: u32,
     strings: &mut StringInterner,
-) -> SceneRenderBindingRecord {
-    match binding {
+) -> Result<SceneRenderBindingRecord, WeLowerError> {
+    Ok(match binding {
         TextureBindingRole::SourceTexture => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::SourceTexture,
             slot: 0,
@@ -651,12 +733,20 @@ fn lower_binding(
             target: SceneRenderTargetKind::SceneColor,
             name: SceneStringId::NONE,
         },
-        TextureBindingRole::PreviousGraphTarget { slot } => SceneRenderBindingRecord {
-            kind: SceneRenderBindingKind::PreviousGraphTarget,
-            slot: *slot,
-            target: SceneRenderTargetKind::ImageLocalMain,
-            name: SceneStringId::NONE,
-        },
+        TextureBindingRole::PreviousGraphTarget { slot } => {
+            let (target, name) =
+                previous_target.ok_or(WeLowerError::MissingPreviousGraphTarget {
+                    graph_index,
+                    pass_id,
+                    slot: *slot,
+                })?;
+            SceneRenderBindingRecord {
+                kind: SceneRenderBindingKind::PreviousGraphTarget,
+                slot: *slot,
+                target: lower_render_target(target),
+                name: strings.optional_id(name.unwrap_or_default()),
+            }
+        }
         TextureBindingRole::GraphTarget { slot, role, name } => SceneRenderBindingRecord {
             kind: SceneRenderBindingKind::GraphTarget,
             slot: *slot,
@@ -699,7 +789,7 @@ fn lower_binding(
             target: SceneRenderTargetKind::Temporary,
             name: strings.id(name),
         },
-    }
+    })
 }
 
 fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
@@ -837,21 +927,52 @@ mod tests {
         let mut strings = StringInterner::default();
         let previous = lower_binding(
             &TextureBindingRole::PreviousGraphTarget { slot: 2 },
+            Some((RenderTargetRole::ImageLocalSub, None)),
+            3,
+            7,
             &mut strings,
-        );
+        )
+        .expect("previous target");
         let named = lower_binding(
             &TextureBindingRole::NamedFboBind {
                 slot: 7,
                 name: "fbo_velocity".to_owned(),
             },
+            None,
+            3,
+            7,
             &mut strings,
-        );
+        )
+        .expect("named target");
 
         assert_eq!(previous.kind, SceneRenderBindingKind::PreviousGraphTarget);
         assert_eq!(previous.slot, 2);
+        assert_eq!(previous.target, SceneRenderTargetKind::ImageLocalSub);
+        assert_eq!(previous.name, SceneStringId::NONE);
         assert_eq!(named.kind, SceneRenderBindingKind::NamedFboBind);
         assert_eq!(named.slot, 7);
         assert_eq!(strings.strings[named.name.0 as usize], "fbo_velocity");
+    }
+
+    #[test]
+    fn lower_previous_target_requires_an_earlier_pass() {
+        let error = lower_binding(
+            &TextureBindingRole::PreviousGraphTarget { slot: 0 },
+            None,
+            5,
+            11,
+            &mut StringInterner::default(),
+        )
+        .expect_err("first pass cannot sample a previous target");
+
+        assert!(matches!(
+            error,
+            WeLowerError::MissingPreviousGraphTarget {
+                graph_index: 5,
+                pass_id: 11,
+                slot: 0,
+            }
+        ));
     }
 
     #[test]
@@ -894,6 +1015,9 @@ mod tests {
             objects: Vec::new(),
             object_effects: Vec::new(),
             object_animation_layers: Vec::new(),
+            object_transform_tracks: Vec::new(),
+            object_transform_channels: Vec::new(),
+            object_transform_keyframes: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -972,6 +1096,7 @@ mod tests {
             effect_passes: Vec::new(),
             effect_bindings: Vec::new(),
             effect_combos: Vec::new(),
+            shader_combo_definitions: Vec::new(),
             effect_fbos: Vec::new(),
             render_graphs: Vec::new(),
             image_targets: Vec::new(),

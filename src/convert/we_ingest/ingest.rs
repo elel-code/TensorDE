@@ -8,43 +8,60 @@
 //! - `reverse-engineered/docs/material-format.md`
 //! - `reverse-engineered/docs/effect-format.md`
 //! - `reverse-engineered/docs/tex-format.md`
-//! - `reverse-engineered/docs/exe/scene-and-object.md`
-//! - `reverse-engineered/docs/exe/blend-and-render.md`
 
 mod animation_layer;
+mod asset_source;
+mod builtin_effect_texture;
+mod effect_target;
 mod image_plane;
 mod material_instance;
+mod pipeline_state;
 mod puppet_material;
+mod shader_combo;
 mod shader_contract;
+mod text_layer;
 mod texture_resolver;
-
-use std::collections::{BTreeMap, BTreeSet};
+mod transform_animation;
+mod utility_layer;
+use std::collections::BTreeMap;
 use std::fmt;
-use std::fs;
 use std::path::{Path, PathBuf};
+
+#[cfg(test)]
+use std::fs;
 
 use serde_json::Value;
 
-use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{WeEffectPassContract, WeImageGraphContract, we_image_graph};
 use crate::engine::scene::abi::{
-    SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
-    SceneResourceKind, SceneVec3,
+    SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, SceneResourceKind,
+    SceneVec3,
 };
 
 use super::ir::*;
 use super::mdl::{MdlMeshEntry, parse_mdl_model};
-use super::pkg::{ScenePackage, ScenePackageError};
+use super::pkg::ScenePackageError;
 use super::tex::{TexParseError, block_compression::transcode_texture_upload, decode_tex_upload};
 use animation_layer::animation_layer_initial_progress;
+use asset_source::WeAssetSource;
+use builtin_effect_texture::apply_builtin_effect_texture_defaults;
+use effect_target::{image_target_role, scale_divisor_to_milli};
 use image_plane::image_plane_extent;
 use material_instance::{
-    effect_shader_variant_key, instance_texture_paths, material_pass_constant_names,
+    effect_shader_variant_key, file_texture_bindings, material_pass_constant_names,
     material_texture_bindings, merged_material_constants, push_instance_combo_overrides,
     push_instance_texture_overrides,
 };
-use shader_contract::{declared_texture_slot_mask, shader_uniform_buffer_count};
+use pipeline_state::{
+    cull_mode_from_we, depth_test_from_we, pipeline_blend_from_we, pipeline_blend_string,
+    scene_blend_from_color_blend_mode,
+};
+use shader_combo::parse_shader_combo_definitions;
+use shader_contract::build_shader_contract_records;
+use text_layer::{ingest_text_layer, retained_text_effect_is_supported, text_layer_value};
 use texture_resolver::texture_candidates;
+use transform_animation::ingest_object_transform_tracks;
+use utility_layer::{FULL_FRAMEBUFFER_TARGET, is_runtime_render_target, utility_layer_kind};
 
 pub fn ingest_wallpaper_engine_project(
     project_root: impl AsRef<Path>,
@@ -198,64 +215,6 @@ fn parse_scene_root_ir(scene: &Value) -> WeSceneRootIr {
     }
 }
 
-#[derive(Debug, Clone)]
-struct WeAsset {
-    bytes: Vec<u8>,
-    source: WeIrResourceSource,
-}
-
-#[derive(Debug, Clone)]
-struct WeAssetSource {
-    root: PathBuf,
-    package: Option<ScenePackage>,
-}
-
-impl WeAssetSource {
-    fn open(root: PathBuf) -> Result<Self, WeIngestError> {
-        let pkg_path = root.join("scene.pkg");
-        let package = if pkg_path.is_file() {
-            Some(ScenePackage::from_path(&pkg_path)?)
-        } else {
-            None
-        };
-        Ok(Self { root, package })
-    }
-
-    fn read_required_asset(&self, path: impl AsRef<str>) -> Result<WeAsset, WeIngestError> {
-        let path = normalize_we_path(path.as_ref());
-        self.read_optional_asset(&path)?
-            .ok_or(WeIngestError::MissingAsset(path))
-    }
-
-    fn read_optional_asset(&self, path: impl AsRef<str>) -> Result<Option<WeAsset>, WeIngestError> {
-        let path = normalize_we_path(path.as_ref());
-        validate_relative_we_path(&path)?;
-        let loose_path = self.root.join(&path);
-        if loose_path.is_file() {
-            return fs::read(&loose_path)
-                .map(|bytes| {
-                    Some(WeAsset {
-                        bytes,
-                        source: WeIrResourceSource::LooseFile,
-                    })
-                })
-                .map_err(|source| WeIngestError::Io {
-                    path: loose_path,
-                    source,
-                });
-        }
-        if let Some(package) = &self.package {
-            if let Some(bytes) = package.entry_bytes(&path) {
-                return Ok(Some(WeAsset {
-                    bytes: bytes.to_vec(),
-                    source: WeIrResourceSource::ScenePackage,
-                }));
-            }
-        }
-        Ok(None)
-    }
-}
-
 struct WeIrBuilder {
     project_root: PathBuf,
     source: WeAssetSource,
@@ -268,6 +227,9 @@ struct WeIrBuilder {
     objects: Vec<WeIrObject>,
     object_effects: Vec<WeIrObjectEffect>,
     object_animation_layers: Vec<WeIrObjectAnimationLayer>,
+    object_transform_tracks: Vec<WeIrObjectTransformTrack>,
+    object_transform_channels: Vec<WeIrObjectTransformChannel>,
+    object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -289,6 +251,8 @@ struct WeIrBuilder {
     effect_passes: Vec<WeIrEffectPass>,
     effect_bindings: Vec<WeIrEffectBinding>,
     effect_combos: Vec<WeIrEffectCombo>,
+    shader_combo_definitions: Vec<WeIrShaderComboDefinition>,
+    shader_combo_defaults_by_shader: BTreeMap<String, BTreeMap<String, i64>>,
     effect_fbos: Vec<WeIrEffectFbo>,
     render_graphs: Vec<crate::engine::render_graph::RenderGraph>,
     image_targets: Vec<WeIrImageTarget>,
@@ -315,6 +279,9 @@ impl WeIrBuilder {
             objects: Vec::new(),
             object_effects: Vec::new(),
             object_animation_layers: Vec::new(),
+            object_transform_tracks: Vec::new(),
+            object_transform_channels: Vec::new(),
+            object_transform_keyframes: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -336,6 +303,8 @@ impl WeIrBuilder {
             effect_passes: Vec::new(),
             effect_bindings: Vec::new(),
             effect_combos: Vec::new(),
+            shader_combo_definitions: Vec::new(),
+            shader_combo_defaults_by_shader: BTreeMap::new(),
             effect_fbos: Vec::new(),
             render_graphs: Vec::new(),
             image_targets: Vec::new(),
@@ -355,6 +324,9 @@ impl WeIrBuilder {
             objects: self.objects,
             object_effects: self.object_effects,
             object_animation_layers: self.object_animation_layers,
+            object_transform_tracks: self.object_transform_tracks,
+            object_transform_channels: self.object_transform_channels,
+            object_transform_keyframes: self.object_transform_keyframes,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
@@ -373,6 +345,7 @@ impl WeIrBuilder {
             effect_passes: self.effect_passes,
             effect_bindings: self.effect_bindings,
             effect_combos: self.effect_combos,
+            shader_combo_definitions: self.shader_combo_definitions,
             effect_fbos: self.effect_fbos,
             render_graphs: self.render_graphs,
             image_targets: self.image_targets,
@@ -444,11 +417,30 @@ impl WeIrBuilder {
         let image_path = bound_string(value.get("image"))
             .or_else(|| bound_string(value.get("model")))
             .unwrap_or_default();
+        let text_value = text_layer_value(value);
+        let utility_layer = utility_layer_kind(&image_path);
         let mut resource = None;
         let mut material = None;
         let mut kind = SceneAbiObjectKind::Unsupported;
 
-        if !image_path.is_empty() {
+        if let Some(text) = text_value.as_deref() {
+            kind = SceneAbiObjectKind::Text;
+            match ingest_text_layer(self, handle, value, text)? {
+                Some((font_resource, text_material)) => {
+                    resource = Some(font_resource);
+                    material = Some(text_material);
+                }
+                None => {
+                    self.unsupported.push(WeIrUnsupported {
+                        object: Some(handle),
+                        pass_index: None,
+                        feature: "text-layer-retained-fallback-unavailable".to_owned(),
+                        expected_subsystem: "convert/we_ingest text glyph lowering".to_owned(),
+                        containment: "text-object-kept-without-render-graph".to_owned(),
+                    });
+                }
+            }
+        } else if !image_path.is_empty() {
             let image_kind = if image_path.ends_with(".mdl") {
                 SceneResourceKind::Mdl
             } else {
@@ -482,6 +474,10 @@ impl WeIrBuilder {
                         } else {
                             if let Some((width, height)) = image_plane_extent(&model_json, value) {
                                 self.add_image_plane_mesh(handle, material, width, height);
+                            } else if utility_layer
+                                == Some(WeIrUtilityLayerKind::FullscreenPostprocess)
+                            {
+                                // Fullscreen utility passes use the canonical renderer triangle.
                             } else {
                                 self.unsupported.push(WeIrUnsupported {
                                     object: Some(handle),
@@ -540,17 +536,48 @@ impl WeIrBuilder {
         }
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
+        let retained_text_effect_instances;
+        let render_effect_instances = if kind == SceneAbiObjectKind::Text {
+            retained_text_effect_instances = effect_instances
+                .iter()
+                .filter(|(effect, _)| retained_text_effect_is_supported(self, *effect))
+                .cloned()
+                .collect::<Vec<_>>();
+            if retained_text_effect_instances.len() != effect_instances.len() {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(handle),
+                    pass_index: None,
+                    feature: "some-text-layer-effects-deferred-until-dynamic-glyph-atlas"
+                        .to_owned(),
+                    expected_subsystem: "scene text semantic runtime".to_owned(),
+                    containment: "retained-text-renders-catalog-supported-effects-only".to_owned(),
+                });
+            }
+            retained_text_effect_instances.as_slice()
+        } else {
+            effect_instances.as_slice()
+        };
         let render_graph = if let Some(material_handle) = material {
             Some(self.add_render_graph_for_object(
                 handle,
                 material_handle,
-                &effect_instances,
+                render_effect_instances,
                 color_blend_mode,
+                utility_layer,
+                kind == SceneAbiObjectKind::Puppet,
             )?)
         } else {
             None
         };
         self.add_object_animation_layers(handle, value);
+        ingest_object_transform_tracks(
+            handle,
+            value,
+            &mut self.object_transform_tracks,
+            &mut self.object_transform_channels,
+            &mut self.object_transform_keyframes,
+            &mut self.unsupported,
+        );
 
         self.objects.push(WeIrObject {
             handle,
@@ -572,6 +599,7 @@ impl WeIrBuilder {
             visible: bound_bool(value.get("visible")).unwrap_or(true),
             color_blend_mode,
             sort_order: value_i32(value.get("sortorder")).unwrap_or(index as i32),
+            utility_layer,
             render_graph,
         });
         Ok(())
@@ -1049,6 +1077,9 @@ impl WeIrBuilder {
         material_path: Option<&str>,
     ) -> Result<Option<u32>, WeIngestError> {
         let original = normalize_we_path(path);
+        if is_runtime_render_target(&original) {
+            return Ok(None);
+        }
         for candidate in texture_candidates(&original, material_path) {
             if let Some(resource) = self.texture_by_path.get(&candidate).copied() {
                 return Ok(Some(resource));
@@ -1258,6 +1289,8 @@ impl WeIrBuilder {
         material: u32,
         effect_instances: &[(u32, Value)],
         color_blend_mode: i32,
+        utility_layer: Option<WeIrUtilityLayerKind>,
+        object_is_puppet: bool,
     ) -> Result<u32, WeIngestError> {
         let graph_index = self.render_graphs.len() as u32;
         let base_material_handle = material;
@@ -1279,6 +1312,9 @@ impl WeIrBuilder {
             .unwrap_or_default();
         let base_pass_constants =
             material_pass_constant_names(&self.material_constants, base_pass.as_ref());
+        let effects_in_authored_texture_space = puppet_material::image_effects_use_authored_texture(
+            base_pass.as_ref().map_or("", |pass| &pass.shader_key),
+        );
         let mut effect_passes = Vec::new();
         for (effect_handle, instance) in effect_instances {
             self.push_effect_contracts_for_instance(
@@ -1303,9 +1339,37 @@ impl WeIrBuilder {
                 .map(|pass| pipeline_blend_string(pass.pipeline_blend)),
             base_texture_slots,
             base_pass_constants,
+            framebuffer_snapshot: utility_layer
+                .filter(|layer| layer.samples_scene_color())
+                .map(
+                    |layer| crate::engine::render_graph::WeFramebufferSnapshotContract {
+                        target_name: FULL_FRAMEBUFFER_TARGET.to_owned(),
+                        texture_slot: 0,
+                        composite_to_object_mesh: matches!(
+                            layer,
+                            WeIrUtilityLayerKind::FramebufferComposite
+                        ),
+                    },
+                ),
             final_scene_blend: scene_blend_from_color_blend_mode(color_blend_mode),
+            effects_in_authored_texture_space,
+            puppet_skinning_after_effects: object_is_puppet && effects_in_authored_texture_space,
             effect_passes,
         });
+        if utility_layer.is_some_and(WeIrUtilityLayerKind::samples_scene_color)
+            && !self.image_targets.iter().any(|target| {
+                target.name == FULL_FRAMEBUFFER_TARGET
+                    && target.role == WeIrImageTargetRole::FirstClassEffectTarget
+            })
+        {
+            self.image_targets.push(WeIrImageTarget {
+                name: FULL_FRAMEBUFFER_TARGET.to_owned(),
+                format: "rgba_backbuffer".to_owned(),
+                role: WeIrImageTargetRole::FirstClassEffectTarget,
+                width_divisor_milli: 1_000,
+                height_divisor_milli: 1_000,
+            });
+        }
         self.render_graphs.push(graph);
         Ok(graph_index)
     }
@@ -1381,10 +1445,19 @@ impl WeIrBuilder {
             if let Some(instance_pass) = instance_pass {
                 push_instance_combo_overrides(instance_pass, &mut combos);
             }
-            let shader = material_pass.as_ref().and_then(|pass| {
-                (!pass.shader_key.is_empty())
-                    .then(|| effect_shader_variant_key(&pass.shader_key, &binds, &combos))
-            });
+            apply_builtin_effect_texture_defaults(&effect_file, &combos, &mut binds);
+            let base_shader = material_pass
+                .as_ref()
+                .map(|pass| pass.shader_key.clone())
+                .filter(|shader| !shader.is_empty());
+            let combo_defaults = base_shader
+                .as_deref()
+                .map(|shader| self.shader_combo_defaults(shader))
+                .transpose()?
+                .unwrap_or_default();
+            let shader = base_shader
+                .as_deref()
+                .map(|shader| effect_shader_variant_key(shader, &binds, &combos, &combo_defaults));
             let (material_index, pass_constants) =
                 match (base_material, material_pass.clone(), shader.as_deref()) {
                     (Some(material), Some(pass), Some(shader)) => {
@@ -1393,6 +1466,7 @@ impl WeIrBuilder {
                             pass,
                             base_textures,
                             instance_pass,
+                            &binds,
                             shader,
                         )?;
                         let pass = self.materials.get(material as usize).and_then(|material| {
@@ -1453,6 +1527,7 @@ impl WeIrBuilder {
         base_pass: WeIrMaterialPass,
         base_textures: Vec<WeIrMaterialTexture>,
         instance_pass: Option<&Value>,
+        resolved_bindings: &BTreeMap<u32, String>,
         shader_key: &str,
     ) -> Result<u32, WeIngestError> {
         let material_path = self
@@ -1463,7 +1538,7 @@ impl WeIrBuilder {
             .into_iter()
             .map(|texture| (texture.slot, texture))
             .collect::<BTreeMap<_, _>>();
-        for (slot, path) in instance_texture_paths(instance_pass) {
+        for (slot, path) in file_texture_bindings(resolved_bindings) {
             let resource = self.add_texture(&path, material_path.as_deref())?;
             textures.insert(
                 slot,
@@ -1505,54 +1580,47 @@ impl WeIrBuilder {
         Ok(handle)
     }
 
-    fn build_shader_contracts(&mut self) {
-        let used_materials = self
-            .render_graphs
-            .iter()
-            .flat_map(|graph| graph.passes.iter().filter_map(|pass| pass.material_index))
-            .collect::<BTreeSet<_>>();
-        let mut seen = BTreeSet::new();
-        for pass in &self.material_passes {
-            if pass.shader_key.is_empty() || !used_materials.contains(&(pass.material as usize)) {
-                continue;
-            }
-            let textures = self
-                .material_textures
-                .iter()
-                .skip(pass.texture_start as usize)
-                .take(pass.texture_count as usize)
-                .collect::<Vec<_>>();
-            let constants = self
-                .material_constants
-                .iter()
-                .skip(pass.constant_start as usize)
-                .take(pass.constant_count as usize)
-                .map(|constant| constant.name.clone())
-                .collect::<Vec<_>>();
-            let texture_slot_mask = declared_texture_slot_mask(&pass.shader_key, &textures);
-            let pipeline_key = format!(
-                "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
-                pass.shader_key,
-                pass.pipeline_blend,
-                pass.depth_test,
-                pass.depth_write,
-                pass.cull_mode
-            );
-            if !seen.insert(pipeline_key.clone()) {
-                continue;
-            }
-            let uniform_count =
-                shader_uniform_buffer_count(&pass.shader_key, !constants.is_empty());
-            let texture_count = texture_slot_mask.count_ones();
-            self.shader_contracts.push(WeIrShaderContract {
-                shader_key: pass.shader_key.clone(),
-                pipeline_key,
-                texture_slot_mask,
-                constants,
-                resource_heap_count: texture_count + uniform_count,
-                sampler_heap_count: texture_count,
-            });
+    fn shader_combo_defaults(
+        &mut self,
+        shader_key: &str,
+    ) -> Result<BTreeMap<String, i64>, WeIngestError> {
+        let shader_key = shader_key.split("__").next().unwrap_or(shader_key);
+        if let Some(defaults) = self.shader_combo_defaults_by_shader.get(shader_key) {
+            return Ok(defaults.clone());
         }
+        let mut defaults = BTreeMap::new();
+        for extension in ["vert", "frag"] {
+            let path = format!("shaders/{shader_key}.{extension}");
+            let Some(asset) = self.source.read_optional_asset(&path)? else {
+                continue;
+            };
+            let source = String::from_utf8_lossy(&asset.bytes);
+            for definition in parse_shader_combo_definitions(shader_key, &source) {
+                defaults
+                    .entry(definition.name.clone())
+                    .or_insert(definition.default_value);
+                if !self.shader_combo_definitions.iter().any(|existing| {
+                    existing
+                        .shader_key
+                        .eq_ignore_ascii_case(&definition.shader_key)
+                        && existing.name.eq_ignore_ascii_case(&definition.name)
+                }) {
+                    self.shader_combo_definitions.push(definition);
+                }
+            }
+        }
+        self.shader_combo_defaults_by_shader
+            .insert(shader_key.to_owned(), defaults.clone());
+        Ok(defaults)
+    }
+
+    fn build_shader_contracts(&mut self) {
+        self.shader_contracts = build_shader_contract_records(
+            &self.render_graphs,
+            &self.material_passes,
+            &self.material_textures,
+            &self.material_constants,
+        );
     }
 }
 
@@ -1679,69 +1747,6 @@ fn parse_color4(value: Option<&Value>, fallback: [f32; 4]) -> [f32; 4] {
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned())
-}
-
-fn pipeline_blend_from_we(value: Option<&str>) -> ScenePipelineBlend {
-    match value.unwrap_or("normal").to_ascii_lowercase().as_str() {
-        "translucent" | "alpha" => ScenePipelineBlend::Translucent,
-        "additive" | "add" => ScenePipelineBlend::Additive,
-        "disabled" | "opaque" => ScenePipelineBlend::Disabled,
-        "alphatocoverage" | "alpha-to-coverage" => ScenePipelineBlend::AlphaToCoverage,
-        _ => ScenePipelineBlend::Normal,
-    }
-}
-
-fn pipeline_blend_string(value: ScenePipelineBlend) -> String {
-    match value {
-        ScenePipelineBlend::Normal => "normal",
-        ScenePipelineBlend::Translucent => "translucent",
-        ScenePipelineBlend::Additive => "additive",
-        ScenePipelineBlend::Disabled => "disabled",
-        ScenePipelineBlend::AlphaToCoverage => "alphatocoverage",
-    }
-    .to_owned()
-}
-
-fn depth_test_from_we(value: Option<&str>) -> SceneDepthTest {
-    match value.unwrap_or("disabled").to_ascii_lowercase().as_str() {
-        "enabled" => SceneDepthTest::Enabled,
-        _ => SceneDepthTest::Disabled,
-    }
-}
-
-fn cull_mode_from_we(value: Option<&str>) -> SceneCullMode {
-    match value.unwrap_or("nocull").to_ascii_lowercase().as_str() {
-        "normal" => SceneCullMode::Normal,
-        _ => SceneCullMode::None,
-    }
-}
-
-fn scene_blend_from_color_blend_mode(value: i32) -> SceneBlendMode {
-    match value {
-        2 | 3 => SceneBlendMode::Multiply,
-        6 => SceneBlendMode::Max,
-        7 | 8 => SceneBlendMode::Screen,
-        28 => SceneBlendMode::HslColor,
-        31 => SceneBlendMode::Additive,
-        32 => SceneBlendMode::Modulate,
-        _ => SceneBlendMode::Alpha,
-    }
-}
-
-fn image_target_role(name: &str) -> WeIrImageTargetRole {
-    if name.starts_with("fbo_") {
-        WeIrImageTargetRole::NamedFbo
-    } else {
-        WeIrImageTargetRole::FirstClassEffectTarget
-    }
-}
-
-fn scale_divisor_to_milli(value: f32) -> u32 {
-    if value.is_finite() && value > 0.0 {
-        (value * 1000.0).round().clamp(1.0, u32::MAX as f32) as u32
-    } else {
-        1000
-    }
 }
 
 #[cfg(test)]

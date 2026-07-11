@@ -271,6 +271,17 @@ mod tests {
         assert_eq!(metadata.sampler_flags, 2);
     }
 
+    #[test]
+    fn texb0004_zero_encoding_with_distinct_sizes_is_lz4() {
+        // One terminal LZ4 sequence containing four literal RGBA bytes.
+        let encoded = [0x40, 10, 20, 30, 40];
+        let bytes = texb0004_with_decoded_sizes(0, 0, 1, 1, 1, &[(0, 4, encoded.as_slice())]);
+
+        let upload = decode_tex_upload(&bytes).expect("TEXB0004 LZ4 upload");
+
+        assert_eq!(upload.payload, [10, 20, 30, 40]);
+    }
+
     fn texb0004(
         runtime_format: u32,
         payload_format: u32,
@@ -278,6 +289,28 @@ mod tests {
         height: u32,
         tail_byte: u8,
         levels: &[(u32, &[u8])],
+    ) -> Vec<u8> {
+        let levels = levels
+            .iter()
+            .map(|(compression, payload)| (*compression, payload.len() as u32, *payload))
+            .collect::<Vec<_>>();
+        texb0004_with_decoded_sizes(
+            runtime_format,
+            payload_format,
+            width,
+            height,
+            tail_byte,
+            &levels,
+        )
+    }
+
+    fn texb0004_with_decoded_sizes(
+        runtime_format: u32,
+        payload_format: u32,
+        width: u32,
+        height: u32,
+        tail_byte: u8,
+        levels: &[(u32, u32, &[u8])],
     ) -> Vec<u8> {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"TEXV0005\0TEXI0001\0");
@@ -291,13 +324,13 @@ mod tests {
         for value in [1, u32::MAX, 0, levels.len() as u32, width, height] {
             bytes.extend_from_slice(&value.to_le_bytes());
         }
-        for (index, (compression, payload)) in levels.iter().enumerate() {
+        for (index, (compression, decoded_size, payload)) in levels.iter().enumerate() {
             if index != 0 {
                 bytes.extend_from_slice(&(width >> index).max(1).to_le_bytes());
                 bytes.extend_from_slice(&(height >> index).max(1).to_le_bytes());
             }
             bytes.extend_from_slice(&compression.to_le_bytes());
-            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&decoded_size.to_le_bytes());
             bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
             bytes.extend_from_slice(payload);
         }

@@ -59,15 +59,23 @@ pub(super) fn material_texture_bindings(
     }
 }
 
-pub(super) fn instance_texture_paths(instance_pass: Option<&Value>) -> Vec<(u32, String)> {
-    instance_pass
-        .and_then(|pass| pass.get("textures"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .filter_map(|(slot, texture)| bound_string(Some(texture)).map(|path| (slot as u32, path)))
+pub(super) fn file_texture_bindings(bindings: &BTreeMap<u32, String>) -> Vec<(u32, String)> {
+    bindings
+        .iter()
+        .filter(|(_, path)| is_file_texture_binding(path))
+        .map(|(slot, path)| (*slot, path.clone()))
         .collect()
+}
+
+fn is_file_texture_binding(path: &str) -> bool {
+    !path.is_empty()
+        && !matches!(
+            path,
+            "previous" | "_previous" | "$previous" | "source" | "g_Texture0"
+        )
+        && !path.starts_with("_rt_")
+        && !path.starts_with("_alias_")
+        && !path.starts_with("fbo_")
 }
 
 pub(super) fn push_instance_texture_overrides(
@@ -106,6 +114,7 @@ pub(super) fn effect_shader_variant_key(
     shader: &str,
     bindings: &BTreeMap<u32, String>,
     combos: &BTreeMap<String, i64>,
+    combo_defaults: &BTreeMap<String, i64>,
 ) -> String {
     let base = shader.split("__").next().unwrap_or(shader);
     let texture_slot_mask = bindings
@@ -120,16 +129,23 @@ pub(super) fn effect_shader_variant_key(
     {
         key.push_str("__MASK_1");
     }
-    for (name, value) in combos
-        .iter()
-        .filter(|(name, value)| !name.eq_ignore_ascii_case("SLOTS") && **value != 0)
-    {
+    for (name, value) in combos.iter().filter(|(name, value)| {
+        !name.eq_ignore_ascii_case("SLOTS")
+            && combo_default(combo_defaults, name).unwrap_or(0) != **value
+    }) {
         key.push_str("__");
         key.push_str(&name.to_ascii_uppercase());
         key.push('_');
         key.push_str(&value.to_string());
     }
     key
+}
+
+fn combo_default(defaults: &BTreeMap<String, i64>, name: &str) -> Option<i64> {
+    defaults
+        .iter()
+        .find(|(candidate, _)| candidate.eq_ignore_ascii_case(name))
+        .map(|(_, value)| *value)
 }
 
 #[cfg(test)]
@@ -152,7 +168,7 @@ mod tests {
             .collect();
 
         assert_eq!(
-            effect_shader_variant_key("effects/waterwaves", &bindings, &combos),
+            effect_shader_variant_key("effects/waterwaves", &bindings, &combos, &BTreeMap::new(),),
             "effects/waterwaves__SLOTS_5__DUALWAVES_1"
         );
     }
@@ -164,8 +180,56 @@ mod tests {
             .collect();
 
         assert_eq!(
-            effect_shader_variant_key("effects/iris", &bindings, &BTreeMap::new()),
+            effect_shader_variant_key(
+                "effects/iris",
+                &bindings,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            ),
             "effects/iris__SLOTS_3__MASK_1"
+        );
+    }
+
+    #[test]
+    fn explicit_zero_is_canonical_when_shader_default_is_nonzero() {
+        let bindings = [(0, "previous".to_owned())].into_iter().collect();
+        let combos = [
+            ("B_SQUARE".to_owned(), 0),
+            ("C_ALPHA_ONLY".to_owned(), 0),
+            ("SOFT".to_owned(), 1),
+        ]
+        .into_iter()
+        .collect();
+        let defaults = [
+            ("B_SQUARE".to_owned(), 1),
+            ("C_ALPHA_ONLY".to_owned(), 1),
+            ("SOFT".to_owned(), 0),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            effect_shader_variant_key("effects/rounded_mask", &bindings, &combos, &defaults),
+            "effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
+        );
+    }
+
+    #[test]
+    fn file_texture_bindings_exclude_graph_targets() {
+        let bindings = [
+            (0, "previous".to_owned()),
+            (1, "masks/custom".to_owned()),
+            (2, "_rt_Effect".to_owned()),
+            (3, "util/perlin_256".to_owned()),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            file_texture_bindings(&bindings),
+            vec![
+                (1, "masks/custom".to_owned()),
+                (3, "util/perlin_256".to_owned()),
+            ]
         );
     }
 

@@ -9,16 +9,11 @@ use super::components::TransformComponent;
 use crate::engine::scene::abi::SceneVec3;
 
 pub fn transform_matrix(transform: &TransformComponent) -> [f32; 16] {
-    let rotation = SceneVec3 {
-        x: transform.angles.x.to_radians(),
-        y: transform.angles.y.to_radians(),
-        z: transform.angles.z.to_radians(),
-    };
-    compose_transform_matrix(transform.origin, rotation, transform.scale)
+    compose_transform_matrix(transform.origin, transform.angles, transform.scale)
 }
 
 pub fn transform_matrix_radians(transform: &TransformComponent) -> [f32; 16] {
-    compose_transform_matrix(transform.origin, transform.angles, transform.scale)
+    transform_matrix(transform)
 }
 
 fn compose_transform_matrix(origin: SceneVec3, rotation: SceneVec3, scale: SceneVec3) -> [f32; 16] {
@@ -331,6 +326,24 @@ mod tests {
     }
 
     #[test]
+    fn scene_object_angles_are_radians() {
+        let matrix = transform_matrix(&TransformComponent {
+            origin: SceneVec3::default(),
+            angles: SceneVec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -std::f32::consts::FRAC_PI_2,
+            },
+            scale: SceneVec3::ONE,
+        });
+
+        assert!(matrix[0].abs() <= 1.0e-5);
+        assert!((matrix[1] + 1.0).abs() <= 1.0e-5);
+        assert!((matrix[4] - 1.0).abs() <= 1.0e-5);
+        assert!(matrix[5].abs() <= 1.0e-5);
+    }
+
+    #[test]
     fn affine_inverse_cancels_translation_rotation_and_scale() {
         let transform = transform_matrix(&TransformComponent {
             origin: SceneVec3 {
@@ -339,9 +352,9 @@ mod tests {
                 z: 2.0,
             },
             angles: SceneVec3 {
-                x: 15.0,
-                y: -20.0,
-                z: 35.0,
+                x: 0.25,
+                y: -0.35,
+                z: 0.6,
             },
             scale: SceneVec3 {
                 x: 2.0,

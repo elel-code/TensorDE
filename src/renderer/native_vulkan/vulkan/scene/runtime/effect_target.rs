@@ -50,7 +50,7 @@ pub(in crate::renderer::native_vulkan) struct SceneEffectTargetCommandPlan {
 pub(in crate::renderer::native_vulkan) struct SceneEffectTargetCommand {
     kind: SceneEffectTargetCommandKind,
     target: LogicalEffectTargetKey,
-    source: Option<LogicalEffectTargetKey>,
+    source: Option<SceneEffectTargetCommandSource>,
     mesh_draw_start: u32,
     mesh_draw_count: u32,
     clear_before_draw: bool,
@@ -61,6 +61,12 @@ enum SceneEffectTargetCommandKind {
     DynamicRender,
     Copy,
     SwapReferences,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SceneEffectTargetCommandSource {
+    LogicalTarget(LogicalEffectTargetKey),
+    SceneColor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,27 +92,27 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_image_plan(
     allocations.sort_by_key(|allocation| allocation.physical_slot);
     let mut plans = Vec::<SceneEffectTargetImagePlan>::new();
     for allocation in allocations {
-        let spec = target_spec(storage, allocation, swapchain_format, swapchain_extent)?;
+        let spec = target_spec(
+            storage,
+            graph,
+            allocation,
+            swapchain_format,
+            swapchain_extent,
+        )?;
         if let Some(plan) = plans
             .iter_mut()
             .find(|plan| plan.physical_slot == allocation.physical_slot)
         {
-            if (
-                plan.format,
-                plan.width,
-                plan.height,
-                plan.persistent_across_frames,
-            ) != (
-                spec.format,
-                spec.width,
-                spec.height,
-                spec.persistent_across_frames,
-            ) {
+            if (plan.format, plan.persistent_across_frames)
+                != (spec.format, spec.persistent_across_frames)
+            {
                 return Err(format!(
                     "scene effect target physical slot {} aliases incompatible images",
                     allocation.physical_slot
                 ));
             }
+            plan.width = plan.width.max(spec.width);
+            plan.height = plan.height.max(spec.height);
             plan.aliased_logical_target_count = plan.aliased_logical_target_count.saturating_add(1);
         } else {
             plans.push(spec);
@@ -193,6 +199,17 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
             command.kind == SceneEffectTargetCommandKind::DynamicRender || command.source.is_some()
         })
         .collect()
+}
+
+pub(in crate::renderer::native_vulkan) fn graph_copies_scene_color(
+    commands: &[SceneEffectTargetCommand],
+    graph_index: u32,
+) -> bool {
+    commands.iter().any(|command| {
+        command.target.graph_index == graph_index
+            && command.kind == SceneEffectTargetCommandKind::Copy
+            && command.source == Some(SceneEffectTargetCommandSource::SceneColor)
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn create_scene_effect_target_images(
@@ -301,6 +318,8 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_initial_lay
 pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passes(
     device: &Device,
     command_buffer: vk::CommandBuffer,
+    scene_color_image: vk::Image,
+    scene_color_extent: vk::Extent2D,
     graph_index: u32,
     commands: &[SceneEffectTargetCommand],
     target_allocations: &[SceneRenderingDeviceTargetAllocation],
@@ -342,7 +361,15 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     {
         match command.kind {
             SceneEffectTargetCommandKind::Copy => {
-                record_copy_command(device, command_buffer, *command, resources, &references)?;
+                record_copy_command(
+                    device,
+                    command_buffer,
+                    scene_color_image,
+                    scene_color_extent,
+                    *command,
+                    resources,
+                    &references,
+                )?;
                 let resource = resource_for_key(resources, &references, command.target)?;
                 mark_target_initialized(
                     &mut initialized_physical_slots,
@@ -445,7 +472,7 @@ fn mark_swapped_initialized_targets(
     initialized_physical_slots: &[u32],
     initialized_logical_targets: &mut Vec<LogicalEffectTargetKey>,
 ) {
-    let Some(source) = command.source else {
+    let Some(SceneEffectTargetCommandSource::LogicalTarget(source)) = command.source else {
         return;
     };
     for key in [source, command.target] {
@@ -466,6 +493,7 @@ fn mark_target_initialized(initialized_physical_slots: &mut Vec<u32>, physical_s
 
 fn target_spec(
     storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
     allocation: SceneRenderingDeviceTargetAllocation,
     swapchain_format: vk::Format,
     swapchain_extent: vk::Extent2D,
@@ -478,9 +506,14 @@ fn target_spec(
         .map(|format| target_format(format, swapchain_format))
         .transpose()?
         .unwrap_or(swapchain_format);
-    let (width, height) = image_target
-        .map(|target| scaled_extent(swapchain_extent, target))
-        .unwrap_or((swapchain_extent.width.max(1), swapchain_extent.height.max(1)));
+    let (width, height) = if allocation.width != 0 && allocation.height != 0 {
+        puppet_effect_target_extent(storage, graph, allocation.graph_index, swapchain_extent)
+            .unwrap_or((allocation.width, allocation.height))
+    } else {
+        image_target
+            .map(|target| scaled_extent(swapchain_extent, target))
+            .unwrap_or((swapchain_extent.width.max(1), swapchain_extent.height.max(1)))
+    };
     Ok(SceneEffectTargetImagePlan {
         physical_slot: allocation.physical_slot,
         graph_index: allocation.graph_index,
@@ -495,6 +528,33 @@ fn target_spec(
         ),
         aliased_logical_target_count: 1,
     })
+}
+
+fn puppet_effect_target_extent(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    graph_index: u32,
+    output_extent: vk::Extent2D,
+) -> Option<(u32, u32)> {
+    let draw = graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| {
+            pass.graph_index == graph_index && pass.role == SceneRenderPassKind::BaseMaterial
+        })
+        .flat_map(|pass| {
+            let start = pass.mesh_draw_start as usize;
+            let end = start.saturating_add(pass.mesh_draw_count as usize);
+            graph.mesh_draws.get(start..end).unwrap_or(&[])
+        })
+        .find(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)?;
+    let [width, height] = super::composite_scissor::object_mesh_pixel_extent(
+        storage,
+        graph,
+        draw,
+        [output_extent.width, output_extent.height],
+    )?;
+    Some((width, height))
 }
 
 impl LogicalEffectTargetKey {
@@ -539,7 +599,7 @@ fn logical_target_references(
 fn command_source_key(
     storage: &SceneStorage,
     pass: &SceneRenderingDevicePassNode,
-) -> Option<LogicalEffectTargetKey> {
+) -> Option<SceneEffectTargetCommandSource> {
     let start = pass.binding_start as usize;
     let end = start.saturating_add(pass.binding_count as usize);
     storage
@@ -548,27 +608,53 @@ fn command_source_key(
         .get(start..end)?
         .iter()
         .find_map(|binding| {
-            LogicalEffectTargetKey::from_target(
-                pass.graph_index,
-                binding.target,
-                binding.name,
-            )
+            if binding.target == SceneRenderTargetKind::SceneColor {
+                Some(SceneEffectTargetCommandSource::SceneColor)
+            } else {
+                LogicalEffectTargetKey::from_target(
+                    pass.graph_index,
+                    binding.target,
+                    binding.name,
+                )
+                .map(SceneEffectTargetCommandSource::LogicalTarget)
+            }
         })
 }
 
 fn record_copy_command(
     device: &Device,
     command_buffer: vk::CommandBuffer,
+    scene_color_image: vk::Image,
+    scene_color_extent: vk::Extent2D,
     command: SceneEffectTargetCommand,
     resources: &[SceneEffectTargetImageResource],
     references: &[LogicalEffectTargetReference],
 ) -> Result<(), String> {
-    let source_key = command
+    let source = command
         .source
         .ok_or_else(|| "scene effect copy command has no source target binding".to_owned())?;
-    let target_key = command.target;
-    let source = resource_for_key(resources, references, source_key)?;
-    let target = resource_for_key(resources, references, target_key)?;
+    let target = resource_for_key(resources, references, command.target)?;
+    match source {
+        SceneEffectTargetCommandSource::LogicalTarget(source_key) => {
+            let source = resource_for_key(resources, references, source_key)?;
+            record_effect_target_copy(device, command_buffer, source, target)
+        }
+        SceneEffectTargetCommandSource::SceneColor => record_scene_color_copy(
+            device,
+            command_buffer,
+            scene_color_image,
+            scene_color_extent,
+            target,
+        ),
+    }
+}
+
+fn record_effect_target_copy(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    source: &SceneEffectTargetImageResource,
+    target: &SceneEffectTargetImageResource,
+) -> Result<(), String> {
     if source.plan.physical_slot == target.plan.physical_slot {
         return Ok(());
     }
@@ -635,13 +721,90 @@ fn record_copy_command(
     Ok(())
 }
 
+fn record_scene_color_copy(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene_color_image: vk::Image,
+    scene_color_extent: vk::Extent2D,
+    target: &SceneEffectTargetImageResource,
+) -> Result<(), String> {
+    record_effect_target_barrier(
+        device,
+        command_buffer,
+        scene_color_image,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        vk::AccessFlags2::TRANSFER_READ,
+    );
+    record_effect_target_barrier(
+        device,
+        command_buffer,
+        target.image.image,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+        vk::AccessFlags2::TRANSFER_WRITE,
+    );
+    let copy_region = vk::ImageCopy::builder()
+        .src_subresource(color_subresource_layers())
+        .dst_subresource(color_subresource_layers())
+        .extent(vk::Extent3D {
+            width: scene_color_extent.width.min(target.plan.width).max(1),
+            height: scene_color_extent.height.min(target.plan.height).max(1),
+            depth: 1,
+        })
+        .build();
+    unsafe {
+        device.cmd_copy_image(
+            command_buffer,
+            scene_color_image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            target.image.image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[copy_region],
+        );
+    }
+    record_effect_target_barrier(
+        device,
+        command_buffer,
+        scene_color_image,
+        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::AccessFlags2::TRANSFER_READ,
+        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+    );
+    record_effect_target_barrier(
+        device,
+        command_buffer,
+        target.image.image,
+        vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::PipelineStageFlags2::ALL_TRANSFER,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::AccessFlags2::TRANSFER_WRITE,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+    );
+    Ok(())
+}
+
 fn swap_logical_references(
     command: SceneEffectTargetCommand,
     references: &mut [LogicalEffectTargetReference],
 ) -> Result<(), String> {
     let source_key = command
         .source
-        .ok_or_else(|| "scene effect swap command has no source target binding".to_owned())?;
+        .and_then(|source| match source {
+            SceneEffectTargetCommandSource::LogicalTarget(key) => Some(key),
+            SceneEffectTargetCommandSource::SceneColor => None,
+        })
+        .ok_or_else(|| "scene effect swap command has no logical source target".to_owned())?;
     let target_key = command.target;
     let source_index = reference_index(references, source_key).ok_or_else(|| {
         "scene effect swap command source target is not allocated".to_owned()
@@ -1103,6 +1266,8 @@ mod tests {
             first_write_pass_id: 1,
             last_use_pass_id: 2,
             physical_slot,
+            width: 0,
+            height: 0,
         }
     }
 

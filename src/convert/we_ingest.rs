@@ -74,6 +74,9 @@ pub fn convert_wallpaper_engine_project_to_scene_binary(
             .document()
             .puppet_animation_opacity_samples
             .len(),
+        object_transform_track_count: storage.object_transform_tracks().len(),
+        object_transform_channel_count: storage.document().object_transform_channels.len(),
+        object_transform_keyframe_count: storage.document().object_transform_keyframes.len(),
         render_graph_count: render_plan.render_graph_count,
         shader_contract_count: render_plan.shader_contract_count,
         descriptor_heap_resource_count: render_plan.descriptor_heap_resource_count,
@@ -99,6 +102,9 @@ pub struct WeConvertSummary {
     pub puppet_animation_track_count: usize,
     pub puppet_animation_transform_sample_count: usize,
     pub puppet_animation_opacity_sample_count: usize,
+    pub object_transform_track_count: usize,
+    pub object_transform_channel_count: usize,
+    pub object_transform_keyframe_count: usize,
     pub render_graph_count: usize,
     pub shader_contract_count: usize,
     pub descriptor_heap_resource_count: u32,

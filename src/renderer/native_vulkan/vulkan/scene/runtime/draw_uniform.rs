@@ -16,6 +16,7 @@ use crate::renderer::native_vulkan::scene::{
 };
 
 use super::material_uniform::{material_parameter_layout, material_parameter_values};
+use super::scene_viewport::scene_cover_clip_transform;
 
 pub(super) const SCENE_DRAW_UNIFORM_BYTES: u64 = 64;
 const SCENE_DRAW_UNIFORM_FLOATS: usize = SCENE_DRAW_UNIFORM_BYTES as usize / size_of::<f32>();
@@ -24,6 +25,7 @@ pub(super) fn pack_scene_draw_uniforms(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
+    output_extent: [u32; 2],
 ) -> Vec<u8> {
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_DRAW_UNIFORM_BYTES as usize);
@@ -32,7 +34,24 @@ pub(super) fn pack_scene_draw_uniforms(
             BuiltinSceneParameterLayout::Iris => {
                 iris_draw_values(storage, draw.material, scene_time_seconds)
             }
-            _ => matrix_draw_values(draw.clip_transform),
+            BuiltinSceneParameterLayout::WaterWaves => {
+                waterwaves_draw_values(storage, draw, output_extent)
+            }
+            BuiltinSceneParameterLayout::AudioBars
+            | BuiltinSceneParameterLayout::RoundedMask
+            | BuiltinSceneParameterLayout::Scroll
+            | BuiltinSceneParameterLayout::Skew
+            | BuiltinSceneParameterLayout::TechCircle => {
+                object_local_effect_draw_values(storage, draw, output_extent)
+            }
+            BuiltinSceneParameterLayout::WaterFlow => {
+                object_local_effect_draw_values(storage, draw, output_extent)
+            }
+            _ => matrix_draw_values(scene_cover_clip_transform(
+                storage.project(),
+                output_extent,
+                draw.clip_transform,
+            )),
         };
         for value in values {
             payload.extend_from_slice(&value.to_le_bytes());
@@ -66,6 +85,138 @@ fn iris_draw_values(
     values[7] = bool_float(material_shader_combo_enabled(storage, material, "MASK"));
     values[8..12].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
     values
+}
+
+fn waterwaves_draw_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    object_local_effect_draw_values(storage, draw, output_extent)
+}
+
+fn object_local_effect_draw_values(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    if object_effects_use_authored_texture_space(storage, draw) {
+        return identity_uv_affine_rows();
+    }
+    let clip_transform = scene_cover_clip_transform(
+        storage.project(),
+        output_extent,
+        draw.clip_transform,
+    );
+    object_uv_affine_rows(clip_transform, draw.authored_source_extent)
+        .unwrap_or_else(identity_uv_affine_rows)
+}
+
+fn object_effects_use_authored_texture_space(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> bool {
+    let Some(object) = storage.objects().get(draw.object.0 as usize) else {
+        return false;
+    };
+    let Some(graph) = storage.render_graphs().get(object.render_graph as usize) else {
+        return false;
+    };
+    storage.render_graph_passes(graph).iter().any(|pass| {
+        storage.string(pass.shader_key).is_some_and(|shader| {
+            shader.eq_ignore_ascii_case("we/image-effect-source")
+                || shader.eq_ignore_ascii_case("we/puppet-effect-source")
+        })
+    })
+}
+
+pub(super) fn object_uv_to_screen_linear(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> Option<[[f32; 2]; 2]> {
+    let clip_transform = scene_cover_clip_transform(
+        storage.project(),
+        output_extent,
+        draw.clip_transform,
+    );
+    let affine = object_uv_affine_rows(clip_transform, draw.authored_source_extent)?;
+    Some([[affine[8], affine[9]], [affine[12], affine[13]]])
+}
+
+fn object_uv_affine_rows(
+    clip_transform: [[f32; 4]; 4],
+    source_extent: [f32; 2],
+) -> Option<[f32; SCENE_DRAW_UNIFORM_FLOATS]> {
+    let [width, height] = source_extent;
+    let homogeneous_w = clip_transform[3][3];
+    if !width.is_finite()
+        || !height.is_finite()
+        || width <= 0.0
+        || height <= 0.0
+        || !homogeneous_w.is_finite()
+        || homogeneous_w.abs() <= 1.0e-8
+        || clip_transform[3][0].abs() > 1.0e-8
+        || clip_transform[3][1].abs() > 1.0e-8
+    {
+        return None;
+    }
+
+    let clip_xx = clip_transform[0][0] / homogeneous_w;
+    let clip_xy = clip_transform[0][1] / homogeneous_w;
+    let clip_xt = clip_transform[0][3] / homogeneous_w;
+    let clip_yx = clip_transform[1][0] / homogeneous_w;
+    let clip_yy = clip_transform[1][1] / homogeneous_w;
+    let clip_yt = clip_transform[1][3] / homogeneous_w;
+    let object_to_screen_xx = 0.5 * clip_xx * width;
+    let object_to_screen_xy = -0.5 * clip_xy * height;
+    let object_to_screen_xt =
+        0.5 * (1.0 + clip_xt - 0.5 * clip_xx * width + 0.5 * clip_xy * height);
+    let object_to_screen_yx = 0.5 * clip_yx * width;
+    let object_to_screen_yy = -0.5 * clip_yy * height;
+    let object_to_screen_yt =
+        0.5 * (1.0 + clip_yt - 0.5 * clip_yx * width + 0.5 * clip_yy * height);
+    let determinant = object_to_screen_xx * object_to_screen_yy
+        - object_to_screen_xy * object_to_screen_yx;
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-8 {
+        return None;
+    }
+
+    let inverse_determinant = determinant.recip();
+    let screen_to_object_xx = object_to_screen_yy * inverse_determinant;
+    let screen_to_object_xy = -object_to_screen_xy * inverse_determinant;
+    let screen_to_object_yx = -object_to_screen_yx * inverse_determinant;
+    let screen_to_object_yy = object_to_screen_xx * inverse_determinant;
+    let screen_to_object_xt = -(screen_to_object_xx * object_to_screen_xt
+        + screen_to_object_xy * object_to_screen_yt);
+    let screen_to_object_yt = -(screen_to_object_yx * object_to_screen_xt
+        + screen_to_object_yy * object_to_screen_yt);
+    let values = [
+        screen_to_object_xx,
+        screen_to_object_xy,
+        screen_to_object_xt,
+        0.0,
+        screen_to_object_yx,
+        screen_to_object_yy,
+        screen_to_object_yt,
+        0.0,
+        object_to_screen_xx,
+        object_to_screen_xy,
+        object_to_screen_xt,
+        0.0,
+        object_to_screen_yx,
+        object_to_screen_yy,
+        object_to_screen_yt,
+        0.0,
+    ];
+    values.iter().all(|value| value.is_finite()).then_some(values)
+}
+
+fn identity_uv_affine_rows() -> [f32; SCENE_DRAW_UNIFORM_FLOATS] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+        0.0,
+    ]
 }
 
 fn material_scalar(
@@ -135,7 +286,7 @@ mod tests {
             [13.0, 14.0, 15.0, 16.0],
         ];
 
-        let payload = pack_scene_draw_uniforms(&storage, &[draw], 9.0);
+        let payload = pack_scene_draw_uniforms(&storage, &[draw], 9.0, [1, 1]);
 
         assert_eq!(payload.len(), SCENE_DRAW_UNIFORM_BYTES as usize);
         assert_eq!(payload_f32(&payload, 0), 1.0);
@@ -149,6 +300,7 @@ mod tests {
             &storage,
             &[draw_with_material(SceneMaterialHandle(0))],
             3.25,
+            [1, 1],
         );
 
         assert_eq!(payload_f32(&payload, 0), 3.25);
@@ -159,6 +311,47 @@ mod tests {
         assert_eq!(payload_f32(&payload, 20), 3.0);
         assert_eq!(payload_f32(&payload, 24), 0.4);
         assert_eq!(payload_f32(&payload, 28), 1.0);
+    }
+
+    #[test]
+    fn waterwaves_keeps_phase_in_object_uv_when_only_translation_differs() {
+        let storage = waterwaves_storage();
+        let mut shadow = draw_with_material(SceneMaterialHandle(0));
+        shadow.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+        shadow.authored_source_extent = [1571.0, 2621.0];
+        shadow.clip_transform = [
+            [0.0005609375, 0.0, 0.0, 0.022509336],
+            [0.0, -0.0009972223, 0.0, -0.033291817],
+            [0.0, 0.0, 1.077, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut body = shadow;
+        body.clip_transform[0][3] = 0.03257537;
+        body.clip_transform[1][3] = -0.04262042;
+
+        let payload = pack_scene_draw_uniforms(&storage, &[shadow, body], 0.0, [1, 1]);
+        let authored_uv = [0.83, 0.42];
+        let shadow_screen_uv = packed_affine_point(&payload, 0, 8, 12, authored_uv);
+        let body_screen_uv = packed_affine_point(&payload, 1, 8, 12, authored_uv);
+        let shadow_recovered_uv = packed_affine_point(&payload, 0, 0, 4, shadow_screen_uv);
+        let body_recovered_uv = packed_affine_point(&payload, 1, 0, 4, body_screen_uv);
+
+        assert!((shadow_screen_uv[0] - body_screen_uv[0]).abs() > 0.001);
+        assert!((shadow_screen_uv[1] - body_screen_uv[1]).abs() > 0.001);
+        assert_vec2_close(shadow_recovered_uv, authored_uv);
+        assert_vec2_close(body_recovered_uv, authored_uv);
+        let direction = [0.6_f32, 0.8_f32];
+        let shadow_phase_position =
+            shadow_recovered_uv[0] * direction[0] + shadow_recovered_uv[1] * direction[1];
+        let body_phase_position =
+            body_recovered_uv[0] * direction[0] + body_recovered_uv[1] * direction[1];
+        assert_close(shadow_phase_position, body_phase_position);
+        assert_close(
+            payload_f32(&payload, 32),
+            0.5 * shadow.clip_transform[0][0] * shadow.authored_source_extent[0],
+        );
+        assert_close(payload_f32(&payload, 32), payload_f32(&payload, 96));
+        assert_close(payload_f32(&payload, 52), payload_f32(&payload, 116));
     }
 
     fn iris_storage() -> SceneStorage {
@@ -208,12 +401,42 @@ mod tests {
         .expect("storage")
     }
 
+    fn waterwaves_storage() -> SceneStorage {
+        SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["effects/waterwaves__SLOTS_3".to_owned()],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId::NONE,
+                pass_start: 0,
+                pass_count: 1,
+            }],
+            material_passes: vec![SceneMaterialPassRecord {
+                material: SceneMaterialHandle(0),
+                shader_key: SceneStringId(0),
+                target: SceneStringId::NONE,
+                texture_start: 0,
+                texture_count: 0,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: SceneStringId::NONE,
+                clear_target: false,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("waterwaves storage")
+    }
+
     fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {
         SceneRenderingDeviceMeshDraw {
             primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
             mesh_index: 0,
             resolved_object_index: 0,
             clip_transform: [[0.0; 4]; 4],
+            authored_source_extent: [0.0; 2],
             skinning_palette_start: crate::engine::scene::INVALID_OBJECT_ID,
             skinning_palette_count: 0,
             resolved_color: crate::engine::scene::SceneVec3 {
@@ -222,6 +445,7 @@ mod tests {
                 z: 1.0,
             },
             resolved_alpha: 1.0,
+            apply_resolved_visual: true,
             object: crate::engine::scene::SceneObjectHandle(0),
             material,
             vertex_start: 0,
@@ -233,5 +457,33 @@ mod tests {
 
     fn payload_f32(payload: &[u8], offset: usize) -> f32 {
         f32::from_le_bytes(payload[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn packed_affine_point(
+        payload: &[u8],
+        draw_index: usize,
+        row0: usize,
+        row1: usize,
+        point: [f32; 2],
+    ) -> [f32; 2] {
+        let base = draw_index * SCENE_DRAW_UNIFORM_BYTES as usize;
+        let apply_row = |row: usize| {
+            payload_f32(payload, base + row * size_of::<f32>()) * point[0]
+                + payload_f32(payload, base + (row + 1) * size_of::<f32>()) * point[1]
+                + payload_f32(payload, base + (row + 2) * size_of::<f32>())
+        };
+        [apply_row(row0), apply_row(row1)]
+    }
+
+    fn assert_vec2_close(actual: [f32; 2], expected: [f32; 2]) {
+        assert_close(actual[0], expected[0]);
+        assert_close(actual[1], expected[1]);
+    }
+
+    fn assert_close(actual: f32, expected: f32) {
+        assert!(
+            (actual - expected).abs() <= 1.0e-5,
+            "expected {expected}, got {actual}"
+        );
     }
 }

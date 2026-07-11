@@ -19,14 +19,27 @@ use super::{
     NativeVulkanClearColor, SceneGpuResources, color_subresource_range, effect_target,
 };
 
-pub(super) fn scene_graph_execution_order(graph: &SceneRenderingDeviceGraphPlan) -> Vec<u32> {
+pub(super) fn scene_graph_execution_order(
+    graph: &SceneRenderingDeviceGraphPlan,
+    capture_scene_graph: Option<u32>,
+) -> Result<Vec<u32>, String> {
     let mut order = Vec::new();
     for pass in &graph.pass_nodes {
+        if capture_scene_graph.is_some_and(|selected| selected != pass.graph_index) {
+            continue;
+        }
         if order.last().copied() != Some(pass.graph_index) {
             order.push(pass.graph_index);
         }
     }
-    order
+    if let Some(selected) = capture_scene_graph
+        && order.is_empty()
+    {
+        return Err(format!(
+            "captured scene graph {selected} does not exist or has no render passes"
+        ));
+    }
+    Ok(order)
 }
 
 pub(super) fn record_scene_graphs_to_swapchain(
@@ -49,6 +62,25 @@ pub(super) fn record_scene_graphs_to_swapchain(
     let mut scene_color_initialized = false;
 
     for graph_index in &scene.graph_execution_order {
+        if !scene_color_initialized
+            && effect_target::graph_copies_scene_color(
+                &scene.effect_target_commands,
+                *graph_index,
+            )
+        {
+            begin_scene_color_rendering(
+                device,
+                command_buffer,
+                swapchain_view,
+                extent,
+                clear_color,
+                false,
+            );
+            unsafe {
+                device.cmd_end_rendering(command_buffer);
+            }
+            scene_color_initialized = true;
+        }
         let mut record_effect_draws = |draw_start, draw_count| {
             record_scene_mesh_draw_ranges(
                 device,
@@ -58,11 +90,14 @@ pub(super) fn record_scene_graphs_to_swapchain(
                     start: draw_start,
                     count: draw_count,
                 }],
+                extent,
             )
         };
         effect_target::record_scene_effect_target_graph_passes(
             device,
             command_buffer,
+            swapchain_image,
+            extent,
             *graph_index,
             &scene.effect_target_commands,
             &scene.effect_target_allocations,
@@ -89,7 +124,13 @@ pub(super) fn record_scene_graphs_to_swapchain(
         );
         record_scene_draw_extent(device, command_buffer, extent);
         for graph_range in graph_ranges {
-            record_scene_mesh_draw_ranges(device, command_buffer, scene, &[graph_range.range])?;
+            record_scene_mesh_draw_ranges(
+                device,
+                command_buffer,
+                scene,
+                &[graph_range.range],
+                extent,
+            )?;
         }
         unsafe {
             device.cmd_end_rendering(command_buffer);
@@ -222,7 +263,15 @@ mod tests {
             pass_nodes: vec![pass(0), pass(0), pass(2)],
             ..empty_graph()
         };
-        assert_eq!(scene_graph_execution_order(&graph), vec![0, 2]);
+        assert_eq!(
+            scene_graph_execution_order(&graph, None).expect("execution order"),
+            vec![0, 2]
+        );
+        assert_eq!(
+            scene_graph_execution_order(&graph, Some(2)).expect("isolated graph"),
+            vec![2]
+        );
+        assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
     }
 
     fn pass(graph_index: u32) -> SceneRenderingDevicePassNode {

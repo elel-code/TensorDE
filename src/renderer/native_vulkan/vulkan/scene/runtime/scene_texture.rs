@@ -26,6 +26,7 @@ pub(in crate::renderer::native_vulkan) struct SceneTextureImageResource {
     pub resource: SceneResourceId,
     pub format: vk::Format,
     pub mip_levels: u32,
+    pub sampler_flags: u32,
     pub upload: NativeVulkanVulkanaliaRecordedImageUpload,
 }
 
@@ -113,6 +114,7 @@ fn create_scene_texture_image(
         resource,
         format,
         mip_levels: texture.mip_count,
+        sampler_flags: texture.sampler_flags,
         upload,
     })
 }
@@ -162,15 +164,26 @@ pub(in crate::renderer::native_vulkan) fn scene_texture_image_view_info(
 pub(in crate::renderer::native_vulkan) fn scene_texture_sampler_info(
     resource: &SceneTextureImageResource,
 ) -> vk::SamplerCreateInfo {
+    let address_mode = scene_texture_address_mode(resource.sampler_flags);
     vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
         .mipmap_mode(vk::SamplerMipmapMode::LINEAR)
-        .address_mode_u(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_v(vk::SamplerAddressMode::CLAMP_TO_EDGE)
-        .address_mode_w(vk::SamplerAddressMode::CLAMP_TO_EDGE)
+        .address_mode_u(address_mode)
+        .address_mode_v(address_mode)
+        .address_mode_w(address_mode)
         .max_lod(resource.mip_levels.saturating_sub(1) as f32)
         .build()
+}
+
+fn scene_texture_address_mode(sampler_flags: u32) -> vk::SamplerAddressMode {
+    // WE sampler helper 0x140099980 maps payload/config bit 1 to D3D address
+    // mode 3 (clamp); its absence maps to mode 1 (wrap).
+    if sampler_flags & 0x2 != 0 {
+        vk::SamplerAddressMode::CLAMP_TO_EDGE
+    } else {
+        vk::SamplerAddressMode::REPEAT
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_texture_memory_bytes(
@@ -232,6 +245,26 @@ mod tests {
         assert_eq!(
             scene_texture_vk_format(SceneTextureFormat::Bc5UnormBlock),
             vk::Format::BC5_UNORM_BLOCK
+        );
+    }
+
+    #[test]
+    fn we_sampler_seed_bit_one_selects_clamp_instead_of_wrap() {
+        assert_eq!(
+            scene_texture_address_mode(0),
+            vk::SamplerAddressMode::REPEAT
+        );
+        assert_eq!(
+            scene_texture_address_mode(0x8),
+            vk::SamplerAddressMode::REPEAT
+        );
+        assert_eq!(
+            scene_texture_address_mode(0x2),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
+        );
+        assert_eq!(
+            scene_texture_address_mode(0xa),
+            vk::SamplerAddressMode::CLAMP_TO_EDGE
         );
     }
 }

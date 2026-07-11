@@ -5,6 +5,7 @@
 //! are grouped by core device setup, present, scene, and video responsibilities.
 
 mod core;
+mod device_selection;
 mod present;
 mod scene;
 mod video;

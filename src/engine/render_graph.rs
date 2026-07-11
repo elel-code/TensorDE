@@ -31,5 +31,6 @@ pub use run::{
 pub use state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 pub use target::RenderTargetRole;
 pub use we_image::{
-    WeEffectPassContract, WeImageGraphContract, we_effect_pass_node, we_image_graph,
+    WeEffectPassContract, WeFramebufferSnapshotContract, WeImageGraphContract, we_effect_pass_node,
+    we_image_graph,
 };

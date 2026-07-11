@@ -14,7 +14,8 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 7;
+pub const SCENE_BINARY_VERSION: u32 = 8;
+pub const SCENE_BINARY_MIN_READ_VERSION: u32 = 7;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
@@ -630,6 +631,98 @@ pub struct SceneObjectAnimationLayerRecord {
     pub playback_rate: f32,
     pub blend_weight: f32,
     pub initial_progress: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneObjectTransformProperty {
+    Origin,
+    Angles,
+    Scale,
+}
+
+impl SceneObjectTransformProperty {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Origin => 1,
+            Self::Angles => 2,
+            Self::Scale => 3,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Origin),
+            2 => Some(Self::Angles),
+            3 => Some(Self::Scale),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneObjectTransformChannelKind {
+    Keyframed,
+    Sine,
+}
+
+impl SceneObjectTransformChannelKind {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::Keyframed => 1,
+            Self::Sine => 2,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::Keyframed),
+            2 => Some(Self::Sine),
+            _ => None,
+        }
+    }
+}
+
+pub const SCENE_OBJECT_TRANSFORM_TRACK_RELATIVE: u32 = 1 << 0;
+pub const SCENE_OBJECT_TRANSFORM_TRACK_WRAP_LOOP: u32 = 1 << 1;
+pub const SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_ENABLED: u32 = 1 << 0;
+pub const SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_ENABLED: u32 = 1 << 1;
+pub const SCENE_OBJECT_TRANSFORM_KEYFRAME_BACK_MAGIC: u32 = 1 << 2;
+pub const SCENE_OBJECT_TRANSFORM_KEYFRAME_FRONT_MAGIC: u32 = 1 << 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneObjectTransformTrackRecord {
+    pub object: SceneObjectHandle,
+    pub property: SceneObjectTransformProperty,
+    pub flags: u32,
+    pub playback: SceneStringId,
+    pub fps: f32,
+    pub frame_count: u32,
+    pub channel_start: u32,
+    pub channel_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneObjectTransformChannelRecord {
+    pub track: u32,
+    pub component: u32,
+    pub kind: SceneObjectTransformChannelKind,
+    pub offset: f32,
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub phase: f32,
+    pub keyframe_start: u32,
+    pub keyframe_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SceneObjectTransformKeyframeRecord {
+    pub frame: f32,
+    pub value: f32,
+    pub back: [f32; 2],
+    pub front: [f32; 2],
+    pub flags: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]

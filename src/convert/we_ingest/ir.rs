@@ -30,6 +30,9 @@ pub struct WeSceneIr {
     pub objects: Vec<WeIrObject>,
     pub object_effects: Vec<WeIrObjectEffect>,
     pub object_animation_layers: Vec<WeIrObjectAnimationLayer>,
+    pub object_transform_tracks: Vec<WeIrObjectTransformTrack>,
+    pub object_transform_channels: Vec<WeIrObjectTransformChannel>,
+    pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -48,6 +51,7 @@ pub struct WeSceneIr {
     pub effect_passes: Vec<WeIrEffectPass>,
     pub effect_bindings: Vec<WeIrEffectBinding>,
     pub effect_combos: Vec<WeIrEffectCombo>,
+    pub shader_combo_definitions: Vec<WeIrShaderComboDefinition>,
     pub effect_fbos: Vec<WeIrEffectFbo>,
     pub render_graphs: Vec<RenderGraph>,
     pub image_targets: Vec<WeIrImageTarget>,
@@ -148,7 +152,25 @@ pub struct WeIrObject {
     pub visible: bool,
     pub color_blend_mode: i32,
     pub sort_order: i32,
+    pub utility_layer: Option<WeIrUtilityLayerKind>,
     pub render_graph: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrUtilityLayerKind {
+    SolidColor,
+    FramebufferComposite,
+    FullscreenPostprocess,
+}
+
+impl WeIrUtilityLayerKind {
+    pub const fn samples_scene_color(self) -> bool {
+        matches!(
+            self,
+            Self::FramebufferComposite | Self::FullscreenPostprocess
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -170,6 +192,59 @@ pub struct WeIrObjectAnimationLayer {
     pub playback_rate: f32,
     pub blend_weight: f32,
     pub initial_progress: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrObjectTransformProperty {
+    Origin,
+    Angles,
+    Scale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrObjectTransformChannelKind {
+    Keyframed,
+    Sine,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrObjectTransformTrack {
+    pub object: u32,
+    pub property: WeIrObjectTransformProperty,
+    pub relative: bool,
+    pub wrap_loop: bool,
+    pub playback: String,
+    pub fps: f32,
+    pub frame_count: u32,
+    pub channel_start: u32,
+    pub channel_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrObjectTransformChannel {
+    pub track: u32,
+    pub component: u32,
+    pub kind: WeIrObjectTransformChannelKind,
+    pub offset: f32,
+    pub amplitude: f32,
+    pub frequency: f32,
+    pub phase: f32,
+    pub keyframe_start: u32,
+    pub keyframe_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WeIrObjectTransformKeyframe {
+    pub frame: f32,
+    pub value: f32,
+    pub back: [f32; 2],
+    pub front: [f32; 2],
+    pub back_enabled: bool,
+    pub front_enabled: bool,
+    pub back_magic: bool,
+    pub front_magic: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -331,6 +406,13 @@ pub struct WeIrEffectBinding {
 pub struct WeIrEffectCombo {
     pub name: String,
     pub value: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrShaderComboDefinition {
+    pub shader_key: String,
+    pub name: String,
+    pub default_value: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

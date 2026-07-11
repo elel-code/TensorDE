@@ -77,7 +77,7 @@ impl SceneRenderingDeviceGraphPlan {
                 let mesh_draw_start = mesh_draws.len() as u32;
                 let pass_object_state = visible_pass_object(semantic_frame, pass);
                 if let (true, Some(pass_object_state)) =
-                    (pass_draws_object_mesh(pass), pass_object_state)
+                    (pass_draws_object_mesh(storage, pass), pass_object_state)
                 {
                     let resolved_object_index = pass_object_state.object_index;
                     for (mesh_index, mesh) in storage.meshes().iter().enumerate() {
@@ -90,6 +90,10 @@ impl SceneRenderingDeviceGraphPlan {
                                     storage.project(),
                                     pass_object_state.world_matrix,
                                 ),
+                                authored_source_extent: authored_source_extent(
+                                    storage,
+                                    pass.object,
+                                ),
                                 skinning_palette_start: skinning_palette_start(
                                     &puppet_bone_palettes,
                                     mesh.object,
@@ -100,6 +104,7 @@ impl SceneRenderingDeviceGraphPlan {
                                 ),
                                 resolved_color: pass_object_state.resolved_color,
                                 resolved_alpha: pass_object_state.resolved_alpha,
+                                apply_resolved_visual: pass_applies_resolved_visual(pass),
                                 object: mesh.object,
                                 material: pass_draw_material(pass, mesh.material),
                                 vertex_start: mesh.vertex_start,
@@ -113,7 +118,7 @@ impl SceneRenderingDeviceGraphPlan {
                 if mesh_draws.len() == mesh_draw_start as usize
                     && pass_draws_fullscreen_utility(storage, pass, pass_object_state)
                 {
-                    mesh_draws.push(fullscreen_utility_draw(pass, pass_object_state));
+                    mesh_draws.push(fullscreen_utility_draw(storage, pass, pass_object_state));
                 }
                 let mesh_draw_count = mesh_draws.len() as u32 - mesh_draw_start;
                 sampled_bindings.extend(storage.render_pass_bindings(pass).iter().filter_map(
@@ -212,6 +217,9 @@ pub struct SceneRenderingDeviceTargetAllocation {
     pub first_write_pass_id: u32,
     pub last_use_pass_id: u32,
     pub physical_slot: u32,
+    /// Non-zero dimensions select a graph-local authored-texture target.
+    pub width: u32,
+    pub height: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -236,12 +244,8 @@ pub struct SceneRenderingDeviceMaterialSampledBinding {
 impl SceneRenderingDeviceSampledBinding {
     pub fn logical_target(self) -> Option<(u32, SceneRenderTargetKind, SceneStringId)> {
         match self.kind {
-            SceneRenderBindingKind::PreviousGraphTarget => Some((
-                self.graph_index,
-                SceneRenderTargetKind::ImageLocalMain,
-                SceneStringId::NONE,
-            )),
-            SceneRenderBindingKind::GraphTarget
+            SceneRenderBindingKind::PreviousGraphTarget
+            | SceneRenderBindingKind::GraphTarget
             | SceneRenderBindingKind::NamedFboBind
             | SceneRenderBindingKind::EffectTarget => {
                 Some((self.graph_index, self.target, self.target_name))
@@ -257,10 +261,12 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub mesh_index: u32,
     pub resolved_object_index: u32,
     pub clip_transform: [[f32; 4]; 4],
+    pub authored_source_extent: [f32; 2],
     pub skinning_palette_start: u32,
     pub skinning_palette_count: u32,
     pub resolved_color: SceneVec3,
     pub resolved_alpha: f32,
+    pub apply_resolved_visual: bool,
     pub object: SceneObjectHandle,
     pub material: SceneMaterialHandle,
     pub vertex_start: u32,
@@ -294,8 +300,13 @@ pub struct SceneRenderingDevicePuppetBoneMatrix {
     pub alpha: f32,
 }
 
-fn pass_draws_object_mesh(pass: &SceneRenderPassRecord) -> bool {
-    pass.object.0 != INVALID_OBJECT_ID && pass.role == SceneRenderPassKind::BaseMaterial
+fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) -> bool {
+    pass.object.0 != INVALID_OBJECT_ID
+        && (pass.role == SceneRenderPassKind::BaseMaterial
+            || (pass.role == SceneRenderPassKind::SceneComposite
+                && !storage
+                    .string(pass.shader_key)
+                    .is_some_and(|key| key.eq_ignore_ascii_case("we/objectcomposite"))))
 }
 
 fn visible_pass_object<'frame>(
@@ -314,7 +325,8 @@ fn pass_draws_fullscreen_utility(
 ) -> bool {
     if !matches!(
         pass.role,
-        SceneRenderPassKind::EffectMaterial
+        SceneRenderPassKind::BaseMaterial
+            | SceneRenderPassKind::EffectMaterial
             | SceneRenderPassKind::ColorBlendPassthrough
             | SceneRenderPassKind::SceneComposite
     ) {
@@ -337,10 +349,13 @@ fn shader_uses_fullscreen_utility_primitive(shader_key: &str) -> bool {
         || key == "passthrough"
         || key.starts_with("passthrough__")
         || key.contains("composelayer")
+        || key.contains("objectcomposite")
+        || key.contains("utilitycomposite")
         || key.contains("flattexture")
 }
 
 fn fullscreen_utility_draw(
+    storage: &SceneStorage,
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
 ) -> SceneRenderingDeviceMeshDraw {
@@ -350,7 +365,10 @@ fn fullscreen_utility_draw(
         resolved_object_index: pass_object_state
             .map(|object| object.object_index)
             .unwrap_or(INVALID_OBJECT_ID),
-        clip_transform: identity_clip_transform(),
+        clip_transform: pass_object_state.map_or_else(identity_clip_transform, |object| {
+            scene_clip_transform(storage.project(), object.world_matrix)
+        }),
+        authored_source_extent: authored_source_extent(storage, pass.object),
         skinning_palette_start: INVALID_OBJECT_ID,
         skinning_palette_count: 0,
         resolved_color: pass_object_state.map_or(
@@ -362,6 +380,7 @@ fn fullscreen_utility_draw(
             |object| object.resolved_color,
         ),
         resolved_alpha: pass_object_state.map_or(1.0, |object| object.resolved_alpha),
+        apply_resolved_visual: pass_applies_resolved_visual(pass),
         object: pass.object,
         material: pass.material,
         vertex_start: 0,
@@ -371,7 +390,56 @@ fn fullscreen_utility_draw(
     }
 }
 
-fn scene_clip_transform(project: &SceneProjectRecord, world_matrix: [f32; 16]) -> [[f32; 4]; 4] {
+fn pass_applies_resolved_visual(pass: &SceneRenderPassRecord) -> bool {
+    matches!(
+        pass.target,
+        SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
+    )
+}
+
+fn authored_source_extent(storage: &SceneStorage, object: SceneObjectHandle) -> [f32; 2] {
+    let Some(object_record) = storage.objects().get(object.0 as usize) else {
+        return [0.0; 2];
+    };
+    let texture_extent = storage
+        .texture(object_record.resource)
+        .or_else(|| source_texture_for_material(storage, object_record.material))
+        .or_else(|| {
+            storage
+                .meshes()
+                .iter()
+                .filter(|mesh| mesh.object == object)
+                .find_map(|mesh| source_texture_for_material(storage, mesh.material))
+        })
+        .map(|texture| [texture.width.max(1) as f32, texture.height.max(1) as f32]);
+    texture_extent
+        .or_else(|| {
+            storage
+                .meshes()
+                .iter()
+                .find(|mesh| mesh.object == object)
+                .map(|mesh| [mesh.width, mesh.height])
+        })
+        .unwrap_or([0.0; 2])
+}
+
+fn source_texture_for_material<'storage>(
+    storage: &'storage SceneStorage,
+    material: SceneMaterialHandle,
+) -> Option<&'storage SceneTextureRecord> {
+    let material = storage.material(material)?;
+    storage
+        .material_passes(material)
+        .iter()
+        .flat_map(|pass| storage.material_pass_textures(pass))
+        .find(|binding| binding.slot == 0)
+        .and_then(|binding| storage.texture(binding.resource))
+}
+
+pub(crate) fn scene_clip_transform(
+    project: &SceneProjectRecord,
+    world_matrix: [f32; 16],
+) -> [[f32; 4]; 4] {
     let width = project.logical_width.max(1) as f32;
     let height = project.logical_height.max(1) as f32;
     [
@@ -526,6 +594,9 @@ struct TargetAllocationCompatibility {
     format: SceneStringId,
     width_divisor_milli: u32,
     height_divisor_milli: u32,
+    authored_width: u32,
+    authored_height: u32,
+    authored_texture_space: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,7 +655,7 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
                     reusable
                         && physical.reusable
                         && physical.last_use_order < state.first_write_order
-                        && physical.compatibility == compatibility
+                        && target_allocations_are_compatible(physical.compatibility, compatibility)
                 })
                 .unwrap_or_else(|| {
                     physical_targets.push(PhysicalTargetState {
@@ -602,9 +673,24 @@ fn graph_target_allocations(storage: &SceneStorage) -> Vec<SceneRenderingDeviceT
                 first_write_pass_id: state.first_write_pass_id,
                 last_use_pass_id: state.last_use_pass_id,
                 physical_slot: slot as u32,
+                width: compatibility.authored_width,
+                height: compatibility.authored_height,
             }
         })
         .collect()
+}
+
+fn target_allocations_are_compatible(
+    left: TargetAllocationCompatibility,
+    right: TargetAllocationCompatibility,
+) -> bool {
+    left.format == right.format
+        && left.width_divisor_milli == right.width_divisor_milli
+        && left.height_divisor_milli == right.height_divisor_milli
+        && left.authored_texture_space == right.authored_texture_space
+        && (left.authored_texture_space
+            || (left.authored_width, left.authored_height)
+                == (right.authored_width, right.authored_height))
 }
 
 fn target_is_transient_aliasable(target: SceneRenderTargetKind) -> bool {
@@ -620,6 +706,13 @@ fn target_allocation_compatibility(
     storage: &SceneStorage,
     state: TargetAllocationState,
 ) -> TargetAllocationCompatibility {
+    let authored_extent = matches!(
+        state.target,
+        SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
+    )
+    .then(|| puppet_effect_graph_extent(storage, state.graph_index))
+    .flatten()
+    .unwrap_or([0, 0]);
     storage
         .document()
         .image_targets
@@ -629,12 +722,34 @@ fn target_allocation_compatibility(
             format: target.format,
             width_divisor_milli: target.width_divisor_milli.max(1),
             height_divisor_milli: target.height_divisor_milli.max(1),
+            authored_width: authored_extent[0],
+            authored_height: authored_extent[1],
+            authored_texture_space: authored_extent != [0, 0],
         })
         .unwrap_or(TargetAllocationCompatibility {
             format: SceneStringId::NONE,
             width_divisor_milli: 1_000,
             height_divisor_milli: 1_000,
+            authored_width: authored_extent[0],
+            authored_height: authored_extent[1],
+            authored_texture_space: authored_extent != [0, 0],
         })
+}
+
+fn puppet_effect_graph_extent(storage: &SceneStorage, graph_index: u32) -> Option<[u32; 2]> {
+    let graph = storage.render_graphs().get(graph_index as usize)?;
+    let uses_authored_texture_space = storage.render_graph_passes(graph).iter().any(|pass| {
+        storage.string(pass.shader_key).is_some_and(|shader| {
+            shader.eq_ignore_ascii_case("we/image-effect-source")
+                || shader.eq_ignore_ascii_case("we/puppet-effect-source")
+        })
+    });
+    if !uses_authored_texture_space {
+        return None;
+    }
+    let [width, height] = authored_source_extent(storage, graph.object);
+    (width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0)
+        .then_some([width.round() as u32, height.round() as u32])
 }
 
 fn record_target_write(
@@ -691,10 +806,8 @@ fn binding_target_read(
     match binding.kind {
         SceneRenderBindingKind::GraphTarget
         | SceneRenderBindingKind::NamedFboBind
-        | SceneRenderBindingKind::EffectTarget => Some((binding.target, binding.name)),
-        SceneRenderBindingKind::PreviousGraphTarget => {
-            Some((SceneRenderTargetKind::ImageLocalMain, SceneStringId::NONE))
-        }
+        | SceneRenderBindingKind::EffectTarget
+        | SceneRenderBindingKind::PreviousGraphTarget => Some((binding.target, binding.name)),
         _ => None,
     }
 }
@@ -718,8 +831,9 @@ mod tests {
         SceneBinaryDocument, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,
         SceneMeshVertexRecord, SceneObjectHandle, SceneObjectKind, SceneObjectRecord,
         ScenePuppetBoneRecord, ScenePuppetRecord, SceneRenderBindingKind, SceneRenderBindingRecord,
-        SceneRenderGraphRecord, SceneRenderPassRecord, SceneResourceId, SceneShaderContractRecord,
-        SceneStringId, SceneVec3,
+        SceneRenderGraphRecord, SceneRenderPassRecord, SceneResourceId, SceneResourceKind,
+        SceneResourceRecord, SceneShaderContractRecord, SceneStringId, SceneTextureFormat,
+        SceneTextureRecord, SceneVec3,
     };
 
     #[test]
@@ -1184,19 +1298,190 @@ mod tests {
             graph.mesh_draws[0].clip_transform,
             identity_clip_transform()
         );
+        assert_eq!(graph.mesh_draws[0].authored_source_extent, [0.0; 2]);
+    }
+
+    #[test]
+    fn object_effect_utility_retains_semantic_transform_and_authored_source_extent() {
+        let mut project = SceneBinaryDocument::default().project;
+        project.logical_width = 200;
+        project.logical_height = 100;
+        let source_resource = SceneResourceId(7);
+        let document = SceneBinaryDocument {
+            project,
+            strings: vec!["effects/waterwaves__SLOTS_1".to_owned()],
+            resources: vec![SceneResourceRecord {
+                id: source_resource,
+                kind: SceneResourceKind::TextureTex,
+                path: SceneStringId::NONE,
+                source: SceneStringId::NONE,
+                payload_offset: 0,
+                payload_len: 0,
+            }],
+            textures: vec![SceneTextureRecord {
+                resource: source_resource,
+                format: SceneTextureFormat::Bc7UnormBlock,
+                source_runtime_format: 0,
+                payload_format: 0,
+                sampler_flags: 0,
+                width: 1571,
+                height: 2621,
+                storage_width: 1572,
+                storage_height: 2624,
+                mip_start: 0,
+                mip_count: 0,
+                texv_tag: SceneStringId::NONE,
+                texb_tag: SceneStringId::NONE,
+                payload_offset: 0,
+                payload_len: 0,
+            }],
+            objects: vec![SceneObjectRecord {
+                id: SceneObjectHandle(0),
+                we_id: 937,
+                name: SceneStringId::NONE,
+                kind: SceneObjectKind::Puppet,
+                resource: SceneResourceId::NONE,
+                material: SceneMaterialHandle(0),
+                parent_we_id: INVALID_OBJECT_ID,
+                attachment: SceneStringId::NONE,
+                origin: SceneVec3 {
+                    x: 50.0,
+                    y: 20.0,
+                    z: 0.0,
+                },
+                angles: SceneVec3::default(),
+                scale: SceneVec3::ONE,
+                color: SceneVec3::ONE,
+                alpha: 1.0,
+                visible: true,
+                color_blend_mode: 0,
+                sort_order: 0,
+                effect_start: u32::MAX,
+                effect_count: 0,
+                render_graph: 0,
+            }],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId::NONE,
+                pass_start: 0,
+                pass_count: 1,
+            }],
+            material_passes: vec![SceneMaterialPassRecord {
+                material: SceneMaterialHandle(0),
+                shader_key: SceneStringId(0),
+                target: SceneStringId::NONE,
+                texture_start: 0,
+                texture_count: 1,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: SceneStringId::NONE,
+                clear_target: false,
+            }],
+            material_textures: vec![SceneMaterialTextureRecord {
+                slot: 0,
+                resource: source_resource,
+                path: SceneStringId::NONE,
+            }],
+            render_graphs: vec![SceneRenderGraphRecord {
+                object: SceneObjectHandle(0),
+                pass_start: 0,
+                pass_count: 1,
+                unsupported_start: 0,
+                unsupported_count: 0,
+            }],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 1,
+                role: SceneRenderPassKind::EffectMaterial,
+                object: SceneObjectHandle(0),
+                material: SceneMaterialHandle(0),
+                pass_index: 0,
+                shader_key: SceneStringId(0),
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                scene_blend: SceneCompositeBlend::Alpha,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+            }],
+            ..SceneBinaryDocument::default()
+        };
+        let storage = SceneStorage::from_document(document).expect("storage");
+        let graph = RenderingServer::new(&storage).rendering_device_graph_plan();
+        let draw = graph.mesh_draws.first().expect("fullscreen effect draw");
+
+        assert_eq!(
+            draw.primitive,
+            SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        );
+        assert_eq!(draw.authored_source_extent, [1571.0, 2621.0]);
+        assert_eq!(draw.clip_transform[0], [0.01, 0.0, 0.0, -0.5]);
+        assert_eq!(draw.clip_transform[1], [0.0, -0.02, 0.0, 0.6]);
+    }
+
+    #[test]
+    fn textureless_solid_layer_uses_authored_mesh_extent_for_local_effects() {
+        let object = SceneObjectHandle(0);
+        let document = SceneBinaryDocument {
+            objects: vec![SceneObjectRecord {
+                id: object,
+                we_id: 1416,
+                name: SceneStringId::NONE,
+                kind: SceneObjectKind::Image,
+                resource: SceneResourceId::NONE,
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                parent_we_id: INVALID_OBJECT_ID,
+                attachment: SceneStringId::NONE,
+                origin: SceneVec3::default(),
+                angles: SceneVec3::default(),
+                scale: SceneVec3::ONE,
+                color: SceneVec3::ONE,
+                alpha: 1.0,
+                visible: true,
+                color_blend_mode: 0,
+                sort_order: 0,
+                effect_start: 0,
+                effect_count: 0,
+                render_graph: INVALID_OBJECT_ID,
+            }],
+            meshes: vec![SceneMeshRecord {
+                object,
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                vertex_start: 0,
+                vertex_count: 0,
+                index_start: 0,
+                index_count: 0,
+                width: 550.0,
+                height: 3300.0,
+                bounds_min: SceneVec3::default(),
+                bounds_max: SceneVec3::default(),
+            }],
+            ..SceneBinaryDocument::default()
+        };
+        let storage = SceneStorage::from_document(document).expect("storage");
+
+        assert_eq!(authored_source_extent(&storage, object), [550.0, 3300.0]);
     }
 
     #[test]
     fn only_base_material_pass_draws_authored_object_mesh() {
+        let storage =
+            SceneStorage::from_document(SceneBinaryDocument::default()).expect("empty storage");
         let mut pass = named_fbo_pass(5, 0, SceneStringId(1), 0, 0);
         pass.object = SceneObjectHandle(7);
-        assert!(!pass_draws_object_mesh(&pass));
+        assert!(!pass_draws_object_mesh(&storage, &pass));
 
         pass.role = SceneRenderPassKind::ColorBlendPassthrough;
-        assert!(!pass_draws_object_mesh(&pass));
+        assert!(!pass_draws_object_mesh(&storage, &pass));
 
         pass.role = SceneRenderPassKind::BaseMaterial;
-        assert!(pass_draws_object_mesh(&pass));
+        assert!(pass_draws_object_mesh(&storage, &pass));
     }
 
     fn named_fbo_pass(

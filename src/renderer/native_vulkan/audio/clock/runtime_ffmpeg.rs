@@ -61,12 +61,19 @@ fn native_vulkan_audio_publish_signal_level(level_micros: u32) {
     NATIVE_VULKAN_AUDIO_SIGNAL_READY.store(true, Ordering::Relaxed);
 }
 
-fn native_vulkan_audio_publish_spectrum32_packed(
+pub(super) fn native_vulkan_audio_publish_spectrum32_packed(
     spectrum32_packed: [u32; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS],
 ) {
     if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED.lock() {
         *spectrum = spectrum32_packed;
         NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.store(true, Ordering::Relaxed);
+    }
+}
+
+pub(super) fn native_vulkan_audio_clear_spectrum32() {
+    NATIVE_VULKAN_AUDIO_SPECTRUM32_READY.store(false, Ordering::Relaxed);
+    if let Ok(mut spectrum) = NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED.lock() {
+        *spectrum = [0; NATIVE_VULKAN_AUDIO_SPECTRUM32_PACKED_WORDS];
     }
 }
 

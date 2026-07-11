@@ -23,10 +23,12 @@ use crate::renderer::native_vulkan::{
 
 use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanSceneRunOptions {
     pub capture_frame: Option<PathBuf>,
     pub capture_frame_number: u64,
+    pub capture_scene_graph: Option<u32>,
+    pub clear_color_override: Option<NativeVulkanClearColor>,
 }
 
 impl Default for NativeVulkanSceneRunOptions {
@@ -34,6 +36,8 @@ impl Default for NativeVulkanSceneRunOptions {
         Self {
             capture_frame: None,
             capture_frame_number: 1,
+            capture_scene_graph: None,
+            clear_color_override: None,
         }
     }
 }
@@ -44,6 +48,7 @@ pub struct NativeVulkanSceneRuntimeSnapshot {
     pub route: &'static str,
     pub source: PathBuf,
     pub frame_capture: Option<NativeVulkanSceneFrameCaptureSnapshot>,
+    pub capture_scene_graph: Option<u32>,
     pub backend_plan: NativeVulkanSceneBackendPlan,
     pub present: NativeVulkanVulkanaliaScenePresentSnapshot,
     pub frames_presented: u64,
@@ -90,6 +95,11 @@ pub fn run_scene_with_options(
             "scene frame capture number must be at least 1".to_owned(),
         ));
     }
+    if scene_options.capture_frame.is_none() && scene_options.capture_scene_graph.is_some() {
+        return Err(NativeVulkanError::Scene(
+            "scene graph isolation requires frame capture".to_owned(),
+        ));
+    }
     let file = std::fs::File::open(&source).map_err(|err| {
         NativeVulkanError::Scene(format!(
             "open scene engine binary {}: {err}",
@@ -104,6 +114,10 @@ pub fn run_scene_with_options(
     })?;
     let backend_plan = native_vulkan_scene_backend_plan(&storage);
     validate_scene_runtime_plan(&backend_plan)?;
+    let clear_color = scene_options
+        .clear_color_override
+        .unwrap_or_else(|| scene_clear_color(&storage));
+    let capture_scene_graph = scene_options.capture_scene_graph;
 
     let present =
         run_native_vulkan_vulkanalia_scene_present(NativeVulkanVulkanaliaScenePresentOptions {
@@ -111,10 +125,11 @@ pub fn run_scene_with_options(
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
             target_max_fps: options.target_max_fps,
-            clear_color: scene_clear_color(&storage),
-            storage: storage.clone(),
+            clear_color,
+            storage,
             capture_frame: scene_options.capture_frame,
             capture_frame_number: scene_options.capture_frame_number,
+            capture_scene_graph,
         })
         .map_err(NativeVulkanError::Scene)?;
     let frame_capture = present.frame_capture.clone();
@@ -131,6 +146,7 @@ pub fn run_scene_with_options(
         route: "scene-engine-fifo-latest-ready-present-runtime",
         source,
         frame_capture,
+        capture_scene_graph,
         frames_presented: present.frames_presented,
         average_present_fps: present.average_present_fps,
         present_delta_min_micros: present.present_delta_min_micros,

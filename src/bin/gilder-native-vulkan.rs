@@ -160,13 +160,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut duration = Duration::from_secs(5);
     let mut duration_set = false;
     let mut source = None::<PathBuf>;
+    let mut vulkan_device = None::<String>;
+    let mut vulkan_device_preference = None::<String>;
     let mut capture_frame = None::<PathBuf>;
     let mut capture_frame_number = 1u64;
     let mut capture_frame_number_set = false;
+    let mut capture_scene_graph = None::<u32>;
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
-    let mut _scene_color = None::<String>;
+    let mut scene_clear_color_override = None::<NativeVulkanClearColor>;
     let mut _muted = true;
     #[cfg(feature = "native-vulkan-video")]
     let mut audio_clock_probe_requested = false;
@@ -292,13 +295,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--color" => {
                 let value = args.next().ok_or("--color requires #rrggbb or r,g,b")?;
-                options.clear_color = parse_color(&value)?;
-                if value.starts_with('#') {
-                    _scene_color = Some(value);
-                }
+                let color = parse_color(&value)?;
+                options.clear_color = color;
+                scene_clear_color_override = Some(color);
             }
             "--source" => {
                 source = Some(args.next().ok_or("--source requires a path")?.into());
+            }
+            "--vulkan-device" => {
+                vulkan_device = Some(args.next().ok_or("--vulkan-device requires a selector")?);
+            }
+            "--vulkan-device-preference" => {
+                let value = args
+                    .next()
+                    .ok_or("--vulkan-device-preference requires a value")?;
+                if !matches!(value.as_str(), "discrete" | "integrated" | "enumeration") {
+                    return Err(
+                        "--vulkan-device-preference requires discrete, integrated, or enumeration"
+                            .into(),
+                    );
+                }
+                vulkan_device_preference = Some(value);
             }
             "--capture-frame" => {
                 capture_frame = Some(parse_capture_frame_path(args.next())?);
@@ -306,6 +323,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "--capture-frame-number" => {
                 capture_frame_number = parse_capture_frame_number(args.next())?;
                 capture_frame_number_set = true;
+            }
+            "--capture-scene-graph" => {
+                capture_scene_graph = Some(parse_capture_scene_graph(args.next())?);
             }
             "--scene-video" => {
                 return Err("--scene-video was removed with the old scene CLI".into());
@@ -449,12 +469,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if capture_frame.is_none() && capture_frame_number_set {
         return Err("--capture-frame-number requires --capture-frame".into());
     }
+    if capture_frame.is_none() && capture_scene_graph.is_some() {
+        return Err("--capture-scene-graph requires --capture-frame".into());
+    }
 
     let duration_playback_frames = if duration_set {
         native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
     } else {
         None
     };
+    apply_vulkan_device_cli_environment(
+        vulkan_device.as_deref(),
+        vulkan_device_preference.as_deref(),
+    )?;
     let report = match mode {
         NativeVulkanCliMode::All => {
             json!({ "capabilities": capabilities(), "backend_contract": backend_contract() })
@@ -633,6 +660,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 NativeVulkanSceneRunOptions {
                     capture_frame,
                     capture_frame_number,
+                    capture_scene_graph,
+                    clear_color_override: scene_clear_color_override,
                 },
             )?)
         }
@@ -828,6 +857,37 @@ fn parse_capture_frame_number(value: Option<String>) -> Result<u64, &'static str
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_capture_scene_graph(value: Option<String>) -> Result<u32, &'static str> {
+    value
+        .ok_or("--capture-scene-graph requires a graph index")?
+        .parse::<u32>()
+        .map_err(|_| "--capture-scene-graph requires a graph index")
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
+#[allow(unsafe_code)]
+fn apply_vulkan_device_cli_environment(
+    selector: Option<&str>,
+    preference: Option<&str>,
+) -> Result<(), &'static str> {
+    if selector.is_some_and(|value| value.trim().is_empty()) {
+        return Err("--vulkan-device selector cannot be empty");
+    }
+    // The CLI has not started renderer, audio, or presentation threads yet.
+    // Setting these process variables here makes one immutable selection policy
+    // visible to every Vulkan route, including video decode and scene present.
+    unsafe {
+        if let Some(selector) = selector {
+            std::env::set_var("GILDER_VULKAN_DEVICE", selector);
+        }
+        if let Some(preference) = preference {
+            std::env::set_var("GILDER_VULKAN_DEVICE_PREFERENCE", preference);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn parse_decoder_policy(
     value: &str,
 ) -> Result<gilder::config::VideoDecoderPolicy, Box<dyn std::error::Error>> {
@@ -893,10 +953,14 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-scene reads --source file.gscene, validates the scene engine backend plan and runs the FIFO latest ready scene present loop.\n\
 --capture-frame PATH writes a completed --run-scene frame directly from the Vulkan swapchain as an RGBA8 PNG.\n\
 --capture-frame-number N selects the 1-based submitted frame captured by --capture-frame; the default is 1.\n\
+--capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
+--vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
+--vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
-         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N]\n\
+         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-scene-graph N]\n\
+         [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
          [--decoder auto|hardware-preferred|hardware-required|software]\n\
@@ -937,6 +1001,15 @@ mod tests {
         assert_eq!(
             parse_capture_frame_number(Some("0".to_owned())),
             Err("--capture-frame-number requires a positive frame number")
+        );
+    }
+
+    #[test]
+    fn capture_scene_graph_accepts_zero_based_graph_index() {
+        assert_eq!(parse_capture_scene_graph(Some("0".to_owned())), Ok(0));
+        assert_eq!(
+            parse_capture_scene_graph(Some("graph".to_owned())),
+            Err("--capture-scene-graph requires a graph index")
         );
     }
 }

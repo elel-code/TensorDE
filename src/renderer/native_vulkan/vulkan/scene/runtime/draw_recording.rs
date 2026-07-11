@@ -29,6 +29,12 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuGraphDrawRange {
     pub range: SceneGpuDrawRange,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct SceneGpuScissor {
+    pub offset: [i32; 2],
+    pub extent: [u32; 2],
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub primitive: SceneRenderingDeviceDrawPrimitive,
@@ -40,6 +46,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,
     pub skinning_byte_count: u64,
+    pub scissor: Option<SceneGpuScissor>,
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
@@ -102,6 +109,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
     command_buffer: vk::CommandBuffer,
     scene: &SceneGpuResources,
     ranges: &[SceneGpuDrawRange],
+    extent: vk::Extent2D,
 ) -> Result<(), String> {
     if ranges.is_empty() {
         return Ok(());
@@ -117,7 +125,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draw_ranges(
             vk::IndexType::UINT32,
         );
         for range in ranges {
-            record_scene_mesh_draws(device, command_buffer, scene, *range)?;
+            record_scene_mesh_draws(device, command_buffer, scene, *range, extent)?;
         }
     }
     Ok(())
@@ -128,11 +136,16 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
     command_buffer: vk::CommandBuffer,
     scene: &SceneGpuResources,
     range: SceneGpuDrawRange,
+    extent: vk::Extent2D,
 ) -> Result<(), String> {
     let start = range.start as usize;
     let count = range.count as usize;
     let end = start.saturating_add(count);
     for draw in scene.draw_commands.get(start..end).unwrap_or(&[]) {
+        let scissor = scene_vk_scissor(draw.scissor, extent);
+        unsafe {
+            device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+        }
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
                 &scene.descriptor_heap,
@@ -179,4 +192,27 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
         }
     }
     Ok(())
+}
+
+fn scene_vk_scissor(scissor: Option<SceneGpuScissor>, extent: vk::Extent2D) -> vk::Rect2D {
+    scissor.map_or_else(
+        || {
+            vk::Rect2D::builder()
+                .offset(vk::Offset2D { x: 0, y: 0 })
+                .extent(extent)
+                .build()
+        },
+        |scissor| {
+            vk::Rect2D::builder()
+                .offset(vk::Offset2D {
+                    x: scissor.offset[0],
+                    y: scissor.offset[1],
+                })
+                .extent(vk::Extent2D {
+                    width: scissor.extent[0],
+                    height: scissor.extent[1],
+                })
+                .build()
+        },
+    )
 }

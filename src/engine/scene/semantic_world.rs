@@ -14,6 +14,7 @@ pub mod indexes;
 pub mod matrix;
 pub mod resolved_frame;
 pub mod timeline;
+pub mod transform_animation;
 
 pub use components::{
     MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
@@ -28,6 +29,7 @@ pub use resolved_frame::{
     ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
     ResolvedPuppetBonePalette, ResolvedSemanticFrame,
 };
+pub use transform_animation::TransformAnimationComponent;
 
 use std::fmt;
 
@@ -39,7 +41,7 @@ use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
 use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
-use timeline::sampled_puppet_bone_local_state;
+use timeline::{sampled_object_transform, sampled_puppet_bone_local_state};
 
 use super::abi::*;
 use super::storage::SceneStorage;
@@ -50,6 +52,7 @@ pub struct SceneSemanticWorld<'a> {
     entities: Vec<SemanticEntityRecord>,
     index: SemanticIndexTable,
     transforms: Vec<Option<TransformComponent>>,
+    transform_animations: Vec<Option<TransformAnimationComponent>>,
     parents: Vec<Option<ParentComponent>>,
     visibility: Vec<Option<VisibilityComponent>>,
     visuals: Vec<Option<VisualComponent>>,
@@ -86,6 +89,7 @@ impl<'a> SceneSemanticWorld<'a> {
             entities: Vec::with_capacity(object_count),
             index: SemanticIndexTable::default(),
             transforms: Vec::with_capacity(object_count),
+            transform_animations: Vec::with_capacity(object_count),
             parents: Vec::with_capacity(object_count),
             visibility: Vec::with_capacity(object_count),
             visuals: Vec::with_capacity(object_count),
@@ -149,6 +153,13 @@ impl<'a> SceneSemanticWorld<'a> {
 
     pub fn transform(&self, object: SceneObjectHandle) -> Option<&TransformComponent> {
         self.component_for_object(object, &self.transforms)
+    }
+
+    pub fn transform_animation(
+        &self,
+        object: SceneObjectHandle,
+    ) -> Option<&TransformAnimationComponent> {
+        self.component_for_object(object, &self.transform_animations)
     }
 
     pub fn parent(&self, object: SceneObjectHandle) -> Option<&ParentComponent> {
@@ -307,6 +318,11 @@ impl<'a> SceneSemanticWorld<'a> {
             object_index: object_index as u32,
         });
         self.transforms.push(Some(transform_from_object(object)));
+        self.transform_animations
+            .push(TransformAnimationComponent::from_storage(
+                self.storage,
+                object.id,
+            ));
         self.parents.push(parent_from_object(object));
         self.visibility.push(Some(visibility_from_object(object)));
         self.visuals.push(Some(visual_from_object(object)));
@@ -461,7 +477,15 @@ impl<'a> SceneSemanticWorld<'a> {
             .ok_or(SceneSemanticWorldError::MissingVisual {
                 object: entity_record.object,
             })?;
-        let local_matrix = transform_matrix(transform);
+        let sampled_transform = sampled_object_transform(
+            self.storage,
+            transform,
+            self.transform_animations
+                .get(entity_index)
+                .and_then(Option::as_ref),
+            scene_time_seconds,
+        );
+        let local_matrix = transform_matrix(&sampled_transform);
         let mesh_range = self
             .mesh_components
             .get(entity_index)

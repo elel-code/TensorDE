@@ -9,12 +9,22 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSceneParameterLayout {
     None,
+    AudioBars,
     StandardMaterial,
     Iris,
     Opacity,
+    RoundedMask,
+    Scroll,
+    Skew,
+    TechCircle,
+    Caustics,
+    CloudMotion,
+    ColorKey,
     FoliageSway,
+    Shake,
     WaterWaves,
     WaterRipple,
+    WaterFlow,
 }
 
 impl BuiltinSceneParameterLayout {
@@ -23,13 +33,33 @@ impl BuiltinSceneParameterLayout {
     }
 
     pub const fn uses_effect_draw_uniform(self) -> bool {
-        matches!(self, Self::Iris)
-    }
-
-    pub const fn uses_scene_time(self) -> bool {
         matches!(
             self,
-            Self::Iris | Self::FoliageSway | Self::WaterWaves | Self::WaterRipple
+            Self::AudioBars
+                | Self::Iris
+                | Self::RoundedMask
+                | Self::Scroll
+                | Self::Skew
+                | Self::TechCircle
+                | Self::WaterFlow
+                | Self::WaterWaves
+        )
+    }
+
+    pub const fn uses_dynamic_material_input(self) -> bool {
+        matches!(
+            self,
+            Self::AudioBars
+                | Self::Iris
+                | Self::Caustics
+                | Self::CloudMotion
+                | Self::FoliageSway
+                | Self::Shake
+                | Self::Scroll
+                | Self::TechCircle
+                | Self::WaterFlow
+                | Self::WaterWaves
+                | Self::WaterRipple
         )
     }
 }
@@ -111,5 +141,40 @@ mod tests {
             .parameter_layout,
             BuiltinSceneParameterLayout::FoliageSway
         );
+        let rounded = native_vulkan_scene_shader_for_key(
+            "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+        )
+        .expect("rounded mask shader");
+        assert_eq!(
+            rounded.parameter_layout,
+            BuiltinSceneParameterLayout::RoundedMask
+        );
+        assert!(rounded.fragment_spirv.len() > 200);
+        for (key, layout) in [
+            (
+                "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+                BuiltinSceneParameterLayout::AudioBars,
+            ),
+            (
+                "effects/scroll__SLOTS_1",
+                BuiltinSceneParameterLayout::Scroll,
+            ),
+            (
+                "effects/skew__SLOTS_1",
+                BuiltinSceneParameterLayout::Skew,
+            ),
+            (
+                "effects/waterflow__SLOTS_7",
+                BuiltinSceneParameterLayout::WaterFlow,
+            ),
+            (
+                "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+                BuiltinSceneParameterLayout::TechCircle,
+            ),
+        ] {
+            let shader = native_vulkan_scene_shader_for_key(key).expect("object-local shader");
+            assert_eq!(shader.parameter_layout, layout);
+            assert!(shader.fragment_spirv.len() > 200);
+        }
     }
 }

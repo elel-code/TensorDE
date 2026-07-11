@@ -17,14 +17,34 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PSS_DIRTY_TARGET_KIB = 40 * 1024
+DGOP_PSS_DIRTY_KEYS = ("pssDirtyKB", "pss_dirty_kb", "pssDirtyKb")
 
 
 def main() -> int:
     args = parse_args()
     with tempfile.TemporaryDirectory(prefix="gilder-scene-runtime-smoke-") as tmp:
         root = Path(tmp)
-        write_minimal_we_project(root)
-        output = root / "out.gscene"
+        if args.source:
+            output = Path(args.source).expanduser().resolve()
+            if not output.is_file():
+                raise FileNotFoundError(f"scene source does not exist: {output}")
+            source_mode = "existing-gscene"
+        else:
+            write_minimal_we_project(root)
+            output = root / "out.gscene"
+            run(
+                [
+                    "cargo",
+                    "run",
+                    "--bin",
+                    "gilder-convert",
+                    "--",
+                    "wallpaper-engine",
+                    str(root),
+                    str(output),
+                ]
+            )
+            source_mode = "generated-minimal-project"
         artifact_dir = (
             Path(args.artifact_dir)
             if args.artifact_dir
@@ -33,18 +53,6 @@ def main() -> int:
         )
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
-        run(
-            [
-                "cargo",
-                "run",
-                "--bin",
-                "gilder-convert",
-                "--",
-                "wallpaper-engine",
-                str(root),
-                str(output),
-            ]
-        )
         run(
             [
                 "cargo",
@@ -58,6 +66,7 @@ def main() -> int:
         )
 
         binary = ROOT / "target/release/gilder-native-vulkan"
+        dgop_pss_dirty_available = dgop_exposes_pss_dirty()
         runtime = subprocess.Popen(
             [
                 str(binary),
@@ -73,7 +82,13 @@ def main() -> int:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        samples = sample_process(runtime.pid, args.duration, args.interval)
+        samples = sample_process(
+            runtime.pid,
+            args.duration,
+            args.interval,
+            args.warmup,
+            dgop_pss_dirty_available,
+        )
         stdout, stderr = runtime.communicate(timeout=max(5, args.duration + 5))
 
         (artifact_dir / "scene-runtime.stdout.json").write_text(stdout, encoding="utf-8")
@@ -89,11 +104,32 @@ def main() -> int:
         report = json.loads(stdout)
         max_pss_dirty = max((sample["pss_dirty_kib"] for sample in samples), default=0)
         max_dgop_pss_dirty = max((sample["dgop_pss_dirty_kib"] for sample in samples), default=0)
+        retained_samples = [
+            sample for sample in samples if sample["elapsed_ms"] >= args.warmup * 1000
+        ]
+        if not retained_samples and samples:
+            retained_samples = samples[-1:]
+        max_retained_pss_dirty = max(
+            (sample["pss_dirty_kib"] for sample in retained_samples), default=0
+        )
+        max_retained_dgop_pss_dirty = max(
+            (sample["dgop_pss_dirty_kib"] for sample in retained_samples), default=0
+        )
+        max_observed_pss_dirty = max(max_pss_dirty, max_dgop_pss_dirty)
+        max_retained_observed_pss_dirty = max(
+            max_retained_pss_dirty, max_retained_dgop_pss_dirty
+        )
         summary: dict[str, Any] = {
             "runtime_report": "scene-runtime.stdout.json",
             "samples": "scene-runtime-samples.json",
+            "source": str(output),
+            "source_mode": source_mode,
             "duration_seconds": args.duration,
+            "warmup_seconds": args.warmup,
+            "sampling_interval_seconds": args.interval,
+            "startup_sampling_interval_seconds": min(args.interval, 0.05),
             "build_profile": "release",
+            "fps_limit": None,
             "frame_capture": report.get("frame_capture"),
             "frames_presented": report["frames_presented"],
             "average_present_fps": report["average_present_fps"],
@@ -105,13 +141,51 @@ def main() -> int:
             "descriptor_model": report["descriptor_model"],
             "render_graph_draw_count": report["render_graph_draw_count"],
             "mesh_draw_count": report["mesh_draw_count"],
+            "released_resource_payload_bytes": report["present"][
+                "released_resource_payload_bytes"
+            ],
+            "released_texture_payload_bytes": report["present"][
+                "released_texture_payload_bytes"
+            ],
             "mesh_draw_recording_ready": report["mesh_draw_recording_ready"],
             "mesh_draw_recorded_this_run": report["mesh_draw_recorded_this_run"],
             "runtime_status": report["runtime_status"],
+            "composite_scissor_draw_count": report["present"].get(
+                "composite_scissor_draw_count", 0
+            ),
+            "composite_scissor_covered_pixels": report["present"].get(
+                "composite_scissor_covered_pixels", 0
+            ),
+            "composite_scissor_avoided_pixels": report["present"].get(
+                "composite_scissor_avoided_pixels", 0
+            ),
+            "frame_state_update_total_micros": report["present"].get(
+                "frame_state_update_total_micros", 0
+            ),
+            "sampled_descriptor_update_total_micros": report["present"].get(
+                "sampled_descriptor_update_total_micros", 0
+            ),
+            "command_recording_total_micros": report["present"].get(
+                "command_recording_total_micros", 0
+            ),
             "max_pss_dirty_kib": max_pss_dirty,
             "max_dgop_pss_dirty_kib": max_dgop_pss_dirty,
+            "max_observed_pss_dirty_kib": max_observed_pss_dirty,
+            "max_retained_pss_dirty_kib": max_retained_pss_dirty,
+            "max_retained_dgop_pss_dirty_kib": max_retained_dgop_pss_dirty,
+            "max_retained_observed_pss_dirty_kib": max_retained_observed_pss_dirty,
+            "dgop_pss_dirty_available": dgop_pss_dirty_available,
+            "pss_dirty_measurement_source": (
+                "dgop+smaps_rollup"
+                if dgop_pss_dirty_available
+                else "smaps_rollup-fallback"
+            ),
             "pss_dirty_target_kib": PSS_DIRTY_TARGET_KIB,
-            "pss_dirty_target_met": max(max_pss_dirty, max_dgop_pss_dirty) <= PSS_DIRTY_TARGET_KIB,
+            "observed_peak_pss_dirty_target_met": max_observed_pss_dirty
+            <= PSS_DIRTY_TARGET_KIB,
+            "pss_dirty_target_scope": "retained-after-warmup",
+            "pss_dirty_target_met": max_retained_observed_pss_dirty
+            <= PSS_DIRTY_TARGET_KIB,
         }
         summary_path = artifact_dir / "scene-runtime-summary.json"
         summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
@@ -128,6 +202,12 @@ def main() -> int:
             raise AssertionError(report["runtime_status"])
         if not report["mesh_draw_recorded_this_run"]:
             raise AssertionError(report["runtime_status"])
+        if not summary["pss_dirty_target_met"]:
+            raise AssertionError(
+                "retained Pss_Dirty exceeded target: "
+                f"{summary['max_retained_observed_pss_dirty_kib']} "
+                f"> {PSS_DIRTY_TARGET_KIB} KiB"
+            )
 
     print(f"scene-engine-runtime-smoke: ok summary={summary_path}")
     return 0
@@ -137,8 +217,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=int, default=10)
     parser.add_argument("--interval", type=float, default=1.0)
+    parser.add_argument("--warmup", type=float, default=1.0)
     parser.add_argument("--artifact-dir", default="")
-    return parser.parse_args()
+    parser.add_argument("--source", default="", help="existing .gscene to measure")
+    args = parser.parse_args()
+    if args.duration <= 0 or args.interval <= 0:
+        parser.error("--duration and --interval must be positive")
+    if args.warmup < 0 or args.warmup >= args.duration:
+        parser.error("--warmup must be non-negative and less than --duration")
+    return args
 
 
 def write_minimal_we_project(root: Path) -> None:
@@ -180,19 +267,33 @@ def run(args: list[str]) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def sample_process(pid: int, duration: int, interval: float) -> list[dict[str, Any]]:
+def sample_process(
+    pid: int,
+    duration: int,
+    interval: float,
+    warmup: float,
+    dgop_pss_dirty_available: bool,
+) -> list[dict[str, Any]]:
     samples: list[dict[str, Any]] = []
     started = time.monotonic()
+    next_dgop_sample = 0.0
+    last_dgop_pss_dirty = 0
     while time.monotonic() - started <= duration:
         if not Path(f"/proc/{pid}").exists():
             break
+        elapsed = time.monotonic() - started
+        pss_dirty = parse_smaps_rollup(pid).get("Pss_Dirty", 0)
+        if dgop_pss_dirty_available and elapsed >= next_dgop_sample:
+            last_dgop_pss_dirty = dgop_pss_dirty(pid)
+            next_dgop_sample = elapsed + max(interval, 1.0)
         sample = {
-            "elapsed_ms": int((time.monotonic() - started) * 1000),
-            "pss_dirty_kib": parse_smaps_rollup(pid).get("Pss_Dirty", 0),
-            "dgop_pss_dirty_kib": dgop_pss_dirty(pid),
+            "elapsed_ms": int(elapsed * 1000),
+            "pss_dirty_kib": pss_dirty,
+            "dgop_pss_dirty_kib": last_dgop_pss_dirty,
         }
         samples.append(sample)
-        time.sleep(interval)
+        sample_interval = min(interval, 0.05) if elapsed < warmup else interval
+        time.sleep(sample_interval)
     return samples
 
 
@@ -212,8 +313,29 @@ def parse_smaps_rollup(pid: int) -> dict[str, int]:
 
 
 def dgop_pss_dirty(pid: int) -> int:
-    if not shutil.which("dgop"):
+    payload = dgop_process_payload()
+    if payload is None:
         return 0
+    for process in payload.get("processes") or []:
+        if int(process.get("pid") or 0) != pid:
+            continue
+        return int(next((process[key] for key in DGOP_PSS_DIRTY_KEYS if process.get(key)), 0))
+    return 0
+
+
+def dgop_exposes_pss_dirty() -> bool:
+    payload = dgop_process_payload()
+    if payload is None:
+        return False
+    return any(
+        any(key in process for key in DGOP_PSS_DIRTY_KEYS)
+        for process in payload.get("processes") or []
+    )
+
+
+def dgop_process_payload() -> dict[str, Any] | None:
+    if not shutil.which("dgop"):
+        return None
     result = subprocess.run(
         ["dgop", "processes", "--json", "--limit", "0", "--sort", "memory", "--no-cpu"],
         check=False,
@@ -223,21 +345,11 @@ def dgop_pss_dirty(pid: int) -> int:
         timeout=3,
     )
     if result.returncode != 0:
-        return 0
+        return None
     try:
-        payload = json.loads(result.stdout or "{}")
+        return json.loads(result.stdout or "{}")
     except json.JSONDecodeError:
-        return 0
-    for process in payload.get("processes") or []:
-        if int(process.get("pid") or 0) != pid:
-            continue
-        return int(
-            process.get("pssDirtyKB")
-            or process.get("pss_dirty_kb")
-            or process.get("pssDirtyKb")
-            or 0
-        )
-    return 0
+        return None
 
 
 if __name__ == "__main__":
