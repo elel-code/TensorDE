@@ -753,8 +753,9 @@ void main() {
         dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
         dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
         dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));
+    // The runtime uses a positive-height Vulkan viewport. NDC Y therefore
+    // already maps directly to framebuffer UV Y and must not be flipped here.
     v_ScreenPos = gl_Position.xyw;
-    v_ScreenPos.y = -v_ScreenPos.y;
 }
 "#
     .to_owned()
@@ -780,8 +781,9 @@ void main() {
         dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
         dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
         dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));
+    // The runtime uses a positive-height Vulkan viewport. NDC Y therefore
+    // already maps directly to framebuffer UV Y and must not be flipped here.
     v_ScreenPos = gl_Position.xyw;
-    v_ScreenPos.y = -v_ScreenPos.y;
 }
 "#
     .to_owned()

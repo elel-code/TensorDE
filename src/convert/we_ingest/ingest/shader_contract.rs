@@ -181,9 +181,13 @@ pub(super) fn declared_texture_slot_mask(
         "we/image-waterwaves-final" => mask |= 0x03,
         "we/image-waterripple-final" => mask |= 0x07,
         "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
+        "we/image-cloudmotion-final" => mask |= 0x05,
         "we/puppet-opacity-final" => mask |= 0x03,
+        "we/puppet-opacity-clipping-final" => mask |= 0x103,
         "we/puppet-iris-waterripple-final" => mask |= 0x0f,
+        "we/puppet-iris-waterripple-clipping-final" => mask |= 0x10f,
         "we/audio-bars-final" => mask |= 0x01,
+        "we/framebuffer-water-final" => mask |= 0x3f,
         _ => {}
     }
     mask
@@ -223,8 +227,12 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-waterripple-final"
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
+        || key == "we/image-cloudmotion-final"
         || key == "we/puppet-opacity-final"
+        || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
+        || key == "we/puppet-iris-waterripple-clipping-final"
+        || key == "we/framebuffer-water-final"
         || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
@@ -275,11 +283,15 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/image-waterripple-final"
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
+        || key == "we/image-cloudmotion-final"
         || key == "we/puppet-opacity-final"
+        || key == "we/puppet-opacity-clipping-final"
         || key == "we/puppet-iris-waterripple-final"
+        || key == "we/puppet-iris-waterripple-clipping-final"
         || key == "we/flat-rounded-opacity-final"
         || key == "we/tech-circle-final"
         || key == "we/audio-bars-final"
+        || key == "we/framebuffer-water-final"
         || key == "color"
         || key.starts_with("color__")
         || key == "we/color"

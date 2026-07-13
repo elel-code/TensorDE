@@ -44,6 +44,10 @@ pub struct WeSceneIr {
     pub meshes: Vec<WeIrMesh>,
     pub mesh_vertices: Vec<WeIrMeshVertex>,
     pub mesh_indices: Vec<u32>,
+    pub mesh_source_records: Vec<WeIrMeshSourceRecord>,
+    pub mesh_clipping_subdraws: Vec<WeIrMeshClippingSubdraw>,
+    pub mesh_clipping_source_ordinals: Vec<u32>,
+    pub mesh_clipping_slices: Vec<WeIrMeshClippingSlice>,
     pub puppets: Vec<WeIrPuppet>,
     pub puppet_bones: Vec<WeIrPuppetBone>,
     pub puppet_attachments: Vec<WeIrPuppetAttachment>,
@@ -338,6 +342,46 @@ pub struct WeIrMeshVertex {
     pub uv: [f32; 2],
     pub blend_indices: [u32; 4],
     pub blend_weights: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrMeshSourceRecord {
+    pub mesh: u32,
+    pub source_index: u32,
+    pub local_index_offset: u32,
+    pub index_start: u32,
+    pub index_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrMeshClippingSubdraw {
+    pub mesh: u32,
+    pub source_qword: u64,
+    pub mask: String,
+    pub mask_resource: Option<u32>,
+    pub raw_flags: u32,
+    pub target_source_start: u32,
+    pub target_source_count: u32,
+    pub mask_source_start: u32,
+    pub mask_source_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WeIrMeshClippingSliceRole {
+    VisiblePrefix,
+    MaskProducer,
+    ClippedTarget,
+    VisibleRemainder,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeIrMeshClippingSlice {
+    pub mesh: u32,
+    pub subdraw: u32,
+    pub role: WeIrMeshClippingSliceRole,
+    pub index_start: u32,
+    pub index_count: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

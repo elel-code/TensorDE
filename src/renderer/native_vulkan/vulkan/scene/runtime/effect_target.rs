@@ -705,6 +705,56 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     Ok(())
 }
 
+pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene_color_image: vk::Image,
+    scene_color_extent: vk::Extent2D,
+    pass: &SceneRenderingDevicePassNode,
+    commands: &[SceneEffectTargetCommand],
+    target_allocations: &[SceneRenderingDeviceTargetAllocation],
+    initial_reference_physical_slots: &[u32],
+    resources: &[SceneEffectTargetImageResource],
+    record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
+) -> Result<(), String> {
+    let clear_before_draw = pass.role == SceneRenderPassKind::Clear;
+    let command = commands
+        .iter()
+        .find(|command| {
+            command.target.graph_index == pass.graph_index
+                && command.target.target == pass.target
+                && command.target.name == pass.target_name
+                && command.mesh_draw_start == pass.mesh_draw_start
+                && command.mesh_draw_count == pass.mesh_draw_count
+                && command.clear_before_draw == clear_before_draw
+        })
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "scene graph {} pass {} has no matching effect-target command",
+                pass.graph_index, pass.pass_id
+            )
+        })?;
+    if command.kind != SceneEffectTargetCommandKind::DynamicRender {
+        return Err(format!(
+            "scene graph {} pass {} cannot execute {:?} as an interleaved dynamic render",
+            pass.graph_index, pass.pass_id, command.kind
+        ));
+    }
+    record_scene_effect_target_graph_passes(
+        device,
+        command_buffer,
+        scene_color_image,
+        scene_color_extent,
+        pass.graph_index,
+        std::slice::from_ref(&command),
+        target_allocations,
+        initial_reference_physical_slots,
+        resources,
+        record_draws,
+    )
+}
+
 fn effect_target_load_op(
     initialized_physical_slots: &[u32],
     physical_slot: u32,

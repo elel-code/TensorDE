@@ -374,6 +374,58 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         })
         .collect();
     let mesh_indices = ir.mesh_indices.clone();
+    let mesh_source_records = ir
+        .mesh_source_records
+        .iter()
+        .map(|record| SceneMeshSourceRecord {
+            mesh: record.mesh,
+            source_index: record.source_index,
+            local_index_offset: record.local_index_offset,
+            index_start: record.index_start,
+            index_count: record.index_count,
+        })
+        .collect();
+    let mesh_clipping_subdraws = ir
+        .mesh_clipping_subdraws
+        .iter()
+        .map(|subdraw| SceneMeshClippingSubdrawRecord {
+            mesh: subdraw.mesh,
+            source_qword: subdraw.source_qword,
+            mask: strings.id(&subdraw.mask),
+            mask_resource: subdraw
+                .mask_resource
+                .map(SceneResourceId)
+                .unwrap_or(SceneResourceId::NONE),
+            raw_flags: subdraw.raw_flags,
+            target_source_start: subdraw.target_source_start,
+            target_source_count: subdraw.target_source_count,
+            mask_source_start: subdraw.mask_source_start,
+            mask_source_count: subdraw.mask_source_count,
+        })
+        .collect();
+    let mesh_clipping_source_ordinals = ir.mesh_clipping_source_ordinals.clone();
+    let mesh_clipping_slices = ir
+        .mesh_clipping_slices
+        .iter()
+        .map(|slice| SceneMeshClippingSliceRecord {
+            mesh: slice.mesh,
+            subdraw: slice.subdraw,
+            role: match slice.role {
+                WeIrMeshClippingSliceRole::VisiblePrefix => {
+                    SceneMeshClippingSliceRole::VisiblePrefix
+                }
+                WeIrMeshClippingSliceRole::MaskProducer => SceneMeshClippingSliceRole::MaskProducer,
+                WeIrMeshClippingSliceRole::ClippedTarget => {
+                    SceneMeshClippingSliceRole::ClippedTarget
+                }
+                WeIrMeshClippingSliceRole::VisibleRemainder => {
+                    SceneMeshClippingSliceRole::VisibleRemainder
+                }
+            },
+            index_start: slice.index_start,
+            index_count: slice.index_count,
+        })
+        .collect();
     let puppets = ir
         .puppets
         .iter()
@@ -502,6 +554,10 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         meshes,
         mesh_vertices,
         mesh_indices,
+        mesh_source_records,
+        mesh_clipping_subdraws,
+        mesh_clipping_source_ordinals,
+        mesh_clipping_slices,
         puppets,
         puppet_bones,
         puppet_attachments,
@@ -863,6 +919,10 @@ fn lower_pass_role(role: RenderPassRole) -> SceneRenderPassKind {
         RenderPassRole::Particle => SceneRenderPassKind::Particle,
         RenderPassRole::TextPath => SceneRenderPassKind::TextPath,
         RenderPassRole::SceneComposite => SceneRenderPassKind::SceneComposite,
+        RenderPassRole::MeshVisiblePrefix => SceneRenderPassKind::MeshVisiblePrefix,
+        RenderPassRole::MeshClippingMask => SceneRenderPassKind::MeshClippingMask,
+        RenderPassRole::MeshClippedTarget => SceneRenderPassKind::MeshClippedTarget,
+        RenderPassRole::MeshVisibleRemainder => SceneRenderPassKind::MeshVisibleRemainder,
         RenderPassRole::DebugEvidence => SceneRenderPassKind::DebugEvidence,
         RenderPassRole::Unsupported => SceneRenderPassKind::Unsupported,
     }
@@ -1148,6 +1208,10 @@ mod tests {
                 },
             ],
             mesh_indices: vec![0, 1, 2, 0, 2, 3],
+            mesh_source_records: Vec::new(),
+            mesh_clipping_subdraws: Vec::new(),
+            mesh_clipping_source_ordinals: Vec::new(),
+            mesh_clipping_slices: Vec::new(),
             puppets: Vec::new(),
             puppet_bones: Vec::new(),
             puppet_attachments: Vec::new(),

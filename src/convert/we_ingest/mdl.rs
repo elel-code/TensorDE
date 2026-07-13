@@ -28,6 +28,58 @@ pub struct MdlMeshEntry {
     pub bounds: [f32; 6],
     pub vertices: Vec<MdlMeshVertex>,
     pub indices: Vec<u32>,
+    pub source_records: Vec<MdlSourceRecord>,
+    pub clipping_subdraws: Vec<MdlClippingSubdraw>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MdlSourceRecord {
+    pub source_index: u32,
+    pub local_index_offset: u32,
+    pub index_start: u32,
+    pub index_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdlClippingSubdraw {
+    pub source_qword: u64,
+    pub mask_resource: String,
+    pub raw_flags: u32,
+    /// Source-record spans drawn with CLIPPINGTARGET after the mask pass.
+    pub target_source_ordinals: Vec<u32>,
+    /// Source-record spans drawn with clippingmaskimage4 into FullAlphaMask.
+    pub mask_source_ordinals: Vec<u32>,
+}
+
+impl MdlMeshEntry {
+    pub fn non_producer_indices(&self) -> Vec<u32> {
+        if self.source_records.is_empty() || self.clipping_subdraws.is_empty() {
+            return self.indices.clone();
+        }
+        let target_ordinals = self
+            .clipping_subdraws
+            .iter()
+            .flat_map(|subdraw| subdraw.target_source_ordinals.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut mask_only = vec![false; self.indices.len()];
+        let index_count = mask_only.len();
+        for ordinal in target_ordinals {
+            let Some(record) = self.source_records.get(ordinal as usize) else {
+                continue;
+            };
+            let start = record.index_start as usize;
+            let end = start
+                .saturating_add(record.index_count as usize)
+                .min(index_count);
+            mask_only[start.min(index_count)..end].fill(true);
+        }
+        self.indices
+            .iter()
+            .copied()
+            .zip(mask_only)
+            .filter_map(|(index, mask_only)| (!mask_only).then_some(index))
+            .collect()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -505,13 +557,81 @@ fn parse_entry(
     let index_bytes = decoder.u32("index_bytes")?;
     let index_payload = decoder.bytes(index_bytes as usize, "indices")?;
     let indices = parse_indices(index_bytes, index_payload)?;
+    let (source_records, clipping_subdraws) = if version >= 21
+        && decoder
+            .bytes
+            .get(decoder.offset)
+            .is_some_and(|present| *present <= 1)
+    {
+        parse_v21_source_and_clipping_blocks(decoder, version)?
+    } else {
+        (Vec::new(), Vec::new())
+    };
     Ok(MdlMeshEntry {
         entry_flags,
         entry_layout_mask,
         bounds,
         vertices,
         indices,
+        source_records,
+        clipping_subdraws,
     })
+}
+
+fn parse_v21_source_and_clipping_blocks(
+    decoder: &mut MdlDecoder<'_>,
+    version: u32,
+) -> Result<(Vec<MdlSourceRecord>, Vec<MdlClippingSubdraw>), MdlParseError> {
+    let optional_a_present = decoder.u8("v21_optional_a_present")? != 0;
+    if optional_a_present {
+        let _value = decoder.u32("v21_optional_a_value")?;
+        let byte_count = decoder.u32("v21_optional_a_bytes")? as usize;
+        let _payload = decoder.bytes(byte_count, "v21_optional_a_payload")?;
+    }
+    let optional_b_present = decoder.u8("v21_optional_b_present")? != 0;
+    let source_records = if optional_b_present {
+        let byte_count = decoder.u32("v21_optional_b_bytes")? as usize;
+        let payload = decoder.bytes(byte_count, "v21_optional_b_payload")?;
+        payload
+            .chunks_exact(16)
+            .map(|record| MdlSourceRecord {
+                source_index: u32_at(record, 0),
+                local_index_offset: u32_at(record, 4),
+                index_start: u32_at(record, 8),
+                index_count: u32_at(record, 12),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if version < 23 {
+        return Ok((source_records, Vec::new()));
+    }
+    let subdraw_count = decoder.u32("v23_subdraw_count")?;
+    let mut clipping_subdraws = Vec::with_capacity(subdraw_count as usize);
+    for _ in 0..subdraw_count {
+        let source_qword = decoder.u64("v23_subdraw_source_qword")?;
+        let mask_resource = decoder.c_string("v23_subdraw_mask_resource")?;
+        let raw_flags = decoder.u32("v23_subdraw_flags")?;
+        let target_count = decoder.u32("v23_subdraw_target_count")?;
+        let mut target_source_ordinals = Vec::with_capacity(target_count as usize);
+        for _ in 0..target_count {
+            target_source_ordinals.push(decoder.u32("v23_subdraw_target_ordinal")?);
+        }
+        let mask_count = decoder.u32("v23_subdraw_mask_count")?;
+        let mut mask_source_ordinals = Vec::with_capacity(mask_count as usize);
+        for _ in 0..mask_count {
+            mask_source_ordinals.push(decoder.u32("v23_subdraw_mask_ordinal")?);
+        }
+        clipping_subdraws.push(MdlClippingSubdraw {
+            source_qword,
+            mask_resource,
+            raw_flags,
+            target_source_ordinals,
+            mask_source_ordinals,
+        });
+    }
+    Ok((source_records, clipping_subdraws))
 }
 
 fn parse_vertices(
@@ -633,6 +753,17 @@ impl<'a> MdlDecoder<'a> {
     fn u32(&mut self, field: &'static str) -> Result<u32, MdlParseError> {
         let bytes = self.bytes(4, field)?;
         Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+    }
+
+    fn u64(&mut self, field: &'static str) -> Result<u64, MdlParseError> {
+        let bytes = self.bytes(8, field)?;
+        Ok(u64::from_le_bytes(
+            bytes.try_into().expect("eight-byte slice"),
+        ))
+    }
+
+    fn u8(&mut self, field: &'static str) -> Result<u8, MdlParseError> {
+        Ok(self.bytes(1, field)?[0])
     }
 
     fn u16(&mut self, field: &'static str) -> Result<u16, MdlParseError> {
@@ -909,6 +1040,43 @@ mod tests {
                 | Err(MdlParseError::UnexpectedEof("mdla_clip_records"))
                 | Err(MdlParseError::UnexpectedEof("mdla_section_metadata"))
         ));
+    }
+
+    #[test]
+    fn v23_mask_producer_spans_are_typed_separately_from_visible_indices() {
+        let entry = MdlMeshEntry {
+            entry_flags: 0,
+            entry_layout_mask: 0,
+            bounds: [0.0; 6],
+            vertices: Vec::new(),
+            indices: (0..18).collect(),
+            source_records: vec![
+                MdlSourceRecord {
+                    source_index: 7,
+                    local_index_offset: 0,
+                    index_start: 0,
+                    index_count: 6,
+                },
+                MdlSourceRecord {
+                    source_index: 8,
+                    local_index_offset: 0,
+                    index_start: 6,
+                    index_count: 6,
+                },
+            ],
+            clipping_subdraws: vec![MdlClippingSubdraw {
+                source_qword: 0,
+                mask_resource: "masks/clip".to_owned(),
+                raw_flags: 0,
+                target_source_ordinals: vec![1],
+                mask_source_ordinals: vec![0],
+            }],
+        };
+
+        assert_eq!(
+            entry.non_producer_indices(),
+            [0, 1, 2, 3, 4, 5, 12, 13, 14, 15, 16, 17]
+        );
     }
 
     fn push_vertex(

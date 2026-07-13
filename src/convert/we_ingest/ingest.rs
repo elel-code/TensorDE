@@ -19,7 +19,9 @@ mod image_plane;
 mod json_value;
 mod material_instance;
 mod pipeline_state;
+mod puppet_clipping;
 mod puppet_material;
+mod puppet_model;
 mod ripple_flow;
 mod shader_combo;
 mod shader_contract;
@@ -44,7 +46,7 @@ use crate::engine::scene::abi::{
 };
 
 use super::ir::*;
-use super::mdl::{MdlMeshEntry, mdl_entry_vertex_bounds, parse_mdl_model};
+use super::mdl::parse_mdl_model;
 use super::pkg::ScenePackageError;
 use super::tex::{TexParseError, block_compression::transcode_texture_upload, decode_tex_upload};
 use animation_layer::animation_layer_initial_progress;
@@ -256,6 +258,10 @@ struct WeIrBuilder {
     meshes: Vec<WeIrMesh>,
     mesh_vertices: Vec<WeIrMeshVertex>,
     mesh_indices: Vec<u32>,
+    mesh_source_records: Vec<WeIrMeshSourceRecord>,
+    mesh_clipping_subdraws: Vec<WeIrMeshClippingSubdraw>,
+    mesh_clipping_source_ordinals: Vec<u32>,
+    mesh_clipping_slices: Vec<WeIrMeshClippingSlice>,
     puppets: Vec<WeIrPuppet>,
     puppet_bones: Vec<WeIrPuppetBone>,
     puppet_attachments: Vec<WeIrPuppetAttachment>,
@@ -308,6 +314,10 @@ impl WeIrBuilder {
             meshes: Vec::new(),
             mesh_vertices: Vec::new(),
             mesh_indices: Vec::new(),
+            mesh_source_records: Vec::new(),
+            mesh_clipping_subdraws: Vec::new(),
+            mesh_clipping_source_ordinals: Vec::new(),
+            mesh_clipping_slices: Vec::new(),
             puppets: Vec::new(),
             puppet_bones: Vec::new(),
             puppet_attachments: Vec::new(),
@@ -351,6 +361,10 @@ impl WeIrBuilder {
             meshes: self.meshes,
             mesh_vertices: self.mesh_vertices,
             mesh_indices: self.mesh_indices,
+            mesh_source_records: self.mesh_source_records,
+            mesh_clipping_subdraws: self.mesh_clipping_subdraws,
+            mesh_clipping_source_ordinals: self.mesh_clipping_source_ordinals,
+            mesh_clipping_slices: self.mesh_clipping_slices,
             puppets: self.puppets,
             puppet_bones: self.puppet_bones,
             puppet_attachments: self.puppet_attachments,
@@ -703,8 +717,26 @@ impl WeIrBuilder {
         let materials = self.add_mdl_materials(object, image_path, &model.material_paths)?;
         let materials = self.specialize_puppet_materials(object, image_path, materials, &model);
         let material = materials.first().copied().flatten();
-        let (mesh_start, mesh_count) =
-            self.add_mdl_meshes(object, image_path, &model.entries, &materials);
+        let mut clipping_mask_resources = Vec::with_capacity(model.entries.len());
+        for (entry_index, entry) in model.entries.iter().enumerate() {
+            let material_path = model
+                .material_paths
+                .get(entry_index)
+                .or_else(|| model.material_paths.first())
+                .map(String::as_str);
+            let mut entry_resources = Vec::with_capacity(entry.clipping_subdraws.len());
+            for subdraw in &entry.clipping_subdraws {
+                entry_resources.push(self.add_texture(&subdraw.mask_resource, material_path)?);
+            }
+            clipping_mask_resources.push(entry_resources);
+        }
+        let (mesh_start, mesh_count) = self.add_mdl_meshes(
+            object,
+            image_path,
+            &model.entries,
+            &materials,
+            &clipping_mask_resources,
+        );
         self.add_mdl_puppet(
             object,
             resource,
@@ -738,86 +770,6 @@ impl WeIrBuilder {
             .iter()
             .map(|path| self.add_material(path).map(Some))
             .collect()
-    }
-
-    fn add_mdl_meshes(
-        &mut self,
-        object: u32,
-        image_path: &str,
-        entries: &[MdlMeshEntry],
-        material_handles: &[Option<u32>],
-    ) -> (u32, u32) {
-        let mesh_start = self.meshes.len() as u32;
-        if entries.is_empty() {
-            self.unsupported.push(WeIrUnsupported {
-                object: Some(object),
-                pass_index: None,
-                feature: format!("mdl-has-no-mesh-entries:{image_path}"),
-                expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
-                containment: "object-kept-without-mdl-mesh".to_owned(),
-            });
-            return (mesh_start, 0);
-        }
-
-        for (entry_index, entry) in entries.iter().enumerate() {
-            if entry.vertices.is_empty() || entry.indices.is_empty() {
-                self.unsupported.push(WeIrUnsupported {
-                    object: Some(object),
-                    pass_index: Some(entry_index as u32),
-                    feature: format!("mdl-empty-mesh-entry:{image_path}:{entry_index}"),
-                    expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
-                    containment: "empty-entry-skipped".to_owned(),
-                });
-                continue;
-            }
-            let invalid_index = entry
-                .indices
-                .iter()
-                .copied()
-                .find(|index| *index >= entry.vertices.len() as u32);
-            if let Some(index) = invalid_index {
-                self.unsupported.push(WeIrUnsupported {
-                    object: Some(object),
-                    pass_index: Some(entry_index as u32),
-                    feature: format!(
-                        "mdl-mesh-index-out-of-range:{image_path}:{entry_index}:{index}"
-                    ),
-                    expected_subsystem: "convert/we_ingest MDLV0023 index block".to_owned(),
-                    containment: "invalid-entry-skipped".to_owned(),
-                });
-                continue;
-            }
-
-            let (bounds_min, bounds_max) = mdl_entry_vertex_bounds(entry);
-            let vertex_start = self.mesh_vertices.len() as u32;
-            let index_start = self.mesh_indices.len() as u32;
-            self.mesh_vertices
-                .extend(entry.vertices.iter().map(|vertex| WeIrMeshVertex {
-                    position: vertex.position,
-                    uv: vertex.uv,
-                    blend_indices: vertex.blend_indices,
-                    blend_weights: vertex.blend_weights,
-                }));
-            self.mesh_indices.extend(entry.indices.iter().copied());
-            let material = material_handles
-                .get(entry_index)
-                .copied()
-                .flatten()
-                .or_else(|| material_handles.first().copied().flatten());
-            self.meshes.push(WeIrMesh {
-                object,
-                material,
-                vertex_start,
-                vertex_count: entry.vertices.len() as u32,
-                index_start,
-                index_count: entry.indices.len() as u32,
-                width: bounds_max.x - bounds_min.x,
-                height: bounds_max.y - bounds_min.y,
-                bounds_min,
-                bounds_max,
-            });
-        }
-        (mesh_start, self.meshes.len() as u32 - mesh_start)
     }
 
     fn add_mdl_puppet(
@@ -1384,7 +1336,7 @@ impl WeIrBuilder {
             effects_in_authored_texture_space,
             object_is_puppet,
         );
-        let graph = we_image_graph(&WeImageGraphContract {
+        let mut graph = we_image_graph(&WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),
             base_shader: base_pass.as_ref().and_then(|pass| {
@@ -1420,6 +1372,7 @@ impl WeIrBuilder {
             final_effect_material: final_effect,
             effect_passes,
         });
+        puppet_clipping::apply_token_one_graph(self, object, base_material_handle, &mut graph);
         if utility_layer.is_some_and(WeIrUtilityLayerKind::samples_scene_color)
             && !self.image_targets.iter().any(|target| {
                 target.name == FULL_FRAMEBUFFER_TARGET

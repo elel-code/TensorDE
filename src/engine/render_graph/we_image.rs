@@ -68,6 +68,7 @@ pub struct WeRippleFlowMaterialIndices {
 pub struct WeFinalEffectMaterial {
     pub material_index: usize,
     pub shader: String,
+    pub samples_framebuffer_snapshot: bool,
 }
 
 pub fn we_effect_passes_form_waterwaves_displacement_chain(
@@ -116,8 +117,33 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         return graph;
     }
     if let Some(final_effect) = &contract.final_effect_material {
+        if final_effect.samples_framebuffer_snapshot {
+            let snapshot = contract
+                .framebuffer_snapshot
+                .as_ref()
+                .expect("framebuffer final effect requires a typed snapshot contract");
+            graph.passes.push(RenderPassNode {
+                id: 0,
+                role: RenderPassRole::CopyTarget,
+                object_index: Some(contract.object_index),
+                material_index: None,
+                pass_index: 0,
+                shader: None,
+                target: RenderTargetRole::FirstClassEffectTarget,
+                target_name: Some(snapshot.target_name.clone()),
+                target_extent: None,
+                target_format: Some("rgba_backbuffer".to_owned()),
+                bindings: vec![TextureBindingRole::GraphTarget {
+                    slot: snapshot.texture_slot,
+                    role: RenderTargetRole::SceneColor,
+                    name: None,
+                }],
+                state: PassState::default(),
+            });
+        }
+        let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
         graph.passes.push(RenderPassNode {
-            id: 0,
+            id: pass_id,
             role: RenderPassRole::SceneComposite,
             object_index: Some(contract.object_index),
             material_index: Some(final_effect.material_index),
@@ -127,7 +153,15 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_name: None,
             target_extent: None,
             target_format: None,
-            bindings: Vec::new(),
+            bindings: contract
+                .framebuffer_snapshot
+                .iter()
+                .filter(|_| final_effect.samples_framebuffer_snapshot)
+                .map(|snapshot| TextureBindingRole::EffectTarget {
+                    slot: snapshot.texture_slot,
+                    name: snapshot.target_name.clone(),
+                })
+                .collect(),
             state: PassState {
                 pipeline_blend: final_pipeline_blend,
                 scene_blend: contract.final_scene_blend,

@@ -149,7 +149,11 @@ fn render_graph_execution_priority(pass: &RenderPassNode) -> u32 {
         | RenderPassRole::VideoSample
         | RenderPassRole::Particle
         | RenderPassRole::TextPath
-        | RenderPassRole::SceneComposite => 3,
+        | RenderPassRole::SceneComposite
+        | RenderPassRole::MeshVisiblePrefix
+        | RenderPassRole::MeshClippingMask
+        | RenderPassRole::MeshClippedTarget
+        | RenderPassRole::MeshVisibleRemainder => 3,
         RenderPassRole::DebugEvidence => 5,
         RenderPassRole::Unsupported => 7,
     }

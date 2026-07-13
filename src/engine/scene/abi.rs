@@ -398,6 +398,10 @@ pub enum SceneRenderPassKind {
     Particle,
     TextPath,
     SceneComposite,
+    MeshVisiblePrefix,
+    MeshClippingMask,
+    MeshClippedTarget,
+    MeshVisibleRemainder,
     DebugEvidence,
     Unsupported,
 }
@@ -415,6 +419,10 @@ impl SceneRenderPassKind {
             Self::Particle => 8,
             Self::TextPath => 9,
             Self::SceneComposite => 10,
+            Self::MeshVisiblePrefix => 12,
+            Self::MeshClippingMask => 13,
+            Self::MeshClippedTarget => 14,
+            Self::MeshVisibleRemainder => 15,
             Self::DebugEvidence => 11,
             Self::Unsupported => 0xffff,
         }
@@ -432,6 +440,10 @@ impl SceneRenderPassKind {
             8 => Some(Self::Particle),
             9 => Some(Self::TextPath),
             10 => Some(Self::SceneComposite),
+            12 => Some(Self::MeshVisiblePrefix),
+            13 => Some(Self::MeshClippingMask),
+            14 => Some(Self::MeshClippedTarget),
+            15 => Some(Self::MeshVisibleRemainder),
             11 => Some(Self::DebugEvidence),
             0xffff => Some(Self::Unsupported),
             _ => None,
@@ -816,6 +828,67 @@ pub struct SceneMeshVertexRecord {
     pub uv: [f32; 2],
     pub blend_indices: [u32; 4],
     pub blend_weights: [f32; 4],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneMeshSourceRecord {
+    pub mesh: u32,
+    pub source_index: u32,
+    pub local_index_offset: u32,
+    pub index_start: u32,
+    pub index_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneMeshClippingSubdrawRecord {
+    pub mesh: u32,
+    pub source_qword: u64,
+    pub mask: SceneStringId,
+    pub mask_resource: SceneResourceId,
+    pub raw_flags: u32,
+    pub target_source_start: u32,
+    pub target_source_count: u32,
+    pub mask_source_start: u32,
+    pub mask_source_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneMeshClippingSliceRole {
+    VisiblePrefix,
+    MaskProducer,
+    ClippedTarget,
+    VisibleRemainder,
+}
+
+impl SceneMeshClippingSliceRole {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::VisiblePrefix => 1,
+            Self::MaskProducer => 2,
+            Self::ClippedTarget => 3,
+            Self::VisibleRemainder => 4,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::VisiblePrefix),
+            2 => Some(Self::MaskProducer),
+            3 => Some(Self::ClippedTarget),
+            4 => Some(Self::VisibleRemainder),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneMeshClippingSliceRecord {
+    pub mesh: u32,
+    pub subdraw: u32,
+    pub role: SceneMeshClippingSliceRole,
+    pub index_start: u32,
+    pub index_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

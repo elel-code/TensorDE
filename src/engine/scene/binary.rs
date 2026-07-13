@@ -17,6 +17,7 @@ use std::io::{self, Read, Write};
 use super::abi::*;
 
 mod document;
+mod mesh_clipping;
 mod texture;
 mod timeline;
 
@@ -169,7 +170,15 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let (materials, material_passes, material_textures, material_constants) =
         decode_materials(chunk_payload(&chunks, CHUNK_MATERIAL)?)?;
     ensure_chunk_count(&chunks, CHUNK_MATERIAL, "materials", materials.len())?;
-    let (meshes, mesh_vertices, mesh_indices) = decode_meshes(chunk_payload(&chunks, CHUNK_MESH)?)?;
+    let (
+        meshes,
+        mesh_vertices,
+        mesh_indices,
+        mesh_source_records,
+        mesh_clipping_subdraws,
+        mesh_clipping_source_ordinals,
+        mesh_clipping_slices,
+    ) = decode_meshes(chunk_payload(&chunks, CHUNK_MESH)?)?;
     ensure_chunk_count(&chunks, CHUNK_MESH, "mesh", meshes.len())?;
     let (puppets, puppet_bones, puppet_attachments) =
         decode_puppets(chunk_payload(&chunks, CHUNK_PUPPET)?)?;
@@ -252,6 +261,10 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         meshes,
         mesh_vertices,
         mesh_indices,
+        mesh_source_records,
+        mesh_clipping_subdraws,
+        mesh_clipping_source_ordinals,
+        mesh_clipping_slices,
         puppets,
         puppet_bones,
         puppet_attachments,
@@ -396,6 +409,10 @@ fn encode_chunks(
                 &document.meshes,
                 &document.mesh_vertices,
                 &document.mesh_indices,
+                &document.mesh_source_records,
+                &document.mesh_clipping_subdraws,
+                &document.mesh_clipping_source_ordinals,
+                &document.mesh_clipping_slices,
             )?,
         },
         SceneEncodedChunk {
@@ -841,6 +858,10 @@ fn encode_meshes(
     meshes: &[SceneMeshRecord],
     vertices: &[SceneMeshVertexRecord],
     indices: &[u32],
+    source_records: &[SceneMeshSourceRecord],
+    clipping_subdraws: &[SceneMeshClippingSubdrawRecord],
+    clipping_source_ordinals: &[u32],
+    clipping_slices: &[SceneMeshClippingSliceRecord],
 ) -> Result<Vec<u8>, SceneBinaryError> {
     let mut out = Vec::new();
     put_u32(&mut out, checked_u32(meshes.len(), "mesh count")?);
@@ -872,12 +893,17 @@ fn encode_meshes(
     for index in indices {
         put_u32(&mut out, *index);
     }
+    mesh_clipping::encode(
+        &mut out,
+        source_records,
+        clipping_subdraws,
+        clipping_source_ordinals,
+        clipping_slices,
+    )?;
     Ok(out)
 }
 
-fn decode_meshes(
-    data: &[u8],
-) -> Result<(Vec<SceneMeshRecord>, Vec<SceneMeshVertexRecord>, Vec<u32>), SceneBinaryError> {
+fn decode_meshes(data: &[u8]) -> Result<mesh_clipping::MeshDecode, SceneBinaryError> {
     let mut decoder = Decoder::new(data);
     let mesh_count = decoder.u32()? as usize;
     let mut meshes = Vec::with_capacity(mesh_count);
@@ -920,7 +946,17 @@ fn decode_meshes(
     for _ in 0..index_count {
         indices.push(decoder.u32()?);
     }
-    Ok((meshes, vertices, indices))
+    let (source_records, clipping_subdraws, clipping_source_ordinals, clipping_slices) =
+        mesh_clipping::decode(&mut decoder)?;
+    Ok((
+        meshes,
+        vertices,
+        indices,
+        source_records,
+        clipping_subdraws,
+        clipping_source_ordinals,
+        clipping_slices,
+    ))
 }
 
 fn encode_puppets(
@@ -1567,6 +1603,7 @@ mod tests {
                 "eye-bone".to_owned(),
                 "blink".to_owned(),
                 "loop".to_owned(),
+                "masks/eye".to_owned(),
             ],
             project: SceneProjectRecord {
                 title: SceneStringId(0),
@@ -1770,6 +1807,45 @@ mod tests {
             },
         ]);
         document.mesh_indices.extend([0, 1, 2, 0, 2, 3]);
+        document.mesh_source_records.extend([
+            SceneMeshSourceRecord {
+                mesh: 0,
+                source_index: 37,
+                local_index_offset: 0,
+                index_start: 0,
+                index_count: 3,
+            },
+            SceneMeshSourceRecord {
+                mesh: 0,
+                source_index: 30,
+                local_index_offset: 0,
+                index_start: 3,
+                index_count: 3,
+            },
+        ]);
+        document.mesh_clipping_source_ordinals.extend([1, 0]);
+        document
+            .mesh_clipping_subdraws
+            .push(SceneMeshClippingSubdrawRecord {
+                mesh: 0,
+                source_qword: 0x690,
+                mask: SceneStringId(9),
+                mask_resource: SceneResourceId::NONE,
+                raw_flags: 0,
+                target_source_start: 0,
+                target_source_count: 1,
+                mask_source_start: 1,
+                mask_source_count: 1,
+            });
+        document
+            .mesh_clipping_slices
+            .push(SceneMeshClippingSliceRecord {
+                mesh: 0,
+                subdraw: 0,
+                role: SceneMeshClippingSliceRole::ClippedTarget,
+                index_start: 3,
+                index_count: 3,
+            });
         document.puppets.push(ScenePuppetRecord {
             object: SceneObjectHandle(0),
             resource: SceneResourceId(0),
@@ -1833,6 +1909,16 @@ mod tests {
         assert_eq!(decoded.meshes[0].width, 64.0);
         assert_eq!(decoded.mesh_vertices.len(), 4);
         assert_eq!(decoded.mesh_indices, vec![0, 1, 2, 0, 2, 3]);
+        assert_eq!(decoded.mesh_source_records, document.mesh_source_records);
+        assert_eq!(
+            decoded.mesh_clipping_subdraws,
+            document.mesh_clipping_subdraws
+        );
+        assert_eq!(
+            decoded.mesh_clipping_source_ordinals,
+            document.mesh_clipping_source_ordinals
+        );
+        assert_eq!(decoded.mesh_clipping_slices, document.mesh_clipping_slices);
         assert_eq!(decoded.puppets[0].bone_count, 1);
         assert_eq!(decoded.puppet_bones[0].bone_index, 41);
         assert_eq!(decoded.puppet_bones[0].parent_index, -1);

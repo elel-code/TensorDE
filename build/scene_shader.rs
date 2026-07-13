@@ -690,11 +690,23 @@ pub(super) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         family: super::SceneShaderFamily::MeshFinalEffect,
     },
     super::SceneShaderSpec {
+        key: "we/image-cloudmotion-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
         key: "we/puppet-opacity-final",
         family: super::SceneShaderFamily::MeshFinalEffect,
     },
     super::SceneShaderSpec {
+        key: "we/puppet-opacity-clipping-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
         key: "we/puppet-iris-waterripple-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/puppet-iris-waterripple-clipping-final",
         family: super::SceneShaderFamily::MeshFinalEffect,
     },
     super::SceneShaderSpec {
@@ -709,6 +721,10 @@ pub(super) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         key: "we/audio-bars-final",
         family: super::SceneShaderFamily::MeshFinalEffect,
     },
+    super::SceneShaderSpec {
+        key: "we/framebuffer-water-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
 ];
 
 pub(super) fn final_effect_parameter_layout(key: &str) -> &'static str {
@@ -717,11 +733,15 @@ pub(super) fn final_effect_parameter_layout(key: &str) -> &'static str {
         | "we/image-waterripple-final"
         | "we/image-scroll-final"
         | "we/image-colorkey-scroll-final"
+        | "we/image-cloudmotion-final"
         | "we/puppet-opacity-final"
+        | "we/puppet-opacity-clipping-final"
         | "we/puppet-iris-waterripple-final"
+        | "we/puppet-iris-waterripple-clipping-final"
         | "we/flat-rounded-opacity-final"
         | "we/tech-circle-final"
-        | "we/audio-bars-final" => "FinalEffectProgram",
+        | "we/audio-bars-final"
+        | "we/framebuffer-water-final" => "FinalEffectProgram",
         _ => "None",
     }
 }
@@ -732,22 +752,116 @@ pub(super) fn final_effect_sources(key: &str) -> (String, String) {
         "we/image-waterripple-final" => final_waterripple_fragment_source(),
         "we/image-scroll-final" => final_scroll_fragment_source(),
         "we/image-colorkey-scroll-final" => final_colorkey_scroll_fragment_source(),
+        "we/image-cloudmotion-final" => final_cloudmotion_fragment_source(),
         "we/puppet-opacity-final" => final_puppet_opacity_fragment_source(),
+        "we/puppet-opacity-clipping-final" => {
+            final_clipping_fragment_source(final_puppet_opacity_fragment_source())
+        }
         "we/puppet-iris-waterripple-final" => final_puppet_iris_waterripple_fragment_source(),
+        "we/puppet-iris-waterripple-clipping-final" => {
+            final_clipping_fragment_source(final_puppet_iris_waterripple_fragment_source())
+        }
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_fragment_source(),
         "we/tech-circle-final" => final_tech_circle_fragment_source(),
         "we/audio-bars-final" => final_audio_bars_fragment_source(),
+        "we/framebuffer-water-final" => final_framebuffer_water_fragment_source(),
         _ => panic!("unknown final effect shader {key:?}"),
     };
     let vertex = match key {
         "we/puppet-opacity-final" | "we/puppet-iris-waterripple-final" => {
             super::scene_puppet_skinning_vertex_source()
         }
+        "we/puppet-opacity-clipping-final" | "we/puppet-iris-waterripple-clipping-final" => {
+            super::scene_puppet_skinning_clippingtarget_vertex_source()
+        }
         "we/flat-rounded-opacity-final" => flat_rounded_mask_support_vertex_source(),
         "we/audio-bars-final" => final_audio_bars_vertex_source(),
+        "we/framebuffer-water-final" => framebuffer_water_vertex_source(),
         _ => super::scene_mesh_vertex_source(),
     };
     (vertex, fragment)
+}
+
+fn final_clipping_fragment_source(source: String) -> String {
+    source
+        .replacen(
+            "layout(location = 0) out vec4 o_Color;",
+            "layout(location = 2) in vec3 v_ScreenPos;\nlayout(location = 0) out vec4 o_Color;",
+            1,
+        )
+        .replacen(
+            "layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;",
+            "layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;\nlayout(set = 0, binding = 8) uniform sampler2D g_FullAlphaMask;",
+            1,
+        )
+        .replacen(
+            "color.a *= v_VertexAlpha;",
+            "vec2 screen_uv = (v_ScreenPos.xy / v_ScreenPos.z) * 0.5 + 0.5;\n    float clip_factor = texture(g_FullAlphaMask, screen_uv).r;\n    color.a *= clip_factor * v_VertexAlpha;",
+            1,
+        )
+}
+
+fn final_cloudmotion_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 2) uniform sampler2D g_NoiseTexture;
+layout(set = 0, binding = 3) uniform FinalCloudMotionProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeedAmountDirection;
+    vec4 g_ScaleScaleXAspectUnused;
+} u_Effect;
+void main() {
+    float time = u_Effect.g_TimeSpeedAmountDirection.x
+        * u_Effect.g_TimeSpeedAmountDirection.y;
+    vec2 noise_uv = v_TexCoord;
+    noise_uv.x *= max(u_Effect.g_ScaleScaleXAspectUnused.z, 0.0001);
+    noise_uv *= max(u_Effect.g_ScaleScaleXAspectUnused.x, 0.1);
+    noise_uv.x *= max(u_Effect.g_ScaleScaleXAspectUnused.y, 0.1);
+    noise_uv.x += time;
+    float noise = texture(g_NoiseTexture, noise_uv).x * 2.0 - 1.0;
+    float angle = u_Effect.g_TimeSpeedAmountDirection.w + 1.5707963;
+    vec2 direction = vec2(cos(angle), sin(angle));
+    vec2 offset = direction * noise * u_Effect.g_TimeSpeedAmountDirection.z;
+    vec4 color = texture(g_SourceTexture,
+        clamp(v_TexCoord + offset, vec2(0.001), vec2(0.999)));
+    color *= u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn framebuffer_water_vertex_source() -> String {
+    r#"#version 450
+layout(set = 0, binding = 2) uniform FramebufferWaterDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    vec2 position = positions[gl_VertexIndex];
+    vec2 uv = position * 0.5 + 0.5;
+    v_TexCoord = uv;
+    v_ObjectTexCoord = vec2(
+        dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(uv, 1.0)),
+        dot(u_Draw.g_ScreenUvToObjectUvRow1.xyz, vec3(uv, 1.0)));
+    v_ObjectUvToScreenUv = vec4(
+        u_Draw.g_ObjectUvToScreenUvRow0.xy,
+        u_Draw.g_ObjectUvToScreenUvRow1.xy);
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#
+    .to_owned()
 }
 
 fn final_waterwaves_fragment_source() -> String {
@@ -1200,6 +1314,127 @@ void main() {
     }
     color *= u_Effect.g_ResolvedColorAlpha;
     color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_framebuffer_water_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec4 v_ObjectUvToScreenUv;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SceneSnapshot;
+layout(set = 0, binding = 1) uniform sampler2D g_CausticsPattern;
+layout(set = 0, binding = 2) uniform sampler2D g_CausticsNoise;
+layout(set = 0, binding = 35) uniform sampler2D g_CausticsOffset;
+layout(set = 0, binding = 4) uniform sampler2D g_CausticsGlow;
+layout(set = 0, binding = 5) uniform sampler2D g_ShakeFlow;
+layout(set = 0, binding = 3) uniform FinalFramebufferWaterProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_CausticsTimeSpeedScaleBrightness;
+    vec4 g_CausticsGlowDistortionChromaticBlur;
+    vec4 g_CausticsColorStartTimeOffset;
+    vec4 g_CausticsColorEndAspect;
+    vec4 g_WavesTimeSpeedScaleStrength;
+    vec4 g_WavesDirectionExponentOpacityUnused;
+    vec4 g_ShakeTimeSpeedStrengthUnused;
+    vec4 g_ShakeBoundsFriction;
+} u_Effect;
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+float shapedSine(float phase, float exponent) {
+    float wave = sin(phase);
+    return pow(abs(wave), max(exponent, 0.0001)) * sign(wave);
+}
+vec2 screenDeltaToObject(vec2 delta) {
+    mat2 object_to_screen = mat2(
+        v_ObjectUvToScreenUv.x, v_ObjectUvToScreenUv.z,
+        v_ObjectUvToScreenUv.y, v_ObjectUvToScreenUv.w);
+    return inverse(object_to_screen) * delta;
+}
+vec2 objectDeltaToScreen(vec2 delta) {
+    return vec2(dot(v_ObjectUvToScreenUv.xy, delta),
+        dot(v_ObjectUvToScreenUv.zw, delta));
+}
+vec4 causticsAt(vec2 effect_uv) {
+    vec4 albedo = texture(g_SceneSnapshot, effect_uv);
+    float aspect = max(u_Effect.g_CausticsColorEndAspect.w, 0.0001);
+    vec2 caustics_uv = effect_uv;
+    caustics_uv.x *= aspect;
+    caustics_uv *= u_Effect.g_CausticsTimeSpeedScaleBrightness.z;
+    vec2 noise_uv = caustics_uv * 0.02;
+    vec2 noise_uv2 = caustics_uv * 0.0333;
+    vec2 blend_uv = caustics_uv * 0.01333;
+    vec2 shift_uv = caustics_uv * 0.05;
+    float time = u_Effect.g_CausticsTimeSpeedScaleBrightness.x
+        * u_Effect.g_CausticsTimeSpeedScaleBrightness.y
+        + u_Effect.g_CausticsColorStartTimeOffset.w;
+    noise_uv.x += time * 0.005;
+    noise_uv2.y += time * 0.004111;
+    blend_uv += time * 0.003777;
+    shift_uv += time * 0.01;
+    vec4 shift = texture(g_CausticsOffset, shift_uv) * 2.0 - 1.0;
+    vec4 noise0 = texture(g_CausticsNoise, noise_uv) * 2.0 - 1.0;
+    vec4 noise1 = texture(g_CausticsNoise, noise_uv2) * 2.0 - 1.0;
+    float distortion = u_Effect.g_CausticsGlowDistortionChromaticBlur.y;
+    caustics_uv += (noise0.xy + noise1.xy) * 0.025 * distortion;
+    caustics_uv += shift.rg * distortion;
+    float chromatic = u_Effect.g_CausticsGlowDistortionChromaticBlur.z;
+    vec3 caustics;
+    if (abs(chromatic) <= 0.000001) {
+        caustics = vec3(texture(g_CausticsPattern, caustics_uv).r);
+    } else {
+        caustics = vec3(
+            texture(g_CausticsPattern, caustics_uv - vec2(0.01 * chromatic, 0.0)).r,
+            texture(g_CausticsPattern, caustics_uv).r,
+            texture(g_CausticsPattern, caustics_uv + vec2(0.01 * chromatic, 0.0)).r);
+    }
+    float glow = texture(g_CausticsGlow, caustics_uv).r;
+    vec4 blend = texture(g_CausticsNoise, blend_uv);
+    caustics = mix(caustics, vec3(glow),
+        u_Effect.g_CausticsGlowDistortionChromaticBlur.w);
+    float sample_alpha = smoothstep(blend.x * 0.8, 1.0 - blend.y * 0.2,
+        dot(caustics, vec3(0.33333))
+            + glow * u_Effect.g_CausticsGlowDistortionChromaticBlur.x);
+    vec3 effect_color = u_Effect.g_CausticsTimeSpeedScaleBrightness.w
+        * mix(u_Effect.g_CausticsColorStartTimeOffset.rgb,
+            u_Effect.g_CausticsColorEndAspect.rgb, blend.x) * caustics;
+    albedo.rgb = mix(albedo.rgb, max(albedo.rgb, effect_color), sample_alpha);
+    return albedo;
+}
+void main() {
+    float phase = u_Effect.g_ShakeTimeSpeedStrengthUnused.x
+        * u_Effect.g_ShakeTimeSpeedStrengthUnused.y;
+    float wave = sin(phase);
+    float lower = u_Effect.g_ShakeBoundsFriction.x;
+    float range = max(u_Effect.g_ShakeBoundsFriction.y - lower, 0.0001);
+    wave = clamp((wave * 0.5 + 0.5 - lower) / range, 0.0, 1.0) * 2.0 - 1.0;
+    vec2 flow = texture(g_ShakeFlow, v_TexCoord).rg * 2.0 - 1.0;
+    float shake_strength = u_Effect.g_ShakeTimeSpeedStrengthUnused.z;
+    vec2 effect_uv = clamp(v_TexCoord + flow * wave * shake_strength * shake_strength,
+        vec2(0.001), vec2(0.999));
+    vec2 object_uv = v_ObjectTexCoord + screenDeltaToObject(effect_uv - v_TexCoord);
+    vec2 direction = rotateVec2(vec2(0.0, 1.0),
+        u_Effect.g_WavesDirectionExponentOpacityUnused.x);
+    float distance = u_Effect.g_WavesTimeSpeedScaleStrength.x
+        * u_Effect.g_WavesTimeSpeedScaleStrength.y
+        + dot(object_uv, direction) * u_Effect.g_WavesTimeSpeedScaleStrength.z;
+    float displacement = shapedSine(
+        distance, u_Effect.g_WavesDirectionExponentOpacityUnused.y);
+    float wave_strength = u_Effect.g_WavesTimeSpeedScaleStrength.w;
+    vec2 object_offset = vec2(direction.y, -direction.x)
+        * displacement * wave_strength * wave_strength;
+    effect_uv += objectDeltaToScreen(object_offset);
+    object_uv += object_offset;
+    vec4 color = causticsAt(effect_uv);
+    color.a *= u_Effect.g_WavesDirectionExponentOpacityUnused.z;
+    color *= u_Effect.g_ResolvedColorAlpha;
     o_Color = color;
 }
 "#

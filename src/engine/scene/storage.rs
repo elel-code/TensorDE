@@ -288,6 +288,57 @@ impl SceneStorage {
             .expect("scene storage validates mesh index ranges")
     }
 
+    pub fn mesh_source_records(
+        &self,
+        mesh_index: u32,
+    ) -> impl Iterator<Item = &SceneMeshSourceRecord> {
+        self.document
+            .mesh_source_records
+            .iter()
+            .filter(move |record| record.mesh == mesh_index)
+    }
+
+    pub fn mesh_clipping_subdraws(
+        &self,
+        mesh_index: u32,
+    ) -> impl Iterator<Item = &SceneMeshClippingSubdrawRecord> {
+        self.document
+            .mesh_clipping_subdraws
+            .iter()
+            .filter(move |record| record.mesh == mesh_index)
+    }
+
+    pub fn mesh_clipping_slices(
+        &self,
+        mesh_index: u32,
+    ) -> impl Iterator<Item = &SceneMeshClippingSliceRecord> {
+        self.document
+            .mesh_clipping_slices
+            .iter()
+            .filter(move |record| record.mesh == mesh_index)
+    }
+
+    pub fn mesh_clipping_target_ordinals(
+        &self,
+        subdraw: &SceneMeshClippingSubdrawRecord,
+    ) -> &[u32] {
+        let start = subdraw.target_source_start as usize;
+        let end = start.saturating_add(subdraw.target_source_count as usize);
+        self.document
+            .mesh_clipping_source_ordinals
+            .get(start..end)
+            .expect("scene storage validates clipping target source ranges")
+    }
+
+    pub fn mesh_clipping_mask_ordinals(&self, subdraw: &SceneMeshClippingSubdrawRecord) -> &[u32] {
+        let start = subdraw.mask_source_start as usize;
+        let end = start.saturating_add(subdraw.mask_source_count as usize);
+        self.document
+            .mesh_clipping_source_ordinals
+            .get(start..end)
+            .expect("scene storage validates clipping mask source ranges")
+    }
+
     pub fn render_graphs(&self) -> &[SceneRenderGraphRecord] {
         &self.document.render_graphs
     }
@@ -726,6 +777,107 @@ fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageE
                     vertex_count: mesh.vertex_count,
                 });
             }
+        }
+    }
+    for source in &document.mesh_source_records {
+        let mesh =
+            document
+                .meshes
+                .get(source.mesh as usize)
+                .ok_or(SceneStorageError::InvalidRange {
+                    field: "mesh_source_record.mesh",
+                    start: source.mesh,
+                    count: 1,
+                    len: document.meshes.len(),
+                })?;
+        validate_range(
+            "mesh_source_record.index_range",
+            source.index_start,
+            source.index_count,
+            mesh.index_count as usize,
+        )?;
+    }
+    for subdraw in &document.mesh_clipping_subdraws {
+        validate_range(
+            "mesh_clipping_subdraw.mesh",
+            subdraw.mesh,
+            1,
+            document.meshes.len(),
+        )?;
+        validate_string(document, "mesh_clipping_subdraw.mask", subdraw.mask)?;
+        validate_optional_resource(
+            document,
+            "mesh_clipping_subdraw.mask_resource",
+            subdraw.mask_resource,
+        )?;
+        validate_range(
+            "mesh_clipping_subdraw.target_sources",
+            subdraw.target_source_start,
+            subdraw.target_source_count,
+            document.mesh_clipping_source_ordinals.len(),
+        )?;
+        validate_range(
+            "mesh_clipping_subdraw.mask_sources",
+            subdraw.mask_source_start,
+            subdraw.mask_source_count,
+            document.mesh_clipping_source_ordinals.len(),
+        )?;
+        let source_count = document
+            .mesh_source_records
+            .iter()
+            .filter(|source| source.mesh == subdraw.mesh)
+            .count() as u32;
+        for ordinal in document
+            .mesh_clipping_source_ordinals
+            .iter()
+            .skip(subdraw.target_source_start as usize)
+            .take(subdraw.target_source_count as usize)
+            .chain(
+                document
+                    .mesh_clipping_source_ordinals
+                    .iter()
+                    .skip(subdraw.mask_source_start as usize)
+                    .take(subdraw.mask_source_count as usize),
+            )
+        {
+            if *ordinal >= source_count {
+                return Err(SceneStorageError::InvalidRange {
+                    field: "mesh_clipping_subdraw.source_ordinal",
+                    start: *ordinal,
+                    count: 1,
+                    len: source_count as usize,
+                });
+            }
+        }
+    }
+    for slice in &document.mesh_clipping_slices {
+        validate_range(
+            "mesh_clipping_slice.mesh",
+            slice.mesh,
+            1,
+            document.meshes.len(),
+        )?;
+        validate_range(
+            "mesh_clipping_slice.index_range",
+            slice.index_start,
+            slice.index_count,
+            document.mesh_indices.len(),
+        )?;
+        if matches!(
+            slice.role,
+            SceneMeshClippingSliceRole::MaskProducer | SceneMeshClippingSliceRole::ClippedTarget
+        ) {
+            let subdraw_count = document
+                .mesh_clipping_subdraws
+                .iter()
+                .filter(|subdraw| subdraw.mesh == slice.mesh)
+                .count();
+            validate_range(
+                "mesh_clipping_slice.subdraw",
+                slice.subdraw,
+                1,
+                subdraw_count,
+            )?;
         }
     }
     for (puppet_index, puppet) in document.puppets.iter().enumerate() {

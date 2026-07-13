@@ -669,8 +669,14 @@ fn final_effect_program_values(
         "we/image-colorkey-scroll-final" => {
             final_colorkey_scroll_values(parameters, draw, scene_time_seconds)
         }
-        "we/puppet-opacity-final" => final_puppet_opacity_values(parameters, storage, draw),
-        "we/puppet-iris-waterripple-final" => {
+        "we/image-cloudmotion-final" => {
+            final_cloudmotion_values(parameters, storage, draw, scene_time_seconds)
+        }
+        "we/puppet-opacity-final" | "we/puppet-opacity-clipping-final" => {
+            final_puppet_opacity_values(parameters, storage, draw)
+        }
+        "we/puppet-iris-waterripple-final"
+        | "we/puppet-iris-waterripple-clipping-final" => {
             final_puppet_iris_waterripple_values(
                 parameters,
                 storage,
@@ -685,8 +691,102 @@ fn final_effect_program_values(
         "we/audio-bars-final" => {
             final_audio_bars_values(parameters, storage, draw, spectrum)
         }
+        "we/framebuffer-water-final" => {
+            final_framebuffer_water_values(parameters, storage, draw, scene_time_seconds)
+        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
+}
+
+fn final_cloudmotion_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["cloud.ui_editor_properties_speed", "cloud.speed"], 0.02);
+    values[6] = parameters.scalar(&["cloud.ui_editor_properties_amount", "cloud.amount"], 0.1);
+    values[7] = parameters.scalar(
+        &["cloud.ui_editor_properties_direction", "cloud.direction"],
+        1.5707963,
+    );
+    values[8] = parameters.scalar(
+        &["cloud.ui_editor_properties_granularity", "cloud.scale"],
+        2.0,
+    );
+    values[9] = parameters.scalar(
+        &[
+            "cloud.ui_editor_properties_granularity_horizontal",
+            "cloud.scalex",
+        ],
+        0.5,
+    );
+    values[10] = storage.project().logical_width.max(1) as f32
+        / storage.project().logical_height.max(1) as f32;
+    values
+}
+
+fn final_framebuffer_water_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["caustics.ui_editor_properties_speed"], 1.0);
+    values[6] = parameters.scalar(&["caustics.ui_editor_properties_granularity"], 2.0);
+    values[7] = parameters.scalar(&["caustics.ui_editor_properties_brightness"], 1.0);
+    values[8] = parameters.scalar(&["caustics.ui_editor_properties_glow"], 0.5);
+    values[9] = parameters.scalar(&["caustics.ui_editor_properties_distortion"], 1.0);
+    values[10] = parameters.scalar(
+        &["caustics.ui_editor_properties_chromatic_aberration"],
+        0.0,
+    );
+    values[11] = parameters.scalar(&["caustics.ui_editor_properties_blur"], 0.0);
+    values[12..15].copy_from_slice(&[1.0; 3]);
+    set_vector(
+        &mut values,
+        12,
+        &parameters.values(&["caustics.ui_editor_properties_color_start"]),
+        3,
+    );
+    values[15] = parameters.scalar(
+        &["caustics.ui_editor_properties_time_offset"],
+        0.0,
+    );
+    values[16..19].copy_from_slice(&[1.0; 3]);
+    set_vector(
+        &mut values,
+        16,
+        &parameters.values(&["caustics.ui_editor_properties_color_end"]),
+        3,
+    );
+    values[19] = scene_logical_aspect_ratio(storage);
+    values[20] = scene_time_seconds;
+    values[21] = parameters.scalar(&["waves.speed"], 5.0);
+    values[22] = parameters.scalar(&["waves.scale"], 200.0);
+    values[23] = parameters.scalar(&["waves.strength"], 0.1);
+    values[24] = parameters.scalar(&["waves.direction"], 0.0);
+    values[25] = parameters.scalar(&["waves.exponent"], 1.0);
+    values[26] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[28] = scene_time_seconds;
+    values[29] = parameters.scalar(&["shake.speed"], 1.0);
+    values[30] = parameters.scalar(&["shake.strength"], 0.1);
+    values[32..34].copy_from_slice(&[0.0, 1.0]);
+    values[34..36].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 32, &parameters.values(&["shake.bounds"]), 2);
+    set_vector(
+        &mut values,
+        34,
+        &parameters.values(&["shake.friction"]),
+        2,
+    );
+    values
 }
 
 fn final_tech_circle_values(

@@ -10,7 +10,9 @@
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-use crate::engine::scene::SceneRenderingDeviceGraphPlan;
+use crate::engine::scene::{
+    SceneRenderTargetKind, SceneRenderingDeviceGraphPlan, SceneRenderingDevicePassNode,
+};
 
 use super::draw_recording::{
     SceneGpuDrawRange, record_scene_draw_extent, record_scene_mesh_draw_ranges,
@@ -100,6 +102,31 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 &scene.effect_target_commands,
                 *graph_index,
             );
+        if graph_requires_interleaved_target_execution(&scene.pass_nodes, *graph_index) {
+            if scene_color_rendering_active {
+                unsafe {
+                    device.cmd_end_rendering(command_buffer);
+                }
+                scene_color_rendering_active = false;
+            }
+            record_interleaved_target_graph(
+                device,
+                command_buffer,
+                swapchain_image,
+                swapchain_view,
+                extent,
+                clear_color,
+                scene,
+                reference_slots,
+                *graph_index,
+                &mut scene_color_initialized,
+                &mut scene_color_rendering_active,
+            )?;
+            if let Some(timing) = gpu_timing {
+                timing.record_graph_finish(device, command_buffer, graph_position);
+            }
+            continue;
+        }
         if requires_effect_target_execution {
             if scene_color_rendering_active {
                 unsafe {
@@ -215,6 +242,120 @@ pub(super) fn record_scene_graphs_to_swapchain(
         }
     }
     Ok(())
+}
+
+fn graph_requires_interleaved_target_execution(
+    passes: &[SceneRenderingDevicePassNode],
+    graph_index: u32,
+) -> bool {
+    let mut effect_target_seen = false;
+    let mut scene_color_after_effect = false;
+    for pass in passes.iter().filter(|pass| pass.graph_index == graph_index) {
+        if pass_is_scene_color(pass) {
+            scene_color_after_effect |= effect_target_seen;
+        } else if pass_targets_effect_image(pass) {
+            if scene_color_after_effect {
+                return true;
+            }
+            effect_target_seen = true;
+        }
+    }
+    false
+}
+
+fn record_interleaved_target_graph(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    swapchain_image: vk::Image,
+    swapchain_view: vk::ImageView,
+    extent: vk::Extent2D,
+    clear_color: NativeVulkanClearColor,
+    scene: &SceneGpuResources,
+    reference_slots: &[u32],
+    graph_index: u32,
+    scene_color_initialized: &mut bool,
+    scene_color_rendering_active: &mut bool,
+) -> Result<(), String> {
+    for pass in scene
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.graph_index == graph_index)
+    {
+        if pass_is_scene_color(pass) {
+            if pass.mesh_draw_count == 0 {
+                continue;
+            }
+            if !*scene_color_rendering_active {
+                begin_scene_color_rendering(
+                    device,
+                    command_buffer,
+                    swapchain_view,
+                    extent,
+                    clear_color,
+                    *scene_color_initialized,
+                );
+                record_scene_draw_extent(device, command_buffer, extent);
+                *scene_color_rendering_active = true;
+            }
+            record_scene_mesh_draw_ranges(
+                device,
+                command_buffer,
+                scene,
+                &[SceneGpuDrawRange {
+                    start: pass.mesh_draw_start,
+                    count: pass.mesh_draw_count,
+                }],
+                extent,
+            )?;
+            *scene_color_initialized = true;
+            continue;
+        }
+        if !pass_targets_effect_image(pass) {
+            continue;
+        }
+        if *scene_color_rendering_active {
+            unsafe {
+                device.cmd_end_rendering(command_buffer);
+            }
+            *scene_color_rendering_active = false;
+        }
+        let mut record_draws = |draw_start, draw_count, target_extent| {
+            record_scene_mesh_draw_ranges(
+                device,
+                command_buffer,
+                scene,
+                &[SceneGpuDrawRange {
+                    start: draw_start,
+                    count: draw_count,
+                }],
+                target_extent,
+            )
+        };
+        effect_target::record_scene_effect_target_pass(
+            device,
+            command_buffer,
+            swapchain_image,
+            extent,
+            pass,
+            &scene.effect_target_commands,
+            &scene.effect_target_allocations,
+            reference_slots,
+            &scene.effect_targets,
+            &mut record_draws,
+        )?;
+    }
+    Ok(())
+}
+
+fn pass_is_scene_color(pass: &SceneRenderingDevicePassNode) -> bool {
+    matches!(
+        pass.target,
+        SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
+    )
+}
+
+fn pass_targets_effect_image(pass: &SceneRenderingDevicePassNode) -> bool {
+    !pass_is_scene_color(pass)
 }
 
 fn begin_scene_color_rendering(
@@ -421,6 +562,19 @@ mod tests {
             vec![0, 2]
         );
         assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
+    }
+
+    #[test]
+    fn repeated_effect_target_and_scene_color_runs_require_pass_order_execution() {
+        let scene = pass(7);
+        let mut effect = pass(7);
+        effect.target = SceneRenderTargetKind::FirstClassEffectTarget;
+        effect.target_name = crate::engine::scene::SceneStringId(4);
+        let ordered = vec![scene, effect, scene, effect];
+        assert!(graph_requires_interleaved_target_execution(&ordered, 7));
+
+        let grouped = vec![effect, effect, scene];
+        assert!(!graph_requires_interleaved_target_execution(&grouped, 7));
     }
 
     fn pass(graph_index: u32) -> SceneRenderingDevicePassNode {

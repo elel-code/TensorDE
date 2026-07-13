@@ -17,6 +17,10 @@ pub enum RenderPassRole {
     Particle,
     TextPath,
     SceneComposite,
+    MeshVisiblePrefix,
+    MeshClippingMask,
+    MeshClippedTarget,
+    MeshVisibleRemainder,
     DebugEvidence,
     Unsupported,
 }

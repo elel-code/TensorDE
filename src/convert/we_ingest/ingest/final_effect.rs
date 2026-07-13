@@ -16,11 +16,13 @@ pub(super) const IMAGE_WATERWAVES_FINAL_SHADER: &str = "we/image-waterwaves-fina
 pub(super) const IMAGE_WATERRIPPLE_FINAL_SHADER: &str = "we/image-waterripple-final";
 pub(super) const IMAGE_SCROLL_FINAL_SHADER: &str = "we/image-scroll-final";
 pub(super) const IMAGE_COLORKEY_SCROLL_FINAL_SHADER: &str = "we/image-colorkey-scroll-final";
+pub(super) const IMAGE_CLOUD_MOTION_FINAL_SHADER: &str = "we/image-cloudmotion-final";
 pub(super) const PUPPET_OPACITY_FINAL_SHADER: &str = "we/puppet-opacity-final";
 pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-waterripple-final";
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
 pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
+pub(super) const FRAMEBUFFER_WATER_FINAL_SHADER: &str = "we/framebuffer-water-final";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
@@ -28,11 +30,13 @@ enum FinalEffectKind {
     ImageWaterRipple,
     ImageScroll,
     ImageColorKeyScroll,
+    ImageCloudMotion,
     PuppetOpacity,
     PuppetIrisWaterRipple,
     FlatRoundedOpacity,
     TechCircle,
     AudioBars,
+    FramebufferWater,
 }
 
 #[derive(Debug, Clone)]
@@ -80,6 +84,7 @@ pub(super) fn create(
     Some(WeFinalEffectMaterial {
         material_index,
         shader: shader.to_owned(),
+        samples_framebuffer_snapshot: kind == FinalEffectKind::FramebufferWater,
     })
 }
 
@@ -150,6 +155,11 @@ fn final_effect_program(
             ));
             IMAGE_COLORKEY_SCROLL_FINAL_SHADER
         }
+        FinalEffectKind::ImageCloudMotion => {
+            append_effect_constants(&mut constants, "cloud", &inputs[0]);
+            textures.push(remap_texture(texture_at_slot(&inputs[0], 2)?, 2));
+            IMAGE_CLOUD_MOTION_FINAL_SHADER
+        }
         FinalEffectKind::PuppetOpacity => {
             append_effect_constants(&mut constants, "opacity", &inputs[0]);
             append_optional_texture(&mut textures, &inputs[0], 1, 1);
@@ -202,6 +212,20 @@ fn final_effect_program(
             ));
             AUDIO_BARS_FINAL_SHADER
         }
+        FinalEffectKind::FramebufferWater => {
+            append_effect_constants(&mut constants, "caustics", &inputs[0]);
+            append_effect_constants(&mut constants, "waves", &inputs[1]);
+            append_effect_constants(&mut constants, "opacity", &inputs[2]);
+            append_effect_constants(&mut constants, "shake", &inputs[3]);
+            for (source_slot, destination_slot) in [(2, 1), (3, 2), (4, 3), (5, 4)] {
+                textures.push(remap_texture(
+                    texture_at_slot(&inputs[0], source_slot)?,
+                    destination_slot,
+                ));
+            }
+            textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 5));
+            FRAMEBUFFER_WATER_FINAL_SHADER
+        }
     };
     Some((shader, textures, constants))
 }
@@ -237,6 +261,12 @@ fn final_effect_kind(
     {
         return Some(FinalEffectKind::AudioBars);
     }
+    if is_composelayer_shader(base_shader)
+        && effect_names.as_slice() == ["caustics", "waterwaves", "opacity", "shake"]
+        && framebuffer_water_chain_is_supported(effects)
+    {
+        return Some(FinalEffectKind::FramebufferWater);
+    }
     if !effects_in_authored_texture_space || !is_generic_image_shader(base_shader) {
         return None;
     }
@@ -254,6 +284,9 @@ fn final_effect_kind(
             if previous_only(&effects[0], &[0]) && previous_only(&effects[1], &[0]) =>
         {
             Some(FinalEffectKind::ImageColorKeyScroll)
+        }
+        (false, ["cloudmotion"]) if cloudmotion_is_supported(&effects[0]) => {
+            Some(FinalEffectKind::ImageCloudMotion)
         }
         (true, ["opacity"]) if previous_only(&effects[0], &[0, 1]) => {
             Some(FinalEffectKind::PuppetOpacity)
@@ -303,6 +336,10 @@ fn waterripple_is_supported(effect: &WeEffectPassContract) -> bool {
         && !combo_enabled(effect, "SPECULAR")
 }
 
+fn cloudmotion_is_supported(effect: &WeEffectPassContract) -> bool {
+    previous_only(effect, &[0, 2]) && effect.binds.contains_key(&2)
+}
+
 fn iris_is_supported(effect: &WeEffectPassContract) -> bool {
     previous_only(effect, &[0, 1]) && !combo_enabled(effect, "PERSPECTIVE")
 }
@@ -329,6 +366,24 @@ fn audio_bars_is_supported(effect: &WeEffectPassContract) -> bool {
 
 fn skew_is_supported(effect: &WeEffectPassContract) -> bool {
     previous_only(effect, &[0]) && combo_value(effect, "REPEAT", 1) != 0
+}
+
+fn framebuffer_water_chain_is_supported(effects: &[WeEffectPassContract]) -> bool {
+    effects.len() == 4
+        && previous_only(&effects[0], &[0, 1, 2, 3, 4, 5])
+        && combo_value(&effects[0], "BLENDMODE", 32) == 6
+        && combo_value(&effects[0], "MODE", 0) == 0
+        && !combo_enabled(&effects[0], "MASK")
+        && !combo_enabled(&effects[0], "PERSPECTIVE")
+        && waterwaves_is_supported(&effects[1])
+        && previous_only(&effects[2], &[0])
+        && previous_only(&effects[3], &[0, 1, 2, 3])
+        && effects[3].binds.contains_key(&1)
+        && !combo_enabled(&effects[3], "AUDIOPROCESSING")
+        && !combo_enabled(&effects[3], "NOISE")
+        && !combo_enabled(&effects[3], "TIMEOFFSET")
+        && !combo_enabled(&effects[3], "MASK")
+        && combo_value(&effects[3], "DIRECTION", 0) == 0
 }
 
 fn combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {
@@ -545,6 +600,15 @@ mod tests {
     }
 
     #[test]
+    fn singleton_cloudmotion_is_a_final_draw_candidate_with_authored_noise() {
+        let cloud = effect("effects/cloudmotion__SLOTS_5", &[0, 2]);
+        assert_eq!(
+            final_effect_kind("genericimage4", &[cloud], true, false),
+            Some(FinalEffectKind::ImageCloudMotion)
+        );
+    }
+
+    #[test]
     fn final_program_classifies_scroll_and_puppet_chains() {
         assert_eq!(
             final_effect_kind(
@@ -595,6 +659,26 @@ mod tests {
                 false,
             ),
             Some(FinalEffectKind::AudioBars)
+        );
+    }
+
+    #[test]
+    fn framebuffer_water_chain_collapses_only_the_verified_contract() {
+        let mut caustics = effect("effects/caustics__SLOTS_3d__BLENDMODE_6", &[0, 2, 3, 4, 5]);
+        caustics.combos.insert("BLENDMODE".to_owned(), 6);
+        assert_eq!(
+            final_effect_kind(
+                "we/composelayer",
+                &[
+                    caustics,
+                    effect("effects/waterwaves__SLOTS_1", &[0]),
+                    effect("effects/opacity__SLOTS_1", &[0]),
+                    effect("effects/shake__SLOTS_3", &[0, 1]),
+                ],
+                false,
+                false,
+            ),
+            Some(FinalEffectKind::FramebufferWater)
         );
     }
 

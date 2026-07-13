@@ -91,6 +91,11 @@ impl SceneRenderingDeviceGraphPlan {
                     let resolved_object_index = pass_object_state.object_index;
                     for (mesh_index, mesh) in storage.meshes().iter().enumerate() {
                         if mesh.object == pass.object {
+                            let Some((index_start, index_count)) =
+                                pass_mesh_index_range(storage, pass, mesh_index as u32, mesh)
+                            else {
+                                continue;
+                            };
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
                                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
                                 mesh_index: mesh_index as u32,
@@ -120,8 +125,8 @@ impl SceneRenderingDeviceGraphPlan {
                                 material: pass_draw_material(pass, mesh.material),
                                 vertex_start: mesh.vertex_start,
                                 vertex_count: mesh.vertex_count,
-                                index_start: mesh.index_start,
-                                index_count: mesh.index_count,
+                                index_start,
+                                index_count,
                             });
                         }
                     }
@@ -372,12 +377,46 @@ pub struct SceneRenderingDevicePuppetBoneMatrix {
 fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) -> bool {
     pass.object.0 != INVALID_OBJECT_ID
         && (pass.role == SceneRenderPassKind::BaseMaterial
+            || matches!(
+                pass.role,
+                SceneRenderPassKind::MeshVisiblePrefix
+                    | SceneRenderPassKind::MeshClippingMask
+                    | SceneRenderPassKind::MeshClippedTarget
+                    | SceneRenderPassKind::MeshVisibleRemainder
+            )
             || (pass.role == SceneRenderPassKind::SceneComposite
                 && !storage.string(pass.shader_key).is_some_and(|key| {
                     key.eq_ignore_ascii_case("we/objectcomposite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
+                        || key.eq_ignore_ascii_case("we/framebuffer-water-final")
                 })))
+}
+
+fn pass_mesh_index_range(
+    storage: &SceneStorage,
+    pass: &SceneRenderPassRecord,
+    mesh_index: u32,
+    mesh: &SceneMeshRecord,
+) -> Option<(u32, u32)> {
+    let role = match pass.role {
+        SceneRenderPassKind::MeshVisiblePrefix => SceneMeshClippingSliceRole::VisiblePrefix,
+        SceneRenderPassKind::MeshClippingMask => SceneMeshClippingSliceRole::MaskProducer,
+        SceneRenderPassKind::MeshClippedTarget => SceneMeshClippingSliceRole::ClippedTarget,
+        SceneRenderPassKind::MeshVisibleRemainder => SceneMeshClippingSliceRole::VisibleRemainder,
+        _ => return Some((mesh.index_start, mesh.index_count)),
+    };
+    storage
+        .mesh_clipping_slices(mesh_index)
+        .find(|slice| {
+            slice.role == role
+                && (!matches!(
+                    role,
+                    SceneMeshClippingSliceRole::MaskProducer
+                        | SceneMeshClippingSliceRole::ClippedTarget
+                ) || slice.subdraw == pass.pass_index)
+        })
+        .map(|slice| (slice.index_start, slice.index_count))
 }
 
 fn visible_pass_object<'frame>(
@@ -418,6 +457,9 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
         "we/flat-rounded-mask-composite" | "we/flat-rounded-opacity-final"
     ) {
         return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
+    }
+    if key == "we/framebuffer-water-final" {
+        return Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle);
     }
     (key.starts_with("effects/")
         || key.starts_with("workshop/")

@@ -1,0 +1,217 @@
+//! Typed MDLV mesh and clipping-table lowering.
+
+use super::WeIrBuilder;
+use crate::convert::we_ingest::ir::{
+    WeIrMesh, WeIrMeshClippingSlice, WeIrMeshClippingSliceRole, WeIrMeshClippingSubdraw,
+    WeIrMeshSourceRecord, WeIrMeshVertex, WeIrUnsupported,
+};
+use crate::convert::we_ingest::mdl::{MdlMeshEntry, mdl_entry_vertex_bounds};
+
+impl WeIrBuilder {
+    pub(super) fn add_mdl_meshes(
+        &mut self,
+        object: u32,
+        image_path: &str,
+        entries: &[MdlMeshEntry],
+        material_handles: &[Option<u32>],
+        clipping_mask_resources: &[Vec<Option<u32>>],
+    ) -> (u32, u32) {
+        let mesh_start = self.meshes.len() as u32;
+        if entries.is_empty() {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(object),
+                pass_index: None,
+                feature: format!("mdl-has-no-mesh-entries:{image_path}"),
+                expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
+                containment: "object-kept-without-mdl-mesh".to_owned(),
+            });
+            return (mesh_start, 0);
+        }
+
+        for (entry_index, entry) in entries.iter().enumerate() {
+            if entry.vertices.is_empty() || entry.indices.is_empty() {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: Some(entry_index as u32),
+                    feature: format!("mdl-empty-mesh-entry:{image_path}:{entry_index}"),
+                    expected_subsystem: "convert/we_ingest MDLV0023 mesh blocks".to_owned(),
+                    containment: "empty-entry-skipped".to_owned(),
+                });
+                continue;
+            }
+            let invalid_index = entry
+                .indices
+                .iter()
+                .copied()
+                .find(|index| *index >= entry.vertices.len() as u32);
+            if let Some(index) = invalid_index {
+                self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: Some(entry_index as u32),
+                    feature: format!(
+                        "mdl-mesh-index-out-of-range:{image_path}:{entry_index}:{index}"
+                    ),
+                    expected_subsystem: "convert/we_ingest MDLV0023 index block".to_owned(),
+                    containment: "invalid-entry-skipped".to_owned(),
+                });
+                continue;
+            }
+
+            let (bounds_min, bounds_max) = mdl_entry_vertex_bounds(entry);
+            let vertex_start = self.mesh_vertices.len() as u32;
+            let index_start = self.mesh_indices.len() as u32;
+            self.mesh_vertices
+                .extend(entry.vertices.iter().map(|vertex| WeIrMeshVertex {
+                    position: vertex.position,
+                    uv: vertex.uv,
+                    blend_indices: vertex.blend_indices,
+                    blend_weights: vertex.blend_weights,
+                }));
+            self.mesh_indices.extend(entry.indices.iter().copied());
+            let material = material_handles
+                .get(entry_index)
+                .copied()
+                .flatten()
+                .or_else(|| material_handles.first().copied().flatten());
+            let mesh = self.meshes.len() as u32;
+            self.meshes.push(WeIrMesh {
+                object,
+                material,
+                vertex_start,
+                vertex_count: entry.vertices.len() as u32,
+                index_start,
+                index_count: entry.indices.len() as u32,
+                width: bounds_max.x - bounds_min.x,
+                height: bounds_max.y - bounds_min.y,
+                bounds_min,
+                bounds_max,
+            });
+            self.mesh_source_records
+                .extend(
+                    entry
+                        .source_records
+                        .iter()
+                        .map(|record| WeIrMeshSourceRecord {
+                            mesh,
+                            source_index: record.source_index,
+                            local_index_offset: record.local_index_offset,
+                            index_start: record.index_start,
+                            index_count: record.index_count,
+                        }),
+                );
+            for (subdraw_index, subdraw) in entry.clipping_subdraws.iter().enumerate() {
+                let target_source_start = self.mesh_clipping_source_ordinals.len() as u32;
+                self.mesh_clipping_source_ordinals
+                    .extend(subdraw.target_source_ordinals.iter().copied());
+                let target_source_count = subdraw.target_source_ordinals.len() as u32;
+                let mask_source_start = self.mesh_clipping_source_ordinals.len() as u32;
+                self.mesh_clipping_source_ordinals
+                    .extend(subdraw.mask_source_ordinals.iter().copied());
+                let mask_source_count = subdraw.mask_source_ordinals.len() as u32;
+                self.mesh_clipping_subdraws.push(WeIrMeshClippingSubdraw {
+                    mesh,
+                    source_qword: subdraw.source_qword,
+                    mask: subdraw.mask_resource.clone(),
+                    mask_resource: clipping_mask_resources
+                        .get(entry_index)
+                        .and_then(|resources| resources.get(subdraw_index))
+                        .copied()
+                        .flatten(),
+                    raw_flags: subdraw.raw_flags,
+                    target_source_start,
+                    target_source_count,
+                    mask_source_start,
+                    mask_source_count,
+                });
+            }
+            self.materialize_mdl_clipping_slices(mesh, entry);
+        }
+        (mesh_start, self.meshes.len() as u32 - mesh_start)
+    }
+
+    fn materialize_mdl_clipping_slices(&mut self, mesh: u32, entry: &MdlMeshEntry) {
+        if entry.source_records.is_empty() || entry.clipping_subdraws.is_empty() {
+            return;
+        }
+        let targets = entry
+            .clipping_subdraws
+            .iter()
+            .flat_map(|subdraw| subdraw.target_source_ordinals.iter().copied())
+            .collect::<std::collections::BTreeSet<_>>();
+        let prefix_end = entry
+            .clipping_subdraws
+            .iter()
+            .flat_map(|subdraw| subdraw.mask_source_ordinals.iter().copied())
+            .max()
+            .map_or(0, |ordinal| ordinal.saturating_add(1))
+            .min(entry.source_records.len() as u32);
+        let visible_prefix = (0..prefix_end)
+            .filter(|ordinal| !targets.contains(ordinal))
+            .collect::<Vec<_>>();
+        self.push_mdl_clipping_slice(
+            mesh,
+            u32::MAX,
+            WeIrMeshClippingSliceRole::VisiblePrefix,
+            entry,
+            &visible_prefix,
+        );
+        for (subdraw, record) in entry.clipping_subdraws.iter().enumerate() {
+            self.push_mdl_clipping_slice(
+                mesh,
+                subdraw as u32,
+                WeIrMeshClippingSliceRole::MaskProducer,
+                entry,
+                &record.mask_source_ordinals,
+            );
+            self.push_mdl_clipping_slice(
+                mesh,
+                subdraw as u32,
+                WeIrMeshClippingSliceRole::ClippedTarget,
+                entry,
+                &record.target_source_ordinals,
+            );
+        }
+        let visible_remainder = (prefix_end..entry.source_records.len() as u32)
+            .filter(|ordinal| !targets.contains(ordinal))
+            .collect::<Vec<_>>();
+        self.push_mdl_clipping_slice(
+            mesh,
+            u32::MAX,
+            WeIrMeshClippingSliceRole::VisibleRemainder,
+            entry,
+            &visible_remainder,
+        );
+    }
+
+    fn push_mdl_clipping_slice(
+        &mut self,
+        mesh: u32,
+        subdraw: u32,
+        role: WeIrMeshClippingSliceRole,
+        entry: &MdlMeshEntry,
+        ordinals: &[u32],
+    ) {
+        let index_start = self.mesh_indices.len() as u32;
+        for ordinal in ordinals {
+            let Some(source) = entry.source_records.get(*ordinal as usize) else {
+                continue;
+            };
+            let start = source.index_start as usize;
+            let end = start
+                .saturating_add(source.index_count as usize)
+                .min(entry.indices.len());
+            self.mesh_indices
+                .extend_from_slice(&entry.indices[start.min(entry.indices.len())..end]);
+        }
+        let index_count = self.mesh_indices.len() as u32 - index_start;
+        if index_count != 0 {
+            self.mesh_clipping_slices.push(WeIrMeshClippingSlice {
+                mesh,
+                subdraw,
+                role,
+                index_start,
+                index_count,
+            });
+        }
+    }
+}
