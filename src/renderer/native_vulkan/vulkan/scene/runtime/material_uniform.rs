@@ -122,6 +122,7 @@ fn material_uniform_values(
             draw,
             shader_key,
             scene_time_seconds,
+            spectrum,
         ),
         BuiltinSceneParameterLayout::FinalWaterRipple => {
             final_waterripple_values(&parameters, storage, draw, scene_time_seconds)
@@ -655,6 +656,7 @@ fn final_effect_program_values(
     draw: &SceneRenderingDeviceMeshDraw,
     shader_key: &str,
     scene_time_seconds: f32,
+    spectrum: Option<&[f32; 32]>,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     match shader_key.to_ascii_lowercase().as_str() {
         "we/image-waterwaves-final" => {
@@ -677,8 +679,95 @@ fn final_effect_program_values(
             )
         }
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_values(parameters, draw),
+        "we/tech-circle-final" => {
+            final_tech_circle_values(parameters, draw, scene_time_seconds)
+        }
+        "we/audio-bars-final" => {
+            final_audio_bars_values(parameters, storage, draw, spectrum)
+        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
+}
+
+fn final_tech_circle_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4..7].copy_from_slice(&[1.0, 1.0, 1.0]);
+    set_vector(
+        &mut values,
+        4,
+        &parameters.values(&["tech.ui_editor_properties_1_color"]),
+        3,
+    );
+    values[7] = parameters.scalar(&["tech.ui_editor_properties_2_alpha"], 1.0);
+    values[8] = scene_time_seconds;
+    values[9] = parameters.scalar(&["tech.ui_editor_properties_3_speed"], 0.1);
+    values[10] = parameters.scalar(&["tech.ui_editor_properties_6_skew"], 0.0);
+    values[11] = parameters.scalar(&["tech.ui_editor_properties_4_ring_1_radius"], 0.5);
+    values[12] = parameters.scalar(&["tech.ui_editor_properties_4_ring_1_width"], 0.2);
+    values[13] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_count"], 2.0);
+    values[14] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_width"], 0.25);
+    values[15] = parameters.scalar(&["tech.ui_editor_properties_5_sector_1_offset"], 0.0);
+    values[16] = parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3);
+    values[17] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_count"], 5.0);
+    values[18] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_width"], 0.75);
+    values
+}
+
+fn final_audio_bars_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    spectrum: Option<&[f32; 32]>,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4..7].copy_from_slice(&[1.0, 1.0, 1.0]);
+    set_vector(&mut values, 4, &parameters.values(&["audio.Bar Color"]), 3);
+    values[7] = parameters.scalar(&["audio.ui_editor_properties_opacity"], 1.0);
+    values[8] = parameters.scalar(&["audio.Bar Count"], 32.0);
+    values[9] = parameters.scalar(&["audio.Bar Spacing"], 0.1);
+    values[10..12].copy_from_slice(&[0.0, 1.0]);
+    set_vector(
+        &mut values,
+        10,
+        &parameters.values(&["audio.Lower/Upper Bar Bounds"]),
+        2,
+    );
+    values[12] = parameters.scalar(
+        &["audio.Minimum Height (Will be multiplied by the bar width) "],
+        0.0,
+    );
+    values[13] = parameters.scalar(&["audio.Radius"], 1.0);
+    values[14] = parameters.scalar(&["audio.Volume Factor"], 1.0);
+    values[15] = parameters
+        .values(&["audio.Anti-alias blurring "])
+        .first()
+        .copied()
+        .unwrap_or(0.05);
+    values[16] = parameters.scalar(&["skew.top"], 0.0);
+    values[17] = parameters.scalar(&["skew.bottom"], 0.0);
+    values[18] = parameters.scalar(&["skew.left"], 0.0);
+    values[19] = parameters.scalar(&["skew.right"], 0.0);
+    values[20] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[21] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    values[24..28].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 0));
+    values[28] = parameters
+        .values(&["audio.Anti-alias blurring "])
+        .get(1)
+        .copied()
+        .unwrap_or(0.0);
+    values[29] = storage.project().logical_width.max(1) as f32
+        / storage.project().logical_height.max(1) as f32;
+    if let Some(spectrum) = spectrum {
+        values[32..64].copy_from_slice(spectrum);
+        values[64..96].copy_from_slice(spectrum);
+    }
+    values
 }
 
 fn final_scroll_values(

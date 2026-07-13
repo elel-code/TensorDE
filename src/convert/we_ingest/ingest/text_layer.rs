@@ -22,6 +22,7 @@ use super::super::tex::{
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
 
 const TEXT_REFERENCE_HEIGHT: f32 = 1080.0;
+const TEXT_VISUAL_SCALE: f32 = 1.5;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WeTextLayerRaster {
@@ -180,13 +181,50 @@ pub(super) fn ingest_text_layer(
         pass_count: 1,
     });
     builder.material_by_path.insert(material_path, material);
+    let vertex_start = builder.mesh_vertices.len();
     builder.add_image_plane_mesh(
         object,
         Some(material),
         texture_width as f32,
         texture_height as f32,
     );
+    apply_text_alignment_anchor(
+        builder,
+        value,
+        vertex_start,
+        texture_width as f32,
+        texture_height as f32,
+    );
     Ok(Some((font_resource, material)))
+}
+
+fn apply_text_alignment_anchor(
+    builder: &mut WeIrBuilder,
+    object: &Value,
+    vertex_start: usize,
+    width: f32,
+    height: f32,
+) {
+    let offset_x = match bound_string(object.get("horizontalalign")).as_deref() {
+        Some("left") => width * 0.5,
+        Some("right") => -width * 0.5,
+        _ => 0.0,
+    };
+    let offset_y = match bound_string(object.get("verticalalign")).as_deref() {
+        Some("top") => -height * 0.5,
+        Some("bottom") => height * 0.5,
+        _ => 0.0,
+    };
+    for vertex in &mut builder.mesh_vertices[vertex_start..] {
+        vertex.position.x += offset_x;
+        vertex.position.y += offset_y;
+    }
+    if let Some(mesh) = builder.meshes.last_mut() {
+        mesh.bounds_min.x += offset_x;
+        mesh.bounds_min.y += offset_y;
+        mesh.bounds_max.x += offset_x;
+        mesh.bounds_max.y += offset_y;
+    }
 }
 
 fn retained_glyph_upload(raster: WeTextLayerRaster) -> TexUpload {
@@ -377,7 +415,7 @@ fn checked_dimension(value: f32, label: &str) -> Result<u32, String> {
 }
 
 fn text_point_size_pixels(point_size: f32, scene_height: u32) -> f32 {
-    point_size * (scene_height.max(1) as f32 / TEXT_REFERENCE_HEIGHT).max(1.0)
+    point_size * (scene_height.max(1) as f32 / TEXT_REFERENCE_HEIGHT).max(1.0) * TEXT_VISUAL_SCALE
 }
 
 fn color_byte(value: f32) -> u8 {
@@ -402,8 +440,8 @@ mod tests {
 
     #[test]
     fn wallpaper_engine_point_size_tracks_authored_scene_resolution() {
-        assert_eq!(text_point_size_pixels(96.0, 2160), 192.0);
-        assert_eq!(text_point_size_pixels(96.0, 1080), 96.0);
-        assert_eq!(text_point_size_pixels(96.0, 720), 96.0);
+        assert_eq!(text_point_size_pixels(96.0, 2160), 288.0);
+        assert_eq!(text_point_size_pixels(96.0, 1080), 144.0);
+        assert_eq!(text_point_size_pixels(96.0, 720), 144.0);
     }
 }

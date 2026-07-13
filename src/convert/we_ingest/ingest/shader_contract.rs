@@ -183,6 +183,7 @@ pub(super) fn declared_texture_slot_mask(
         "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
         "we/puppet-opacity-final" => mask |= 0x03,
         "we/puppet-iris-waterripple-final" => mask |= 0x0f,
+        "we/audio-bars-final" => mask |= 0x01,
         _ => {}
     }
     mask
@@ -277,6 +278,8 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/puppet-opacity-final"
         || key == "we/puppet-iris-waterripple-final"
         || key == "we/flat-rounded-opacity-final"
+        || key == "we/tech-circle-final"
+        || key == "we/audio-bars-final"
         || key == "color"
         || key.starts_with("color__")
         || key == "we/color"

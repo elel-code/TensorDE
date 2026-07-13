@@ -19,6 +19,8 @@ pub(super) const IMAGE_COLORKEY_SCROLL_FINAL_SHADER: &str = "we/image-colorkey-s
 pub(super) const PUPPET_OPACITY_FINAL_SHADER: &str = "we/puppet-opacity-final";
 pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-waterripple-final";
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
+pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
+pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
@@ -29,6 +31,8 @@ enum FinalEffectKind {
     PuppetOpacity,
     PuppetIrisWaterRipple,
     FlatRoundedOpacity,
+    TechCircle,
+    AudioBars,
 }
 
 #[derive(Debug, Clone)]
@@ -97,10 +101,12 @@ fn final_effect_program(
         .iter()
         .map(|effect| material_input(builder, effect.material_index?))
         .collect::<Option<Vec<_>>>()?;
-    let mut textures = if kind == FinalEffectKind::FlatRoundedOpacity {
-        Vec::new()
-    } else {
-        vec![source_texture(source)?]
+    let mut textures = match kind {
+        FinalEffectKind::FlatRoundedOpacity | FinalEffectKind::TechCircle => Vec::new(),
+        FinalEffectKind::AudioBars => texture_at_slot(&inputs[2], 1)
+            .map(|texture| vec![remap_texture(texture, 0)])
+            .unwrap_or_default(),
+        _ => vec![source_texture(source)?],
     };
     let mut constants = prefixed_constants("base", &source.constants);
     let shader = match kind {
@@ -182,6 +188,20 @@ fn final_effect_program(
             append_effect_constants(&mut constants, "opacity", &inputs[1]);
             FLAT_ROUNDED_OPACITY_FINAL_SHADER
         }
+        FinalEffectKind::TechCircle => {
+            append_effect_constants(&mut constants, "tech", &inputs[0]);
+            TECH_CIRCLE_FINAL_SHADER
+        }
+        FinalEffectKind::AudioBars => {
+            append_effect_constants(&mut constants, "audio", &inputs[0]);
+            append_effect_constants(&mut constants, "skew", &inputs[1]);
+            append_effect_constants(&mut constants, "opacity", &inputs[2]);
+            constants.push(synthetic_constant(
+                "opacity.mask_enabled",
+                texture_at_slot(&inputs[2], 1).is_some(),
+            ));
+            AUDIO_BARS_FINAL_SHADER
+        }
     };
     Some((shader, textures, constants))
 }
@@ -202,6 +222,20 @@ fn final_effect_kind(
         && rounded_opacity_chain_is_supported(effects)
     {
         return Some(FinalEffectKind::FlatRoundedOpacity);
+    }
+    if is_composelayer_shader(base_shader)
+        && effect_names.as_slice() == ["tech_circle"]
+        && tech_circle_is_supported(&effects[0])
+    {
+        return Some(FinalEffectKind::TechCircle);
+    }
+    if is_composelayer_shader(base_shader)
+        && effect_names.as_slice() == ["simple_audio_bars", "skew", "opacity"]
+        && audio_bars_is_supported(&effects[0])
+        && skew_is_supported(&effects[1])
+        && previous_only(&effects[2], &[0, 1])
+    {
+        return Some(FinalEffectKind::AudioBars);
     }
     if !effects_in_authored_texture_space || !is_generic_image_shader(base_shader) {
         return None;
@@ -281,6 +315,30 @@ fn rounded_opacity_chain_is_supported(effects: &[WeEffectPassContract]) -> bool 
         && effects[0].combos.get("SOFT") == Some(&1)
 }
 
+fn tech_circle_is_supported(effect: &WeEffectPassContract) -> bool {
+    previous_only(effect, &[0])
+        && combo_value(effect, "COORD_SYS", 1) == 1
+        && combo_value(effect, "RING_SEGMENTS", 0) == 0
+        && combo_value(effect, "SECTOR_SEGMENTS", 0) == 1
+        && combo_value(effect, "RATIO_CORRECTION", 0) == 0
+}
+
+fn audio_bars_is_supported(effect: &WeEffectPassContract) -> bool {
+    previous_only(effect, &[0]) && combo_value(effect, "SHAPE", 0) == 7
+}
+
+fn skew_is_supported(effect: &WeEffectPassContract) -> bool {
+    previous_only(effect, &[0]) && combo_value(effect, "REPEAT", 1) != 0
+}
+
+fn combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {
+    effect
+        .combos
+        .iter()
+        .find_map(|(candidate, value)| candidate.eq_ignore_ascii_case(name).then_some(*value))
+        .unwrap_or(default)
+}
+
 fn bindings_are_local(effect: &WeEffectPassContract, allowed_slots: &[u32]) -> bool {
     effect.binds.iter().all(|(slot, source)| {
         allowed_slots.contains(slot) && (*slot == 0 || !is_graph_resource(source))
@@ -315,6 +373,10 @@ fn is_generic_image_shader(shader: &str) -> bool {
 
 fn is_flat_shader(shader: &str) -> bool {
     shader_basename(shader) == "flat"
+}
+
+fn is_composelayer_shader(shader: &str) -> bool {
+    shader_basename(shader) == "composelayer"
 }
 
 fn shader_basename(shader: &str) -> String {
@@ -501,6 +563,38 @@ mod tests {
                 true,
             ),
             Some(FinalEffectKind::PuppetOpacity)
+        );
+    }
+
+    #[test]
+    fn composelayer_analytics_collapse_to_single_final_draws() {
+        let mut circle = effect(
+            "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
+            &[0],
+        );
+        circle.combos.insert("SECTOR_SEGMENTS".to_owned(), 1);
+        assert_eq!(
+            final_effect_kind("we/composelayer", &[circle], false, false),
+            Some(FinalEffectKind::TechCircle)
+        );
+
+        let mut audio = effect(
+            "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+            &[0],
+        );
+        audio.combos.insert("SHAPE".to_owned(), 7);
+        assert_eq!(
+            final_effect_kind(
+                "we/composelayer",
+                &[
+                    audio,
+                    effect("effects/skew__SLOTS_1", &[0]),
+                    effect("effects/opacity__SLOTS_3", &[0, 1]),
+                ],
+                false,
+                false,
+            ),
+            Some(FinalEffectKind::AudioBars)
         );
     }
 
