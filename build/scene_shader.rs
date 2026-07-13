@@ -942,71 +942,44 @@ float spectrumRight(int band) {
     int index = clamp(band, 0, 31);
     return u_Effect.g_SpectrumRight[index / 4][index % 4];
 }
-float roundedBoxSdf(vec2 point, vec2 half_size, float radius) {
-    float r = clamp(radius, 0.0, min(half_size.x, half_size.y));
-    vec2 delta = abs(point) - (half_size - r);
-    return length(max(delta, 0.0)) - r;
+float capsuleSdf(vec2 point, vec2 start, vec2 end, float radius) {
+    vec2 segment = end - start;
+    vec2 offset = point - start;
+    float phase = clamp(dot(offset, segment) / max(dot(segment, segment), 0.000001), 0.0, 1.0);
+    return length(offset - segment * phase) - radius;
 }
 void main() {
     vec2 uv = v_TexCoord;
-    uv.x += mix(u_Effect.g_SkewTopBottomLeftRight.x,
-        u_Effect.g_SkewTopBottomLeftRight.y, step(0.5, v_TexCoord.y));
-    uv.y -= mix(u_Effect.g_SkewTopBottomLeftRight.z,
-        u_Effect.g_SkewTopBottomLeftRight.w, step(0.5, v_TexCoord.x));
-    uv = fract(uv);
-    vec2 shape_uv = uv;
-    shape_uv.y = fract(0.5 - shape_uv.y) + floor(shape_uv.y);
     float count = max(u_Effect.g_CountSpacingBounds.x, 1.0);
     float cell_width = 1.0 / count;
     float bar_width = cell_width
         * clamp(1.0 - u_Effect.g_CountSpacingBounds.y, 0.0, 1.0);
     float correction = max(u_Effect.g_Reserved.y, 0.000001);
-    float minimum_height = u_Effect.g_MinHeightRadiusVolumeAaX.x
-        * bar_width * correction;
-    float frequency = floor(shape_uv.x * count) / count * 32.0;
+    float frequency = floor(uv.x * count) / count * 32.0;
     int frequency0 = int(mod(frequency, 32.0));
     int frequency1 = (frequency0 + 1) % 32;
     float blend = smoothstep(0.0, 1.0, fract(frequency));
     float left = mix(spectrumLeft(frequency0), spectrumLeft(frequency1), blend);
     float right = mix(spectrumRight(frequency0), spectrumRight(frequency1), blend);
-    left *= u_Effect.g_MinHeightRadiusVolumeAaX.z;
-    right *= u_Effect.g_MinHeightRadiusVolumeAaX.z;
-    float left_height = 0.5 * mix(
-        max(u_Effect.g_CountSpacingBounds.z, minimum_height) * 2.0,
-        u_Effect.g_CountSpacingBounds.w,
-        left);
-    float right_height = 0.5 * mix(
-        max(u_Effect.g_CountSpacingBounds.z, minimum_height) * 2.0,
-        u_Effect.g_CountSpacingBounds.w,
-        right);
-    float bar_distance = abs(fract(shape_uv.x * count) * 2.0 - 1.0);
-    float center_offset = min(bar_width, max(left_height, right_height))
-        * 0.5 * correction;
-    vec2 left_point = vec2(bar_distance / count * 0.5, shape_uv.y + center_offset);
-    vec2 right_point = vec2(bar_distance / count * 0.5,
-        1.0 - shape_uv.y + center_offset);
-    vec2 left_half_size = vec2(bar_width, left_height) * 0.5;
-    vec2 right_half_size = vec2(bar_width, right_height) * 0.5;
-    left_half_size.x *= correction;
-    right_half_size.x *= correction;
-    left_point.x *= correction;
-    right_point.x *= correction;
-    left_point.y -= left_half_size.y;
-    right_point.y -= right_half_size.y;
-    float left_radius = u_Effect.g_MinHeightRadiusVolumeAaX.y
-        * min(left_half_size.x, left_half_size.y);
-    float right_radius = u_Effect.g_MinHeightRadiusVolumeAaX.y
-        * min(right_half_size.x, right_half_size.y);
-    float left_distance = roundedBoxSdf(left_point, left_half_size, left_radius);
-    float right_distance = roundedBoxSdf(right_point, right_half_size, right_radius);
+    float volume = 0.5 * (left + right)
+        * u_Effect.g_MinHeightRadiusVolumeAaX.z;
+    vec2 point = vec2(
+        (fract(uv.x * count) - 0.5) * cell_width * correction,
+        uv.y - 0.5);
+    float skew = max(abs(u_Effect.g_SkewTopBottomLeftRight.y
+        - u_Effect.g_SkewTopBottomLeftRight.x), 0.25);
+    vec2 direction = normalize(vec2(skew, -1.0));
+    float half_length = mix(0.055, 0.11, clamp(volume, 0.0, 1.0));
+    float radius = bar_width * correction * 0.22;
+    float distance = capsuleSdf(
+        point,
+        -direction * half_length,
+        direction * half_length,
+        radius);
     float authored_aa = max(u_Effect.g_MinHeightRadiusVolumeAaX.w,
         u_Effect.g_Reserved.x) * 15.0 / 2160.0;
-    float aa = max(max(fwidth(left_distance), fwidth(right_distance)), authored_aa);
-    float left_bar = (1.0 - smoothstep(-aa, aa, left_distance))
-        * float(shape_uv.y < 0.49);
-    float right_bar = (1.0 - smoothstep(-aa, aa, right_distance))
-        * float(shape_uv.y > 0.51);
-    float bar = max(left_bar, right_bar);
+    float aa = max(fwidth(distance), authored_aa);
+    float bar = 1.0 - smoothstep(-aa, aa, distance);
     float mask = 1.0;
     if (u_Effect.g_OpacityMask.y > 0.5) {
         vec2 mask_uv = v_TexCoord * u_Effect.g_MaskResolution.zw
@@ -1036,7 +1009,7 @@ layout(set = 0, binding = 2) uniform SceneDrawTransform {
 void main() {
     v_TexCoord = a_TexCoord;
     v_VertexAlpha = a_Opacity;
-    vec4 local_position = vec4(a_Position.xy * 1.5, 0.0, 1.0);
+    vec4 local_position = vec4(a_Position.xy, 0.0, 1.0);
     gl_Position = vec4(
         dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
         dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),

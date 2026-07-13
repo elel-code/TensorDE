@@ -22,7 +22,7 @@ use super::super::tex::{
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
 
 const TEXT_REFERENCE_HEIGHT: f32 = 1080.0;
-const TEXT_VISUAL_SCALE: f32 = 1.5;
+const TEXT_VISUAL_SCALE: f32 = 1.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WeTextLayerRaster {
@@ -264,13 +264,13 @@ pub(super) fn rasterize_text_layer(
     let height = checked_dimension(size.y, "height")?;
     let font = FontArc::try_from_vec(font_bytes)
         .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
-    let point_size = text_point_size_pixels(
-        value_f32(object.get("pointsize"))
-            .filter(|value| value.is_finite() && *value > 0.0)
-            .unwrap_or(32.0),
-        scene_height,
-    );
-    let spacing = parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x);
+    let authored_point_size = value_f32(object.get("pointsize"))
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(32.0);
+    let point_size = text_point_size_pixels(authored_point_size, scene_height);
+    let spacing_scale = point_size / authored_point_size;
+    let spacing =
+        parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x) * spacing_scale;
     let scale = PxScale::from(point_size);
     let scaled = font.as_scaled(scale);
     let glyphs = layout_glyphs(&font, text, scale, spacing);
@@ -440,8 +440,8 @@ mod tests {
 
     #[test]
     fn wallpaper_engine_point_size_tracks_authored_scene_resolution() {
-        assert_eq!(text_point_size_pixels(96.0, 2160), 288.0);
-        assert_eq!(text_point_size_pixels(96.0, 1080), 144.0);
-        assert_eq!(text_point_size_pixels(96.0, 720), 144.0);
+        assert_eq!(text_point_size_pixels(96.0, 2160), 192.0);
+        assert_eq!(text_point_size_pixels(96.0, 1080), 96.0);
+        assert_eq!(text_point_size_pixels(96.0, 720), 96.0);
     }
 }
