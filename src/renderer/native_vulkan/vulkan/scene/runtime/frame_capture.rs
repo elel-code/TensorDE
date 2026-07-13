@@ -1,4 +1,4 @@
-//! One-shot scene swapchain readback and PNG capture.
+//! Bounded scene swapchain readback and PNG frame-sequence capture.
 
 use std::io::{BufWriter, Write as _};
 use std::path::{Path, PathBuf};
@@ -20,11 +20,17 @@ const SCENE_FRAME_CAPTURE_BYTES_PER_PIXEL: u64 = 4;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanSceneFrameCaptureSnapshot {
     pub path: PathBuf,
+    pub source_width: u32,
+    pub source_height: u32,
     pub width: u32,
     pub height: u32,
     pub source_format: String,
     pub output_format: &'static str,
     pub frame_number: u64,
+    pub last_frame_number: u64,
+    pub frame_count: u64,
+    pub frame_step: u64,
+    pub downscale: u32,
     pub rgba_bytes: u64,
     pub png_bytes: u64,
 }
@@ -34,9 +40,14 @@ pub(super) struct SceneFrameCapture {
     extent: vk::Extent2D,
     source_format: vk::Format,
     target_frame_number: u64,
+    target_frame_count: u64,
+    target_frame_step: u64,
+    downscale: u32,
+    output_extent: vk::Extent2D,
     byte_count: u64,
+    output_byte_count: u64,
     readback_buffer: NativeVulkanVulkanaliaBuffer,
-    captured_frame: Option<SceneFrameCapturePixels>,
+    captured_frames: Vec<SceneFrameCapturePixels>,
     snapshot: Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
@@ -53,12 +64,26 @@ impl SceneFrameCapture {
         extent: vk::Extent2D,
         source_format: vk::Format,
         target_frame_number: u64,
+        target_frame_count: u64,
+        target_frame_step: u64,
+        downscale: u32,
     ) -> Result<Self, String> {
         if target_frame_number == 0 {
             return Err("scene frame capture number must be at least 1".to_owned());
         }
+        if target_frame_count == 0 {
+            return Err("scene frame capture count must be at least 1".to_owned());
+        }
+        if target_frame_step == 0 {
+            return Err("scene frame capture step must be at least 1".to_owned());
+        }
+        if downscale == 0 {
+            return Err("scene frame capture downscale must be at least 1".to_owned());
+        }
         scene_frame_capture_channel_order(source_format)?;
         let byte_count = scene_frame_capture_byte_count(extent)?;
+        let output_extent = scene_frame_capture_output_extent(extent, downscale);
+        let output_byte_count = scene_frame_capture_byte_count(output_extent)?;
         let readback_buffer = native_vulkan_vulkanalia_create_buffer(
             device,
             memory_properties,
@@ -73,19 +98,33 @@ impl SceneFrameCapture {
             extent,
             source_format,
             target_frame_number,
+            target_frame_count,
+            target_frame_step,
+            downscale,
+            output_extent,
             byte_count,
+            output_byte_count,
             readback_buffer,
-            captured_frame: None,
+            captured_frames: Vec::with_capacity(
+                target_frame_count.min(usize::MAX as u64) as usize,
+            ),
             snapshot: None,
         })
     }
 
     pub(super) fn is_pending(&self) -> bool {
-        self.captured_frame.is_none() && self.snapshot.is_none()
+        (self.captured_frames.len() as u64) < self.target_frame_count && self.snapshot.is_none()
     }
 
     pub(super) fn should_capture(&self, frame_number: u64) -> bool {
-        self.is_pending() && frame_number == self.target_frame_number
+        self.is_pending()
+            && frame_number
+                == self
+                    .target_frame_number
+                    .saturating_add(
+                        (self.captured_frames.len() as u64)
+                            .saturating_mul(self.target_frame_step),
+                    )
     }
 
     pub(super) fn record_swapchain_copy(
@@ -195,7 +234,14 @@ impl SceneFrameCapture {
             self.byte_count,
         )?;
         let rgba = scene_frame_capture_rgba(self.source_format, pixels)?;
-        self.captured_frame = Some(SceneFrameCapturePixels { frame_number, rgba });
+        let rgba = scene_frame_capture_downscale_rgba(
+            rgba,
+            self.extent,
+            self.output_extent,
+            self.downscale,
+        );
+        self.captured_frames
+            .push(SceneFrameCapturePixels { frame_number, rgba });
         Ok(())
     }
 
@@ -203,23 +249,44 @@ impl SceneFrameCapture {
         if self.snapshot.is_some() {
             return Ok(());
         }
-        let captured_frame = self.captured_frame.as_ref().ok_or_else(|| {
+        let captured_frames = std::mem::take(&mut self.captured_frames);
+        let first_frame = captured_frames.first().ok_or_else(|| {
             "scene frame capture has no completed GPU readback to encode".to_owned()
         })?;
-        let png_bytes = write_scene_frame_png(
-            &self.path,
-            self.extent.width,
-            self.extent.height,
-            &captured_frame.rgba,
-        )?;
+        let frame_number = first_frame.frame_number;
+        let last_frame_number = captured_frames
+            .last()
+            .map_or(frame_number, |frame| frame.frame_number);
+        let frame_count = captured_frames.len() as u64;
+        let multiple_frames = self.target_frame_count > 1;
+        let mut png_bytes = 0u64;
+        for captured_frame in captured_frames {
+            let path = scene_frame_capture_output_path(
+                &self.path,
+                captured_frame.frame_number,
+                multiple_frames,
+            );
+            png_bytes = png_bytes.saturating_add(write_scene_frame_png(
+                &path,
+                self.output_extent.width,
+                self.output_extent.height,
+                &captured_frame.rgba,
+            )?);
+        }
         self.snapshot = Some(NativeVulkanSceneFrameCaptureSnapshot {
             path: self.path.clone(),
-            width: self.extent.width,
-            height: self.extent.height,
+            source_width: self.extent.width,
+            source_height: self.extent.height,
+            width: self.output_extent.width,
+            height: self.output_extent.height,
             source_format: format!("{:?}", self.source_format),
             output_format: "PNG/RGBA8",
-            frame_number: captured_frame.frame_number,
-            rgba_bytes: self.byte_count,
+            frame_number,
+            last_frame_number,
+            frame_count,
+            frame_step: self.target_frame_step,
+            downscale: self.downscale,
+            rgba_bytes: self.output_byte_count.saturating_mul(frame_count),
             png_bytes,
         });
         Ok(())
@@ -232,6 +299,62 @@ impl SceneFrameCapture {
     pub(super) fn destroy(self, device: &Device) {
         native_vulkan_vulkanalia_destroy_buffer(device, self.readback_buffer);
     }
+}
+
+fn scene_frame_capture_output_path(
+    path: &Path,
+    frame_number: u64,
+    multiple_frames: bool,
+) -> PathBuf {
+    if !multiple_frames {
+        return path.to_path_buf();
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("frame");
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("png");
+    path.with_file_name(format!("{stem}-{frame_number:06}.{extension}"))
+}
+
+fn scene_frame_capture_output_extent(extent: vk::Extent2D, downscale: u32) -> vk::Extent2D {
+    vk::Extent2D {
+        width: extent.width.div_ceil(downscale).max(1),
+        height: extent.height.div_ceil(downscale).max(1),
+    }
+}
+
+fn scene_frame_capture_downscale_rgba(
+    rgba: Vec<u8>,
+    source_extent: vk::Extent2D,
+    output_extent: vk::Extent2D,
+    downscale: u32,
+) -> Vec<u8> {
+    if downscale == 1 {
+        return rgba;
+    }
+    let mut output = vec![0; output_extent.width as usize * output_extent.height as usize * 4];
+    let sample_offset = downscale / 2;
+    for output_y in 0..output_extent.height {
+        let source_y = output_y
+            .saturating_mul(downscale)
+            .saturating_add(sample_offset)
+            .min(source_extent.height - 1);
+        for output_x in 0..output_extent.width {
+            let source_x = output_x
+                .saturating_mul(downscale)
+                .saturating_add(sample_offset)
+                .min(source_extent.width - 1);
+            let source = (source_y as usize * source_extent.width as usize + source_x as usize) * 4;
+            let destination =
+                (output_y as usize * output_extent.width as usize + output_x as usize) * 4;
+            output[destination..destination + 4].copy_from_slice(&rgba[source..source + 4]);
+        }
+    }
+    output
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,12 +409,7 @@ fn scene_frame_capture_rgba(format: vk::Format, mut pixels: Vec<u8>) -> Result<V
     Ok(pixels)
 }
 
-fn write_scene_frame_png(
-    path: &Path,
-    width: u32,
-    height: u32,
-    rgba: &[u8],
-) -> Result<u64, String> {
+fn write_scene_frame_png(path: &Path, width: u32, height: u32, rgba: &[u8]) -> Result<u64, String> {
     let expected_bytes = scene_frame_capture_byte_count(vk::Extent2D { width, height })?;
     if rgba.len() as u64 != expected_bytes {
         return Err(format!(
@@ -328,12 +446,9 @@ fn write_scene_frame_png(
                 path.display()
             )
         })?;
-        writer.finish().map_err(|err| {
-            format!(
-                "finish scene frame capture PNG {}: {err}",
-                path.display()
-            )
-        })?;
+        writer
+            .finish()
+            .map_err(|err| format!("finish scene frame capture PNG {}: {err}", path.display()))?;
     }
     output
         .flush()
@@ -356,11 +471,9 @@ mod tests {
 
     #[test]
     fn bgra_swapchain_pixels_are_lowered_to_rgba() {
-        let rgba = scene_frame_capture_rgba(
-            vk::Format::B8G8R8A8_SRGB,
-            vec![30, 20, 10, 255, 3, 2, 1, 4],
-        )
-        .unwrap();
+        let rgba =
+            scene_frame_capture_rgba(vk::Format::B8G8R8A8_SRGB, vec![30, 20, 10, 255, 3, 2, 1, 4])
+                .unwrap();
         assert_eq!(rgba, vec![10, 20, 30, 255, 1, 2, 3, 4]);
     }
 
@@ -375,8 +488,8 @@ mod tests {
 
     #[test]
     fn unsupported_swapchain_format_is_rejected() {
-        let err = scene_frame_capture_rgba(vk::Format::R16G16B16A16_SFLOAT, vec![0; 8])
-            .unwrap_err();
+        let err =
+            scene_frame_capture_rgba(vk::Format::R16G16B16A16_SFLOAT, vec![0; 8]).unwrap_err();
         assert!(err.contains("R16G16B16A16_SFLOAT"));
     }
 
@@ -394,5 +507,33 @@ mod tests {
         assert_eq!(decoded.dimensions(), (2, 1));
         assert_eq!(decoded.to_rgba8().as_raw(), &pixels);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn sequence_capture_paths_preserve_parent_stem_and_extension() {
+        assert_eq!(
+            scene_frame_capture_output_path(Path::new("/tmp/timeline/frame.png"), 42, true),
+            PathBuf::from("/tmp/timeline/frame-000042.png")
+        );
+        assert_eq!(
+            scene_frame_capture_output_path(Path::new("/tmp/frame.png"), 42, false),
+            PathBuf::from("/tmp/frame.png")
+        );
+    }
+
+    #[test]
+    fn sequence_downscale_keeps_full_render_extent_and_samples_pixel_centers() {
+        let source_extent = vk::Extent2D {
+            width: 4,
+            height: 2,
+        };
+        let output_extent = scene_frame_capture_output_extent(source_extent, 2);
+        assert_eq!(output_extent.width, 2);
+        assert_eq!(output_extent.height, 1);
+        let rgba = (0u8..32).collect::<Vec<_>>();
+        assert_eq!(
+            scene_frame_capture_downscale_rgba(rgba, source_extent, output_extent, 2),
+            vec![20, 21, 22, 23, 28, 29, 30, 31]
+        );
     }
 }

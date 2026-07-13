@@ -531,6 +531,7 @@ mod tests {
                     ],
                 ),
             ],
+            target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
 
@@ -587,6 +588,7 @@ mod tests {
                 ),
                 pass(2, RenderTargetRole::SceneColor, None, vec![]),
             ],
+            target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
 
@@ -629,6 +631,7 @@ mod tests {
                     }],
                 ),
             ],
+            target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
 

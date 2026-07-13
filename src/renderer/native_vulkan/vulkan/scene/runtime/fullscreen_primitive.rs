@@ -13,7 +13,9 @@ pub(in crate::renderer::native_vulkan) fn graph_uses_fullscreen_utility_primitiv
     graph.uses_fullscreen_utility_primitive()
 }
 
-pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_vertices(payload: &mut Vec<u8>) {
+pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_vertices(
+    payload: &mut Vec<u8>,
+) {
     for (x, y, u, v) in [
         (-1.0f32, -1.0f32, 0.0f32, 0.0f32),
         (3.0f32, -1.0f32, 2.0f32, 0.0f32),
@@ -26,7 +28,9 @@ pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_vertices(pa
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_indices(payload: &mut Vec<u8>) {
+pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_indices(
+    payload: &mut Vec<u8>,
+) {
     for index in [0u32, 1, 2] {
         payload.extend_from_slice(&index.to_le_bytes());
     }
@@ -35,9 +39,7 @@ pub(in crate::renderer::native_vulkan) fn append_fullscreen_triangle_indices(pay
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::scene::{
-        SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw,
-    };
+    use crate::engine::scene::{SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw};
 
     #[test]
     fn fullscreen_triangle_payload_matches_three_vertex_copyback_primitive() {
@@ -77,6 +79,8 @@ mod tests {
                 },
                 resolved_alpha: 1.0,
                 apply_resolved_visual: true,
+                effect_batch_atlas_tile: u32::MAX,
+                effect_batch_atlas_grid: [0; 2],
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),
@@ -89,6 +93,8 @@ mod tests {
                 index_count: 3,
             }],
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             pass_nodes: Vec::new(),

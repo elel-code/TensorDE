@@ -344,7 +344,6 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
                     handles.buffer_size,
                     vulkanalia_surface_capabilities2_enabled(&vulkan),
                     &context.present_feature_selection,
-                    false,
                 )?;
                 let swapchain = unsafe {
                     context
@@ -978,7 +977,6 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_ffmpeg_vulkan_hw_sce
                     handles.buffer_size,
                     vulkanalia_surface_capabilities2_enabled(&vulkan),
                     &context.present_feature_selection,
-                    false,
                 )?;
                 let swapchain = unsafe {
                     context

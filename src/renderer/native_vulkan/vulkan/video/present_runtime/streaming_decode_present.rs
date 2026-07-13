@@ -175,7 +175,6 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_multi_str
                 handles.buffer_size,
                 vulkanalia_surface_capabilities2_enabled(&vulkan),
                 &context.present_feature_selection,
-                false,
             )?;
             let swapchain = unsafe {
                 context
@@ -1088,7 +1087,6 @@ fn create_native_vulkan_vulkanalia_video_present_session_runtime_with_ready_pref
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(&vulkan),
         &context.present_feature_selection,
-        false,
     ) {
         Ok(plan) => plan,
         Err(err) => {

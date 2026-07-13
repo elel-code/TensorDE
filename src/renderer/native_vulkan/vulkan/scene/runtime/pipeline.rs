@@ -45,6 +45,7 @@ struct ScenePipelineKey {
     shader_key: SceneStringId,
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
+    advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
 }
 
@@ -55,7 +56,9 @@ enum SceneGpuBlend {
     Additive,
     AlphaToCoverage,
     Multiply,
+    MultiplyPremultiplied,
     Screen,
+    ScreenPremultiplied,
     Maximum,
     Modulate,
     HslColor,
@@ -73,7 +76,9 @@ impl SceneGpuBlend {
             Self::Additive => "additive",
             Self::AlphaToCoverage => "alpha-to-coverage",
             Self::Multiply => "multiply",
+            Self::MultiplyPremultiplied => "multiply-premultiplied-standard",
             Self::Screen => "screen",
+            Self::ScreenPremultiplied => "screen-premultiplied-standard",
             Self::Maximum => "maximum",
             Self::Modulate => "modulate",
             Self::HslColor => "hsl-color",
@@ -116,7 +121,11 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
 ) -> Result<Vec<u32>, String> {
     let keys = drawn_pass_pipeline_keys(storage, graph, swapchain_format, effect_target_plans)?;
     let mut indices = vec![0u32; graph.mesh_draws.len()];
-    for pass in graph.pass_nodes.iter().filter(|pass| pass.mesh_draw_count != 0) {
+    for pass in graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.mesh_draw_count != 0)
+    {
         let pass_record = storage
             .document()
             .render_passes
@@ -124,14 +133,10 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
             .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
         let key = ScenePipelineKey {
             shader_key: pass_record.shader_key,
-            blend: scene_gpu_blend(pass_record, pass.target),
+            blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
-            target_format: pass_target_format(
-                graph,
-                pass,
-                swapchain_format,
-                effect_target_plans,
-            )?,
+            advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
+            target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
         };
         let pipeline_index = keys
             .iter()
@@ -159,13 +164,14 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
         return Ok(());
     };
     let requested = requested.trim();
-    let graph_filter = if requested.eq_ignore_ascii_case("all") || requested == "1" {
-        None
-    } else {
-        Some(requested.parse::<u32>().map_err(|_| {
-            format!("{ENV} must be a graph index, 1, or all; got {requested:?}")
-        })?)
-    };
+    let graph_filter =
+        if requested.eq_ignore_ascii_case("all") || requested == "1" {
+            None
+        } else {
+            Some(requested.parse::<u32>().map_err(|_| {
+                format!("{ENV} must be a graph index, 1, or all; got {requested:?}")
+            })?)
+        };
     for pass in graph.pass_nodes.iter().filter(|pass| {
         pass.mesh_draw_count != 0
             && graph_filter.is_none_or(|graph_index| pass.graph_index == graph_index)
@@ -175,21 +181,17 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             .render_passes
             .get(pass.pass_record_index as usize)
             .ok_or_else(|| "scene drawable pass references a missing pass record".to_owned())?;
-        let blend = scene_gpu_blend(pass_record, pass.target);
-        let target_format = pass_target_format(
-            graph,
-            pass,
-            swapchain_format,
-            effect_target_plans,
-        )?;
+        let blend = scene_gpu_blend(storage, pass_record, pass.target);
+        let target_format = pass_target_format(graph, pass, swapchain_format, effect_target_plans)?;
         let draw_start = pass.mesh_draw_start as usize;
         let draw_end = draw_start.saturating_add(pass.mesh_draw_count as usize);
-        let draw_pipeline_indices = pipeline_indices.get(draw_start..draw_end).ok_or_else(|| {
-            format!(
-                "scene graph {} pass {} draw range {}..{} exceeds pipeline index plan",
-                pass.graph_index, pass.pass_id, draw_start, draw_end
-            )
-        })?;
+        let draw_pipeline_indices =
+            pipeline_indices.get(draw_start..draw_end).ok_or_else(|| {
+                format!(
+                    "scene graph {} pass {} draw range {}..{} exceeds pipeline index plan",
+                    pass.graph_index, pass.pass_id, draw_start, draw_end
+                )
+            })?;
         let pipeline_index = draw_pipeline_indices.first().copied().unwrap_or_default();
         if draw_pipeline_indices
             .iter()
@@ -213,7 +215,12 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             .iter()
             .map(|binding| {
                 storage.texture(binding.resource).map_or_else(
-                    || format!("slot{}=resource{}:<missing>", binding.slot, binding.resource.0),
+                    || {
+                        format!(
+                            "slot{}=resource{}:<missing>",
+                            binding.slot, binding.resource.0
+                        )
+                    },
                     |texture| {
                         format!(
                             "slot{}=resource{}:{}x{}/storage{}x{}",
@@ -238,7 +245,9 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             draw_end,
             pass.target,
             pass.target_name,
-            storage.string(pass_record.shader_key).unwrap_or("<missing>"),
+            storage
+                .string(pass_record.shader_key)
+                .unwrap_or("<missing>"),
             pass_record.pipeline_blend,
             pass_record.scene_blend,
             blend.label(),
@@ -293,6 +302,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             descriptor_layout,
             key.blend,
             key.advanced_source_premultiplied,
+            key.advanced_blend_overlap,
         ) {
             Ok(pipeline) => entries.push(ScenePipelineEntry { key, pipeline }),
             Err(err) => {
@@ -322,7 +332,11 @@ fn drawn_pass_pipeline_keys(
     effect_target_plans: &[SceneEffectTargetImagePlan],
 ) -> Result<Vec<ScenePipelineKey>, String> {
     let mut keys = Vec::<ScenePipelineKey>::new();
-    for pass in graph.pass_nodes.iter().filter(|pass| pass.mesh_draw_count != 0) {
+    for pass in graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.mesh_draw_count != 0)
+    {
         let pass_record = storage
             .document()
             .render_passes
@@ -333,14 +347,10 @@ fn drawn_pass_pipeline_keys(
         }
         let key = ScenePipelineKey {
             shader_key: pass_record.shader_key,
-            blend: scene_gpu_blend(pass_record, pass.target),
+            blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
-            target_format: pass_target_format(
-                graph,
-                pass,
-                swapchain_format,
-                effect_target_plans,
-            )?,
+            advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
+            target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
         };
         if !keys.contains(&key) {
             keys.push(key);
@@ -354,7 +364,11 @@ fn drawn_pass_material_keys(
     graph: &SceneRenderingDeviceGraphPlan,
 ) -> Result<Vec<ScenePipelineKey>, String> {
     let mut keys = Vec::<ScenePipelineKey>::new();
-    for pass in graph.pass_nodes.iter().filter(|pass| pass.mesh_draw_count != 0) {
+    for pass in graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.mesh_draw_count != 0)
+    {
         let pass_record = storage
             .document()
             .render_passes
@@ -365,8 +379,9 @@ fn drawn_pass_material_keys(
         }
         let key = ScenePipelineKey {
             shader_key: pass_record.shader_key,
-            blend: scene_gpu_blend(pass_record, pass.target),
+            blend: scene_gpu_blend(storage, pass_record, pass.target),
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
+            advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: vk::Format::UNDEFINED,
         };
         if !keys.contains(&key) {
@@ -377,6 +392,7 @@ fn drawn_pass_material_keys(
 }
 
 fn scene_gpu_blend(
+    storage: &SceneStorage,
     pass: &SceneRenderPassRecord,
     target: SceneRenderTargetKind,
 ) -> SceneGpuBlend {
@@ -390,13 +406,39 @@ fn scene_gpu_blend(
         SceneCompositeBlend::Alpha => SceneGpuBlend::Alpha,
         SceneCompositeBlend::Normal => pipeline_gpu_blend(pass.pipeline_blend),
         SceneCompositeBlend::Additive => SceneGpuBlend::Additive,
-        SceneCompositeBlend::Multiply => SceneGpuBlend::Multiply,
-        SceneCompositeBlend::Screen => SceneGpuBlend::Screen,
+        SceneCompositeBlend::Multiply => {
+            if storage
+                .string(pass.shader_key)
+                .is_some_and(multiply_shader_is_premultiplied)
+            {
+                SceneGpuBlend::MultiplyPremultiplied
+            } else {
+                SceneGpuBlend::Multiply
+            }
+        }
+        SceneCompositeBlend::Screen => {
+            if storage.string(pass.shader_key).is_some_and(|shader| {
+                shader.eq_ignore_ascii_case("we/image-foliage-ripple-screen-composite")
+            }) {
+                SceneGpuBlend::ScreenPremultiplied
+            } else {
+                SceneGpuBlend::Screen
+            }
+        }
         SceneCompositeBlend::Max => SceneGpuBlend::Maximum,
         SceneCompositeBlend::Modulate => SceneGpuBlend::Modulate,
         SceneCompositeBlend::HslColor => SceneGpuBlend::HslColor,
         SceneCompositeBlend::AlphaToCoverage => SceneGpuBlend::AlphaToCoverage,
     }
+}
+
+fn multiply_shader_is_premultiplied(shader: &str) -> bool {
+    matches!(
+        shader.to_ascii_lowercase().as_str(),
+        "we/genericimage4-multiply-composite"
+            | "we/image-waterwaves-multiply-composite"
+            | "we/image-ripple-flow-multiply-composite"
+    )
 }
 
 fn advanced_source_is_premultiplied(pass: &SceneRenderPassRecord) -> bool {
@@ -407,6 +449,21 @@ fn advanced_source_is_premultiplied(pass: &SceneRenderPassRecord) -> bool {
                 | SceneCompositeBlend::Screen
                 | SceneCompositeBlend::HslColor
         )
+}
+
+fn advanced_blend_overlap(
+    storage: &SceneStorage,
+    pass: &SceneRenderPassRecord,
+) -> vk::BlendOverlapEXT {
+    if pass.scene_blend == SceneCompositeBlend::HslColor
+        && storage.string(pass.shader_key).is_some_and(|shader| {
+            shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
+        })
+    {
+        vk::BlendOverlapEXT::DISJOINT
+    } else {
+        vk::BlendOverlapEXT::UNCORRELATED
+    }
 }
 
 fn pipeline_gpu_blend(blend: ScenePipelineBlend) -> SceneGpuBlend {
@@ -467,6 +524,7 @@ fn create_scene_pipeline(
     descriptor_layout: &ScenePipelineDescriptorLayout,
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
+    advanced_blend_overlap: vk::BlendOverlapEXT,
 ) -> Result<vk::Pipeline, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene pipeline requires non-zero extent".to_owned());
@@ -483,6 +541,7 @@ fn create_scene_pipeline(
             descriptor_layout,
             blend,
             advanced_source_premultiplied,
+            advanced_blend_overlap,
         );
         unsafe {
             device.destroy_shader_module(fragment_module, None);
@@ -504,6 +563,7 @@ fn create_scene_pipeline_with_modules(
     descriptor_layout: &ScenePipelineDescriptorLayout,
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
+    advanced_blend_overlap: vk::BlendOverlapEXT,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
     let mut vertex_mappings = vec![
@@ -576,6 +636,7 @@ fn create_scene_pipeline_with_modules(
         [vertex_stage, fragment_stage],
         blend,
         advanced_source_premultiplied,
+        advanced_blend_overlap,
     )
 }
 
@@ -592,6 +653,7 @@ fn create_graphics_pipeline(
     stages: [vk::PipelineShaderStageCreateInfo; 2],
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
+    advanced_blend_overlap: vk::BlendOverlapEXT,
 ) -> Result<vk::Pipeline, String> {
     let binding = vk::VertexInputBindingDescription::builder()
         .binding(0)
@@ -661,7 +723,7 @@ fn create_graphics_pipeline(
     let mut advanced_blend = vk::PipelineColorBlendAdvancedStateCreateInfoEXT::builder()
         .src_premultiplied(advanced_source_premultiplied)
         .dst_premultiplied(false)
-        .blend_overlap(vk::BlendOverlapEXT::UNCORRELATED)
+        .blend_overlap(advanced_blend_overlap)
         .build();
     let mut color_blend_builder =
         vk::PipelineColorBlendStateCreateInfo::builder().attachments(&color_attachments);
@@ -713,9 +775,7 @@ fn create_shader_module(
         .map_err(|err| format!("vkCreateShaderModule(vulkanalia {label}): {err:?}"))
 }
 
-fn scene_color_blend_attachment(
-    blend: SceneGpuBlend,
-) -> vk::PipelineColorBlendAttachmentState {
+fn scene_color_blend_attachment(blend: SceneGpuBlend) -> vk::PipelineColorBlendAttachmentState {
     let builder = vk::PipelineColorBlendAttachmentState::builder().color_write_mask(
         vk::ColorComponentFlags::R
             | vk::ColorComponentFlags::G
@@ -736,10 +796,26 @@ fn scene_color_blend_attachment(
             .alpha_blend_op(vk::BlendOp::ADD)
             .build(),
         SceneGpuBlend::Multiply => advanced_blend_attachment(builder, vk::BlendOp::MULTIPLY_EXT),
+        SceneGpuBlend::MultiplyPremultiplied => builder
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::DST_COLOR)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
         SceneGpuBlend::Screen => advanced_blend_attachment(builder, vk::BlendOp::SCREEN_EXT),
-        SceneGpuBlend::HslColor => {
-            advanced_blend_attachment(builder, vk::BlendOp::HSL_COLOR_EXT)
-        }
+        SceneGpuBlend::ScreenPremultiplied => builder
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::ONE)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_COLOR)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::ONE)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .build(),
+        SceneGpuBlend::HslColor => advanced_blend_attachment(builder, vk::BlendOp::HSL_COLOR_EXT),
         SceneGpuBlend::Maximum => builder
             .blend_enable(true)
             .src_color_blend_factor(vk::BlendFactor::ONE)
@@ -837,13 +913,9 @@ mod tests {
         let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
 
         let layout = scene_pipeline_descriptor_layout(&storage, &graph).expect("layout");
-        let indices = scene_pipeline_indices_for_draws(
-            &storage,
-            &graph,
-            vk::Format::B8G8R8A8_UNORM,
-            &[],
-        )
-        .expect("indices");
+        let indices =
+            scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[])
+                .expect("indices");
 
         assert_eq!(layout.sampled_slots, vec![0]);
         assert!(layout.material_uniform_enabled);
@@ -892,6 +964,9 @@ mod tests {
             format: vk::Format::R16G16B16A16_SFLOAT,
             width: 960,
             height: 540,
+            batch_field_count: 1,
+            batch_atlas_columns: 1,
+            batch_atlas_rows: 1,
             persistent_across_frames: true,
             aliased_logical_target_count: 1,
         }];
@@ -930,29 +1005,109 @@ mod tests {
         .expect("storage");
         let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
 
-        let indices = scene_pipeline_indices_for_draws(
-            &storage,
-            &graph,
-            vk::Format::B8G8R8A8_UNORM,
-            &[],
-        )
-        .expect("indices");
+        let indices =
+            scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[])
+                .expect("indices");
 
         assert_eq!(indices, vec![0, 1]);
         assert_eq!(
             scene_gpu_blend(
+                &storage,
                 &storage.document().render_passes[0],
                 SceneRenderTargetKind::SceneColor
             ),
             SceneGpuBlend::Alpha
         );
         assert_eq!(
-            scene_gpu_blend(&storage.document().render_passes[1], SceneRenderTargetKind::SceneColor),
+            scene_gpu_blend(
+                &storage,
+                &storage.document().render_passes[1],
+                SceneRenderTargetKind::SceneColor
+            ),
             SceneGpuBlend::Multiply
         );
         assert_eq!(
-            scene_gpu_blend(&storage.document().render_passes[1], SceneRenderTargetKind::NamedFbo),
+            scene_gpu_blend(
+                &storage,
+                &storage.document().render_passes[1],
+                SceneRenderTargetKind::NamedFbo
+            ),
             SceneGpuBlend::Replace
+        );
+    }
+
+    #[test]
+    fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["we/image-foliage-ripple-screen-composite".to_owned()],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+        pass.scene_blend = SceneCompositeBlend::Screen;
+
+        assert_eq!(
+            scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+            SceneGpuBlend::ScreenPremultiplied
+        );
+        let attachment = scene_color_blend_attachment(SceneGpuBlend::ScreenPremultiplied);
+        assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
+        assert_eq!(attachment.src_color_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(
+            attachment.dst_color_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_COLOR
+        );
+        assert_eq!(attachment.src_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(
+            attachment.dst_alpha_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
+    }
+
+    #[test]
+    fn typed_multiply_variant_uses_standard_premultiplied_multiply_blend() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["we/image-waterwaves-multiply-composite".to_owned()],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+        pass.scene_blend = SceneCompositeBlend::Multiply;
+
+        assert_eq!(
+            scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+            SceneGpuBlend::MultiplyPremultiplied
+        );
+        let attachment = scene_color_blend_attachment(SceneGpuBlend::MultiplyPremultiplied);
+        assert_eq!(attachment.color_blend_op, vk::BlendOp::ADD);
+        assert_eq!(
+            attachment.src_color_blend_factor,
+            vk::BlendFactor::DST_COLOR
+        );
+        assert_eq!(
+            attachment.dst_color_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
+        assert_eq!(attachment.src_alpha_blend_factor, vk::BlendFactor::ONE);
+        assert_eq!(
+            attachment.dst_alpha_blend_factor,
+            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        );
+    }
+
+    #[test]
+    fn rounded_hsl_quad_declares_disjoint_advanced_blend_coverage() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["we/flat-rounded-mask-composite".to_owned()],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
+        pass.scene_blend = SceneCompositeBlend::HslColor;
+
+        assert_eq!(
+            advanced_blend_overlap(&storage, &pass),
+            vk::BlendOverlapEXT::DISJOINT
         );
     }
 
@@ -1020,6 +1175,8 @@ mod tests {
             pass_nodes,
             mesh_draws: vec![draw(), draw()],
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             puppet_bone_palettes: Vec::new(),
@@ -1105,6 +1262,8 @@ mod tests {
             },
             resolved_alpha: 1.0,
             apply_resolved_visual: true,
+            effect_batch_atlas_tile: u32::MAX,
+            effect_batch_atlas_grid: [0; 2],
             object: crate::engine::scene::SceneObjectHandle(
                 crate::engine::scene::INVALID_OBJECT_ID,
             ),

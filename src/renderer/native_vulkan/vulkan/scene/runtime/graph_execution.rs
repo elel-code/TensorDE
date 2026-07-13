@@ -15,16 +15,19 @@ use crate::engine::scene::SceneRenderingDeviceGraphPlan;
 use super::draw_recording::{
     SceneGpuDrawRange, record_scene_draw_extent, record_scene_mesh_draw_ranges,
 };
-use super::{
-    NativeVulkanClearColor, SceneGpuResources, color_subresource_range, effect_target,
-};
+use super::gpu_timing::SceneGpuTiming;
+use super::{NativeVulkanClearColor, SceneGpuResources, color_subresource_range, effect_target};
 
 pub(super) fn scene_graph_execution_order(
     graph: &SceneRenderingDeviceGraphPlan,
     capture_scene_graph: Option<u32>,
 ) -> Result<Vec<u32>, String> {
     let mut order = Vec::new();
-    for pass in &graph.pass_nodes {
+    for pass in graph
+        .pass_nodes
+        .iter()
+        .filter(|pass| pass.mesh_draw_count != 0)
+    {
         if capture_scene_graph.is_some_and(|selected| selected != pass.graph_index) {
             continue;
         }
@@ -52,6 +55,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
     clear_color: NativeVulkanClearColor,
     scene: &SceneGpuResources,
     reference_phase: usize,
+    gpu_timing: Option<&SceneGpuTiming>,
 ) -> Result<(), String> {
     transition_swapchain_to_attachment(device, command_buffer, swapchain_image, old_layout);
     let reference_slots = &scene
@@ -59,86 +63,145 @@ pub(super) fn record_scene_graphs_to_swapchain(
         .get(reference_phase)
         .ok_or_else(|| format!("scene sampled binding phase {reference_phase} is missing"))?
         .initial_reference_physical_slots;
-    let mut scene_color_initialized = false;
-
-    for graph_index in &scene.graph_execution_order {
-        if !scene_color_initialized
-            && effect_target::graph_copies_scene_color(
-                &scene.effect_target_commands,
-                *graph_index,
-            )
-        {
-            begin_scene_color_rendering(
-                device,
-                command_buffer,
-                swapchain_view,
-                extent,
-                clear_color,
-                false,
-            );
-            unsafe {
-                device.cmd_end_rendering(command_buffer);
-            }
-            scene_color_initialized = true;
-        }
-        let mut record_effect_draws = |draw_start, draw_count| {
-            record_scene_mesh_draw_ranges(
-                device,
-                command_buffer,
-                scene,
-                &[SceneGpuDrawRange {
-                    start: draw_start,
-                    count: draw_count,
-                }],
-                extent,
-            )
-        };
-        effect_target::record_scene_effect_target_graph_passes(
+    let mut record_batch_draws = |draw_start, draw_count, target_extent| {
+        record_scene_mesh_draw_ranges(
             device,
             command_buffer,
-            swapchain_image,
-            extent,
-            *graph_index,
-            &scene.effect_target_commands,
-            &scene.effect_target_allocations,
-            reference_slots,
-            &scene.effect_targets,
-            &mut record_effect_draws,
-        )?;
+            scene,
+            &[SceneGpuDrawRange {
+                start: draw_start,
+                count: draw_count,
+            }],
+            target_extent,
+        )
+    };
+    if let Some(timing) = gpu_timing {
+        timing.record_effect_batch_start(device, command_buffer);
+    }
+    effect_target::record_scene_effect_batches(
+        device,
+        command_buffer,
+        &scene.effect_target_commands,
+        &scene.effect_targets,
+        &mut record_batch_draws,
+    )?;
+    if let Some(timing) = gpu_timing {
+        timing.record_effect_batch_finish(device, command_buffer);
+    }
+    let mut scene_color_initialized = false;
+    let mut scene_color_rendering_active = false;
 
-        let graph_ranges = scene
+    for (graph_position, graph_index) in scene.graph_execution_order.iter().enumerate() {
+        if let Some(timing) = gpu_timing {
+            timing.record_graph_start(device, command_buffer, graph_position);
+        }
+        let requires_effect_target_execution =
+            effect_target::graph_requires_effect_target_execution(
+                &scene.effect_target_commands,
+                *graph_index,
+            );
+        if requires_effect_target_execution {
+            if scene_color_rendering_active {
+                unsafe {
+                    device.cmd_end_rendering(command_buffer);
+                }
+                scene_color_rendering_active = false;
+            }
+            if !scene_color_initialized
+                && effect_target::graph_copies_scene_color(
+                    &scene.effect_target_commands,
+                    *graph_index,
+                )
+            {
+                begin_scene_color_rendering(
+                    device,
+                    command_buffer,
+                    swapchain_view,
+                    extent,
+                    clear_color,
+                    false,
+                );
+                unsafe {
+                    device.cmd_end_rendering(command_buffer);
+                }
+                scene_color_initialized = true;
+            }
+            let direct_scene_color_snapshot =
+                effect_target::graph_uses_direct_scene_color_snapshot(
+                    &scene.effect_target_commands,
+                    *graph_index,
+                );
+            if direct_scene_color_snapshot {
+                transition_scene_color_to_sampled(device, command_buffer, swapchain_image);
+            }
+            let mut record_effect_draws = |draw_start, draw_count, target_extent| {
+                record_scene_mesh_draw_ranges(
+                    device,
+                    command_buffer,
+                    scene,
+                    &[SceneGpuDrawRange {
+                        start: draw_start,
+                        count: draw_count,
+                    }],
+                    target_extent,
+                )
+            };
+            effect_target::record_scene_effect_target_graph_passes(
+                device,
+                command_buffer,
+                swapchain_image,
+                extent,
+                *graph_index,
+                &scene.effect_target_commands,
+                &scene.effect_target_allocations,
+                reference_slots,
+                &scene.effect_targets,
+                &mut record_effect_draws,
+            )?;
+            if direct_scene_color_snapshot {
+                transition_scene_color_to_attachment(device, command_buffer, swapchain_image);
+            }
+        }
+
+        let mut graph_ranges = scene
             .scene_color_draw_ranges
             .iter()
             .filter(|range| range.graph_index == *graph_index)
-            .collect::<Vec<_>>();
-        if graph_ranges.is_empty() {
-            continue;
+            .peekable();
+        if graph_ranges.peek().is_some() {
+            if !scene_color_rendering_active {
+                begin_scene_color_rendering(
+                    device,
+                    command_buffer,
+                    swapchain_view,
+                    extent,
+                    clear_color,
+                    scene_color_initialized,
+                );
+                record_scene_draw_extent(device, command_buffer, extent);
+                scene_color_rendering_active = true;
+            }
+            for graph_range in graph_ranges {
+                record_scene_mesh_draw_ranges(
+                    device,
+                    command_buffer,
+                    scene,
+                    &[graph_range.range],
+                    extent,
+                )?;
+            }
+            scene_color_initialized = true;
         }
-        begin_scene_color_rendering(
-            device,
-            command_buffer,
-            swapchain_view,
-            extent,
-            clear_color,
-            scene_color_initialized,
-        );
-        record_scene_draw_extent(device, command_buffer, extent);
-        for graph_range in graph_ranges {
-            record_scene_mesh_draw_ranges(
-                device,
-                command_buffer,
-                scene,
-                &[graph_range.range],
-                extent,
-            )?;
+        if let Some(timing) = gpu_timing {
+            timing.record_graph_finish(device, command_buffer, graph_position);
         }
+    }
+
+    if scene_color_rendering_active {
         unsafe {
             device.cmd_end_rendering(command_buffer);
         }
-        scene_color_initialized = true;
-    }
-
-    if !scene_color_initialized {
+    } else if !scene_color_initialized {
         begin_scene_color_rendering(
             device,
             command_buffer,
@@ -225,6 +288,76 @@ fn transition_swapchain_to_attachment(
     }
 }
 
+fn transition_scene_color_to_sampled(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+) {
+    transition_scene_color_layout(
+        device,
+        command_buffer,
+        image,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+    );
+}
+
+fn transition_scene_color_to_attachment(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+) {
+    transition_scene_color_layout(
+        device,
+        command_buffer,
+        image,
+        vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+        vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+        vk::PipelineStageFlags2::FRAGMENT_SHADER,
+        vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+        vk::AccessFlags2::SHADER_SAMPLED_READ,
+        vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transition_scene_color_layout(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_stage: vk::PipelineStageFlags2,
+    dst_stage: vk::PipelineStageFlags2,
+    src_access: vk::AccessFlags2,
+    dst_access: vk::AccessFlags2,
+) {
+    let barrier = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(src_stage)
+        .src_access_mask(src_access)
+        .dst_stage_mask(dst_stage)
+        .dst_access_mask(dst_access)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(color_subresource_range())
+        .build();
+    unsafe {
+        device.cmd_pipeline_barrier2(
+            command_buffer,
+            &vk::DependencyInfo::builder()
+                .image_memory_barriers(&[barrier])
+                .build(),
+        );
+    }
+}
+
 pub(super) fn transition_swapchain_to_present(
     device: &Device,
     command_buffer: vk::CommandBuffer,
@@ -274,6 +407,22 @@ mod tests {
         assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
     }
 
+    #[test]
+    fn execution_order_drops_invisible_zero_draw_graphs() {
+        let mut invisible = pass(1);
+        invisible.mesh_draw_count = 0;
+        let graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![pass(0), invisible, pass(2)],
+            ..empty_graph()
+        };
+
+        assert_eq!(
+            scene_graph_execution_order(&graph, None).expect("execution order"),
+            vec![0, 2]
+        );
+        assert!(scene_graph_execution_order(&graph, Some(1)).is_err());
+    }
+
     fn pass(graph_index: u32) -> SceneRenderingDevicePassNode {
         SceneRenderingDevicePassNode {
             graph_index,
@@ -285,7 +434,7 @@ mod tests {
             binding_start: 0,
             binding_count: 0,
             mesh_draw_start: 0,
-            mesh_draw_count: 0,
+            mesh_draw_count: 1,
         }
     }
 
@@ -293,6 +442,8 @@ mod tests {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),

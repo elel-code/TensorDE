@@ -21,8 +21,14 @@ pub enum BuiltinSceneParameterLayout {
     CloudMotion,
     ColorKey,
     FoliageSway,
+    FoliageRippleComposite,
+    FinalEffectProgram,
+    FinalWaterRipple,
+    FinalWaterWaves,
+    RippleFlowComposite,
     Shake,
     WaterWaves,
+    WaterWavesUvField,
     WaterRipple,
     WaterFlow,
 }
@@ -36,6 +42,7 @@ impl BuiltinSceneParameterLayout {
         matches!(
             self,
             Self::AudioBars
+                | Self::FinalEffectProgram
                 | Self::Iris
                 | Self::RoundedMask
                 | Self::Scroll
@@ -43,6 +50,7 @@ impl BuiltinSceneParameterLayout {
                 | Self::TechCircle
                 | Self::WaterFlow
                 | Self::WaterWaves
+                | Self::WaterWavesUvField
         )
     }
 
@@ -54,11 +62,17 @@ impl BuiltinSceneParameterLayout {
                 | Self::Caustics
                 | Self::CloudMotion
                 | Self::FoliageSway
+                | Self::FoliageRippleComposite
+                | Self::FinalEffectProgram
+                | Self::FinalWaterRipple
+                | Self::FinalWaterWaves
+                | Self::RippleFlowComposite
                 | Self::Shake
                 | Self::Scroll
                 | Self::TechCircle
                 | Self::WaterFlow
                 | Self::WaterWaves
+                | Self::WaterWavesUvField
                 | Self::WaterRipple
         )
     }
@@ -134,11 +148,9 @@ mod tests {
             BuiltinSceneParameterLayout::WaterWaves
         );
         assert_eq!(
-            native_vulkan_scene_shader_for_key(
-                "workshop/2790231929/effects/foliagesway__SLOTS_1"
-            )
-            .expect("foliage sway shader")
-            .parameter_layout,
+            native_vulkan_scene_shader_for_key("workshop/2790231929/effects/foliagesway__SLOTS_1")
+                .expect("foliage sway shader")
+                .parameter_layout,
             BuiltinSceneParameterLayout::FoliageSway
         );
         let rounded = native_vulkan_scene_shader_for_key(
@@ -159,10 +171,7 @@ mod tests {
                 "effects/scroll__SLOTS_1",
                 BuiltinSceneParameterLayout::Scroll,
             ),
-            (
-                "effects/skew__SLOTS_1",
-                BuiltinSceneParameterLayout::Skew,
-            ),
+            ("effects/skew__SLOTS_1", BuiltinSceneParameterLayout::Skew),
             (
                 "effects/waterflow__SLOTS_7",
                 BuiltinSceneParameterLayout::WaterFlow,

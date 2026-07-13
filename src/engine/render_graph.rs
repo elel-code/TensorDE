@@ -29,8 +29,10 @@ pub use run::{
     RenderGraphRunPlan, RenderGraphRunPlanCandidate, RenderGraphTargetRun, RenderGraphTargetRunPass,
 };
 pub use state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
-pub use target::RenderTargetRole;
+pub use target::{RenderTargetRole, RenderTargetSpec};
 pub use we_image::{
-    WeEffectPassContract, WeFramebufferSnapshotContract, WeImageGraphContract, we_effect_pass_node,
-    we_image_graph,
+    WeEffectPassContract, WeFinalEffectMaterial, WeFramebufferSnapshotContract,
+    WeImageGraphContract, WeRippleFlowMaterialIndices, we_effect_pass_node,
+    we_effect_passes_form_foliage_ripple_chain, we_effect_passes_form_ripple_flow_chain,
+    we_effect_passes_form_waterwaves_displacement_chain, we_image_graph,
 };

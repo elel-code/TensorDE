@@ -333,6 +333,8 @@ mod tests {
                         mesh_draw_count: 1,
                     }],
                     target_allocations: Vec::new(),
+                    effect_batches: Vec::new(),
+                    effect_batch_instances: Vec::new(),
                     sampled_bindings: Vec::new(),
                     material_sampled_bindings: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
@@ -350,6 +352,8 @@ mod tests {
                         },
                         resolved_alpha: 1.0,
                         apply_resolved_visual: true,
+                        effect_batch_atlas_tile: u32::MAX,
+                        effect_batch_atlas_grid: [0; 2],
                         object: SceneObjectHandle(0),
                         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
                         vertex_start: 0,

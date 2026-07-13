@@ -1,3 +1,38 @@
+pub(super) fn generic_image_fragment_source() -> String {
+    generic_image_fragment(false)
+}
+
+pub(super) fn generic_image_multiply_fragment_source() -> String {
+    generic_image_fragment(true)
+}
+
+fn generic_image_fragment(premultiply: bool) -> String {
+    let premultiply = premultiply
+        .then_some("    color.rgb *= color.a;\n")
+        .unwrap_or("");
+    [
+        r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
+layout(set = 0, binding = 3) uniform GenericImage4Material {
+    vec4 g_Color4;
+    vec4 g_RoughnessMetallic;
+    vec4 g_SpecularTint;
+} g_Material;
+void main() {
+    vec4 color = texture(g_Texture0, v_TexCoord) * g_Material.g_Color4;
+    color.a *= v_VertexAlpha;
+"#,
+        premultiply,
+        r#"    o_Color = color;
+}
+"#,
+    ]
+    .concat()
+}
+
 pub(super) fn object_composite_sources() -> (String, String) {
     let vertex = r#"#version 450
 layout(location = 0) out vec2 v_TexCoord;
@@ -77,6 +112,477 @@ void main() {
 }
 "#;
     (vertex, fragment.to_owned())
+}
+
+pub(super) fn flat_rounded_mask_composite_sources() -> (String, String) {
+    let vertex = flat_rounded_mask_support_vertex_source();
+    let fragment = r#"#version 450
+layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec3 v_ObjectPixelExtent;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 3) uniform FlatRoundedMaskCompositeMaterial {
+    vec4 g_ColorRadius;
+    vec4 g_SizeSoftnessAlpha;
+    vec4 g_BorderWidth;
+    vec4 g_ResolvedColorAlpha;
+} u_Effect;
+float roundedBoxSdf(vec2 point, vec2 size, float radius) {
+    vec2 half_size = size * 0.5;
+    float half_min = min(half_size.x, half_size.y);
+    float r = clamp(radius * half_min, 0.001, half_min);
+    vec2 delta = abs(point) - (half_size - r);
+    return length(max(delta, 0.0)) - r;
+}
+void main() {
+    float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
+    float height_pixels = max(v_ObjectPixelExtent.y, 1.0);
+    vec2 aspect_scale = vec2(
+        max(1.0, width_pixels / height_pixels),
+        max(1.0, height_pixels / width_pixels));
+    vec2 mask_uv = (v_ObjectTexCoord - 0.5) * aspect_scale + 0.5;
+    vec2 mask_size = u_Effect.g_SizeSoftnessAlpha.xy * aspect_scale;
+    float distance = roundedBoxSdf(
+        mask_uv - vec2(0.5),
+        mask_size,
+        u_Effect.g_ColorRadius.w);
+    float edge_softness = u_Effect.g_SizeSoftnessAlpha.z
+        / max(v_ObjectPixelExtent.z, 1.0) * 2.0;
+    float mask_alpha = smoothstep(edge_softness, 0.0, distance);
+    float effect_alpha = mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;
+    vec3 rounded_color = mix(
+        u_Effect.g_ColorRadius.rgb,
+        vec3(1.0),
+        effect_alpha);
+    o_Color = vec4(
+        rounded_color * u_Effect.g_ResolvedColorAlpha.rgb,
+        mask_alpha * u_Effect.g_ResolvedColorAlpha.a);
+}
+"#;
+    (vertex, fragment.to_owned())
+}
+
+fn flat_rounded_mask_support_vertex_source() -> String {
+    r#"#version 450
+layout(set = 0, binding = 2) uniform FlatRoundedMaskDrawUniform {
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+    vec4 g_ObjectPixelExtent;
+    vec4 g_ObjectUvBounds;
+} u_Draw;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec3 v_ObjectPixelExtent;
+void main() {
+    vec2 corners[6] = vec2[](
+        vec2(0.0, 0.0),
+        vec2(1.0, 0.0),
+        vec2(0.0, 1.0),
+        vec2(0.0, 1.0),
+        vec2(1.0, 0.0),
+        vec2(1.0, 1.0)
+    );
+    vec2 object_uv = mix(
+        u_Draw.g_ObjectUvBounds.xy,
+        u_Draw.g_ObjectUvBounds.zw,
+        corners[gl_VertexIndex]);
+    vec2 screen_uv = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(object_uv, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(object_uv, 1.0)));
+    v_ObjectTexCoord = object_uv;
+    v_ObjectPixelExtent = u_Draw.g_ObjectPixelExtent.xyz;
+    gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+pub(super) fn waterwaves_uv_field_sources() -> (String, String) {
+    (
+        waterwaves_uv_vertex_source(),
+        waterwaves_uv_field_fragment_source(),
+    )
+}
+
+pub(super) fn image_waterwaves_composite_sources() -> (String, String) {
+    (
+        super::scene_mesh_vertex_source(),
+        image_waterwaves_composite_fragment(false),
+    )
+}
+
+pub(super) fn image_waterwaves_multiply_composite_sources() -> (String, String) {
+    (
+        super::scene_mesh_vertex_source(),
+        image_waterwaves_composite_fragment(true),
+    )
+}
+
+pub(super) fn image_foliage_ripple_composite_sources() -> (String, String) {
+    (
+        super::scene_mesh_vertex_source(),
+        foliage_ripple_fragment_source(false),
+    )
+}
+
+pub(super) fn image_foliage_ripple_screen_composite_sources() -> (String, String) {
+    (
+        super::scene_mesh_vertex_source(),
+        foliage_ripple_fragment_source(true),
+    )
+}
+
+fn foliage_ripple_fragment_source(premultiply_output: bool) -> String {
+    let premultiply = premultiply_output
+        .then_some("    color.rgb *= color.a;\n")
+        .unwrap_or_default();
+    [
+        r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_FoliageNoise;
+layout(set = 0, binding = 35) uniform sampler2D g_RippleNormal;
+layout(set = 0, binding = 3) uniform FoliageRippleCompositeMaterial {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_FoliageTimeSpeedStrengthPhase;
+    vec4 g_FoliagePowerNoiseScaleRatioDirection;
+    vec4 g_SourceResolution;
+    vec4 g_RippleTimeAnimationScaleScroll;
+    vec4 g_RippleDirectionStrengthAspectNormal;
+} u_Effect;
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+vec4 shapedSine(vec4 phase, float power) {
+    vec4 wave = sin(phase);
+    return pow(abs(wave), vec4(max(power, 0.0001))) * sign(wave);
+}
+vec2 rippleSourceUv(vec2 uv) {
+    vec2 scroll = rotateVec2(
+        vec2(0.0, 1.0),
+        u_Effect.g_RippleDirectionStrengthAspectNormal.x)
+        * u_Effect.g_RippleTimeAnimationScaleScroll.w
+        * u_Effect.g_RippleTimeAnimationScaleScroll.w
+        * u_Effect.g_RippleTimeAnimationScaleScroll.x;
+    float animation = u_Effect.g_RippleTimeAnimationScaleScroll.x
+        * u_Effect.g_RippleTimeAnimationScaleScroll.y
+        * u_Effect.g_RippleTimeAnimationScaleScroll.y;
+    vec4 ripple = vec4(uv + animation + scroll,
+        uv * 1.333 - animation + scroll)
+        * u_Effect.g_RippleTimeAnimationScaleScroll.z;
+    ripple.xz *= u_Effect.g_RippleDirectionStrengthAspectNormal.z;
+    ripple.yw *= u_Effect.g_RippleDirectionStrengthAspectNormal.w;
+    vec3 n1 = texture(g_RippleNormal, ripple.xy).xyz * 2.0 - 1.0;
+    vec3 n2 = texture(g_RippleNormal, ripple.zw).xyz * 2.0 - 1.0;
+    vec3 normal = normalize(vec3(n1.xy + n2.xy, n1.z));
+    float strength = u_Effect.g_RippleDirectionStrengthAspectNormal.y;
+    return uv + normal.xy * strength * strength;
+}
+vec2 foliageSourceUv(vec2 uv) {
+    float width = max(u_Effect.g_SourceResolution.z, 1.0);
+    float height = max(u_Effect.g_SourceResolution.w, 1.0);
+    float ratio = max(u_Effect.g_FoliagePowerNoiseScaleRatioDirection.z, 0.0001);
+    float aspect = max(width / height * ratio, 0.0001);
+    float direction = u_Effect.g_FoliagePowerNoiseScaleRatioDirection.w;
+    vec2 offset_scale = rotateVec2(vec2(1.0 / aspect, aspect), direction);
+    vec2 phase_position = rotateVec2(uv, direction);
+    float noise = texture(g_FoliageNoise,
+        uv * u_Effect.g_FoliagePowerNoiseScaleRatioDirection.y).g;
+    float phase = (noise * 6.283185307179586
+        + phase_position.x * 10.0
+        + phase_position.y * 5.0)
+        * u_Effect.g_FoliageTimeSpeedStrengthPhase.w;
+    float time = u_Effect.g_FoliageTimeSpeedStrengthPhase.x
+        * u_Effect.g_FoliageTimeSpeedStrengthPhase.y;
+    vec4 sines = shapedSine(
+        phase + time * vec4(1.0, -0.16161616, 0.0083333, -0.00019841),
+        u_Effect.g_FoliagePowerNoiseScaleRatioDirection.x);
+    vec4 cosines = shapedSine(
+        0.4 + phase + time * vec4(-0.5, 0.041666666, -0.0013888889, 0.000024801587),
+        u_Effect.g_FoliagePowerNoiseScaleRatioDirection.x);
+    float strength = u_Effect.g_FoliageTimeSpeedStrengthPhase.z;
+    float amplitude = strength * strength * 0.005;
+    vec2 offset = offset_scale * vec2(
+        dot(sines, vec4(amplitude)),
+        dot(cosines, vec4(amplitude)));
+    return uv + offset;
+}
+"#,
+        r#"void main() {
+    vec2 ripple_uv = rippleSourceUv(v_TexCoord);
+    vec4 color = texture(g_SourceTexture, foliageSourceUv(ripple_uv))
+        * u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+"#,
+        premultiply,
+        r#"    o_Color = color;
+}
+"#,
+    ]
+    .concat()
+}
+
+pub(super) fn image_ripple_source_sources() -> (String, String) {
+    (
+        super::flattexture_vertex_source(),
+        super::waterripple_fragment_source(0x5),
+    )
+}
+
+pub(super) fn image_ripple_flow_composite_sources() -> (String, String) {
+    image_ripple_flow_composite_sources_with_premultiply(false)
+}
+
+pub(super) fn image_ripple_flow_multiply_composite_sources() -> (String, String) {
+    image_ripple_flow_composite_sources_with_premultiply(true)
+}
+
+fn image_ripple_flow_composite_sources_with_premultiply(premultiply: bool) -> (String, String) {
+    let vertex = super::scene_mesh_vertex_source();
+    let premultiply = premultiply
+        .then_some("    color.rgb *= color.a;\n")
+        .unwrap_or("");
+    let fragment = [
+        r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_RippleTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_FlowTexture;
+layout(set = 0, binding = 2) uniform sampler2D g_PhaseTexture;
+layout(set = 0, binding = 3) uniform RippleFlowCompositeMaterial {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeedFeatherStrength;
+    vec4 g_PhaseScale;
+    vec4 g_FlowResolution;
+} u_Effect;
+vec4 sourceAtUv(vec2 uv) {
+    return texture(g_RippleTexture, uv);
+}
+void main() {
+    if (any(lessThan(v_TexCoord, vec2(0.0)))
+        || any(greaterThan(v_TexCoord, vec2(1.0)))) {
+        o_Color = vec4(0.0);
+        return;
+    }
+    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
+        * u_Effect.g_TimeSpeedFeatherStrength.y;
+    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75)) - 0.5;
+    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
+    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
+    vec2 blend_weight = smoothstep(smooth_range.x, smooth_range.y,
+        2.0 * abs(vec2(cycles.x, cycles.z)));
+    vec2 flow_uv = v_TexCoord
+        * u_Effect.g_FlowResolution.zw / u_Effect.g_FlowResolution.xy;
+    vec2 flow = (texture(g_FlowTexture, flow_uv).rg - vec2(0.498)) * 2.0;
+    float strength = u_Effect.g_TimeSpeedFeatherStrength.w * 0.1;
+    vec4 offset0 = flow.xyxy * strength * cycles.xxyy;
+    vec4 offset1 = flow.xyxy * strength * cycles.zzww;
+    vec4 first = mix(sourceAtUv(v_TexCoord + offset0.xy),
+        sourceAtUv(v_TexCoord + offset0.zw), blend_weight.x);
+    vec4 second = mix(sourceAtUv(v_TexCoord + offset1.xy),
+        sourceAtUv(v_TexCoord + offset1.zw), blend_weight.y);
+    float phase = texture(g_PhaseTexture,
+        v_TexCoord * u_Effect.g_PhaseScale.x).r;
+    vec4 flowed = mix(first, second, smoothstep(0.2, 0.8, phase));
+    vec4 color = mix(sourceAtUv(v_TexCoord), flowed, length(flow))
+        * u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+"#,
+        premultiply,
+        r#"    o_Color = color;
+}
+"#,
+    ]
+    .concat();
+    (vertex, fragment)
+}
+
+pub(super) fn puppet_waterwaves_composite_sources() -> (String, String) {
+    (
+        puppet_effect_composite_vertex(),
+        puppet_waterwaves_composite_fragment(),
+    )
+}
+
+fn image_waterwaves_composite_fragment(premultiply: bool) -> String {
+    let premultiply = premultiply
+        .then_some("    color.rgb *= color.a;\n")
+        .unwrap_or("");
+    [
+        r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
+layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
+layout(set = 0, binding = 3) uniform ImageWaterWavesCompositeMaterial {
+    vec4 g_Color4;
+    vec4 g_RoughnessMetallic;
+    vec4 g_SpecularTint;
+    vec4 g_EffectAtlas;
+} g_Material;
+void main() {
+    vec2 atlas_size = vec2(textureSize(g_Texture1, 0));
+    vec2 atlas_min = g_Material.g_EffectAtlas.zw + 0.5 / atlas_size;
+    vec2 atlas_max = g_Material.g_EffectAtlas.zw
+        + g_Material.g_EffectAtlas.xy - 0.5 / atlas_size;
+    vec2 atlas_uv = mix(atlas_min, atlas_max, clamp(v_TexCoord, 0.0, 1.0));
+    vec2 source_uv = clamp(texture(g_Texture1, atlas_uv).rg, vec2(0.001), vec2(0.999));
+    vec4 color = texture(g_Texture0, source_uv) * g_Material.g_Color4;
+    color.a *= v_VertexAlpha;
+"#,
+        premultiply,
+        r#"    o_Color = color;
+}
+"#,
+    ]
+    .concat()
+}
+
+fn puppet_waterwaves_composite_fragment() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_EffectTexCoord;
+layout(location = 1) in float v_BoneAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
+layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
+layout(set = 0, binding = 3) uniform PuppetWaterWavesCompositeMaterial {
+    vec4 g_Color4;
+    vec4 g_RoughnessMetallic;
+    vec4 g_SpecularTint;
+    vec4 g_EffectAtlas;
+} g_Material;
+void main() {
+    vec2 atlas_size = vec2(textureSize(g_Texture1, 0));
+    vec2 atlas_min = g_Material.g_EffectAtlas.zw + 0.5 / atlas_size;
+    vec2 atlas_max = g_Material.g_EffectAtlas.zw
+        + g_Material.g_EffectAtlas.xy - 0.5 / atlas_size;
+    vec2 atlas_uv = mix(atlas_min, atlas_max, clamp(v_EffectTexCoord, 0.0, 1.0));
+    vec2 source_uv = clamp(texture(g_Texture1, atlas_uv).rg, vec2(0.001), vec2(0.999));
+    vec4 color = texture(g_Texture0, source_uv) * g_Material.g_Color4;
+    color.a *= v_BoneAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn waterwaves_uv_vertex_source() -> String {
+    r#"#version 450
+layout(set = 0, binding = 2) uniform WaterWavesDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec4 v_ObjectUvToScreenUv;
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0)
+    );
+    vec2 position = positions[gl_VertexIndex];
+    vec2 uv = position * 0.5 + 0.5;
+    float layer = u_Draw.g_ScreenUvToObjectUvRow0.w;
+    vec2 atlas_grid = max(vec2(
+        u_Draw.g_ScreenUvToObjectUvRow1.w,
+        u_Draw.g_ObjectUvToScreenUvRow0.w), vec2(1.0));
+    vec2 atlas_tile = vec2(mod(layer, atlas_grid.x), floor(layer / atlas_grid.x));
+    vec2 atlas_uv = (atlas_tile + uv) / atlas_grid;
+    v_TexCoord = uv;
+    v_ObjectTexCoord = vec2(
+        dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(uv, 1.0)),
+        dot(u_Draw.g_ScreenUvToObjectUvRow1.xyz, vec3(uv, 1.0)));
+    v_ObjectUvToScreenUv = vec4(
+        u_Draw.g_ObjectUvToScreenUvRow0.xy,
+        u_Draw.g_ObjectUvToScreenUvRow1.xy);
+    gl_Position = vec4(atlas_uv * 2.0 - 1.0, 0.0, 1.0);
+}
+"#
+    .to_owned()
+}
+
+fn waterwaves_uv_field_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec4 v_ObjectUvToScreenUv;
+layout(location = 0) out vec2 o_Uv;
+layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
+layout(set = 0, binding = 2) uniform sampler2D g_Texture2;
+layout(set = 0, binding = 3) uniform WaterWavesUvFieldUniform {
+    vec4 g_Chain;
+    vec4 g_Stage[28];
+} u_Effect;
+layout(set = 0, binding = 4) uniform sampler2D g_Texture4;
+layout(set = 0, binding = 5) uniform sampler2D g_Texture5;
+layout(set = 0, binding = 6) uniform sampler2D g_Texture6;
+layout(set = 0, binding = 7) uniform sampler2D g_Texture7;
+layout(set = 0, binding = 35) uniform sampler2D g_Texture3;
+vec2 rotateVec2(vec2 v, float r) {
+    vec2 cs = vec2(cos(r), sin(r));
+    return vec2(v.x * cs.x - v.y * cs.y, v.x * cs.y + v.y * cs.x);
+}
+float shapedSine(float phase, float exponent) {
+    float wave = sin(phase);
+    return pow(abs(wave), max(exponent, 0.0001)) * sign(wave);
+}
+float stageMask(int stage, vec2 uv) {
+    if (stage == 0) return texture(g_Texture1, uv).r;
+    if (stage == 1) return texture(g_Texture2, uv).r;
+    if (stage == 2) return texture(g_Texture3, uv).r;
+    if (stage == 3) return texture(g_Texture4, uv).r;
+    if (stage == 4) return texture(g_Texture5, uv).r;
+    if (stage == 5) return texture(g_Texture6, uv).r;
+    return texture(g_Texture7, uv).r;
+}
+vec2 stageOffset(int stage, vec2 motion_uv) {
+    int base = stage * 4;
+    vec4 speed_scale_strength_mask = u_Effect.g_Stage[base];
+    vec4 direction_speed2_scale2_direction2 = u_Effect.g_Stage[base + 1];
+    vec4 offset2_dual_exponents = u_Effect.g_Stage[base + 2];
+    vec4 mask_resolution = u_Effect.g_Stage[base + 3];
+    float mask = 1.0;
+    if (speed_scale_strength_mask.w > 0.5) {
+        vec2 mask_uv = motion_uv * mask_resolution.zw / mask_resolution.xy;
+        mask = stageMask(stage, mask_uv);
+    }
+    vec2 direction = rotateVec2(vec2(0.0, 1.0), direction_speed2_scale2_direction2.x);
+    float distance0 = u_Effect.g_Chain.y * speed_scale_strength_mask.x
+        + dot(motion_uv, direction) * speed_scale_strength_mask.y;
+    vec2 offset_direction = vec2(direction.y, -direction.x);
+    float displacement = shapedSine(distance0, offset2_dual_exponents.z);
+    if (offset2_dual_exponents.y > 0.5) {
+        vec2 direction2 = rotateVec2(vec2(0.0, 1.0), direction_speed2_scale2_direction2.w);
+        float distance1 = (u_Effect.g_Chain.y + offset2_dual_exponents.x)
+            * direction_speed2_scale2_direction2.y
+            + dot(motion_uv, direction2) * direction_speed2_scale2_direction2.z;
+        displacement *= shapedSine(distance1, offset2_dual_exponents.w);
+    }
+    float strength = speed_scale_strength_mask.z;
+    vec2 object_uv_offset = displacement * offset_direction * strength * strength * mask;
+    return vec2(
+        dot(v_ObjectUvToScreenUv.xy, object_uv_offset),
+        dot(v_ObjectUvToScreenUv.zw, object_uv_offset));
+}
+void main() {
+    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 7);
+    vec2 source_uv = v_TexCoord;
+    for (int stage = 6; stage >= 0; --stage) {
+        if (stage < stage_count) {
+            source_uv += stageOffset(stage, source_uv);
+        }
+    }
+    o_Uv = source_uv;
+}
+"#
+    .to_owned()
 }
 
 pub(super) fn puppet_effect_composite_sources() -> (String, String) {
@@ -162,6 +668,416 @@ void main() {
     vec4 color = texture(g_Texture0, v_EffectTexCoord) * g_Material.g_Color4;
     color.a *= v_BoneAlpha;
     o_Color = color;
+}
+"#
+    .to_owned()
+}
+pub(super) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
+    super::SceneShaderSpec {
+        key: "we/image-waterwaves-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/image-waterripple-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/image-scroll-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/image-colorkey-scroll-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/puppet-opacity-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/puppet-iris-waterripple-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::SceneShaderSpec {
+        key: "we/flat-rounded-opacity-final",
+        family: super::SceneShaderFamily::MeshFinalEffect,
+    },
+];
+
+pub(super) fn final_effect_parameter_layout(key: &str) -> &'static str {
+    match key {
+        "we/image-waterwaves-final"
+        | "we/image-waterripple-final"
+        | "we/image-scroll-final"
+        | "we/image-colorkey-scroll-final"
+        | "we/puppet-opacity-final"
+        | "we/puppet-iris-waterripple-final"
+        | "we/flat-rounded-opacity-final" => "FinalEffectProgram",
+        _ => "None",
+    }
+}
+
+pub(super) fn final_effect_sources(key: &str) -> (String, String) {
+    let fragment = match key {
+        "we/image-waterwaves-final" => final_waterwaves_fragment_source(),
+        "we/image-waterripple-final" => final_waterripple_fragment_source(),
+        "we/image-scroll-final" => final_scroll_fragment_source(),
+        "we/image-colorkey-scroll-final" => final_colorkey_scroll_fragment_source(),
+        "we/puppet-opacity-final" => final_puppet_opacity_fragment_source(),
+        "we/puppet-iris-waterripple-final" => final_puppet_iris_waterripple_fragment_source(),
+        "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_fragment_source(),
+        _ => panic!("unknown final effect shader {key:?}"),
+    };
+    let vertex = match key {
+        "we/puppet-opacity-final" | "we/puppet-iris-waterripple-final" => {
+            super::scene_puppet_skinning_vertex_source()
+        }
+        "we/flat-rounded-opacity-final" => flat_rounded_mask_support_vertex_source(),
+        _ => super::scene_mesh_vertex_source(),
+    };
+    (vertex, fragment)
+}
+
+fn final_waterwaves_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_MaskTexture;
+layout(set = 0, binding = 3) uniform FinalWaterWavesMaterial {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeedScaleStrength;
+    vec4 g_DirectionSpeed2Scale2Direction2;
+    vec4 g_Offset2DualExponentExponent2;
+    vec4 g_MaskEnabled;
+    vec4 g_MaskResolution;
+} u_Effect;
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+float shapedSine(float phase, float exponent) {
+    float wave = sin(phase);
+    return pow(abs(wave), max(exponent, 0.0001)) * sign(wave);
+}
+void main() {
+    vec2 source_uv = v_TexCoord;
+    float mask = 1.0;
+    if (u_Effect.g_MaskEnabled.x > 0.5) {
+        vec2 mask_uv = v_TexCoord * u_Effect.g_MaskResolution.zw
+            / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
+        mask = texture(g_MaskTexture, mask_uv).r;
+    }
+    vec2 direction = rotateVec2(
+        vec2(0.0, 1.0), u_Effect.g_DirectionSpeed2Scale2Direction2.x);
+    float distance0 = u_Effect.g_TimeSpeedScaleStrength.x
+        * u_Effect.g_TimeSpeedScaleStrength.y
+        + dot(v_TexCoord, direction) * u_Effect.g_TimeSpeedScaleStrength.z;
+    float displacement = shapedSine(
+        distance0, u_Effect.g_Offset2DualExponentExponent2.z);
+    if (u_Effect.g_Offset2DualExponentExponent2.y > 0.5) {
+        vec2 direction2 = rotateVec2(
+            vec2(0.0, 1.0), u_Effect.g_DirectionSpeed2Scale2Direction2.w);
+        float distance1 = (u_Effect.g_TimeSpeedScaleStrength.x
+            + u_Effect.g_Offset2DualExponentExponent2.x)
+            * u_Effect.g_DirectionSpeed2Scale2Direction2.y
+            + dot(v_TexCoord, direction2)
+                * u_Effect.g_DirectionSpeed2Scale2Direction2.z;
+        displacement *= shapedSine(
+            distance1, u_Effect.g_Offset2DualExponentExponent2.w);
+    }
+    float strength = u_Effect.g_TimeSpeedScaleStrength.w;
+    vec2 offset = vec2(direction.y, -direction.x)
+        * displacement * strength * strength * mask;
+    vec4 color = texture(g_SourceTexture, source_uv + offset)
+        * u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_waterripple_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_MaskTexture;
+layout(set = 0, binding = 2) uniform sampler2D g_NormalTexture;
+layout(set = 0, binding = 3) uniform FinalWaterRippleMaterial {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeAnimationScaleScroll;
+    vec4 g_DirectionStrengthAspectNormal;
+    vec4 g_MaskFlags;
+    vec4 g_MaskResolution;
+} u_Effect;
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+void main() {
+    vec2 source_uv = v_TexCoord;
+    vec2 scroll = rotateVec2(
+        vec2(0.0, 1.0), u_Effect.g_DirectionStrengthAspectNormal.x)
+        * u_Effect.g_TimeAnimationScaleScroll.w
+        * u_Effect.g_TimeAnimationScaleScroll.w
+        * u_Effect.g_TimeAnimationScaleScroll.x;
+    float animation = u_Effect.g_TimeAnimationScaleScroll.x
+        * u_Effect.g_TimeAnimationScaleScroll.y
+        * u_Effect.g_TimeAnimationScaleScroll.y;
+    vec4 ripple = vec4(source_uv + animation + scroll,
+        source_uv * 1.333 - animation + scroll)
+        * u_Effect.g_TimeAnimationScaleScroll.z;
+    ripple.xz *= u_Effect.g_DirectionStrengthAspectNormal.z;
+    ripple.yw *= u_Effect.g_MaskFlags.w;
+    vec3 normal0 = texture(g_NormalTexture, ripple.xy).xyz * 2.0 - 1.0;
+    vec3 normal1 = texture(g_NormalTexture, ripple.zw).xyz * 2.0 - 1.0;
+    vec3 normal = normalize(vec3(normal0.xy + normal1.xy, normal0.z));
+    float mask = 1.0;
+    if (u_Effect.g_MaskFlags.x > 0.5) {
+        vec2 mask_uv = source_uv * u_Effect.g_MaskResolution.zw
+            / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
+        mask = texture(g_MaskTexture, mask_uv).r;
+    }
+    float strength = u_Effect.g_DirectionStrengthAspectNormal.y;
+    source_uv += normal.xy * strength * strength * mask;
+    vec4 color = texture(g_SourceTexture, source_uv);
+    color *= u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_scroll_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 3) uniform FinalScrollProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeed;
+    vec4 g_Repeat;
+} u_Effect;
+void main() {
+    vec2 speed = u_Effect.g_TimeSpeed.yz;
+    vec2 scroll = sign(speed) * speed * speed * u_Effect.g_TimeSpeed.x;
+    vec2 source_uv = fract((v_TexCoord + scroll) * u_Effect.g_Repeat.xy);
+    vec4 color = texture(g_SourceTexture, source_uv)
+        * u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_colorkey_scroll_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 3) uniform FinalColorKeyScrollProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeed;
+    vec4 g_Repeat;
+    vec4 g_AlphaFuzzToleranceInvert;
+    vec4 g_KeyColorFlatten;
+} u_Effect;
+void main() {
+    vec2 speed = u_Effect.g_TimeSpeed.yz;
+    vec2 scroll = sign(speed) * speed * speed * u_Effect.g_TimeSpeed.x;
+    vec2 source_uv = fract((v_TexCoord + scroll) * u_Effect.g_Repeat.xy);
+    vec4 color = texture(g_SourceTexture, source_uv);
+    float delta = dot(abs(u_Effect.g_KeyColorFlatten.rgb - color.rgb), vec3(1.0));
+    float blend = smoothstep(
+        0.001,
+        0.002 + u_Effect.g_AlphaFuzzToleranceInvert.y,
+        delta - u_Effect.g_AlphaFuzzToleranceInvert.z);
+    if (u_Effect.g_AlphaFuzzToleranceInvert.w > 0.5) {
+        blend = 1.0 - blend;
+    }
+    color.a *= mix(u_Effect.g_AlphaFuzzToleranceInvert.x, 1.0, blend);
+    if (u_Effect.g_KeyColorFlatten.w > 0.5) {
+        color.rgb *= color.a;
+    }
+    color *= u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_puppet_opacity_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_OpacityMask;
+layout(set = 0, binding = 3) uniform FinalPuppetOpacityProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_OpacityMaskFlags;
+    vec4 g_MaskResolution;
+} u_Effect;
+void main() {
+    vec4 color = texture(g_SourceTexture, v_TexCoord);
+    if (u_Effect.g_OpacityMaskFlags.y > 0.5) {
+        vec2 mask_uv = v_TexCoord * u_Effect.g_MaskResolution.zw
+            / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
+        color.a *= texture(g_OpacityMask, mask_uv).r;
+    }
+    color.a *= u_Effect.g_OpacityMaskFlags.x;
+    color *= u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_puppet_iris_waterripple_fragment_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 v_TexCoord;
+layout(location = 1) in float v_VertexAlpha;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SourceTexture;
+layout(set = 0, binding = 1) uniform sampler2D g_IrisMask;
+layout(set = 0, binding = 2) uniform sampler2D g_RippleMask;
+layout(set = 0, binding = 35) uniform sampler2D g_RippleNormal;
+layout(set = 0, binding = 3) uniform FinalPuppetIrisRippleProgram {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_IrisTimeSpeedRoughNoise;
+    vec4 g_IrisScalePhaseMask;
+    vec4 g_IrisMaskResolution;
+    vec4 g_IrisEyeColorBackground;
+    vec4 g_RippleTimeAnimationScaleScroll;
+    vec4 g_RippleDirectionStrengthAspectNormal;
+    vec4 g_RippleFlags;
+    vec4 g_RippleMaskResolution;
+} u_Effect;
+vec2 rotateVec2(vec2 value, float angle) {
+    vec2 cs = vec2(cos(angle), sin(angle));
+    return vec2(value.x * cs.x - value.y * cs.y,
+        value.x * cs.y + value.y * cs.x);
+}
+vec2 irisOffset() {
+    float time = u_Effect.g_IrisTimeSpeedRoughNoise.x
+        * u_Effect.g_IrisTimeSpeedRoughNoise.y
+        + u_Effect.g_IrisScalePhaseMask.z;
+    float low_dt = floor(time);
+    vec2 motion2 = sin(1.9 * (low_dt + vec2(0.0, 1.0)));
+    vec4 motion4 = sin(2.5 * (low_dt + vec4(0.0, 0.0, 1.0, 1.0))
+        + vec4(1.0, 2.0, 1.0, 2.0));
+    vec2 move_start = motion2.xx + motion4.xy;
+    vec2 move_end = motion2.yy + motion4.zw;
+    float blend = cos(fract(time) * 3.14159265358979323846) * -0.5 + 0.5;
+    vec2 offset = mix(move_start, move_end, smoothstep(
+        1.0 - u_Effect.g_IrisTimeSpeedRoughNoise.z, 1.0, blend));
+    offset.x += sin(time) * u_Effect.g_IrisTimeSpeedRoughNoise.w;
+    offset.y += cos(time) * u_Effect.g_IrisTimeSpeedRoughNoise.w;
+    return offset * u_Effect.g_IrisScalePhaseMask.xy * 0.001;
+}
+vec2 rippleSourceUv(vec2 uv) {
+    vec2 scroll = rotateVec2(
+        vec2(0.0, 1.0), u_Effect.g_RippleDirectionStrengthAspectNormal.x)
+        * u_Effect.g_RippleTimeAnimationScaleScroll.w
+        * u_Effect.g_RippleTimeAnimationScaleScroll.w
+        * u_Effect.g_RippleTimeAnimationScaleScroll.x;
+    float animation = u_Effect.g_RippleTimeAnimationScaleScroll.x
+        * u_Effect.g_RippleTimeAnimationScaleScroll.y
+        * u_Effect.g_RippleTimeAnimationScaleScroll.y;
+    vec4 ripple = vec4(uv + animation + scroll,
+        uv * 1.333 - animation + scroll)
+        * u_Effect.g_RippleTimeAnimationScaleScroll.z;
+    ripple.xz *= u_Effect.g_RippleDirectionStrengthAspectNormal.z;
+    ripple.yw *= u_Effect.g_RippleDirectionStrengthAspectNormal.w;
+    vec3 normal = vec3(0.0, 0.0, 1.0);
+    if (u_Effect.g_RippleFlags.y > 0.5) {
+        vec3 normal0 = texture(g_RippleNormal, ripple.xy).xyz * 2.0 - 1.0;
+        vec3 normal1 = texture(g_RippleNormal, ripple.zw).xyz * 2.0 - 1.0;
+        normal = normalize(vec3(normal0.xy + normal1.xy, normal0.z));
+    }
+    float mask = 1.0;
+    if (u_Effect.g_RippleFlags.x > 0.5) {
+        vec2 mask_uv = uv * u_Effect.g_RippleMaskResolution.zw
+            / max(u_Effect.g_RippleMaskResolution.xy, vec2(1.0));
+        mask = texture(g_RippleMask, mask_uv).r;
+    }
+    float strength = u_Effect.g_RippleDirectionStrengthAspectNormal.y;
+    return uv + normal.xy * strength * strength * mask;
+}
+void main() {
+    vec2 ripple_uv = rippleSourceUv(v_TexCoord);
+    vec2 offset = irisOffset();
+    vec2 source_uv = ripple_uv + offset;
+    float iris_mask = 1.0;
+    vec2 mask_uv = ripple_uv;
+    if (u_Effect.g_IrisScalePhaseMask.w > 0.5) {
+        mask_uv = ripple_uv * u_Effect.g_IrisMaskResolution.zw
+            / max(u_Effect.g_IrisMaskResolution.xy, vec2(1.0));
+        iris_mask = texture(g_IrisMask, mask_uv).r;
+        source_uv = ripple_uv + offset * iris_mask;
+    }
+    vec4 color = texture(g_SourceTexture, source_uv);
+    if (u_Effect.g_IrisEyeColorBackground.w > 0.5) {
+        float shifted_mask = texture(g_IrisMask, mask_uv + offset * iris_mask).r;
+        color.rgb = mix(u_Effect.g_IrisEyeColorBackground.rgb, color.rgb, shifted_mask);
+    }
+    color *= u_Effect.g_ResolvedColorAlpha;
+    color.a *= v_VertexAlpha;
+    o_Color = color;
+}
+"#
+    .to_owned()
+}
+
+fn final_flat_rounded_opacity_fragment_source() -> String {
+    r#"#version 450
+layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec3 v_ObjectPixelExtent;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 3) uniform FinalRoundedOpacityProgram {
+    vec4 g_ColorRadius;
+    vec4 g_SizeSoftnessAlpha;
+    vec4 g_BorderWidthOpacity;
+    vec4 g_ResolvedColorAlpha;
+} u_Effect;
+float roundedBoxSdf(vec2 point, vec2 size, float radius) {
+    vec2 half_size = size * 0.5;
+    float half_min = min(half_size.x, half_size.y);
+    float r = clamp(radius * half_min, 0.001, half_min);
+    vec2 delta = abs(point) - (half_size - r);
+    return length(max(delta, 0.0)) - r;
+}
+void main() {
+    float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
+    float height_pixels = max(v_ObjectPixelExtent.y, 1.0);
+    vec2 aspect_scale = vec2(
+        max(1.0, width_pixels / height_pixels),
+        max(1.0, height_pixels / width_pixels));
+    vec2 mask_uv = (v_ObjectTexCoord - 0.5) * aspect_scale + 0.5;
+    vec2 mask_size = u_Effect.g_SizeSoftnessAlpha.xy * aspect_scale;
+    float distance = roundedBoxSdf(
+        mask_uv - vec2(0.5), mask_size, u_Effect.g_ColorRadius.w);
+    float edge_softness = u_Effect.g_SizeSoftnessAlpha.z
+        / max(v_ObjectPixelExtent.z, 1.0) * 2.0;
+    float mask_alpha = smoothstep(edge_softness, 0.0, distance);
+    float effect_alpha = mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;
+    vec3 rounded_color = mix(
+        u_Effect.g_ColorRadius.rgb, vec3(1.0), effect_alpha);
+    float alpha = mask_alpha * u_Effect.g_BorderWidthOpacity.y;
+    o_Color = vec4(
+        rounded_color * u_Effect.g_ResolvedColorAlpha.rgb,
+        alpha * u_Effect.g_ResolvedColorAlpha.a);
 }
 "#
     .to_owned()

@@ -153,6 +153,7 @@ pub struct NativeVulkanVulkanaliaSurfaceCapabilitiesSnapshot {
     pub supports_transfer_src: bool,
     pub supports_transfer_dst: bool,
     pub supports_color_attachment: bool,
+    pub supports_sampled: bool,
     pub present_id2_supported: bool,
     pub present_wait2_supported: bool,
 }
@@ -329,7 +330,6 @@ fn with_vulkanalia_surface_swapchain(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
-        false,
     ) {
         Ok(plan) => plan,
         Err(err) => {
@@ -412,7 +412,12 @@ fn with_vulkanalia_surface_swapchain(
             image_count: swapchain_images.len(),
             min_image_count: swapchain_plan.image_count,
             composite_alpha: composite_alpha_label(swapchain_plan.composite_alpha),
-            image_usage: vec!["transfer-src", "transfer-dst", "color-attachment"],
+            image_usage: vec![
+                "transfer-src",
+                "transfer-dst",
+                "color-attachment",
+                "sampled",
+            ],
             create_flags: swapchain_create_flag_labels(swapchain_plan.create_flags),
             present_id2_enabled: swapchain_plan.present_id2_enabled,
             present_wait2_enabled: swapchain_plan.present_wait2_enabled,
@@ -868,7 +873,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     buffer_size: (u32, u32),
     surface_capabilities2_enabled: bool,
     feature_selection: &NativeVulkanVulkanaliaPresentFeatureSelection,
-    uncapped_present: bool,
 ) -> Result<NativeVulkanVulkanaliaSwapchainPlan, String> {
     let capabilities =
         unsafe { instance.get_physical_device_surface_capabilities_khr(physical_device, surface) }
@@ -899,6 +903,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     {
         return Err("Vulkanalia swapchain surface does not support COLOR_ATTACHMENT".to_owned());
     }
+    if !capabilities
+        .supported_usage_flags
+        .contains(vk::ImageUsageFlags::SAMPLED)
+    {
+        return Err("Vulkanalia swapchain surface does not support SAMPLED".to_owned());
+    }
     let formats =
         unsafe { instance.get_physical_device_surface_formats_khr(physical_device, surface) }
             .map_err(|err| format!("vkGetPhysicalDeviceSurfaceFormatsKHR(vulkanalia): {err:?}"))?;
@@ -911,7 +921,6 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
     let present_mode = choose_present_mode(
         &present_modes,
         feature_selection.present_mode_fifo_latest_ready_enabled,
-        uncapped_present,
     )?;
     let (extent, extent_selection) = choose_swapchain_extent(&capabilities, buffer_size)?;
     let image_count = swapchain_image_count(&capabilities);
@@ -945,7 +954,8 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_swapchain_pl
         .image_usage(
             vk::ImageUsageFlags::TRANSFER_SRC
                 | vk::ImageUsageFlags::TRANSFER_DST
-                | vk::ImageUsageFlags::COLOR_ATTACHMENT,
+                | vk::ImageUsageFlags::COLOR_ATTACHMENT
+                | vk::ImageUsageFlags::SAMPLED,
         )
         .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
         .pre_transform(capabilities.current_transform)
@@ -1014,6 +1024,9 @@ fn surface_snapshot_from_plan(
             supports_color_attachment: capabilities
                 .supported_usage_flags
                 .contains(vk::ImageUsageFlags::COLOR_ATTACHMENT),
+            supports_sampled: capabilities
+                .supported_usage_flags
+                .contains(vk::ImageUsageFlags::SAMPLED),
             present_id2_supported: _swapchain_plan.surface_present_id2_supported,
             present_wait2_supported: _swapchain_plan.surface_present_wait2_supported,
         },
@@ -1051,7 +1064,6 @@ fn choose_surface_format(formats: &[vk::SurfaceFormatKHR]) -> Result<vk::Surface
 fn choose_present_mode(
     present_modes: &[vk::PresentModeKHR],
     present_mode_fifo_latest_ready_enabled: bool,
-    _uncapped_present: bool,
 ) -> Result<vk::PresentModeKHR, String> {
     if !present_mode_fifo_latest_ready_enabled {
         return Err(
@@ -1522,7 +1534,6 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 true,
-                false,
             )
             .expect("fifo latest ready present mode"),
             vk::PresentModeKHR::FIFO_LATEST_READY
@@ -1535,13 +1546,12 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 false,
-                false,
             )
             .expect_err("fifo latest ready feature is mandatory")
             .contains("requires VK_KHR_present_mode_fifo_latest_ready")
         );
         assert!(
-            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true, false)
+            choose_present_mode(&[vk::PresentModeKHR::MAILBOX], true)
                 .expect_err("mailbox-only present surface is forbidden")
                 .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
@@ -1549,13 +1559,12 @@ mod tests {
             choose_present_mode(
                 &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::FIFO_RELAXED,],
                 true,
-                false,
             )
             .expect_err("fifo relaxed fallback is forbidden")
             .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
         assert!(
-            choose_present_mode(&[vk::PresentModeKHR::FIFO], true, false)
+            choose_present_mode(&[vk::PresentModeKHR::FIFO], true)
                 .expect_err("fifo fallback is forbidden")
                 .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
@@ -1566,7 +1575,6 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 true,
-                false,
             )
             .expect("fifo latest ready present mode"),
             vk::PresentModeKHR::FIFO_LATEST_READY
@@ -1578,46 +1586,9 @@ mod tests {
                     vk::PresentModeKHR::FIFO_LATEST_READY,
                 ],
                 false,
-                false,
             )
             .expect_err("fifo latest ready feature is mandatory")
             .contains("requires VK_KHR_present_mode_fifo_latest_ready")
-        );
-        assert_eq!(
-            choose_present_mode(
-                &[
-                    vk::PresentModeKHR::FIFO,
-                    vk::PresentModeKHR::MAILBOX,
-                    vk::PresentModeKHR::FIFO_LATEST_READY,
-                ],
-                true,
-                true,
-            )
-            .expect("uncapped still uses fifo latest ready"),
-            vk::PresentModeKHR::FIFO_LATEST_READY
-        );
-        assert_eq!(
-            choose_present_mode(
-                &[
-                    vk::PresentModeKHR::FIFO,
-                    vk::PresentModeKHR::IMMEDIATE,
-                    vk::PresentModeKHR::MAILBOX,
-                    vk::PresentModeKHR::FIFO_LATEST_READY,
-                ],
-                true,
-                true,
-            )
-            .expect("uncapped ignores mailbox/immediate when latest ready exists"),
-            vk::PresentModeKHR::FIFO_LATEST_READY
-        );
-        assert!(
-            choose_present_mode(
-                &[vk::PresentModeKHR::FIFO, vk::PresentModeKHR::IMMEDIATE],
-                true,
-                true,
-            )
-            .expect_err("uncapped immediate fallback is forbidden")
-            .contains("VK_PRESENT_MODE_FIFO_LATEST_READY_KHR")
         );
     }
 

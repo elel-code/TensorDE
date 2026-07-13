@@ -77,7 +77,7 @@ pub(super) fn build_shader_contract_records(
             binding_texture_slot(binding)
                 .filter(|slot| *slot < 32)
                 .map_or(mask, |slot| mask | (1 << slot))
-        });
+        }) | graph_shader_texture_slot_mask(shader_key);
         let pipeline_key = format!(
             "{}|blend={:?}|depth={:?}|depthwrite={}|cull={:?}",
             shader_key,
@@ -130,6 +130,13 @@ fn binding_texture_slot(binding: &TextureBindingRole) -> Option<u32> {
     }
 }
 
+fn graph_shader_texture_slot_mask(shader_key: &str) -> u32 {
+    match shader_key.to_ascii_lowercase().as_str() {
+        "we/image-foliage-ripple-screen-composite" => 0x0b,
+        _ => 0,
+    }
+}
+
 pub(super) fn declared_texture_slot_mask(
     shader_key: &str,
     textures: &[&WeIrMaterialTexture],
@@ -151,6 +158,32 @@ pub(super) fn declared_texture_slot_mask(
     }
     if let Some(slot_mask) = effect_shader_slot_mask(&key) {
         mask |= slot_mask;
+    }
+    if key == "we/waterwaves-uv-field" {
+        mask |= 0xfe;
+    }
+    if matches!(
+        key.as_str(),
+        "we/image-foliage-ripple-composite" | "we/image-foliage-ripple-screen-composite"
+    ) {
+        mask |= 0x0b;
+    }
+    if key == "we/image-ripple-source" {
+        mask |= 0x05;
+    }
+    if matches!(
+        key.as_str(),
+        "we/image-ripple-flow-composite" | "we/image-ripple-flow-multiply-composite"
+    ) {
+        mask |= 0x07;
+    }
+    match key.as_str() {
+        "we/image-waterwaves-final" => mask |= 0x03,
+        "we/image-waterripple-final" => mask |= 0x07,
+        "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
+        "we/puppet-opacity-final" => mask |= 0x03,
+        "we/puppet-iris-waterripple-final" => mask |= 0x0f,
+        _ => {}
     }
     mask
 }
@@ -179,8 +212,21 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/objectcomposite"
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"
+        || key == "we/image-waterwaves-composite"
+        || key == "we/image-waterwaves-multiply-composite"
+        || key == "we/image-foliage-ripple-composite"
+        || key == "we/image-foliage-ripple-screen-composite"
+        || key == "we/image-ripple-flow-composite"
+        || key == "we/image-ripple-flow-multiply-composite"
+        || key == "we/image-waterwaves-final"
+        || key == "we/image-waterripple-final"
+        || key == "we/image-scroll-final"
+        || key == "we/image-colorkey-scroll-final"
+        || key == "we/puppet-opacity-final"
+        || key == "we/puppet-iris-waterripple-final"
         || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
+        || key == "we/puppet-waterwaves-composite"
         || key == "utilitycomposite"
         || key.starts_with("utilitycomposite__")
 }
@@ -218,10 +264,19 @@ fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
                 .strip_prefix(shader)
                 .is_some_and(|rest| rest.starts_with("__"))
     }) || key.contains("/effects/waterripple__")
+        || key == "we/waterwaves-uv-field"
+        || key == "we/image-ripple-source"
 }
 
 fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
     key.contains("genericimage")
+        || key == "we/image-waterwaves-final"
+        || key == "we/image-waterripple-final"
+        || key == "we/image-scroll-final"
+        || key == "we/image-colorkey-scroll-final"
+        || key == "we/puppet-opacity-final"
+        || key == "we/puppet-iris-waterripple-final"
+        || key == "we/flat-rounded-opacity-final"
         || key == "color"
         || key.starts_with("color__")
         || key == "we/color"
@@ -237,6 +292,13 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/objectcomposite"
         || key == "we/image-effect-composite"
         || key == "we/puppet-effect-composite"
+        || key == "we/image-waterwaves-composite"
+        || key == "we/image-waterwaves-multiply-composite"
+        || key == "we/image-foliage-ripple-composite"
+        || key == "we/image-foliage-ripple-screen-composite"
+        || key == "we/image-ripple-flow-composite"
+        || key == "we/image-ripple-flow-multiply-composite"
+        || key == "we/puppet-waterwaves-composite"
         || key.contains("genericparticle")
 }
 

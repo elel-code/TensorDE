@@ -337,6 +337,8 @@ mod tests {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),

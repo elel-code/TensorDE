@@ -165,7 +165,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut capture_frame = None::<PathBuf>;
     let mut capture_frame_number = 1u64;
     let mut capture_frame_number_set = false;
+    let mut capture_frame_count = 1u64;
+    let mut capture_frame_count_set = false;
+    let mut capture_frame_step = 1u64;
+    let mut capture_frame_step_set = false;
+    let mut capture_frame_downscale = 1u32;
+    let mut capture_frame_downscale_set = false;
     let mut capture_scene_graph = None::<u32>;
+    let mut scene_surface_width = None::<u32>;
+    let mut scene_surface_height = None::<u32>;
+    let mut scene_gpu_timing = false;
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
@@ -324,9 +333,36 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 capture_frame_number = parse_capture_frame_number(args.next())?;
                 capture_frame_number_set = true;
             }
+            "--capture-frame-count" => {
+                capture_frame_count = parse_capture_frame_count(args.next())?;
+                capture_frame_count_set = true;
+            }
+            "--capture-frame-step" => {
+                capture_frame_step = parse_capture_frame_step(args.next())?;
+                capture_frame_step_set = true;
+            }
+            "--capture-frame-downscale" => {
+                capture_frame_downscale = parse_capture_frame_downscale(args.next())?;
+                capture_frame_downscale_set = true;
+            }
             "--capture-scene-graph" => {
                 capture_scene_graph = Some(parse_capture_scene_graph(args.next())?);
             }
+            "--surface-width" => {
+                scene_surface_width = Some(
+                    args.next()
+                        .ok_or("--surface-width requires pixels")?
+                        .parse::<u32>()?,
+                );
+            }
+            "--surface-height" => {
+                scene_surface_height = Some(
+                    args.next()
+                        .ok_or("--surface-height requires pixels")?
+                        .parse::<u32>()?,
+                );
+            }
+            "--gpu-timing" => scene_gpu_timing = true,
             "--scene-video" => {
                 return Err("--scene-video was removed with the old scene CLI".into());
             }
@@ -469,9 +505,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if capture_frame.is_none() && capture_frame_number_set {
         return Err("--capture-frame-number requires --capture-frame".into());
     }
+    if capture_frame.is_none() && capture_frame_count_set {
+        return Err("--capture-frame-count requires --capture-frame".into());
+    }
+    if capture_frame.is_none() && capture_frame_step_set {
+        return Err("--capture-frame-step requires --capture-frame".into());
+    }
+    if capture_frame.is_none() && capture_frame_downscale_set {
+        return Err("--capture-frame-downscale requires --capture-frame".into());
+    }
     if capture_frame.is_none() && capture_scene_graph.is_some() {
         return Err("--capture-scene-graph requires --capture-frame".into());
     }
+    if scene_gpu_timing && mode != NativeVulkanCliMode::RunScene {
+        return Err("--gpu-timing requires --run-scene".into());
+    }
+    let scene_surface_extent = match (scene_surface_width, scene_surface_height) {
+        (Some(width), Some(height)) if width > 0 && height > 0 => Some((width, height)),
+        (None, None) => None,
+        _ => {
+            return Err(
+                "--surface-width and --surface-height must be positive and used together".into(),
+            );
+        }
+    };
 
     let duration_playback_frames = if duration_set {
         native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
@@ -660,8 +717,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 NativeVulkanSceneRunOptions {
                     capture_frame,
                     capture_frame_number,
+                    capture_frame_count,
+                    capture_frame_step,
+                    capture_frame_downscale,
                     capture_scene_graph,
                     clear_color_override: scene_clear_color_override,
+                    surface_extent: scene_surface_extent,
+                    gpu_timing: scene_gpu_timing,
                 },
             )?)
         }
@@ -856,6 +918,33 @@ fn parse_capture_frame_number(value: Option<String>) -> Result<u64, &'static str
         .ok_or("--capture-frame-number requires a positive frame number")
 }
 
+fn parse_capture_frame_count(value: Option<String>) -> Result<u64, &'static str> {
+    value
+        .ok_or("--capture-frame-count requires a positive count")?
+        .parse::<u64>()
+        .ok()
+        .filter(|count| *count > 0)
+        .ok_or("--capture-frame-count requires a positive count")
+}
+
+fn parse_capture_frame_step(value: Option<String>) -> Result<u64, &'static str> {
+    value
+        .ok_or("--capture-frame-step requires a positive step")?
+        .parse::<u64>()
+        .ok()
+        .filter(|step| *step > 0)
+        .ok_or("--capture-frame-step requires a positive step")
+}
+
+fn parse_capture_frame_downscale(value: Option<String>) -> Result<u32, &'static str> {
+    value
+        .ok_or("--capture-frame-downscale requires a positive divisor")?
+        .parse::<u32>()
+        .ok()
+        .filter(|downscale| *downscale > 0)
+        .ok_or("--capture-frame-downscale requires a positive divisor")
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 fn parse_capture_scene_graph(value: Option<String>) -> Result<u32, &'static str> {
     value
@@ -950,16 +1039,21 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --playback-frames N sets the FFmpeg Vulkan HW present frame budget or repeats the legacy ready-prefix window.\n\
 --run-clear uses the Vulkanalia Wayland swapchain runtime, clears frames with CmdPipelineBarrier2/QueueSubmit2, presents, then prints runtime JSON.\n\
 --run-static uses Vulkanalia sampled-image dynamic rendering for static wallpapers with cover|contain|stretch|tile|center fit and background clear.\n\
---run-scene reads --source file.gscene, validates the scene engine backend plan and runs the FIFO latest ready scene present loop.\n\
+--run-scene reads --source file.gscene and runs the selected Vulkan scene present policy.\n\
 --capture-frame PATH writes a completed --run-scene frame directly from the Vulkan swapchain as an RGBA8 PNG.\n\
 --capture-frame-number N selects the 1-based submitted frame captured by --capture-frame; the default is 1.\n\
+--capture-frame-count N captures N submitted frames; sequence files append the zero-padded frame number to PATH.\n\
+--capture-frame-step N samples every Nth submitted frame in a sequence; the default is 1.\n\
+--capture-frame-downscale N keeps full-resolution rendering but stores every Nth readback pixel in each axis.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
+--gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
-         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-scene-graph N]\n\
+         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-scene-graph N]\n\
+         [--surface-width PX --surface-height PX] [--gpu-timing]\n\
          [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
@@ -1001,6 +1095,29 @@ mod tests {
         assert_eq!(
             parse_capture_frame_number(Some("0".to_owned())),
             Err("--capture-frame-number requires a positive frame number")
+        );
+    }
+
+    #[test]
+    fn capture_frame_count_is_positive() {
+        assert_eq!(parse_capture_frame_count(Some("120".to_owned())), Ok(120));
+        assert_eq!(
+            parse_capture_frame_count(Some("0".to_owned())),
+            Err("--capture-frame-count requires a positive count")
+        );
+    }
+
+    #[test]
+    fn capture_frame_sequence_sampling_values_are_positive() {
+        assert_eq!(parse_capture_frame_step(Some("5".to_owned())), Ok(5));
+        assert_eq!(
+            parse_capture_frame_step(Some("0".to_owned())),
+            Err("--capture-frame-step requires a positive step")
+        );
+        assert_eq!(parse_capture_frame_downscale(Some("3".to_owned())), Ok(3));
+        assert_eq!(
+            parse_capture_frame_downscale(Some("0".to_owned())),
+            Err("--capture-frame-downscale requires a positive divisor")
         );
     }
 

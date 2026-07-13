@@ -12,3 +12,12 @@ pub enum RenderTargetRole {
     VideoExternalImage,
     Temporary,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderTargetSpec {
+    pub role: RenderTargetRole,
+    pub name: String,
+    pub format: String,
+    pub width_divisor_milli: u32,
+    pub height_divisor_milli: u32,
+}

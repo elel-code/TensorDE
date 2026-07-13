@@ -216,6 +216,7 @@ mod tests {
                     ],
                 ),
             ],
+            target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
 
@@ -265,6 +266,7 @@ mod tests {
                     }],
                 ),
             ],
+            target_specs: Vec::new(),
             unsupported: Vec::new(),
         };
 

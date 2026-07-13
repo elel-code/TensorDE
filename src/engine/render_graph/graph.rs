@@ -8,6 +8,7 @@ use super::resource::{
     texture_binding_resource_usage,
 };
 use super::target::RenderTargetRole;
+use super::target::RenderTargetSpec;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UnsupportedGraphBoundary {
@@ -21,6 +22,8 @@ pub struct UnsupportedGraphBoundary {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderGraph {
     pub passes: Vec<RenderPassNode>,
+    #[serde(default)]
+    pub target_specs: Vec<RenderTargetSpec>,
     pub unsupported: Vec<UnsupportedGraphBoundary>,
 }
 
@@ -38,6 +41,16 @@ impl RenderGraph {
                     pass.state.pipeline_blend
                 )
             })
+            .chain(self.target_specs.iter().map(|target| {
+                format!(
+                    "target:{:?}:{}:{}:{}:{}",
+                    target.role,
+                    target.name,
+                    target.format,
+                    target.width_divisor_milli,
+                    target.height_divisor_milli
+                )
+            }))
             .collect()
     }
 

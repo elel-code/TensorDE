@@ -54,9 +54,18 @@ enum SceneShaderFamily {
     MeshObjectComposite,
     MeshImageEffectSource,
     MeshImageEffectComposite,
+    MeshFlatRoundedMaskComposite,
     MeshPuppetEffectSource,
     MeshPuppetEffectComposite,
+    MeshImageWaterWavesComposite,
+    MeshImageFoliageRippleComposite,
+    MeshImageFoliageRippleScreenComposite,
+    MeshImageRippleFlowComposite,
+    MeshFinalEffect,
+    MeshPuppetWaterWavesComposite,
     MeshUtilityComposite,
+    EffectWaterWavesUvField,
+    EffectImageRippleSource,
     FlatMinimalAlpha,
     FlatPassthrough,
     Effect,
@@ -192,6 +201,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshImageEffectComposite,
     },
     SceneShaderSpec {
+        key: "we/flat-rounded-mask-composite",
+        family: SceneShaderFamily::MeshFlatRoundedMaskComposite,
+    },
+    SceneShaderSpec {
         key: "we/puppet-effect-source",
         family: SceneShaderFamily::MeshPuppetEffectSource,
     },
@@ -200,8 +213,44 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshPuppetEffectComposite,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-composite",
+        family: SceneShaderFamily::MeshImageWaterWavesComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-composite",
+        family: SceneShaderFamily::MeshImageWaterWavesComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-foliage-ripple-composite",
+        family: SceneShaderFamily::MeshImageFoliageRippleComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-foliage-ripple-screen-composite",
+        family: SceneShaderFamily::MeshImageFoliageRippleScreenComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-ripple-flow-composite",
+        family: SceneShaderFamily::MeshImageRippleFlowComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-ripple-flow-multiply-composite",
+        family: SceneShaderFamily::MeshImageRippleFlowComposite,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-composite",
+        family: SceneShaderFamily::MeshPuppetWaterWavesComposite,
+    },
+    SceneShaderSpec {
         key: "we/utilitycomposite",
         family: SceneShaderFamily::MeshUtilityComposite,
+    },
+    SceneShaderSpec {
+        key: "we/waterwaves-uv-field",
+        family: SceneShaderFamily::EffectWaterWavesUvField,
+    },
+    SceneShaderSpec {
+        key: "we/image-ripple-source",
+        family: SceneShaderFamily::EffectImageRippleSource,
     },
     SceneShaderSpec {
         key: "we/genericimage2",
@@ -213,6 +262,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "we/genericimage4",
+        family: SceneShaderFamily::MeshGenericImage4,
+    },
+    SceneShaderSpec {
+        key: "we/genericimage4-multiply-composite",
         family: SceneShaderFamily::MeshGenericImage4,
     },
     SceneShaderSpec {
@@ -296,7 +349,10 @@ fn build_scene_shader_catalog() {
     generated.push_str("}\n\n");
 
     let mut entries = String::new();
-    for spec in BUILTIN_SCENE_SHADER_SPECS {
+    for spec in BUILTIN_SCENE_SHADER_SPECS
+        .iter()
+        .chain(scene_shader::FINAL_EFFECT_SHADER_SPECS)
+    {
         let (vertex_source, fragment_source) = scene_shader_sources(*spec);
         let vertex_path = compile_scene_shader_stage(&shader_dir, spec.key, "vert", &vertex_source);
         let fragment_path =
@@ -333,7 +389,16 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         | SceneShaderFamily::MeshGenericParticle
         | SceneShaderFamily::MeshObjectComposite
         | SceneShaderFamily::MeshImageEffectComposite
-        | SceneShaderFamily::MeshPuppetEffectComposite => "StandardMaterial",
+        | SceneShaderFamily::MeshPuppetEffectComposite
+        | SceneShaderFamily::MeshImageWaterWavesComposite
+        | SceneShaderFamily::MeshPuppetWaterWavesComposite => "StandardMaterial",
+        SceneShaderFamily::MeshImageFoliageRippleComposite
+        | SceneShaderFamily::MeshImageFoliageRippleScreenComposite => "FoliageRippleComposite",
+        SceneShaderFamily::MeshImageRippleFlowComposite => "RippleFlowComposite",
+        SceneShaderFamily::MeshFinalEffect => scene_shader::final_effect_parameter_layout(spec.key),
+        SceneShaderFamily::MeshFlatRoundedMaskComposite => "RoundedMask",
+        SceneShaderFamily::EffectWaterWavesUvField => "WaterWavesUvField",
+        SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
             "effects/caustics" => "Caustics",
             "effects/cloudmotion" => "CloudMotion",
@@ -359,11 +424,16 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
 fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
     match spec.family {
         SceneShaderFamily::MeshGenericImage4 => {
-            (scene_mesh_vertex_source(), genericimage4_fragment_source())
+            let fragment = if spec.key == "we/genericimage4-multiply-composite" {
+                scene_shader::generic_image_multiply_fragment_source()
+            } else {
+                scene_shader::generic_image_fragment_source()
+            };
+            (scene_mesh_vertex_source(), fragment)
         }
         SceneShaderFamily::MeshGenericImage4PuppetSkinning => (
             scene_puppet_skinning_vertex_source(),
-            genericimage4_fragment_source(),
+            scene_shader::generic_image_fragment_source(),
         ),
         SceneShaderFamily::MeshColor => (scene_mesh_vertex_source(), color_fragment_source()),
         SceneShaderFamily::MeshColorPuppetSkinning => (
@@ -403,13 +473,42 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         SceneShaderFamily::MeshImageEffectComposite => {
             scene_shader::image_effect_composite_sources()
         }
+        SceneShaderFamily::MeshFlatRoundedMaskComposite => {
+            scene_shader::flat_rounded_mask_composite_sources()
+        }
         SceneShaderFamily::MeshPuppetEffectSource => scene_shader::puppet_effect_source_sources(),
         SceneShaderFamily::MeshPuppetEffectComposite => {
             scene_shader::puppet_effect_composite_sources()
         }
+        SceneShaderFamily::MeshImageWaterWavesComposite => {
+            if spec.key == "we/image-waterwaves-multiply-composite" {
+                scene_shader::image_waterwaves_multiply_composite_sources()
+            } else {
+                scene_shader::image_waterwaves_composite_sources()
+            }
+        }
+        SceneShaderFamily::MeshImageFoliageRippleComposite => {
+            scene_shader::image_foliage_ripple_composite_sources()
+        }
+        SceneShaderFamily::MeshImageFoliageRippleScreenComposite => {
+            scene_shader::image_foliage_ripple_screen_composite_sources()
+        }
+        SceneShaderFamily::MeshImageRippleFlowComposite => {
+            if spec.key == "we/image-ripple-flow-multiply-composite" {
+                scene_shader::image_ripple_flow_multiply_composite_sources()
+            } else {
+                scene_shader::image_ripple_flow_composite_sources()
+            }
+        }
+        SceneShaderFamily::MeshFinalEffect => scene_shader::final_effect_sources(spec.key),
+        SceneShaderFamily::MeshPuppetWaterWavesComposite => {
+            scene_shader::puppet_waterwaves_composite_sources()
+        }
         SceneShaderFamily::MeshUtilityComposite => {
             (scene_mesh_vertex_source(), passthrough_fragment_source())
         }
+        SceneShaderFamily::EffectWaterWavesUvField => scene_shader::waterwaves_uv_field_sources(),
+        SceneShaderFamily::EffectImageRippleSource => scene_shader::image_ripple_source_sources(),
         SceneShaderFamily::FlatMinimalAlpha => {
             (flattexture_vertex_source(), minimalalpha_fragment_source())
         }
@@ -688,26 +787,6 @@ void main() {
     .to_owned()
 }
 
-fn genericimage4_fragment_source() -> String {
-    r#"#version 450
-layout(location = 0) in vec2 v_TexCoord;
-layout(location = 1) in float v_VertexAlpha;
-layout(location = 0) out vec4 o_Color;
-layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-layout(set = 0, binding = 3) uniform GenericImage4Material {
-    vec4 g_Color4;
-    vec4 g_RoughnessMetallic;
-    vec4 g_SpecularTint;
-} g_Material;
-void main() {
-    vec4 color = texture(g_Texture0, v_TexCoord) * g_Material.g_Color4;
-    color.a *= v_VertexAlpha;
-    o_Color = color;
-}
-"#
-    .to_owned()
-}
-
 fn color_fragment_source() -> String {
     r#"#version 450
 layout(location = 1) in float v_VertexAlpha;
@@ -887,6 +966,7 @@ layout(set = 0, binding = 2) uniform ObjectLocalEffectDrawUniform {
 } u_Draw;
 layout(location = 0) out vec2 v_TexCoord;
 layout(location = 1) out vec2 v_ObjectTexCoord;
+layout(location = 2) flat out vec3 v_ObjectPixelExtent;
 void main() {
     vec2 positions[3] = vec2[](
         vec2(-1.0, -1.0),
@@ -899,6 +979,7 @@ void main() {
     v_ObjectTexCoord = vec2(
         dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(uv, 1.0)),
         dot(u_Draw.g_ScreenUvToObjectUvRow1.xyz, vec3(uv, 1.0)));
+    v_ObjectPixelExtent = u_Draw.g_ObjectUvToScreenUvRow0.xyz;
     gl_Position = vec4(position, 0.0, 1.0);
 }
 "#
@@ -1272,7 +1353,7 @@ fn rounded_mask_fragment_source(key: &str) -> String {
         "u_Effect.g_SizeSoftnessAlpha.xy * aspect_scale"
     };
     let edge_expression = if soft {
-        "float edge_softness = u_Effect.g_SizeSoftnessAlpha.z\n        / float(max(textureSize(g_Texture0, 0).x, textureSize(g_Texture0, 0).y)) * 2.0;\n    float mask_alpha = smoothstep(edge_softness, 0.0, distance);"
+        "float edge_softness = u_Effect.g_SizeSoftnessAlpha.z\n        / max(v_ObjectPixelExtent.z, 1.0) * 2.0;\n    float mask_alpha = smoothstep(edge_softness, 0.0, distance);"
     } else {
         "float mask_alpha = 1.0 - step(0.0, distance);"
     };
@@ -1285,6 +1366,7 @@ fn rounded_mask_fragment_source(key: &str) -> String {
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec3 v_ObjectPixelExtent;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 layout(set = 0, binding = 3) uniform RoundedMaskUniform {{
@@ -1302,10 +1384,8 @@ float roundedBoxSdf(vec2 point, vec2 size, float radius) {{
 }}
 void main() {{
     vec4 source = texture(g_Texture0, v_TexCoord);
-    vec2 gradient_x = vec2(dFdx(v_ObjectTexCoord.x), dFdy(v_ObjectTexCoord.x));
-    vec2 gradient_y = vec2(dFdx(v_ObjectTexCoord.y), dFdy(v_ObjectTexCoord.y));
-    float width_pixels = 1.0 / max(length(gradient_x), 0.000001);
-    float height_pixels = 1.0 / max(length(gradient_y), 0.000001);
+    float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
+    float height_pixels = max(v_ObjectPixelExtent.y, 1.0);
     vec2 aspect_scale = vec2(
         max(1.0, width_pixels / height_pixels),
         max(1.0, height_pixels / width_pixels));

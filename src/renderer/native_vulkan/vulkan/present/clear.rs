@@ -135,7 +135,6 @@ fn with_vulkanalia_clear_present(
         handles.buffer_size,
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
-        options.target_max_fps.is_none(),
     ) {
         Ok(plan) => plan,
         Err(err) => {

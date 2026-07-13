@@ -9,6 +9,11 @@ use super::pass::{RenderPassNode, RenderPassRole};
 use super::state::{CullMode, DepthTestMode, PassState, PipelineBlendMode, ShaderBlendMode};
 use super::target::RenderTargetRole;
 
+mod flat_rounded_mask;
+mod foliage_ripple;
+mod ripple_flow;
+mod waterwaves;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeEffectPassContract {
     pub object_index: usize,
@@ -42,7 +47,41 @@ pub struct WeImageGraphContract {
     pub effects_in_authored_texture_space: bool,
     /// Apply image-space effects to the authored texture before the puppet mesh deforms it.
     pub puppet_skinning_after_effects: bool,
+    /// Converter-authored material containing the complete compatible waterwaves chain.
+    pub waterwaves_uv_field_material_index: Option<usize>,
+    /// Converter-authored material for a compatible direct foliage/ripple composite.
+    pub foliage_ripple_material_index: Option<usize>,
+    /// Converter-authored materials for the typed ripple/flow two-stage path.
+    pub ripple_flow_material_indices: Option<WeRippleFlowMaterialIndices>,
+    /// Converter-authored material evaluated once in the final object draw.
+    pub final_effect_material: Option<WeFinalEffectMaterial>,
     pub effect_passes: Vec<WeEffectPassContract>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeRippleFlowMaterialIndices {
+    pub ripple_source: usize,
+    pub flow_composite: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeFinalEffectMaterial {
+    pub material_index: usize,
+    pub shader: String,
+}
+
+pub fn we_effect_passes_form_waterwaves_displacement_chain(
+    effect_passes: &[WeEffectPassContract],
+) -> bool {
+    waterwaves::are_compatible_effect_passes(effect_passes)
+}
+
+pub fn we_effect_passes_form_foliage_ripple_chain(effect_passes: &[WeEffectPassContract]) -> bool {
+    foliage_ripple::are_compatible_effect_passes(effect_passes)
+}
+
+pub fn we_effect_passes_form_ripple_flow_chain(effect_passes: &[WeEffectPassContract]) -> bool {
+    ripple_flow::are_compatible_effect_passes(effect_passes)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +103,39 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
     let puppet_skinning_after_effects =
         authored_texture_effects && contract.puppet_skinning_after_effects;
     let final_pipeline_blend = final_pipeline_blend(contract);
+    if flat_rounded_mask::is_compatible(contract) {
+        flat_rounded_mask::append_direct_composite(&mut graph, contract);
+        return graph;
+    }
+    if ripple_flow::is_compatible(contract) {
+        ripple_flow::append_two_stage_composite(&mut graph, contract);
+        return graph;
+    }
+    if foliage_ripple::is_compatible(contract) {
+        foliage_ripple::append_direct_composite(&mut graph, contract);
+        return graph;
+    }
+    if let Some(final_effect) = &contract.final_effect_material {
+        graph.passes.push(RenderPassNode {
+            id: 0,
+            role: RenderPassRole::SceneComposite,
+            object_index: Some(contract.object_index),
+            material_index: Some(final_effect.material_index),
+            pass_index: 0,
+            shader: Some(final_effect.shader.clone()),
+            target: RenderTargetRole::SceneColor,
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: Vec::new(),
+            state: PassState {
+                pipeline_blend: final_pipeline_blend,
+                scene_blend: contract.final_scene_blend,
+                ..PassState::default()
+            },
+        });
+        return graph;
+    }
     if let Some(snapshot) = &contract.framebuffer_snapshot {
         graph.passes.push(RenderPassNode {
             id: 0,
@@ -84,6 +156,10 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             state: PassState::default(),
         });
     }
+    if waterwaves::is_compatible_displacement_chain(contract) {
+        waterwaves::append_displacement_chain(&mut graph, contract);
+        return graph;
+    }
     let base_pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
     graph.passes.push(RenderPassNode {
         id: base_pass_id,
@@ -100,6 +176,14 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 }
                 .to_owned(),
             )
+        } else if !has_offscreen_chain
+            && contract.final_scene_blend == SceneBlendMode::Multiply
+            && contract
+                .base_shader
+                .as_deref()
+                .is_some_and(is_unskinned_generic_image_shader)
+        {
+            Some("we/genericimage4-multiply-composite".to_owned())
         } else {
             contract.base_shader.clone()
         },
@@ -206,6 +290,22 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         });
     }
     graph
+}
+
+fn is_unskinned_generic_image_shader(shader: &str) -> bool {
+    !shader.to_ascii_lowercase().contains("puppetskinning")
+        && matches!(
+            shader
+                .split("__")
+                .next()
+                .unwrap_or_default()
+                .rsplit('/')
+                .next()
+                .unwrap_or_default()
+                .to_ascii_lowercase()
+                .as_str(),
+            "genericimage2" | "genericimage4"
+        )
 }
 
 fn base_pipeline_blend(contract: &WeImageGraphContract) -> PipelineBlendMode {
@@ -386,6 +486,34 @@ mod tests {
     }
 
     #[test]
+    fn direct_generic_multiply_uses_the_premultiplied_fixed_blend_shader() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 7,
+            base_material_index: Some(3),
+            base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Multiply,
+            effects_in_authored_texture_space: true,
+            puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
+            effect_passes: Vec::new(),
+        });
+
+        assert_eq!(graph.passes.len(), 1);
+        assert_eq!(
+            graph.passes[0].shader.as_deref(),
+            Some("we/genericimage4-multiply-composite")
+        );
+        assert_eq!(graph.passes[0].target, RenderTargetRole::SceneColor);
+    }
+
+    #[test]
     fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: 7,
@@ -398,6 +526,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: false,
             puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: vec![
                 WeEffectPassContract {
                     object_index: 7,
@@ -510,6 +642,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: false,
             puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: vec![WeEffectPassContract {
                 object_index: 7,
                 material_index: Some(4),
@@ -552,6 +688,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: vec![WeEffectPassContract {
                 object_index: 7,
                 material_index: Some(4),
@@ -583,6 +723,54 @@ mod tests {
     }
 
     #[test]
+    fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
+        let graph = we_image_graph(&WeImageGraphContract {
+            object_index: 7,
+            base_material_index: Some(3),
+            base_shader: Some("we/flat".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: Vec::new(),
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: true,
+            puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
+            effect_passes: vec![WeEffectPassContract {
+                object_index: 7,
+                material_index: Some(4),
+                effect_file: "effects/rounded_mask/effect.json".to_owned(),
+                pass_index: 0,
+                command: None,
+                shader: Some("effects/rounded_mask".to_owned()),
+                source: None,
+                target: None,
+                binds: [(0, "previous".to_owned())].into_iter().collect(),
+                pass_constants: Vec::new(),
+                material_blending: Some("normal".to_owned()),
+                depthtest: None,
+                depthwrite: None,
+                cullmode: None,
+                combos: BTreeMap::from([
+                    ("B_SQUARE".to_owned(), 0),
+                    ("C_ALPHA_ONLY".to_owned(), 0),
+                    ("SOFT".to_owned(), 1),
+                ]),
+            }],
+        });
+
+        assert_eq!(graph.passes.len(), 1);
+        assert_eq!(
+            graph.passes[0].shader.as_deref(),
+            Some("we/flat-rounded-mask-composite")
+        );
+        assert_eq!(graph.passes[0].material_index, Some(4));
+    }
+
+    #[test]
     fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: 9,
@@ -595,6 +783,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: false,
             puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: vec![
                 WeEffectPassContract {
                     object_index: 9,
@@ -661,6 +853,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: false,
             puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: Vec::new(),
         });
 
@@ -699,6 +895,10 @@ mod tests {
             final_scene_blend: SceneBlendMode::Alpha,
             effects_in_authored_texture_space: false,
             puppet_skinning_after_effects: false,
+            waterwaves_uv_field_material_index: None,
+            foliage_ripple_material_index: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
             effect_passes: vec![WeEffectPassContract {
                 object_index: 12,
                 material_index: Some(6),

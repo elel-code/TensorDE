@@ -4,15 +4,14 @@ use std::fmt::Debug;
 
 use vulkanalia::prelude::v1_4::*;
 
+use crate::engine::scene::rendering_device_graph::scene_clip_transform;
+use crate::engine::scene::semantic_world::ResolvedSemanticFrame;
 use crate::engine::scene::{
     SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMaterialSampledBinding,
-    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
-    SceneRenderingDeviceSampledBinding, SceneRenderingDeviceTargetAllocation, SceneSemanticWorld,
-    SceneStorage,
+    SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneRenderingDeviceSampledBinding,
+    SceneRenderingDeviceTargetAllocation, SceneSemanticWorld, SceneStorage,
 };
-use crate::engine::scene::rendering_device_graph::scene_clip_transform;
-use crate::engine::scene::semantic_world::ResolvedSemanticFrame;
 use crate::renderer::native_vulkan::{
     NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanVulkanaliaBuffer,
     native_vulkan_vulkanalia_write_host_buffer,
@@ -171,7 +170,11 @@ impl SceneFrameTopology {
             &graph.material_sampled_bindings,
             scene_time_seconds,
         )?;
-        let draws = graph.mesh_draws.iter().map(draw_topology).collect::<Vec<_>>();
+        let draws = graph
+            .mesh_draws
+            .iter()
+            .map(draw_topology)
+            .collect::<Vec<_>>();
         validate_topology_slice("mesh draw", &self.draws, &draws, scene_time_seconds)?;
         let palettes = graph
             .puppet_bone_palettes
@@ -198,12 +201,7 @@ impl SceneFrameTopology {
                 parent_index: bone.parent_index,
             })
             .collect::<Vec<_>>();
-        validate_topology_slice(
-            "puppet bone",
-            &self.bones,
-            &bones,
-            scene_time_seconds,
-        )
+        validate_topology_slice("puppet bone", &self.bones, &bones, scene_time_seconds)
     }
 }
 
@@ -257,9 +255,17 @@ fn update_puppet_palettes(
         .iter_mut()
         .zip(&frame.puppet_bone_palettes)
     {
-        if (target.object, target.puppet_index, target.bone_matrix_start, target.bone_matrix_count)
-            != (source.object, source.puppet_index, source.bone_start, source.bone_count)
-        {
+        if (
+            target.object,
+            target.puppet_index,
+            target.bone_matrix_start,
+            target.bone_matrix_count,
+        ) != (
+            source.object,
+            source.puppet_index,
+            source.bone_start,
+            source.bone_count,
+        ) {
             return Err(format!(
                 "scene puppet palette topology changed at {scene_time_seconds:.6}s for object {}",
                 source.object.0
@@ -448,11 +454,11 @@ fn push_scene_puppet_bone(payload: &mut Vec<u8>, matrix: [[f32; 4]; 4], alpha: f
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::scene::{
-        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
-    };
     use crate::engine::scene::semantic_world::{
         ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette,
+    };
+    use crate::engine::scene::{
+        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
     };
 
     #[test]
@@ -549,8 +555,7 @@ mod tests {
             alpha: 1.0,
         });
         let matrix = [
-            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0,
-            14.0, 15.0, 16.0,
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0,
         ];
         let frame = ResolvedSemanticFrame {
             objects: Vec::new(),
@@ -599,6 +604,8 @@ mod tests {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),

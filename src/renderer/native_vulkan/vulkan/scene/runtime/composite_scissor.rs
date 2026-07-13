@@ -7,12 +7,15 @@
 //! falls back to the complete target whenever an effect cannot prove a finite bound.
 
 use crate::engine::scene::{
-    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
-    SceneRenderingDeviceMeshDraw, SceneStorage,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw,
+    SceneStorage,
 };
 
 use super::draw_recording::{SceneGpuDrawCommand, SceneGpuScissor};
-use super::draw_uniform::object_uv_to_screen_linear;
+use super::draw_uniform::{
+    object_projected_pixel_extent, object_uv_to_screen_affine, object_uv_to_screen_linear,
+};
+use super::flat_rounded_mask_coverage::flat_rounded_mask_uv_bounds;
 use super::material_uniform::material_parameter_values;
 use super::scene_viewport::scene_cover_clip_transform;
 
@@ -95,15 +98,13 @@ pub(super) fn update_scene_composite_scissors(
             let start = pass.mesh_draw_start as usize;
             let end = start.saturating_add(pass.mesh_draw_count as usize);
             let draws = graph.mesh_draws.get(start..end).unwrap_or(&[]);
-            for draw in draws.iter().filter(|draw| {
-                draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
-            }) {
-                let Some(draw_bounds) = object_mesh_pixel_bounds(
-                    storage,
-                    graph,
-                    draw,
-                    output_extent,
-                ) else {
+            for draw in draws
+                .iter()
+                .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)
+            {
+                let Some(draw_bounds) =
+                    object_mesh_pixel_bounds(storage, graph, draw, output_extent)
+                else {
                     coverage_is_bounded = false;
                     continue;
                 };
@@ -114,7 +115,11 @@ pub(super) fn update_scene_composite_scissors(
                 }
             }
             if draws.iter().all(|draw| {
-                draw.primitive != SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+                !matches!(
+                    draw.primitive,
+                    SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+                        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+                )
             }) {
                 continue;
             }
@@ -134,6 +139,35 @@ pub(super) fn update_scene_composite_scissors(
                 .unwrap_or_default()
                 .to_ascii_lowercase();
             match shader.as_str() {
+                "we/flat-rounded-mask-composite" => {
+                    let scissors = draws
+                        .iter()
+                        .map(|draw| {
+                            flat_rounded_mask_pixel_bounds(storage, draw, output_extent)
+                                .and_then(|bounds| bounds.scissor(output_extent))
+                        })
+                        .collect::<Vec<_>>();
+                    if std::env::var("GILDER_NATIVE_VULKAN_SCENE_SCISSOR_DEBUG")
+                        .ok()
+                        .is_some_and(|requested| {
+                            requested == "all" || requested == graph_index.to_string()
+                        })
+                        && !SCISSOR_DIAGNOSTIC_EMITTED
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
+                    {
+                        eprintln!(
+                            "gilder-flat-rounded-mask-scissor: graph={graph_index} scissors={scissors:?}"
+                        );
+                    }
+                    for (command, scissor) in commands
+                        .get_mut(start..end)
+                        .unwrap_or(&mut [])
+                        .iter_mut()
+                        .zip(scissors)
+                    {
+                        command.scissor = scissor;
+                    }
+                }
                 "we/objectcomposite" => {
                     let scissor = coverage_is_bounded
                         .then(|| bounds.and_then(|bounds| bounds.scissor(output_extent)))
@@ -143,10 +177,8 @@ pub(super) fn update_scene_composite_scissors(
                         .is_some_and(|requested| {
                             requested == "all" || requested == graph_index.to_string()
                         })
-                        && !SCISSOR_DIAGNOSTIC_EMITTED.swap(
-                            true,
-                            std::sync::atomic::Ordering::Relaxed,
-                        )
+                        && !SCISSOR_DIAGNOSTIC_EMITTED
+                            .swap(true, std::sync::atomic::Ordering::Relaxed)
                     {
                         eprintln!(
                             "gilder-scene-composite-scissor: graph={graph_index} bounded={coverage_is_bounded} bounds={bounds:?} scissor={scissor:?}"
@@ -186,11 +218,8 @@ fn object_mesh_pixel_bounds(
     output_extent: [u32; 2],
 ) -> Option<PixelBounds> {
     let mesh = storage.meshes().get(draw.mesh_index as usize)?;
-    let transform = scene_cover_clip_transform(
-        storage.project(),
-        output_extent,
-        draw.clip_transform,
-    );
+    let transform =
+        scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform);
     let mut bounds = None::<PixelBounds>;
     for vertex in storage.mesh_vertices(mesh) {
         let local = skinned_vertex_position(graph, draw, vertex)?;
@@ -284,22 +313,59 @@ fn waterwaves_pixel_margin(
     }
     let linear = object_uv_to_screen_linear(storage, draw, output_extent)?;
     let displacement = strength.abs() * strength.abs();
-    let margin_x = displacement * linear[0][0].hypot(linear[0][1])
-        * output_extent[0] as f32;
-    let margin_y = displacement * linear[1][0].hypot(linear[1][1])
-        * output_extent[1] as f32;
-    (margin_x.is_finite() && margin_y.is_finite()).then_some([
-        margin_x.ceil() + 2.0,
-        margin_y.ceil() + 2.0,
-    ])
+    let margin_x = displacement * linear[0][0].hypot(linear[0][1]) * output_extent[0] as f32;
+    let margin_y = displacement * linear[1][0].hypot(linear[1][1]) * output_extent[1] as f32;
+    (margin_x.is_finite() && margin_y.is_finite())
+        .then_some([margin_x.ceil() + 2.0, margin_y.ceil() + 2.0])
+}
+
+fn flat_rounded_mask_pixel_bounds(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> Option<PixelBounds> {
+    let size_values = material_parameter_values(storage, draw.material, &["Size"]);
+    let size = [
+        size_values.first().copied().unwrap_or(1.0),
+        size_values.get(1).copied().unwrap_or(1.0),
+    ];
+    let softness = material_parameter_values(storage, draw.material, &["Softness"])
+        .first()
+        .copied()
+        .unwrap_or(0.5);
+    let object_pixel_extent = object_projected_pixel_extent(storage, draw, output_extent)?;
+    let uv_bounds =
+        flat_rounded_mask_uv_bounds(size, softness, object_pixel_extent, output_extent)?;
+    let affine = object_uv_to_screen_affine(storage, draw, output_extent)?;
+    let mut bounds = None::<PixelBounds>;
+    for uv in [
+        [uv_bounds.min[0], uv_bounds.min[1]],
+        [uv_bounds.max[0], uv_bounds.min[1]],
+        [uv_bounds.min[0], uv_bounds.max[1]],
+        [uv_bounds.max[0], uv_bounds.max[1]],
+    ] {
+        let screen_uv = [
+            affine[0][0] * uv[0] + affine[0][1] * uv[1] + affine[0][2],
+            affine[1][0] * uv[0] + affine[1][1] * uv[1] + affine[1][2],
+        ];
+        let point = PixelBounds {
+            min_x: screen_uv[0] * output_extent[0] as f32,
+            min_y: screen_uv[1] * output_extent[1] as f32,
+            max_x: screen_uv[0] * output_extent[0] as f32,
+            max_y: screen_uv[1] * output_extent[1] as f32,
+        };
+        if let Some(bounds) = &mut bounds {
+            bounds.include(point);
+        } else {
+            bounds = Some(point);
+        }
+    }
+    bounds
 }
 
 fn multiply_rows(matrix: [[f32; 4]; 4], vector: [f32; 4]) -> [f32; 4] {
     matrix.map(|row| {
-        row[0] * vector[0]
-            + row[1] * vector[1]
-            + row[2] * vector[2]
-            + row[3] * vector[3]
+        row[0] * vector[0] + row[1] * vector[1] + row[2] * vector[2] + row[3] * vector[3]
     })
 }
 

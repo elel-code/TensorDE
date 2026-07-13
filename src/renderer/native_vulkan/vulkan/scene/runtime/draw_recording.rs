@@ -42,6 +42,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub first_index: u32,
     pub index_count: u32,
     pub vertex_offset: i32,
+    pub vertex_count: u32,
     pub resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,
@@ -75,10 +76,7 @@ pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
 pub(in crate::renderer::native_vulkan) fn draw_range_count(
     ranges: &[SceneGpuGraphDrawRange],
 ) -> usize {
-    ranges
-        .iter()
-        .map(|range| range.range.count as usize)
-        .sum()
+    ranges.iter().map(|range| range.range.count as usize).sum()
 }
 
 pub(in crate::renderer::native_vulkan) fn record_scene_draw_extent(
@@ -170,7 +168,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                 .entries
                 .get(draw.pipeline_index as usize)
                 .ok_or_else(|| {
-                    format!("scene draw references missing pipeline {}", draw.pipeline_index)
+                    format!(
+                        "scene draw references missing pipeline {}",
+                        draw.pipeline_index
+                    )
                 })?
                 .pipeline;
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
@@ -185,8 +186,9 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                         0,
                     );
                 }
-                SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => {
-                    device.cmd_draw(command_buffer, 3, 1, 0, 0);
+                SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+                | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => {
+                    device.cmd_draw(command_buffer, draw.vertex_count, 1, 0, 0);
                 }
             }
         }

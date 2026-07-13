@@ -11,9 +11,7 @@ use std::collections::BTreeSet;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
-use crate::engine::scene::{
-    SceneResourceId, SceneStorage, SceneTextureFormat,
-};
+use crate::engine::scene::{SceneResourceId, SceneStorage, SceneTextureFormat};
 use crate::renderer::native_vulkan::vulkan::{
     NativeVulkanVulkanaliaImageMipUpload, NativeVulkanVulkanaliaRecordedImageUpload,
     native_vulkan_vulkanalia_create_sampled_image_with_recorded_staging_upload,
@@ -73,7 +71,10 @@ fn create_scene_texture_image(
     resource: SceneResourceId,
 ) -> Result<SceneTextureImageResource, String> {
     let texture = storage.texture(resource).ok_or_else(|| {
-        format!("scene material texture resource {} has no texture record", resource.0)
+        format!(
+            "scene material texture resource {} has no texture record",
+            resource.0
+        )
     })?;
     let format = scene_texture_vk_format(texture.format);
     let payload = storage.texture_payload(texture);

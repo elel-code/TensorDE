@@ -12,14 +12,15 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 use crate::engine::scene::{
-    INVALID_MATERIAL_ID, SceneMaterialConstantRecord, SceneMaterialHandle,
-    SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage, SceneTextureRecord,
+    INVALID_MATERIAL_ID, SceneMaterialConstantRecord, SceneMaterialHandle, SceneMaterialPassRecord,
+    SceneRenderingDeviceMeshDraw, SceneStorage, SceneTextureRecord,
 };
+use crate::renderer::native_vulkan::native_vulkan_scene_backend_plan;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
 
-pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 320;
+pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 512;
 const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
     SCENE_MATERIAL_UNIFORM_BYTES as usize / size_of::<f32>();
 static SCENE_AUDIO_SPECTRUM32_DIAGNOSTIC: OnceLock<Option<[f32; 32]>> = OnceLock::new();
@@ -68,7 +69,7 @@ fn material_uniform_values(
         .map(|shader| shader.parameter_layout)
         .unwrap_or(BuiltinSceneParameterLayout::None);
     let parameters = MaterialParameters { storage, pass };
-    match layout {
+    let mut values = match layout {
         BuiltinSceneParameterLayout::None => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
         BuiltinSceneParameterLayout::AudioBars => audio_bars_values(&parameters, spectrum),
         BuiltinSceneParameterLayout::StandardMaterial => {
@@ -101,7 +102,9 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
-        BuiltinSceneParameterLayout::RoundedMask => rounded_mask_values(&parameters),
+        BuiltinSceneParameterLayout::RoundedMask => {
+            rounded_mask_values(&parameters, draw.resolved_color, draw.resolved_alpha)
+        }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
         BuiltinSceneParameterLayout::TechCircle => {
@@ -110,23 +113,54 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::FoliageSway => {
             foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
         }
+        BuiltinSceneParameterLayout::FoliageRippleComposite => {
+            foliage_ripple_composite_values(&parameters, storage, draw, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::FinalEffectProgram => final_effect_program_values(
+            &parameters,
+            storage,
+            draw,
+            shader_key,
+            scene_time_seconds,
+        ),
+        BuiltinSceneParameterLayout::FinalWaterRipple => {
+            final_waterripple_values(&parameters, storage, draw, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::FinalWaterWaves => {
+            final_waterwaves_values(&parameters, storage, draw, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::RippleFlowComposite => {
+            ripple_flow_composite_values(&parameters, storage, draw, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::Shake => shake_values(&parameters, scene_time_seconds),
-        BuiltinSceneParameterLayout::WaterWaves => waterwaves_values(
-            &parameters,
-            storage,
-            shader_key,
-            scene_time_seconds,
-        ),
-        BuiltinSceneParameterLayout::WaterRipple => waterripple_values(
-            &parameters,
-            storage,
-            shader_key,
-            scene_time_seconds,
-        ),
+        BuiltinSceneParameterLayout::WaterWaves => {
+            waterwaves_values(&parameters, storage, shader_key, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::WaterWavesUvField => {
+            waterwaves_uv_field_values(&parameters, storage, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::WaterRipple => {
+            waterripple_values(&parameters, storage, shader_key, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::WaterFlow => {
             waterflow_values(&parameters, storage, scene_time_seconds)
         }
+    };
+    let [columns, rows] = draw.effect_batch_atlas_grid;
+    if layout == BuiltinSceneParameterLayout::StandardMaterial {
+        if columns != 0 && rows != 0 && draw.effect_batch_atlas_tile != u32::MAX {
+            let layer = draw.effect_batch_atlas_tile;
+            values[12..16].copy_from_slice(&[
+                (columns as f32).recip(),
+                (rows as f32).recip(),
+                (layer % columns) as f32 / columns as f32,
+                (layer / columns) as f32 / rows as f32,
+            ]);
+        } else {
+            values[12..16].copy_from_slice(&[1.0, 1.0, 0.0, 0.0]);
+        }
     }
+    values
 }
 
 fn resolved_visual_material_values(
@@ -255,6 +289,8 @@ fn parse_scene_audio_spectrum32(value: &str) -> Option<[f32; 32]> {
 
 fn rounded_mask_values(
     parameters: &MaterialParameters<'_>,
+    resolved_color: crate::engine::scene::SceneVec3,
+    resolved_alpha: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
@@ -265,6 +301,12 @@ fn rounded_mask_values(
     values[6] = parameters.scalar(&["Softness"], 0.5);
     values[7] = parameters.scalar(&["ui_editor_properties_opacity"], 1.0);
     values[8] = parameters.scalar(&["Border width", "BorderWidth"], 0.025);
+    values[12..16].copy_from_slice(&[
+        resolved_color.x,
+        resolved_color.y,
+        resolved_color.z,
+        resolved_alpha,
+    ]);
     values
 }
 
@@ -348,10 +390,7 @@ fn caustics_values(
         &parameters.values(&["ui_editor_properties_color_end", "color_end"]),
         3,
     );
-    values[11] = parameters.scalar(
-        &["ui_editor_properties_time_offset", "time_offset"],
-        0.0,
-    );
+    values[11] = parameters.scalar(&["ui_editor_properties_time_offset", "time_offset"], 0.0);
     values[15] = scene_logical_aspect_ratio(storage);
     values
 }
@@ -459,6 +498,17 @@ pub(super) fn material_parameter_layout(
         .unwrap_or(BuiltinSceneParameterLayout::None)
 }
 
+pub(super) fn scene_uses_audio_spectrum(storage: &SceneStorage) -> bool {
+    native_vulkan_scene_backend_plan(storage)
+        .rendering_device_graph
+        .mesh_draws
+        .iter()
+        .any(|draw| {
+            material_parameter_layout(storage, draw.material)
+                == BuiltinSceneParameterLayout::AudioBars
+        })
+}
+
 struct MaterialParameters<'a> {
     storage: &'a SceneStorage,
     pass: &'a SceneMaterialPassRecord,
@@ -534,9 +584,7 @@ fn iris_fragment_values(
     values
 }
 
-fn opacity_values(
-    parameters: &MaterialParameters<'_>,
-) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+fn opacity_values(parameters: &MaterialParameters<'_>) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0] = parameters.scalar(&["alpha", "opacity"], 1.0);
     values[4..8].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
@@ -559,6 +607,294 @@ fn foliage_sway_values(
     values[6] = parameters.scalar(&["ratio"], 0.3);
     values[7] = parameters.scalar(&["scrolldirection", "direction"], 0.0);
     values[8..12].copy_from_slice(&object_source_texture_resolution(storage, draw.object));
+    values
+}
+
+fn foliage_ripple_composite_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&[1.0; 4]);
+    set_vector(
+        &mut values,
+        0,
+        &parameters.values(&["base.color4", "base.g_color4", "base.color", "base.tint"]),
+        4,
+    );
+    values[0] *= draw.resolved_color.x;
+    values[1] *= draw.resolved_color.y;
+    values[2] *= draw.resolved_color.z;
+    values[3] *= draw.resolved_alpha;
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["foliage.speeduv", "foliage.speed"], 5.0);
+    values[6] = parameters.scalar(&["foliage.strength"], 0.4);
+    values[7] = parameters.scalar(&["foliage.phase"], 0.5);
+    values[8] = parameters.scalar(&["foliage.power"], 1.0);
+    values[9] = parameters.scalar(&["foliage.scale", "foliage.noisescale"], 0.05);
+    values[10] = parameters.scalar(&["foliage.ratio"], 0.3);
+    values[11] = parameters.scalar(&["foliage.scrolldirection", "foliage.direction"], 0.0);
+    values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 0));
+    values[16] = scene_time_seconds;
+    values[17] = parameters.scalar(&["ripple.animationspeed"], 0.15);
+    values[18] = parameters.scalar(&["ripple.scale"], 1.0);
+    values[19] = parameters.scalar(&["ripple.scrollspeed"], 0.0);
+    values[20] = parameters.scalar(&["ripple.scrolldirection", "ripple.direction"], 0.0);
+    values[21] = parameters.scalar(&["ripple.ripplestrength", "ripple.strength"], 0.1);
+    let ripple_ratio = parameters.scalar(&["ripple.ratio"], 1.0);
+    values[22] = ripple_ratio;
+    values[23] = ripple_ratio;
+    values
+}
+
+fn final_effect_program_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    shader_key: &str,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    match shader_key.to_ascii_lowercase().as_str() {
+        "we/image-waterwaves-final" => {
+            final_waterwaves_values(parameters, storage, draw, scene_time_seconds)
+        }
+        "we/image-waterripple-final" => {
+            final_waterripple_values(parameters, storage, draw, scene_time_seconds)
+        }
+        "we/image-scroll-final" => final_scroll_values(parameters, draw, scene_time_seconds),
+        "we/image-colorkey-scroll-final" => {
+            final_colorkey_scroll_values(parameters, draw, scene_time_seconds)
+        }
+        "we/puppet-opacity-final" => final_puppet_opacity_values(parameters, storage, draw),
+        "we/puppet-iris-waterripple-final" => {
+            final_puppet_iris_waterripple_values(
+                parameters,
+                storage,
+                draw,
+                scene_time_seconds,
+            )
+        }
+        "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_values(parameters, draw),
+        _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
+    }
+}
+
+fn final_scroll_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["scroll.speedx"], 0.2);
+    values[6] = parameters.scalar(&["scroll.speedy"], 0.2);
+    values[8..10].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 8, &parameters.values(&["scroll.repeat"]), 2);
+    values
+}
+
+fn final_colorkey_scroll_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = final_scroll_values(parameters, draw, scene_time_seconds);
+    values[12] = parameters.scalar(&["colorkey.alpha"], 0.0);
+    values[13] = parameters.scalar(&["colorkey.fuzziness"], 0.0);
+    values[14] = parameters.scalar(&["colorkey.tolerance"], 0.1);
+    values[15] = parameters.scalar(&["colorkey.invert"], 0.0);
+    values[16..19].copy_from_slice(&[1.0, 1.0, 1.0]);
+    set_vector(
+        &mut values,
+        16,
+        &parameters.values(&["colorkey.color"]),
+        3,
+    );
+    values[19] = parameters.scalar(&["colorkey.flatten"], 0.0);
+    values
+}
+
+fn final_puppet_opacity_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[5] = parameters.scalar(&["opacity.mask_enabled"], 0.0);
+    values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
+    values
+}
+
+fn final_puppet_iris_waterripple_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["iris.speed"], 1.0);
+    values[6] = parameters.scalar(&["iris.rough"], 0.2);
+    values[7] = parameters.scalar(&["iris.noiseamount"], 0.5);
+    values[8..10].copy_from_slice(&[1.0, 1.0]);
+    set_vector(&mut values, 8, &parameters.values(&["iris.scale"]), 2);
+    values[10] = parameters.scalar(&["iris.phase"], 0.0);
+    values[11] = parameters.scalar(&["iris.mask_enabled"], 0.0);
+    values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
+    values[16..19].copy_from_slice(&[1.0, 1.0, 1.0]);
+    set_vector(
+        &mut values,
+        16,
+        &parameters.values(&["iris.color", "iris.eyecolor"]),
+        3,
+    );
+    values[19] = parameters.scalar(&["iris.background"], 0.0);
+    let ratio = parameters.scalar(&["ripple.ratio"], 1.0);
+    values[20] = scene_time_seconds;
+    values[21] = parameters.scalar(&["ripple.animationspeed"], 0.15);
+    values[22] = parameters.scalar(&["ripple.scale"], 1.0);
+    values[23] = parameters.scalar(&["ripple.scrollspeed"], 0.0);
+    values[24] = parameters.scalar(&["ripple.scrolldirection", "ripple.direction"], 0.0);
+    values[25] = parameters.scalar(&["ripple.ripplestrength", "ripple.strength"], 0.1);
+    values[26] = ratio;
+    values[27] = ratio;
+    values[28] = parameters.scalar(&["ripple.mask_enabled"], 0.0);
+    values[29] = parameters.scalar(&["ripple.normal_enabled"], 0.0);
+    values[32..36].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 2));
+    values
+}
+
+fn final_flat_rounded_opacity_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
+    set_vector(
+        &mut values,
+        0,
+        &parameters.values(&["rounded.Color"]),
+        3,
+    );
+    values[3] = parameters.scalar(&["rounded.Radius"], 0.5);
+    values[4..6].copy_from_slice(&[1.0, 1.0]);
+    set_vector(
+        &mut values,
+        4,
+        &parameters.values(&["rounded.Size"]),
+        2,
+    );
+    values[6] = parameters.scalar(&["rounded.Softness"], 0.5);
+    values[7] = parameters.scalar(&["rounded.ui_editor_properties_opacity"], 1.0);
+    values[8] = parameters.scalar(&["rounded.Border width", "rounded.BorderWidth"], 0.025);
+    values[9] = parameters.scalar(&["opacity.alpha", "opacity.opacity"], 1.0);
+    values[12..16].copy_from_slice(&[
+        draw.resolved_color.x,
+        draw.resolved_color.y,
+        draw.resolved_color.z,
+        draw.resolved_alpha,
+    ]);
+    values
+}
+
+fn final_effect_color(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; 4] {
+    let mut color = [1.0; 4];
+    set_vector(
+        &mut color,
+        0,
+        &parameters.values(&["base.color4", "base.g_color4", "base.color", "base.tint"]),
+        4,
+    );
+    color[0] *= draw.resolved_color.x;
+    color[1] *= draw.resolved_color.y;
+    color[2] *= draw.resolved_color.z;
+    color[3] *= draw.resolved_alpha;
+    color
+}
+
+fn final_waterwaves_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    let speed = parameters.scalar(&["effect.speed"], 5.0);
+    let scale = parameters.scalar(&["effect.scale"], 200.0);
+    values[4] = scene_time_seconds;
+    values[5] = speed;
+    values[6] = scale;
+    values[7] = parameters.scalar(&["effect.strength"], 0.1);
+    values[8] = parameters.scalar(&["effect.direction"], 0.0);
+    values[9] = parameters.scalar(&["effect.speed2"], speed);
+    values[10] = parameters.scalar(&["effect.scale2"], scale);
+    values[11] = parameters.scalar(&["effect.direction2"], 0.0);
+    values[12] = parameters.scalar(&["effect.offset2"], 0.0);
+    values[13] = parameters.scalar(&["effect.dualwaves"], 0.0);
+    values[14] = parameters.scalar(&["effect.exponent"], 1.0);
+    values[15] = parameters.scalar(&["effect.exponent2"], 1.0);
+    values[16] = parameters.scalar(&["effect.mask_enabled"], 0.0);
+    values[20..24].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
+    values
+}
+
+fn final_waterripple_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    let ratio = parameters.scalar(&["effect.ratio"], 1.0);
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["effect.animationspeed"], 0.15);
+    values[6] = parameters.scalar(&["effect.scale"], 1.0);
+    values[7] = parameters.scalar(&["effect.scrollspeed"], 0.0);
+    values[8] = parameters.scalar(&["effect.scrolldirection", "effect.direction"], 0.0);
+    values[9] = parameters.scalar(&["effect.ripplestrength", "effect.strength"], 0.1);
+    values[10] = ratio;
+    values[11] = 1.0;
+    values[12] = parameters.scalar(&["effect.mask_enabled"], 0.0);
+    values[15] = ratio;
+    values[16..20].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
+    values
+}
+
+fn ripple_flow_composite_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&[1.0; 4]);
+    set_vector(
+        &mut values,
+        0,
+        &parameters.values(&["base.color4", "base.g_color4", "base.color", "base.tint"]),
+        4,
+    );
+    values[0] *= draw.resolved_color.x;
+    values[1] *= draw.resolved_color.y;
+    values[2] *= draw.resolved_color.z;
+    values[3] *= draw.resolved_alpha;
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["flow.speed"], 1.0);
+    values[6] = parameters.scalar(&["flow.feather"], 0.4);
+    values[7] = parameters.scalar(&["flow.strength"], 1.0);
+    values[8] = parameters.scalar(&["flow.phasescale"], 2.0);
+    values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values
 }
 
@@ -636,6 +972,53 @@ fn waterwaves_values(
     values[11] = parameters.scalar(&["exponent2"], 1.0);
     values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values
+}
+
+fn waterwaves_uv_field_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    const MAX_STAGES: usize = 7;
+    const STAGE_FLOATS: usize = 16;
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0] = parameters
+        .scalar(&["waterwaves.stage_count"], 0.0)
+        .clamp(0.0, MAX_STAGES as f32);
+    values[1] = scene_time_seconds;
+    for stage in 0..MAX_STAGES {
+        let speed = waterwaves_stage_scalar(parameters, stage, "speed", 5.0);
+        let scale = waterwaves_stage_scalar(parameters, stage, "scale", 200.0);
+        let base = 4 + stage * STAGE_FLOATS;
+        values[base] = speed;
+        values[base + 1] = scale;
+        values[base + 2] = waterwaves_stage_scalar(parameters, stage, "strength", 0.1);
+        values[base + 3] = waterwaves_stage_scalar(parameters, stage, "mask", 0.0);
+        values[base + 4] = waterwaves_stage_scalar(parameters, stage, "direction", 0.0);
+        values[base + 5] = waterwaves_stage_scalar(parameters, stage, "speed2", speed);
+        values[base + 6] = waterwaves_stage_scalar(parameters, stage, "scale2", scale);
+        values[base + 7] = waterwaves_stage_scalar(parameters, stage, "direction2", 0.0);
+        values[base + 8] = waterwaves_stage_scalar(parameters, stage, "offset2", 0.0);
+        values[base + 9] = waterwaves_stage_scalar(parameters, stage, "dualwaves", 0.0);
+        values[base + 10] = waterwaves_stage_scalar(parameters, stage, "exponent", 1.0);
+        values[base + 11] = waterwaves_stage_scalar(parameters, stage, "exponent2", 1.0);
+        values[base + 12..base + 16].copy_from_slice(&material_texture_resolution(
+            storage,
+            parameters.pass,
+            stage as u32 + 1,
+        ));
+    }
+    values
+}
+
+fn waterwaves_stage_scalar(
+    parameters: &MaterialParameters<'_>,
+    stage: usize,
+    name: &str,
+    default: f32,
+) -> f32 {
+    let name = format!("waterwaves.{stage}.{name}");
+    parameters.scalar(&[name.as_str()], default)
 }
 
 fn waterripple_values(
@@ -745,8 +1128,7 @@ mod tests {
         SceneBinaryDocument, SceneCullMode, SceneDepthTest, SceneMaterialConstantRecord,
         SceneMaterialHandle, SceneMaterialPassRecord, SceneMaterialRecord,
         SceneMaterialTextureRecord, ScenePipelineBlend, SceneRenderingDeviceDrawPrimitive,
-        SceneResourceId, SceneResourceKind, SceneResourceRecord, SceneStringId,
-        SceneTextureFormat,
+        SceneResourceId, SceneResourceKind, SceneResourceRecord, SceneStringId, SceneTextureFormat,
     };
 
     #[test]
@@ -756,16 +1138,16 @@ mod tests {
 
         let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
 
-        assert_eq!(payload.len(), SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
+        assert_eq!(
+            payload.len(),
+            SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>()
+        );
         assert!(payload.iter().all(|byte| *byte == 0));
     }
 
     #[test]
     fn material_uniform_packs_color_constant_into_first_vec4() {
-        let storage = storage_with_constants(
-            "genericimage4",
-            &[("tint", "[0.25,0.5,0.75,0.9]")],
-        );
+        let storage = storage_with_constants("genericimage4", &[("tint", "[0.25,0.5,0.75,0.9]")]);
         let draw = draw_with_material(SceneMaterialHandle(0));
 
         let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
@@ -778,10 +1160,7 @@ mod tests {
 
     #[test]
     fn standard_material_multiplies_resolved_object_shadow_tint_and_alpha() {
-        let storage = storage_with_constants(
-            "genericimage4",
-            &[("tint", "[0.8,0.6,0.4,0.5]")],
-        );
+        let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
         let mut draw = draw_with_material(SceneMaterialHandle(0));
         draw.resolved_color = crate::engine::scene::SceneVec3 {
             x: 0.25,
@@ -800,10 +1179,7 @@ mod tests {
 
     #[test]
     fn offscreen_object_source_defers_resolved_visual_to_object_composite() {
-        let storage = storage_with_constants(
-            "genericimage4",
-            &[("tint", "[0.8,0.6,0.4,0.5]")],
-        );
+        let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
         let mut draw = draw_with_material(SceneMaterialHandle(0));
         draw.resolved_color = crate::engine::scene::SceneVec3 {
             x: 0.0,
@@ -823,12 +1199,10 @@ mod tests {
 
     #[test]
     fn object_composite_applies_only_resolved_visual_not_base_material_twice() {
-        let storage = storage_with_constants(
-            "genericimage4",
-            &[("tint", "[0.8,0.6,0.4,0.5]")],
-        );
+        let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
         let mut draw = draw_with_material(SceneMaterialHandle(0));
-        draw.primitive = crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+        draw.primitive =
+            crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
         draw.resolved_color = crate::engine::scene::SceneVec3 {
             x: 0.1,
             y: 0.2,
@@ -882,6 +1256,45 @@ mod tests {
     }
 
     #[test]
+    fn waterwaves_uv_field_batch_metadata_does_not_overwrite_stage_parameters() {
+        let storage = storage_with_constants(
+            "we/waterwaves-uv-field",
+            &[
+                ("waterwaves.stage_count", "1"),
+                ("waterwaves.0.offset2", "0.125"),
+                ("waterwaves.0.dualwaves", "1"),
+                ("waterwaves.0.exponent", "1.75"),
+                ("waterwaves.0.exponent2", "2.25"),
+            ],
+        );
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.effect_batch_atlas_tile = 6;
+        draw.effect_batch_atlas_grid = [4, 3];
+
+        let payload = pack_scene_material_uniforms(&storage, &[draw], 4.25);
+
+        assert_eq!(f32_from_payload(&payload, 48), 0.125);
+        assert_eq!(f32_from_payload(&payload, 52), 1.0);
+        assert_eq!(f32_from_payload(&payload, 56), 1.75);
+        assert_eq!(f32_from_payload(&payload, 60), 2.25);
+    }
+
+    #[test]
+    fn waterwaves_composite_receives_its_atlas_tile_rectangle() {
+        let storage = storage_with_constants("genericimage4", &[]);
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.effect_batch_atlas_tile = 6;
+        draw.effect_batch_atlas_grid = [4, 3];
+
+        let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+        assert_eq!(f32_from_payload(&payload, 48), 0.25);
+        assert_eq!(f32_from_payload(&payload, 52), 1.0 / 3.0);
+        assert_eq!(f32_from_payload(&payload, 56), 0.5);
+        assert_eq!(f32_from_payload(&payload, 60), 1.0 / 3.0);
+    }
+
+    #[test]
     fn rounded_mask_uniform_packs_sdf_shape_parameters() {
         let storage = storage_with_constants(
             "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
@@ -911,7 +1324,11 @@ mod tests {
     fn scroll_uniform_packs_time_signed_speed_and_repeat_inputs() {
         let storage = storage_with_constants(
             "effects/scroll__SLOTS_1",
-            &[("speedx", "-0.4"), ("speedy", "0.25"), ("repeat", "\"2 3\"")],
+            &[
+                ("speedx", "-0.4"),
+                ("speedy", "0.25"),
+                ("repeat", "\"2 3\""),
+            ],
         );
         let payload = pack_scene_material_uniforms(
             &storage,
@@ -953,12 +1370,18 @@ mod tests {
         let storage = storage_with_constants(
             "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
             &[
-                ("ui_editor_properties_1_color", "{\"value\":\"0.2 0.4 0.6\"}"),
+                (
+                    "ui_editor_properties_1_color",
+                    "{\"value\":\"0.2 0.4 0.6\"}",
+                ),
                 ("ui_editor_properties_2_alpha", "0.8"),
                 ("ui_editor_properties_3_speed", "0.1"),
                 ("ui_editor_properties_4_ring_1_radius", "0.54"),
                 ("ui_editor_properties_4_ring_1_width", "0.04"),
-                ("ui_editor_properties_5_sector_1_width", "{\"script\":\"ignored\",\"value\":0.3}"),
+                (
+                    "ui_editor_properties_5_sector_1_width",
+                    "{\"script\":\"ignored\",\"value\":0.3}",
+                ),
                 ("ui_editor_properties_5_sector_segment_count", "5"),
                 ("ui_editor_properties_5_sector_segment_width", "0.75"),
             ],
@@ -1136,10 +1559,7 @@ mod tests {
 
     #[test]
     fn opacity_uniform_maps_instance_alpha() {
-        let storage = storage_with_constants(
-            "effects/opacity__SLOTS_1",
-            &[("alpha", "0.97")],
-        );
+        let storage = storage_with_constants("effects/opacity__SLOTS_1", &[("alpha", "0.97")]);
         let payload = pack_scene_material_uniforms(
             &storage,
             &[draw_with_material(SceneMaterialHandle(0))],
@@ -1251,6 +1671,8 @@ mod tests {
             },
             resolved_alpha: 1.0,
             apply_resolved_visual: true,
+            effect_batch_atlas_tile: u32::MAX,
+            effect_batch_atlas_grid: [0; 2],
             object: crate::engine::scene::SceneObjectHandle(0),
             material,
             vertex_start: 0,

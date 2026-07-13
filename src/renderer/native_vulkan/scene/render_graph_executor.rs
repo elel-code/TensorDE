@@ -47,6 +47,7 @@ pub enum NativeVulkanSceneRenderGraphCommandKind {
     BindPipeline,
     DrawMesh,
     DrawFullscreenTriangle,
+    DrawObjectUvSupportQuad,
     CopyTarget,
     SwapTargetReferences,
     EndTarget,
@@ -61,7 +62,11 @@ pub fn native_vulkan_scene_render_graph_executor_plan(
     let mut commands = Vec::new();
     for (index, pass) in graph.pass_nodes.iter().enumerate() {
         if pass.role == SceneRenderPassKind::CopyTarget {
-            commands.push(command(index, NativeVulkanSceneRenderGraphCommandKind::CopyTarget, pass));
+            commands.push(command(
+                index,
+                NativeVulkanSceneRenderGraphCommandKind::CopyTarget,
+                pass,
+            ));
             continue;
         }
         if pass.role == SceneRenderPassKind::SwapTargetReferences {
@@ -148,7 +153,15 @@ fn draw_command_kind(
         .unwrap_or(&[])
         .iter()
         .any(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::FullscreenTriangle);
-    Some(if has_fullscreen_utility {
+    let has_object_uv_support_quad = graph
+        .mesh_draws
+        .get(start..end)
+        .unwrap_or(&[])
+        .iter()
+        .any(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
+    Some(if has_object_uv_support_quad {
+        NativeVulkanSceneRenderGraphCommandKind::DrawObjectUvSupportQuad
+    } else if has_fullscreen_utility {
         NativeVulkanSceneRenderGraphCommandKind::DrawFullscreenTriangle
     } else {
         NativeVulkanSceneRenderGraphCommandKind::DrawMesh
@@ -182,14 +195,14 @@ fn executor_status(
 mod tests {
     use super::super::pipeline_cache::NativeVulkanScenePipelineCachePlan;
     use super::super::resource_storage::{
-        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
-        NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneSkinningBufferPlan,
+        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneHeapStoragePlan,
+        NativeVulkanSceneMeshBufferPlan, NativeVulkanSceneResourceStoragePlan,
+        NativeVulkanSceneSkinningBufferPlan,
     };
     use super::*;
     use crate::engine::scene::{
-        SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceGraphPlan,
-        SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceMeshDraw,
-        SceneRenderingDevicePassNode,
+        SceneRenderPassKind, SceneRenderTargetKind, SceneRenderingDeviceDrawPrimitive,
+        SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode,
     };
 
     #[test]
@@ -208,6 +221,8 @@ mod tests {
                 mesh_draw_count: 1,
             }],
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
@@ -225,6 +240,8 @@ mod tests {
                 },
                 resolved_alpha: 1.0,
                 apply_resolved_visual: true,
+                effect_batch_atlas_tile: u32::MAX,
+                effect_batch_atlas_grid: [0; 2],
                 object: crate::engine::scene::SceneObjectHandle(0),
                 material: crate::engine::scene::SceneMaterialHandle(
                     crate::engine::scene::INVALID_MATERIAL_ID,
@@ -342,6 +359,8 @@ mod tests {
                 mesh_draw_count: 1,
             }],
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
@@ -359,6 +378,8 @@ mod tests {
                 },
                 resolved_alpha: 1.0,
                 apply_resolved_visual: true,
+                effect_batch_atlas_tile: u32::MAX,
+                effect_batch_atlas_grid: [0; 2],
                 object: crate::engine::scene::SceneObjectHandle(
                     crate::engine::scene::INVALID_OBJECT_ID,
                 ),
@@ -442,6 +463,8 @@ mod tests {
                 },
             ],
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),
@@ -482,7 +505,8 @@ mod tests {
         assert!(
             plan.commands
                 .iter()
-                .any(|command| command.kind == NativeVulkanSceneRenderGraphCommandKind::RestoreTarget)
+                .any(|command| command.kind
+                    == NativeVulkanSceneRenderGraphCommandKind::RestoreTarget)
         );
     }
 

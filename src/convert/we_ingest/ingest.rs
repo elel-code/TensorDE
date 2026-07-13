@@ -13,16 +13,21 @@ mod animation_layer;
 mod asset_source;
 mod builtin_effect_texture;
 mod effect_target;
+mod final_effect;
+mod foliage_ripple;
 mod image_plane;
+mod json_value;
 mod material_instance;
 mod pipeline_state;
 mod puppet_material;
+mod ripple_flow;
 mod shader_combo;
 mod shader_contract;
 mod text_layer;
 mod texture_resolver;
 mod transform_animation;
 mod utility_layer;
+mod waterwaves_displacement;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -39,7 +44,7 @@ use crate::engine::scene::abi::{
 };
 
 use super::ir::*;
-use super::mdl::{MdlMeshEntry, parse_mdl_model};
+use super::mdl::{MdlMeshEntry, mdl_entry_vertex_bounds, parse_mdl_model};
 use super::pkg::ScenePackageError;
 use super::tex::{TexParseError, block_compression::transcode_texture_upload, decode_tex_upload};
 use animation_layer::animation_layer_initial_progress;
@@ -47,6 +52,11 @@ use asset_source::WeAssetSource;
 use builtin_effect_texture::apply_builtin_effect_texture_defaults;
 use effect_target::{image_target_role, scale_divisor_to_milli};
 use image_plane::image_plane_extent;
+use json_value::{
+    bound_bool, bound_string, compact_json, infer_project_type, non_empty_string,
+    normalize_we_path, parse_color4, parse_json_bytes, parse_vec3, value_f32, value_i32, value_i64,
+    value_u32,
+};
 use material_instance::{
     effect_shader_variant_key, file_texture_bindings, material_pass_constant_names,
     material_texture_bindings, merged_material_constants, push_instance_combo_overrides,
@@ -1324,6 +1334,33 @@ impl WeIrBuilder {
                 &mut effect_passes,
             )?;
         }
+        let waterwaves_uv_field_material_index =
+            waterwaves_displacement::create_waterwaves_uv_field_material(
+                self,
+                effects_in_authored_texture_space,
+                &effect_passes,
+            );
+        let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
+        let foliage_ripple = foliage_ripple::create(
+            self,
+            base_material_handle,
+            &effect_passes,
+            final_scene_blend,
+        );
+        let ripple_flow_materials = ripple_flow::create(
+            self,
+            base_material_handle,
+            &effect_passes,
+            final_scene_blend,
+        );
+        let final_effect = final_effect::create(
+            self,
+            base_material_handle,
+            &effect_passes,
+            final_scene_blend,
+            effects_in_authored_texture_space,
+            object_is_puppet,
+        );
         let graph = we_image_graph(&WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),
@@ -1351,9 +1388,13 @@ impl WeIrBuilder {
                         ),
                     },
                 ),
-            final_scene_blend: scene_blend_from_color_blend_mode(color_blend_mode),
+            final_scene_blend,
             effects_in_authored_texture_space,
             puppet_skinning_after_effects: object_is_puppet && effects_in_authored_texture_space,
+            waterwaves_uv_field_material_index,
+            foliage_ripple_material_index: foliage_ripple,
+            ripple_flow_material_indices: ripple_flow_materials,
+            final_effect_material: final_effect,
             effect_passes,
         });
         if utility_layer.is_some_and(WeIrUtilityLayerKind::samples_scene_color)
@@ -1622,131 +1663,6 @@ impl WeIrBuilder {
             &self.material_constants,
         );
     }
-}
-
-fn mdl_entry_vertex_bounds(entry: &MdlMeshEntry) -> (SceneVec3, SceneVec3) {
-    let mut min = entry.vertices[0].position;
-    let mut max = entry.vertices[0].position;
-    for vertex in &entry.vertices[1..] {
-        min.x = min.x.min(vertex.position.x);
-        min.y = min.y.min(vertex.position.y);
-        min.z = min.z.min(vertex.position.z);
-        max.x = max.x.max(vertex.position.x);
-        max.y = max.y.max(vertex.position.y);
-        max.z = max.z.max(vertex.position.z);
-    }
-    (min, max)
-}
-
-fn non_empty_string(value: &str) -> Option<String> {
-    (!value.is_empty()).then(|| value.to_owned())
-}
-
-fn parse_json_bytes(path: &str, bytes: &[u8]) -> Result<Value, WeIngestError> {
-    serde_json::from_slice(bytes).map_err(|source| WeIngestError::Json {
-        path: path.to_owned(),
-        source,
-    })
-}
-
-fn infer_project_type(scene_file: &str) -> &'static str {
-    if scene_file.ends_with(".mp4") {
-        "video"
-    } else if scene_file.ends_with(".html") || scene_file.ends_with(".htm") {
-        "web"
-    } else {
-        "scene"
-    }
-}
-
-fn normalize_we_path(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_start_matches("./")
-        .trim_start_matches('/')
-        .to_owned()
-}
-
-fn validate_relative_we_path(path: &str) -> Result<(), WeIngestError> {
-    if Path::new(path).is_absolute()
-        || path
-            .split('/')
-            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
-    {
-        return Err(WeIngestError::UnsafePath(path.to_owned()));
-    }
-    Ok(())
-}
-
-fn bound_value(value: Option<&Value>) -> Option<&Value> {
-    match value? {
-        Value::Object(object) => object.get("value").or(value),
-        value => Some(value),
-    }
-}
-
-fn bound_string(value: Option<&Value>) -> Option<String> {
-    bound_value(value).and_then(|value| match value {
-        Value::String(value) => Some(normalize_we_path(value)),
-        _ => None,
-    })
-}
-
-fn bound_bool(value: Option<&Value>) -> Option<bool> {
-    bound_value(value).and_then(Value::as_bool)
-}
-
-fn value_u32(value: Option<&Value>) -> Option<u32> {
-    let value = bound_value(value)?;
-    value.as_u64().and_then(|value| u32::try_from(value).ok())
-}
-
-fn value_i32(value: Option<&Value>) -> Option<i32> {
-    let value = bound_value(value)?;
-    value.as_i64().and_then(|value| i32::try_from(value).ok())
-}
-
-fn value_i64(value: Option<&Value>) -> Option<i64> {
-    let value = bound_value(value)?;
-    value
-        .as_i64()
-        .or_else(|| value.as_u64().and_then(|value| i64::try_from(value).ok()))
-}
-
-fn value_f32(value: Option<&Value>) -> Option<f32> {
-    let value = bound_value(value)?;
-    value.as_f64().map(|value| value as f32)
-}
-
-fn parse_vec3(value: Option<&Value>) -> Option<SceneVec3> {
-    let value = bound_value(value)?;
-    match value {
-        Value::String(text) => {
-            let mut parts = text
-                .split_ascii_whitespace()
-                .filter_map(|part| part.parse::<f32>().ok());
-            Some(SceneVec3 {
-                x: parts.next()?,
-                y: parts.next()?,
-                z: parts.next().unwrap_or(0.0),
-            })
-        }
-        Value::Array(values) => Some(SceneVec3 {
-            x: values.first()?.as_f64()? as f32,
-            y: values.get(1)?.as_f64()? as f32,
-            z: values.get(2).and_then(Value::as_f64).unwrap_or(0.0) as f32,
-        }),
-        _ => None,
-    }
-}
-
-fn parse_color4(value: Option<&Value>, fallback: [f32; 4]) -> [f32; 4] {
-    parse_vec3(value)
-        .map(|color| [color.x, color.y, color.z, 1.0])
-        .unwrap_or(fallback)
-}
-
-fn compact_json(value: &Value) -> String {
-    serde_json::to_string(value).unwrap_or_else(|_| "null".to_owned())
 }
 
 #[cfg(test)]

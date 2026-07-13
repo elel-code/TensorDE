@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::utility_layer::builtin_utility_asset;
-use super::{WeIngestError, normalize_we_path, validate_relative_we_path};
+use super::{WeIngestError, normalize_we_path};
 use crate::convert::we_ingest::ir::WeIrResourceSource;
 use crate::convert::we_ingest::pkg::ScenePackage;
 
@@ -97,6 +97,17 @@ fn read_file_asset(
             })
         })
         .map_err(|source| WeIngestError::Io { path, source })
+}
+
+fn validate_relative_we_path(path: &str) -> Result<(), WeIngestError> {
+    if Path::new(path).is_absolute()
+        || path
+            .split('/')
+            .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        return Err(WeIngestError::UnsafePath(path.to_owned()));
+    }
+    Ok(())
 }
 
 fn discover_builtin_asset_roots(project_root: &Path) -> Vec<PathBuf> {

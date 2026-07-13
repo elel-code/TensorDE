@@ -38,6 +38,20 @@ pub struct MdlMeshVertex {
     pub blend_weights: [f32; 4],
 }
 
+pub fn mdl_entry_vertex_bounds(entry: &MdlMeshEntry) -> (SceneVec3, SceneVec3) {
+    let mut min = entry.vertices[0].position;
+    let mut max = entry.vertices[0].position;
+    for vertex in &entry.vertices[1..] {
+        min.x = min.x.min(vertex.position.x);
+        min.y = min.y.min(vertex.position.y);
+        min.z = min.z.min(vertex.position.z);
+        max.x = max.x.max(vertex.position.x);
+        max.y = max.y.max(vertex.position.y);
+        max.z = max.z.max(vertex.position.z);
+    }
+    (min, max)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MdlAttachment {
     pub bone_index: u32,

@@ -15,7 +15,11 @@ use crate::engine::scene::{
 pub(in crate::renderer::native_vulkan) enum SceneSampledImageSource {
     FallbackWhite,
     SceneTexture { resource: SceneResourceId },
-    EffectTarget { physical_slot: u32 },
+    SceneColorSnapshot,
+    EffectTarget {
+        physical_slot: u32,
+        batch_atlas_tile: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +29,7 @@ pub(in crate::renderer::native_vulkan) struct SceneSampledImageBindingPlan {
     pub initial_reference_physical_slots: Vec<u32>,
     pub fallback_descriptor_count: usize,
     pub scene_texture_descriptor_count: usize,
+    pub scene_color_snapshot_descriptor_count: usize,
     pub effect_target_descriptor_count: usize,
 }
 
@@ -72,12 +77,10 @@ pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_cycle(
             return Err("scene sampled target reference cycle exceeds 1024 frames".to_owned());
         }
         if cycle.iter().any(|plan: &SceneSampledImageBindingPlan| {
-            plan.initial_reference_physical_slots
-                == reference_physical_slots(&references)
+            plan.initial_reference_physical_slots == reference_physical_slots(&references)
         }) {
             return Err(
-                "scene sampled target references entered a non-origin permutation cycle"
-                    .to_owned(),
+                "scene sampled target references entered a non-origin permutation cycle".to_owned(),
             );
         }
         cycle.push(scene_sampled_image_binding_plan_for_references(
@@ -122,6 +125,7 @@ fn scene_sampled_image_binding_plan_for_references(
             continue;
         }
         lower_pass_sampled_bindings(
+            graph,
             pass.mesh_draw_start,
             pass.mesh_draw_count,
             &pass_bindings,
@@ -139,14 +143,20 @@ fn scene_sampled_image_binding_plan_for_references(
         .iter()
         .filter(|source| matches!(source, SceneSampledImageSource::SceneTexture { .. }))
         .count();
+    let scene_color_snapshot_descriptor_count = sources
+        .iter()
+        .filter(|source| matches!(source, SceneSampledImageSource::SceneColorSnapshot))
+        .count();
     Ok(SceneSampledImageBindingPlan {
         sampled_slot_count: sampled_slots.len(),
         initial_reference_physical_slots,
         fallback_descriptor_count: sources
             .len()
             .saturating_sub(effect_target_descriptor_count)
-            .saturating_sub(scene_texture_descriptor_count),
+            .saturating_sub(scene_texture_descriptor_count)
+            .saturating_sub(scene_color_snapshot_descriptor_count),
         scene_texture_descriptor_count,
+        scene_color_snapshot_descriptor_count,
         effect_target_descriptor_count,
         sources,
     })
@@ -158,7 +168,8 @@ fn lower_material_sampled_bindings(
     sources: &mut [SceneSampledImageSource],
 ) -> Result<(), String> {
     for binding in &graph.material_sampled_bindings {
-        let Some(sampled_index) = sampled_slots.iter().position(|slot| *slot == binding.slot) else {
+        let Some(sampled_index) = sampled_slots.iter().position(|slot| *slot == binding.slot)
+        else {
             continue;
         };
         let source_index = binding.draw_index as usize * sampled_slots.len() + sampled_index;
@@ -189,6 +200,7 @@ fn reference_physical_slots(references: &[LogicalTargetReference]) -> Vec<u32> {
 }
 
 fn lower_pass_sampled_bindings(
+    graph: &SceneRenderingDeviceGraphPlan,
     draw_start: u32,
     draw_count: u32,
     bindings: &[&SceneRenderingDeviceSampledBinding],
@@ -209,13 +221,8 @@ fn lower_pass_sampled_bindings(
                     binding.slot
                 )
             })?;
-        let physical_slot = reference_physical_slot(
-            references,
-            graph_index,
-            target,
-            target_name,
-        )
-        .ok_or_else(|| {
+        let physical_slot = reference_physical_slot(references, graph_index, target, target_name)
+            .ok_or_else(|| {
             format!(
                 "scene graph target binding {:?}:{:?} has no physical allocation",
                 target, target_name
@@ -235,10 +242,45 @@ fn lower_pass_sampled_bindings(
                     binding.slot
                 ));
             }
-            *source = SceneSampledImageSource::EffectTarget { physical_slot };
+            *source = if target_is_direct_scene_color_snapshot(
+                graph,
+                graph_index,
+                target,
+                target_name,
+            ) {
+                SceneSampledImageSource::SceneColorSnapshot
+            } else {
+                SceneSampledImageSource::EffectTarget {
+                    physical_slot,
+                    batch_atlas_tile: graph
+                        .effect_batch_atlas_tile(graph_index, target, target_name)
+                        .unwrap_or(0),
+                }
+            };
         }
     }
     Ok(())
+}
+
+pub(in crate::renderer::native_vulkan) fn target_is_direct_scene_color_snapshot(
+    graph: &SceneRenderingDeviceGraphPlan,
+    graph_index: u32,
+    target: SceneRenderTargetKind,
+    target_name: SceneStringId,
+) -> bool {
+    if target != SceneRenderTargetKind::FirstClassEffectTarget {
+        return false;
+    }
+    graph.pass_nodes.iter().enumerate().any(|(pass_index, pass)| {
+        pass.graph_index == graph_index
+            && pass.role == SceneRenderPassKind::CopyTarget
+            && pass.target == target
+            && pass.target_name == target_name
+            && graph.sampled_bindings.iter().any(|binding| {
+                binding.pass_node_index == pass_index as u32
+                    && binding.target == SceneRenderTargetKind::SceneColor
+            })
+    })
 }
 
 fn apply_swap_reference(
@@ -252,18 +294,12 @@ fn apply_swap_reference(
         .iter()
         .find_map(|binding| binding.logical_target())
         .ok_or_else(|| "scene effect swap pass has no logical source target binding".to_owned())?;
-    let source_index = reference_index(
-        references,
-        source_graph_index,
-        source_target,
-        source_name,
-    )
-    .ok_or_else(|| {
-        "scene effect swap source target has no physical allocation".to_owned()
-    })?;
-    let target_index = reference_index(references, graph_index, target, target_name).ok_or_else(|| {
-        "scene effect swap destination target has no physical allocation".to_owned()
-    })?;
+    let source_index = reference_index(references, source_graph_index, source_target, source_name)
+        .ok_or_else(|| "scene effect swap source target has no physical allocation".to_owned())?;
+    let target_index =
+        reference_index(references, graph_index, target, target_name).ok_or_else(|| {
+            "scene effect swap destination target has no physical allocation".to_owned()
+        })?;
     let source_physical_slot = references[source_index].physical_slot;
     references[source_index].physical_slot = references[target_index].physical_slot;
     references[target_index].physical_slot = source_physical_slot;
@@ -320,7 +356,13 @@ mod tests {
     fn sampled_binding_plan_preserves_nonzero_slots_and_swap_rewrites() {
         let graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![
-                pass_node(0, SceneRenderPassKind::EffectMaterial, SceneStringId(0), 0, 1),
+                pass_node(
+                    0,
+                    SceneRenderPassKind::EffectMaterial,
+                    SceneStringId(0),
+                    0,
+                    1,
+                ),
                 pass_node(
                     1,
                     SceneRenderPassKind::SwapTargetReferences,
@@ -328,7 +370,13 @@ mod tests {
                     1,
                     0,
                 ),
-                pass_node(2, SceneRenderPassKind::EffectMaterial, SceneStringId(2), 1, 1),
+                pass_node(
+                    2,
+                    SceneRenderPassKind::EffectMaterial,
+                    SceneStringId(2),
+                    1,
+                    1,
+                ),
             ],
             target_allocations: vec![
                 allocation(SceneStringId(0), 0),
@@ -373,15 +421,24 @@ mod tests {
         );
         assert_eq!(
             plan.source(0, 1),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 1 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 1,
+                batch_atlas_tile: 0,
+            })
         );
         assert_eq!(
             plan.source(1, 1),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 1 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 1,
+                batch_atlas_tile: 0,
+            })
         );
         assert_eq!(
             cycle[1].source(1, 1),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 0 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 0,
+                batch_atlas_tile: 0,
+            })
         );
     }
 
@@ -389,10 +446,34 @@ mod tests {
     fn sampled_binding_plan_follows_lowered_ping_pong_previous_targets() {
         let graph = SceneRenderingDeviceGraphPlan {
             pass_nodes: vec![
-                pass_node(0, SceneRenderPassKind::BaseMaterial, SceneStringId::NONE, 0, 1),
-                pass_node(1, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 1, 1),
-                pass_node(2, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 2, 1),
-                pass_node(3, SceneRenderPassKind::EffectMaterial, SceneStringId::NONE, 3, 1),
+                pass_node(
+                    0,
+                    SceneRenderPassKind::BaseMaterial,
+                    SceneStringId::NONE,
+                    0,
+                    1,
+                ),
+                pass_node(
+                    1,
+                    SceneRenderPassKind::EffectMaterial,
+                    SceneStringId::NONE,
+                    1,
+                    1,
+                ),
+                pass_node(
+                    2,
+                    SceneRenderPassKind::EffectMaterial,
+                    SceneStringId::NONE,
+                    2,
+                    1,
+                ),
+                pass_node(
+                    3,
+                    SceneRenderPassKind::EffectMaterial,
+                    SceneStringId::NONE,
+                    3,
+                    1,
+                ),
             ],
             target_allocations: vec![
                 SceneRenderingDeviceTargetAllocation {
@@ -429,15 +510,24 @@ mod tests {
 
         assert_eq!(
             plan.source(1, 0),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 0 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 0,
+                batch_atlas_tile: 0,
+            })
         );
         assert_eq!(
             plan.source(2, 0),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 1 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 1,
+                batch_atlas_tile: 0,
+            })
         );
         assert_eq!(
             plan.source(3, 0),
-            Some(SceneSampledImageSource::EffectTarget { physical_slot: 0 })
+            Some(SceneSampledImageSource::EffectTarget {
+                physical_slot: 0,
+                batch_atlas_tile: 0,
+            })
         );
     }
 
@@ -530,6 +620,8 @@ mod tests {
             },
             resolved_alpha: 1.0,
             apply_resolved_visual: true,
+            effect_batch_atlas_tile: u32::MAX,
+            effect_batch_atlas_grid: [0; 2],
             object: crate::engine::scene::SceneObjectHandle(
                 crate::engine::scene::INVALID_OBJECT_ID,
             ),
@@ -547,6 +639,8 @@ mod tests {
         SceneRenderingDeviceGraphPlan {
             pass_nodes: Vec::new(),
             target_allocations: Vec::new(),
+            effect_batches: Vec::new(),
+            effect_batch_instances: Vec::new(),
             sampled_bindings: Vec::new(),
             material_sampled_bindings: Vec::new(),
             mesh_draws: Vec::new(),

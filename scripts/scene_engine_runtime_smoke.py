@@ -17,6 +17,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PSS_DIRTY_TARGET_KIB = 40 * 1024
+PERF_SURFACE_WIDTH = 2561
+PERF_SURFACE_HEIGHT = 1601
 DGOP_PSS_DIRTY_KEYS = ("pssDirtyKB", "pss_dirty_kb", "pssDirtyKb")
 
 
@@ -76,7 +78,12 @@ def main() -> int:
                 "--duration",
                 str(args.duration),
                 "--no-fps-limit",
-            ],
+                "--surface-width",
+                str(PERF_SURFACE_WIDTH),
+                "--surface-height",
+                str(PERF_SURFACE_HEIGHT),
+            ]
+            + (["--gpu-timing"] if args.gpu_timing else []),
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -138,6 +145,7 @@ def main() -> int:
             "present_delta_over_6250us_count": report["present_delta_over_6250us_count"],
             "present_delta_over_8334us_count": report["present_delta_over_8334us_count"],
             "present_mode": report["present_mode"],
+            "surface_extent": report["present"]["swapchain"]["extent"],
             "descriptor_model": report["descriptor_model"],
             "render_graph_draw_count": report["render_graph_draw_count"],
             "mesh_draw_count": report["mesh_draw_count"],
@@ -168,6 +176,7 @@ def main() -> int:
             "command_recording_total_micros": report["present"].get(
                 "command_recording_total_micros", 0
             ),
+            "gpu_timing": report["present"].get("gpu_timing"),
             "max_pss_dirty_kib": max_pss_dirty,
             "max_dgop_pss_dirty_kib": max_dgop_pss_dirty,
             "max_observed_pss_dirty_kib": max_observed_pss_dirty,
@@ -192,6 +201,8 @@ def main() -> int:
 
         if report["present_mode"] != "fifo-latest-ready":
             raise AssertionError(report["present_mode"])
+        if summary["surface_extent"] != [PERF_SURFACE_WIDTH, PERF_SURFACE_HEIGHT]:
+            raise AssertionError(summary["surface_extent"])
         if report.get("frame_capture") is not None:
             raise AssertionError("performance smoke must run with frame capture disabled")
         if report["frames_presented"] <= 0:
@@ -220,6 +231,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=float, default=1.0)
     parser.add_argument("--artifact-dir", default="")
     parser.add_argument("--source", default="", help="existing .gscene to measure")
+    parser.add_argument(
+        "--gpu-timing",
+        action="store_true",
+        help="enable optional Vulkan scene GPU timestamp queries",
+    )
     args = parser.parse_args()
     if args.duration <= 0 or args.interval <= 0:
         parser.error("--duration and --interval must be positive")

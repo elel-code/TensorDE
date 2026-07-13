@@ -470,22 +470,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         })
         .collect();
 
-    let image_targets = ir
-        .image_targets
-        .iter()
-        .map(|target| SceneImageTargetRecord {
-            name: strings.id(&target.name),
-            role: match target.role {
-                WeIrImageTargetRole::NamedFbo => SceneRenderTargetKind::NamedFbo,
-                WeIrImageTargetRole::FirstClassEffectTarget => {
-                    SceneRenderTargetKind::FirstClassEffectTarget
-                }
-            },
-            format: strings.optional_id(&target.format),
-            width_divisor_milli: target.width_divisor_milli,
-            height_divisor_milli: target.height_divisor_milli,
-        })
-        .collect();
+    let image_targets = lower_image_targets(ir, &mut strings)?;
 
     let (render_graphs, render_passes, render_bindings, unsupported) =
         lower_render_graphs(ir, &mut strings)?;
@@ -544,6 +529,10 @@ pub enum WeLowerError {
         pass_id: u32,
         slot: u32,
     },
+    IncompatibleImageTargetSpec {
+        role: SceneRenderTargetKind,
+        name: String,
+    },
 }
 
 impl std::fmt::Display for WeLowerError {
@@ -566,11 +555,81 @@ impl std::fmt::Display for WeLowerError {
                 f,
                 "IR render graph {graph_index} pass {pass_id} samples previous target in slot {slot}, but no previous pass exists"
             ),
+            Self::IncompatibleImageTargetSpec { role, name } => write!(
+                f,
+                "IR image target {role:?}:{name} has conflicting format or scale declarations"
+            ),
         }
     }
 }
 
 impl std::error::Error for WeLowerError {}
+
+fn lower_image_targets(
+    ir: &WeSceneIr,
+    strings: &mut StringInterner,
+) -> Result<Vec<SceneImageTargetRecord>, WeLowerError> {
+    let mut targets = Vec::new();
+    for target in &ir.image_targets {
+        let role = match target.role {
+            WeIrImageTargetRole::NamedFbo => SceneRenderTargetKind::NamedFbo,
+            WeIrImageTargetRole::FirstClassEffectTarget => {
+                SceneRenderTargetKind::FirstClassEffectTarget
+            }
+        };
+        push_image_target(
+            &mut targets,
+            SceneImageTargetRecord {
+                name: strings.id(&target.name),
+                role,
+                format: strings.optional_id(&target.format),
+                width_divisor_milli: target.width_divisor_milli,
+                height_divisor_milli: target.height_divisor_milli,
+            },
+            &target.name,
+        )?;
+    }
+    for target in ir
+        .render_graphs
+        .iter()
+        .flat_map(|graph| &graph.target_specs)
+    {
+        push_image_target(
+            &mut targets,
+            SceneImageTargetRecord {
+                name: strings.id(&target.name),
+                role: lower_render_target(target.role),
+                format: strings.optional_id(&target.format),
+                width_divisor_milli: target.width_divisor_milli,
+                height_divisor_milli: target.height_divisor_milli,
+            },
+            &target.name,
+        )?;
+    }
+    Ok(targets)
+}
+
+fn push_image_target(
+    targets: &mut Vec<SceneImageTargetRecord>,
+    candidate: SceneImageTargetRecord,
+    name: &str,
+) -> Result<(), WeLowerError> {
+    let Some(existing) = targets
+        .iter()
+        .find(|target| target.role == candidate.role && target.name == candidate.name)
+    else {
+        targets.push(candidate);
+        return Ok(());
+    };
+    if *existing == candidate {
+        Ok(())
+    } else {
+        Err(WeLowerError::IncompatibleImageTargetSpec {
+            role: candidate.role,
+            name: name.to_owned(),
+        })
+    }
+}
 
 fn lower_render_graphs(
     ir: &WeSceneIr,

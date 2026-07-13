@@ -27,8 +27,13 @@ use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 pub struct NativeVulkanSceneRunOptions {
     pub capture_frame: Option<PathBuf>,
     pub capture_frame_number: u64,
+    pub capture_frame_count: u64,
+    pub capture_frame_step: u64,
+    pub capture_frame_downscale: u32,
     pub capture_scene_graph: Option<u32>,
     pub clear_color_override: Option<NativeVulkanClearColor>,
+    pub surface_extent: Option<(u32, u32)>,
+    pub gpu_timing: bool,
 }
 
 impl Default for NativeVulkanSceneRunOptions {
@@ -36,8 +41,13 @@ impl Default for NativeVulkanSceneRunOptions {
         Self {
             capture_frame: None,
             capture_frame_number: 1,
+            capture_frame_count: 1,
+            capture_frame_step: 1,
+            capture_frame_downscale: 1,
             capture_scene_graph: None,
             clear_color_override: None,
+            surface_extent: None,
+            gpu_timing: false,
         }
     }
 }
@@ -95,6 +105,21 @@ pub fn run_scene_with_options(
             "scene frame capture number must be at least 1".to_owned(),
         ));
     }
+    if scene_options.capture_frame.is_some() && scene_options.capture_frame_count == 0 {
+        return Err(NativeVulkanError::Scene(
+            "scene frame capture count must be at least 1".to_owned(),
+        ));
+    }
+    if scene_options.capture_frame.is_some() && scene_options.capture_frame_step == 0 {
+        return Err(NativeVulkanError::Scene(
+            "scene frame capture step must be at least 1".to_owned(),
+        ));
+    }
+    if scene_options.capture_frame.is_some() && scene_options.capture_frame_downscale == 0 {
+        return Err(NativeVulkanError::Scene(
+            "scene frame capture downscale must be at least 1".to_owned(),
+        ));
+    }
     if scene_options.capture_frame.is_none() && scene_options.capture_scene_graph.is_some() {
         return Err(NativeVulkanError::Scene(
             "scene graph isolation requires frame capture".to_owned(),
@@ -129,7 +154,12 @@ pub fn run_scene_with_options(
             storage,
             capture_frame: scene_options.capture_frame,
             capture_frame_number: scene_options.capture_frame_number,
+            capture_frame_count: scene_options.capture_frame_count,
+            capture_frame_step: scene_options.capture_frame_step,
+            capture_frame_downscale: scene_options.capture_frame_downscale,
             capture_scene_graph,
+            surface_extent: scene_options.surface_extent,
+            gpu_timing: scene_options.gpu_timing,
         })
         .map_err(NativeVulkanError::Scene)?;
     let frame_capture = present.frame_capture.clone();
@@ -143,7 +173,7 @@ pub fn run_scene_with_options(
 
     Ok(NativeVulkanSceneRuntimeSnapshot {
         binding: "vulkanalia",
-        route: "scene-engine-fifo-latest-ready-present-runtime",
+        route: "scene-engine-vulkan-present-runtime",
         source,
         frame_capture,
         capture_scene_graph,
@@ -154,7 +184,7 @@ pub fn run_scene_with_options(
         present_delta_over_6250us_count: present.present_delta_over_6250us_count,
         present_delta_over_8334us_count: present.present_delta_over_8334us_count,
         descriptor_model: "VK_EXT_descriptor_heap",
-        present_mode: backend_plan.present_mode,
+        present_mode: present.swapchain.present_mode,
         render_graph_draw_count: backend_plan.render_graph_executor.draw_count,
         mesh_draw_count: backend_plan.rendering_device_graph.mesh_draws.len(),
         mesh_draw_recording_ready,
@@ -270,6 +300,8 @@ mod tests {
             rendering_device_graph: SceneRenderingDeviceGraphPlan {
                 pass_nodes: Vec::new(),
                 target_allocations: Vec::new(),
+                effect_batches: Vec::new(),
+                effect_batch_instances: Vec::new(),
                 sampled_bindings: Vec::new(),
                 material_sampled_bindings: Vec::new(),
                 mesh_draws: Vec::new(),

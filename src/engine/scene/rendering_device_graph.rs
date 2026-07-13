@@ -13,10 +13,19 @@ use super::semantic_world::{ResolvedObjectState, ResolvedSemanticFrame};
 use super::server::RendererSceneRenderPlan;
 use super::storage::SceneStorage;
 
+mod effect_batch;
+
+pub use effect_batch::{
+    SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
+    SceneRenderingDeviceEffectBatchInstance,
+};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceGraphPlan {
     pub pass_nodes: Vec<SceneRenderingDevicePassNode>,
     pub target_allocations: Vec<SceneRenderingDeviceTargetAllocation>,
+    pub effect_batches: Vec<SceneRenderingDeviceEffectBatch>,
+    pub effect_batch_instances: Vec<SceneRenderingDeviceEffectBatchInstance>,
     pub sampled_bindings: Vec<SceneRenderingDeviceSampledBinding>,
     pub material_sampled_bindings: Vec<SceneRenderingDeviceMaterialSampledBinding>,
     pub mesh_draws: Vec<SceneRenderingDeviceMeshDraw>,
@@ -105,6 +114,8 @@ impl SceneRenderingDeviceGraphPlan {
                                 resolved_color: pass_object_state.resolved_color,
                                 resolved_alpha: pass_object_state.resolved_alpha,
                                 apply_resolved_visual: pass_applies_resolved_visual(pass),
+                                effect_batch_atlas_tile: INVALID_OBJECT_ID,
+                                effect_batch_atlas_grid: [0; 2],
                                 object: mesh.object,
                                 material: pass_draw_material(pass, mesh.material),
                                 vertex_start: mesh.vertex_start,
@@ -116,9 +127,15 @@ impl SceneRenderingDeviceGraphPlan {
                     }
                 }
                 if mesh_draws.len() == mesh_draw_start as usize
-                    && pass_draws_fullscreen_utility(storage, pass, pass_object_state)
+                    && let Some(primitive) =
+                        pass_utility_primitive(storage, pass, pass_object_state)
                 {
-                    mesh_draws.push(fullscreen_utility_draw(storage, pass, pass_object_state));
+                    mesh_draws.push(utility_primitive_draw(
+                        storage,
+                        pass,
+                        pass_object_state,
+                        primitive,
+                    ));
                 }
                 let mesh_draw_count = mesh_draws.len() as u32 - mesh_draw_start;
                 sampled_bindings.extend(storage.render_pass_bindings(pass).iter().filter_map(
@@ -147,6 +164,12 @@ impl SceneRenderingDeviceGraphPlan {
             }
         }
         let target_allocations = graph_target_allocations(storage);
+        let (effect_batches, effect_batch_instances) = effect_batch::build_scene_effect_batches(
+            storage,
+            &pass_nodes,
+            &target_allocations,
+            &mut mesh_draws,
+        );
         let material_sampled_bindings = material_sampled_bindings(storage, &mesh_draws);
         let graph_physical_target_count = target_allocations
             .iter()
@@ -160,6 +183,8 @@ impl SceneRenderingDeviceGraphPlan {
         Self {
             pass_nodes,
             target_allocations,
+            effect_batches,
+            effect_batch_instances,
             sampled_bindings,
             material_sampled_bindings,
             mesh_draws,
@@ -192,6 +217,45 @@ impl SceneRenderingDeviceGraphPlan {
 
     pub fn uses_fullscreen_utility_primitive(&self) -> bool {
         self.fullscreen_utility_draw_count() != 0
+    }
+
+    pub fn effect_batch_atlas_tile(
+        &self,
+        graph_index: u32,
+        target: SceneRenderTargetKind,
+        target_name: SceneStringId,
+    ) -> Option<u32> {
+        self.effect_batch_instances
+            .iter()
+            .find(|instance| {
+                instance.graph_index == graph_index
+                    && instance.target == target
+                    && instance.target_name == target_name
+            })
+            .map(|instance| instance.atlas_tile)
+    }
+
+    pub fn effect_batch_field_count(&self, physical_slot: u32) -> u32 {
+        self.effect_batches
+            .iter()
+            .find(|batch| batch.physical_slot == physical_slot)
+            .map_or(1, |batch| batch.layer_count.max(1))
+    }
+
+    pub fn effect_batch_atlas_grid(&self, physical_slot: u32) -> [u32; 2] {
+        self.effect_batches
+            .iter()
+            .find(|batch| batch.physical_slot == physical_slot)
+            .map_or([1, 1], |batch| {
+                [batch.atlas_columns.max(1), batch.atlas_rows.max(1)]
+            })
+    }
+
+    pub fn effect_batch_field_extent_divisor(&self, physical_slot: u32) -> u32 {
+        self.effect_batches
+            .iter()
+            .find(|batch| batch.physical_slot == physical_slot)
+            .map_or(1, |batch| batch.field_extent_divisor.max(1))
     }
 }
 
@@ -267,6 +331,10 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub resolved_color: SceneVec3,
     pub resolved_alpha: f32,
     pub apply_resolved_visual: bool,
+    /// Layer in a scene-level GPU effect batch, or `INVALID_OBJECT_ID` for ordinary draws.
+    pub effect_batch_atlas_tile: u32,
+    /// Column/row count of the scene-level 2D effect atlas; `[0, 0]` means no batch.
+    pub effect_batch_atlas_grid: [u32; 2],
     pub object: SceneObjectHandle,
     pub material: SceneMaterialHandle,
     pub vertex_start: u32,
@@ -280,6 +348,7 @@ pub struct SceneRenderingDeviceMeshDraw {
 pub enum SceneRenderingDeviceDrawPrimitive {
     ObjectMesh,
     FullscreenTriangle,
+    ObjectUvSupportQuad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -304,9 +373,11 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
     pass.object.0 != INVALID_OBJECT_ID
         && (pass.role == SceneRenderPassKind::BaseMaterial
             || (pass.role == SceneRenderPassKind::SceneComposite
-                && !storage
-                    .string(pass.shader_key)
-                    .is_some_and(|key| key.eq_ignore_ascii_case("we/objectcomposite"))))
+                && !storage.string(pass.shader_key).is_some_and(|key| {
+                    key.eq_ignore_ascii_case("we/objectcomposite")
+                        || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
+                        || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
+                })))
 }
 
 fn visible_pass_object<'frame>(
@@ -318,11 +389,11 @@ fn visible_pass_object<'frame>(
         .filter(|object| object.resolved_visible)
 }
 
-fn pass_draws_fullscreen_utility(
+fn pass_utility_primitive(
     storage: &SceneStorage,
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
-) -> bool {
+) -> Option<SceneRenderingDeviceDrawPrimitive> {
     if !matches!(
         pass.role,
         SceneRenderPassKind::BaseMaterial
@@ -330,20 +401,28 @@ fn pass_draws_fullscreen_utility(
             | SceneRenderPassKind::ColorBlendPassthrough
             | SceneRenderPassKind::SceneComposite
     ) {
-        return false;
+        return None;
     }
     if pass.object.0 != INVALID_OBJECT_ID && pass_object_state.is_none() {
-        return false;
+        return None;
     }
     storage
         .string(pass.shader_key)
-        .is_some_and(shader_uses_fullscreen_utility_primitive)
+        .and_then(shader_utility_primitive)
 }
 
-fn shader_uses_fullscreen_utility_primitive(shader_key: &str) -> bool {
+fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDrawPrimitive> {
     let key = shader_key.to_ascii_lowercase();
-    key.starts_with("effects/")
+    if matches!(
+        key.as_str(),
+        "we/flat-rounded-mask-composite" | "we/flat-rounded-opacity-final"
+    ) {
+        return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
+    }
+    (key.starts_with("effects/")
         || key.starts_with("workshop/")
+        || key == "we/image-ripple-source"
+        || key.starts_with("we/waterwaves-uv-")
         || key == "minimalalpha"
         || key.starts_with("minimalalpha__")
         || key == "passthrough"
@@ -351,16 +430,23 @@ fn shader_uses_fullscreen_utility_primitive(shader_key: &str) -> bool {
         || key.contains("composelayer")
         || key.contains("objectcomposite")
         || key.contains("utilitycomposite")
-        || key.contains("flattexture")
+        || key.contains("flattexture"))
+    .then_some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
 }
 
-fn fullscreen_utility_draw(
+fn utility_primitive_draw(
     storage: &SceneStorage,
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
+    primitive: SceneRenderingDeviceDrawPrimitive,
 ) -> SceneRenderingDeviceMeshDraw {
+    let vertex_count = match primitive {
+        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => 6,
+        SceneRenderingDeviceDrawPrimitive::ObjectMesh
+        | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
+    };
     SceneRenderingDeviceMeshDraw {
-        primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+        primitive,
         mesh_index: INVALID_OBJECT_ID,
         resolved_object_index: pass_object_state
             .map(|object| object.object_index)
@@ -381,12 +467,14 @@ fn fullscreen_utility_draw(
         ),
         resolved_alpha: pass_object_state.map_or(1.0, |object| object.resolved_alpha),
         apply_resolved_visual: pass_applies_resolved_visual(pass),
+        effect_batch_atlas_tile: INVALID_OBJECT_ID,
+        effect_batch_atlas_grid: [0; 2],
         object: pass.object,
         material: pass.material,
         vertex_start: 0,
-        vertex_count: 3,
+        vertex_count,
         index_start: 0,
-        index_count: 3,
+        index_count: vertex_count,
     }
 }
 
@@ -688,9 +776,8 @@ fn target_allocations_are_compatible(
         && left.width_divisor_milli == right.width_divisor_milli
         && left.height_divisor_milli == right.height_divisor_milli
         && left.authored_texture_space == right.authored_texture_space
-        && (left.authored_texture_space
-            || (left.authored_width, left.authored_height)
-                == (right.authored_width, right.authored_height))
+        && (left.authored_width, left.authored_height)
+            == (right.authored_width, right.authored_height)
 }
 
 fn target_is_transient_aliasable(target: SceneRenderTargetKind) -> bool {
@@ -742,6 +829,7 @@ fn puppet_effect_graph_extent(storage: &SceneStorage, graph_index: u32) -> Optio
         storage.string(pass.shader_key).is_some_and(|shader| {
             shader.eq_ignore_ascii_case("we/image-effect-source")
                 || shader.eq_ignore_ascii_case("we/puppet-effect-source")
+                || shader.eq_ignore_ascii_case("we/image-ripple-source")
         })
     });
     if !uses_authored_texture_space {
@@ -835,6 +923,27 @@ mod tests {
         SceneResourceRecord, SceneShaderContractRecord, SceneStringId, SceneTextureFormat,
         SceneTextureRecord, SceneVec3,
     };
+
+    #[test]
+    fn authored_targets_only_alias_images_with_identical_extents() {
+        let base = TargetAllocationCompatibility {
+            format: SceneStringId(3),
+            width_divisor_milli: 1_000,
+            height_divisor_milli: 1_000,
+            authored_width: 1_571,
+            authored_height: 2_621,
+            authored_texture_space: true,
+        };
+        assert!(target_allocations_are_compatible(base, base));
+        assert!(!target_allocations_are_compatible(
+            base,
+            TargetAllocationCompatibility {
+                authored_width: 2_318,
+                authored_height: 1_794,
+                ..base
+            }
+        ));
+    }
 
     #[test]
     fn scene_projection_maps_authored_bounds_to_vulkan_ndc() {
@@ -1299,6 +1408,14 @@ mod tests {
             identity_clip_transform()
         );
         assert_eq!(graph.mesh_draws[0].authored_source_extent, [0.0; 2]);
+    }
+
+    #[test]
+    fn direct_flat_rounded_mask_uses_object_uv_support_quad() {
+        assert_eq!(
+            shader_utility_primitive("we/flat-rounded-mask-composite"),
+            Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad)
+        );
     }
 
     #[test]
