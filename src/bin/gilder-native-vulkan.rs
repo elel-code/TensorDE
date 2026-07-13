@@ -520,15 +520,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     if scene_gpu_timing && mode != NativeVulkanCliMode::RunScene {
         return Err("--gpu-timing requires --run-scene".into());
     }
-    let scene_surface_extent = match (scene_surface_width, scene_surface_height) {
-        (Some(width), Some(height)) if width > 0 && height > 0 => Some((width, height)),
-        (None, None) => None,
-        _ => {
-            return Err(
-                "--surface-width and --surface-height must be positive and used together".into(),
-            );
-        }
-    };
+    let scene_surface_extent =
+        parse_scene_surface_extent(scene_surface_width, scene_surface_height)?;
 
     let duration_playback_frames = if duration_set {
         native_vulkan_video_duration_playback_frames(duration, options.target_max_fps)
@@ -954,6 +947,18 @@ fn parse_capture_scene_graph(value: Option<String>) -> Result<u32, &'static str>
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_scene_surface_extent(
+    width: Option<u32>,
+    height: Option<u32>,
+) -> Result<Option<(u32, u32)>, &'static str> {
+    match (width, height) {
+        (None, None) => Ok(None),
+        (Some(width), Some(height)) if width > 0 && height > 0 => Ok(Some((width, height))),
+        _ => Err("--surface-width and --surface-height must be positive and used together"),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 #[allow(unsafe_code)]
 fn apply_vulkan_device_cli_environment(
     selector: Option<&str>,
@@ -1046,6 +1051,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --capture-frame-step N samples every Nth submitted frame in a sequence; the default is 1.\n\
 --capture-frame-downscale N keeps full-resolution rendering but stores every Nth readback pixel in each axis.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
+--surface-width/--surface-height override the automatic Wayland buffer extent and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
@@ -1127,6 +1133,23 @@ mod tests {
         assert_eq!(
             parse_capture_scene_graph(Some("graph".to_owned())),
             Err("--capture-scene-graph requires a graph index")
+        );
+    }
+
+    #[test]
+    fn scene_surface_extent_defaults_to_wayland_and_allows_a_paired_override() {
+        assert_eq!(parse_scene_surface_extent(None, None), Ok(None));
+        assert_eq!(
+            parse_scene_surface_extent(Some(2561), Some(1601)),
+            Ok(Some((2561, 1601)))
+        );
+        assert_eq!(
+            parse_scene_surface_extent(Some(2561), None),
+            Err("--surface-width and --surface-height must be positive and used together")
+        );
+        assert_eq!(
+            parse_scene_surface_extent(Some(0), Some(1601)),
+            Err("--surface-width and --surface-height must be positive and used together")
         );
     }
 }
