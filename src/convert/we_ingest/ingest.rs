@@ -68,7 +68,10 @@ use pipeline_state::{
 };
 use shader_combo::parse_shader_combo_definitions;
 use shader_contract::build_shader_contract_records;
-use text_layer::{ingest_text_layer, retained_text_effect_is_supported, text_layer_value};
+use text_layer::{
+    ingest_text_layer, retained_text_effect_is_supported,
+    retained_text_effect_requires_dependency_composite, text_layer_value,
+};
 use texture_resolver::texture_candidates;
 use transform_animation::ingest_object_transform_tracks;
 use utility_layer::{FULL_FRAMEBUFFER_TARGET, is_runtime_render_target, utility_layer_kind};
@@ -547,7 +550,12 @@ impl WeIrBuilder {
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
         let retained_text_effect_instances;
+        let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {
+            retained_text_requires_dependency_composite =
+                effect_instances.iter().any(|(effect, _)| {
+                    retained_text_effect_requires_dependency_composite(self, *effect)
+                });
             retained_text_effect_instances = effect_instances
                 .iter()
                 .filter(|(effect, _)| retained_text_effect_is_supported(self, *effect))
@@ -565,9 +573,19 @@ impl WeIrBuilder {
             }
             retained_text_effect_instances.as_slice()
         } else {
+            retained_text_requires_dependency_composite = false;
             effect_instances.as_slice()
         };
-        let render_graph = if let Some(material_handle) = material {
+        let render_graph = if retained_text_requires_dependency_composite {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(handle),
+                pass_index: None,
+                feature: "text-clipping-mask-needs-dependency-composite".to_owned(),
+                expected_subsystem: "scene RenderingDevice dependency composite".to_owned(),
+                containment: "masked-text-hidden-instead-of-unmasked-solid-fallback".to_owned(),
+            });
+            None
+        } else if let Some(material_handle) = material {
             Some(self.add_render_graph_for_object(
                 handle,
                 material_handle,
@@ -601,7 +619,12 @@ impl WeIrBuilder {
             origin: parse_vec3(value.get("origin")).unwrap_or_default(),
             angles: parse_vec3(value.get("angles")).unwrap_or_default(),
             scale: parse_vec3(value.get("scale")).unwrap_or(SceneVec3::ONE),
-            color: parse_vec3(value.get("color")).unwrap_or(SceneVec3::ONE),
+            // Retained glyph textures already contain both the glyph and outline colors.
+            color: if kind == SceneAbiObjectKind::Text && material.is_some() {
+                SceneVec3::ONE
+            } else {
+                parse_vec3(value.get("color")).unwrap_or(SceneVec3::ONE)
+            },
             alpha: value_f32(value.get("alpha"))
                 .filter(|alpha| alpha.is_finite())
                 .unwrap_or(1.0)

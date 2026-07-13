@@ -21,6 +21,8 @@ use super::super::tex::{
 };
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
 
+const TEXT_REFERENCE_HEIGHT: f32 = 1080.0;
+
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WeTextLayerRaster {
     pub width: u32,
@@ -52,6 +54,20 @@ pub(super) fn retained_text_effect_is_supported(builder: &WeIrBuilder, effect: u
         })
 }
 
+pub(super) fn retained_text_effect_requires_dependency_composite(
+    builder: &WeIrBuilder,
+    effect: u32,
+) -> bool {
+    builder
+        .effects
+        .get(effect as usize)
+        .and_then(|effect| builder.resources.get(effect.resource as usize))
+        .is_some_and(|resource| {
+            resource.path.ends_with("/clipping_mask/effect.json")
+                || resource.path.ends_with("/clippingmask/effect.json")
+        })
+}
+
 pub(super) fn ingest_text_layer(
     builder: &mut WeIrBuilder,
     object: u32,
@@ -71,7 +87,7 @@ pub(super) fn ingest_text_layer(
         return Ok(None);
     };
     let font_bytes = builder.resources[font_resource as usize].payload.clone();
-    let raster = match rasterize_text_layer(value, text, font_bytes) {
+    let raster = match rasterize_text_layer(value, text, font_bytes, builder.scene.logical_height) {
         Ok(raster) => raster,
         Err(message) => {
             builder.unsupported.push(WeIrUnsupported {
@@ -203,15 +219,19 @@ pub(super) fn rasterize_text_layer(
     object: &Value,
     text: &str,
     font_bytes: Vec<u8>,
+    scene_height: u32,
 ) -> Result<WeTextLayerRaster, String> {
     let size = parse_vec3(object.get("size")).ok_or("text layer is missing a valid size")?;
     let width = checked_dimension(size.x, "width")?;
     let height = checked_dimension(size.y, "height")?;
     let font = FontArc::try_from_vec(font_bytes)
         .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
-    let point_size = value_f32(object.get("pointsize"))
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(32.0);
+    let point_size = text_point_size_pixels(
+        value_f32(object.get("pointsize"))
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(32.0),
+        scene_height,
+    );
     let spacing = parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x);
     let scale = PxScale::from(point_size);
     let scaled = font.as_scaled(scale);
@@ -356,6 +376,10 @@ fn checked_dimension(value: f32, label: &str) -> Result<u32, String> {
     Ok(value.round().max(1.0) as u32)
 }
 
+fn text_point_size_pixels(point_size: f32, scene_height: u32) -> f32 {
+    point_size * (scene_height.max(1) as f32 / TEXT_REFERENCE_HEIGHT).max(1.0)
+}
+
 fn color_byte(value: f32) -> u8 {
     (value.clamp(0.0, 1.0) * 255.0).round() as u8
 }
@@ -374,5 +398,12 @@ mod tests {
     fn system_font_uses_portable_scene_fallback() {
         let object = serde_json::json!({"font": "systemfont_arial"});
         assert_eq!(text_layer_font_path(&object), "fonts/Jost-Medium.ttf");
+    }
+
+    #[test]
+    fn wallpaper_engine_point_size_tracks_authored_scene_resolution() {
+        assert_eq!(text_point_size_pixels(96.0, 2160), 192.0);
+        assert_eq!(text_point_size_pixels(96.0, 1080), 96.0);
+        assert_eq!(text_point_size_pixels(96.0, 720), 96.0);
     }
 }

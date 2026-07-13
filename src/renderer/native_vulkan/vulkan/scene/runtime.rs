@@ -230,6 +230,17 @@ struct SceneGpuResources {
     dynamic_effect_uniforms: bool,
 }
 
+fn automatic_scene_surface_extent(
+    authored_extent: (u32, u32),
+    wayland_buffer_extent: (u32, u32),
+) -> (u32, u32) {
+    if authored_extent.0 > 0 && authored_extent.1 > 0 {
+        authored_extent
+    } else {
+        wayland_buffer_extent
+    }
+}
+
 pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_present(
     options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
@@ -320,11 +331,18 @@ fn with_scene_present(
         ));
     }
 
+    let project = options.storage.project();
+    let automatic_surface_extent = automatic_scene_surface_extent(
+        (project.logical_width, project.logical_height),
+        handles.buffer_size,
+    );
     let swapchain_plan = match create_vulkanalia_swapchain_plan(
         instance,
         selection.physical_device,
         surface,
-        options.surface_extent.unwrap_or(handles.buffer_size),
+        options
+            .surface_extent
+            .unwrap_or(automatic_surface_extent),
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
     ) {
@@ -1896,6 +1914,18 @@ mod tests {
         INVALID_MATERIAL_ID, SceneMaterialHandle, SceneObjectHandle,
         SceneRenderingDeviceDrawPrimitive,
     };
+
+    #[test]
+    fn automatic_surface_extent_prefers_authored_scene_pixels() {
+        assert_eq!(
+            automatic_scene_surface_extent((3840, 2160), (2561, 1440)),
+            (3840, 2160)
+        );
+        assert_eq!(
+            automatic_scene_surface_extent((0, 0), (2561, 1440)),
+            (2561, 1440)
+        );
+    }
 
     #[test]
     fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {

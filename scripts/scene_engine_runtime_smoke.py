@@ -17,8 +17,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 PSS_DIRTY_TARGET_KIB = 40 * 1024
-PERF_SURFACE_WIDTH = 2561
-PERF_SURFACE_HEIGHT = 1601
+PERF_SURFACE_WIDTH = 3840
+PERF_SURFACE_HEIGHT = 2160
 DGOP_PSS_DIRTY_KEYS = ("pssDirtyKB", "pss_dirty_kb", "pssDirtyKb")
 
 

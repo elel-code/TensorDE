@@ -1051,7 +1051,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --capture-frame-step N samples every Nth submitted frame in a sequence; the default is 1.\n\
 --capture-frame-downscale N keeps full-resolution rendering but stores every Nth readback pixel in each axis.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
---surface-width/--surface-height override the automatic Wayland buffer extent and must be provided together.\n\
+--surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
 --vulkan-device-preference defaults to discrete; integrated and enumeration are explicit alternatives when no selector is set.\n\
@@ -1137,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_surface_extent_defaults_to_wayland_and_allows_a_paired_override() {
+    fn scene_surface_extent_defaults_to_automatic_and_allows_a_paired_override() {
         assert_eq!(parse_scene_surface_extent(None, None), Ok(None));
         assert_eq!(
             parse_scene_surface_extent(Some(2561), Some(1601)),

@@ -40,10 +40,10 @@ pub(super) fn pack_scene_draw_uniforms(
             | BuiltinSceneParameterLayout::WaterWavesUvField => {
                 waterwaves_draw_values(storage, draw, output_extent)
             }
-            BuiltinSceneParameterLayout::AudioBars
-            | BuiltinSceneParameterLayout::Scroll
-            | BuiltinSceneParameterLayout::Skew
-            | BuiltinSceneParameterLayout::TechCircle => {
+            BuiltinSceneParameterLayout::AudioBars | BuiltinSceneParameterLayout::TechCircle => {
+                identity_uv_affine_rows()
+            }
+            BuiltinSceneParameterLayout::Scroll | BuiltinSceneParameterLayout::Skew => {
                 object_local_effect_draw_values(storage, draw, output_extent)
             }
             BuiltinSceneParameterLayout::FinalEffectProgram
@@ -497,6 +497,33 @@ mod tests {
     }
 
     #[test]
+    fn audio_image_local_pass_uses_target_local_uvs() {
+        let storage = audio_bars_storage();
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+        draw.authored_source_extent = [1000.0, 1000.0];
+        draw.clip_transform = [
+            [0.000313, 0.0, 0.0, 0.5315],
+            [0.0, -0.000557, 0.0, 0.6945],
+            [0.0, 0.0, 0.6, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+
+        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [3840, 2160]);
+
+        for (lane, expected) in [
+            (0, 1.0),
+            (1, 0.0),
+            (2, 0.0),
+            (4, 0.0),
+            (5, 1.0),
+            (6, 0.0),
+        ] {
+            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
+        }
+    }
+
+    #[test]
     fn waterwaves_keeps_phase_in_object_uv_when_only_translation_differs() {
         let storage = waterwaves_storage();
         let mut shadow = draw_with_material(SceneMaterialHandle(0));
@@ -656,6 +683,37 @@ mod tests {
             ..SceneBinaryDocument::default()
         })
         .expect("waterwaves storage")
+    }
+
+    fn audio_bars_storage() -> SceneStorage {
+        SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec![
+                "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7".to_owned(),
+            ],
+            materials: vec![SceneMaterialRecord {
+                id: SceneMaterialHandle(0),
+                resource: SceneResourceId::NONE,
+                pass_start: 0,
+                pass_count: 1,
+            }],
+            material_passes: vec![SceneMaterialPassRecord {
+                material: SceneMaterialHandle(0),
+                shader_key: SceneStringId(0),
+                target: SceneStringId::NONE,
+                texture_start: 0,
+                texture_count: 0,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: SceneStringId::NONE,
+                clear_target: false,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("audio bars storage")
     }
 
     fn rounded_mask_storage() -> SceneStorage {
