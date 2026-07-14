@@ -27,7 +27,7 @@ pub struct NativeVulkanScenePipelineCachePlan {
     pub shader_catalog_source: &'static str,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct NativeVulkanScenePipelineCacheEntry {
     pub shader_key: SceneStringId,
     pub pipeline_key: SceneStringId,
@@ -35,6 +35,7 @@ pub struct NativeVulkanScenePipelineCacheEntry {
     pub resource_descriptor_count: u32,
     pub sampler_descriptor_start: u32,
     pub sampler_descriptor_count: u32,
+    pub material_ids: Vec<u32>,
     pub material_pass_count: u32,
     pub render_pass_count: u32,
     pub primary_blend: ScenePipelineBlend,
@@ -107,6 +108,7 @@ fn pipeline_entry_for_slice(
         resource_descriptor_count: slice.resource_descriptor_count,
         sampler_descriptor_start: slice.sampler_descriptor_start,
         sampler_descriptor_count: slice.sampler_descriptor_count,
+        material_ids: material_passes.iter().map(|pass| pass.material.0).collect(),
         material_pass_count: material_passes.len() as u32,
         render_pass_count,
         primary_blend,

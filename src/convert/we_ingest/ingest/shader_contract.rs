@@ -180,6 +180,7 @@ pub(super) fn declared_texture_slot_mask(
     match key.as_str() {
         "we/image-waterwaves-final" => mask |= 0x03,
         "we/image-waterripple-final" => mask |= 0x07,
+        "we/image-waterripple-modulate-final" => mask |= 0x07,
         "we/image-scroll-final" | "we/image-colorkey-scroll-final" => mask |= 0x01,
         "we/image-cloudmotion-final" => mask |= 0x05,
         "we/puppet-opacity-final" => mask |= 0x03,
@@ -218,6 +219,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/objectcomposite"
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"
+        || key == "we/image-effect-modulate-composite"
         || key == "we/image-waterwaves-composite"
         || key == "we/image-waterwaves-multiply-composite"
         || key == "we/image-foliage-ripple-composite"
@@ -226,6 +228,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-ripple-flow-multiply-composite"
         || key == "we/image-waterwaves-final"
         || key == "we/image-waterripple-final"
+        || key == "we/image-waterripple-modulate-final"
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
@@ -283,6 +286,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
     key.contains("genericimage")
         || key == "we/image-waterwaves-final"
         || key == "we/image-waterripple-final"
+        || key == "we/image-waterripple-modulate-final"
         || key == "we/image-scroll-final"
         || key == "we/image-colorkey-scroll-final"
         || key == "we/image-cloudmotion-final"
@@ -309,6 +313,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key.starts_with("we/flat__")
         || key == "we/objectcomposite"
         || key == "we/image-effect-composite"
+        || key == "we/image-effect-modulate-composite"
         || key == "we/puppet-effect-composite"
         || key == "we/image-waterwaves-composite"
         || key == "we/image-waterwaves-multiply-composite"

@@ -14,6 +14,8 @@ use super::WeIrBuilder;
 
 pub(super) const IMAGE_WATERWAVES_FINAL_SHADER: &str = "we/image-waterwaves-final";
 pub(super) const IMAGE_WATERRIPPLE_FINAL_SHADER: &str = "we/image-waterripple-final";
+pub(super) const IMAGE_WATERRIPPLE_MODULATE_FINAL_SHADER: &str =
+    "we/image-waterripple-modulate-final";
 pub(super) const IMAGE_SCROLL_FINAL_SHADER: &str = "we/image-scroll-final";
 pub(super) const IMAGE_COLORKEY_SCROLL_FINAL_SHADER: &str = "we/image-colorkey-scroll-final";
 pub(super) const IMAGE_CLOUD_MOTION_FINAL_SHADER: &str = "we/image-cloudmotion-final";
@@ -59,9 +61,6 @@ pub(super) fn create(
     effects_in_authored_texture_space: bool,
     object_is_puppet: bool,
 ) -> Option<WeFinalEffectMaterial> {
-    if !final_effect_scene_blend_supported(final_scene_blend) {
-        return None;
-    }
     let source = material_input(builder, base_material_handle as usize)?;
     if source
         .textures
@@ -76,7 +75,11 @@ pub(super) fn create(
         effects_in_authored_texture_space,
         object_is_puppet,
     )?;
-    let (shader, textures, constants) = final_effect_program(builder, &source, effects, kind)?;
+    if !final_effect_scene_blend_supported(kind, final_scene_blend) {
+        return None;
+    }
+    let (shader, textures, constants) =
+        final_effect_program(builder, &source, effects, kind, final_scene_blend)?;
     let framebuffer_prepass = framebuffer_caustics_prepass(builder, effects, kind)?;
     let material_index = push_material(
         builder,
@@ -149,8 +152,9 @@ fn material_static_scalar_equals(
         .is_some_and(|value| value.is_finite() && (value - expected).abs() <= 1.0e-7)
 }
 
-fn final_effect_scene_blend_supported(scene_blend: SceneBlendMode) -> bool {
+fn final_effect_scene_blend_supported(kind: FinalEffectKind, scene_blend: SceneBlendMode) -> bool {
     scene_blend == SceneBlendMode::Alpha
+        || (kind == FinalEffectKind::ImageWaterRipple && scene_blend == SceneBlendMode::Modulate)
 }
 
 fn final_effect_program(
@@ -158,6 +162,7 @@ fn final_effect_program(
     source: &MaterialInput,
     effects: &[WeEffectPassContract],
     kind: FinalEffectKind,
+    final_scene_blend: SceneBlendMode,
 ) -> Option<(
     &'static str,
     Vec<WeIrMaterialTexture>,
@@ -197,7 +202,11 @@ fn final_effect_program(
                 "effect.mask_enabled",
                 texture_at_slot(&inputs[0], 1).is_some(),
             ));
-            IMAGE_WATERRIPPLE_FINAL_SHADER
+            if final_scene_blend == SceneBlendMode::Modulate {
+                IMAGE_WATERRIPPLE_MODULATE_FINAL_SHADER
+            } else {
+                IMAGE_WATERRIPPLE_FINAL_SHADER
+            }
         }
         FinalEffectKind::ImageScroll => {
             append_effect_constants(&mut constants, "scroll", &inputs[0]);
@@ -633,9 +642,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn modulate_effects_stay_on_the_offscreen_chain() {
-        assert!(final_effect_scene_blend_supported(SceneBlendMode::Alpha));
+    fn only_waterripple_has_a_premultiplied_modulate_final_program() {
+        assert!(final_effect_scene_blend_supported(
+            FinalEffectKind::ImageWaterWaves,
+            SceneBlendMode::Alpha
+        ));
+        assert!(final_effect_scene_blend_supported(
+            FinalEffectKind::ImageWaterRipple,
+            SceneBlendMode::Modulate
+        ));
         assert!(!final_effect_scene_blend_supported(
+            FinalEffectKind::ImageWaterWaves,
             SceneBlendMode::Modulate
         ));
     }
