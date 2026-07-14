@@ -861,8 +861,22 @@ fn final_audio_bars_values(
         .get(1)
         .copied()
         .unwrap_or(0.0);
-    values[29] = storage.project().logical_width.max(1) as f32
-        / storage.project().logical_height.max(1) as f32;
+    let source_width = draw.authored_source_extent[0];
+    let source_height = draw.authored_source_extent[1];
+    let (source_width, source_height) = if source_width.is_finite()
+        && source_height.is_finite()
+        && source_width > 0.0
+        && source_height > 0.0
+    {
+        (source_width, source_height)
+    } else {
+        (
+            storage.project().logical_width.max(1) as f32,
+            storage.project().logical_height.max(1) as f32,
+        )
+    };
+    values[29] = source_width / source_height;
+    values[30] = source_width.min(source_height);
     if let Some(spectrum) = spectrum {
         values[32..64].copy_from_slice(spectrum);
         values[64..96].copy_from_slice(spectrum);
@@ -1647,6 +1661,23 @@ mod tests {
             assert_eq!(f32_from_payload(&payload, (16 + band) * 4), spectrum[band]);
             assert_eq!(f32_from_payload(&payload, (48 + band) * 4), spectrum[band]);
         }
+    }
+
+    #[test]
+    fn final_audio_bars_uses_object_local_source_resolution_for_deformity() {
+        let storage = storage_with_constants("we/audio-bars-final", &[]);
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.authored_source_extent = [1000.0, 1000.0];
+        let pass = first_material_pass(&storage, SceneMaterialHandle(0)).expect("material pass");
+        let parameters = MaterialParameters {
+            storage: &storage,
+            pass,
+        };
+
+        let values = final_audio_bars_values(&parameters, &storage, &draw, None);
+
+        assert_eq!(values[29], 1.0);
+        assert_eq!(values[30], 1000.0);
     }
 
     #[test]

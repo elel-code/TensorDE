@@ -1076,47 +1076,79 @@ float spectrumRight(int band) {
     int index = clamp(band, 0, 31);
     return u_Effect.g_SpectrumRight[index / 4][index % 4];
 }
-float capsuleSdf(vec2 point, vec2 start, vec2 end, float radius) {
-    vec2 segment = end - start;
-    vec2 offset = point - start;
-    float phase = clamp(dot(offset, segment) / max(dot(segment, segment), 0.000001), 0.0, 1.0);
-    return length(offset - segment * phase) - radius;
+float roundedBoxSdf(vec2 current_position, vec3 size, float correction, float radius_factor) {
+    size *= 0.5;
+    size.x *= correction;
+    current_position.y -= size.y + size.z;
+    size.y -= size.z;
+    float radius = radius_factor * min(size.x, size.y);
+    current_position.x *= correction;
+    return length(max(abs(current_position) - size.xy + radius, 0.0)) - radius;
 }
 void main() {
-    vec2 uv = v_TexCoord;
+    // Authored chain: Simple_Audio_Bars(SHAPE=7, BAR_STYLE=1), then skew MODE=0/REPEAT=1.
+    // Fuse the latter by evaluating the audio source at the skewed source UV instead of rotating
+    // each bar independently.
+    vec2 output_uv = v_TexCoord;
+    vec2 uv = output_uv;
+    uv.x -= step(output_uv.y, 0.5) * u_Effect.g_SkewTopBottomLeftRight.x
+        + step(0.5, output_uv.y) * u_Effect.g_SkewTopBottomLeftRight.y;
+    uv.y += step(output_uv.x, 0.5) * u_Effect.g_SkewTopBottomLeftRight.z
+        + step(0.5, output_uv.x) * u_Effect.g_SkewTopBottomLeftRight.w;
+    uv = fract(uv);
+    uv.y = fract(0.5 - uv.y) + floor(uv.y);
+
     float count = max(u_Effect.g_CountSpacingBounds.x, 1.0);
-    float cell_width = 1.0 / count;
-    float bar_width = cell_width
-        * clamp(1.0 - u_Effect.g_CountSpacingBounds.y, 0.0, 1.0);
     float correction = max(u_Effect.g_Reserved.y, 0.000001);
+    float bar_distance = abs(fract(uv.x * count) * 2.0 - 1.0);
     float frequency = floor(uv.x * count) / count * 32.0;
     int frequency0 = int(mod(frequency, 32.0));
     int frequency1 = (frequency0 + 1) % 32;
     float blend = smoothstep(0.0, 1.0, fract(frequency));
     float left = mix(spectrumLeft(frequency0), spectrumLeft(frequency1), blend);
     float right = mix(spectrumRight(frequency0), spectrumRight(frequency1), blend);
-    float volume = 0.5 * (left + right)
-        * u_Effect.g_MinHeightRadiusVolumeAaX.z;
-    vec2 point = vec2(
-        (fract(uv.x * count) - 0.5) * cell_width * correction,
-        uv.y - 0.5);
-    float skew = max(abs(u_Effect.g_SkewTopBottomLeftRight.y
-        - u_Effect.g_SkewTopBottomLeftRight.x), 0.25);
-    vec2 direction = normalize(vec2(skew, -1.0));
-    float half_length = mix(0.055, 0.11, clamp(volume, 0.0, 1.0));
-    float radius = bar_width * correction * 0.22;
-    float distance = capsuleSdf(
-        point,
-        -direction * half_length,
-        direction * half_length,
-        radius);
-    float authored_aa = max(u_Effect.g_MinHeightRadiusVolumeAaX.w,
-        u_Effect.g_Reserved.x) * 15.0 / 2160.0;
-    float aa = max(fwidth(distance), authored_aa);
-    float bar = 1.0 - smoothstep(-aa, aa, distance);
+    float volume_left = left * u_Effect.g_MinHeightRadiusVolumeAaX.z;
+    float volume_right = right * u_Effect.g_MinHeightRadiusVolumeAaX.z;
+
+    float rounded_width = (1.0 - u_Effect.g_CountSpacingBounds.y) / count;
+    float minimum_height = u_Effect.g_MinHeightRadiusVolumeAaX.x
+        * rounded_width * correction;
+    float lower_bound = u_Effect.g_CountSpacingBounds.z;
+    float upper_bound = u_Effect.g_CountSpacingBounds.w;
+    float height_left = 0.5 * mix(
+        max(lower_bound, minimum_height) * 2.0,
+        upper_bound,
+        volume_left);
+    float height_right = 0.5 * mix(
+        max(lower_bound, minimum_height) * 2.0,
+        upper_bound,
+        volume_right);
+
+    vec2 center_left = vec2(bar_distance / count * 0.5, uv.y);
+    vec2 center_right = vec2(bar_distance / count * 0.5, 1.0 - uv.y);
+    float center_offset = min(rounded_width, max(height_left, height_right))
+        * 0.5 * correction;
+    center_left.y += center_offset;
+    center_right.y += center_offset;
+    float distance_left = roundedBoxSdf(
+        center_left,
+        vec3(rounded_width, height_left, 0.0),
+        correction,
+        u_Effect.g_MinHeightRadiusVolumeAaX.y);
+    float distance_right = roundedBoxSdf(
+        center_right,
+        vec3(rounded_width, height_right, 0.0),
+        correction,
+        u_Effect.g_MinHeightRadiusVolumeAaX.y);
+    float aa_factor = 15.0 / max(u_Effect.g_Reserved.z, 1.0);
+    float aa_start = -u_Effect.g_MinHeightRadiusVolumeAaX.w * aa_factor;
+    float aa_end = u_Effect.g_Reserved.x * aa_factor;
+    float bar = 1.0 - min(
+        smoothstep(aa_start, aa_end, distance_left),
+        smoothstep(aa_start, aa_end, distance_right));
     float mask = 1.0;
     if (u_Effect.g_OpacityMask.y > 0.5) {
-        vec2 mask_uv = v_TexCoord * u_Effect.g_MaskResolution.zw
+        vec2 mask_uv = output_uv * u_Effect.g_MaskResolution.zw
             / max(u_Effect.g_MaskResolution.xy, vec2(1.0));
         mask = texture(g_MaskTexture, mask_uv).r;
     }
