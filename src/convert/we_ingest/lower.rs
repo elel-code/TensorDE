@@ -111,6 +111,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             texb_tag: strings.id(&texture.texb_tag),
             payload_offset,
             payload_len: texture_payload.len() as u64 - payload_offset,
+            alpha_coverage_rows: texture.alpha_coverage_rows,
         });
     }
 

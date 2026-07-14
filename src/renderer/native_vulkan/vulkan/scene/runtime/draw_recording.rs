@@ -35,7 +35,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuScissor {
     pub extent: [u32; 2],
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub primitive: SceneRenderingDeviceDrawPrimitive,
     pub pipeline_index: u32,
@@ -48,6 +48,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub skinning_byte_offset: u64,
     pub skinning_byte_count: u64,
     pub scissor: Option<SceneGpuScissor>,
+    pub alpha_coverage_scissors: Vec<SceneGpuScissor>,
 }
 
 pub(in crate::renderer::native_vulkan) fn scene_color_draw_ranges(
@@ -140,10 +141,6 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
     let count = range.count as usize;
     let end = start.saturating_add(count);
     for draw in scene.draw_commands.get(start..end).unwrap_or(&[]) {
-        let scissor = scene_vk_scissor(draw.scissor, extent);
-        unsafe {
-            device.cmd_set_scissor(command_buffer, 0, &[scissor]);
-        }
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
                 &scene.descriptor_heap,
@@ -175,25 +172,77 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
                 })?
                 .pipeline;
             device.cmd_bind_pipeline(command_buffer, vk::PipelineBindPoint::GRAPHICS, pipeline);
-            match draw.primitive {
-                SceneRenderingDeviceDrawPrimitive::ObjectMesh => {
-                    device.cmd_draw_indexed(
-                        command_buffer,
-                        draw.index_count,
-                        1,
-                        draw.first_index,
-                        draw.vertex_offset,
-                        0,
-                    );
-                }
-                SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
-                | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => {
-                    device.cmd_draw(command_buffer, draw.vertex_count, 1, 0, 0);
-                }
+        }
+        if draw.alpha_coverage_scissors.is_empty() {
+            let scissor = scene_vk_scissor(draw.scissor, extent);
+            unsafe {
+                device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+                record_bound_scene_draw(device, command_buffer, draw);
+            }
+            continue;
+        }
+        for coverage in &draw.alpha_coverage_scissors {
+            let Some(scissor) = intersect_scissors(draw.scissor, *coverage, extent) else {
+                continue;
+            };
+            unsafe {
+                device.cmd_set_scissor(command_buffer, 0, &[scissor]);
+                record_bound_scene_draw(device, command_buffer, draw);
             }
         }
     }
     Ok(())
+}
+
+unsafe fn record_bound_scene_draw(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    draw: &SceneGpuDrawCommand,
+) {
+    match draw.primitive {
+        SceneRenderingDeviceDrawPrimitive::ObjectMesh => unsafe {
+            device.cmd_draw_indexed(
+                command_buffer,
+                draw.index_count,
+                1,
+                draw.first_index,
+                draw.vertex_offset,
+                0,
+            );
+        },
+        SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
+        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => unsafe {
+            device.cmd_draw(command_buffer, draw.vertex_count, 1, 0, 0);
+        },
+    }
+}
+
+fn intersect_scissors(
+    base: Option<SceneGpuScissor>,
+    coverage: SceneGpuScissor,
+    extent: vk::Extent2D,
+) -> Option<vk::Rect2D> {
+    let base = base.unwrap_or(SceneGpuScissor {
+        offset: [0, 0],
+        extent: [extent.width, extent.height],
+    });
+    let min_x = base.offset[0].max(coverage.offset[0]);
+    let min_y = base.offset[1].max(coverage.offset[1]);
+    let max_x = (base.offset[0] + base.extent[0] as i32)
+        .min(coverage.offset[0] + coverage.extent[0] as i32)
+        .min(extent.width as i32);
+    let max_y = (base.offset[1] + base.extent[1] as i32)
+        .min(coverage.offset[1] + coverage.extent[1] as i32)
+        .min(extent.height as i32);
+    (max_x > min_x && max_y > min_y).then(|| {
+        vk::Rect2D::builder()
+            .offset(vk::Offset2D { x: min_x, y: min_y })
+            .extent(vk::Extent2D {
+                width: (max_x - min_x) as u32,
+                height: (max_y - min_y) as u32,
+            })
+            .build()
+    })
 }
 
 fn scene_vk_scissor(scissor: Option<SceneGpuScissor>, extent: vk::Extent2D) -> vk::Rect2D {

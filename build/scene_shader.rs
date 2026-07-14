@@ -431,7 +431,13 @@ void main() {
         + g_Material.g_EffectAtlas.xy - 0.5 / atlas_size;
     vec2 atlas_uv = mix(atlas_min, atlas_max, clamp(v_TexCoord, 0.0, 1.0));
     vec2 source_uv = clamp(texture(g_Texture1, atlas_uv).rg, vec2(0.001), vec2(0.999));
-    vec4 color = texture(g_Texture0, source_uv) * g_Material.g_Color4;
+    vec4 source_color = texture(g_Texture0, source_uv);
+    const float alpha_noise = 4.0 / 255.0;
+    source_color.a = max(source_color.a - alpha_noise, 0.0) / (1.0 - alpha_noise);
+    if (source_color.a == 0.0) {
+        discard;
+    }
+    vec4 color = source_color * g_Material.g_Color4;
     color.a *= v_VertexAlpha;
 "#,
         premultiply,
@@ -462,7 +468,13 @@ void main() {
         + g_Material.g_EffectAtlas.xy - 0.5 / atlas_size;
     vec2 atlas_uv = mix(atlas_min, atlas_max, clamp(v_EffectTexCoord, 0.0, 1.0));
     vec2 source_uv = clamp(texture(g_Texture1, atlas_uv).rg, vec2(0.001), vec2(0.999));
-    vec4 color = texture(g_Texture0, source_uv) * g_Material.g_Color4;
+    vec4 color = texture(g_Texture0, source_uv);
+    const float alpha_noise = 4.0 / 255.0;
+    color.a = max(color.a - alpha_noise, 0.0) / (1.0 - alpha_noise);
+    if (color.a == 0.0) {
+        discard;
+    }
+    color *= g_Material.g_Color4;
     color.a *= v_BoneAlpha;
     o_Color = color;
 }

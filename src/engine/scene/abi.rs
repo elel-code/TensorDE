@@ -14,9 +14,10 @@
 use serde::{Deserialize, Serialize};
 
 pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 8;
-pub const SCENE_BINARY_MIN_READ_VERSION: u32 = 7;
+pub const SCENE_BINARY_VERSION: u32 = 9;
+pub const SCENE_BINARY_MIN_READ_VERSION: u32 = 9;
 pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
+pub const SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE: usize = 32;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
 pub const SCENE_FEATURE_RENDER_GRAPH: u64 = 1 << 1;
@@ -546,6 +547,7 @@ pub struct SceneTextureRecord {
     pub texb_tag: SceneStringId,
     pub payload_offset: u64,
     pub payload_len: u64,
+    pub alpha_coverage_rows: [u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

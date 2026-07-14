@@ -57,6 +57,7 @@ use super::super::present::swapchain::{
 };
 
 mod command_order;
+mod alpha_coverage_scissor;
 mod composite_scissor;
 mod draw_recording;
 mod draw_uniform;
@@ -69,21 +70,24 @@ mod gpu_resource_lifecycle;
 mod gpu_timing;
 mod graph_execution;
 mod material_uniform;
+mod mesh_payload;
 mod pipeline;
+mod resource_residency;
 mod sampled_binding;
 mod scene_texture;
 mod scene_viewport;
 
 use command_order::scene_command_order;
+use alpha_coverage_scissor::scene_alpha_coverage_scissors;
 use draw_recording::{
-    SceneGpuDrawCommand, SceneGpuGraphDrawRange, draw_range_count, scene_color_draw_ranges,
+    SceneGpuDrawCommand, SceneGpuGraphDrawRange, SceneGpuScissor, draw_range_count,
+    scene_color_draw_ranges,
 };
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
 pub use frame_capture::NativeVulkanSceneFrameCaptureSnapshot;
 use frame_capture::SceneFrameCapture;
 use frame_state::{SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers};
 use fullscreen_primitive::{
-    append_fullscreen_triangle_indices, append_fullscreen_triangle_vertices,
     graph_uses_fullscreen_utility_primitive,
 };
 use gpu_resource_lifecycle::{
@@ -93,10 +97,12 @@ use gpu_resource_lifecycle::{
 };
 pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
+pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use material_uniform::{
     SCENE_MATERIAL_UNIFORM_BYTES, material_parameter_layout, pack_scene_material_uniforms,
     scene_audio_spectrum_status, scene_uses_audio_spectrum,
 };
+use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
     ScenePipelineResources, create_scene_pipelines,
     emit_scene_pipeline_diagnostics_if_requested, scene_pipeline_descriptor_layout,
@@ -171,6 +177,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub audio_spectrum_model: &'static str,
     pub audio_spectrum_ready: bool,
     pub skinning_storage_bytes: u64,
+    pub resource_residency: NativeVulkanSceneResourceResidencySnapshot,
     pub scene_texture_image_count: usize,
     pub scene_texture_memory_bytes: u64,
     pub released_resource_payload_bytes: usize,
@@ -194,6 +201,9 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub composite_scissor_draw_count: usize,
     pub composite_scissor_covered_pixels: u64,
     pub composite_scissor_avoided_pixels: u64,
+    pub alpha_coverage_scissor_draw_count: usize,
+    pub alpha_coverage_scissor_segment_count: usize,
+    pub alpha_coverage_scissor_pixels: u64,
     pub scene_pipeline_count: usize,
     pub mesh_draw_count: usize,
     pub mesh_draw_recorded: bool,
@@ -229,17 +239,6 @@ struct SceneGpuResources {
     material_uniform_enabled: bool,
     frame_topology: SceneFrameTopology,
     dynamic_effect_uniforms: bool,
-}
-
-fn automatic_scene_surface_extent(
-    authored_extent: (u32, u32),
-    wayland_buffer_extent: (u32, u32),
-) -> (u32, u32) {
-    if authored_extent.0 > 0 && authored_extent.1 > 0 {
-        authored_extent
-    } else {
-        wayland_buffer_extent
-    }
 }
 
 pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_present(
@@ -333,7 +332,7 @@ fn with_scene_present(
     }
 
     let project = options.storage.project();
-    let automatic_surface_extent = automatic_scene_surface_extent(
+    let automatic_surface_extent = scene_viewport::automatic_scene_surface_extent(
         (project.logical_width, project.logical_height),
         handles.buffer_size,
     );
@@ -640,6 +639,10 @@ fn with_scene_present(
     let mut composite_scissor_covered_pixels = 0u64;
     let mut composite_scissor_avoided_pixels = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
+    let fixed_scene_time_seconds = std::env::var("GILDER_NATIVE_VULKAN_SCENE_FIXED_TIME")
+        .ok()
+        .and_then(|value| value.parse::<f32>().ok())
+        .filter(|value| value.is_finite() && *value >= 0.0);
 
     while Instant::now() < deadline {
         system_audio_monitor.publish_latest();
@@ -657,7 +660,8 @@ fn with_scene_present(
         if let Some(timing) = gpu_timing.as_mut() {
             timing.collect_completed(device)?;
         }
-        let scene_time_seconds = started_at.elapsed().as_secs_f32();
+        let scene_time_seconds =
+            fixed_scene_time_seconds.unwrap_or_else(|| started_at.elapsed().as_secs_f32());
         let frame_state_update_started = Instant::now();
         let frame_update = write_scene_frame_buffers(
             device,
@@ -834,6 +838,7 @@ fn with_scene_present(
         .skinning_buffer
         .as_ref()
         .map_or(0, |buffer| buffer.snapshot.requested_bytes);
+    let resource_residency = resource_residency::scene_resource_residency_snapshot(&scene_resources);
     let sampled_fallback_texture_count = usize::from(scene_resources.white_upload.is_some());
     let sampled_fallback_descriptor_count = scene_resources
         .sampled_binding_cycle
@@ -896,6 +901,22 @@ fn with_scene_present(
     let scene_color_mesh_draw_count = draw_range_count(&scene_resources.scene_color_draw_ranges);
     let scene_pipeline_count = scene_resources.pipelines.entries.len();
     let mesh_draw_count = scene_resources.draw_commands.len();
+    let alpha_coverage_scissor_draw_count = scene_resources
+        .draw_commands
+        .iter()
+        .filter(|draw| !draw.alpha_coverage_scissors.is_empty())
+        .count();
+    let alpha_coverage_scissor_segment_count = scene_resources
+        .draw_commands
+        .iter()
+        .map(|draw| draw.alpha_coverage_scissors.len())
+        .sum();
+    let alpha_coverage_scissor_pixels = scene_resources
+        .draw_commands
+        .iter()
+        .flat_map(|draw| &draw.alpha_coverage_scissors)
+        .map(|scissor| u64::from(scissor.extent[0]) * u64::from(scissor.extent[1]))
+        .sum();
     let mesh_draw_recorded = mesh_draw_count > 0;
     let capture_scene_graph = scene_resources.capture_scene_graph;
     let frame_capture_requested = frame_capture.is_some();
@@ -1027,6 +1048,7 @@ fn with_scene_present(
         audio_spectrum_model,
         audio_spectrum_ready,
         skinning_storage_bytes,
+        resource_residency,
         scene_texture_image_count,
         scene_texture_memory_bytes,
         released_resource_payload_bytes,
@@ -1050,6 +1072,9 @@ fn with_scene_present(
         composite_scissor_draw_count,
         composite_scissor_covered_pixels,
         composite_scissor_avoided_pixels,
+        alpha_coverage_scissor_draw_count,
+        alpha_coverage_scissor_segment_count,
+        alpha_coverage_scissor_pixels,
         scene_pipeline_count,
         mesh_draw_count,
         mesh_draw_recorded,
@@ -1122,6 +1147,19 @@ fn create_scene_gpu_resources(
     let draw_count = backend_plan.rendering_device_graph.mesh_draws.len();
     let include_fullscreen_utility =
         graph_uses_fullscreen_utility_primitive(&backend_plan.rendering_device_graph);
+    let alpha_coverage_scissors = if std::env::var_os(
+        "GILDER_NATIVE_VULKAN_SCENE_FULL_ALPHA_COVERAGE_TARGET",
+    )
+    .is_some()
+    {
+        vec![Vec::new(); draw_count]
+    } else {
+        scene_alpha_coverage_scissors(
+            storage,
+            &backend_plan.rendering_device_graph,
+            [extent.width, extent.height],
+        )
+    };
     let vertex_payload = pack_scene_vertices(storage, include_fullscreen_utility);
     let index_payload = pack_scene_indices(storage, include_fullscreen_utility);
     let transform_payload = pack_scene_draw_uniforms(
@@ -1258,6 +1296,7 @@ fn create_scene_gpu_resources(
         &backend_plan.rendering_device_graph.mesh_draws,
         &descriptor_layout,
         &pipeline_indices,
+        &alpha_coverage_scissors,
     );
     let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
         NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
@@ -1809,6 +1848,7 @@ fn scene_descriptor_plan_inputs(
     draws: &[SceneRenderingDeviceMeshDraw],
     layout: &pipeline::ScenePipelineDescriptorLayout,
     pipeline_indices: &[u32],
+    alpha_coverage_scissors: &[Vec<SceneGpuScissor>],
 ) -> (
     Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
     Vec<SceneGpuDrawCommand>,
@@ -1851,6 +1891,10 @@ fn scene_descriptor_plan_inputs(
             skinning_byte_offset,
             skinning_byte_count,
             scissor: None,
+            alpha_coverage_scissors: alpha_coverage_scissors
+                .get(index)
+                .cloned()
+                .unwrap_or_default(),
         });
     }
     (resources, commands)
@@ -1871,44 +1915,6 @@ fn scene_draw_skinning_range(draw: &SceneRenderingDeviceMeshDraw) -> (u64, u64) 
     )
 }
 
-fn pack_scene_vertices(storage: &SceneStorage, include_fullscreen_utility: bool) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(
-        storage.document().mesh_vertices.len() * SCENE_MESH_VERTEX_STRIDE_BYTES as usize,
-    );
-    for vertex in &storage.document().mesh_vertices {
-        for value in [
-            vertex.position.x,
-            vertex.position.y,
-            vertex.uv[0],
-            vertex.uv[1],
-            1.0,
-        ] {
-            payload.extend_from_slice(&value.to_le_bytes());
-        }
-        for index in vertex.blend_indices {
-            payload.extend_from_slice(&index.to_le_bytes());
-        }
-        for weight in vertex.blend_weights {
-            payload.extend_from_slice(&weight.to_le_bytes());
-        }
-    }
-    if include_fullscreen_utility {
-        append_fullscreen_triangle_vertices(&mut payload);
-    }
-    payload
-}
-
-fn pack_scene_indices(storage: &SceneStorage, include_fullscreen_utility: bool) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(storage.document().mesh_indices.len() * 4);
-    for index in &storage.document().mesh_indices {
-        payload.extend_from_slice(&index.to_le_bytes());
-    }
-    if include_fullscreen_utility {
-        append_fullscreen_triangle_indices(&mut payload);
-    }
-    payload
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1920,11 +1926,11 @@ mod tests {
     #[test]
     fn automatic_surface_extent_prefers_authored_scene_pixels() {
         assert_eq!(
-            automatic_scene_surface_extent((3840, 2160), (2561, 1440)),
+            scene_viewport::automatic_scene_surface_extent((3840, 2160), (2561, 1440)),
             (3840, 2160)
         );
         assert_eq!(
-            automatic_scene_surface_extent((0, 0), (2561, 1440)),
+            scene_viewport::automatic_scene_surface_extent((0, 0), (2561, 1440)),
             (2561, 1440)
         );
     }
@@ -1961,7 +1967,12 @@ mod tests {
             skinning_storage_enabled: true,
         };
 
-        let (descriptors, commands) = scene_descriptor_plan_inputs(&[draw], &layout, &[2]);
+        let (descriptors, commands) = scene_descriptor_plan_inputs(
+            &[draw],
+            &layout,
+            &[2],
+            &[Vec::new()],
+        );
 
         assert_eq!(
             descriptors,

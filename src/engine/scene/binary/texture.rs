@@ -21,6 +21,9 @@ pub(super) fn encode_textures(textures: &[SceneTextureRecord]) -> Vec<u8> {
         put_string_id(&mut out, record.texb_tag);
         put_u64(&mut out, record.payload_offset);
         put_u64(&mut out, record.payload_len);
+        for row in record.alpha_coverage_rows {
+            put_u32(&mut out, row);
+        }
     }
     out
 }
@@ -32,24 +35,42 @@ pub(super) fn decode_textures(data: &[u8]) -> Result<Vec<SceneTextureRecord>, Sc
     for _ in 0..count {
         let resource = decoder.resource_id()?;
         let format_raw = decoder.u32()?;
+        let source_runtime_format = decoder.u32()?;
+        let payload_format = decoder.u32()?;
+        let sampler_flags = decoder.u32()?;
+        let width = decoder.u32()?;
+        let height = decoder.u32()?;
+        let storage_width = decoder.u32()?;
+        let storage_height = decoder.u32()?;
+        let mip_start = decoder.u32()?;
+        let mip_count = decoder.u32()?;
+        let texv_tag = decoder.string_id()?;
+        let texb_tag = decoder.string_id()?;
+        let payload_offset = decoder.u64()?;
+        let payload_len = decoder.u64()?;
+        let mut alpha_coverage_rows = [0u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE];
+        for row in &mut alpha_coverage_rows {
+            *row = decoder.u32()?;
+        }
         records.push(SceneTextureRecord {
             resource,
             format: SceneTextureFormat::from_u32(format_raw).ok_or(
                 SceneBinaryError::InvalidChunkValue("texture format", format_raw),
             )?,
-            source_runtime_format: decoder.u32()?,
-            payload_format: decoder.u32()?,
-            sampler_flags: decoder.u32()?,
-            width: decoder.u32()?,
-            height: decoder.u32()?,
-            storage_width: decoder.u32()?,
-            storage_height: decoder.u32()?,
-            mip_start: decoder.u32()?,
-            mip_count: decoder.u32()?,
-            texv_tag: decoder.string_id()?,
-            texb_tag: decoder.string_id()?,
-            payload_offset: decoder.u64()?,
-            payload_len: decoder.u64()?,
+            source_runtime_format,
+            payload_format,
+            sampler_flags,
+            width,
+            height,
+            storage_width,
+            storage_height,
+            mip_start,
+            mip_count,
+            texv_tag,
+            texb_tag,
+            payload_offset,
+            payload_len,
+            alpha_coverage_rows,
         });
     }
     Ok(records)
@@ -106,6 +127,7 @@ mod tests {
             texb_tag: SceneStringId(2),
             payload_offset: 0,
             payload_len: 64,
+            alpha_coverage_rows: [u32::MAX; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE],
         };
         let mip = SceneTextureMipRecord {
             width: 8,

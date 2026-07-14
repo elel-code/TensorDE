@@ -2,6 +2,17 @@
 
 use crate::engine::scene::SceneProjectRecord;
 
+pub(super) fn automatic_scene_surface_extent(
+    authored_extent: (u32, u32),
+    wayland_buffer_extent: (u32, u32),
+) -> (u32, u32) {
+    if authored_extent.0 > 0 && authored_extent.1 > 0 {
+        authored_extent
+    } else {
+        wayland_buffer_extent
+    }
+}
+
 /// Applies an aspect-preserving `cover` mapping to a logical-scene clip matrix.
 ///
 /// The scene graph produces clip coordinates for the complete logical canvas. A Vulkan viewport

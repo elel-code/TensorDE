@@ -18,6 +18,7 @@ use super::super::ir::{
 };
 use super::super::tex::{
     TexMetadata, TexUpload, TexUploadMip, block_compression::transcode_texture_upload,
+    texture_alpha_coverage_rows,
 };
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
 
@@ -109,6 +110,7 @@ pub(super) fn ingest_text_layer(
         Vec::new(),
     );
     let upload = retained_glyph_upload(raster);
+    let alpha_coverage_rows = texture_alpha_coverage_rows(&upload);
     let upload =
         transcode_texture_upload(&texture_path, upload).map_err(|source| WeIngestError::Tex {
             path: texture_path.clone(),
@@ -139,6 +141,7 @@ pub(super) fn ingest_text_layer(
             })
             .collect(),
         upload_payload: upload.payload,
+        alpha_coverage_rows,
     });
     builder
         .texture_by_path

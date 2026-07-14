@@ -128,6 +128,7 @@ pub struct WeIrTexture {
     pub texb_tag: String,
     pub mips: Vec<WeIrTextureMip>,
     pub upload_payload: Vec<u8>,
+    pub alpha_coverage_rows: [u32; crate::engine::scene::SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

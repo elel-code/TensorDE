@@ -11,6 +11,7 @@ use std::fmt;
 
 use crate::engine::scene::SceneTextureFormat;
 
+mod alpha_coverage;
 pub(super) mod block_compression;
 mod container;
 mod decoded_image;
@@ -19,6 +20,8 @@ mod lz4_block;
 use container::{TexEncodedLevel, parse_tex_container};
 use decoded_image::decode_image_level;
 use lz4_block::decode_lz4_block;
+
+pub(super) use alpha_coverage::texture_alpha_coverage_rows;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TexMetadata {

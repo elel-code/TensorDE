@@ -48,7 +48,10 @@ use crate::engine::scene::abi::{
 use super::ir::*;
 use super::mdl::parse_mdl_model;
 use super::pkg::ScenePackageError;
-use super::tex::{TexParseError, block_compression::transcode_texture_upload, decode_tex_upload};
+use super::tex::{
+    TexParseError, block_compression::transcode_texture_upload, decode_tex_upload,
+    texture_alpha_coverage_rows,
+};
 use animation_layer::animation_layer_initial_progress;
 use asset_source::WeAssetSource;
 use builtin_effect_texture::apply_builtin_effect_texture_defaults;
@@ -1079,10 +1082,14 @@ impl WeIrBuilder {
             };
             let resource = self.add_existing_resource(&candidate, kind, asset.source, asset.bytes);
             if candidate.ends_with(".tex") {
-                match decode_tex_upload(&self.resources[resource as usize].payload)
-                    .and_then(|upload| transcode_texture_upload(&candidate, upload))
-                {
-                    Ok(upload) => self.textures.push(WeIrTexture {
+                match decode_tex_upload(&self.resources[resource as usize].payload).and_then(
+                    |upload| {
+                        let alpha_coverage_rows = texture_alpha_coverage_rows(&upload);
+                        transcode_texture_upload(&candidate, upload)
+                            .map(|upload| (upload, alpha_coverage_rows))
+                    },
+                ) {
+                    Ok((upload, alpha_coverage_rows)) => self.textures.push(WeIrTexture {
                         resource,
                         format: upload.format,
                         source_runtime_format: upload.metadata.runtime_format,
@@ -1105,6 +1112,7 @@ impl WeIrBuilder {
                             })
                             .collect(),
                         upload_payload: upload.payload,
+                        alpha_coverage_rows,
                     }),
                     Err(source) => {
                         self.unsupported.push(WeIrUnsupported {

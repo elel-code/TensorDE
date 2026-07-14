@@ -1834,6 +1834,10 @@ mod tests {
             texb_tag: SceneStringId::NONE,
             payload_offset: 0,
             payload_len: 0,
+            alpha_coverage_rows: [
+                u32::MAX;
+                crate::engine::scene::SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE
+            ],
         });
         document.material_textures.push(SceneMaterialTextureRecord {
             slot: 1,

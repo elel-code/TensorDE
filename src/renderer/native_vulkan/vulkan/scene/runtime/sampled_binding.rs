@@ -92,6 +92,22 @@ pub(in crate::renderer::native_vulkan) fn scene_sampled_image_binding_cycle(
             break;
         }
     }
+    if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_SAMPLED_BINDING_DEBUG").is_some() {
+        for (phase, plan) in cycle.iter().enumerate() {
+            for draw_index in 0..graph.mesh_draws.len() {
+                for (sampled_index, slot) in sampled_slots.iter().copied().enumerate() {
+                    let Some(source) = plan.source(draw_index, sampled_index) else {
+                        continue;
+                    };
+                    if !matches!(source, SceneSampledImageSource::FallbackWhite) {
+                        eprintln!(
+                            "gilder-sampled-binding: phase={phase} draw={draw_index} slot={slot} source={source:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
     Ok(cycle)
 }
 
