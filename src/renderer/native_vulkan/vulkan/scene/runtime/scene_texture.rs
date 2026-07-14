@@ -25,6 +25,7 @@ pub(in crate::renderer::native_vulkan) struct SceneTextureImageResource {
     pub format: vk::Format,
     pub mip_levels: u32,
     pub sampler_flags: u32,
+    pub max_sampler_anisotropy: f32,
     pub upload: NativeVulkanVulkanaliaRecordedImageUpload,
 }
 
@@ -34,6 +35,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_texture_images(
     command_buffer: vk::CommandBuffer,
     storage: &SceneStorage,
     binding_cycle: &[SceneSampledImageBindingPlan],
+    device_max_sampler_anisotropy_x1: u32,
 ) -> Result<Vec<SceneTextureImageResource>, String> {
     let resource_ids = binding_cycle
         .iter()
@@ -51,6 +53,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_texture_images(
             command_buffer,
             storage,
             resource,
+            device_max_sampler_anisotropy_x1,
         );
         match result {
             Ok(image) => resources.push(image),
@@ -69,6 +72,7 @@ fn create_scene_texture_image(
     command_buffer: vk::CommandBuffer,
     storage: &SceneStorage,
     resource: SceneResourceId,
+    device_max_sampler_anisotropy_x1: u32,
 ) -> Result<SceneTextureImageResource, String> {
     let texture = storage.texture(resource).ok_or_else(|| {
         format!(
@@ -116,6 +120,10 @@ fn create_scene_texture_image(
         format,
         mip_levels: texture.mip_count,
         sampler_flags: texture.sampler_flags,
+        max_sampler_anisotropy: we_sampler_max_anisotropy(
+            texture.mip_count,
+            device_max_sampler_anisotropy_x1,
+        ),
         upload,
     })
 }
@@ -166,6 +174,7 @@ pub(in crate::renderer::native_vulkan) fn scene_texture_sampler_info(
     resource: &SceneTextureImageResource,
 ) -> vk::SamplerCreateInfo {
     let address_mode = scene_texture_address_mode(resource.sampler_flags);
+    let anisotropy_enabled = resource.max_sampler_anisotropy > 1.0;
     vk::SamplerCreateInfo::builder()
         .mag_filter(vk::Filter::LINEAR)
         .min_filter(vk::Filter::LINEAR)
@@ -173,8 +182,18 @@ pub(in crate::renderer::native_vulkan) fn scene_texture_sampler_info(
         .address_mode_u(address_mode)
         .address_mode_v(address_mode)
         .address_mode_w(address_mode)
+        .anisotropy_enable(anisotropy_enabled)
+        .max_anisotropy(resource.max_sampler_anisotropy)
         .max_lod(resource.mip_levels.saturating_sub(1) as f32)
         .build()
+}
+
+fn we_sampler_max_anisotropy(mip_levels: u32, device_max_x1: u32) -> f32 {
+    if mip_levels < 2 {
+        1.0
+    } else {
+        device_max_x1.clamp(1, 8) as f32
+    }
 }
 
 fn scene_texture_address_mode(sampler_flags: u32) -> vk::SamplerAddressMode {
@@ -267,5 +286,12 @@ mod tests {
             scene_texture_address_mode(0xa),
             vk::SamplerAddressMode::CLAMP_TO_EDGE
         );
+    }
+
+    #[test]
+    fn we_file_texture_sampler_uses_eight_x_anisotropy_with_mips() {
+        assert_eq!(we_sampler_max_anisotropy(1, 16), 1.0);
+        assert_eq!(we_sampler_max_anisotropy(7, 16), 8.0);
+        assert_eq!(we_sampler_max_anisotropy(7, 4), 4.0);
     }
 }

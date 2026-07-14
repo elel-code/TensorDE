@@ -691,7 +691,7 @@ fn final_effect_program_values(
         "we/audio-bars-final" => {
             final_audio_bars_values(parameters, storage, draw, spectrum)
         }
-        "we/framebuffer-water-final" => {
+        "we/framebuffer-water-final" | "we/framebuffer-water-post-final" => {
             final_framebuffer_water_values(parameters, storage, draw, scene_time_seconds)
         }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],

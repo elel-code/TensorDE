@@ -6,7 +6,6 @@
 //! - `reverse-engineered/docs/exe/global-uniforms.md`
 //! - `reverse-engineered/docs/shader-conventions.md`
 //! - `references/godot/servers/rendering/rendering_device_graph.*`
-//! - `references/godot/drivers/vulkan/rendering_device_driver_vulkan.*`
 
 use std::path::PathBuf;
 use std::thread;
@@ -461,6 +460,10 @@ fn with_scene_present(
             .first()
             .ok_or_else(|| "scene swapchain has no images".to_owned())?,
         swapchain_plan.extent,
+        present_device
+            .feature_selection
+            .vulkan_1_4_properties
+            .max_sampler_anisotropy_x1,
         &present_device.feature_selection.descriptor_heap_properties,
         present_device
             .feature_selection
@@ -1092,6 +1095,7 @@ fn create_scene_gpu_resources(
     target_format: vk::Format,
     initial_scene_color_image: vk::Image,
     extent: vk::Extent2D,
+    max_sampler_anisotropy_x1: u32,
     descriptor_heap_properties: &crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
@@ -1388,6 +1392,7 @@ fn create_scene_gpu_resources(
         setup_command_buffer,
         storage,
         &sampled_binding_cycle,
+        max_sampler_anisotropy_x1,
     ) {
         Ok(textures) => textures,
         Err(err) => {

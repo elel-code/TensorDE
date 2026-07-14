@@ -116,6 +116,10 @@ fn discover_builtin_asset_roots(project_root: &Path) -> Vec<PathBuf> {
         push_existing_unique(&mut roots, PathBuf::from(root));
     }
     for ancestor in project_root.ancestors() {
+        // The Linux Wallpaper Engine distribution used by the native runtime carries Windows
+        // system-font faces under `files/share/fonts`. Keep this as a built-in root so virtual
+        // text resources such as `fonts/arial.ttf` are embedded into the resulting `.gscene`.
+        push_existing_unique(&mut roots, ancestor.join("files/share"));
         if ancestor.file_name().and_then(|name| name.to_str()) == Some("steamapps") {
             push_existing_unique(&mut roots, ancestor.join("common/wallpaper_engine/assets"));
         }
@@ -133,6 +137,10 @@ fn discover_builtin_asset_roots(project_root: &Path) -> Vec<PathBuf> {
         push_existing_unique(
             &mut roots,
             current_dir.join("artifacts/wallpaper-engine-workshop/steamcmd-root/assets"),
+        );
+        push_existing_unique(
+            &mut roots,
+            current_dir.join("artifacts/wallpaper-engine-workshop/steamcmd-root/files/share"),
         );
     }
     roots

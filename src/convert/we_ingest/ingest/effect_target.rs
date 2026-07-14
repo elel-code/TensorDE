@@ -5,6 +5,8 @@ use crate::convert::we_ingest::ir::WeIrImageTargetRole;
 pub(super) fn image_target_role(name: &str) -> WeIrImageTargetRole {
     if name.starts_with("fbo_") {
         WeIrImageTargetRole::NamedFbo
+    } else if name.starts_with("_tmp_") {
+        WeIrImageTargetRole::Temporary
     } else {
         WeIrImageTargetRole::FirstClassEffectTarget
     }

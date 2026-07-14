@@ -46,6 +46,14 @@ pub(super) fn pack_scene_draw_uniforms(
             BuiltinSceneParameterLayout::Scroll | BuiltinSceneParameterLayout::Skew => {
                 object_local_effect_draw_values(storage, draw, output_extent)
             }
+            BuiltinSceneParameterLayout::Caustics
+                if material_shader_key(storage, draw.material).is_some_and(|key| {
+                    key.to_ascii_lowercase()
+                        .contains("__gilder_framebuffer_overlay_1")
+                }) =>
+            {
+                projected_object_uv_draw_values(storage, draw, output_extent)
+            }
             BuiltinSceneParameterLayout::FinalEffectProgram
                 if material_shader_key(storage, draw.material)
                     .is_some_and(|key| key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")) =>
@@ -54,7 +62,10 @@ pub(super) fn pack_scene_draw_uniforms(
             }
             BuiltinSceneParameterLayout::FinalEffectProgram
                 if material_shader_key(storage, draw.material)
-                    .is_some_and(|key| key.eq_ignore_ascii_case("we/framebuffer-water-final")) =>
+                    .is_some_and(|key| {
+                        key.eq_ignore_ascii_case("we/framebuffer-water-final")
+                            || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
+                    }) =>
             {
                 projected_object_uv_draw_values(storage, draw, output_extent)
             }

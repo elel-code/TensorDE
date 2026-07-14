@@ -481,6 +481,7 @@ pub struct WeIrImageTarget {
 pub enum WeIrImageTargetRole {
     NamedFbo,
     FirstClassEffectTarget,
+    Temporary,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

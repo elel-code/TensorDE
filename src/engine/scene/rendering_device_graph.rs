@@ -390,6 +390,7 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
                         || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
                         || key.eq_ignore_ascii_case("we/framebuffer-water-final")
+                        || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
                 })))
 }
 
@@ -458,7 +459,10 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
     ) {
         return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
     }
-    if key == "we/framebuffer-water-final" {
+    if matches!(
+        key.as_str(),
+        "we/framebuffer-water-final" | "we/framebuffer-water-post-final"
+    ) {
         return Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle);
     }
     (key.starts_with("effects/")

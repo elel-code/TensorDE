@@ -22,7 +22,11 @@ pub(super) const PUPPET_IRIS_WATERRIPPLE_FINAL_SHADER: &str = "we/puppet-iris-wa
 pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opacity-final";
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
 pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
-pub(super) const FRAMEBUFFER_WATER_FINAL_SHADER: &str = "we/framebuffer-water-final";
+pub(super) const FRAMEBUFFER_WATER_POST_FINAL_SHADER: &str = "we/framebuffer-water-post-final";
+const FRAMEBUFFER_CAUSTICS_PREPASS_SHADER: &str =
+    "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1";
+const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
+const FRAMEBUFFER_CAUSTICS_TARGET: &str = "_tmp_GilderFramebufferCaustics";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FinalEffectKind {
@@ -73,6 +77,7 @@ pub(super) fn create(
         object_is_puppet,
     )?;
     let (shader, textures, constants) = final_effect_program(builder, &source, effects, kind)?;
+    let framebuffer_prepass = framebuffer_caustics_prepass(builder, effects, kind)?;
     let material_index = push_material(
         builder,
         source.resource,
@@ -80,12 +85,68 @@ pub(super) fn create(
         shader,
         textures,
         constants,
+        ScenePipelineBlend::Translucent,
     );
     Some(WeFinalEffectMaterial {
         material_index,
         shader: shader.to_owned(),
         samples_framebuffer_snapshot: kind == FinalEffectKind::FramebufferWater,
+        framebuffer_prepass,
     })
+}
+
+fn framebuffer_caustics_prepass(
+    builder: &mut WeIrBuilder,
+    effects: &[WeEffectPassContract],
+    kind: FinalEffectKind,
+) -> Option<Option<WeEffectPassContract>> {
+    if kind != FinalEffectKind::FramebufferWater {
+        return Some(None);
+    }
+    let mut contract = effects.first()?.clone();
+    let input = material_input(builder, contract.material_index?)?;
+    let shader = framebuffer_caustics_prepass_shader(&input);
+    let material_index = push_material(
+        builder,
+        input.resource,
+        input.pass,
+        shader,
+        input.textures,
+        input.constants,
+        ScenePipelineBlend::Normal,
+    );
+    contract.material_index = Some(material_index);
+    contract.shader = Some(shader.to_owned());
+    contract.target = Some(FRAMEBUFFER_CAUSTICS_TARGET.to_owned());
+    Some(Some(contract))
+}
+
+fn framebuffer_caustics_prepass_shader(input: &MaterialInput) -> &'static str {
+    if material_static_scalar_equals(
+        &input.constants,
+        &["ui_editor_properties_chromatic_aberration", "chromatic"],
+        0.0,
+    ) {
+        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
+    } else {
+        FRAMEBUFFER_CAUSTICS_PREPASS_SHADER
+    }
+}
+
+fn material_static_scalar_equals(
+    constants: &[WeIrMaterialConstant],
+    names: &[&str],
+    expected: f32,
+) -> bool {
+    constants
+        .iter()
+        .find(|constant| {
+            names
+                .iter()
+                .any(|name| constant.name.eq_ignore_ascii_case(name))
+        })
+        .and_then(|constant| constant.value_json.trim().parse::<f32>().ok())
+        .is_some_and(|value| value.is_finite() && (value - expected).abs() <= 1.0e-7)
 }
 
 fn final_effect_scene_blend_supported(scene_blend: SceneBlendMode) -> bool {
@@ -213,18 +274,11 @@ fn final_effect_program(
             AUDIO_BARS_FINAL_SHADER
         }
         FinalEffectKind::FramebufferWater => {
-            append_effect_constants(&mut constants, "caustics", &inputs[0]);
             append_effect_constants(&mut constants, "waves", &inputs[1]);
             append_effect_constants(&mut constants, "opacity", &inputs[2]);
             append_effect_constants(&mut constants, "shake", &inputs[3]);
-            for (source_slot, destination_slot) in [(2, 1), (3, 2), (4, 3), (5, 4)] {
-                textures.push(remap_texture(
-                    texture_at_slot(&inputs[0], source_slot)?,
-                    destination_slot,
-                ));
-            }
-            textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 5));
-            FRAMEBUFFER_WATER_FINAL_SHADER
+            textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 1));
+            FRAMEBUFFER_WATER_POST_FINAL_SHADER
         }
     };
     Some((shader, textures, constants))
@@ -542,6 +596,7 @@ fn push_material(
     shader: &str,
     textures: Vec<WeIrMaterialTexture>,
     constants: Vec<WeIrMaterialConstant>,
+    pipeline_blend: ScenePipelineBlend,
 ) -> usize {
     let handle = builder.materials.len() as u32;
     let texture_start = builder.material_textures.len() as u32;
@@ -555,7 +610,7 @@ fn push_material(
     pass.texture_count = builder.material_textures.len() as u32 - texture_start;
     pass.constant_start = constant_start;
     pass.constant_count = builder.material_constants.len() as u32 - constant_start;
-    pass.pipeline_blend = ScenePipelineBlend::Translucent;
+    pass.pipeline_blend = pipeline_blend;
     pass.depth_test = SceneDepthTest::Disabled;
     pass.depth_write = false;
     pass.cull_mode = SceneCullMode::None;
@@ -680,6 +735,29 @@ mod tests {
             ),
             Some(FinalEffectKind::FramebufferWater)
         );
+    }
+
+    #[test]
+    fn caustics_chromatic_variant_requires_a_static_numeric_zero() {
+        let numeric_zero = vec![WeIrMaterialConstant {
+            name: "ui_editor_properties_chromatic_aberration".to_owned(),
+            value_json: "0".to_owned(),
+        }];
+        let user_bound_zero = vec![WeIrMaterialConstant {
+            name: "ui_editor_properties_chromatic_aberration".to_owned(),
+            value_json: r#"{"user":"chromatic","value":0}"#.to_owned(),
+        }];
+
+        assert!(material_static_scalar_equals(
+            &numeric_zero,
+            &["ui_editor_properties_chromatic_aberration"],
+            0.0,
+        ));
+        assert!(!material_static_scalar_equals(
+            &user_bound_zero,
+            &["ui_editor_properties_chromatic_aberration"],
+            0.0,
+        ));
     }
 
     fn effect(shader: &str, slots: &[u32]) -> WeEffectPassContract {

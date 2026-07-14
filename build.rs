@@ -85,6 +85,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/cloudmotion__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
@@ -519,7 +523,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             let shader = effect_shader_name_for_key(spec.key);
             let texture_slot_mask = effect_texture_slot_mask_for_key(spec.key);
             (
-                effect_vertex_source(shader, texture_slot_mask),
+                effect_vertex_source(spec.key, shader, texture_slot_mask),
                 effect_fragment_source(spec.key, shader, texture_slot_mask),
             )
         }
@@ -921,7 +925,10 @@ void main() {
     .to_owned()
 }
 
-fn effect_vertex_source(shader: &str, texture_slot_mask: u32) -> String {
+fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
+    if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
+        return framebuffer_overlay_effect_vertex_source();
+    }
     if shader == "effects/iris" {
         return iris_effect_vertex_source(texture_slot_mask);
     }
@@ -956,6 +963,31 @@ void main() {{
 }}
 "#
     )
+}
+
+fn framebuffer_overlay_effect_vertex_source() -> String {
+    r#"#version 450
+layout(set = 0, binding = 2) uniform FramebufferOverlayDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out vec2 v_FramebufferCoord;
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
+    vec2 position = positions[gl_VertexIndex];
+    vec2 uv = position * 0.5 + 0.5;
+    v_TexCoord = uv;
+    v_FramebufferCoord = vec2(
+        dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(uv, 1.0)),
+        dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(uv, 1.0)));
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#
+    .to_owned()
 }
 
 fn object_local_effect_vertex_source() -> String {
@@ -1022,7 +1054,10 @@ void main() {
 
 fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
     if shader == "effects/caustics" {
-        return caustics_effect_fragment_source(texture_slot_mask);
+        if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
+            return caustics_framebuffer_overlay_fragment_source(key, texture_slot_mask);
+        }
+        return caustics_effect_fragment_source(texture_slot_mask, false);
     }
     if shader == "effects/cloudmotion" {
         return cloudmotion_effect_fragment_source(texture_slot_mask);
@@ -1092,6 +1127,23 @@ layout(location = 0) out vec4 o_Color;
 }}
 "#
     )
+}
+
+fn caustics_framebuffer_overlay_fragment_source(key: &str, texture_slot_mask: u32) -> String {
+    caustics_effect_fragment_source(
+        texture_slot_mask,
+        key.contains("__GILDER_CHROMATIC_ZERO_1"),
+    )
+        .replacen(
+            "layout(location = 0) in vec2 v_TexCoord;",
+            "layout(location = 0) in vec2 v_TexCoord;\nlayout(location = 1) in vec2 v_FramebufferCoord;",
+            1,
+        )
+        .replacen(
+            "vec4 albedo = texture(g_Texture0, v_TexCoord);",
+            "vec4 albedo = texture(g_Texture0, v_FramebufferCoord);",
+            1,
+        )
 }
 
 fn audio_bars_fragment_source(key: &str) -> String {
@@ -1416,11 +1468,11 @@ fn effect_combo_value_for_key(key: &str, combo: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
-fn caustics_effect_fragment_source(texture_slot_mask: u32) -> String {
+fn caustics_effect_fragment_source(texture_slot_mask: u32, chromatic_zero: bool) -> String {
     if texture_slot_mask & 0x3d != 0x3d {
         return caustics_compatibility_fragment_source();
     }
-    r#"#version 450
+    let source = r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
@@ -1491,7 +1543,22 @@ void main() {
     o_Color = albedo;
 }
 "#
-    .to_owned()
+    .to_owned();
+    if chromatic_zero {
+        source.replace(
+            r#"    float chromatic = u_Effect.g_GlowDistortionChromaticBlur.z;
+    vec2 leftCoords = causticsCoords - vec2(0.01 * chromatic, 0.0);
+    vec2 rightCoords = causticsCoords + vec2(0.01 * chromatic, 0.0);
+    vec3 caustics = vec3(
+        texture(g_Texture2, leftCoords).r,
+        texture(g_Texture2, causticsCoords).r,
+        texture(g_Texture2, rightCoords).r);"#,
+            r#"    float causticsPattern = texture(g_Texture2, causticsCoords).r;
+    vec3 caustics = vec3(causticsPattern);"#,
+        )
+    } else {
+        source
+    }
 }
 
 fn caustics_compatibility_fragment_source() -> String {

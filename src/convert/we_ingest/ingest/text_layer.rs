@@ -22,8 +22,10 @@ use super::super::tex::{
 };
 use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, value_f32};
 
-const TEXT_REFERENCE_HEIGHT: f32 = 1080.0;
-const TEXT_VISUAL_SCALE: f32 = 1.0;
+// `wallpaper64.exe` passes authored point size to FreeType as a 26.6 point value and requests
+// 300 DPI on both axes (`0x1401ad1c9..0x1401ad1f2`). This is independent of scene resolution.
+const WALLPAPER_ENGINE_FONT_DPI: f32 = 300.0;
+const TYPOGRAPHIC_POINTS_PER_INCH: f32 = 72.0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WeTextLayerRaster {
@@ -38,8 +40,11 @@ pub(super) fn text_layer_value(object: &Value) -> Option<String> {
 
 pub(super) fn text_layer_font_path(object: &Value) -> String {
     let font = bound_string(object.get("font")).unwrap_or_default();
-    if font.is_empty() || font.starts_with("systemfont_") {
-        "fonts/Jost-Medium.ttf".to_owned()
+    if font.is_empty() || font == "systemfont_arial" {
+        // `systemfont_arial` resolves to the Wallpaper Engine installation's real Arial face.
+        // `WeAssetSource` includes the installed `files/share` root, whose relative resource is
+        // `fonts/arial.ttf`; substituting a project font changes native glyph metrics.
+        "fonts/arial.ttf".to_owned()
     } else {
         font
     }
@@ -89,7 +94,7 @@ pub(super) fn ingest_text_layer(
         return Ok(None);
     };
     let font_bytes = builder.resources[font_resource as usize].payload.clone();
-    let raster = match rasterize_text_layer(value, text, font_bytes, builder.scene.logical_height) {
+    let raster = match rasterize_text_layer(value, text, font_bytes) {
         Ok(raster) => raster,
         Err(message) => {
             builder.unsupported.push(WeIrUnsupported {
@@ -260,7 +265,6 @@ pub(super) fn rasterize_text_layer(
     object: &Value,
     text: &str,
     font_bytes: Vec<u8>,
-    scene_height: u32,
 ) -> Result<WeTextLayerRaster, String> {
     let size = parse_vec3(object.get("size")).ok_or("text layer is missing a valid size")?;
     let width = checked_dimension(size.x, "width")?;
@@ -270,10 +274,11 @@ pub(super) fn rasterize_text_layer(
     let authored_point_size = value_f32(object.get("pointsize"))
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or(32.0);
-    let point_size = text_point_size_pixels(authored_point_size, scene_height);
-    let spacing_scale = point_size / authored_point_size;
-    let spacing =
-        parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x) * spacing_scale;
+    let point_size = text_point_size_pixels(authored_point_size);
+    // The native layout path adds `[parameters+0x10]` directly to the 26.6 glyph advance after
+    // converting that advance to pixels (`0x1401b1166..0x1401b119a`). It is not a point-size or
+    // scene-resolution-relative value.
+    let spacing = parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x);
     let scale = PxScale::from(point_size);
     let scaled = font.as_scaled(scale);
     let glyphs = layout_glyphs(&font, text, scale, spacing);
@@ -417,8 +422,8 @@ fn checked_dimension(value: f32, label: &str) -> Result<u32, String> {
     Ok(value.round().max(1.0) as u32)
 }
 
-fn text_point_size_pixels(point_size: f32, scene_height: u32) -> f32 {
-    point_size * (scene_height.max(1) as f32 / TEXT_REFERENCE_HEIGHT).max(1.0) * TEXT_VISUAL_SCALE
+fn text_point_size_pixels(point_size: f32) -> f32 {
+    point_size * WALLPAPER_ENGINE_FONT_DPI / TYPOGRAPHIC_POINTS_PER_INCH
 }
 
 fn color_byte(value: f32) -> u8 {
@@ -436,15 +441,29 @@ mod tests {
     }
 
     #[test]
-    fn system_font_uses_portable_scene_fallback() {
+    fn system_font_uses_wallpaper_engine_installed_arial() {
         let object = serde_json::json!({"font": "systemfont_arial"});
-        assert_eq!(text_layer_font_path(&object), "fonts/Jost-Medium.ttf");
+        assert_eq!(text_layer_font_path(&object), "fonts/arial.ttf");
     }
 
     #[test]
-    fn wallpaper_engine_point_size_tracks_authored_scene_resolution() {
-        assert_eq!(text_point_size_pixels(96.0, 2160), 192.0);
-        assert_eq!(text_point_size_pixels(96.0, 1080), 96.0);
-        assert_eq!(text_point_size_pixels(96.0, 720), 96.0);
+    fn unknown_system_font_is_not_silently_replaced_by_another_family() {
+        let object = serde_json::json!({"font": "systemfont_consolas"});
+        assert_eq!(text_layer_font_path(&object), "systemfont_consolas");
+    }
+
+    #[test]
+    fn wallpaper_engine_point_size_uses_freetype_300_dpi_semantics() {
+        assert_eq!(text_point_size_pixels(96.0), 400.0);
+        assert!((text_point_size_pixels(16.0) - 66.666_664).abs() < 0.000_01);
+    }
+
+    #[test]
+    fn wallpaper_engine_spacing_is_already_in_layout_pixels() {
+        let object = serde_json::json!({"spacing": "202.00000 202.00000"});
+        assert_eq!(
+            parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x),
+            202.0
+        );
     }
 }

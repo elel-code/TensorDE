@@ -69,6 +69,7 @@ pub struct WeFinalEffectMaterial {
     pub material_index: usize,
     pub shader: String,
     pub samples_framebuffer_snapshot: bool,
+    pub framebuffer_prepass: Option<WeEffectPassContract>,
 }
 
 pub fn we_effect_passes_form_waterwaves_displacement_chain(
@@ -141,7 +142,38 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
                 state: PassState::default(),
             });
         }
+        if let Some(prepass) = &final_effect.framebuffer_prepass {
+            let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
+            let mut node = we_effect_pass_node(pass_id, prepass, SceneBlendMode::Normal);
+            let snapshot = contract
+                .framebuffer_snapshot
+                .as_ref()
+                .expect("framebuffer prepass requires a typed snapshot contract");
+            for binding in &mut node.bindings {
+                if matches!(binding, TextureBindingRole::PreviousGraphTarget { slot: 0 }) {
+                    *binding = TextureBindingRole::EffectTarget {
+                        slot: snapshot.texture_slot,
+                        name: snapshot.target_name.clone(),
+                    };
+                }
+            }
+            node.state.scene_blend = SceneBlendMode::Normal;
+            graph.passes.push(node);
+        }
         let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
+        let bindings = if final_effect.framebuffer_prepass.is_some() {
+            vec![TextureBindingRole::PreviousGraphTarget { slot: 0 }]
+        } else {
+            contract
+                .framebuffer_snapshot
+                .iter()
+                .filter(|_| final_effect.samples_framebuffer_snapshot)
+                .map(|snapshot| TextureBindingRole::EffectTarget {
+                    slot: snapshot.texture_slot,
+                    name: snapshot.target_name.clone(),
+                })
+                .collect()
+        };
         graph.passes.push(RenderPassNode {
             id: pass_id,
             role: RenderPassRole::SceneComposite,
@@ -153,15 +185,7 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
             target_name: None,
             target_extent: None,
             target_format: None,
-            bindings: contract
-                .framebuffer_snapshot
-                .iter()
-                .filter(|_| final_effect.samples_framebuffer_snapshot)
-                .map(|snapshot| TextureBindingRole::EffectTarget {
-                    slot: snapshot.texture_slot,
-                    name: snapshot.target_name.clone(),
-                })
-                .collect(),
+            bindings,
             state: PassState {
                 pipeline_blend: final_pipeline_blend,
                 scene_blend: contract.final_scene_blend,
@@ -449,7 +473,10 @@ fn we_binding_role(slot: u32, binding: &str) -> TextureBindingRole {
         TextureBindingRole::PreviousGraphTarget { slot }
     } else if matches!(binding, "source" | "g_Texture0") {
         TextureBindingRole::SourceTexture
-    } else if binding.starts_with("_rt_") || binding.starts_with("_alias_") {
+    } else if binding.starts_with("_rt_")
+        || binding.starts_with("_alias_")
+        || binding.starts_with("_tmp_")
+    {
         TextureBindingRole::EffectTarget {
             slot,
             name: binding.to_owned(),
@@ -467,6 +494,8 @@ fn we_binding_role(slot: u32, binding: &str) -> TextureBindingRole {
 fn we_render_target_role(name: &str) -> RenderTargetRole {
     if name.starts_with("fbo_") {
         RenderTargetRole::NamedFbo
+    } else if name.starts_with("_tmp_") {
+        RenderTargetRole::Temporary
     } else if name.starts_with("_rt_") || name.starts_with("_alias_") {
         RenderTargetRole::FirstClassEffectTarget
     } else {
@@ -477,6 +506,21 @@ fn we_render_target_role(name: &str) -> RenderTargetRole {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generated_temporary_target_names_keep_transient_lifetime_semantics() {
+        assert_eq!(
+            we_render_target_role("_tmp_GilderFramebufferCaustics"),
+            RenderTargetRole::Temporary
+        );
+        assert_eq!(
+            we_binding_role(0, "_tmp_GilderFramebufferCaustics"),
+            TextureBindingRole::EffectTarget {
+                slot: 0,
+                name: "_tmp_GilderFramebufferCaustics".to_owned(),
+            }
+        );
+    }
 
     #[test]
     fn reverse_engineered_material_blend_strings_map_to_pipeline_state() {

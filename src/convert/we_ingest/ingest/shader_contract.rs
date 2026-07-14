@@ -188,6 +188,7 @@ pub(super) fn declared_texture_slot_mask(
         "we/puppet-iris-waterripple-clipping-final" => mask |= 0x10f,
         "we/audio-bars-final" => mask |= 0x01,
         "we/framebuffer-water-final" => mask |= 0x3f,
+        "we/framebuffer-water-post-final" => mask |= 0x03,
         _ => {}
     }
     mask
@@ -233,6 +234,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/puppet-iris-waterripple-final"
         || key == "we/puppet-iris-waterripple-clipping-final"
         || key == "we/framebuffer-water-final"
+        || key == "we/framebuffer-water-post-final"
         || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
@@ -292,6 +294,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/tech-circle-final"
         || key == "we/audio-bars-final"
         || key == "we/framebuffer-water-final"
+        || key == "we/framebuffer-water-post-final"
         || key == "color"
         || key.starts_with("color__")
         || key == "we/color"

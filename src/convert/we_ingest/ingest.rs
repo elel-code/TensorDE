@@ -1663,6 +1663,10 @@ mod tests {
             image_target_role("_rt_QuarterCompoBuffer1"),
             WeIrImageTargetRole::FirstClassEffectTarget
         );
+        assert_eq!(
+            image_target_role("_tmp_GilderFramebufferCaustics"),
+            WeIrImageTargetRole::Temporary
+        );
         assert_eq!(scale_divisor_to_milli(4.0), 4_000);
         assert_eq!(scale_divisor_to_milli(1.0), 1_000);
     }

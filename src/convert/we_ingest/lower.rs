@@ -633,6 +633,7 @@ fn lower_image_targets(
             WeIrImageTargetRole::FirstClassEffectTarget => {
                 SceneRenderTargetKind::FirstClassEffectTarget
             }
+            WeIrImageTargetRole::Temporary => SceneRenderTargetKind::Temporary,
         };
         push_image_target(
             &mut targets,
