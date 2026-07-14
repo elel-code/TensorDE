@@ -28,6 +28,7 @@ pub(super) const FRAMEBUFFER_WATER_POST_FINAL_SHADER: &str = "we/framebuffer-wat
 const FRAMEBUFFER_CAUSTICS_PREPASS_SHADER: &str =
     "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1";
 const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
+const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1";
 const FRAMEBUFFER_CAUSTICS_TARGET: &str = "_tmp_GilderFramebufferCaustics";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,14 +126,35 @@ fn framebuffer_caustics_prepass(
 }
 
 fn framebuffer_caustics_prepass_shader(input: &MaterialInput) -> &'static str {
-    if material_static_scalar_equals(
+    let chromatic_zero = material_static_scalar_equals(
         &input.constants,
         &["ui_editor_properties_chromatic_aberration", "chromatic"],
         0.0,
-    ) {
+    );
+    if chromatic_zero && material_slots_bind_same_texture(input, 2, 5) {
+        FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER
+    } else if chromatic_zero {
         FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
     } else {
         FRAMEBUFFER_CAUSTICS_PREPASS_SHADER
+    }
+}
+
+fn material_slots_bind_same_texture(
+    input: &MaterialInput,
+    left_slot: u32,
+    right_slot: u32,
+) -> bool {
+    let Some(left) = texture_at_slot(input, left_slot) else {
+        return false;
+    };
+    let Some(right) = texture_at_slot(input, right_slot) else {
+        return false;
+    };
+    match (left.resource, right.resource) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => !left.path.is_empty() && left.path == right.path,
+        _ => false,
     }
 }
 
@@ -775,6 +797,60 @@ mod tests {
             &["ui_editor_properties_chromatic_aberration"],
             0.0,
         ));
+    }
+
+    #[test]
+    fn caustics_shared_pattern_variant_requires_identical_bound_resources() {
+        let input = |left, right| MaterialInput {
+            resource: 0,
+            pass: WeIrMaterialPass {
+                material: 0,
+                shader_key: "effects/caustics".to_owned(),
+                target: String::new(),
+                texture_start: 0,
+                texture_count: 2,
+                constant_start: 0,
+                constant_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+                alpha_writing: String::new(),
+                clear_target: false,
+            },
+            textures: vec![
+                WeIrMaterialTexture {
+                    slot: 2,
+                    resource: Some(left),
+                    path: "pattern.tex".to_owned(),
+                },
+                WeIrMaterialTexture {
+                    slot: 5,
+                    resource: Some(right),
+                    path: "glow.tex".to_owned(),
+                },
+            ],
+            constants: Vec::new(),
+        };
+
+        let mut shared = input(7, 7);
+        shared.constants.push(WeIrMaterialConstant {
+            name: "ui_editor_properties_chromatic_aberration".to_owned(),
+            value_json: "0".to_owned(),
+        });
+        let mut distinct = input(7, 8);
+        distinct.constants = shared.constants.clone();
+
+        assert!(material_slots_bind_same_texture(&shared, 2, 5));
+        assert!(!material_slots_bind_same_texture(&distinct, 2, 5));
+        assert_eq!(
+            framebuffer_caustics_prepass_shader(&shared),
+            FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_SHARED_PATTERN_PREPASS_SHADER
+        );
+        assert_eq!(
+            framebuffer_caustics_prepass_shader(&distinct),
+            FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER
+        );
     }
 
     fn effect(shader: &str, slots: &[u32]) -> WeEffectPassContract {

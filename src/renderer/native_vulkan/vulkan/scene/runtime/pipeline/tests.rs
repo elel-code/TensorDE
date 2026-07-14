@@ -170,13 +170,22 @@
     #[test]
     fn foliage_screen_variant_uses_standard_premultiplied_screen_blend() {
         let storage = SceneStorage::from_document(SceneBinaryDocument {
-            strings: vec!["we/image-foliage-ripple-screen-composite".to_owned()],
+            strings: vec![
+                "we/image-foliage-ripple-screen-composite".to_owned(),
+                "we/image-foliage-ripple-screen-composite__GILDER_FOLIAGE_POWER_TWO_1"
+                    .to_owned(),
+            ],
             ..SceneBinaryDocument::default()
         })
         .expect("storage");
         let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
         pass.scene_blend = SceneCompositeBlend::Screen;
 
+        assert_eq!(
+            scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+            SceneGpuBlend::ScreenPremultiplied
+        );
+        pass.shader_key = SceneStringId(1);
         assert_eq!(
             scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
             SceneGpuBlend::ScreenPremultiplied

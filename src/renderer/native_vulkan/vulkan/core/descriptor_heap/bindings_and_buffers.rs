@@ -478,4 +478,5 @@ fn align_down(value: u64, alignment: u64) -> u64 {
 }
 
 #[cfg(test)]
+#[path = "bindings_and_buffers/tests.rs"]
 mod tests;

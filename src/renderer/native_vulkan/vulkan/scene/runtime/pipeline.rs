@@ -418,7 +418,10 @@ fn scene_gpu_blend(
         }
         SceneCompositeBlend::Screen => {
             if storage.string(pass.shader_key).is_some_and(|shader| {
-                shader.eq_ignore_ascii_case("we/image-foliage-ripple-screen-composite")
+                shader
+                    .to_ascii_lowercase()
+                    .strip_prefix("we/image-foliage-ripple-screen-composite")
+                    .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with("__"))
             }) {
                 SceneGpuBlend::ScreenPremultiplied
             } else {

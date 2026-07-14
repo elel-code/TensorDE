@@ -13,9 +13,11 @@ use crate::renderer::native_wayland::{NativeWaylandError, NativeWaylandHostOptio
 use crate::renderer::{StaticWallpaperPlan, VideoWallpaperPlan};
 use vulkanalia::vk;
 
+#[cfg(any(feature = "native-vulkan-video", test))]
 #[path = "backend_entry/codec_submit_helpers.rs"]
 mod codec_submit_helpers;
 
+#[cfg(any(feature = "native-vulkan-video", test))]
 use codec_submit_helpers::*;
 
 #[cfg(all(

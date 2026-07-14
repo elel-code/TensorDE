@@ -10,7 +10,7 @@ use vulkanalia::vk::{self, HasBuilder};
 
 const FRAME_TIMESTAMP_QUERY_COUNT: u32 = 2;
 const EFFECT_BATCH_TIMESTAMP_QUERY_COUNT: u32 = 2;
-const GRAPH_TIMESTAMP_QUERY_COUNT: u32 = 2;
+const GRAPH_TIMESTAMP_QUERY_COUNT: u32 = 6;
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneGraphGpuTimingSnapshot {
@@ -20,6 +20,8 @@ pub struct NativeVulkanSceneGraphGpuTimingSnapshot {
     pub average_micros: Option<f64>,
     pub min_micros: Option<f64>,
     pub max_micros: Option<f64>,
+    pub effect_target_average_micros: Option<f64>,
+    pub scene_color_average_micros: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -52,6 +54,8 @@ pub(super) struct SceneGpuTiming {
     effect_batch: GpuDurationStats,
     graph_indices: Vec<u32>,
     graphs: Vec<GpuDurationStats>,
+    graph_effect_targets: Vec<GpuDurationStats>,
+    graph_scene_colors: Vec<GpuDurationStats>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -132,6 +136,8 @@ impl SceneGpuTiming {
             effect_batch: GpuDurationStats::default(),
             graph_indices: graph_indices.to_vec(),
             graphs: vec![GpuDurationStats::default(); graph_indices.len()],
+            graph_effect_targets: vec![GpuDurationStats::default(); graph_indices.len()],
+            graph_scene_colors: vec![GpuDurationStats::default(); graph_indices.len()],
         }))
     }
 
@@ -172,6 +178,20 @@ impl SceneGpuTiming {
                 &bytes,
                 start_query,
                 start_query + 1,
+                self.timestamp_valid_bits,
+                self.timestamp_period_nanoseconds,
+            ));
+            self.graph_effect_targets[graph_position].observe(query_duration_micros(
+                &bytes,
+                start_query + 2,
+                start_query + 3,
+                self.timestamp_valid_bits,
+                self.timestamp_period_nanoseconds,
+            ));
+            self.graph_scene_colors[graph_position].observe(query_duration_micros(
+                &bytes,
+                start_query + 4,
+                start_query + 5,
                 self.timestamp_valid_bits,
                 self.timestamp_period_nanoseconds,
             ));
@@ -265,6 +285,59 @@ impl SceneGpuTiming {
         }
     }
 
+    pub(super) fn record_graph_effect_target_start(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        graph_position: usize,
+    ) {
+        self.record_graph_phase_timestamp(device, command_buffer, graph_position, 2);
+    }
+
+    pub(super) fn record_graph_effect_target_finish(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        graph_position: usize,
+    ) {
+        self.record_graph_phase_timestamp(device, command_buffer, graph_position, 3);
+    }
+
+    pub(super) fn record_graph_scene_color_start(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        graph_position: usize,
+    ) {
+        self.record_graph_phase_timestamp(device, command_buffer, graph_position, 4);
+    }
+
+    pub(super) fn record_graph_scene_color_finish(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        graph_position: usize,
+    ) {
+        self.record_graph_phase_timestamp(device, command_buffer, graph_position, 5);
+    }
+
+    fn record_graph_phase_timestamp(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        graph_position: usize,
+        offset: u32,
+    ) {
+        unsafe {
+            device.cmd_write_timestamp2(
+                command_buffer,
+                vk::PipelineStageFlags2::BOTTOM_OF_PIPE,
+                self.query_pool,
+                graph_start_query(graph_position) + offset,
+            );
+        }
+    }
+
     pub(super) fn mark_submitted(&mut self) {
         self.pending = true;
     }
@@ -291,14 +364,18 @@ impl SceneGpuTiming {
                 .iter()
                 .copied()
                 .zip(self.graphs.iter().copied())
+                .zip(self.graph_effect_targets.iter().copied())
+                .zip(self.graph_scene_colors.iter().copied())
                 .map(
-                    |(graph_index, stats)| NativeVulkanSceneGraphGpuTimingSnapshot {
+                    |(((graph_index, stats), effect_target), scene_color)| NativeVulkanSceneGraphGpuTimingSnapshot {
                         graph_index,
                         sample_count: stats.sample_count,
                         total_micros: stats.total_micros,
                         average_micros: stats.average_micros(),
                         min_micros: stats.min_micros,
                         max_micros: stats.max_micros,
+                        effect_target_average_micros: effect_target.average_micros(),
+                        scene_color_average_micros: scene_color.average_micros(),
                     },
                 )
                 .collect(),

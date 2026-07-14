@@ -70,7 +70,7 @@ fn direct_generic_multiply_uses_the_premultiplied_fixed_blend_shader() {
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: Vec::new(),
@@ -98,7 +98,7 @@ fn we_image_graph_keeps_pass_targets_and_derives_barriers() {
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![
@@ -214,7 +214,7 @@ fn effect_target_base_keeps_authored_translucent_submesh_assembly() {
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
@@ -260,7 +260,7 @@ fn authored_modulate_effect_composite_premultiplies_layer_alpha() {
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
@@ -303,7 +303,7 @@ fn puppet_image_effects_run_before_skinning_composite() {
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: true,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
@@ -350,7 +350,7 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
         effects_in_authored_texture_space: true,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {
@@ -398,7 +398,7 @@ fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![
@@ -468,7 +468,7 @@ fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: Vec::new(),
@@ -493,6 +493,69 @@ fn framebuffer_utility_graph_snapshots_scene_color_before_sampling_it() {
 }
 
 #[test]
+fn framebuffer_cloudmotion_samples_snapshot_without_passthrough_target() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 7,
+        base_material_index: Some(27),
+        base_shader: Some("passthrough".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: vec![0],
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: Some(WeFramebufferSnapshotContract {
+            target_name: "_rt_FullFrameBuffer".to_owned(),
+            texture_slot: 0,
+            composite_to_object_mesh: false,
+        }),
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: false,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: None,
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 7,
+            material_index: Some(28),
+            effect_file: "effects/cloudmotion/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some("effects/cloudmotion__SLOTS_5".to_owned()),
+            source: None,
+            target: None,
+            binds: [(0, "previous".to_owned()), (2, "cloudnoise".to_owned())]
+                .into_iter()
+                .collect(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
+    assert_eq!(graph.passes.len(), 3);
+    assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+    assert_eq!(graph.passes[1].role, RenderPassRole::EffectMaterial);
+    assert_eq!(graph.passes[1].target, RenderTargetRole::ImageLocalSub);
+    assert!(
+        graph.passes[1]
+            .bindings
+            .contains(&TextureBindingRole::EffectTarget {
+                slot: 0,
+                name: "_rt_FullFrameBuffer".to_owned(),
+            })
+    );
+    assert_eq!(graph.passes[2].role, RenderPassRole::SceneComposite);
+    assert!(
+        !graph
+            .passes
+            .iter()
+            .any(|pass| pass.role == RenderPassRole::BaseMaterial)
+    );
+}
+
+#[test]
 fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 12,
@@ -510,7 +573,7 @@ fn composelayer_effect_chain_composites_back_through_the_object_mesh() {
         effects_in_authored_texture_space: false,
         puppet_skinning_after_effects: false,
         waterwaves_uv_field_material_index: None,
-        foliage_ripple_material_index: None,
+        foliage_ripple_material: None,
         ripple_flow_material_indices: None,
         final_effect_material: None,
         effect_passes: vec![WeEffectPassContract {

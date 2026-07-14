@@ -96,6 +96,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
     for (graph_position, graph_index) in scene.graph_execution_order.iter().enumerate() {
         if let Some(timing) = gpu_timing {
             timing.record_graph_start(device, command_buffer, graph_position);
+            timing.record_graph_effect_target_start(device, command_buffer, graph_position);
         }
         let requires_effect_target_execution =
             effect_target::graph_requires_effect_target_execution(
@@ -123,6 +124,9 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 &mut scene_color_rendering_active,
             )?;
             if let Some(timing) = gpu_timing {
+                timing.record_graph_effect_target_finish(device, command_buffer, graph_position);
+                timing.record_graph_scene_color_start(device, command_buffer, graph_position);
+                timing.record_graph_scene_color_finish(device, command_buffer, graph_position);
                 timing.record_graph_finish(device, command_buffer, graph_position);
             }
             continue;
@@ -190,6 +194,11 @@ pub(super) fn record_scene_graphs_to_swapchain(
             }
         }
 
+        if let Some(timing) = gpu_timing {
+            timing.record_graph_effect_target_finish(device, command_buffer, graph_position);
+            timing.record_graph_scene_color_start(device, command_buffer, graph_position);
+        }
+
         let mut graph_ranges = scene
             .scene_color_draw_ranges
             .iter()
@@ -220,6 +229,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
             scene_color_initialized = true;
         }
         if let Some(timing) = gpu_timing {
+            timing.record_graph_scene_color_finish(device, command_buffer, graph_position);
             timing.record_graph_finish(device, command_buffer, graph_position);
         }
     }

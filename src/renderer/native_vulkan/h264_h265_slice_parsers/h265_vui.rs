@@ -1,5 +1,5 @@
 #[cfg(any(feature = "native-vulkan-video", test))]
-pub(super) fn native_vulkan_parse_h265_vui_parameters(
+fn native_vulkan_parse_h265_vui_parameters(
     bits: &mut NativeVulkanH265BitReader<'_>,
     max_sub_layers_minus1: u8,
 ) -> Result<NativeVulkanH265ParsedVui, String> {
@@ -269,7 +269,7 @@ pub(super) fn native_vulkan_h265_skip_sub_layer_hrd_parameters(
 }
 
 #[cfg(any(feature = "native-vulkan-video", test))]
-pub(super) fn native_vulkan_parse_h265_profile_tier_level(
+fn native_vulkan_parse_h265_profile_tier_level(
     bits: &mut NativeVulkanH265BitReader<'_>,
     max_sub_layers_minus1: u8,
 ) -> Result<NativeVulkanH265ParsedProfileTierLevel, String> {

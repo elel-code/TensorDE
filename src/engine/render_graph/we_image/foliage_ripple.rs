@@ -1,12 +1,13 @@
 //! Typed direct composite for a compatible foliage-sway then water-ripple chain.
 
 use super::{WeEffectPassContract, WeImageGraphContract};
-use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     PassState, RenderGraph, RenderPassNode, RenderPassRole, RenderTargetRole,
 };
 
+#[cfg(test)]
 const DIRECT_SHADER: &str = "we/image-foliage-ripple-composite";
+#[cfg(test)]
 const SCREEN_DIRECT_SHADER: &str = "we/image-foliage-ripple-screen-composite";
 
 pub(super) fn is_compatible(contract: &WeImageGraphContract) -> bool {
@@ -19,7 +20,7 @@ pub(super) fn is_compatible(contract: &WeImageGraphContract) -> bool {
             .as_deref()
             .is_some_and(is_generic_image_shader)
         && contract.base_texture_slots.as_slice() == [0]
-        && contract.foliage_ripple_material_index.is_some()
+        && contract.foliage_ripple_material.is_some()
         && are_compatible_effect_passes(&contract.effect_passes)
 }
 
@@ -43,18 +44,17 @@ pub(super) fn are_compatible_effect_passes(effects: &[WeEffectPassContract]) -> 
 }
 
 pub(super) fn append_direct_composite(graph: &mut RenderGraph, contract: &WeImageGraphContract) {
-    let shader = if contract.final_scene_blend == SceneBlendMode::Screen {
-        SCREEN_DIRECT_SHADER
-    } else {
-        DIRECT_SHADER
-    };
+    let material = contract
+        .foliage_ripple_material
+        .as_ref()
+        .expect("compatible foliage/ripple graph requires its typed material");
     graph.passes.push(RenderPassNode {
         id: 0,
         role: RenderPassRole::SceneComposite,
         object_index: Some(contract.object_index),
-        material_index: contract.foliage_ripple_material_index,
+        material_index: Some(material.material_index),
         pass_index: 0,
-        shader: Some(shader.to_owned()),
+        shader: Some(material.shader.clone()),
         target: RenderTargetRole::SceneColor,
         target_name: None,
         target_extent: None,
@@ -119,6 +119,7 @@ fn combo_disabled(pass: &WeEffectPassContract, name: &str) -> bool {
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::super::WeFoliageRippleMaterial;
     use super::*;
     use crate::core::SceneBlendMode;
 
@@ -136,7 +137,10 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
-            foliage_ripple_material_index: Some(12),
+            foliage_ripple_material: Some(WeFoliageRippleMaterial {
+                material_index: 12,
+                shader: DIRECT_SHADER.to_owned(),
+            }),
             ripple_flow_material_indices: None,
             final_effect_material: None,
             effect_passes: vec![effect("foliagesway", 10), effect("waterripple", 11)],
@@ -165,7 +169,10 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
-            foliage_ripple_material_index: Some(12),
+            foliage_ripple_material: Some(WeFoliageRippleMaterial {
+                material_index: 12,
+                shader: SCREEN_DIRECT_SHADER.to_owned(),
+            }),
             ripple_flow_material_indices: None,
             final_effect_material: None,
             effect_passes: vec![effect("foliagesway", 10), effect("waterripple", 11)],
@@ -178,6 +185,11 @@ mod tests {
         );
 
         contract.final_scene_blend = SceneBlendMode::Alpha;
+        contract
+            .foliage_ripple_material
+            .as_mut()
+            .expect("typed foliage material")
+            .shader = DIRECT_SHADER.to_owned();
         let graph = super::super::we_image_graph(&contract);
         assert_eq!(graph.passes[0].shader.as_deref(), Some(DIRECT_SHADER));
     }

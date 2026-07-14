@@ -168,7 +168,7 @@ fn final_tech_circle_values(
     values
 }
 
-fn final_audio_bars_values(
+pub(super) fn final_audio_bars_values(
     parameters: &MaterialParameters<'_>,
     storage: &SceneStorage,
     draw: &SceneRenderingDeviceMeshDraw,

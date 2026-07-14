@@ -5,7 +5,7 @@ use crate::convert::we_ingest::ir::{
 };
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    WeEffectPassContract, we_effect_passes_form_foliage_ripple_chain,
+    WeEffectPassContract, WeFoliageRippleMaterial, we_effect_passes_form_foliage_ripple_chain,
 };
 use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
@@ -13,6 +13,10 @@ use super::WeIrBuilder;
 
 pub(super) const FOLIAGE_RIPPLE_SHADER: &str = "we/image-foliage-ripple-composite";
 pub(super) const FOLIAGE_RIPPLE_SCREEN_SHADER: &str = "we/image-foliage-ripple-screen-composite";
+const FOLIAGE_RIPPLE_POWER_TWO_SHADER: &str =
+    "we/image-foliage-ripple-composite__GILDER_FOLIAGE_POWER_TWO_1";
+const FOLIAGE_RIPPLE_SCREEN_POWER_TWO_SHADER: &str =
+    "we/image-foliage-ripple-screen-composite__GILDER_FOLIAGE_POWER_TWO_1";
 
 #[derive(Debug, Clone)]
 struct MaterialInput {
@@ -27,7 +31,7 @@ pub(super) fn create(
     base_material_handle: u32,
     effects: &[WeEffectPassContract],
     final_scene_blend: SceneBlendMode,
-) -> Option<usize> {
+) -> Option<WeFoliageRippleMaterial> {
     if !we_effect_passes_form_foliage_ripple_chain(effects) {
         return None;
     }
@@ -67,7 +71,9 @@ pub(super) fn create(
 
     let mut pass = source.pass;
     pass.material = handle;
-    pass.shader_key = shader_for_scene_blend(final_scene_blend).to_owned();
+    let foliage_power_two = constant_is_static_number(&foliage.constants, "power", 2.0);
+    let shader = shader_for_scene_blend(final_scene_blend, foliage_power_two).to_owned();
+    pass.shader_key = shader.clone();
     pass.target.clear();
     pass.texture_start = texture_start;
     pass.texture_count = builder.material_textures.len() as u32 - texture_start;
@@ -86,15 +92,31 @@ pub(super) fn create(
         pass_start,
         pass_count: 1,
     });
-    Some(handle as usize)
+    Some(WeFoliageRippleMaterial {
+        material_index: handle as usize,
+        shader,
+    })
 }
 
-fn shader_for_scene_blend(blend: SceneBlendMode) -> &'static str {
-    if blend == SceneBlendMode::Screen {
-        FOLIAGE_RIPPLE_SCREEN_SHADER
-    } else {
-        FOLIAGE_RIPPLE_SHADER
+fn shader_for_scene_blend(blend: SceneBlendMode, foliage_power_two: bool) -> &'static str {
+    match (blend == SceneBlendMode::Screen, foliage_power_two) {
+        (true, true) => FOLIAGE_RIPPLE_SCREEN_POWER_TWO_SHADER,
+        (true, false) => FOLIAGE_RIPPLE_SCREEN_SHADER,
+        (false, true) => FOLIAGE_RIPPLE_POWER_TWO_SHADER,
+        (false, false) => FOLIAGE_RIPPLE_SHADER,
     }
+}
+
+fn constant_is_static_number(
+    constants: &[WeIrMaterialConstant],
+    name: &str,
+    expected: f32,
+) -> bool {
+    constants
+        .iter()
+        .find(|constant| constant.name.eq_ignore_ascii_case(name))
+        .and_then(|constant| constant.value_json.trim().parse::<f32>().ok())
+        .is_some_and(|value| value.is_finite() && (value - expected).abs() <= 1.0e-7)
 }
 
 fn material_input(builder: &WeIrBuilder, material_index: usize) -> Option<MaterialInput> {
@@ -152,12 +174,30 @@ mod tests {
     #[test]
     fn aggregate_material_uses_the_typed_screen_shader() {
         assert_eq!(
-            shader_for_scene_blend(SceneBlendMode::Screen),
+            shader_for_scene_blend(SceneBlendMode::Screen, false),
             FOLIAGE_RIPPLE_SCREEN_SHADER
         );
         assert_eq!(
-            shader_for_scene_blend(SceneBlendMode::Alpha),
+            shader_for_scene_blend(SceneBlendMode::Alpha, false),
             FOLIAGE_RIPPLE_SHADER
         );
+        assert_eq!(
+            shader_for_scene_blend(SceneBlendMode::Screen, true),
+            FOLIAGE_RIPPLE_SCREEN_POWER_TWO_SHADER
+        );
+    }
+
+    #[test]
+    fn power_two_variant_requires_a_static_numeric_constant() {
+        let numeric = [WeIrMaterialConstant {
+            name: "power".to_owned(),
+            value_json: "2".to_owned(),
+        }];
+        let property = [WeIrMaterialConstant {
+            name: "power".to_owned(),
+            value_json: r#"{"user":"foliage_power"}"#.to_owned(),
+        }];
+        assert!(constant_is_static_number(&numeric, "power", 2.0));
+        assert!(!constant_is_static_number(&property, "power", 2.0));
     }
 }

@@ -321,7 +321,7 @@ pub(super) fn destroy_multi_video_decode_source_slot(
 }
 
 #[cfg(feature = "native-vulkan-video")]
-pub(super) fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
+fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
     requests: NativeVulkanVulkanaliaStreamingDecodeRequests,
     codec: NativeVulkanVideoSessionCodec,
     session_max_dpb_slots: u32,
@@ -708,7 +708,7 @@ pub(super) fn create_multi_video_decode_source_slot(
 }
 
 #[cfg(not(feature = "native-vulkan-video"))]
-pub(super) fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
+fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
     _requests: NativeVulkanVulkanaliaStreamingDecodeRequests,
     _codec: NativeVulkanVideoSessionCodec,
     _session_max_dpb_slots: u32,

@@ -165,11 +165,7 @@ float roundedBoxSdf(vec2 point, vec2 size, float radius) {
     float half_min = min(half_size.x, half_size.y);
     float r = clamp(radius * half_min, 0.001, half_min);
     vec2 delta = abs(point) - (half_size - r);
-    vec2 outside = max(delta, 0.0);
-    if (outside.x == 0.0 && outside.y == 0.0) {
-        return -r;
-    }
-    return length(outside) - r;
+    return length(max(delta, 0.0)) - r;
 }
 void main() {
     float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
@@ -254,24 +250,39 @@ pub(super) fn image_waterwaves_multiply_composite_sources() -> (String, String) 
     )
 }
 
-pub(super) fn image_foliage_ripple_composite_sources() -> (String, String) {
+pub(super) fn image_foliage_ripple_composite_sources(foliage_power_two: bool) -> (String, String) {
     (
         super::scene_mesh_vertex_source(),
-        foliage_ripple_fragment_source(false),
+        foliage_ripple_fragment_source(false, foliage_power_two),
     )
 }
 
-pub(super) fn image_foliage_ripple_screen_composite_sources() -> (String, String) {
+pub(super) fn image_foliage_ripple_screen_composite_sources(
+    foliage_power_two: bool,
+) -> (String, String) {
     (
         super::scene_mesh_vertex_source(),
-        foliage_ripple_fragment_source(true),
+        foliage_ripple_fragment_source(true, foliage_power_two),
     )
 }
 
-fn foliage_ripple_fragment_source(premultiply_output: bool) -> String {
+fn foliage_ripple_fragment_source(premultiply_output: bool, foliage_power_two: bool) -> String {
     let premultiply = premultiply_output
         .then_some("    color.rgb *= color.a;\n")
         .unwrap_or_default();
+    let shaped_sine = if foliage_power_two {
+        r#"vec4 shapedSine(vec4 phase, float power) {
+    vec4 wave = sin(phase);
+    return wave * abs(wave);
+}
+"#
+    } else {
+        r#"vec4 shapedSine(vec4 phase, float power) {
+    vec4 wave = sin(phase);
+    return pow(abs(wave), vec4(max(power, 0.0001))) * sign(wave);
+}
+"#
+    };
     [
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
@@ -293,10 +304,7 @@ vec2 rotateVec2(vec2 value, float angle) {
     return vec2(value.x * cs.x - value.y * cs.y,
         value.x * cs.y + value.y * cs.x);
 }
-vec4 shapedSine(vec4 phase, float power) {
-    vec4 wave = sin(phase);
-    return pow(abs(wave), vec4(max(power, 0.0001))) * sign(wave);
-}
+vec4 shapedSine(vec4 phase, float power);
 vec2 rippleSourceUv(vec2 uv) {
     vec2 scroll = rotateVec2(
         vec2(0.0, 1.0),
@@ -348,6 +356,7 @@ vec2 foliageSourceUv(vec2 uv) {
     return uv + offset;
 }
 "#,
+        shaped_sine,
         r#"void main() {
     vec2 ripple_uv = rippleSourceUv(v_TexCoord);
     vec4 color = texture(g_SourceTexture, foliageSourceUv(ripple_uv))

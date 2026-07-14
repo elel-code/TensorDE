@@ -208,13 +208,13 @@ pub(super) fn native_vulkan_av1_picture_order_hints_for_submit(
 #[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanAv1ReferenceHistory {
-    frame_width: u32,
-    frame_height: u32,
-    render_width: u32,
-    render_height: u32,
-    segmentation: NativeVulkanAv1ParsedSegmentation,
-    loop_filter_ref_deltas: [i8; 8],
-    loop_filter_mode_deltas: [i8; 2],
+    pub(super) frame_width: u32,
+    pub(super) frame_height: u32,
+    pub(super) render_width: u32,
+    pub(super) render_height: u32,
+    pub(super) segmentation: NativeVulkanAv1ParsedSegmentation,
+    pub(super) loop_filter_ref_deltas: [i8; 8],
+    pub(super) loop_filter_mode_deltas: [i8; 2],
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -235,9 +235,9 @@ impl From<NativeVulkanAv1ActiveDpbReference> for NativeVulkanAv1ReferenceHistory
 #[cfg(any(feature = "native-vulkan-video", test))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeVulkanAv1FrameHeaderReferenceContext {
-    reference_name_order_hints: [u8; 8],
-    reference_name_slot_indices: [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
-    reference_histories:
+    pub(super) reference_name_order_hints: [u8; 8],
+    pub(super) reference_name_slot_indices: [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
+    pub(super) reference_histories:
         [Option<NativeVulkanAv1ReferenceHistory>; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
 }
 

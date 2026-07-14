@@ -50,7 +50,7 @@ pub struct WeImageGraphContract {
     /// Converter-authored material containing the complete compatible waterwaves chain.
     pub waterwaves_uv_field_material_index: Option<usize>,
     /// Converter-authored material for a compatible direct foliage/ripple composite.
-    pub foliage_ripple_material_index: Option<usize>,
+    pub foliage_ripple_material: Option<WeFoliageRippleMaterial>,
     /// Converter-authored materials for the typed ripple/flow two-stage path.
     pub ripple_flow_material_indices: Option<WeRippleFlowMaterialIndices>,
     /// Converter-authored material evaluated once in the final object draw.
@@ -62,6 +62,12 @@ pub struct WeImageGraphContract {
 pub struct WeRippleFlowMaterialIndices {
     pub ripple_source: usize,
     pub flow_composite: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeFoliageRippleMaterial {
+    pub material_index: usize,
+    pub shader: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -218,77 +224,81 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         waterwaves::append_displacement_chain(&mut graph, contract);
         return graph;
     }
-    let base_pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
-    graph.passes.push(RenderPassNode {
-        id: base_pass_id,
-        role: RenderPassRole::BaseMaterial,
-        object_index: Some(contract.object_index),
-        material_index: contract.base_material_index,
-        pass_index: 0,
-        shader: if authored_texture_effects {
-            Some(
-                if puppet_skinning_after_effects {
-                    "we/puppet-effect-source"
+    let cloudmotion_samples_snapshot_directly =
+        framebuffer_cloudmotion_samples_snapshot_directly(contract);
+    if !cloudmotion_samples_snapshot_directly {
+        let base_pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
+        graph.passes.push(RenderPassNode {
+            id: base_pass_id,
+            role: RenderPassRole::BaseMaterial,
+            object_index: Some(contract.object_index),
+            material_index: contract.base_material_index,
+            pass_index: 0,
+            shader: if authored_texture_effects {
+                Some(
+                    if puppet_skinning_after_effects {
+                        "we/puppet-effect-source"
+                    } else {
+                        "we/image-effect-source"
+                    }
+                    .to_owned(),
+                )
+            } else if !has_offscreen_chain
+                && contract.final_scene_blend == SceneBlendMode::Multiply
+                && contract
+                    .base_shader
+                    .as_deref()
+                    .is_some_and(is_unskinned_generic_image_shader)
+            {
+                Some("we/genericimage4-multiply-composite".to_owned())
+            } else {
+                contract.base_shader.clone()
+            },
+            target: if has_offscreen_chain {
+                RenderTargetRole::ImageLocalMain
+            } else {
+                RenderTargetRole::SceneColor
+            },
+            target_name: None,
+            target_extent: None,
+            target_format: None,
+            bindings: std::iter::once(TextureBindingRole::SourceTexture)
+                .chain(
+                    contract
+                        .base_texture_slots
+                        .iter()
+                        .copied()
+                        .map(|slot| TextureBindingRole::TextureSlot { slot }),
+                )
+                .chain(
+                    contract
+                        .base_pass_constants
+                        .iter()
+                        .cloned()
+                        .map(|name| TextureBindingRole::PassConstant { name }),
+                )
+                .chain(contract.framebuffer_snapshot.iter().map(|snapshot| {
+                    TextureBindingRole::EffectTarget {
+                        slot: snapshot.texture_slot,
+                        name: snapshot.target_name.clone(),
+                    }
+                }))
+                .collect(),
+            state: PassState {
+                pipeline_blend: if has_offscreen_chain {
+                    base_pipeline_blend(contract)
                 } else {
-                    "we/image-effect-source"
-                }
-                .to_owned(),
-            )
-        } else if !has_offscreen_chain
-            && contract.final_scene_blend == SceneBlendMode::Multiply
-            && contract
-                .base_shader
-                .as_deref()
-                .is_some_and(is_unskinned_generic_image_shader)
-        {
-            Some("we/genericimage4-multiply-composite".to_owned())
-        } else {
-            contract.base_shader.clone()
-        },
-        target: if has_offscreen_chain {
-            RenderTargetRole::ImageLocalMain
-        } else {
-            RenderTargetRole::SceneColor
-        },
-        target_name: None,
-        target_extent: None,
-        target_format: None,
-        bindings: std::iter::once(TextureBindingRole::SourceTexture)
-            .chain(
-                contract
-                    .base_texture_slots
-                    .iter()
-                    .copied()
-                    .map(|slot| TextureBindingRole::TextureSlot { slot }),
-            )
-            .chain(
-                contract
-                    .base_pass_constants
-                    .iter()
-                    .cloned()
-                    .map(|name| TextureBindingRole::PassConstant { name }),
-            )
-            .chain(contract.framebuffer_snapshot.iter().map(|snapshot| {
-                TextureBindingRole::EffectTarget {
-                    slot: snapshot.texture_slot,
-                    name: snapshot.target_name.clone(),
-                }
-            }))
-            .collect(),
-        state: PassState {
-            pipeline_blend: if has_offscreen_chain {
-                base_pipeline_blend(contract)
-            } else {
-                final_pipeline_blend
+                    final_pipeline_blend
+                },
+                scene_blend: if has_offscreen_chain {
+                    SceneBlendMode::Normal
+                } else {
+                    contract.final_scene_blend
+                },
+                ..PassState::default()
             },
-            scene_blend: if has_offscreen_chain {
-                SceneBlendMode::Normal
-            } else {
-                contract.final_scene_blend
-            },
-            ..PassState::default()
-        },
-    });
+        });
+    }
     for (index, effect) in contract.effect_passes.iter().enumerate() {
         let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
         let mut node = we_effect_pass_node(pass_id, effect, contract.final_scene_blend);
@@ -305,6 +315,20 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         if node.bindings.is_empty() {
             node.bindings
                 .push(TextureBindingRole::PreviousGraphTarget { slot: 0 });
+        }
+        if index == 0 && cloudmotion_samples_snapshot_directly {
+            let snapshot = contract
+                .framebuffer_snapshot
+                .as_ref()
+                .expect("direct framebuffer cloudmotion requires snapshot contract");
+            for binding in &mut node.bindings {
+                if matches!(binding, TextureBindingRole::PreviousGraphTarget { slot: 0 }) {
+                    *binding = TextureBindingRole::EffectTarget {
+                        slot: snapshot.texture_slot,
+                        name: snapshot.target_name.clone(),
+                    };
+                }
+            }
         }
         if node.shader.is_none() && !effect_command_has_no_shader(effect) {
             graph.unsupported.push(UnsupportedGraphBoundary {
@@ -352,6 +376,37 @@ pub fn we_image_graph(contract: &WeImageGraphContract) -> RenderGraph {
         });
     }
     graph
+}
+
+fn framebuffer_cloudmotion_samples_snapshot_directly(contract: &WeImageGraphContract) -> bool {
+    if contract.framebuffer_snapshot.is_none() {
+        return false;
+    }
+    if contract.effects_in_authored_texture_space
+        || contract.effect_passes.len() != 1
+        || !contract.base_pass_constants.is_empty()
+        || contract.base_texture_slots.iter().any(|slot| *slot != 0)
+        || !contract
+            .base_shader
+            .as_deref()
+            .is_some_and(|shader| shader.eq_ignore_ascii_case("passthrough"))
+    {
+        return false;
+    }
+    let effect = &contract.effect_passes[0];
+    effect.command.is_none()
+        && effect.source.is_none()
+        && effect.target.is_none()
+        && effect.shader.as_deref().is_some_and(|shader| {
+            shader
+                .split("__")
+                .next()
+                .is_some_and(|shader| shader.eq_ignore_ascii_case("effects/cloudmotion"))
+        })
+        && effect
+            .binds
+            .get(&0)
+            .is_some_and(|source| matches!(source.as_str(), "previous" | "_previous" | "$previous"))
 }
 
 fn is_unskinned_generic_image_shader(shader: &str) -> bool {

@@ -132,7 +132,7 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
         if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
             return caustics_framebuffer_overlay_fragment_source(key, texture_slot_mask);
         }
-        return caustics_effect_fragment_source(texture_slot_mask, false);
+        return caustics_effect_fragment_source(texture_slot_mask, false, false);
     }
     if shader == "effects/cloudmotion" {
         return cloudmotion_effect_fragment_source(texture_slot_mask);
@@ -208,6 +208,7 @@ fn caustics_framebuffer_overlay_fragment_source(key: &str, texture_slot_mask: u3
     caustics_effect_fragment_source(
         texture_slot_mask,
         key.contains("__GILDER_CHROMATIC_ZERO_1"),
+        key.contains("__GILDER_PATTERN_GLOW_SHARED_1"),
     )
         .replacen(
             "layout(location = 0) in vec2 v_TexCoord;",

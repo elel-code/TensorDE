@@ -58,6 +58,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1__GILDER_PATTERN_GLOW_SHARED_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/cloudmotion__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
@@ -202,7 +206,15 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshImageFoliageRippleComposite,
     },
     SceneShaderSpec {
+        key: "we/image-foliage-ripple-composite__GILDER_FOLIAGE_POWER_TWO_1",
+        family: SceneShaderFamily::MeshImageFoliageRippleComposite,
+    },
+    SceneShaderSpec {
         key: "we/image-foliage-ripple-screen-composite",
+        family: SceneShaderFamily::MeshImageFoliageRippleScreenComposite,
+    },
+    SceneShaderSpec {
+        key: "we/image-foliage-ripple-screen-composite__GILDER_FOLIAGE_POWER_TWO_1",
         family: SceneShaderFamily::MeshImageFoliageRippleScreenComposite,
     },
     SceneShaderSpec {
@@ -469,10 +481,14 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             }
         }
         SceneShaderFamily::MeshImageFoliageRippleComposite => {
-            super::image_foliage_ripple_composite_sources()
+            super::image_foliage_ripple_composite_sources(
+                spec.key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
+            )
         }
         SceneShaderFamily::MeshImageFoliageRippleScreenComposite => {
-            super::image_foliage_ripple_screen_composite_sources()
+            super::image_foliage_ripple_screen_composite_sources(
+                spec.key.contains("__GILDER_FOLIAGE_POWER_TWO_1"),
+            )
         }
         SceneShaderFamily::MeshImageRippleFlowComposite => {
             if spec.key == "we/image-ripple-flow-multiply-composite" {

@@ -17,6 +17,8 @@ use final_effect::{
     final_effect_program_values, final_waterripple_values, final_waterwaves_values,
     material_texture_resolution, object_source_texture_resolution, ripple_flow_composite_values,
 };
+#[cfg(test)]
+use final_effect::final_audio_bars_values;
 
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneMaterialConstantRecord, SceneMaterialHandle, SceneMaterialPassRecord,

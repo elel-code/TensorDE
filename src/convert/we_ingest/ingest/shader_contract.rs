@@ -131,10 +131,9 @@ fn binding_texture_slot(binding: &TextureBindingRole) -> Option<u32> {
 }
 
 fn graph_shader_texture_slot_mask(shader_key: &str) -> u32 {
-    match shader_key.to_ascii_lowercase().as_str() {
-        "we/image-foliage-ripple-screen-composite" => 0x0b,
-        _ => 0,
-    }
+    u32::from(is_foliage_ripple_shader(
+        shader_key.to_ascii_lowercase().as_str(),
+    )) * 0x0b
 }
 
 pub(super) fn declared_texture_slot_mask(
@@ -162,10 +161,7 @@ pub(super) fn declared_texture_slot_mask(
     if key == "we/waterwaves-uv-field" {
         mask |= 0xfe;
     }
-    if matches!(
-        key.as_str(),
-        "we/image-foliage-ripple-composite" | "we/image-foliage-ripple-screen-composite"
-    ) {
+    if is_foliage_ripple_shader(&key) {
         mask |= 0x0b;
     }
     if key == "we/image-ripple-source" {
@@ -222,8 +218,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-effect-modulate-composite"
         || key == "we/image-waterwaves-composite"
         || key == "we/image-waterwaves-multiply-composite"
-        || key == "we/image-foliage-ripple-composite"
-        || key == "we/image-foliage-ripple-screen-composite"
+        || is_foliage_ripple_shader(key)
         || key == "we/image-ripple-flow-composite"
         || key == "we/image-ripple-flow-multiply-composite"
         || key == "we/image-waterwaves-final"
@@ -317,12 +312,25 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/puppet-effect-composite"
         || key == "we/image-waterwaves-composite"
         || key == "we/image-waterwaves-multiply-composite"
-        || key == "we/image-foliage-ripple-composite"
-        || key == "we/image-foliage-ripple-screen-composite"
+        || is_foliage_ripple_shader(key)
         || key == "we/image-ripple-flow-composite"
         || key == "we/image-ripple-flow-multiply-composite"
         || key == "we/puppet-waterwaves-composite"
         || key.contains("genericparticle")
+}
+
+fn is_foliage_ripple_shader(key: &str) -> bool {
+    [
+        "we/image-foliage-ripple-composite",
+        "we/image-foliage-ripple-screen-composite",
+    ]
+    .iter()
+    .any(|base| {
+        key == *base
+            || key
+                .strip_prefix(base)
+                .is_some_and(|suffix| suffix.starts_with("__"))
+    })
 }
 
 #[cfg(test)]

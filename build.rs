@@ -302,7 +302,11 @@ void main() {
     .to_owned()
 }
 
-fn caustics_effect_fragment_source(texture_slot_mask: u32, chromatic_zero: bool) -> String {
+fn caustics_effect_fragment_source(
+    texture_slot_mask: u32,
+    chromatic_zero: bool,
+    pattern_glow_shared: bool,
+) -> String {
     if texture_slot_mask & 0x3d != 0x3d {
         return caustics_compatibility_fragment_source();
     }
@@ -378,7 +382,7 @@ void main() {
 }
 "#
     .to_owned();
-    if chromatic_zero {
+    let source = if chromatic_zero {
         source.replace(
             r#"    float chromatic = u_Effect.g_GlowDistortionChromaticBlur.z;
     vec2 leftCoords = causticsCoords - vec2(0.01 * chromatic, 0.0);
@@ -389,6 +393,18 @@ void main() {
         texture(g_Texture2, rightCoords).r);"#,
             r#"    float causticsPattern = texture(g_Texture2, causticsCoords).r;
     vec3 caustics = vec3(causticsPattern);"#,
+        )
+    } else {
+        source
+    };
+    if pattern_glow_shared {
+        assert!(
+            chromatic_zero,
+            "shared caustics pattern/glow currently requires the chromatic-zero variant"
+        );
+        source.replace(
+            "    float glowSample = texture(g_Texture5, causticsCoords).r;",
+            "    float glowSample = causticsPattern;",
         )
     } else {
         source
