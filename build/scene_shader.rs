@@ -1091,10 +1091,17 @@ void main() {
     // each bar independently.
     vec2 output_uv = v_TexCoord;
     vec2 uv = output_uv;
-    uv.x -= step(output_uv.y, 0.5) * u_Effect.g_SkewTopBottomLeftRight.x
-        + step(0.5, output_uv.y) * u_Effect.g_SkewTopBottomLeftRight.y;
-    uv.y += step(output_uv.x, 0.5) * u_Effect.g_SkewTopBottomLeftRight.z
-        + step(0.5, output_uv.x) * u_Effect.g_SkewTopBottomLeftRight.w;
+    // The authored skew source computes `step` in the vertex shader. On a quad those four
+    // corner values are linearly interpolated, so the fragment-equivalent mapping is a
+    // continuous mix, not a per-fragment half-plane jump.
+    uv.x -= mix(
+        u_Effect.g_SkewTopBottomLeftRight.x,
+        u_Effect.g_SkewTopBottomLeftRight.y,
+        output_uv.y);
+    uv.y += mix(
+        u_Effect.g_SkewTopBottomLeftRight.z,
+        u_Effect.g_SkewTopBottomLeftRight.w,
+        output_uv.x);
     uv = fract(uv);
     uv.y = fract(0.5 - uv.y) + floor(uv.y);
 

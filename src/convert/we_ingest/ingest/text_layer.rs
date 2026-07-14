@@ -267,8 +267,8 @@ pub(super) fn rasterize_text_layer(
     font_bytes: Vec<u8>,
 ) -> Result<WeTextLayerRaster, String> {
     let size = parse_vec3(object.get("size")).ok_or("text layer is missing a valid size")?;
-    let width = checked_dimension(size.x, "width")?;
-    let height = checked_dimension(size.y, "height")?;
+    let authored_width = checked_dimension(size.x, "width")?;
+    let authored_height = checked_dimension(size.y, "height")?;
     let font = FontArc::try_from_vec(font_bytes)
         .map_err(|_| "font payload is not a supported OpenType/TrueType face".to_owned())?;
     let authored_point_size = value_f32(object.get("pointsize"))
@@ -280,32 +280,33 @@ pub(super) fn rasterize_text_layer(
     // scene-resolution-relative value.
     let spacing = parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x);
     let scale = PxScale::from(point_size);
-    let scaled = font.as_scaled(scale);
     let glyphs = layout_glyphs(&font, text, scale, spacing);
-    let text_width = glyphs
-        .last()
-        .map(|glyph| glyph.position.x + scaled.h_advance(glyph.id))
+    let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
+    let outline_radius = outline_enabled
+        .then(|| value_f32(object.get("outlinethickness")).unwrap_or(1.0))
         .unwrap_or(0.0)
-        .max(0.0);
-    let horizontal_align = bound_string(object.get("horizontalalign")).unwrap_or_default();
-    let start_x = match horizontal_align.as_str() {
-        "right" => width as f32 - text_width,
-        "center" => (width as f32 - text_width) * 0.5,
-        _ => 0.0,
-    };
-    let vertical_align = bound_string(object.get("verticalalign")).unwrap_or_default();
-    let line_height = scaled.height();
-    let line_top = match vertical_align.as_str() {
-        "bottom" => height as f32 - line_height,
-        "center" => (height as f32 - line_height) * 0.5,
-        _ => 0.0,
-    };
-    let baseline = line_top + scaled.ascent();
+        .round()
+        .clamp(0.0, 16.0) as f32;
+    let (padding_x, padding_y) = retained_text_padding(object.get("padding"));
+    let (width, height, origin) =
+        if let Some((min_x, min_y, max_x, max_y)) = glyph_ink_bounds(&font, &glyphs, scale) {
+            let min_x = (min_x - padding_x - outline_radius).floor();
+            let min_y = (min_y - padding_y - outline_radius).floor();
+            let max_x = (max_x + padding_x + outline_radius).ceil();
+            let max_y = (max_y + padding_y + outline_radius).ceil();
+            (
+                checked_dimension(max_x - min_x, "raster width")?,
+                checked_dimension(max_y - min_y, "raster height")?,
+                point(-min_x, -min_y),
+            )
+        } else {
+            (authored_width, authored_height, point(0.0, 0.0))
+        };
     let mut glyph_alpha = vec![0u8; width as usize * height as usize];
     for glyph in glyphs {
         let positioned = glyph
             .id
-            .with_scale_and_position(scale, point(start_x + glyph.position.x, baseline));
+            .with_scale_and_position(scale, point(origin.x + glyph.position.x, origin.y));
         let Some(outlined) = font.outline_glyph(positioned) else {
             continue;
         };
@@ -322,14 +323,8 @@ pub(super) fn rasterize_text_layer(
     }
 
     let text_color = parse_vec3(object.get("color")).unwrap_or(SceneVec3::ONE);
-    let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
-    let outline_radius = outline_enabled
-        .then(|| value_f32(object.get("outlinethickness")).unwrap_or(1.0))
-        .unwrap_or(0.0)
-        .round()
-        .clamp(0.0, 16.0) as i32;
     let outline_color = parse_vec3(object.get("outlinecolor")).unwrap_or(SceneVec3::ONE);
-    let outline_alpha = dilate_alpha(&glyph_alpha, width, height, outline_radius);
+    let outline_alpha = dilate_alpha(&glyph_alpha, width, height, outline_radius as i32);
     let mut rgba = vec![0u8; glyph_alpha.len() * 4];
     for index in 0..glyph_alpha.len() {
         let glyph_coverage = glyph_alpha[index] as f32 / 255.0;
@@ -363,6 +358,47 @@ pub(super) fn rasterize_text_layer(
         height,
         rgba,
     })
+}
+
+fn glyph_ink_bounds(
+    font: &FontArc,
+    glyphs: &[ab_glyph::Glyph],
+    scale: PxScale,
+) -> Option<(f32, f32, f32, f32)> {
+    let mut minimum_x = f32::INFINITY;
+    let mut minimum_y = f32::INFINITY;
+    let mut maximum_x = f32::NEG_INFINITY;
+    let mut maximum_y = f32::NEG_INFINITY;
+    for glyph in glyphs {
+        let positioned = glyph
+            .id
+            .with_scale_and_position(scale, point(glyph.position.x, 0.0));
+        let Some(outlined) = font.outline_glyph(positioned) else {
+            continue;
+        };
+        let bounds = outlined.px_bounds();
+        minimum_x = minimum_x.min(bounds.min.x);
+        minimum_y = minimum_y.min(bounds.min.y);
+        maximum_x = maximum_x.max(bounds.max.x);
+        maximum_y = maximum_y.max(bounds.max.y);
+    }
+    if minimum_x.is_finite()
+        && minimum_y.is_finite()
+        && maximum_x.is_finite()
+        && maximum_y.is_finite()
+    {
+        Some((minimum_x, minimum_y, maximum_x, maximum_y))
+    } else {
+        None
+    }
+}
+
+fn retained_text_padding(value: Option<&Value>) -> (f32, f32) {
+    if let Some(padding) = parse_vec3(value) {
+        return (padding.x.clamp(0.0, 1.0), padding.y.clamp(0.0, 1.0));
+    }
+    let padding = value_f32(value).unwrap_or(32.0).clamp(0.0, 1.0);
+    (padding, padding)
 }
 
 fn layout_glyphs(font: &FontArc, text: &str, scale: PxScale, spacing: f32) -> Vec<ab_glyph::Glyph> {
@@ -465,5 +501,15 @@ mod tests {
             parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x),
             202.0
         );
+    }
+
+    #[test]
+    fn retained_text_padding_matches_native_one_pixel_cap() {
+        let vector = serde_json::json!({"padding": "32.00000 0.50000"});
+        assert_eq!(retained_text_padding(vector.get("padding")), (1.0, 0.5));
+
+        let scalar = serde_json::json!({"padding": 0.25});
+        assert_eq!(retained_text_padding(scalar.get("padding")), (0.25, 0.25));
+        assert_eq!(retained_text_padding(None), (1.0, 1.0));
     }
 }
