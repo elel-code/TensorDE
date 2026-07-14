@@ -388,6 +388,7 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
                 && !storage.string(pass.shader_key).is_some_and(|key| {
                     key.eq_ignore_ascii_case("we/objectcomposite")
                         || key.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
+                        || key.eq_ignore_ascii_case("we/flat-rounded-hsl-source")
                         || key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
                         || key.eq_ignore_ascii_case("we/framebuffer-water-final")
                         || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
@@ -455,7 +456,9 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
     let key = shader_key.to_ascii_lowercase();
     if matches!(
         key.as_str(),
-        "we/flat-rounded-mask-composite" | "we/flat-rounded-opacity-final"
+        "we/flat-rounded-mask-composite"
+            | "we/flat-rounded-opacity-final"
+            | "we/flat-rounded-hsl-source"
     ) {
         return Some(SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad);
     }

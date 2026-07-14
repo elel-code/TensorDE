@@ -40,7 +40,10 @@ use std::fs;
 
 use serde_json::Value;
 
-use crate::engine::render_graph::{WeEffectPassContract, WeImageGraphContract, we_image_graph};
+use crate::engine::render_graph::{
+    WeEffectPassContract, WeImageGraphContract, we_image_graph,
+    we_image_graph_requires_generated_scene_snapshot,
+};
 use crate::engine::scene::abi::{
     SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, SceneResourceKind,
     SceneVec3,

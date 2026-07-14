@@ -216,6 +216,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/image-effect-source"
         || key == "we/image-effect-composite"
         || key == "we/image-effect-modulate-composite"
+        || key == "we/flat-rounded-hsl-source"
         || key == "we/image-waterwaves-composite"
         || key == "we/image-waterwaves-multiply-composite"
         || is_foliage_ripple_shader(key)
@@ -290,6 +291,7 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/puppet-iris-waterripple-final"
         || key == "we/puppet-iris-waterripple-clipping-final"
         || key == "we/flat-rounded-opacity-final"
+        || key == "we/flat-rounded-hsl-source"
         || key == "we/tech-circle-final"
         || key == "we/audio-bars-final"
         || key == "we/framebuffer-water-final"

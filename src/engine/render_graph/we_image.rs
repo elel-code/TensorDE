@@ -92,6 +92,11 @@ pub fn we_effect_passes_form_ripple_flow_chain(effect_passes: &[WeEffectPassCont
     ripple_flow::are_compatible_effect_passes(effect_passes)
 }
 
+pub fn we_image_graph_requires_generated_scene_snapshot(contract: &WeImageGraphContract) -> bool {
+    contract.final_scene_blend == SceneBlendMode::HslColor
+        && flat_rounded_mask::supports_direct_chain(contract)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WeFramebufferSnapshotContract {
     pub target_name: String,

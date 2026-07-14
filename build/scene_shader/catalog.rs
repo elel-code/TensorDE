@@ -186,6 +186,10 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshFlatRoundedMaskComposite,
     },
     SceneShaderSpec {
+        key: "we/flat-rounded-hsl-source",
+        family: SceneShaderFamily::MeshFlatRoundedMaskComposite,
+    },
+    SceneShaderSpec {
         key: "we/puppet-effect-source",
         family: SceneShaderFamily::MeshPuppetEffectSource,
     },
@@ -468,9 +472,10 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
                 super::image_effect_composite_sources()
             }
         }
-        SceneShaderFamily::MeshFlatRoundedMaskComposite => {
-            super::flat_rounded_mask_composite_sources()
-        }
+        SceneShaderFamily::MeshFlatRoundedMaskComposite => match spec.key {
+            "we/flat-rounded-hsl-source" => super::flat_rounded_hsl_source_sources(),
+            _ => super::flat_rounded_mask_composite_sources(),
+        },
         SceneShaderFamily::MeshPuppetEffectSource => super::puppet_effect_source_sources(),
         SceneShaderFamily::MeshPuppetEffectComposite => super::puppet_effect_composite_sources(),
         SceneShaderFamily::MeshImageWaterWavesComposite => {

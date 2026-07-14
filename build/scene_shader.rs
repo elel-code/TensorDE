@@ -195,6 +195,72 @@ void main() {
     (vertex, fragment.to_owned())
 }
 
+pub(super) fn flat_rounded_hsl_source_sources() -> (String, String) {
+    let vertex = flat_rounded_mask_support_vertex_source();
+    let fragment = r#"#version 450
+layout(location = 0) in vec2 v_ScreenTexCoord;
+layout(location = 1) in vec2 v_ObjectTexCoord;
+layout(location = 2) flat in vec3 v_ObjectPixelExtent;
+layout(location = 0) out vec4 o_Color;
+layout(set = 0, binding = 0) uniform sampler2D g_SceneSnapshot;
+layout(set = 0, binding = 3) uniform FlatRoundedMaskCompositeMaterial {
+    vec4 g_ColorRadius;
+    vec4 g_SizeSoftnessAlpha;
+    vec4 g_BorderWidth;
+    vec4 g_ResolvedColorAlpha;
+} u_Effect;
+float roundedBoxSdf(vec2 point, vec2 size, float radius) {
+    vec2 half_size = size * 0.5;
+    float half_min = min(half_size.x, half_size.y);
+    float r = clamp(radius * half_min, 0.001, half_min);
+    vec2 delta = abs(point) - (half_size - r);
+    return length(max(delta, 0.0)) - r;
+}
+float blendLum(vec3 color) {
+    return dot(color, vec3(0.30, 0.59, 0.11));
+}
+vec3 clipBlendColor(vec3 color) {
+    float lum = blendLum(color);
+    float low = min(min(color.r, color.g), color.b);
+    float high = max(max(color.r, color.g), color.b);
+    if (low < 0.0) color = vec3(lum) + (color - vec3(lum)) * lum / (lum - low);
+    if (high > 1.0) color = vec3(lum)
+        + (color - vec3(lum)) * (1.0 - lum) / (high - lum);
+    return color;
+}
+vec3 setBlendLum(vec3 color, float lum) {
+    return clipBlendColor(color + vec3(lum - blendLum(color)));
+}
+void main() {
+    float width_pixels = max(v_ObjectPixelExtent.x, 1.0);
+    float height_pixels = max(v_ObjectPixelExtent.y, 1.0);
+    vec2 aspect_scale = vec2(max(1.0, width_pixels / height_pixels),
+        max(1.0, height_pixels / width_pixels));
+    vec2 mask_uv = (v_ObjectTexCoord - 0.5) * aspect_scale + 0.5;
+    vec2 mask_size = u_Effect.g_SizeSoftnessAlpha.xy * aspect_scale;
+    float distance = roundedBoxSdf(mask_uv - vec2(0.5), mask_size,
+        u_Effect.g_ColorRadius.w);
+    float edge_softness = u_Effect.g_SizeSoftnessAlpha.z
+        / max(v_ObjectPixelExtent.z, 1.0) * 2.0;
+    float mask_alpha = smoothstep(edge_softness, 0.0, distance);
+    float effect_alpha = mask_alpha * u_Effect.g_SizeSoftnessAlpha.w;
+    vec3 source = mix(u_Effect.g_ColorRadius.rgb, vec3(1.0), effect_alpha)
+        * u_Effect.g_ResolvedColorAlpha.rgb;
+    vec4 destination = texelFetch(g_SceneSnapshot, ivec2(gl_FragCoord.xy), 0);
+    vec3 blended = setBlendLum(source, blendLum(destination.rgb));
+    float source_alpha = mask_alpha * u_Effect.g_ResolvedColorAlpha.a;
+    float destination_alpha = destination.a;
+    vec3 result = blended * source_alpha * destination_alpha
+        + source * source_alpha * (1.0 - destination_alpha)
+        + destination.rgb * destination_alpha * (1.0 - source_alpha);
+    float result_alpha = source_alpha + destination_alpha
+        - source_alpha * destination_alpha;
+    o_Color = vec4(result, result_alpha);
+}
+"#;
+    (vertex, fragment.to_owned())
+}
+
 fn flat_rounded_mask_support_vertex_source() -> String {
     r#"#version 450
 layout(set = 0, binding = 2) uniform FlatRoundedMaskDrawUniform {
@@ -203,6 +269,7 @@ layout(set = 0, binding = 2) uniform FlatRoundedMaskDrawUniform {
     vec4 g_ObjectPixelExtent;
     vec4 g_ObjectUvBounds;
 } u_Draw;
+layout(location = 0) out vec2 v_ScreenTexCoord;
 layout(location = 1) out vec2 v_ObjectTexCoord;
 layout(location = 2) flat out vec3 v_ObjectPixelExtent;
 void main() {
@@ -222,6 +289,7 @@ void main() {
         dot(u_Draw.g_ObjectUvToScreenUvRow0.xyz, vec3(object_uv, 1.0)),
         dot(u_Draw.g_ObjectUvToScreenUvRow1.xyz, vec3(object_uv, 1.0)));
     v_ObjectTexCoord = object_uv;
+    v_ScreenTexCoord = screen_uv;
     v_ObjectPixelExtent = u_Draw.g_ObjectPixelExtent.xyz;
     gl_Position = vec4(screen_uv * 2.0 - 1.0, 0.0, 1.0);
 }

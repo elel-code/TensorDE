@@ -467,7 +467,7 @@ impl WeIrBuilder {
             effects_in_authored_texture_space,
             object_is_puppet,
         );
-        let mut graph = we_image_graph(&WeImageGraphContract {
+        let mut graph_contract = WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),
             base_shader: base_pass.as_ref().and_then(|pass| {
@@ -502,9 +502,21 @@ impl WeIrBuilder {
             ripple_flow_material_indices: ripple_flow_materials,
             final_effect_material: final_effect,
             effect_passes,
-        });
+        };
+        if graph_contract.framebuffer_snapshot.is_none()
+            && we_image_graph_requires_generated_scene_snapshot(&graph_contract)
+        {
+            graph_contract.framebuffer_snapshot =
+                Some(crate::engine::render_graph::WeFramebufferSnapshotContract {
+                    target_name: FULL_FRAMEBUFFER_TARGET.to_owned(),
+                    texture_slot: 0,
+                    composite_to_object_mesh: false,
+                });
+        }
+        let has_framebuffer_snapshot = graph_contract.framebuffer_snapshot.is_some();
+        let mut graph = we_image_graph(&graph_contract);
         puppet_clipping::apply_token_one_graph(self, object, base_material_handle, &mut graph);
-        if utility_layer.is_some_and(WeIrUtilityLayerKind::samples_scene_color)
+        if has_framebuffer_snapshot
             && !self.image_targets.iter().any(|target| {
                 target.name == FULL_FRAMEBUFFER_TARGET
                     && target.role == WeIrImageTargetRole::FirstClassEffectTarget

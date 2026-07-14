@@ -338,7 +338,7 @@ fn puppet_image_effects_run_before_skinning_composite() {
 
 #[test]
 fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
-    let graph = we_image_graph(&WeImageGraphContract {
+    let mut contract = WeImageGraphContract {
         object_index: 7,
         base_material_index: Some(3),
         base_shader: Some("we/flat".to_owned()),
@@ -374,7 +374,8 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
                 ("SOFT".to_owned(), 1),
             ]),
         }],
-    });
+    };
+    let graph = we_image_graph(&contract);
 
     assert_eq!(graph.passes.len(), 1);
     assert_eq!(
@@ -382,6 +383,23 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
         Some("we/flat-rounded-mask-composite")
     );
     assert_eq!(graph.passes[0].material_index, Some(4));
+
+    contract.final_scene_blend = SceneBlendMode::HslColor;
+    assert!(we_image_graph_requires_generated_scene_snapshot(&contract));
+    contract.framebuffer_snapshot = Some(WeFramebufferSnapshotContract {
+        target_name: "_rt_FullFrameBuffer".to_owned(),
+        texture_slot: 0,
+        composite_to_object_mesh: false,
+    });
+    let graph = we_image_graph(&contract);
+    assert_eq!(graph.passes.len(), 2);
+    assert_eq!(graph.passes[0].role, RenderPassRole::CopyTarget);
+    assert_eq!(
+        graph.passes[1].shader.as_deref(),
+        Some("we/flat-rounded-hsl-source")
+    );
+    assert_eq!(graph.passes[1].target, RenderTargetRole::SceneColor);
+    assert_eq!(graph.passes[1].state.scene_blend, SceneBlendMode::Normal);
 }
 
 #[test]
