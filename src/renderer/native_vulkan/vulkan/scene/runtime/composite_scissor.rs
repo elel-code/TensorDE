@@ -21,6 +21,7 @@ use super::scene_viewport::scene_cover_clip_transform;
 
 static SCISSOR_DIAGNOSTIC_EMITTED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
+static COMPOSITE_CONSUMER_CULL_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
 struct PixelBounds {
@@ -85,6 +86,9 @@ pub(super) fn update_scene_composite_scissors(
     for command in commands.iter_mut() {
         command.scissor = None;
     }
+    let consumer_cull_enabled = *COMPOSITE_CONSUMER_CULL_ENABLED.get_or_init(|| {
+        std::env::var_os("GILDER_NATIVE_VULKAN_DISABLE_COMPOSITE_CONSUMER_CULL").is_none()
+    });
     let mut graph_pass_start = 0usize;
     while graph_pass_start < graph.pass_nodes.len() {
         let graph_index = graph.pass_nodes[graph_pass_start].graph_index;
@@ -92,26 +96,39 @@ pub(super) fn update_scene_composite_scissors(
             .iter()
             .position(|pass| pass.graph_index != graph_index)
             .map_or(graph.pass_nodes.len(), |offset| graph_pass_start + offset);
+        let graph_passes = &graph.pass_nodes[graph_pass_start..graph_pass_end];
+        let has_object_composite = !consumer_cull_enabled
+            || graph_passes
+                .iter()
+                .any(|pass| pass_shader_is(storage, pass, "we/objectcomposite"));
+        let has_flat_rounded_composite = graph_passes
+            .iter()
+            .any(|pass| pass_shader_is(storage, pass, "we/flat-rounded-mask-composite"));
+        if consumer_cull_enabled && !has_object_composite && !has_flat_rounded_composite {
+            graph_pass_start = graph_pass_end;
+            continue;
+        }
         let mut bounds = None::<PixelBounds>;
         let mut coverage_is_bounded = true;
-        for pass in &graph.pass_nodes[graph_pass_start..graph_pass_end] {
+        for pass in graph_passes {
             let start = pass.mesh_draw_start as usize;
             let end = start.saturating_add(pass.mesh_draw_count as usize);
             let draws = graph.mesh_draws.get(start..end).unwrap_or(&[]);
-            for draw in draws
-                .iter()
-                .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)
-            {
-                let Some(draw_bounds) =
-                    object_mesh_pixel_bounds(storage, graph, draw, output_extent)
-                else {
-                    coverage_is_bounded = false;
-                    continue;
-                };
-                if let Some(bounds) = &mut bounds {
-                    bounds.include(draw_bounds);
-                } else {
-                    bounds = Some(draw_bounds);
+            if has_object_composite {
+                for draw in draws.iter().filter(|draw| {
+                    draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
+                }) {
+                    let Some(draw_bounds) =
+                        object_mesh_pixel_bounds(storage, graph, draw, output_extent)
+                    else {
+                        coverage_is_bounded = false;
+                        continue;
+                    };
+                    if let Some(bounds) = &mut bounds {
+                        bounds.include(draw_bounds);
+                    } else {
+                        bounds = Some(draw_bounds);
+                    }
                 }
             }
             if draws.iter().all(|draw| {
@@ -123,23 +140,11 @@ pub(super) fn update_scene_composite_scissors(
             }) {
                 continue;
             }
-            let Some(pass_record) = storage
-                .document()
-                .render_passes
-                .get(pass.pass_record_index as usize)
-            else {
+            let Some(shader) = pass_shader(storage, pass) else {
                 coverage_is_bounded = false;
                 continue;
             };
-            let shader = storage
-                .string(pass_record.shader_key)
-                .unwrap_or_default()
-                .split("__")
-                .next()
-                .unwrap_or_default()
-                .to_ascii_lowercase();
-            match shader.as_str() {
-                "we/flat-rounded-mask-composite" => {
+            if shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite") {
                     let scissors = draws
                         .iter()
                         .map(|draw| {
@@ -167,8 +172,7 @@ pub(super) fn update_scene_composite_scissors(
                     {
                         command.scissor = scissor;
                     }
-                }
-                "we/objectcomposite" => {
+            } else if shader.eq_ignore_ascii_case("we/objectcomposite") {
                     let scissor = coverage_is_bounded
                         .then(|| bounds.and_then(|bounds| bounds.scissor(output_extent)))
                         .flatten();
@@ -189,8 +193,7 @@ pub(super) fn update_scene_composite_scissors(
                             command.scissor = Some(scissor);
                         }
                     }
-                }
-                "effects/waterwaves" => {
+            } else if shader.eq_ignore_ascii_case("effects/waterwaves") {
                     for draw in draws {
                         let Some([x, y]) = waterwaves_pixel_margin(storage, draw, output_extent)
                         else {
@@ -201,14 +204,35 @@ pub(super) fn update_scene_composite_scissors(
                             bounds.expand(x, y);
                         }
                     }
-                }
-                "minimalalpha" | "passthrough" | "effects/opacity" => {}
-                _ => coverage_is_bounded = false,
+            } else if !shader.eq_ignore_ascii_case("minimalalpha")
+                && !shader.eq_ignore_ascii_case("passthrough")
+                && !shader.eq_ignore_ascii_case("effects/opacity")
+            {
+                coverage_is_bounded = false;
             }
         }
         graph_pass_start = graph_pass_end;
     }
     Ok(())
+}
+
+fn pass_shader<'a>(
+    storage: &'a SceneStorage,
+    pass: &crate::engine::scene::SceneRenderingDevicePassNode,
+) -> Option<&'a str> {
+    let record = storage
+        .document()
+        .render_passes
+        .get(pass.pass_record_index as usize)?;
+    storage.string(record.shader_key)?.split("__").next()
+}
+
+fn pass_shader_is(
+    storage: &SceneStorage,
+    pass: &crate::engine::scene::SceneRenderingDevicePassNode,
+    expected: &str,
+) -> bool {
+    pass_shader(storage, pass).is_some_and(|shader| shader.eq_ignore_ascii_case(expected))
 }
 
 fn object_mesh_pixel_bounds(
@@ -483,6 +507,12 @@ fn multiply_rows(matrix: [[f32; 4]; 4], vector: [f32; 4]) -> [f32; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::scene::{
+        INVALID_MATERIAL_ID, INVALID_OBJECT_ID, SceneBinaryDocument, SceneCompositeBlend,
+        SceneCullMode, SceneDepthTest, SceneMaterialHandle, SceneObjectHandle, ScenePipelineBlend,
+        SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
+        SceneRenderingDevicePassNode, SceneStringId,
+    };
 
     #[test]
     fn pixel_bounds_scissor_rounds_outward_and_clamps_to_target() {
@@ -533,6 +563,51 @@ mod tests {
             [[50.0, -50.0], [150.0, 50.0], [-50.0, 50.0], [50.0, 150.0]],
             &[0, 1, 3, 0, 3, 2],
             [100, 100],
+        ));
+    }
+
+    #[test]
+    fn composite_consumer_detection_normalizes_shader_variants() {
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["we/objectcomposite__TEST_1".to_owned()],
+            render_passes: vec![SceneRenderPassRecord {
+                id: 0,
+                role: SceneRenderPassKind::SceneComposite,
+                object: SceneObjectHandle(INVALID_OBJECT_ID),
+                material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+                pass_index: 0,
+                shader_key: SceneStringId(0),
+                target: SceneRenderTargetKind::SceneColor,
+                target_name: SceneStringId::NONE,
+                binding_start: 0,
+                binding_count: 0,
+                pipeline_blend: ScenePipelineBlend::Normal,
+                scene_blend: SceneCompositeBlend::Alpha,
+                depth_test: SceneDepthTest::Disabled,
+                depth_write: false,
+                cull_mode: SceneCullMode::None,
+            }],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let pass = SceneRenderingDevicePassNode {
+            graph_index: 4,
+            pass_record_index: 0,
+            pass_id: 0,
+            role: SceneRenderPassKind::SceneComposite,
+            target: SceneRenderTargetKind::SceneColor,
+            target_name: SceneStringId::NONE,
+            binding_start: 0,
+            binding_count: 0,
+            mesh_draw_start: 0,
+            mesh_draw_count: 1,
+        };
+
+        assert!(pass_shader_is(&storage, &pass, "we/objectcomposite"));
+        assert!(!pass_shader_is(
+            &storage,
+            &pass,
+            "we/flat-rounded-mask-composite"
         ));
     }
 }

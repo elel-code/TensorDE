@@ -14,6 +14,7 @@ mod errors;
 pub mod indexes;
 pub mod matrix;
 pub mod resolved_frame;
+mod semantic_resolution;
 pub mod timeline;
 pub mod transform_animation;
 
@@ -31,6 +32,7 @@ pub use resolved_frame::{
     ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
     ResolvedPuppetBonePalette, ResolvedSemanticFrame,
 };
+pub use semantic_resolution::SemanticFrameResolver;
 pub use transform_animation::TransformAnimationComponent;
 
 use components::{
@@ -41,6 +43,7 @@ use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
 use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};
+use semantic_resolution::{RetainedPuppetTopology, resolve_retained_attachment_anchor};
 use timeline::{sampled_object_transform, sampled_puppet_bone_local_state};
 
 use super::abi::*;
@@ -257,6 +260,7 @@ impl<'a> SceneSemanticWorld<'a> {
         let mut states = vec![None; self.entities.len()];
         let mut visits = vec![ResolveVisitState::Unvisited; self.entities.len()];
         let mut attachment_links = Vec::new();
+        let mut retained_puppets = None;
 
         for entity_index in 0..self.entities.len() {
             self.resolve_entity(
@@ -264,6 +268,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 &mut visits,
                 &mut states,
                 &mut attachment_links,
+                &mut retained_puppets,
                 scene_time_seconds,
             )?;
         }
@@ -431,6 +436,7 @@ impl<'a> SceneSemanticWorld<'a> {
         visits: &mut [ResolveVisitState],
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
+        retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         scene_time_seconds: f32,
     ) -> Result<ResolvedObjectState, SceneSemanticWorldError> {
         match visits[entity_index] {
@@ -505,6 +511,7 @@ impl<'a> SceneSemanticWorld<'a> {
             visits,
             states,
             attachment_links,
+            retained_puppets,
             scene_time_seconds,
         )?;
         let state = ResolvedObjectState {
@@ -539,6 +546,7 @@ impl<'a> SceneSemanticWorld<'a> {
         visits: &mut [ResolveVisitState],
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
+        retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         scene_time_seconds: f32,
     ) -> Result<ResolvedParentState, SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
@@ -572,6 +580,7 @@ impl<'a> SceneSemanticWorld<'a> {
             visits,
             states,
             attachment_links,
+            retained_puppets,
             scene_time_seconds,
         )?;
         let mut parent_anchor = parent_state.world_matrix;
@@ -581,6 +590,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 object.id,
                 &parent_state,
                 object.attachment,
+                retained_puppets,
                 scene_time_seconds,
             );
             if let Some(attachment_anchor) = attachment_anchor {
@@ -603,6 +613,7 @@ impl<'a> SceneSemanticWorld<'a> {
         child: SceneObjectHandle,
         parent_state: &ResolvedObjectState,
         attachment: SceneStringId,
+        retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
         scene_time_seconds: f32,
     ) -> (ResolvedAttachmentLink, Option<[f32; 16]>) {
         let parent = parent_state.object;
@@ -637,12 +648,19 @@ impl<'a> SceneSemanticWorld<'a> {
                         parent_puppet.puppet_index,
                         record.bone_index,
                     ),
-                    self.resolve_puppet_attachment_anchor(
-                        parent_state,
-                        puppet,
-                        record,
-                        scene_time_seconds,
-                    ),
+                    retained_puppets
+                        .as_deref_mut()
+                        .and_then(|topologies| {
+                            resolve_retained_attachment_anchor(topologies, parent_state, record)
+                        })
+                        .or_else(|| {
+                            self.resolve_puppet_attachment_anchor(
+                                parent_state,
+                                puppet,
+                                record,
+                                scene_time_seconds,
+                            )
+                        }),
                 );
             }
         }

@@ -403,6 +403,52 @@ fn flat_authored_effects_composite_from_object_uv_over_full_scene() {
 }
 
 #[test]
+fn flat_rounded_mask_accepts_typed_shader_variants_with_sparse_effect_metadata() {
+    let graph = we_image_graph(&WeImageGraphContract {
+        object_index: 7,
+        base_material_index: Some(3),
+        base_shader: Some("we/flat".to_owned()),
+        base_material_blending: Some("translucent".to_owned()),
+        base_texture_slots: Vec::new(),
+        base_pass_constants: Vec::new(),
+        framebuffer_snapshot: None,
+        final_scene_blend: SceneBlendMode::Alpha,
+        effects_in_authored_texture_space: true,
+        puppet_skinning_after_effects: false,
+        waterwaves_uv_field_material_index: None,
+        foliage_ripple_material: None,
+        ripple_flow_material_indices: None,
+        final_effect_material: None,
+        effect_passes: vec![WeEffectPassContract {
+            object_index: 7,
+            material_index: Some(4),
+            effect_file: "effects/rounded_mask/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some(
+                "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1"
+                    .to_owned(),
+            ),
+            source: None,
+            target: None,
+            binds: BTreeMap::new(),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }],
+    });
+
+    assert_eq!(graph.passes.len(), 1);
+    assert_eq!(
+        graph.passes[0].shader.as_deref(),
+        Some("we/flat-rounded-mask-composite")
+    );
+}
+
+#[test]
 fn we_image_graph_keeps_effect_copy_and_swap_command_passes() {
     let graph = we_image_graph(&WeImageGraphContract {
         object_index: 9,

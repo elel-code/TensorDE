@@ -139,17 +139,36 @@ fn compatible_effect(effect: &WeEffectPassContract) -> bool {
                 .next()
                 .is_some_and(|shader| shader.ends_with("/rounded_mask"))
         })
-        && effect
-            .binds
-            .get(&0)
-            .is_some_and(|source| is_previous(source))
+        && (effect.binds.is_empty()
+            || effect
+                .binds
+                .get(&0)
+                .is_some_and(|source| is_previous(source)))
         && effect
             .binds
             .iter()
             .all(|(slot, source)| *slot == 0 && is_previous(source))
-        && effect.combos.get("B_SQUARE") == Some(&0)
-        && effect.combos.get("C_ALPHA_ONLY") == Some(&0)
-        && effect.combos.get("SOFT") == Some(&1)
+        && effect_combo_value(effect, "B_SQUARE", 1) == 0
+        && effect_combo_value(effect, "C_ALPHA_ONLY", 1) == 0
+        && effect_combo_value(effect, "SOFT", 0) == 1
+}
+
+fn effect_combo_value(effect: &WeEffectPassContract, name: &str, default: i64) -> i64 {
+    effect.combos.get(name).copied().unwrap_or_else(|| {
+        let prefix = format!("{}_", name.to_ascii_uppercase());
+        effect
+            .shader
+            .as_deref()
+            .into_iter()
+            .flat_map(|shader| shader.split("__"))
+            .find_map(|component| {
+                component
+                    .to_ascii_uppercase()
+                    .strip_prefix(&prefix)
+                    .and_then(|value| value.parse().ok())
+            })
+            .unwrap_or(default)
+    })
 }
 
 fn is_previous(source: &str) -> bool {

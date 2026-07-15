@@ -192,6 +192,33 @@ def main() -> int:
             "frame_state_update_total_micros": report["present"].get(
                 "frame_state_update_total_micros", 0
             ),
+            "semantic_incremental_resolve_enabled": report["present"].get(
+                "semantic_incremental_resolve_enabled", False
+            ),
+            "semantic_retained_puppet_resolve_enabled": report["present"].get(
+                "semantic_retained_puppet_resolve_enabled", False
+            ),
+            "semantic_dynamic_entity_count": report["present"].get(
+                "semantic_dynamic_entity_count", 0
+            ),
+            "semantic_resolve_total_micros": report["present"].get(
+                "semantic_resolve_total_micros", 0
+            ),
+            "graph_update_total_micros": report["present"].get(
+                "graph_update_total_micros", 0
+            ),
+            "transform_update_total_micros": report["present"].get(
+                "transform_update_total_micros", 0
+            ),
+            "material_update_total_micros": report["present"].get(
+                "material_update_total_micros", 0
+            ),
+            "skinning_update_total_micros": report["present"].get(
+                "skinning_update_total_micros", 0
+            ),
+            "draw_policy_update_total_micros": report["present"].get(
+                "draw_policy_update_total_micros", 0
+            ),
             "sampled_descriptor_update_total_micros": report["present"].get(
                 "sampled_descriptor_update_total_micros", 0
             ),

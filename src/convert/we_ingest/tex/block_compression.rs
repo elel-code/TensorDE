@@ -118,7 +118,7 @@ fn compress_bc7(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexPa
         height: padded_height,
         stride: padded_width * 4,
     };
-    Ok(bc7::compress_blocks(&bc7::alpha_fast_settings(), &surface))
+    Ok(bc7::compress_blocks(&bc7::alpha_slow_settings(), &surface))
 }
 
 fn extract_rg8(source: &[u8], width: u32, height: u32) -> Result<Vec<u8>, TexParseError> {

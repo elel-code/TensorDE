@@ -1,11 +1,12 @@
 //! Dynamic semantic-frame planning and host-visible GPU buffer updates.
 
 use std::fmt::Debug;
+use std::time::Instant;
 
 use vulkanalia::prelude::v1_4::*;
 
 use crate::engine::scene::rendering_device_graph::scene_clip_transform;
-use crate::engine::scene::semantic_world::ResolvedSemanticFrame;
+use crate::engine::scene::semantic_world::{ResolvedSemanticFrame, SemanticFrameResolver};
 use crate::engine::scene::{
     SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMaterialSampledBinding,
@@ -31,6 +32,17 @@ pub(super) struct SceneFrameBufferUpdate {
     pub material_uniform_updated: bool,
     pub skinning_storage_updated: bool,
     pub scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
+    pub cpu_timing: SceneFrameCpuTiming,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct SceneFrameCpuTiming {
+    pub semantic_resolve_micros: u64,
+    pub graph_update_micros: u64,
+    pub transform_update_micros: u64,
+    pub material_update_micros: u64,
+    pub skinning_update_micros: u64,
+    pub draw_policy_update_micros: u64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,26 +321,33 @@ pub(super) fn write_scene_frame_buffers(
     device: &Device,
     storage: &SceneStorage,
     semantic_world: &SceneSemanticWorld<'_>,
+    semantic_resolver: &mut SemanticFrameResolver,
     topology: &mut SceneFrameTopology,
     draw_commands: &mut [SceneGpuDrawCommand],
     transform_buffer: &NativeVulkanVulkanaliaBuffer,
     material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     dynamic_effect_uniforms: bool,
+    cpu_timing_enabled: bool,
     graph_execution_order: &[u32],
     scene_color_attachment_clear_enabled: bool,
     scene_time_seconds: f32,
     output_extent: [u32; 2],
 ) -> Result<SceneFrameBufferUpdate, String> {
-    let semantic_frame = semantic_world
-        .resolve_frame_at(scene_time_seconds)
+    let semantic_started = cpu_timing_enabled.then(Instant::now);
+    let semantic_frame = semantic_resolver
+        .resolve_frame_at(semantic_world, scene_time_seconds)
         .map_err(|err| {
             format!(
                 "resolve scene semantic frame at {scene_time_seconds:.6}s for Vulkan buffer update: {err}"
             )
         })?;
+    let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
+    let graph_started = cpu_timing_enabled.then(Instant::now);
     let graph = topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
+    let graph_update_micros = elapsed_optional_micros(graph_started);
 
+    let transform_started = cpu_timing_enabled.then(Instant::now);
     let transform_payload = pack_scene_draw_uniforms(
         storage,
         &graph.mesh_draws,
@@ -336,7 +355,9 @@ pub(super) fn write_scene_frame_buffers(
         output_extent,
     );
     write_exact_frame_payload(device, transform_buffer, &transform_payload)?;
+    let transform_update_micros = elapsed_optional_micros(transform_started);
 
+    let material_started = cpu_timing_enabled.then(Instant::now);
     let material_uniform_updated = if dynamic_effect_uniforms {
         let material_buffer = material_buffer.ok_or_else(|| {
             "scene has dynamic effect uniforms but no material uniform buffer".to_owned()
@@ -348,7 +369,9 @@ pub(super) fn write_scene_frame_buffers(
     } else {
         false
     };
+    let material_update_micros = elapsed_optional_micros(material_started);
 
+    let skinning_started = cpu_timing_enabled.then(Instant::now);
     let skinning_storage_updated = if let Some(skinning_buffer) = skinning_buffer {
         let skinning_payload = pack_scene_skinning_palette(&graph);
         write_exact_frame_payload(device, skinning_buffer, &skinning_payload)?;
@@ -356,7 +379,9 @@ pub(super) fn write_scene_frame_buffers(
     } else {
         false
     };
+    let skinning_update_micros = elapsed_optional_micros(skinning_started);
 
+    let draw_policy_started = cpu_timing_enabled.then(Instant::now);
     update_scene_composite_scissors(storage, graph, output_extent, draw_commands)?;
     let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
         storage,
@@ -365,13 +390,28 @@ pub(super) fn write_scene_frame_buffers(
         output_extent,
         scene_color_attachment_clear_enabled,
     );
+    let draw_policy_update_micros = elapsed_optional_micros(draw_policy_started);
 
     Ok(SceneFrameBufferUpdate {
         transform_uniform_updated: true,
         material_uniform_updated,
         skinning_storage_updated,
         scene_color_attachment_clear,
+        cpu_timing: SceneFrameCpuTiming {
+            semantic_resolve_micros,
+            graph_update_micros,
+            transform_update_micros,
+            material_update_micros,
+            skinning_update_micros,
+            draw_policy_update_micros,
+        },
     })
+}
+
+fn elapsed_optional_micros(started: Option<Instant>) -> u64 {
+    started
+        .map(|started| started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 pub(super) fn pack_scene_skinning_palette(graph: &SceneRenderingDeviceGraphPlan) -> Vec<u8> {

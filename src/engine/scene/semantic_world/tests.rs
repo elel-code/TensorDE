@@ -234,6 +234,14 @@ fn resolve_frame_samples_puppet_animation_for_skinning_and_attachment() {
     let frame = world
         .resolve_frame_at(1.0 / 60.0)
         .expect("resolved animated frame");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("semantic resolver");
+    assert_eq!(resolver.dynamic_entity_count(), 1);
+    assert_eq!(
+        resolver
+            .resolve_frame_at(&world, 1.0 / 60.0)
+            .expect("incrementally resolved animated frame"),
+        &frame
+    );
     let child = frame.object(SceneObjectHandle(1)).expect("child state");
 
     assert_close(frame.puppet_bone_matrices[0].matrix[12], 15.5);

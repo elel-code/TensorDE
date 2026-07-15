@@ -243,6 +243,9 @@ pub(super) fn with_scene_present(
     let semantic_world = RenderingServer::new(&options.storage)
         .semantic_world()
         .expect("scene semantic world was validated during Vulkan GPU setup");
+    let mut semantic_resolver =
+        crate::engine::scene::semantic_world::SemanticFrameResolver::from_world(&semantic_world)
+            .expect("scene semantic frame was validated during Vulkan GPU setup");
     let frame_contexts = match create_scene_present_frame_contexts(device, present_command_buffers)
     {
         Ok(contexts) => contexts,
@@ -354,6 +357,12 @@ pub(super) fn with_scene_present(
     let mut effect_uniform_update_count = 0u64;
     let mut skinning_storage_update_count = 0u64;
     let mut frame_state_update_total_micros = 0u64;
+    let mut semantic_resolve_total_micros = 0u64;
+    let mut graph_update_total_micros = 0u64;
+    let mut transform_update_total_micros = 0u64;
+    let mut material_update_total_micros = 0u64;
+    let mut skinning_update_total_micros = 0u64;
+    let mut draw_policy_update_total_micros = 0u64;
     let mut sampled_descriptor_update_count = 0u64;
     let mut sampled_descriptor_update_total_micros = 0u64;
     let mut command_recording_total_micros = 0u64;
@@ -397,12 +406,14 @@ pub(super) fn with_scene_present(
             device,
             &options.storage,
             &semantic_world,
+            &mut semantic_resolver,
             &mut scene_resources.frame_topology,
             &mut scene_resources.draw_commands,
             &frame_resources.transform_buffer,
             frame_resources.material_buffer.as_ref(),
             frame_resources.skinning_buffer.as_ref(),
             scene_resources.dynamic_effect_uniforms,
+            options.gpu_timing,
             &scene_resources.graph_execution_order,
             scene_resources.scene_color_attachment_clear_enabled,
             scene_time_seconds,
@@ -415,6 +426,18 @@ pub(super) fn with_scene_present(
             ));
         frame_state_update_total_micros = frame_state_update_total_micros
             .saturating_add(elapsed_micros_u64(frame_state_update_started));
+        semantic_resolve_total_micros = semantic_resolve_total_micros
+            .saturating_add(frame_update.cpu_timing.semantic_resolve_micros);
+        graph_update_total_micros = graph_update_total_micros
+            .saturating_add(frame_update.cpu_timing.graph_update_micros);
+        transform_update_total_micros = transform_update_total_micros
+            .saturating_add(frame_update.cpu_timing.transform_update_micros);
+        material_update_total_micros = material_update_total_micros
+            .saturating_add(frame_update.cpu_timing.material_update_micros);
+        skinning_update_total_micros = skinning_update_total_micros
+            .saturating_add(frame_update.cpu_timing.skinning_update_micros);
+        draw_policy_update_total_micros = draw_policy_update_total_micros
+            .saturating_add(frame_update.cpu_timing.draw_policy_update_micros);
         composite_scissor_draw_count = scene_resources
             .draw_commands
             .iter()
@@ -824,6 +847,15 @@ pub(super) fn with_scene_present(
         effect_uniform_update_count,
         skinning_storage_update_count,
         frame_state_update_total_micros,
+        semantic_incremental_resolve_enabled: semantic_resolver.incremental_enabled(),
+        semantic_retained_puppet_resolve_enabled: semantic_resolver.retained_puppet_enabled(),
+        semantic_dynamic_entity_count: semantic_resolver.dynamic_entity_count(),
+        semantic_resolve_total_micros,
+        graph_update_total_micros,
+        transform_update_total_micros,
+        material_update_total_micros,
+        skinning_update_total_micros,
+        draw_policy_update_total_micros,
         sampled_descriptor_update_count,
         sampled_descriptor_update_total_micros,
         command_recording_total_micros,
