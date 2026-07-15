@@ -655,12 +655,10 @@ layout(set = 0, binding = 5) uniform sampler2D g_Texture5;
 layout(set = 0, binding = 6) uniform sampler2D g_Texture6;
 layout(set = 0, binding = 7) uniform sampler2D g_Texture7;
 layout(set = 0, binding = 35) uniform sampler2D g_Texture3;
-vec2 rotateVec2(vec2 v, float r) {
-    vec2 cs = vec2(cos(r), sin(r));
-    return vec2(v.x * cs.x - v.y * cs.y, v.x * cs.y + v.y * cs.x);
-}
 float shapedSine(float phase, float exponent) {
     float wave = sin(phase);
+    if (exponent == 1.0) return wave;
+    if (exponent == 2.0) return wave * abs(wave);
     return pow(abs(wave), max(exponent, 0.0001)) * sign(wave);
 }
 float stageMask(int stage, vec2 uv) {
@@ -674,29 +672,28 @@ float stageMask(int stage, vec2 uv) {
 }
 vec2 stageOffset(int stage, vec2 motion_uv) {
     int base = stage * 4;
-    vec4 speed_scale_strength_mask = u_Effect.g_Stage[base];
-    vec4 direction_speed2_scale2_direction2 = u_Effect.g_Stage[base + 1];
-    vec4 offset2_dual_exponents = u_Effect.g_Stage[base + 2];
+    vec4 phase_scale_strength2_mask = u_Effect.g_Stage[base];
+    vec4 direction_phase2_scale2 = u_Effect.g_Stage[base + 1];
+    vec4 direction2_exponents = u_Effect.g_Stage[base + 2];
     vec4 mask_resolution = u_Effect.g_Stage[base + 3];
     float mask = 1.0;
-    if (speed_scale_strength_mask.w > 0.5) {
+    if (phase_scale_strength2_mask.w > 0.5) {
         vec2 mask_uv = motion_uv * mask_resolution.zw / mask_resolution.xy;
         mask = stageMask(stage, mask_uv);
     }
-    vec2 direction = rotateVec2(vec2(0.0, 1.0), direction_speed2_scale2_direction2.x);
-    float distance0 = u_Effect.g_Chain.y * speed_scale_strength_mask.x
-        + dot(motion_uv, direction) * speed_scale_strength_mask.y;
+    vec2 direction = direction_phase2_scale2.xy;
+    float distance0 = phase_scale_strength2_mask.x
+        + dot(motion_uv, direction) * phase_scale_strength2_mask.y;
     vec2 offset_direction = vec2(direction.y, -direction.x);
-    float displacement = shapedSine(distance0, offset2_dual_exponents.z);
-    if (offset2_dual_exponents.y > 0.5) {
-        vec2 direction2 = rotateVec2(vec2(0.0, 1.0), direction_speed2_scale2_direction2.w);
-        float distance1 = (u_Effect.g_Chain.y + offset2_dual_exponents.x)
-            * direction_speed2_scale2_direction2.y
-            + dot(motion_uv, direction2) * direction_speed2_scale2_direction2.z;
-        displacement *= shapedSine(distance1, offset2_dual_exponents.w);
+    float displacement = shapedSine(distance0, direction2_exponents.z);
+    if (direction_phase2_scale2.w > 0.0) {
+        vec2 direction2 = direction2_exponents.xy;
+        float distance1 = direction_phase2_scale2.z
+            + dot(motion_uv, direction2) * direction_phase2_scale2.w;
+        displacement *= shapedSine(distance1, direction2_exponents.w);
     }
-    float strength = speed_scale_strength_mask.z;
-    vec2 object_uv_offset = displacement * offset_direction * strength * strength * mask;
+    vec2 object_uv_offset = displacement * offset_direction
+        * phase_scale_strength2_mask.z * mask;
     return vec2(
         dot(v_ObjectUvToScreenUv.xy, object_uv_offset),
         dot(v_ObjectUvToScreenUv.zw, object_uv_offset));

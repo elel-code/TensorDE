@@ -55,8 +55,8 @@ use super::super::present::swapchain::{
     vulkanalia_surface_capabilities2_enabled, vulkanalia_surface_maintenance1_enabled,
 };
 
-mod command_order;
 mod alpha_coverage_scissor;
+mod command_order;
 mod composite_scissor;
 mod draw_recording;
 mod draw_uniform;
@@ -84,8 +84,8 @@ mod resource_setup;
 use present_loop::with_scene_present;
 use resource_setup::*;
 
-use command_order::scene_command_order;
 use alpha_coverage_scissor::scene_alpha_coverage_scissors;
+use command_order::scene_command_order;
 use draw_recording::{
     SceneGpuDrawCommand, SceneGpuGraphDrawRange, SceneGpuScissor, draw_range_count,
     scene_color_draw_ranges,
@@ -114,7 +114,7 @@ use gpu_timing::SceneGpuTiming;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use material_uniform::{
     SCENE_MATERIAL_UNIFORM_BYTES, material_parameter_layout, pack_scene_material_uniforms,
-    scene_audio_spectrum_status, scene_uses_audio_spectrum,
+    scene_audio_spectrum_status, scene_audio_spectrum_summary, scene_uses_audio_spectrum,
 };
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
@@ -202,6 +202,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub material_uniform_bytes: u64,
     pub audio_spectrum_model: &'static str,
     pub audio_spectrum_ready: bool,
+    pub audio_spectrum_peak: f32,
+    pub audio_spectrum_active_band_count: u32,
     pub skinning_storage_bytes: u64,
     pub resource_residency: NativeVulkanSceneResourceResidencySnapshot,
     pub scene_texture_image_count: usize,

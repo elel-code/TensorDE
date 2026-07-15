@@ -767,6 +767,8 @@ pub(super) fn with_scene_present(
 
     system_audio_monitor.publish_latest();
     let (audio_spectrum_model, audio_spectrum_ready) = scene_audio_spectrum_status();
+    let (audio_spectrum_peak, audio_spectrum_active_band_count) =
+        scene_audio_spectrum_summary();
     Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-mesh-dynamic-rendering-present",
@@ -856,6 +858,8 @@ pub(super) fn with_scene_present(
         material_uniform_bytes,
         audio_spectrum_model,
         audio_spectrum_ready,
+        audio_spectrum_peak,
+        audio_spectrum_active_band_count,
         skinning_storage_bytes,
         resource_residency,
         scene_texture_image_count,

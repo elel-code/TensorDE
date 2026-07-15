@@ -1516,25 +1516,27 @@ static void gilder_audio_output_spectrum32_packed(
         return;
 
     const int16_t *samples = (const int16_t *)data;
-    int max_bin = frame_count / 2 - 1;
-    if (max_bin < 1)
-        return;
     for (int band = 0; band < GILDER_AUDIO_SPECTRUM_BANDS; ++band) {
-        int bin = 1 + (band * max_bin) / GILDER_AUDIO_SPECTRUM_BANDS;
-        double omega = 2.0 * GILDER_AUDIO_PI * (double)bin / (double)frame_count;
+        double position = (double)band / (double)(GILDER_AUDIO_SPECTRUM_BANDS - 1);
+        double frequency = 50.0 * pow(16000.0 / 50.0, position);
+        double omega = 2.0 * GILDER_AUDIO_PI * frequency / 48000.0;
         double coeff = 2.0 * cos(omega);
         double q0 = 0.0;
         double q1 = 0.0;
         double q2 = 0.0;
         for (int frame = 0; frame < frame_count; ++frame) {
-            q0 = coeff * q1 - q2 + gilder_audio_output_mono_sample(samples, frame, channels);
+            double window = 0.5 - 0.5 * cos(
+                2.0 * GILDER_AUDIO_PI * (double)frame / (double)(frame_count - 1)
+            );
+            q0 = coeff * q1 - q2
+                + gilder_audio_output_mono_sample(samples, frame, channels) * window;
             q2 = q1;
             q1 = q0;
         }
         double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
         if (power < 0.0)
             power = 0.0;
-        double magnitude = sqrt(power) * 2.0 / (double)frame_count;
+        double magnitude = sqrt(power) * 4.0 / (double)frame_count;
         uint32_t quantized = gilder_audio_output_quantize_u16(magnitude);
         int word = band / 2;
         if ((band & 1) == 0)

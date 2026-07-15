@@ -501,7 +501,7 @@ impl WeIrBuilder {
             effects_in_authored_texture_space,
             puppet_skinning_after_effects: object_is_puppet && effects_in_authored_texture_space,
             waterwaves_uv_field_material_index: waterwaves_displacement.uv_field,
-            waterwaves_direct_material_index: waterwaves_displacement.direct,
+            waterwaves_direct_material: waterwaves_displacement.direct,
             foliage_ripple_material: foliage_ripple,
             ripple_flow_material_indices: ripple_flow_materials,
             final_effect_material: final_effect,

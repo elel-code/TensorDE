@@ -15,6 +15,8 @@
 #define GILDER_MONITOR_FORMAT_BUFFER_BYTES 1024
 #define GILDER_MONITOR_THREAD_STACK_SIZE "131072"
 #define GILDER_MONITOR_PI 3.14159265358979323846
+#define GILDER_MONITOR_MIN_FREQUENCY 50.0
+#define GILDER_MONITOR_MAX_FREQUENCY 16000.0
 
 typedef struct GilderSystemAudioMonitor {
     struct pw_thread_loop *loop;
@@ -46,24 +48,29 @@ static void gilder_monitor_analyze(
 ) {
     if (frame_count < 4)
         return;
-    int max_bin = frame_count / 2 - 1;
-    if (max_bin < 1)
-        return;
     uint32_t bands[GILDER_MONITOR_BANDS];
     for (int band = 0; band < GILDER_MONITOR_BANDS; ++band) {
-        int bin = 1 + (band * max_bin) / GILDER_MONITOR_BANDS;
-        double omega = 2.0 * GILDER_MONITOR_PI * (double)bin / (double)frame_count;
+        double position = (double)band / (double)(GILDER_MONITOR_BANDS - 1);
+        double frequency = GILDER_MONITOR_MIN_FREQUENCY * pow(
+            GILDER_MONITOR_MAX_FREQUENCY / GILDER_MONITOR_MIN_FREQUENCY,
+            position
+        );
+        double omega = 2.0 * GILDER_MONITOR_PI * frequency / GILDER_MONITOR_RATE;
         double coeff = 2.0 * cos(omega);
         double q0 = 0.0;
         double q1 = 0.0;
         double q2 = 0.0;
         for (int frame = 0; frame < frame_count; ++frame) {
-            q0 = coeff * q1 - q2 + gilder_monitor_mono_sample(samples, frame);
+            double window = 0.5 - 0.5 * cos(
+                2.0 * GILDER_MONITOR_PI * (double)frame / (double)(frame_count - 1)
+            );
+            q0 = coeff * q1 - q2
+                + gilder_monitor_mono_sample(samples, frame) * window;
             q2 = q1;
             q1 = q0;
         }
         double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
-        double magnitude = power > 0.0 ? sqrt(power) * 2.0 / (double)frame_count : 0.0;
+        double magnitude = power > 0.0 ? sqrt(power) * 4.0 / (double)frame_count : 0.0;
         bands[band] = gilder_monitor_quantize(magnitude);
     }
     for (int word = 0; word < GILDER_MONITOR_PACKED_WORDS; ++word) {

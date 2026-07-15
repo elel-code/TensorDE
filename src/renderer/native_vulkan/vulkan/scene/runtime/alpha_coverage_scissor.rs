@@ -1,8 +1,8 @@
 //! Conservative sparse scissors for transparent image-waterwaves composites.
 
 use crate::engine::scene::{
-    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SceneRenderingDeviceDrawPrimitive,
-    SceneRenderingDeviceGraphPlan, SceneStorage,
+    SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE, SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneStorage,
 };
 
 use super::draw_recording::SceneGpuScissor;
@@ -46,10 +46,7 @@ pub(super) fn scene_alpha_coverage_scissors(
         let Some(shader) = storage.string(pass_record.shader_key) else {
             continue;
         };
-        if !SPARSE_COMPOSITE_SHADERS
-            .iter()
-            .any(|candidate| shader.eq_ignore_ascii_case(candidate))
-        {
+        if !matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS) {
             continue;
         }
         let displacement = graph_waterwaves_displacement_cells(
@@ -145,9 +142,7 @@ fn graph_waterwaves_displacement_cells(
             .get(pass.pass_record_index as usize)
             .and_then(|record| storage.string(record.shader_key))
             .is_some_and(|shader| {
-                WATERWAVES_DISPLACEMENT_SHADERS
-                    .iter()
-                    .any(|candidate| shader.eq_ignore_ascii_case(candidate))
+                matches_shader_or_stage_variant(shader, WATERWAVES_DISPLACEMENT_SHADERS)
             })
     }) else {
         return [SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE; 2];
@@ -188,12 +183,30 @@ fn graph_waterwaves_displacement_cells(
     let safety_cells = std::env::var("GILDER_NATIVE_VULKAN_SCENE_ALPHA_COVERAGE_PADDING")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(1)
+        .unwrap_or(SCENE_TEXTURE_ALPHA_COVERAGE_GUARD_CELLS)
         .min(SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE);
     [
         (x * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize + safety_cells,
         (y * SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE as f32).ceil() as usize + safety_cells,
     ]
+}
+
+fn axis_aligned(affine: [[f32; 3]; 2]) -> bool {
+    affine.iter().flatten().all(|value| value.is_finite())
+        && affine[0][1].abs() <= 1.0e-6
+        && affine[1][0].abs() <= 1.0e-6
+}
+
+fn matches_shader_or_stage_variant(shader: &str, bases: &[&str]) -> bool {
+    bases.iter().any(|base| {
+        shader.eq_ignore_ascii_case(base)
+            || shader
+                .get(..base.len())
+                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(base))
+                && shader
+                    .get(base.len()..)
+                    .is_some_and(|suffix| suffix.starts_with("__STAGES_"))
+    })
 }
 
 fn dilate_coverage(
@@ -218,12 +231,6 @@ fn dilate_coverage(
         }
     }
     expanded
-}
-
-fn axis_aligned(affine: [[f32; 3]; 2]) -> bool {
-    affine.iter().flatten().all(|value| value.is_finite())
-        && affine[0][1].abs() <= 1.0e-6
-        && affine[1][0].abs() <= 1.0e-6
 }
 
 fn coverage_scissors(
@@ -359,5 +366,17 @@ mod tests {
         let rectangles = coverage_rectangles(rows);
 
         assert_eq!(rectangles, vec![[1, 3, 5, 5], [1, 5, 4, 6]]);
+    }
+
+    #[test]
+    fn stage_specialized_direct_shader_keeps_sparse_coverage() {
+        assert!(matches_shader_or_stage_variant(
+            "we/image-waterwaves-direct__STAGES_7",
+            SPARSE_COMPOSITE_SHADERS,
+        ));
+        assert!(!matches_shader_or_stage_variant(
+            "we/image-waterwaves-direct__UNKNOWN_7",
+            SPARSE_COMPOSITE_SHADERS,
+        ));
     }
 }

@@ -148,7 +148,12 @@
 
         let payload = pack_scene_material_uniforms(&storage, &[draw], 4.25);
 
-        assert_eq!(f32_from_payload(&payload, 48), 0.125);
+        assert_eq!(f32_from_payload(&payload, 16), 21.25);
+        assert!((f32_from_payload(&payload, 24) - 0.01).abs() < 1.0e-7);
+        assert_eq!(f32_from_payload(&payload, 36), 1.0);
+        assert_eq!(f32_from_payload(&payload, 40), 21.875);
+        assert_eq!(f32_from_payload(&payload, 44), 200.0);
+        assert_eq!(f32_from_payload(&payload, 48), 0.0);
         assert_eq!(f32_from_payload(&payload, 52), 1.0);
         assert_eq!(f32_from_payload(&payload, 56), 1.75);
         assert_eq!(f32_from_payload(&payload, 60), 2.25);
@@ -350,6 +355,29 @@
 
         assert_eq!(values[29], 1.0);
         assert_eq!(values[30], 1000.0);
+    }
+
+    #[test]
+    fn fused_final_audio_program_requests_the_system_spectrum_adapter() {
+        let final_storage = storage_with_constants("we/audio-bars-final", &[]);
+        let legacy_storage = storage_with_constants(
+            "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__SHAPE_7",
+            &[],
+        );
+        let unrelated_storage = storage_with_constants("we/image-scroll-final", &[]);
+
+        assert!(material_uses_audio_spectrum(
+            &final_storage,
+            SceneMaterialHandle(0)
+        ));
+        assert!(material_uses_audio_spectrum(
+            &legacy_storage,
+            SceneMaterialHandle(0)
+        ));
+        assert!(!material_uses_audio_spectrum(
+            &unrelated_storage,
+            SceneMaterialHandle(0)
+        ));
     }
 
     #[test]

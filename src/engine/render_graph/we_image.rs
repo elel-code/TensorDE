@@ -50,7 +50,7 @@ pub struct WeImageGraphContract {
     /// Converter-authored material containing the complete compatible waterwaves chain.
     pub waterwaves_uv_field_material_index: Option<usize>,
     /// Converter-authored material that evaluates the complete chain in the final mesh fragment.
-    pub waterwaves_direct_material_index: Option<usize>,
+    pub waterwaves_direct_material: Option<WeWaterWavesDirectMaterial>,
     /// Converter-authored material for a compatible direct foliage/ripple composite.
     pub foliage_ripple_material: Option<WeFoliageRippleMaterial>,
     /// Converter-authored materials for the typed ripple/flow two-stage path.
@@ -64,6 +64,12 @@ pub struct WeImageGraphContract {
 pub struct WeRippleFlowMaterialIndices {
     pub ripple_source: usize,
     pub flow_composite: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WeWaterWavesDirectMaterial {
+    pub material_index: usize,
+    pub shader: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

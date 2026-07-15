@@ -282,6 +282,17 @@ pub(super) fn scene_audio_spectrum_status() -> (&'static str, bool) {
     }
 }
 
+pub(super) fn scene_audio_spectrum_summary() -> (f32, u32) {
+    let spectrum = scene_audio_spectrum32().unwrap_or([0.0; 32]);
+    let peak = spectrum.iter().copied().fold(0.0f32, f32::max);
+    let active_bands = spectrum
+        .iter()
+        .filter(|value| **value > 1.0 / 65535.0)
+        .count()
+        .min(u32::MAX as usize) as u32;
+    (peak, active_bands)
+}
+
 fn parse_scene_audio_spectrum32(value: &str) -> Option<[f32; 32]> {
     if let Some(value) = value.trim().strip_prefix("flat:") {
         let value = value.parse::<f32>().ok()?;
@@ -519,10 +530,24 @@ pub(super) fn scene_uses_audio_spectrum(storage: &SceneStorage) -> bool {
         .rendering_device_graph
         .mesh_draws
         .iter()
-        .any(|draw| {
-            material_parameter_layout(storage, draw.material)
-                == BuiltinSceneParameterLayout::AudioBars
-        })
+        .any(|draw| material_uses_audio_spectrum(storage, draw.material))
+}
+
+fn material_uses_audio_spectrum(
+    storage: &SceneStorage,
+    material: SceneMaterialHandle,
+) -> bool {
+    let Some(pass) = first_material_pass(storage, material) else {
+        return false;
+    };
+    let Some(shader_key) = storage.string(pass.shader_key) else {
+        return false;
+    };
+    native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
+        shader.parameter_layout == BuiltinSceneParameterLayout::AudioBars
+            || (shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
+                && shader_key.eq_ignore_ascii_case("we/audio-bars-final"))
+    })
 }
 
 struct MaterialParameters<'a> {
@@ -775,17 +800,25 @@ fn waterwaves_displacement_values(
     for stage in 0..MAX_STAGES {
         let speed = waterwaves_stage_scalar(parameters, stage, "speed", 5.0);
         let scale = waterwaves_stage_scalar(parameters, stage, "scale", 200.0);
+        let strength = waterwaves_stage_scalar(parameters, stage, "strength", 0.1);
+        let direction_angle = waterwaves_stage_scalar(parameters, stage, "direction", 0.0);
+        let speed2 = waterwaves_stage_scalar(parameters, stage, "speed2", speed);
+        let scale2 = waterwaves_stage_scalar(parameters, stage, "scale2", scale);
+        let direction2_angle =
+            waterwaves_stage_scalar(parameters, stage, "direction2", 0.0);
+        let offset2 = waterwaves_stage_scalar(parameters, stage, "offset2", 0.0);
+        let dual_waves = waterwaves_stage_scalar(parameters, stage, "dualwaves", 0.0) > 0.5;
+        let direction = [-direction_angle.sin(), direction_angle.cos()];
+        let direction2 = [-direction2_angle.sin(), direction2_angle.cos()];
         let base = stage_start + stage * STAGE_FLOATS;
-        values[base] = speed;
+        values[base] = scene_time_seconds * speed;
         values[base + 1] = scale;
-        values[base + 2] = waterwaves_stage_scalar(parameters, stage, "strength", 0.1);
+        values[base + 2] = strength * strength;
         values[base + 3] = waterwaves_stage_scalar(parameters, stage, "mask", 0.0);
-        values[base + 4] = waterwaves_stage_scalar(parameters, stage, "direction", 0.0);
-        values[base + 5] = waterwaves_stage_scalar(parameters, stage, "speed2", speed);
-        values[base + 6] = waterwaves_stage_scalar(parameters, stage, "scale2", scale);
-        values[base + 7] = waterwaves_stage_scalar(parameters, stage, "direction2", 0.0);
-        values[base + 8] = waterwaves_stage_scalar(parameters, stage, "offset2", 0.0);
-        values[base + 9] = waterwaves_stage_scalar(parameters, stage, "dualwaves", 0.0);
+        values[base + 4..base + 6].copy_from_slice(&direction);
+        values[base + 6] = (scene_time_seconds + offset2) * speed2;
+        values[base + 7] = if dual_waves { scale2 } else { 0.0 };
+        values[base + 8..base + 10].copy_from_slice(&direction2);
         values[base + 10] = waterwaves_stage_scalar(parameters, stage, "exponent", 1.0);
         values[base + 11] = waterwaves_stage_scalar(parameters, stage, "exponent2", 1.0);
         values[base + 12..base + 16].copy_from_slice(&material_texture_resolution(

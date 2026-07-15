@@ -22,7 +22,7 @@ pub(super) fn is_compatible_displacement_chain(contract: &WeImageGraphContract) 
         && contract.base_material_index.is_some()
         && contract.base_texture_slots.iter().all(|slot| *slot == 0)
         && (contract.waterwaves_uv_field_material_index.is_some()
-            || contract.waterwaves_direct_material_index.is_some())
+            || contract.waterwaves_direct_material.is_some())
         && are_compatible_effect_passes(&contract.effect_passes)
 }
 
@@ -69,8 +69,8 @@ fn is_graph_resource(source: &str) -> bool {
 }
 
 pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeImageGraphContract) {
-    if let Some(material_index) = contract.waterwaves_direct_material_index {
-        append_direct_composite(graph, contract, material_index);
+    if let Some(material) = &contract.waterwaves_direct_material {
+        append_direct_composite(graph, contract, material);
         return;
     }
     let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
@@ -131,16 +131,15 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
 fn append_direct_composite(
     graph: &mut RenderGraph,
     contract: &WeImageGraphContract,
-    material_index: usize,
+    material: &crate::engine::render_graph::WeWaterWavesDirectMaterial,
 ) {
-    let shader = direct_shader(contract);
     graph.passes.push(RenderPassNode {
         id: graph.passes.len().min(u32::MAX as usize) as u32,
         role: RenderPassRole::SceneComposite,
         object_index: Some(contract.object_index),
-        material_index: Some(material_index),
+        material_index: Some(material.material_index),
         pass_index: 0,
-        shader: Some(shader.to_owned()),
+        shader: Some(material.shader.clone()),
         target: RenderTargetRole::SceneColor,
         target_name: None,
         target_extent: None,
@@ -152,16 +151,6 @@ fn append_direct_composite(
             ..PassState::default()
         },
     });
-}
-
-fn direct_shader(contract: &WeImageGraphContract) -> &'static str {
-    if contract.puppet_skinning_after_effects {
-        "we/puppet-waterwaves-direct"
-    } else if contract.final_scene_blend == SceneBlendMode::Multiply {
-        "we/image-waterwaves-multiply-direct"
-    } else {
-        "we/image-waterwaves-direct"
-    }
 }
 
 fn composite_shader(contract: &WeImageGraphContract) -> &'static str {
@@ -195,7 +184,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
             waterwaves_uv_field_material_index: Some(9),
-            waterwaves_direct_material_index: None,
+            waterwaves_direct_material: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -234,7 +223,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
             waterwaves_uv_field_material_index: None,
-            waterwaves_direct_material_index: None,
+            waterwaves_direct_material: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -264,7 +253,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: Some(9),
-            waterwaves_direct_material_index: None,
+            waterwaves_direct_material: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -292,7 +281,12 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
             waterwaves_uv_field_material_index: None,
-            waterwaves_direct_material_index: Some(12),
+            waterwaves_direct_material: Some(
+                crate::engine::render_graph::WeWaterWavesDirectMaterial {
+                    material_index: 12,
+                    shader: "we/puppet-waterwaves-direct__STAGES_2".to_owned(),
+                },
+            ),
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -306,7 +300,7 @@ mod tests {
         assert_eq!(graph.passes[0].material_index, Some(12));
         assert_eq!(
             graph.passes[0].shader.as_deref(),
-            Some("we/puppet-waterwaves-direct")
+            Some("we/puppet-waterwaves-direct__STAGES_2")
         );
         assert_eq!(graph.passes[0].target, RenderTargetRole::SceneColor);
         assert!(graph.passes[0].bindings.is_empty());

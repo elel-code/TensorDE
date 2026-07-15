@@ -324,12 +324,18 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
 }
 
 fn is_waterwaves_direct_shader(key: &str) -> bool {
-    matches!(
-        key,
-        "we/image-waterwaves-direct"
-            | "we/image-waterwaves-multiply-direct"
-            | "we/puppet-waterwaves-direct"
-    )
+    [
+        "we/image-waterwaves-direct",
+        "we/image-waterwaves-multiply-direct",
+        "we/puppet-waterwaves-direct",
+    ]
+    .iter()
+    .any(|base| {
+        key == *base
+            || key
+                .strip_prefix(base)
+                .is_some_and(|suffix| suffix.starts_with("__STAGES_"))
+    })
 }
 
 fn is_foliage_ripple_shader(key: &str) -> bool {

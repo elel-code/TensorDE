@@ -183,7 +183,7 @@ mod tests {
                 BuiltinSceneParameterLayout::TechCircle,
             ),
             (
-                "we/puppet-waterwaves-direct",
+                "we/puppet-waterwaves-direct__STAGES_7",
                 BuiltinSceneParameterLayout::WaterWavesDirect,
             ),
         ] {

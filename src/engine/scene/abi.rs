@@ -12,15 +12,11 @@
 
 use serde::{Deserialize, Serialize};
 
+mod binary_contract;
 mod render_contract;
 
+pub use binary_contract::*;
 pub use render_contract::*;
-
-pub const SCENE_BINARY_MAGIC: [u8; 8] = *b"GSCNENG1";
-pub const SCENE_BINARY_VERSION: u32 = 9;
-pub const SCENE_BINARY_MIN_READ_VERSION: u32 = 9;
-pub const SCENE_BINARY_ENDIANNESS_LITTLE: u8 = 1;
-pub const SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE: usize = 32;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
 pub const SCENE_FEATURE_RENDER_GRAPH: u64 = 1 << 1;

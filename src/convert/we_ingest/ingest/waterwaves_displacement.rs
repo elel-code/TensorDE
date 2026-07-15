@@ -3,7 +3,8 @@
 use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialConstant, WeIrMaterialTexture};
 use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
-    WeEffectPassContract, we_effect_passes_form_waterwaves_displacement_chain,
+    WeEffectPassContract, WeWaterWavesDirectMaterial,
+    we_effect_passes_form_waterwaves_displacement_chain,
 };
 use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 
@@ -17,10 +18,10 @@ const IMAGE_DIRECT_SHADER: &str = "we/image-waterwaves-direct";
 const IMAGE_MULTIPLY_DIRECT_SHADER: &str = "we/image-waterwaves-multiply-direct";
 const PUPPET_DIRECT_SHADER: &str = "we/puppet-waterwaves-direct";
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct WaterWavesDisplacementMaterials {
     pub uv_field: Option<usize>,
-    pub direct: Option<usize>,
+    pub direct: Option<WeWaterWavesDirectMaterial>,
 }
 
 #[derive(Debug, Clone)]
@@ -61,12 +62,15 @@ pub(super) fn create_waterwaves_displacement_materials(
     let material = create_aggregated_material(builder, base_material_index, effects, direct_shader);
     if direct_shader.is_some() {
         WaterWavesDisplacementMaterials {
-            direct: material,
+            direct: material.map(|(material_index, shader)| WeWaterWavesDirectMaterial {
+                material_index,
+                shader,
+            }),
             ..WaterWavesDisplacementMaterials::default()
         }
     } else {
         WaterWavesDisplacementMaterials {
-            uv_field: material,
+            uv_field: material.map(|(material_index, _)| material_index),
             ..WaterWavesDisplacementMaterials::default()
         }
     }
@@ -77,7 +81,7 @@ fn create_aggregated_material(
     base_material_index: usize,
     effects: &[WeEffectPassContract],
     direct_shader: Option<&str>,
-) -> Option<usize> {
+) -> Option<(usize, String)> {
     let mut stages = Vec::with_capacity(effects.len());
     let mut template = None;
     let base_material = builder.materials.get(base_material_index)?.clone();
@@ -173,9 +177,10 @@ fn create_aggregated_material(
 
     let mut pass = template?;
     pass.material = handle;
-    pass.shader_key = direct_shader
-        .unwrap_or(WATERWAVES_UV_FIELD_SHADER)
-        .to_owned();
+    pass.shader_key = direct_shader.map_or_else(
+        || WATERWAVES_UV_FIELD_SHADER.to_owned(),
+        |shader| direct_shader_key(shader, &stages),
+    );
     pass.target.clear();
     pass.texture_start = texture_start;
     pass.texture_count = builder.material_textures.len() as u32 - texture_start;
@@ -186,6 +191,7 @@ fn create_aggregated_material(
     pass.depth_write = false;
     pass.cull_mode = SceneCullMode::None;
     pass.clear_target = false;
+    let shader = pass.shader_key.clone();
     let pass_start = builder.material_passes.len() as u32;
     builder.material_passes.push(pass);
     builder.materials.push(WeIrMaterial {
@@ -194,7 +200,11 @@ fn create_aggregated_material(
         pass_start,
         pass_count: 1,
     });
-    Some(handle as usize)
+    Some((handle as usize, shader))
+}
+
+fn direct_shader_key(shader: &str, stages: &[WaterWavesStageMaterial]) -> String {
+    format!("{shader}__STAGES_{}", stages.len())
 }
 
 fn combo_enabled(effect: &WeEffectPassContract, name: &str) -> bool {
@@ -216,4 +226,32 @@ fn combo_enabled(effect: &WeEffectPassContract, name: &str) -> bool {
 
 fn stage_parameter_name(stage: usize, name: &str) -> String {
     format!("waterwaves.{stage}.{name}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn direct_shader_key_records_the_typed_stage_count() {
+        assert_eq!(
+            direct_shader_key(IMAGE_DIRECT_SHADER, &[stage(&[], false), stage(&[], false)]),
+            "we/image-waterwaves-direct__STAGES_2",
+        );
+    }
+
+    fn stage(constants: &[(&str, &str)], dual_waves: bool) -> WaterWavesStageMaterial {
+        WaterWavesStageMaterial {
+            mask: None,
+            constants: constants
+                .iter()
+                .map(|(name, value)| WeIrMaterialConstant {
+                    name: (*name).to_owned(),
+                    value_json: (*value).to_owned(),
+                })
+                .collect(),
+            dual_waves,
+            masked: false,
+        }
+    }
 }
