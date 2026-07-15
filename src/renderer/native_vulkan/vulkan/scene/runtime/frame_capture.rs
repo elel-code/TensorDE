@@ -22,6 +22,10 @@ pub struct NativeVulkanSceneFrameCaptureSnapshot {
     pub path: PathBuf,
     pub source_width: u32,
     pub source_height: u32,
+    pub region_x: u32,
+    pub region_y: u32,
+    pub region_width: u32,
+    pub region_height: u32,
     pub width: u32,
     pub height: u32,
     pub source_format: String,
@@ -37,6 +41,8 @@ pub struct NativeVulkanSceneFrameCaptureSnapshot {
 
 pub(super) struct SceneFrameCapture {
     path: PathBuf,
+    source_extent: vk::Extent2D,
+    image_offset: vk::Offset3D,
     extent: vk::Extent2D,
     source_format: vk::Format,
     target_frame_number: u64,
@@ -48,6 +54,7 @@ pub(super) struct SceneFrameCapture {
     output_byte_count: u64,
     readback_buffer: NativeVulkanVulkanaliaBuffer,
     captured_frames: Vec<SceneFrameCapturePixels>,
+    pending_frame_number: Option<u64>,
     snapshot: Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
@@ -67,6 +74,7 @@ impl SceneFrameCapture {
         target_frame_count: u64,
         target_frame_step: u64,
         downscale: u32,
+        region: Option<(u32, u32, u32, u32)>,
     ) -> Result<Self, String> {
         if target_frame_number == 0 {
             return Err("scene frame capture number must be at least 1".to_owned());
@@ -81,6 +89,9 @@ impl SceneFrameCapture {
             return Err("scene frame capture downscale must be at least 1".to_owned());
         }
         scene_frame_capture_channel_order(source_format)?;
+        let (image_offset, capture_extent) = scene_frame_capture_region(extent, region)?;
+        let source_extent = extent;
+        let extent = capture_extent;
         let byte_count = scene_frame_capture_byte_count(extent)?;
         let output_extent = scene_frame_capture_output_extent(extent, downscale);
         let output_byte_count = scene_frame_capture_byte_count(output_extent)?;
@@ -95,6 +106,8 @@ impl SceneFrameCapture {
         )?;
         Ok(Self {
             path,
+            source_extent,
+            image_offset,
             extent,
             source_format,
             target_frame_number,
@@ -108,6 +121,7 @@ impl SceneFrameCapture {
             captured_frames: Vec::with_capacity(
                 target_frame_count.min(usize::MAX as u64) as usize,
             ),
+            pending_frame_number: None,
             snapshot: None,
         })
     }
@@ -118,6 +132,7 @@ impl SceneFrameCapture {
 
     pub(super) fn should_capture(&self, frame_number: u64) -> bool {
         self.is_pending()
+            && self.pending_frame_number.is_none()
             && frame_number
                 == self
                     .target_frame_number
@@ -125,6 +140,10 @@ impl SceneFrameCapture {
                         (self.captured_frames.len() as u64)
                             .saturating_mul(self.target_frame_step),
                     )
+    }
+
+    pub(super) fn mark_submitted(&mut self, frame_number: u64) {
+        self.pending_frame_number = Some(frame_number);
     }
 
     pub(super) fn record_swapchain_copy(
@@ -167,7 +186,7 @@ impl SceneFrameCapture {
                     .layer_count(1)
                     .build(),
             )
-            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_offset(self.image_offset)
             .image_extent(vk::Extent3D {
                 width: self.extent.width,
                 height: self.extent.height,
@@ -223,11 +242,10 @@ impl SceneFrameCapture {
     pub(super) fn read_completed_frame(
         &mut self,
         device: &Device,
-        frame_number: u64,
     ) -> Result<(), String> {
-        if !self.is_pending() {
+        let Some(frame_number) = self.pending_frame_number else {
             return Ok(());
-        }
+        };
         let pixels = native_vulkan_vulkanalia_read_host_buffer(
             device,
             &self.readback_buffer,
@@ -242,6 +260,7 @@ impl SceneFrameCapture {
         );
         self.captured_frames
             .push(SceneFrameCapturePixels { frame_number, rgba });
+        self.pending_frame_number = None;
         Ok(())
     }
 
@@ -275,8 +294,12 @@ impl SceneFrameCapture {
         }
         self.snapshot = Some(NativeVulkanSceneFrameCaptureSnapshot {
             path: self.path.clone(),
-            source_width: self.extent.width,
-            source_height: self.extent.height,
+            source_width: self.source_extent.width,
+            source_height: self.source_extent.height,
+            region_x: self.image_offset.x as u32,
+            region_y: self.image_offset.y as u32,
+            region_width: self.extent.width,
+            region_height: self.extent.height,
             width: self.output_extent.width,
             height: self.output_extent.height,
             source_format: format!("{:?}", self.source_format),
@@ -299,6 +322,42 @@ impl SceneFrameCapture {
     pub(super) fn destroy(self, device: &Device) {
         native_vulkan_vulkanalia_destroy_buffer(device, self.readback_buffer);
     }
+}
+
+fn scene_frame_capture_region(
+    source_extent: vk::Extent2D,
+    region: Option<(u32, u32, u32, u32)>,
+) -> Result<(vk::Offset3D, vk::Extent2D), String> {
+    let (x, y, width, height) = region.unwrap_or((
+        0,
+        0,
+        source_extent.width,
+        source_extent.height,
+    ));
+    let end_x = x
+        .checked_add(width)
+        .ok_or_else(|| "scene frame capture region x range overflows".to_owned())?;
+    let end_y = y
+        .checked_add(height)
+        .ok_or_else(|| "scene frame capture region y range overflows".to_owned())?;
+    if width == 0
+        || height == 0
+        || end_x > source_extent.width
+        || end_y > source_extent.height
+    {
+        return Err(format!(
+            "scene frame capture region {x},{y},{width},{height} exceeds {}x{} swapchain",
+            source_extent.width, source_extent.height
+        ));
+    }
+    Ok((
+        vk::Offset3D {
+            x: x as i32,
+            y: y as i32,
+            z: 0,
+        },
+        vk::Extent2D { width, height },
+    ))
 }
 
 fn scene_frame_capture_output_path(
@@ -535,5 +594,28 @@ mod tests {
             scene_frame_capture_downscale_rgba(rgba, source_extent, output_extent, 2),
             vec![20, 21, 22, 23, 28, 29, 30, 31]
         );
+    }
+
+    #[test]
+    fn capture_region_keeps_source_coordinates_and_rejects_overflow() {
+        let source = vk::Extent2D {
+            width: 3840,
+            height: 2160,
+        };
+        assert_eq!(
+            scene_frame_capture_region(source, Some((1200, 800, 640, 360))),
+            Ok((
+                vk::Offset3D {
+                    x: 1200,
+                    y: 800,
+                    z: 0,
+                },
+                vk::Extent2D {
+                    width: 640,
+                    height: 360,
+                },
+            ))
+        );
+        assert!(scene_frame_capture_region(source, Some((3800, 0, 100, 100))).is_err());
     }
 }

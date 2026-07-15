@@ -29,6 +29,19 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
         extension_available(device_extensions, BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
     let blend_operation_advanced_coherent_operations = blend_operation_advanced_enabled
         && query_blend_operation_advanced_coherent_operations(instance, physical_device);
+    let scene_color_msaa_request = std::env::var("GILDER_NATIVE_VULKAN_SCENE_MSAA").ok();
+    let scene_color_4x_msaa_enabled =
+        scene_color_4x_msaa_requested(scene_color_msaa_request.as_deref())
+        && unsafe { instance.get_physical_device_properties(physical_device) }
+            .limits
+            .framebuffer_color_sample_counts
+            .contains(vk::SampleCountFlags::_4);
+    let multisampled_render_to_single_sampled_enabled = scene_color_4x_msaa_enabled
+        && extension_available(
+            device_extensions,
+            MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME,
+        )
+        && query_multisampled_render_to_single_sampled_feature(instance, physical_device);
     let maintenance7_enabled = extension_available(device_extensions, MAINTENANCE7_EXTENSION_NAME)
         && query_maintenance7_feature(instance, physical_device);
     let maintenance8_enabled = extension_available(device_extensions, MAINTENANCE8_EXTENSION_NAME)
@@ -51,11 +64,17 @@ pub(in crate::renderer::native_vulkan::vulkan) fn query_vulkanalia_present_featu
         present_mode_fifo_latest_ready_enabled,
         blend_operation_advanced_enabled,
         blend_operation_advanced_coherent_operations,
+        multisampled_render_to_single_sampled_enabled,
+        scene_color_4x_msaa_enabled,
         maintenance7_enabled,
         maintenance8_enabled,
         maintenance9_enabled,
         maintenance10_enabled,
     }
+}
+
+fn scene_color_4x_msaa_requested(value: Option<&str>) -> bool {
+    value.is_some_and(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "4" | "4x"))
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn vulkanalia_surface_maintenance1_enabled(
@@ -85,6 +104,9 @@ pub(in crate::renderer::native_vulkan::vulkan) fn enabled_present_device_extensi
     }
     if feature_selection.blend_operation_advanced_enabled {
         extensions.push(BLEND_OPERATION_ADVANCED_EXTENSION_NAME);
+    }
+    if feature_selection.multisampled_render_to_single_sampled_enabled {
+        extensions.push(MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME);
     }
     if feature_selection.core_features.descriptor_heap {
         extensions.push(DESCRIPTOR_HEAP_EXTENSION_NAME);
@@ -527,6 +549,20 @@ fn query_blend_operation_advanced_coherent_operations(
         instance.get_physical_device_features2(physical_device, &mut features2);
     }
     feature.advanced_blend_coherent_operations != 0
+}
+
+fn query_multisampled_render_to_single_sampled_feature(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+) -> bool {
+    let mut feature = vk::PhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT::default();
+    let mut features2 = vk::PhysicalDeviceFeatures2::builder()
+        .push_next(&mut feature)
+        .build();
+    unsafe {
+        instance.get_physical_device_features2(physical_device, &mut features2);
+    }
+    feature.multisampled_render_to_single_sampled != 0
 }
 
 fn query_maintenance7_feature(instance: &Instance, physical_device: vk::PhysicalDevice) -> bool {

@@ -45,8 +45,14 @@
 
         let layout = scene_pipeline_descriptor_layout(&storage, &graph).expect("layout");
         let indices =
-            scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[])
-                .expect("indices");
+            scene_pipeline_indices_for_draws(
+                &storage,
+                &graph,
+                vk::Format::B8G8R8A8_UNORM,
+                &[],
+                false,
+            )
+            .expect("indices");
 
         assert_eq!(layout.sampled_slots, vec![0]);
         assert!(layout.material_uniform_enabled);
@@ -107,10 +113,82 @@
             &graph,
             vk::Format::B8G8R8A8_UNORM,
             &target_plans,
+            false,
         )
         .expect("indices");
 
         assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn pipeline_indices_keep_scene_color_msaa_separate_from_single_sample_effect_targets() {
+        let mut scene_pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Normal);
+        scene_pass.scene_blend = SceneCompositeBlend::Normal;
+        let mut effect_pass = render_pass(1, SceneStringId(0), ScenePipelineBlend::Normal);
+        effect_pass.scene_blend = SceneCompositeBlend::Normal;
+        let storage = SceneStorage::from_document(SceneBinaryDocument {
+            strings: vec!["effects/opacity__SLOTS_1".to_owned(), "pipeline".to_owned()],
+            shader_contracts: vec![SceneShaderContractRecord {
+                shader_key: SceneStringId(0),
+                pipeline_key: SceneStringId(1),
+                texture_slot_mask: 1,
+                constant_start: 0,
+                constant_count: 0,
+                resource_heap_count: 1,
+                sampler_heap_count: 1,
+            }],
+            render_passes: vec![scene_pass, effect_pass],
+            ..SceneBinaryDocument::default()
+        })
+        .expect("storage");
+        let mut offscreen_pass = pass_node(1, 1, 1);
+        offscreen_pass.target = SceneRenderTargetKind::NamedFbo;
+        offscreen_pass.target_name = SceneStringId(7);
+        let mut graph = graph_with_passes(vec![pass_node(0, 0, 1), offscreen_pass]);
+        graph.target_allocations = vec![SceneRenderingDeviceTargetAllocation {
+            graph_index: 0,
+            target: SceneRenderTargetKind::NamedFbo,
+            target_name: SceneStringId(7),
+            first_write_pass_id: 1,
+            last_use_pass_id: 1,
+            physical_slot: 3,
+            width: 0,
+            height: 0,
+        }];
+        let target_plans = vec![SceneEffectTargetImagePlan {
+            physical_slot: 3,
+            graph_index: 0,
+            target: SceneRenderTargetKind::NamedFbo,
+            target_name: SceneStringId(7),
+            format: vk::Format::B8G8R8A8_UNORM,
+            width: 960,
+            height: 540,
+            batch_field_count: 1,
+            batch_atlas_columns: 1,
+            batch_atlas_rows: 1,
+            persistent_across_frames: true,
+            aliased_logical_target_count: 1,
+        }];
+
+        let single_sample = scene_pipeline_indices_for_draws(
+            &storage,
+            &graph,
+            vk::Format::B8G8R8A8_UNORM,
+            &target_plans,
+            false,
+        )
+        .expect("single-sample indices");
+        let scene_msaa = scene_pipeline_indices_for_draws(
+            &storage,
+            &graph,
+            vk::Format::B8G8R8A8_UNORM,
+            &target_plans,
+            true,
+        )
+        .expect("scene MSAA indices");
+
+        assert_eq!(single_sample, vec![0, 0]);
+        assert_eq!(scene_msaa, vec![0, 1]);
     }
 
     #[test]
@@ -137,8 +215,14 @@
         let graph = graph_with_passes(vec![pass_node(0, 0, 1), pass_node(1, 1, 1)]);
 
         let indices =
-            scene_pipeline_indices_for_draws(&storage, &graph, vk::Format::B8G8R8A8_UNORM, &[])
-                .expect("indices");
+            scene_pipeline_indices_for_draws(
+                &storage,
+                &graph,
+                vk::Format::B8G8R8A8_UNORM,
+                &[],
+                false,
+            )
+            .expect("indices");
 
         assert_eq!(indices, vec![0, 1]);
         assert_eq!(

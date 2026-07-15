@@ -75,6 +75,7 @@ mod pipeline;
 mod resource_residency;
 mod sampled_binding;
 mod scene_color_clear;
+mod scene_color_msaa;
 mod scene_texture;
 mod scene_viewport;
 mod present_loop;
@@ -140,6 +141,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub capture_frame_count: u64,
     pub capture_frame_step: u64,
     pub capture_frame_downscale: u32,
+    pub capture_frame_region: Option<(u32, u32, u32, u32)>,
     pub capture_scene_graph: Option<u32>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
@@ -167,6 +169,10 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
     pub uses_dynamic_rendering: bool,
+    pub scene_color_rasterization_samples: &'static str,
+    pub uses_multisampled_render_to_single_sampled: bool,
+    pub uses_explicit_scene_color_msaa_resolve: bool,
+    pub scene_color_msaa_memory_bytes: u64,
     pub frame_slot_count: usize,
     pub effect_target_physical_image_count: usize,
     pub effect_target_memory_bytes: u64,
@@ -266,6 +272,9 @@ struct SceneGpuResources {
     material_uniform_enabled: bool,
     frame_topology: SceneFrameTopology,
     dynamic_effect_uniforms: bool,
+    scene_color_msaa_enabled: bool,
+    multisampled_render_to_single_sampled_enabled: bool,
+    scene_color_msaa_targets: Vec<NativeVulkanVulkanaliaImage>,
 }
 
 struct SceneGpuFrameResources {

@@ -1,8 +1,12 @@
 //! Puppet mesh material specialization for GPU skinning shader variants.
 
 use super::WeIrBuilder;
-use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialPass};
+use crate::convert::we_ingest::ir::{
+    WeIrMaterial, WeIrMaterialPass, WeIrTextureMip, WeIrUnsupported,
+};
 use crate::convert::we_ingest::mdl::MdlModel;
+use crate::convert::we_ingest::tex::{decode_tex_upload, texture_alpha_coverage_rows};
+use crate::engine::scene::SceneTextureFormat;
 
 impl WeIrBuilder {
     pub(super) fn specialize_puppet_materials(
@@ -37,6 +41,9 @@ impl WeIrBuilder {
         let Some(base) = self.materials.get(base_handle as usize).cloned() else {
             return base_handle;
         };
+        if std::env::var_os("GILDER_CONVERT_PRESERVE_PUPPET_RGBA8").is_some() {
+            self.preserve_puppet_texture_precision(object, &base);
+        }
         let handle = self.materials.len() as u32;
         let pass_start = self.material_passes.len() as u32;
         let mut specialized_count = 0u32;
@@ -77,6 +84,79 @@ impl WeIrBuilder {
         self.puppet_material_by_base.insert(base_handle, handle);
         handle
     }
+
+    fn preserve_puppet_texture_precision(&mut self, object: u32, material: &WeIrMaterial) {
+        let mut resources = self
+            .material_passes
+            .iter()
+            .skip(material.pass_start as usize)
+            .take(material.pass_count as usize)
+            .flat_map(|pass| {
+                self.material_textures
+                    .iter()
+                    .skip(pass.texture_start as usize)
+                    .take(pass.texture_count as usize)
+            })
+            .filter_map(|texture| texture.resource)
+            .collect::<Vec<_>>();
+        resources.sort_unstable();
+        resources.dedup();
+        for resource in resources {
+            let Some(texture_index) = self
+                .textures
+                .iter()
+                .position(|texture| texture.resource == resource)
+            else {
+                continue;
+            };
+            if !puppet_texture_requires_lossless_alpha(self.textures[texture_index].format) {
+                continue;
+            }
+            let decoded = decode_tex_upload(&self.resources[resource as usize].payload);
+            match decoded {
+                Ok(upload) if upload.format == SceneTextureFormat::Rgba8Unorm => {
+                    let alpha_coverage_rows = texture_alpha_coverage_rows(&upload);
+                    let texture = &mut self.textures[texture_index];
+                    texture.format = upload.format;
+                    texture.source_runtime_format = upload.metadata.runtime_format;
+                    texture.payload_format = upload.metadata.payload_format;
+                    texture.sampler_flags = upload.metadata.sampler_flags;
+                    texture.width = upload.metadata.width;
+                    texture.height = upload.metadata.height;
+                    texture.storage_width = upload.metadata.storage_width;
+                    texture.storage_height = upload.metadata.storage_height;
+                    texture.texv_tag = upload.metadata.texv_tag;
+                    texture.texb_tag = upload.metadata.texb_tag;
+                    texture.mips = upload
+                        .mips
+                        .into_iter()
+                        .map(|mip| WeIrTextureMip {
+                            width: mip.width,
+                            height: mip.height,
+                            payload_offset: mip.payload_offset,
+                            payload_len: mip.payload_len,
+                        })
+                        .collect();
+                    texture.upload_payload = upload.payload;
+                    texture.alpha_coverage_rows = alpha_coverage_rows;
+                }
+                Ok(_) => {}
+                Err(source) => self.unsupported.push(WeIrUnsupported {
+                    object: Some(object),
+                    pass_index: None,
+                    feature: format!(
+                        "puppet-lossless-texture-decode-failed:resource{resource}:{source}"
+                    ),
+                    expected_subsystem: "convert/we_ingest puppet texture precision".to_owned(),
+                    containment: "existing-transcoded-texture-kept".to_owned(),
+                }),
+            }
+        }
+    }
+}
+
+fn puppet_texture_requires_lossless_alpha(format: SceneTextureFormat) -> bool {
+    format == SceneTextureFormat::Bc7UnormBlock
 }
 
 fn puppet_skinning_shader_key(shader_key: &str) -> Option<String> {
@@ -129,5 +209,18 @@ mod tests {
             Some("genericimage4__PUPPETSKINNING_1__CLIPPINGTARGET_1__CLIPPINGUVS_1")
         );
         assert_eq!(puppet_skinning_shader_key("effects/opacity__SLOTS_1"), None);
+    }
+
+    #[test]
+    fn puppet_rgba_alpha_texture_rejects_lossy_bc7_storage() {
+        assert!(puppet_texture_requires_lossless_alpha(
+            SceneTextureFormat::Bc7UnormBlock
+        ));
+        assert!(!puppet_texture_requires_lossless_alpha(
+            SceneTextureFormat::Rgba8Unorm
+        ));
+        assert!(!puppet_texture_requires_lossless_alpha(
+            SceneTextureFormat::Bc5UnormBlock
+        ));
     }
 }

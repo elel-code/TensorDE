@@ -12,6 +12,8 @@ pub(super) fn create_scene_gpu_resources(
     descriptor_heap_properties: &crate::renderer::native_vulkan::NativeVulkanVulkanaliaDescriptorHeapPropertySnapshot,
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
+    scene_color_msaa_enabled: bool,
+    multisampled_render_to_single_sampled_enabled: bool,
     capture_scene_graph: Option<u32>,
     frame_slot_count: usize,
 ) -> Result<SceneGpuResources, String> {
@@ -57,6 +59,7 @@ pub(super) fn create_scene_gpu_resources(
         &backend_plan.rendering_device_graph,
         target_format,
         &effect_target_plans,
+        scene_color_msaa_enabled,
     )?;
     emit_scene_pipeline_diagnostics_if_requested(
         storage,
@@ -64,6 +67,7 @@ pub(super) fn create_scene_gpu_resources(
         target_format,
         &effect_target_plans,
         &pipeline_indices,
+        scene_color_msaa_enabled,
     )?;
     let draw_count = backend_plan.rendering_device_graph.mesh_draws.len();
     let include_fullscreen_utility =
@@ -378,9 +382,43 @@ pub(super) fn create_scene_gpu_resources(
         &effect_target_plans,
         advanced_blend_enabled,
         advanced_blend_coherent,
+        scene_color_msaa_enabled,
     ) {
         Ok(resources) => resources,
         Err(err) => {
+            scene_texture::destroy_scene_texture_images(device, scene_textures);
+            effect_target::destroy_scene_effect_target_images(device, effect_targets);
+            native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+                device,
+                descriptor_heap,
+            );
+            if let Some(upload) = white_upload {
+                destroy_recorded_image_upload(device, upload);
+            }
+            if let Some(buffer) = material_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            if let Some(buffer) = skinning_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            return Err(err);
+        }
+    };
+    let scene_color_msaa_targets = match scene_color_msaa::create_scene_color_msaa_targets(
+        device,
+        memory_properties,
+        target_format,
+        extent,
+        frame_slot_count,
+        scene_color_msaa_enabled,
+        multisampled_render_to_single_sampled_enabled,
+    ) {
+        Ok(targets) => targets,
+        Err(err) => {
+            pipeline::destroy_scene_pipelines(device, pipeline_resources);
             scene_texture::destroy_scene_texture_images(device, scene_textures);
             effect_target::destroy_scene_effect_target_images(device, effect_targets);
             native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
@@ -429,6 +467,10 @@ pub(super) fn create_scene_gpu_resources(
             Ok(resources) => frame_resources.push(resources),
             Err(err) => {
                 pipeline::destroy_scene_pipelines(device, pipeline_resources);
+                scene_color_msaa::destroy_scene_color_msaa_targets(
+                    device,
+                    scene_color_msaa_targets,
+                );
                 destroy_scene_gpu_frame_resources(device, frame_resources);
                 scene_texture::destroy_scene_texture_images(device, scene_textures);
                 effect_target::destroy_scene_effect_target_images(device, effect_targets);
@@ -474,6 +516,9 @@ pub(super) fn create_scene_gpu_resources(
         material_uniform_enabled: descriptor_layout.material_uniform_enabled,
         frame_topology,
         dynamic_effect_uniforms,
+        scene_color_msaa_enabled,
+        multisampled_render_to_single_sampled_enabled,
+        scene_color_msaa_targets,
     })
 }
 

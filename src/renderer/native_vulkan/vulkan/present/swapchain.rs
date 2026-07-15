@@ -45,6 +45,8 @@ const PRESENT_WAIT2_EXTENSION_NAME: &str = "VK_KHR_present_wait2";
 const SWAPCHAIN_MAINTENANCE1_EXTENSION_NAME: &str = "VK_KHR_swapchain_maintenance1";
 const PRESENT_MODE_FIFO_LATEST_READY_EXTENSION_NAME: &str = "VK_KHR_present_mode_fifo_latest_ready";
 const BLEND_OPERATION_ADVANCED_EXTENSION_NAME: &str = "VK_EXT_blend_operation_advanced";
+const MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME: &str =
+    "VK_EXT_multisampled_render_to_single_sampled";
 const MAINTENANCE7_EXTENSION_NAME: &str = "VK_KHR_maintenance7";
 const MAINTENANCE8_EXTENSION_NAME: &str = "VK_KHR_maintenance8";
 const MAINTENANCE9_EXTENSION_NAME: &str = "VK_KHR_maintenance9";
@@ -116,6 +118,8 @@ pub struct NativeVulkanVulkanaliaPresentDeviceExtensionSnapshot {
     pub blend_operation_advanced_available: bool,
     pub blend_operation_advanced_enabled: bool,
     pub blend_operation_advanced_coherent_operations: bool,
+    pub multisampled_render_to_single_sampled_available: bool,
+    pub multisampled_render_to_single_sampled_enabled: bool,
     pub present_id2_available: bool,
     pub present_id2_enabled: bool,
     pub present_wait2_available: bool,
@@ -236,6 +240,9 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanVulkanaliaPres
     pub(in crate::renderer::native_vulkan::vulkan) blend_operation_advanced_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) blend_operation_advanced_coherent_operations:
         bool,
+    pub(in crate::renderer::native_vulkan::vulkan) multisampled_render_to_single_sampled_enabled:
+        bool,
+    pub(in crate::renderer::native_vulkan::vulkan) scene_color_4x_msaa_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance7_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance8_enabled: bool,
     pub(in crate::renderer::native_vulkan::vulkan) maintenance9_enabled: bool,
@@ -561,6 +568,12 @@ fn present_device_extension_snapshot(
         blend_operation_advanced_enabled: feature_selection.blend_operation_advanced_enabled,
         blend_operation_advanced_coherent_operations: feature_selection
             .blend_operation_advanced_coherent_operations,
+        multisampled_render_to_single_sampled_available: extension_available(
+            available_device_extensions,
+            MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME,
+        ),
+        multisampled_render_to_single_sampled_enabled: feature_selection
+            .multisampled_render_to_single_sampled_enabled,
         present_id2_available: extension_available(
             available_device_extensions,
             PRESENT_ID2_EXTENSION_NAME,
@@ -664,6 +677,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
                 feature_selection.blend_operation_advanced_coherent_operations,
             )
             .build();
+    let mut multisampled_render_to_single_sampled_features =
+        vk::PhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT::builder()
+            .multisampled_render_to_single_sampled(true)
+            .build();
     let mut maintenance7_features = vk::PhysicalDeviceMaintenance7FeaturesKHR::builder()
         .maintenance7(true)
         .build();
@@ -724,6 +741,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_vulkanalia_present_devi
     }
     if feature_selection.blend_operation_advanced_enabled {
         device_create_info = device_create_info.push_next(&mut blend_operation_advanced_features);
+    }
+    if feature_selection.multisampled_render_to_single_sampled_enabled {
+        device_create_info =
+            device_create_info.push_next(&mut multisampled_render_to_single_sampled_features);
     }
     if feature_selection.maintenance7_enabled {
         device_create_info = device_create_info.push_next(&mut maintenance7_features);

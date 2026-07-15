@@ -146,6 +146,18 @@ def main() -> int:
             "present_delta_over_8334us_count": report["present_delta_over_8334us_count"],
             "present_mode": report["present_mode"],
             "surface_extent": report["present"]["swapchain"]["extent"],
+            "scene_color_rasterization_samples": report["present"].get(
+                "scene_color_rasterization_samples", "1x"
+            ),
+            "uses_multisampled_render_to_single_sampled": report["present"].get(
+                "uses_multisampled_render_to_single_sampled", False
+            ),
+            "uses_explicit_scene_color_msaa_resolve": report["present"].get(
+                "uses_explicit_scene_color_msaa_resolve", False
+            ),
+            "scene_color_msaa_memory_bytes": report["present"].get(
+                "scene_color_msaa_memory_bytes", 0
+            ),
             "descriptor_model": report["descriptor_model"],
             "render_graph_draw_count": report["render_graph_draw_count"],
             "mesh_draw_count": report["mesh_draw_count"],

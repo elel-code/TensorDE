@@ -171,6 +171,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut capture_frame_step_set = false;
     let mut capture_frame_downscale = 1u32;
     let mut capture_frame_downscale_set = false;
+    let mut capture_frame_region = None::<(u32, u32, u32, u32)>;
+    let mut capture_frame_region_set = false;
     let mut capture_scene_graph = None::<u32>;
     let mut scene_surface_width = None::<u32>;
     let mut scene_surface_height = None::<u32>;
@@ -345,6 +347,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 capture_frame_downscale = parse_capture_frame_downscale(args.next())?;
                 capture_frame_downscale_set = true;
             }
+            "--capture-frame-region" => {
+                capture_frame_region = Some(parse_capture_frame_region(args.next())?);
+                capture_frame_region_set = true;
+            }
             "--capture-scene-graph" => {
                 capture_scene_graph = Some(parse_capture_scene_graph(args.next())?);
             }
@@ -513,6 +519,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if capture_frame.is_none() && capture_frame_downscale_set {
         return Err("--capture-frame-downscale requires --capture-frame".into());
+    }
+    if capture_frame.is_none() && capture_frame_region_set {
+        return Err("--capture-frame-region requires --capture-frame".into());
     }
     if capture_frame.is_none() && capture_scene_graph.is_some() {
         return Err("--capture-scene-graph requires --capture-frame".into());
@@ -713,6 +722,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_frame_count,
                     capture_frame_step,
                     capture_frame_downscale,
+                    capture_frame_region,
                     capture_scene_graph,
                     clear_color_override: scene_clear_color_override,
                     surface_extent: scene_surface_extent,

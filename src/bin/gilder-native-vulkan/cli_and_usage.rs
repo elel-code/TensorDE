@@ -98,6 +98,24 @@ fn parse_capture_frame_downscale(value: Option<String>) -> Result<u32, &'static 
         .ok_or("--capture-frame-downscale requires a positive divisor")
 }
 
+fn parse_capture_frame_region(
+    value: Option<String>,
+) -> Result<(u32, u32, u32, u32), &'static str> {
+    let value = value.ok_or("--capture-frame-region requires X,Y,WIDTH,HEIGHT")?;
+    let values = value
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "--capture-frame-region requires X,Y,WIDTH,HEIGHT")?;
+    match values.as_slice() {
+        [x, y, width, height] if *width > 0 && *height > 0 => {
+            Ok((*x, *y, *width, *height))
+        }
+        _ => Err("--capture-frame-region requires X,Y,WIDTH,HEIGHT"),
+    }
+}
+
 #[cfg(feature = "native-vulkan-renderer")]
 fn parse_capture_scene_graph(value: Option<String>) -> Result<u32, &'static str> {
     value
@@ -210,6 +228,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --capture-frame-count N captures N submitted frames; sequence files append the zero-padded frame number to PATH.\n\
 --capture-frame-step N samples every Nth submitted frame in a sequence; the default is 1.\n\
 --capture-frame-downscale N keeps full-resolution rendering but stores every Nth readback pixel in each axis.\n\
+--capture-frame-region X,Y,WIDTH,HEIGHT copies only that swapchain region before optional CPU downscale.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
 --surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
@@ -218,7 +237,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-video selects the FFmpeg Vulkan HW decode mainline and requires AV_PIX_FMT_VULKAN/AVVkFrame before descriptor-heap present.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
-         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-scene-graph N]\n\
+         [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-frame-region X,Y,WIDTH,HEIGHT] [--capture-scene-graph N]\n\
          [--surface-width PX --surface-height PX] [--gpu-timing]\n\
          [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
@@ -285,6 +304,16 @@ mod tests {
             parse_capture_frame_downscale(Some("0".to_owned())),
             Err("--capture-frame-downscale requires a positive divisor")
         );
+    }
+
+    #[test]
+    fn capture_frame_region_requires_four_coordinates_and_positive_extent() {
+        assert_eq!(
+            parse_capture_frame_region(Some("12,34,640,360".to_owned())),
+            Ok((12, 34, 640, 360))
+        );
+        assert!(parse_capture_frame_region(Some("12,34,0,360".to_owned())).is_err());
+        assert!(parse_capture_frame_region(Some("12,34,640".to_owned())).is_err());
     }
 
     #[test]

@@ -15,6 +15,8 @@
             present_mode_fifo_latest_ready_enabled: false,
             blend_operation_advanced_enabled: false,
             blend_operation_advanced_coherent_operations: false,
+            multisampled_render_to_single_sampled_enabled: false,
+            scene_color_4x_msaa_enabled: false,
             maintenance7_enabled: false,
             maintenance8_enabled: false,
             maintenance9_enabled: false,
@@ -46,6 +48,11 @@
             blend_operation_advanced_coherent_operations: true,
             ..disabled
         };
+        let multisampled_render_to_single_sampled_enabled =
+            NativeVulkanVulkanaliaPresentFeatureSelection {
+                multisampled_render_to_single_sampled_enabled: true,
+                ..disabled
+            };
         let maintenance_roadmap_enabled = NativeVulkanVulkanaliaPresentFeatureSelection {
             maintenance7_enabled: true,
             maintenance8_enabled: true,
@@ -87,6 +94,13 @@
             vec!["VK_KHR_swapchain", BLEND_OPERATION_ADVANCED_EXTENSION_NAME]
         );
         assert_eq!(
+            enabled_present_device_extensions(&multisampled_render_to_single_sampled_enabled),
+            vec![
+                "VK_KHR_swapchain",
+                MULTISAMPLED_RENDER_TO_SINGLE_SAMPLED_EXTENSION_NAME,
+            ]
+        );
+        assert_eq!(
             enabled_present_device_extensions(&maintenance_roadmap_enabled),
             vec![
                 "VK_KHR_swapchain",
@@ -96,6 +110,15 @@
                 MAINTENANCE10_EXTENSION_NAME,
             ]
         );
+    }
+
+    #[test]
+    fn scene_color_msaa_is_explicit_four_x_opt_in() {
+        assert!(!scene_color_4x_msaa_requested(None));
+        assert!(!scene_color_4x_msaa_requested(Some("1")));
+        assert!(!scene_color_4x_msaa_requested(Some("true")));
+        assert!(scene_color_4x_msaa_requested(Some("4")));
+        assert!(scene_color_4x_msaa_requested(Some(" 4X ")));
     }
 
     #[test]

@@ -47,6 +47,22 @@ struct ScenePipelineKey {
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
+    samples: ScenePipelineSamples,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScenePipelineSamples {
+    Single,
+    SceneColor4x,
+}
+
+impl ScenePipelineSamples {
+    const fn rasterization_samples(self) -> vk::SampleCountFlags {
+        match self {
+            Self::Single => vk::SampleCountFlags::_1,
+            Self::SceneColor4x => vk::SampleCountFlags::_4,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -118,8 +134,15 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
     graph: &SceneRenderingDeviceGraphPlan,
     swapchain_format: vk::Format,
     effect_target_plans: &[SceneEffectTargetImagePlan],
+    scene_color_msaa_enabled: bool,
 ) -> Result<Vec<u32>, String> {
-    let keys = drawn_pass_pipeline_keys(storage, graph, swapchain_format, effect_target_plans)?;
+    let keys = drawn_pass_pipeline_keys(
+        storage,
+        graph,
+        swapchain_format,
+        effect_target_plans,
+        scene_color_msaa_enabled,
+    )?;
     let mut indices = vec![0u32; graph.mesh_draws.len()];
     for pass in graph
         .pass_nodes
@@ -137,6 +160,7 @@ pub(in crate::renderer::native_vulkan) fn scene_pipeline_indices_for_draws(
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
+            samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
         };
         let pipeline_index = keys
             .iter()
@@ -158,6 +182,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
     swapchain_format: vk::Format,
     effect_target_plans: &[SceneEffectTargetImagePlan],
     pipeline_indices: &[u32],
+    scene_color_msaa_enabled: bool,
 ) -> Result<(), String> {
     const ENV: &str = "GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG";
     let Ok(requested) = std::env::var(ENV) else {
@@ -237,7 +262,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             .collect::<Vec<_>>()
             .join(",");
         eprintln!(
-            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} pipeline_index={} material_textures=[{}]",
+            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}]",
             pass.graph_index,
             pass.pass_id,
             pass.pass_record_index,
@@ -252,6 +277,8 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             pass_record.scene_blend,
             blend.label(),
             target_format,
+            pass_pipeline_samples(pass.target, scene_color_msaa_enabled)
+                .rasterization_samples(),
             pipeline_index,
             material_textures,
         );
@@ -270,8 +297,15 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
     effect_target_plans: &[SceneEffectTargetImagePlan],
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
+    scene_color_msaa_enabled: bool,
 ) -> Result<ScenePipelineResources, String> {
-    let keys = drawn_pass_pipeline_keys(storage, graph, target_format, effect_target_plans)?;
+    let keys = drawn_pass_pipeline_keys(
+        storage,
+        graph,
+        target_format,
+        effect_target_plans,
+        scene_color_msaa_enabled,
+    )?;
     if keys.is_empty() {
         return Err("scene present requires at least one drawable pass pipeline".to_owned());
     }
@@ -303,6 +337,7 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             key.blend,
             key.advanced_source_premultiplied,
             key.advanced_blend_overlap,
+            key.samples,
         ) {
             Ok(pipeline) => entries.push(ScenePipelineEntry { key, pipeline }),
             Err(err) => {
@@ -330,6 +365,7 @@ fn drawn_pass_pipeline_keys(
     graph: &SceneRenderingDeviceGraphPlan,
     swapchain_format: vk::Format,
     effect_target_plans: &[SceneEffectTargetImagePlan],
+    scene_color_msaa_enabled: bool,
 ) -> Result<Vec<ScenePipelineKey>, String> {
     let mut keys = Vec::<ScenePipelineKey>::new();
     for pass in graph
@@ -351,6 +387,7 @@ fn drawn_pass_pipeline_keys(
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: pass_target_format(graph, pass, swapchain_format, effect_target_plans)?,
+            samples: pass_pipeline_samples(pass.target, scene_color_msaa_enabled),
         };
         if !keys.contains(&key) {
             keys.push(key);
@@ -383,6 +420,7 @@ fn drawn_pass_material_keys(
             advanced_source_premultiplied: advanced_source_is_premultiplied(pass_record),
             advanced_blend_overlap: advanced_blend_overlap(storage, pass_record),
             target_format: vk::Format::UNDEFINED,
+            samples: ScenePipelineSamples::Single,
         };
         if !keys.contains(&key) {
             keys.push(key);
@@ -478,6 +516,22 @@ fn pipeline_gpu_blend(blend: ScenePipelineBlend) -> SceneGpuBlend {
     }
 }
 
+fn pass_pipeline_samples(
+    target: SceneRenderTargetKind,
+    scene_color_msaa_enabled: bool,
+) -> ScenePipelineSamples {
+    if scene_color_msaa_enabled
+        && matches!(
+            target,
+            SceneRenderTargetKind::SceneColor | SceneRenderTargetKind::Swapchain
+        )
+    {
+        ScenePipelineSamples::SceneColor4x
+    } else {
+        ScenePipelineSamples::Single
+    }
+}
+
 fn pass_target_format(
     graph: &SceneRenderingDeviceGraphPlan,
     pass: &crate::engine::scene::SceneRenderingDevicePassNode,
@@ -528,6 +582,7 @@ fn create_scene_pipeline(
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
+    samples: ScenePipelineSamples,
 ) -> Result<vk::Pipeline, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene pipeline requires non-zero extent".to_owned());
@@ -545,6 +600,7 @@ fn create_scene_pipeline(
             blend,
             advanced_source_premultiplied,
             advanced_blend_overlap,
+            samples,
         );
         unsafe {
             device.destroy_shader_module(fragment_module, None);
@@ -567,6 +623,7 @@ fn create_scene_pipeline_with_modules(
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
+    samples: ScenePipelineSamples,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
     let mut vertex_mappings = vec![
@@ -640,6 +697,7 @@ fn create_scene_pipeline_with_modules(
         blend,
         advanced_source_premultiplied,
         advanced_blend_overlap,
+        samples,
     )
 }
 
@@ -657,6 +715,7 @@ fn create_graphics_pipeline(
     blend: SceneGpuBlend,
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
+    samples: ScenePipelineSamples,
 ) -> Result<vk::Pipeline, String> {
     let binding = vk::VertexInputBindingDescription::builder()
         .binding(0)
@@ -718,7 +777,7 @@ fn create_graphics_pipeline(
         .line_width(1.0)
         .build();
     let multisample = vk::PipelineMultisampleStateCreateInfo::builder()
-        .rasterization_samples(vk::SampleCountFlags::_1)
+        .rasterization_samples(samples.rasterization_samples())
         .alpha_to_coverage_enable(blend == SceneGpuBlend::AlphaToCoverage)
         .build();
     let color_attachment = scene_color_blend_attachment(blend);

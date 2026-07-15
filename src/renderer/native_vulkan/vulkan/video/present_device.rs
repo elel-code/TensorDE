@@ -729,6 +729,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
                 present_feature_selection.blend_operation_advanced_coherent_operations,
             )
             .build();
+    let mut multisampled_render_to_single_sampled_features =
+        vk::PhysicalDeviceMultisampledRenderToSingleSampledFeaturesEXT::builder()
+            .multisampled_render_to_single_sampled(true)
+            .build();
 
     let mut device_create_info = vk::DeviceCreateInfo::builder()
         .queue_create_infos(&queue_create_infos)
@@ -778,6 +782,10 @@ pub(in crate::renderer::native_vulkan::vulkan) fn create_video_present_device(
     }
     if present_feature_selection.blend_operation_advanced_enabled {
         device_create_info = device_create_info.push_next(&mut blend_operation_advanced_features);
+    }
+    if present_feature_selection.multisampled_render_to_single_sampled_enabled {
+        device_create_info =
+            device_create_info.push_next(&mut multisampled_render_to_single_sampled_features);
     }
 
     let device =

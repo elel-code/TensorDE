@@ -82,6 +82,10 @@ pub(super) fn scene_sampled_sampler_info() -> vk::SamplerCreateInfo {
 
 pub(super) fn destroy_scene_gpu_resources(device: &Device, resources: SceneGpuResources) {
     destroy_scene_pipelines(device, resources.pipelines);
+    super::scene_color_msaa::destroy_scene_color_msaa_targets(
+        device,
+        resources.scene_color_msaa_targets,
+    );
     destroy_scene_gpu_frame_resources(device, resources.frame_resources);
     scene_texture::destroy_scene_texture_images(device, resources.scene_textures);
     effect_target::destroy_scene_effect_target_images(device, resources.effect_targets);

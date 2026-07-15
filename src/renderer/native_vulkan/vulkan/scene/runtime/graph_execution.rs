@@ -60,6 +60,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
     gpu_timing: Option<&SceneGpuTiming>,
 ) -> Result<(), String> {
     transition_swapchain_to_attachment(device, command_buffer, swapchain_image, old_layout);
+    transition_scene_color_msaa_to_attachment(device, command_buffer, scene);
     let reference_slots = &scene
         .sampled_binding_cycle
         .get(reference_phase)
@@ -92,6 +93,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
     }
     let mut scene_color_initialized = false;
     let mut scene_color_rendering_active = false;
+    let mut scene_color_resolve_dirty = false;
 
     for (graph_position, graph_index) in scene.graph_execution_order.iter().enumerate() {
         if let Some(timing) = gpu_timing {
@@ -123,6 +125,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 gpu_timing,
                 &mut scene_color_initialized,
                 &mut scene_color_rendering_active,
+                &mut scene_color_resolve_dirty,
             )?;
             if let Some(timing) = gpu_timing {
                 timing.record_graph_effect_target_finish(device, command_buffer, graph_position);
@@ -152,17 +155,35 @@ pub(super) fn record_scene_graphs_to_swapchain(
                     extent,
                     clear_color,
                     false,
+                    scene,
                 );
                 unsafe {
                     device.cmd_end_rendering(command_buffer);
                 }
                 scene_color_initialized = true;
+                scene_color_resolve_dirty = true;
             }
+            let graph_copies_scene_color = effect_target::graph_copies_scene_color(
+                &scene.effect_target_commands,
+                *graph_index,
+            );
             let direct_scene_color_snapshot =
                 effect_target::graph_uses_direct_scene_color_snapshot(
                     &scene.effect_target_commands,
                     *graph_index,
                 );
+            if scene_color_resolve_dirty
+                && (graph_copies_scene_color || direct_scene_color_snapshot)
+            {
+                resolve_explicit_scene_color_msaa(
+                    device,
+                    command_buffer,
+                    swapchain_image,
+                    extent,
+                    scene,
+                );
+                scene_color_resolve_dirty = false;
+            }
             if direct_scene_color_snapshot {
                 transition_scene_color_to_sampled(device, command_buffer, swapchain_image);
             }
@@ -236,6 +257,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                     extent,
                     attachment_clear.map_or(clear_color, |clear| clear.color),
                     scene_color_initialized,
+                    scene,
                 );
                 record_scene_draw_extent(device, command_buffer, extent);
                 scene_color_rendering_active = true;
@@ -253,6 +275,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 )?;
             }
             scene_color_initialized = true;
+            scene_color_resolve_dirty = true;
         }
         if let Some(timing) = gpu_timing {
             timing.record_graph_scene_color_finish(device, command_buffer, graph_position);
@@ -272,10 +295,21 @@ pub(super) fn record_scene_graphs_to_swapchain(
             extent,
             clear_color,
             false,
+            scene,
         );
         unsafe {
             device.cmd_end_rendering(command_buffer);
         }
+        scene_color_resolve_dirty = true;
+    }
+    if scene_color_resolve_dirty {
+        resolve_explicit_scene_color_msaa(
+            device,
+            command_buffer,
+            swapchain_image,
+            extent,
+            scene,
+        );
     }
     Ok(())
 }
@@ -312,6 +346,7 @@ fn record_interleaved_target_graph(
     gpu_timing: Option<&SceneGpuTiming>,
     scene_color_initialized: &mut bool,
     scene_color_rendering_active: &mut bool,
+    scene_color_resolve_dirty: &mut bool,
 ) -> Result<(), String> {
     for pass in scene
         .pass_nodes
@@ -330,6 +365,7 @@ fn record_interleaved_target_graph(
                     extent,
                     clear_color,
                     *scene_color_initialized,
+                    scene,
                 );
                 record_scene_draw_extent(device, command_buffer, extent);
                 *scene_color_rendering_active = true;
@@ -345,6 +381,7 @@ fn record_interleaved_target_graph(
                 extent,
             )?;
             *scene_color_initialized = true;
+            *scene_color_resolve_dirty = true;
             continue;
         }
         if !pass_targets_effect_image(pass) {
@@ -355,6 +392,16 @@ fn record_interleaved_target_graph(
                 device.cmd_end_rendering(command_buffer);
             }
             *scene_color_rendering_active = false;
+        }
+        if *scene_color_resolve_dirty {
+            resolve_explicit_scene_color_msaa(
+                device,
+                command_buffer,
+                swapchain_image,
+                extent,
+                scene,
+            );
+            *scene_color_resolve_dirty = false;
         }
         let mut record_draws = |draw_start, draw_count, target_extent| {
             record_scene_mesh_draw_ranges(
@@ -413,14 +460,20 @@ fn begin_scene_color_rendering(
     extent: vk::Extent2D,
     clear_color: NativeVulkanClearColor,
     initialized: bool,
+    scene: &SceneGpuResources,
 ) {
     let clear_value = vk::ClearValue {
         color: vk::ClearColorValue {
             float32: [clear_color.r, clear_color.g, clear_color.b, clear_color.a],
         },
     };
+    let explicit_msaa_target = scene
+        .scene_color_msaa_targets
+        .get(scene.active_frame_slot);
     let color_attachment = vk::RenderingAttachmentInfo::builder()
-        .image_view(swapchain_view)
+        .image_view(
+            explicit_msaa_target.map_or(swapchain_view, |target| target.view),
+        )
         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
         .load_op(if initialized {
             vk::AttachmentLoadOp::LOAD
@@ -428,10 +481,15 @@ fn begin_scene_color_rendering(
             vk::AttachmentLoadOp::CLEAR
         })
         .store_op(vk::AttachmentStoreOp::STORE)
-        .clear_value(clear_value)
-        .build();
+        .clear_value(clear_value);
+    let color_attachment = color_attachment.build();
     let color_attachments = [color_attachment];
-    let rendering_info = vk::RenderingInfo::builder()
+    let mut multisampled_render_to_single_sampled =
+        vk::MultisampledRenderToSingleSampledInfoEXT::builder()
+            .multisampled_render_to_single_sampled_enable(true)
+            .rasterization_samples(vk::SampleCountFlags::_4)
+            .build();
+    let mut rendering_info = vk::RenderingInfo::builder()
         .render_area(
             vk::Rect2D::builder()
                 .offset(vk::Offset2D { x: 0, y: 0 })
@@ -439,10 +497,163 @@ fn begin_scene_color_rendering(
                 .build(),
         )
         .layer_count(1)
-        .color_attachments(&color_attachments)
-        .build();
+        .color_attachments(&color_attachments);
+    if scene.multisampled_render_to_single_sampled_enabled {
+        rendering_info = rendering_info.push_next(&mut multisampled_render_to_single_sampled);
+    }
+    let rendering_info = rendering_info.build();
     unsafe {
         device.cmd_begin_rendering(command_buffer, &rendering_info);
+    }
+}
+
+fn resolve_explicit_scene_color_msaa(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    swapchain_image: vk::Image,
+    extent: vk::Extent2D,
+    scene: &SceneGpuResources,
+) {
+    let Some(source) = scene
+        .scene_color_msaa_targets
+        .get(scene.active_frame_slot)
+    else {
+        return;
+    };
+    let to_transfer = [
+        scene_color_resolve_barrier(
+            source.image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags2::TRANSFER_READ,
+        ),
+        scene_color_resolve_barrier(
+            swapchain_image,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+            vk::AccessFlags2::TRANSFER_WRITE,
+        ),
+    ];
+    let transfer_dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(&to_transfer)
+        .build();
+    let resolve = vk::ImageResolve::builder()
+        .src_subresource(
+            vk::ImageSubresourceLayers::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .layer_count(1)
+                .build(),
+        )
+        .dst_subresource(
+            vk::ImageSubresourceLayers::builder()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .layer_count(1)
+                .build(),
+        )
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
+        .build();
+    let to_attachment = [
+        scene_color_resolve_barrier(
+            source.image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::TRANSFER_READ,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+        scene_color_resolve_barrier(
+            swapchain_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+            vk::PipelineStageFlags2::ALL_TRANSFER,
+            vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT,
+            vk::AccessFlags2::TRANSFER_WRITE,
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        ),
+    ];
+    let attachment_dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(&to_attachment)
+        .build();
+    unsafe {
+        device.cmd_pipeline_barrier2(command_buffer, &transfer_dependency);
+        device.cmd_resolve_image(
+            command_buffer,
+            source.image,
+            vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+            swapchain_image,
+            vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+            &[resolve],
+        );
+        device.cmd_pipeline_barrier2(command_buffer, &attachment_dependency);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scene_color_resolve_barrier(
+    image: vk::Image,
+    old_layout: vk::ImageLayout,
+    new_layout: vk::ImageLayout,
+    src_stage: vk::PipelineStageFlags2,
+    dst_stage: vk::PipelineStageFlags2,
+    src_access: vk::AccessFlags2,
+    dst_access: vk::AccessFlags2,
+) -> vk::ImageMemoryBarrier2 {
+    vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(src_stage)
+        .src_access_mask(src_access)
+        .dst_stage_mask(dst_stage)
+        .dst_access_mask(dst_access)
+        .old_layout(old_layout)
+        .new_layout(new_layout)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(color_subresource_range())
+        .build()
+}
+
+fn transition_scene_color_msaa_to_attachment(
+    device: &Device,
+    command_buffer: vk::CommandBuffer,
+    scene: &SceneGpuResources,
+) {
+    let Some(target) = scene
+        .scene_color_msaa_targets
+        .get(scene.active_frame_slot)
+    else {
+        return;
+    };
+    let barrier = vk::ImageMemoryBarrier2::builder()
+        .src_stage_mask(vk::PipelineStageFlags2::TOP_OF_PIPE)
+        .src_access_mask(vk::AccessFlags2::empty())
+        .dst_stage_mask(vk::PipelineStageFlags2::COLOR_ATTACHMENT_OUTPUT)
+        .dst_access_mask(
+            vk::AccessFlags2::COLOR_ATTACHMENT_READ | vk::AccessFlags2::COLOR_ATTACHMENT_WRITE,
+        )
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(target.image)
+        .subresource_range(color_subresource_range())
+        .build();
+    let barriers = [barrier];
+    let dependency = vk::DependencyInfo::builder()
+        .image_memory_barriers(&barriers)
+        .build();
+    unsafe {
+        device.cmd_pipeline_barrier2(command_buffer, &dependency);
     }
 }
 

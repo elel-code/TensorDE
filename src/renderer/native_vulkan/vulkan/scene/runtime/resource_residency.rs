@@ -54,6 +54,13 @@ pub(super) fn scene_resource_residency_snapshot(
             &target.image.snapshot,
         );
     }
+    for target in &resources.scene_color_msaa_targets {
+        add_image_class(
+            &mut image_memory_classes,
+            "scene-color-msaa-target",
+            &target.snapshot,
+        );
+    }
 
     let mut buffer_memory_classes = Vec::new();
     add_buffer_class(

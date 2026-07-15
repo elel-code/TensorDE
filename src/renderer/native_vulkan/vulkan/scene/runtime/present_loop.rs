@@ -203,6 +203,12 @@ pub(super) fn with_scene_present(
         present_device
             .feature_selection
             .blend_operation_advanced_coherent_operations,
+        present_device
+            .feature_selection
+            .scene_color_4x_msaa_enabled,
+        present_device
+            .feature_selection
+            .multisampled_render_to_single_sampled_enabled,
         options.capture_scene_graph,
         frame_slot_count,
     ) {
@@ -298,6 +304,7 @@ pub(super) fn with_scene_present(
             options.capture_frame_count,
             options.capture_frame_step,
             options.capture_frame_downscale,
+            options.capture_frame_region,
         ) {
             Ok(capture) => Some(capture),
             Err(err) => {
@@ -392,6 +399,9 @@ pub(super) fn with_scene_present(
             device
                 .reset_fences(&[frame_context.fence])
                 .map_err(|err| format!("vkResetFences(vulkanalia scene present): {err:?}"))?;
+        }
+        if let Some(capture) = frame_capture.as_mut() {
+            capture.read_completed_frame(device)?;
         }
         fence_wait_total_micros =
             fence_wait_total_micros.saturating_add(elapsed_micros_u64(fence_wait_started));
@@ -542,14 +552,7 @@ pub(super) fn with_scene_present(
         queue_present_total_micros = queue_present_total_micros
             .saturating_add(elapsed_micros_u64(queue_present_started));
         if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
-            unsafe {
-                device
-                    .wait_for_fences(&[frame_context.fence], true, u64::MAX)
-                    .map_err(|err| {
-                        format!("vkWaitForFences(vulkanalia scene frame capture): {err:?}")
-                    })?;
-            }
-            capture.read_completed_frame(device, frame_number)?;
+            capture.mark_submitted(frame_number);
         }
         let present_completed_at = Instant::now();
         if let Some(last_present_completed_at) = last_present_completed_at {
@@ -584,6 +587,9 @@ pub(super) fn with_scene_present(
         }
     }
     let _ = unsafe { device.device_wait_idle() };
+    if let Some(capture) = frame_capture.as_mut() {
+        capture.read_completed_frame(device)?;
+    }
     if let Some(timing) = gpu_timing.as_mut() {
         timing.collect_completed(device)?;
     }
@@ -678,6 +684,11 @@ pub(super) fn with_scene_present(
     let scene_color_recorded_mesh_draw_count =
         scene_color_mesh_draw_count.saturating_sub(scene_color_attachment_clear_draw_count);
     let scene_pipeline_count = scene_resources.pipelines.entries.len();
+    let scene_color_msaa_enabled = scene_resources.scene_color_msaa_enabled;
+    let multisampled_render_to_single_sampled_enabled =
+        scene_resources.multisampled_render_to_single_sampled_enabled;
+    let scene_color_msaa_memory_bytes =
+        scene_color_msaa::scene_color_msaa_memory_bytes(&scene_resources.scene_color_msaa_targets);
     let mesh_draw_count = scene_resources.draw_commands.len();
     let alpha_coverage_scissor_draw_count = scene_resources
         .draw_commands
@@ -806,6 +817,16 @@ pub(super) fn with_scene_present(
         uses_synchronization2: true,
         uses_submit2: true,
         uses_dynamic_rendering: true,
+        scene_color_rasterization_samples: if scene_color_msaa_enabled {
+            "4x"
+        } else {
+            "1x"
+        },
+        uses_multisampled_render_to_single_sampled:
+            multisampled_render_to_single_sampled_enabled,
+        uses_explicit_scene_color_msaa_resolve: scene_color_msaa_enabled
+            && !multisampled_render_to_single_sampled_enabled,
+        scene_color_msaa_memory_bytes,
         frame_slot_count,
         effect_target_physical_image_count,
         effect_target_memory_bytes,
