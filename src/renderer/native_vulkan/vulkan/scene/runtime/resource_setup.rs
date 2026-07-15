@@ -13,7 +13,11 @@ pub(super) fn create_scene_gpu_resources(
     advanced_blend_enabled: bool,
     advanced_blend_coherent: bool,
     capture_scene_graph: Option<u32>,
+    frame_slot_count: usize,
 ) -> Result<SceneGpuResources, String> {
+    if frame_slot_count == 0 {
+        return Err("scene present requires at least one frame slot".to_owned());
+    }
     let backend_plan = native_vulkan_scene_backend_plan(storage);
     if backend_plan.rendering_device_graph.mesh_draws.is_empty() {
         return Err("scene present requires at least one render graph mesh draw".to_owned());
@@ -399,12 +403,50 @@ pub(super) fn create_scene_gpu_resources(
         }
     };
 
-    Ok(SceneGpuResources {
-        vertex_buffer,
-        index_buffer,
+    let mut frame_resources = vec![SceneGpuFrameResources {
         transform_buffer,
         material_buffer,
         skinning_buffer,
+        descriptor_heap,
+        sampled_binding_phase: 0,
+    }];
+    for _ in 1..frame_slot_count {
+        match create_additional_scene_frame_resources(
+            device,
+            memory_properties,
+            &transform_payload,
+            material_payload.as_deref(),
+            skinning_payload.as_deref(),
+            &descriptor_heap_plan,
+            &draw_commands,
+            white_upload.as_ref().map(|upload| &upload.image),
+            &scene_textures,
+            &effect_targets,
+            sampled_binding_plan,
+            initial_scene_color_image,
+            target_format,
+        ) {
+            Ok(resources) => frame_resources.push(resources),
+            Err(err) => {
+                pipeline::destroy_scene_pipelines(device, pipeline_resources);
+                destroy_scene_gpu_frame_resources(device, frame_resources);
+                scene_texture::destroy_scene_texture_images(device, scene_textures);
+                effect_target::destroy_scene_effect_target_images(device, effect_targets);
+                if let Some(upload) = white_upload {
+                    destroy_recorded_image_upload(device, upload);
+                }
+                native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
+                native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+                return Err(err);
+            }
+        }
+    }
+
+    Ok(SceneGpuResources {
+        vertex_buffer,
+        index_buffer,
+        frame_resources,
+        active_frame_slot: 0,
         white_upload,
         scene_textures,
         effect_targets,
@@ -413,17 +455,142 @@ pub(super) fn create_scene_gpu_resources(
         effect_target_allocations,
         pass_nodes: backend_plan.rendering_device_graph.pass_nodes.clone(),
         scene_color_draw_ranges: scene_color_ranges,
+        scene_color_attachment_clear: None,
+        scene_color_attachment_clear_enabled: std::env::var_os(
+            "GILDER_NATIVE_VULKAN_DISABLE_SCENE_COLOR_ATTACHMENT_CLEAR",
+        )
+        .is_none(),
         graph_execution_order,
         capture_scene_graph,
-        descriptor_heap,
         descriptor_heap_plan,
         pipelines: pipeline_resources,
         draw_commands,
         sampled_slots: descriptor_layout.sampled_slots,
         sampled_binding_cycle,
+        sampled_descriptor_dirty_update_enabled: std::env::var_os(
+            "GILDER_NATIVE_VULKAN_DISABLE_SAMPLED_DESCRIPTOR_DIRTY_UPDATE",
+        )
+        .is_none(),
         material_uniform_enabled: descriptor_layout.material_uniform_enabled,
         frame_topology,
         dynamic_effect_uniforms,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn create_additional_scene_frame_resources(
+    device: &Device,
+    memory_properties: &vk::PhysicalDeviceMemoryProperties,
+    transform_payload: &[u8],
+    material_payload: Option<&[u8]>,
+    skinning_payload: Option<&[u8]>,
+    descriptor_heap_plan: &NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    draw_commands: &[SceneGpuDrawCommand],
+    white_image: Option<&NativeVulkanVulkanaliaImage>,
+    scene_textures: &[scene_texture::SceneTextureImageResource],
+    effect_targets: &[effect_target::SceneEffectTargetImageResource],
+    sampled_binding_plan: &SceneSampledImageBindingPlan,
+    initial_scene_color_image: vk::Image,
+    target_format: vk::Format,
+) -> Result<SceneGpuFrameResources, String> {
+    let transform_buffer = native_vulkan_vulkanalia_create_buffer(
+        device,
+        memory_properties,
+        "scene-draw-transform-uniform-buffer",
+        transform_payload.len() as u64,
+        vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+        Some(transform_payload),
+    )?;
+    let material_buffer = match material_payload {
+        Some(payload) => match native_vulkan_vulkanalia_create_buffer(
+            device,
+            memory_properties,
+            "scene-material-uniform-buffer",
+            payload.len() as u64,
+            vk::BufferUsageFlags::UNIFORM_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+            Some(payload),
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+                return Err(err);
+            }
+        },
+        None => None,
+    };
+    let skinning_buffer = match skinning_payload {
+        Some(payload) => match native_vulkan_vulkanalia_create_buffer(
+            device,
+            memory_properties,
+            "scene-puppet-bone-storage-buffer",
+            payload.len() as u64,
+            vk::BufferUsageFlags::STORAGE_BUFFER | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
+            NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+            Some(payload),
+        ) {
+            Ok(buffer) => Some(buffer),
+            Err(err) => {
+                if let Some(buffer) = material_buffer {
+                    native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+                }
+                native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+                return Err(err);
+            }
+        },
+        None => None,
+    };
+    let descriptor_heap = native_vulkan_vulkanalia_create_descriptor_heap_resource_resources(
+        device,
+        memory_properties,
+        descriptor_heap_plan,
+    );
+    let mut descriptor_heap = match descriptor_heap {
+        Ok(resources) => resources,
+        Err(err) => {
+            if let Some(buffer) = material_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            if let Some(buffer) = skinning_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+            return Err(err);
+        }
+    };
+    if let Err(err) = write_scene_descriptors(
+        device,
+        &mut descriptor_heap,
+        draw_commands,
+        &transform_buffer,
+        material_buffer.as_ref(),
+        skinning_buffer.as_ref(),
+        white_image,
+        scene_textures,
+        effect_targets,
+        sampled_binding_plan,
+        Some((initial_scene_color_image, target_format)),
+    ) {
+        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+            device,
+            descriptor_heap,
+        );
+        if let Some(buffer) = material_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        if let Some(buffer) = skinning_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+        return Err(err);
+    }
+    Ok(SceneGpuFrameResources {
+        transform_buffer,
+        material_buffer,
+        skinning_buffer,
+        descriptor_heap,
+        sampled_binding_phase: 0,
     })
 }
 
@@ -492,17 +659,36 @@ pub(super) fn write_scene_descriptors(
 pub(super) fn write_scene_frame_sampled_descriptors(
     device: &Device,
     scene: &mut SceneGpuResources,
+    frame_slot: usize,
     reference_phase: usize,
     scene_color_image: vk::Image,
     scene_color_format: vk::Format,
-) -> Result<(), String> {
+) -> Result<usize, String> {
     let sampled_binding_plan = scene
         .sampled_binding_cycle
         .get(reference_phase)
         .ok_or_else(|| format!("scene sampled binding phase {reference_phase} is missing"))?;
+    let frame = scene
+        .frame_resources
+        .get_mut(frame_slot)
+        .ok_or_else(|| format!("scene frame slot {frame_slot} is missing"))?;
+    if scene.sampled_descriptor_dirty_update_enabled
+        && frame.sampled_binding_phase == reference_phase
+    {
+        return write_scene_color_snapshot_descriptors(
+            device,
+            &mut frame.descriptor_heap,
+            &scene.draw_commands,
+            sampled_binding_plan,
+            scene_color_image,
+            scene_color_format,
+            scene.material_uniform_enabled,
+            frame.skinning_buffer.is_some(),
+        );
+    }
     write_scene_sampled_descriptors(
         device,
-        &mut scene.descriptor_heap,
+        &mut frame.descriptor_heap,
         &scene.draw_commands,
         scene.white_upload.as_ref().map(|upload| &upload.image),
         &scene.scene_textures,
@@ -510,8 +696,53 @@ pub(super) fn write_scene_frame_sampled_descriptors(
         sampled_binding_plan,
         Some((scene_color_image, scene_color_format)),
         scene.material_uniform_enabled,
-        scene.skinning_buffer.is_some(),
-    )
+        frame.skinning_buffer.is_some(),
+    )?;
+    frame.sampled_binding_phase = reference_phase;
+    Ok(scene
+        .draw_commands
+        .len()
+        .saturating_mul(sampled_binding_plan.sampled_slot_count))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_scene_color_snapshot_descriptors(
+    device: &Device,
+    descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
+    draw_commands: &[SceneGpuDrawCommand],
+    sampled_binding_plan: &SceneSampledImageBindingPlan,
+    scene_color_image: vk::Image,
+    scene_color_format: vk::Format,
+    material_uniform_enabled: bool,
+    skinning_storage_enabled: bool,
+) -> Result<usize, String> {
+    let image_view_info = scene_color_image_view_info(scene_color_image, scene_color_format);
+    let sampler_info = scene_sampled_sampler_info();
+    let mut update_count = 0usize;
+    for (draw_index, draw) in draw_commands.iter().enumerate() {
+        let resource_descriptor_index = draw.resource_descriptor_base
+            + 1
+            + usize::from(material_uniform_enabled)
+            + usize::from(skinning_storage_enabled);
+        for sampled_index in 0..sampled_binding_plan.sampled_slot_count {
+            if sampled_binding_plan.source(draw_index, sampled_index)
+                != Some(SceneSampledImageSource::SceneColorSnapshot)
+            {
+                continue;
+            }
+            native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
+                device,
+                descriptor_heap,
+                resource_descriptor_index + sampled_index,
+                draw.sampler_descriptor_base + sampled_index,
+                &image_view_info,
+                vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+                &sampler_info,
+            )?;
+            update_count += 1;
+        }
+    }
+    Ok(update_count)
 }
 
 pub(super) fn write_scene_sampled_descriptors(
@@ -602,4 +833,3 @@ pub(super) fn write_scene_sampled_descriptors(
     }
     Ok(())
 }
-

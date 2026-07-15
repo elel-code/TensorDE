@@ -105,6 +105,11 @@ pub(super) fn with_scene_present(
             ));
         }
     };
+    let frame_slot_count = scene_frame_slot_count(
+        options.capture_frame.is_some(),
+        options.gpu_timing,
+        std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_ALLOW_MULTISLOT_CAPTURE").is_some(),
+    );
 
     let command_pool_info = vk::CommandPoolCreateInfo::builder()
         .flags(
@@ -124,7 +129,7 @@ pub(super) fn with_scene_present(
             ));
         }
     };
-    let command_buffer_count = swapchain_images.len().saturating_add(1) as u32;
+    let command_buffer_count = frame_slot_count.saturating_add(1) as u32;
     let command_buffer_info = vk::CommandBufferAllocateInfo::builder()
         .command_pool(command_pool)
         .level(vk::CommandBufferLevel::PRIMARY)
@@ -145,7 +150,7 @@ pub(super) fn with_scene_present(
     let setup_command_buffer = *command_buffers
         .last()
         .ok_or_else(|| "scene present did not allocate setup command buffer".to_owned())?;
-    let present_command_buffers = &command_buffers[..swapchain_images.len()];
+    let present_command_buffers = &command_buffers[..frame_slot_count];
 
     let mut swapchain_views = Vec::with_capacity(swapchain_images.len());
     for image in &swapchain_images {
@@ -199,6 +204,7 @@ pub(super) fn with_scene_present(
             .feature_selection
             .blend_operation_advanced_coherent_operations,
         options.capture_scene_graph,
+        frame_slot_count,
     ) {
         Ok(resources) => resources,
         Err(err) => {
@@ -237,9 +243,9 @@ pub(super) fn with_scene_present(
     let semantic_world = RenderingServer::new(&options.storage)
         .semantic_world()
         .expect("scene semantic world was validated during Vulkan GPU setup");
-    let semaphore_info = vk::SemaphoreCreateInfo::builder();
-    let image_available = match unsafe { device.create_semaphore(&semaphore_info, None) } {
-        Ok(semaphore) => semaphore,
+    let frame_contexts = match create_scene_present_frame_contexts(device, present_command_buffers)
+    {
+        Ok(contexts) => contexts,
         Err(err) => {
             destroy_scene_gpu_resources(device, scene_resources);
             unsafe {
@@ -250,22 +256,21 @@ pub(super) fn with_scene_present(
                 device.destroy_swapchain_khr(swapchain, None);
                 present_device.device.destroy_device(None);
             }
-            return Err(format!(
-                "vkCreateSemaphore(image_available vulkanalia scene present): {err:?}"
-            ));
+            return Err(err);
         }
     };
+    let semaphore_info = vk::SemaphoreCreateInfo::builder();
     let mut render_finished = Vec::with_capacity(swapchain_images.len());
     for image_index in 0..swapchain_images.len() {
         match unsafe { device.create_semaphore(&semaphore_info, None) } {
             Ok(semaphore) => render_finished.push(semaphore),
             Err(err) => {
                 destroy_scene_gpu_resources(device, scene_resources);
+                destroy_scene_present_frame_contexts(device, frame_contexts);
                 unsafe {
                     for semaphore in render_finished {
                         device.destroy_semaphore(semaphore, None);
                     }
-                    device.destroy_semaphore(image_available, None);
                     for view in swapchain_views {
                         device.destroy_image_view(view, None);
                     }
@@ -279,26 +284,6 @@ pub(super) fn with_scene_present(
             }
         }
     }
-    let fence_info = vk::FenceCreateInfo::builder().flags(vk::FenceCreateFlags::SIGNALED);
-    let in_flight = match unsafe { device.create_fence(&fence_info, None) } {
-        Ok(fence) => fence,
-        Err(err) => {
-            destroy_scene_gpu_resources(device, scene_resources);
-            unsafe {
-                for semaphore in render_finished {
-                    device.destroy_semaphore(semaphore, None);
-                }
-                device.destroy_semaphore(image_available, None);
-                for view in swapchain_views {
-                    device.destroy_image_view(view, None);
-                }
-                device.destroy_command_pool(command_pool, None);
-                device.destroy_swapchain_khr(swapchain, None);
-                present_device.device.destroy_device(None);
-            }
-            return Err(format!("vkCreateFence(vulkanalia scene present): {err:?}"));
-        }
-    };
     let mut frame_capture = if let Some(path) = options.capture_frame.clone() {
         match SceneFrameCapture::create(
             device,
@@ -313,12 +298,11 @@ pub(super) fn with_scene_present(
         ) {
             Ok(capture) => Some(capture),
             Err(err) => {
+                destroy_scene_present_frame_contexts(device, frame_contexts);
                 unsafe {
-                    device.destroy_fence(in_flight, None);
                     for semaphore in render_finished {
                         device.destroy_semaphore(semaphore, None);
                     }
-                    device.destroy_semaphore(image_available, None);
                     for view in swapchain_views {
                         device.destroy_image_view(view, None);
                     }
@@ -360,6 +344,7 @@ pub(super) fn with_scene_present(
     let mut effect_uniform_update_count = 0u64;
     let mut skinning_storage_update_count = 0u64;
     let mut frame_state_update_total_micros = 0u64;
+    let mut sampled_descriptor_update_count = 0u64;
     let mut sampled_descriptor_update_total_micros = 0u64;
     let mut command_recording_total_micros = 0u64;
     let mut fence_wait_total_micros = 0u64;
@@ -368,6 +353,7 @@ pub(super) fn with_scene_present(
     let mut composite_scissor_draw_count = 0usize;
     let mut composite_scissor_covered_pixels = 0u64;
     let mut composite_scissor_avoided_pixels = 0u64;
+    let mut scene_color_attachment_clear_frame_count = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
     let fixed_scene_time_seconds = std::env::var("GILDER_NATIVE_VULKAN_SCENE_FIXED_TIME")
         .ok()
@@ -376,13 +362,16 @@ pub(super) fn with_scene_present(
 
     while Instant::now() < deadline {
         system_audio_monitor.publish_latest();
+        let frame_slot = frames_presented as usize % frame_contexts.len();
+        let frame_context = frame_contexts[frame_slot];
+        scene_resources.active_frame_slot = frame_slot;
         let fence_wait_started = Instant::now();
         unsafe {
             device
-                .wait_for_fences(&[in_flight], true, u64::MAX)
+                .wait_for_fences(&[frame_context.fence], true, u64::MAX)
                 .map_err(|err| format!("vkWaitForFences(vulkanalia scene present): {err:?}"))?;
             device
-                .reset_fences(&[in_flight])
+                .reset_fences(&[frame_context.fence])
                 .map_err(|err| format!("vkResetFences(vulkanalia scene present): {err:?}"))?;
         }
         fence_wait_total_micros =
@@ -393,19 +382,27 @@ pub(super) fn with_scene_present(
         let scene_time_seconds =
             fixed_scene_time_seconds.unwrap_or_else(|| started_at.elapsed().as_secs_f32());
         let frame_state_update_started = Instant::now();
+        let frame_resources = &scene_resources.frame_resources[frame_slot];
         let frame_update = write_scene_frame_buffers(
             device,
             &options.storage,
             &semantic_world,
             &mut scene_resources.frame_topology,
             &mut scene_resources.draw_commands,
-            &scene_resources.transform_buffer,
-            scene_resources.material_buffer.as_ref(),
-            scene_resources.skinning_buffer.as_ref(),
+            &frame_resources.transform_buffer,
+            frame_resources.material_buffer.as_ref(),
+            frame_resources.skinning_buffer.as_ref(),
             scene_resources.dynamic_effect_uniforms,
+            &scene_resources.graph_execution_order,
+            scene_resources.scene_color_attachment_clear_enabled,
             scene_time_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
+        scene_resources.scene_color_attachment_clear = frame_update.scene_color_attachment_clear;
+        scene_color_attachment_clear_frame_count = scene_color_attachment_clear_frame_count
+            .saturating_add(u64::from(
+                frame_update.scene_color_attachment_clear.is_some(),
+            ));
         frame_state_update_total_micros = frame_state_update_total_micros
             .saturating_add(elapsed_micros_u64(frame_state_update_started));
         composite_scissor_draw_count = scene_resources
@@ -434,29 +431,34 @@ pub(super) fn with_scene_present(
             frames_presented as usize % scene_resources.sampled_binding_cycle.len();
         let acquire_wait_started = Instant::now();
         let (image_index, _) = unsafe {
-            device.acquire_next_image_khr(swapchain, u64::MAX, image_available, vk::Fence::null())
+            device.acquire_next_image_khr(
+                swapchain,
+                u64::MAX,
+                frame_context.image_available,
+                vk::Fence::null(),
+            )
         }
         .map_err(|err| format!("vkAcquireNextImageKHR(vulkanalia scene present): {err:?}"))?;
         acquire_wait_total_micros =
             acquire_wait_total_micros.saturating_add(elapsed_micros_u64(acquire_wait_started));
         let image_index = image_index as usize;
         let sampled_descriptor_update_started = Instant::now();
-        write_scene_frame_sampled_descriptors(
+        let sampled_descriptor_updates = write_scene_frame_sampled_descriptors(
             device,
             &mut scene_resources,
+            frame_slot,
             reference_phase,
             swapchain_images[image_index],
             swapchain_plan.format.format,
         )?;
+        sampled_descriptor_update_count = sampled_descriptor_update_count
+            .saturating_add(sampled_descriptor_updates as u64);
         sampled_descriptor_update_total_micros = sampled_descriptor_update_total_micros
             .saturating_add(elapsed_micros_u64(sampled_descriptor_update_started));
         let render_finished = *render_finished.get(image_index).ok_or_else(|| {
             format!("swapchain image index {image_index} has no present semaphore")
         })?;
-        let command_buffer = present_command_buffers
-            .get(image_index)
-            .copied()
-            .ok_or_else(|| format!("swapchain image index {image_index} has no command buffer"))?;
+        let command_buffer = frame_context.command_buffer;
         let frame_number = frames_presented.saturating_add(1);
         let capture_this_frame = frame_capture
             .as_ref()
@@ -484,9 +486,9 @@ pub(super) fn with_scene_present(
             device,
             present_device.queue,
             command_buffer,
-            image_available,
+            frame_context.image_available,
             render_finished,
-            in_flight,
+            frame_context.fence,
         )?;
         if let Some(timing) = gpu_timing.as_mut() {
             timing.mark_submitted();
@@ -509,7 +511,7 @@ pub(super) fn with_scene_present(
         if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
             unsafe {
                 device
-                    .wait_for_fences(&[in_flight], true, u64::MAX)
+                    .wait_for_fences(&[frame_context.fence], true, u64::MAX)
                     .map_err(|err| {
                         format!("vkWaitForFences(vulkanalia scene frame capture): {err:?}")
                     })?;
@@ -559,15 +561,23 @@ pub(super) fn with_scene_present(
         .and_then(|capture| capture.write_png().err());
     let vertex_buffer_bytes = scene_resources.vertex_buffer.snapshot.requested_bytes;
     let index_buffer_bytes = scene_resources.index_buffer.snapshot.requested_bytes;
-    let transform_uniform_bytes = scene_resources.transform_buffer.snapshot.requested_bytes;
+    let transform_uniform_bytes = scene_resources
+        .frame_resources
+        .iter()
+        .map(|frame| frame.transform_buffer.snapshot.requested_bytes)
+        .sum();
     let material_uniform_bytes = scene_resources
-        .material_buffer
-        .as_ref()
-        .map_or(0, |buffer| buffer.snapshot.requested_bytes);
+        .frame_resources
+        .iter()
+        .filter_map(|frame| frame.material_buffer.as_ref())
+        .map(|buffer| buffer.snapshot.requested_bytes)
+        .sum();
     let skinning_storage_bytes = scene_resources
-        .skinning_buffer
-        .as_ref()
-        .map_or(0, |buffer| buffer.snapshot.requested_bytes);
+        .frame_resources
+        .iter()
+        .filter_map(|frame| frame.skinning_buffer.as_ref())
+        .map(|buffer| buffer.snapshot.requested_bytes)
+        .sum();
     let resource_residency = resource_residency::scene_resource_residency_snapshot(&scene_resources);
     let sampled_fallback_texture_count = usize::from(scene_resources.white_upload.is_some());
     let sampled_fallback_descriptor_count = scene_resources
@@ -629,6 +639,11 @@ pub(super) fn with_scene_present(
         .effect_target_command_plan
         .fullscreen_triangle_draw_count;
     let scene_color_mesh_draw_count = draw_range_count(&scene_resources.scene_color_draw_ranges);
+    let scene_color_attachment_clear_draw_count = usize::from(
+        scene_resources.scene_color_attachment_clear.is_some(),
+    );
+    let scene_color_recorded_mesh_draw_count =
+        scene_color_mesh_draw_count.saturating_sub(scene_color_attachment_clear_draw_count);
     let scene_pipeline_count = scene_resources.pipelines.entries.len();
     let mesh_draw_count = scene_resources.draw_commands.len();
     let alpha_coverage_scissor_draw_count = scene_resources
@@ -658,7 +673,10 @@ pub(super) fn with_scene_present(
         scene_resources.sampled_slots.is_empty(),
         sampled_fallback_texture_count != 0,
         scene_texture_image_count != 0,
-        scene_resources.skinning_buffer.is_some(),
+        scene_resources
+            .frame_resources
+            .first()
+            .is_some_and(|frame| frame.skinning_buffer.is_some()),
         scene_pipeline_count > 1,
         scene_resources.dynamic_effect_uniforms,
         effect_target_dynamic_rendering_recorded,
@@ -668,12 +686,11 @@ pub(super) fn with_scene_present(
         effect_target_fullscreen_draw_count > 0,
     );
 
+    destroy_scene_present_frame_contexts(device, frame_contexts);
     unsafe {
-        device.destroy_fence(in_flight, None);
         for semaphore in render_finished {
             device.destroy_semaphore(semaphore, None);
         }
-        device.destroy_semaphore(image_available, None);
         for view in swapchain_views {
             device.destroy_image_view(view, None);
         }
@@ -756,6 +773,7 @@ pub(super) fn with_scene_present(
         uses_synchronization2: true,
         uses_submit2: true,
         uses_dynamic_rendering: true,
+        frame_slot_count,
         effect_target_physical_image_count,
         effect_target_memory_bytes,
         effect_target_dynamic_rendering_recorded,
@@ -768,6 +786,9 @@ pub(super) fn with_scene_present(
         effect_target_mesh_draw_count,
         effect_target_discard_load_count,
         scene_color_mesh_draw_count,
+        scene_color_recorded_mesh_draw_count,
+        scene_color_attachment_clear_draw_count,
+        scene_color_attachment_clear_frame_count,
         descriptor_model: "VK_EXT_descriptor_heap",
         descriptor_heap_resource_count,
         descriptor_heap_sampler_count,
@@ -793,6 +814,7 @@ pub(super) fn with_scene_present(
         effect_uniform_update_count,
         skinning_storage_update_count,
         frame_state_update_total_micros,
+        sampled_descriptor_update_count,
         sampled_descriptor_update_total_micros,
         command_recording_total_micros,
         fence_wait_total_micros,
@@ -813,4 +835,3 @@ pub(super) fn with_scene_present(
         frame_capture: frame_capture_snapshot,
     })
 }
-

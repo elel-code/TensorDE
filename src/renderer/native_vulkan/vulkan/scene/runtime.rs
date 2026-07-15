@@ -63,6 +63,7 @@ mod draw_uniform;
 mod effect_target;
 mod flat_rounded_mask_coverage;
 mod frame_capture;
+mod frame_context;
 mod frame_state;
 mod fullscreen_primitive;
 mod gpu_resource_lifecycle;
@@ -73,6 +74,7 @@ mod mesh_payload;
 mod pipeline;
 mod resource_residency;
 mod sampled_binding;
+mod scene_color_clear;
 mod scene_texture;
 mod scene_viewport;
 mod present_loop;
@@ -90,14 +92,19 @@ use draw_recording::{
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
 pub use frame_capture::NativeVulkanSceneFrameCaptureSnapshot;
 use frame_capture::SceneFrameCapture;
+use frame_context::{
+    create_scene_present_frame_contexts, destroy_scene_present_frame_contexts,
+    scene_frame_slot_count,
+};
 use frame_state::{SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers};
 use fullscreen_primitive::{
     graph_uses_fullscreen_utility_primitive,
 };
 use gpu_resource_lifecycle::{
     color_subresource_range, create_white_texture_upload, destroy_recorded_image_upload,
-    destroy_scene_gpu_resources, identity_component_mapping, release_scene_upload_staging,
-    scene_color_image_view_info, scene_sampled_sampler_info, scene_white_image_view_info,
+    destroy_scene_gpu_frame_resources, destroy_scene_gpu_resources, identity_component_mapping,
+    release_scene_upload_staging, scene_color_image_view_info, scene_sampled_sampler_info,
+    scene_white_image_view_info,
 };
 pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
@@ -115,6 +122,7 @@ use pipeline::{
 use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,
 };
+use scene_color_clear::SceneGpuSceneColorClear;
 
 const SCENE_MESH_VERTEX_STRIDE_BYTES: u32 = 52;
 const SCENE_WHITE_TEXTURE_BYTES: &[u8] = &[255, 255, 255, 255];
@@ -159,6 +167,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub uses_synchronization2: bool,
     pub uses_submit2: bool,
     pub uses_dynamic_rendering: bool,
+    pub frame_slot_count: usize,
     pub effect_target_physical_image_count: usize,
     pub effect_target_memory_bytes: u64,
     pub effect_target_dynamic_rendering_recorded: bool,
@@ -171,6 +180,9 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub effect_target_mesh_draw_count: usize,
     pub effect_target_discard_load_count: usize,
     pub scene_color_mesh_draw_count: usize,
+    pub scene_color_recorded_mesh_draw_count: usize,
+    pub scene_color_attachment_clear_draw_count: usize,
+    pub scene_color_attachment_clear_frame_count: u64,
     pub descriptor_model: &'static str,
     pub descriptor_heap_resource_count: usize,
     pub descriptor_heap_sampler_count: usize,
@@ -196,6 +208,7 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub effect_uniform_update_count: u64,
     pub skinning_storage_update_count: u64,
     pub frame_state_update_total_micros: u64,
+    pub sampled_descriptor_update_count: u64,
     pub sampled_descriptor_update_total_micros: u64,
     pub command_recording_total_micros: u64,
     pub fence_wait_total_micros: u64,
@@ -221,9 +234,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
 struct SceneGpuResources {
     vertex_buffer: NativeVulkanVulkanaliaBuffer,
     index_buffer: NativeVulkanVulkanaliaBuffer,
-    transform_buffer: NativeVulkanVulkanaliaBuffer,
-    material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
-    skinning_buffer: Option<NativeVulkanVulkanaliaBuffer>,
+    frame_resources: Vec<SceneGpuFrameResources>,
+    active_frame_slot: usize,
     white_upload: Option<NativeVulkanVulkanaliaRecordedImageUpload>,
     scene_textures: Vec<scene_texture::SceneTextureImageResource>,
     effect_targets: Vec<effect_target::SceneEffectTargetImageResource>,
@@ -232,17 +244,33 @@ struct SceneGpuResources {
     effect_target_allocations: Vec<crate::engine::scene::SceneRenderingDeviceTargetAllocation>,
     pass_nodes: Vec<crate::engine::scene::SceneRenderingDevicePassNode>,
     scene_color_draw_ranges: Vec<SceneGpuGraphDrawRange>,
+    scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
+    scene_color_attachment_clear_enabled: bool,
     graph_execution_order: Vec<u32>,
     capture_scene_graph: Option<u32>,
-    descriptor_heap: VulkanaliaDescriptorHeapResourceResources,
     descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     pipelines: ScenePipelineResources,
     draw_commands: Vec<SceneGpuDrawCommand>,
     sampled_slots: Vec<u32>,
     sampled_binding_cycle: Vec<SceneSampledImageBindingPlan>,
+    sampled_descriptor_dirty_update_enabled: bool,
     material_uniform_enabled: bool,
     frame_topology: SceneFrameTopology,
     dynamic_effect_uniforms: bool,
+}
+
+struct SceneGpuFrameResources {
+    transform_buffer: NativeVulkanVulkanaliaBuffer,
+    material_buffer: Option<NativeVulkanVulkanaliaBuffer>,
+    skinning_buffer: Option<NativeVulkanVulkanaliaBuffer>,
+    descriptor_heap: VulkanaliaDescriptorHeapResourceResources,
+    sampled_binding_phase: usize,
+}
+
+impl SceneGpuResources {
+    fn active_frame(&self) -> &SceneGpuFrameResources {
+        &self.frame_resources[self.active_frame_slot]
+    }
 }
 
 pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_present(

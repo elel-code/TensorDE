@@ -66,36 +66,38 @@ pub(super) fn scene_resource_residency_snapshot(
         "index-buffer",
         &resources.index_buffer.snapshot,
     );
-    add_buffer_class(
-        &mut buffer_memory_classes,
-        "transform-buffer",
-        &resources.transform_buffer.snapshot,
-    );
-    if let Some(buffer) = &resources.material_buffer {
+    for frame in &resources.frame_resources {
         add_buffer_class(
             &mut buffer_memory_classes,
-            "material-buffer",
-            &buffer.snapshot,
+            "transform-buffer",
+            &frame.transform_buffer.snapshot,
         );
-    }
-    if let Some(buffer) = &resources.skinning_buffer {
-        add_buffer_class(
-            &mut buffer_memory_classes,
-            "skinning-buffer",
-            &buffer.snapshot,
-        );
-    }
-    add_descriptor_heap_class(
-        &mut buffer_memory_classes,
-        "descriptor-resource-heap",
-        &resources.descriptor_heap.snapshot.resource_heap,
-    );
-    if let Some(heap) = &resources.descriptor_heap.snapshot.sampler_heap {
+        if let Some(buffer) = &frame.material_buffer {
+            add_buffer_class(
+                &mut buffer_memory_classes,
+                "material-buffer",
+                &buffer.snapshot,
+            );
+        }
+        if let Some(buffer) = &frame.skinning_buffer {
+            add_buffer_class(
+                &mut buffer_memory_classes,
+                "skinning-buffer",
+                &buffer.snapshot,
+            );
+        }
         add_descriptor_heap_class(
             &mut buffer_memory_classes,
-            "descriptor-sampler-heap",
-            heap,
+            "descriptor-resource-heap",
+            &frame.descriptor_heap.snapshot.resource_heap,
         );
+        if let Some(heap) = &frame.descriptor_heap.snapshot.sampler_heap {
+            add_descriptor_heap_class(
+                &mut buffer_memory_classes,
+                "descriptor-sampler-heap",
+                heap,
+            );
+        }
     }
 
     NativeVulkanSceneResourceResidencySnapshot {

@@ -141,9 +141,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
     let count = range.count as usize;
     let end = start.saturating_add(count);
     for draw in scene.draw_commands.get(start..end).unwrap_or(&[]) {
+        let frame = scene.active_frame();
         let resource_bind =
             native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
-                &scene.descriptor_heap,
+                &frame.descriptor_heap,
                 draw.resource_descriptor_base,
             )?;
         unsafe {
@@ -152,7 +153,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
         if !scene.sampled_slots.is_empty() {
             let sampler_bind =
                 native_vulkan_vulkanalia_descriptor_heap_mixed_sampler_bind_info_for_descriptor(
-                    &scene.descriptor_heap,
+                    &frame.descriptor_heap,
                     draw.sampler_descriptor_base,
                 )?;
             unsafe {

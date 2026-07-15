@@ -149,6 +149,19 @@ def main() -> int:
             "descriptor_model": report["descriptor_model"],
             "render_graph_draw_count": report["render_graph_draw_count"],
             "mesh_draw_count": report["mesh_draw_count"],
+            "frame_slot_count": report["present"].get("frame_slot_count", 1),
+            "scene_color_mesh_draw_count": report["present"].get(
+                "scene_color_mesh_draw_count", 0
+            ),
+            "scene_color_recorded_mesh_draw_count": report["present"].get(
+                "scene_color_recorded_mesh_draw_count", 0
+            ),
+            "scene_color_attachment_clear_draw_count": report["present"].get(
+                "scene_color_attachment_clear_draw_count", 0
+            ),
+            "scene_color_attachment_clear_frame_count": report["present"].get(
+                "scene_color_attachment_clear_frame_count", 0
+            ),
             "released_resource_payload_bytes": report["present"][
                 "released_resource_payload_bytes"
             ],
@@ -181,6 +194,9 @@ def main() -> int:
             ),
             "sampled_descriptor_update_total_micros": report["present"].get(
                 "sampled_descriptor_update_total_micros", 0
+            ),
+            "sampled_descriptor_update_count": report["present"].get(
+                "sampled_descriptor_update_count", 0
             ),
             "command_recording_total_micros": report["present"].get(
                 "command_recording_total_micros", 0

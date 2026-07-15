@@ -21,12 +21,16 @@ use super::composite_scissor::update_scene_composite_scissors;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
 use super::material_uniform::pack_scene_material_uniforms;
+use super::scene_color_clear::{
+    SceneGpuSceneColorClear, resolve_scene_color_attachment_clear,
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SceneFrameBufferUpdate {
     pub transform_uniform_updated: bool,
     pub material_uniform_updated: bool,
     pub skinning_storage_updated: bool,
+    pub scene_color_attachment_clear: Option<SceneGpuSceneColorClear>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -311,6 +315,8 @@ pub(super) fn write_scene_frame_buffers(
     material_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     skinning_buffer: Option<&NativeVulkanVulkanaliaBuffer>,
     dynamic_effect_uniforms: bool,
+    graph_execution_order: &[u32],
+    scene_color_attachment_clear_enabled: bool,
     scene_time_seconds: f32,
     output_extent: [u32; 2],
 ) -> Result<SceneFrameBufferUpdate, String> {
@@ -352,11 +358,19 @@ pub(super) fn write_scene_frame_buffers(
     };
 
     update_scene_composite_scissors(storage, graph, output_extent, draw_commands)?;
+    let scene_color_attachment_clear = resolve_scene_color_attachment_clear(
+        storage,
+        graph,
+        graph_execution_order,
+        output_extent,
+        scene_color_attachment_clear_enabled,
+    );
 
     Ok(SceneFrameBufferUpdate {
         transform_uniform_updated: true,
         material_uniform_updated,
         skinning_storage_updated,
+        scene_color_attachment_clear,
     })
 }
 

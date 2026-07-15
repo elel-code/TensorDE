@@ -205,19 +205,33 @@ pub(super) fn record_scene_graphs_to_swapchain(
             .filter(|range| range.graph_index == *graph_index)
             .peekable();
         if graph_ranges.peek().is_some() {
+            let attachment_clear = (!scene_color_initialized)
+                .then_some(scene.scene_color_attachment_clear)
+                .flatten()
+                .filter(|clear| {
+                    clear.graph_index == *graph_index
+                        && scene
+                            .scene_color_draw_ranges
+                            .iter()
+                            .copied()
+                            .any(|range| clear.replaces(range))
+                });
             if !scene_color_rendering_active {
                 begin_scene_color_rendering(
                     device,
                     command_buffer,
                     swapchain_view,
                     extent,
-                    clear_color,
+                    attachment_clear.map_or(clear_color, |clear| clear.color),
                     scene_color_initialized,
                 );
                 record_scene_draw_extent(device, command_buffer, extent);
                 scene_color_rendering_active = true;
             }
             for graph_range in graph_ranges {
+                if attachment_clear.is_some_and(|clear| clear.replaces(*graph_range)) {
+                    continue;
+                }
                 record_scene_mesh_draw_ranges(
                     device,
                     command_buffer,

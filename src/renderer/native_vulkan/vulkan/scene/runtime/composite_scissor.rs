@@ -246,6 +246,117 @@ fn object_mesh_pixel_bounds(
     bounds
 }
 
+pub(super) fn object_mesh_covers_output(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    draw: &SceneRenderingDeviceMeshDraw,
+    output_extent: [u32; 2],
+) -> bool {
+    let Some(mesh) = storage.meshes().get(draw.mesh_index as usize) else {
+        return false;
+    };
+    if output_extent.contains(&0)
+        || draw.vertex_start != mesh.vertex_start
+        || draw.vertex_count != 4
+        || mesh.vertex_count != 4
+        || draw.index_start != mesh.index_start
+        || draw.index_count != 6
+        || mesh.index_count != 6
+    {
+        return false;
+    }
+    let transform =
+        scene_cover_clip_transform(storage.project(), output_extent, draw.clip_transform);
+    let mut points = [[0.0; 2]; 4];
+    for (point, vertex) in points.iter_mut().zip(storage.mesh_vertices(mesh)) {
+        let Some(local) = skinned_vertex_position(graph, draw, vertex) else {
+            return false;
+        };
+        let clip = multiply_rows(transform, local);
+        if !clip.iter().all(|value| value.is_finite()) || clip[3] <= 1.0e-7 {
+            return false;
+        }
+        *point = [
+            (clip[0] / clip[3] * 0.5 + 0.5) * output_extent[0] as f32,
+            (clip[1] / clip[3] * 0.5 + 0.5) * output_extent[1] as f32,
+        ];
+    }
+    rectangle_mesh_covers_pixel_centers(
+        points,
+        storage.mesh_indices(mesh),
+        output_extent,
+    )
+}
+
+fn rectangle_mesh_covers_pixel_centers(
+    points: [[f32; 2]; 4],
+    indices: &[u32],
+    output_extent: [u32; 2],
+) -> bool {
+    if indices.len() != 6 || output_extent.contains(&0) {
+        return false;
+    }
+    let min_x = points.iter().map(|point| point[0]).fold(f32::INFINITY, f32::min);
+    let max_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let min_y = points.iter().map(|point| point[1]).fold(f32::INFINITY, f32::min);
+    let max_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::NEG_INFINITY, f32::max);
+    if ![min_x, min_y, max_x, max_y]
+        .iter()
+        .all(|value| value.is_finite())
+        || min_x > 0.5
+        || min_y > 0.5
+        || max_x < output_extent[0] as f32 - 0.5
+        || max_y < output_extent[1] as f32 - 0.5
+    {
+        return false;
+    }
+    let tolerance = ((max_x - min_x).max(max_y - min_y) * 1.0e-6).max(1.0e-4);
+    let mut corner_for_vertex = [u8::MAX; 4];
+    for (vertex, point) in points.iter().enumerate() {
+        let x = if (point[0] - min_x).abs() <= tolerance {
+            0
+        } else if (point[0] - max_x).abs() <= tolerance {
+            1
+        } else {
+            return false;
+        };
+        let y = if (point[1] - min_y).abs() <= tolerance {
+            0
+        } else if (point[1] - max_y).abs() <= tolerance {
+            2
+        } else {
+            return false;
+        };
+        corner_for_vertex[vertex] = x | y;
+    }
+    let mut corners = corner_for_vertex;
+    corners.sort_unstable();
+    if corners != [0, 1, 2, 3] {
+        return false;
+    }
+    let mut triangles = [[0u8; 3]; 2];
+    for (triangle, source) in triangles.iter_mut().zip(indices.chunks_exact(3)) {
+        for (corner, index) in triangle.iter_mut().zip(source) {
+            let Some(mapped) = corner_for_vertex.get(*index as usize) else {
+                return false;
+            };
+            *corner = *mapped;
+        }
+        triangle.sort_unstable();
+    }
+    triangles.sort_unstable();
+    matches!(
+        triangles,
+        [[0, 1, 2], [1, 2, 3]] | [[0, 1, 3], [0, 2, 3]]
+    )
+}
+
 pub(super) fn object_mesh_pixel_extent(
     storage: &SceneStorage,
     graph: &SceneRenderingDeviceGraphPlan,
@@ -400,5 +511,28 @@ mod tests {
             .scissor([100, 100])
             .is_none()
         );
+    }
+
+    #[test]
+    fn complete_axis_aligned_quad_covers_output_pixel_centers() {
+        assert!(rectangle_mesh_covers_pixel_centers(
+            [[-10.0, -10.0], [110.0, -10.0], [-10.0, 110.0], [110.0, 110.0]],
+            &[0, 1, 3, 0, 3, 2],
+            [100, 100],
+        ));
+    }
+
+    #[test]
+    fn incomplete_or_rotated_quad_does_not_prove_full_output_coverage() {
+        assert!(!rectangle_mesh_covers_pixel_centers(
+            [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0], [100.0, 100.0]],
+            &[0, 1, 2, 0, 1, 3],
+            [100, 100],
+        ));
+        assert!(!rectangle_mesh_covers_pixel_centers(
+            [[50.0, -50.0], [150.0, 50.0], [-50.0, 50.0], [50.0, 150.0]],
+            &[0, 1, 3, 0, 3, 2],
+            [100, 100],
+        ));
     }
 }

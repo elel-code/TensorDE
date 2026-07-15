@@ -14,7 +14,8 @@ use crate::renderer::native_vulkan::{
 
 use super::pipeline::destroy_scene_pipelines;
 use super::{
-    SCENE_WHITE_TEXTURE_BYTES, SceneGpuResources, effect_target, scene_texture,
+    SCENE_WHITE_TEXTURE_BYTES, SceneGpuFrameResources, SceneGpuResources, effect_target,
+    scene_texture,
 };
 
 pub(super) fn create_white_texture_upload(
@@ -81,24 +82,33 @@ pub(super) fn scene_sampled_sampler_info() -> vk::SamplerCreateInfo {
 
 pub(super) fn destroy_scene_gpu_resources(device: &Device, resources: SceneGpuResources) {
     destroy_scene_pipelines(device, resources.pipelines);
-    native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
-        device,
-        resources.descriptor_heap,
-    );
+    destroy_scene_gpu_frame_resources(device, resources.frame_resources);
     scene_texture::destroy_scene_texture_images(device, resources.scene_textures);
     effect_target::destroy_scene_effect_target_images(device, resources.effect_targets);
     if let Some(upload) = resources.white_upload {
         destroy_recorded_image_upload(device, upload);
     }
-    if let Some(buffer) = resources.material_buffer {
-        native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-    }
-    if let Some(buffer) = resources.skinning_buffer {
-        native_vulkan_vulkanalia_destroy_buffer(device, buffer);
-    }
-    native_vulkan_vulkanalia_destroy_buffer(device, resources.transform_buffer);
     native_vulkan_vulkanalia_destroy_buffer(device, resources.index_buffer);
     native_vulkan_vulkanalia_destroy_buffer(device, resources.vertex_buffer);
+}
+
+pub(super) fn destroy_scene_gpu_frame_resources(
+    device: &Device,
+    frame_resources: Vec<SceneGpuFrameResources>,
+) {
+    for resources in frame_resources {
+        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+            device,
+            resources.descriptor_heap,
+        );
+        if let Some(buffer) = resources.material_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        if let Some(buffer) = resources.skinning_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        native_vulkan_vulkanalia_destroy_buffer(device, resources.transform_buffer);
+    }
 }
 
 pub(super) fn destroy_recorded_image_upload(

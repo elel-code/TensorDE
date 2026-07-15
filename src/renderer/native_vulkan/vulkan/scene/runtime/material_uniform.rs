@@ -578,6 +578,36 @@ fn standard_material_values(
     values
 }
 
+pub(super) fn resolved_standard_material_color(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> Option<[f32; 4]> {
+    let pass = first_material_pass(storage, draw.material)?;
+    let shader_key = storage.string(pass.shader_key)?;
+    let shader = native_vulkan_scene_shader_for_key(shader_key)?;
+    if shader.parameter_layout != BuiltinSceneParameterLayout::StandardMaterial {
+        return None;
+    }
+    let (resolved_color, resolved_alpha) = if draw.apply_resolved_visual {
+        (draw.resolved_color, draw.resolved_alpha)
+    } else {
+        (
+            crate::engine::scene::SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            1.0,
+        )
+    };
+    let values = standard_material_values(
+        &MaterialParameters { storage, pass },
+        resolved_color,
+        resolved_alpha,
+    );
+    Some([values[0], values[1], values[2], values[3]])
+}
+
 fn iris_fragment_values(
     parameters: &MaterialParameters<'_>,
     shader_key: &str,
