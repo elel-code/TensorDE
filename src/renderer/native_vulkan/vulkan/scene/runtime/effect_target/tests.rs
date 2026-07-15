@@ -238,6 +238,14 @@
         assert_eq!(plan.discard_load_count, 0);
         assert_eq!(commands[2].mesh_draw_start, 4);
         assert_eq!(commands[2].mesh_draw_count, 2);
+        let timing_commands = scene_effect_target_timing_commands(&commands, &[0]);
+        assert_eq!(timing_commands.len(), 2);
+        assert_eq!(timing_commands[0].source_position, 0);
+        assert_eq!(timing_commands[0].graph_command_index, 0);
+        assert_eq!(timing_commands[0].command_kind, "copy");
+        assert_eq!(timing_commands[1].source_position, 2);
+        assert_eq!(timing_commands[1].graph_command_index, 1);
+        assert_eq!(timing_commands[1].command_kind, "dynamic-render");
 
         swap_logical_references(commands[1], &mut references).expect("swap refs");
         assert_eq!(

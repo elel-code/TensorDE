@@ -120,6 +120,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 scene,
                 reference_slots,
                 *graph_index,
+                gpu_timing,
                 &mut scene_color_initialized,
                 &mut scene_color_rendering_active,
             )?;
@@ -177,6 +178,16 @@ pub(super) fn record_scene_graphs_to_swapchain(
                     target_extent,
                 )
             };
+            let mut record_effect_command_timing = |source_position, starting| {
+                if let Some(timing) = gpu_timing {
+                    timing.record_effect_command(
+                        device,
+                        command_buffer,
+                        source_position,
+                        starting,
+                    );
+                }
+            };
             effect_target::record_scene_effect_target_graph_passes(
                 device,
                 command_buffer,
@@ -188,6 +199,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 reference_slots,
                 &scene.effect_targets,
                 &mut record_effect_draws,
+                &mut record_effect_command_timing,
             )?;
             if direct_scene_color_snapshot {
                 transition_scene_color_to_attachment(device, command_buffer, swapchain_image);
@@ -297,6 +309,7 @@ fn record_interleaved_target_graph(
     scene: &SceneGpuResources,
     reference_slots: &[u32],
     graph_index: u32,
+    gpu_timing: Option<&SceneGpuTiming>,
     scene_color_initialized: &mut bool,
     scene_color_rendering_active: &mut bool,
 ) -> Result<(), String> {
@@ -355,6 +368,16 @@ fn record_interleaved_target_graph(
                 target_extent,
             )
         };
+        let mut record_effect_command_timing = |source_position, starting| {
+            if let Some(timing) = gpu_timing {
+                timing.record_effect_command(
+                    device,
+                    command_buffer,
+                    source_position,
+                    starting,
+                );
+            }
+        };
         effect_target::record_scene_effect_target_pass(
             device,
             command_buffer,
@@ -366,6 +389,7 @@ fn record_interleaved_target_graph(
             reference_slots,
             &scene.effect_targets,
             &mut record_draws,
+            &mut record_effect_command_timing,
         )?;
     }
     Ok(())

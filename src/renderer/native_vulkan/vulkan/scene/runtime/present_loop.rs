@@ -319,6 +319,15 @@ pub(super) fn with_scene_present(
     } else {
         None
     };
+    let effect_timing_commands = options
+        .gpu_timing
+        .then(|| {
+            effect_target::scene_effect_target_timing_commands(
+                &scene_resources.effect_target_commands,
+                &scene_resources.graph_execution_order,
+            )
+        })
+        .unwrap_or_default();
     let mut gpu_timing = SceneGpuTiming::create(
         device,
         instance,
@@ -326,6 +335,7 @@ pub(super) fn with_scene_present(
         selection.queue_family_index,
         options.gpu_timing,
         &scene_resources.graph_execution_order,
+        &effect_timing_commands,
     )?;
     let started_at = Instant::now();
     let deadline = started_at + options.duration;

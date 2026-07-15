@@ -8,6 +8,8 @@ use serde::Serialize;
 use vulkanalia::prelude::v1_4::*;
 use vulkanalia::vk::{self, HasBuilder};
 
+use super::effect_target::SceneEffectTargetTimingCommand;
+
 const FRAME_TIMESTAMP_QUERY_COUNT: u32 = 2;
 const EFFECT_BATCH_TIMESTAMP_QUERY_COUNT: u32 = 2;
 const GRAPH_TIMESTAMP_QUERY_COUNT: u32 = 6;
@@ -22,6 +24,17 @@ pub struct NativeVulkanSceneGraphGpuTimingSnapshot {
     pub max_micros: Option<f64>,
     pub effect_target_average_micros: Option<f64>,
     pub scene_color_average_micros: Option<f64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NativeVulkanSceneEffectCommandGpuTimingSnapshot {
+    pub graph_index: u32,
+    pub graph_command_index: u32,
+    pub command_kind: &'static str,
+    pub sample_count: u64,
+    pub average_micros: Option<f64>,
+    pub min_micros: Option<f64>,
+    pub max_micros: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -42,6 +55,8 @@ pub struct NativeVulkanSceneGpuTimingSnapshot {
     pub effect_batch_max_micros: Option<f64>,
     pub graph_measurement_scope: &'static str,
     pub graphs: Vec<NativeVulkanSceneGraphGpuTimingSnapshot>,
+    pub effect_command_measurement_scope: &'static str,
+    pub effect_commands: Vec<NativeVulkanSceneEffectCommandGpuTimingSnapshot>,
 }
 
 pub(super) struct SceneGpuTiming {
@@ -56,6 +71,8 @@ pub(super) struct SceneGpuTiming {
     graphs: Vec<GpuDurationStats>,
     graph_effect_targets: Vec<GpuDurationStats>,
     graph_scene_colors: Vec<GpuDurationStats>,
+    effect_commands: Vec<SceneEffectTargetTimingCommand>,
+    effect_command_stats: Vec<GpuDurationStats>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -87,6 +104,7 @@ impl SceneGpuTiming {
         queue_family_index: u32,
         enabled: bool,
         graph_indices: &[u32],
+        effect_commands: &[SceneEffectTargetTimingCommand],
     ) -> Result<Option<Self>, String> {
         if !enabled {
             return Ok(None);
@@ -119,6 +137,12 @@ impl SceneGpuTiming {
             .checked_mul(GRAPH_TIMESTAMP_QUERY_COUNT)
             .and_then(|count| count.checked_add(FRAME_TIMESTAMP_QUERY_COUNT))
             .and_then(|count| count.checked_add(EFFECT_BATCH_TIMESTAMP_QUERY_COUNT))
+            .and_then(|count| {
+                u32::try_from(effect_commands.len())
+                    .ok()?
+                    .checked_mul(2)
+                    .and_then(|effect_count| count.checked_add(effect_count))
+            })
             .ok_or_else(|| "scene GPU timing query count exceeds u32".to_owned())?;
         let create_info = vk::QueryPoolCreateInfo::builder()
             .query_type(vk::QueryType::TIMESTAMP)
@@ -138,6 +162,8 @@ impl SceneGpuTiming {
             graphs: vec![GpuDurationStats::default(); graph_indices.len()],
             graph_effect_targets: vec![GpuDurationStats::default(); graph_indices.len()],
             graph_scene_colors: vec![GpuDurationStats::default(); graph_indices.len()],
+            effect_commands: effect_commands.to_vec(),
+            effect_command_stats: vec![GpuDurationStats::default(); effect_commands.len()],
         }))
     }
 
@@ -192,6 +218,16 @@ impl SceneGpuTiming {
                 &bytes,
                 start_query + 4,
                 start_query + 5,
+                self.timestamp_valid_bits,
+                self.timestamp_period_nanoseconds,
+            ));
+        }
+        for (command_position, stats) in self.effect_command_stats.iter_mut().enumerate() {
+            let start_query = effect_command_start_query(self.graph_indices.len(), command_position);
+            stats.observe(query_duration_micros(
+                &bytes,
+                start_query,
+                start_query + 1,
                 self.timestamp_valid_bits,
                 self.timestamp_period_nanoseconds,
             ));
@@ -338,6 +374,36 @@ impl SceneGpuTiming {
         }
     }
 
+    pub(super) fn record_effect_command(
+        &self,
+        device: &Device,
+        command_buffer: vk::CommandBuffer,
+        source_position: usize,
+        starting: bool,
+    ) {
+        let Some(command_position) = self
+            .effect_commands
+            .iter()
+            .position(|command| command.source_position == source_position)
+        else {
+            return;
+        };
+        let query = effect_command_start_query(self.graph_indices.len(), command_position)
+            + u32::from(!starting);
+        unsafe {
+            device.cmd_write_timestamp2(
+                command_buffer,
+                if starting {
+                    vk::PipelineStageFlags2::TOP_OF_PIPE
+                } else {
+                    vk::PipelineStageFlags2::BOTTOM_OF_PIPE
+                },
+                self.query_pool,
+                query,
+            );
+        }
+    }
+
     pub(super) fn mark_submitted(&mut self) {
         self.pending = true;
     }
@@ -379,6 +445,21 @@ impl SceneGpuTiming {
                     },
                 )
                 .collect(),
+            effect_command_measurement_scope: "effect-target-command",
+            effect_commands: self
+                .effect_commands
+                .iter()
+                .zip(self.effect_command_stats.iter().copied())
+                .map(|(command, stats)| NativeVulkanSceneEffectCommandGpuTimingSnapshot {
+                    graph_index: command.graph_index,
+                    graph_command_index: command.graph_command_index,
+                    command_kind: command.command_kind,
+                    sample_count: stats.sample_count,
+                    average_micros: stats.average_micros(),
+                    min_micros: stats.min_micros,
+                    max_micros: stats.max_micros,
+                })
+                .collect(),
         }
     }
 
@@ -398,6 +479,14 @@ fn graph_start_query(graph_position: usize) -> u32 {
 
 fn effect_batch_start_query() -> u32 {
     FRAME_TIMESTAMP_QUERY_COUNT
+}
+
+fn effect_command_start_query(graph_count: usize, command_position: usize) -> u32 {
+    FRAME_TIMESTAMP_QUERY_COUNT
+        + EFFECT_BATCH_TIMESTAMP_QUERY_COUNT
+        + u32::try_from(graph_count).expect("GPU timing graph count fits u32")
+            * GRAPH_TIMESTAMP_QUERY_COUNT
+        + u32::try_from(command_position).expect("GPU timing command position fits u32") * 2
 }
 
 fn query_duration_micros(
@@ -436,5 +525,11 @@ mod tests {
     fn timestamp_delta_handles_queue_counter_wrap() {
         assert_eq!(timestamp_delta(250, 5, 8), 11);
         assert_eq!(timestamp_delta(u64::MAX - 2, 4, 64), 7);
+    }
+
+    #[test]
+    fn effect_command_queries_follow_all_graph_queries() {
+        assert_eq!(effect_command_start_query(3, 0), 22);
+        assert_eq!(effect_command_start_query(3, 2), 26);
     }
 }

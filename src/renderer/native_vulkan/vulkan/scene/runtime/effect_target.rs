@@ -83,6 +83,46 @@ enum SceneEffectTargetCommandSource {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::renderer::native_vulkan) struct SceneEffectTargetTimingCommand {
+    pub source_position: usize,
+    pub graph_index: u32,
+    pub graph_command_index: u32,
+    pub command_kind: &'static str,
+}
+
+pub(in crate::renderer::native_vulkan) fn scene_effect_target_timing_commands(
+    commands: &[SceneEffectTargetCommand],
+    graph_indices: &[u32],
+) -> Vec<SceneEffectTargetTimingCommand> {
+    let mut timing_commands = Vec::new();
+    for (source_position, command) in commands.iter().enumerate() {
+        if command.batch_atlas_tile.is_some()
+            || !graph_indices.contains(&command.target.graph_index)
+            || command.kind == SceneEffectTargetCommandKind::SwapReferences
+        {
+            continue;
+        }
+        let graph_command_index = timing_commands
+            .iter()
+            .filter(|timing: &&SceneEffectTargetTimingCommand| {
+                timing.graph_index == command.target.graph_index
+            })
+            .count() as u32;
+        timing_commands.push(SceneEffectTargetTimingCommand {
+            source_position,
+            graph_index: command.target.graph_index,
+            graph_command_index,
+            command_kind: match command.kind {
+                SceneEffectTargetCommandKind::Copy => "copy",
+                SceneEffectTargetCommandKind::DynamicRender => "dynamic-render",
+                SceneEffectTargetCommandKind::SwapReferences => unreachable!(),
+            },
+        });
+    }
+    timing_commands
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct LogicalEffectTargetKey {
     graph_index: u32,
     target: SceneRenderTargetKind,
@@ -595,6 +635,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
     initial_reference_physical_slots: &[u32],
     resources: &[SceneEffectTargetImageResource],
     mut record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
+    mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
     let mut references = logical_target_references(target_allocations);
     if references.len() != initial_reference_physical_slots.len() {
@@ -624,12 +665,14 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
         })
         .map(|reference| reference.key)
         .collect::<Vec<_>>();
-    for command in commands
+    for (command_position, command) in commands
         .iter()
+        .enumerate()
         .filter(|command| {
-            command.target.graph_index == graph_index && command.batch_atlas_tile.is_none()
+            command.1.target.graph_index == graph_index && command.1.batch_atlas_tile.is_none()
         })
     {
+        record_command_timing(command_position, true);
         match command.kind {
             SceneEffectTargetCommandKind::Copy => {
                 if !command.direct_scene_color_snapshot {
@@ -705,6 +748,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
                 );
             }
         }
+        record_command_timing(command_position, false);
     }
     Ok(())
 }
@@ -720,19 +764,21 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
     initial_reference_physical_slots: &[u32],
     resources: &[SceneEffectTargetImageResource],
     record_draws: impl FnMut(u32, u32, vk::Extent2D) -> Result<(), String>,
+    mut record_command_timing: impl FnMut(usize, bool),
 ) -> Result<(), String> {
     let clear_before_draw = pass.role == SceneRenderPassKind::Clear;
-    let command = commands
+    let (command_position, command) = commands
         .iter()
+        .enumerate()
         .find(|command| {
-            command.target.graph_index == pass.graph_index
-                && command.target.target == pass.target
-                && command.target.name == pass.target_name
-                && command.mesh_draw_start == pass.mesh_draw_start
-                && command.mesh_draw_count == pass.mesh_draw_count
-                && command.clear_before_draw == clear_before_draw
+            command.1.target.graph_index == pass.graph_index
+                && command.1.target.target == pass.target
+                && command.1.target.name == pass.target_name
+                && command.1.mesh_draw_start == pass.mesh_draw_start
+                && command.1.mesh_draw_count == pass.mesh_draw_count
+                && command.1.clear_before_draw == clear_before_draw
         })
-        .copied()
+        .map(|(position, command)| (position, *command))
         .ok_or_else(|| {
             format!(
                 "scene graph {} pass {} has no matching effect-target command",
@@ -745,7 +791,8 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
             pass.graph_index, pass.pass_id, command.kind
         ));
     }
-    record_scene_effect_target_graph_passes(
+    record_command_timing(command_position, true);
+    let result = record_scene_effect_target_graph_passes(
         device,
         command_buffer,
         scene_color_image,
@@ -756,7 +803,10 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_pass(
         initial_reference_physical_slots,
         resources,
         record_draws,
-    )
+        |_, _| {},
+    );
+    record_command_timing(command_position, false);
+    result
 }
 
 fn effect_target_load_op(
