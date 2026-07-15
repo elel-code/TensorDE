@@ -137,6 +137,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: Some(WeFoliageRippleMaterial {
                 material_index: 12,
                 shader: DIRECT_SHADER.to_owned(),
@@ -169,6 +170,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: Some(WeFoliageRippleMaterial {
                 material_index: 12,
                 shader: SCREEN_DIRECT_SHADER.to_owned(),

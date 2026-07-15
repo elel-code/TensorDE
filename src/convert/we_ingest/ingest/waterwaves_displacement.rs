@@ -1,6 +1,7 @@
 //! Converter-owned material aggregation for typed waterwaves UV fields.
 
 use crate::convert::we_ingest::ir::{WeIrMaterial, WeIrMaterialConstant, WeIrMaterialTexture};
+use crate::core::SceneBlendMode;
 use crate::engine::render_graph::{
     WeEffectPassContract, we_effect_passes_form_waterwaves_displacement_chain,
 };
@@ -9,6 +10,18 @@ use crate::engine::scene::{SceneCullMode, SceneDepthTest, ScenePipelineBlend};
 use super::WeIrBuilder;
 
 pub(super) const WATERWAVES_UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
+const DISABLE_WATERWAVES_AGGREGATION_ENV: &str = "GILDER_CONVERT_DISABLE_WATERWAVES_AGGREGATION";
+const LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV: &str = "GILDER_CONVERT_DISABLE_WATERWAVES_UV_FIELD";
+const WATERWAVES_UV_FIELD_ENV: &str = "GILDER_CONVERT_WATERWAVES_UV_FIELD";
+const IMAGE_DIRECT_SHADER: &str = "we/image-waterwaves-direct";
+const IMAGE_MULTIPLY_DIRECT_SHADER: &str = "we/image-waterwaves-multiply-direct";
+const PUPPET_DIRECT_SHADER: &str = "we/puppet-waterwaves-direct";
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct WaterWavesDisplacementMaterials {
+    pub uv_field: Option<usize>,
+    pub direct: Option<usize>,
+}
 
 #[derive(Debug, Clone)]
 struct WaterWavesStageMaterial {
@@ -18,18 +31,79 @@ struct WaterWavesStageMaterial {
     masked: bool,
 }
 
-pub(super) fn create_waterwaves_uv_field_material(
+pub(super) fn create_waterwaves_displacement_materials(
     builder: &mut WeIrBuilder,
     authored_texture_space: bool,
+    base_material_index: usize,
+    final_scene_blend: SceneBlendMode,
+    object_is_puppet: bool,
     effects: &[WeEffectPassContract],
-) -> Option<usize> {
-    if !authored_texture_space || !we_effect_passes_form_waterwaves_displacement_chain(effects) {
-        return None;
+) -> WaterWavesDisplacementMaterials {
+    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
+        || std::env::var_os(LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV).is_some()
+    {
+        return WaterWavesDisplacementMaterials::default();
     }
+    if !authored_texture_space || !we_effect_passes_form_waterwaves_displacement_chain(effects) {
+        return WaterWavesDisplacementMaterials::default();
+    }
+    let direct_shader = std::env::var_os(WATERWAVES_UV_FIELD_ENV)
+        .is_none()
+        .then(|| {
+            if object_is_puppet {
+                PUPPET_DIRECT_SHADER
+            } else if final_scene_blend == SceneBlendMode::Multiply {
+                IMAGE_MULTIPLY_DIRECT_SHADER
+            } else {
+                IMAGE_DIRECT_SHADER
+            }
+        });
+    let material = create_aggregated_material(builder, base_material_index, effects, direct_shader);
+    if direct_shader.is_some() {
+        WaterWavesDisplacementMaterials {
+            direct: material,
+            ..WaterWavesDisplacementMaterials::default()
+        }
+    } else {
+        WaterWavesDisplacementMaterials {
+            uv_field: material,
+            ..WaterWavesDisplacementMaterials::default()
+        }
+    }
+}
 
+fn create_aggregated_material(
+    builder: &mut WeIrBuilder,
+    base_material_index: usize,
+    effects: &[WeEffectPassContract],
+    direct_shader: Option<&str>,
+) -> Option<usize> {
     let mut stages = Vec::with_capacity(effects.len());
     let mut template = None;
-    let mut resource = None;
+    let base_material = builder.materials.get(base_material_index)?.clone();
+    let base_pass = builder
+        .material_passes
+        .get(base_material.pass_start as usize)?
+        .clone();
+    let base_textures = builder
+        .material_textures
+        .get(
+            base_pass.texture_start as usize
+                ..base_pass
+                    .texture_start
+                    .saturating_add(base_pass.texture_count) as usize,
+        )?
+        .to_vec();
+    let base_constants = builder
+        .material_constants
+        .get(
+            base_pass.constant_start as usize
+                ..base_pass
+                    .constant_start
+                    .saturating_add(base_pass.constant_count) as usize,
+        )?
+        .to_vec();
+    let mut resource = direct_shader.map(|_| base_material.resource);
     for effect in effects {
         let material = builder.materials.get(effect.material_index?)?;
         let pass = builder
@@ -63,6 +137,14 @@ pub(super) fn create_waterwaves_uv_field_material(
     let handle = builder.materials.len() as u32;
     let texture_start = builder.material_textures.len() as u32;
     let constant_start = builder.material_constants.len() as u32;
+    if direct_shader.is_some() {
+        builder.material_textures.extend(
+            base_textures
+                .into_iter()
+                .filter(|texture| texture.slot == 0),
+        );
+        builder.material_constants.extend(base_constants);
+    }
     for (stage_index, stage) in stages.iter().enumerate() {
         if let Some(mask) = &stage.mask {
             let mut mask = mask.clone();
@@ -91,7 +173,9 @@ pub(super) fn create_waterwaves_uv_field_material(
 
     let mut pass = template?;
     pass.material = handle;
-    pass.shader_key = WATERWAVES_UV_FIELD_SHADER.to_owned();
+    pass.shader_key = direct_shader
+        .unwrap_or(WATERWAVES_UV_FIELD_SHADER)
+        .to_owned();
     pass.target.clear();
     pass.texture_start = texture_start;
     pass.texture_count = builder.material_textures.len() as u32 - texture_start;

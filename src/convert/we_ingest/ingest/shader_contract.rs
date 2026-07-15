@@ -158,7 +158,7 @@ pub(super) fn declared_texture_slot_mask(
     if let Some(slot_mask) = effect_shader_slot_mask(&key) {
         mask |= slot_mask;
     }
-    if key == "we/waterwaves-uv-field" {
+    if key == "we/waterwaves-uv-field" || is_waterwaves_direct_shader(&key) {
         mask |= 0xfe;
     }
     if is_foliage_ripple_shader(&key) {
@@ -237,6 +237,7 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
+        || is_waterwaves_direct_shader(key)
         || key == "utilitycomposite"
         || key.starts_with("utilitycomposite__")
 }
@@ -318,7 +319,17 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/image-ripple-flow-composite"
         || key == "we/image-ripple-flow-multiply-composite"
         || key == "we/puppet-waterwaves-composite"
+        || is_waterwaves_direct_shader(key)
         || key.contains("genericparticle")
+}
+
+fn is_waterwaves_direct_shader(key: &str) -> bool {
+    matches!(
+        key,
+        "we/image-waterwaves-direct"
+            | "we/image-waterwaves-multiply-direct"
+            | "we/puppet-waterwaves-direct"
+    )
 }
 
 fn is_foliage_ripple_shader(key: &str) -> bool {

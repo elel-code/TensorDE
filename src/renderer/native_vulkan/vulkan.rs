@@ -269,7 +269,9 @@ pub use video_session_parameters::{
     NativeVulkanVulkanaliaVideoSessionParametersSnapshot,
 };
 pub use video_surface_host::NativeVulkanVideoSurfaceHostSnapshot;
-pub use vulkan_scene::NativeVulkanSceneFrameCaptureSnapshot;
+pub use vulkan_scene::{
+    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
+};
 pub(in crate::renderer::native_vulkan) use vulkan_scene::{
     NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
     run_native_vulkan_vulkanalia_scene_present,

@@ -49,6 +49,8 @@ pub struct WeImageGraphContract {
     pub puppet_skinning_after_effects: bool,
     /// Converter-authored material containing the complete compatible waterwaves chain.
     pub waterwaves_uv_field_material_index: Option<usize>,
+    /// Converter-authored material that evaluates the complete chain in the final mesh fragment.
+    pub waterwaves_direct_material_index: Option<usize>,
     /// Converter-authored material for a compatible direct foliage/ripple composite.
     pub foliage_ripple_material: Option<WeFoliageRippleMaterial>,
     /// Converter-authored materials for the typed ripple/flow two-stage path.

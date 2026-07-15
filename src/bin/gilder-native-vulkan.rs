@@ -173,6 +173,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut capture_frame_downscale_set = false;
     let mut capture_frame_region = None::<(u32, u32, u32, u32)>;
     let mut capture_frame_region_set = false;
+    let mut capture_frame_reference = None::<PathBuf>;
+    let mut capture_frame_reference_set = false;
+    let mut capture_frame_time_step_seconds = None::<f32>;
+    let mut capture_frame_time_step_set = false;
     let mut capture_scene_graph = None::<u32>;
     let mut scene_surface_width = None::<u32>;
     let mut scene_surface_height = None::<u32>;
@@ -351,6 +355,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 capture_frame_region = Some(parse_capture_frame_region(args.next())?);
                 capture_frame_region_set = true;
             }
+            "--capture-frame-reference" => {
+                capture_frame_reference = Some(parse_capture_frame_reference(args.next())?);
+                capture_frame_reference_set = true;
+            }
+            "--capture-frame-time-step" => {
+                capture_frame_time_step_seconds = Some(parse_capture_frame_time_step(args.next())?);
+                capture_frame_time_step_set = true;
+            }
             "--capture-scene-graph" => {
                 capture_scene_graph = Some(parse_capture_scene_graph(args.next())?);
             }
@@ -522,6 +534,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if capture_frame.is_none() && capture_frame_region_set {
         return Err("--capture-frame-region requires --capture-frame".into());
+    }
+    if capture_frame.is_none() && capture_frame_reference_set {
+        return Err("--capture-frame-reference requires --capture-frame".into());
+    }
+    if capture_frame_reference.is_some() && capture_frame_count < 3 {
+        return Err(
+            "--capture-frame-reference requires --capture-frame-count of at least 3".into(),
+        );
+    }
+    if capture_frame_reference.is_some() && capture_frame_time_step_seconds.is_none() {
+        return Err("--capture-frame-reference requires --capture-frame-time-step".into());
+    }
+    if capture_frame.is_none() && capture_frame_time_step_set {
+        return Err("--capture-frame-time-step requires --capture-frame".into());
     }
     if capture_frame.is_none() && capture_scene_graph.is_some() {
         return Err("--capture-scene-graph requires --capture-frame".into());
@@ -723,6 +749,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     capture_frame_step,
                     capture_frame_downscale,
                     capture_frame_region,
+                    capture_frame_reference,
+                    capture_frame_time_step_seconds,
                     capture_scene_graph,
                     clear_color_override: scene_clear_color_override,
                     surface_extent: scene_surface_extent,

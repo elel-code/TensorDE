@@ -17,7 +17,9 @@ use crate::engine::scene::{
 
 const WATERWAVES_UV_FIELD_SHADER: &str = "we/waterwaves-uv-field";
 const SCENE_EFFECT_BATCH_ENABLED: bool = true;
-const WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR: u32 = 4;
+const WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR_ENV: &str =
+    "GILDER_NATIVE_VULKAN_WATERWAVES_FIELD_DIVISOR";
+const DEFAULT_WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -170,10 +172,22 @@ pub(super) fn build_scene_effect_batches(
             layer_count,
             atlas_columns,
             atlas_rows,
-            field_extent_divisor: WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR,
+            field_extent_divisor: waterwaves_batch_field_extent_divisor(),
         });
     }
     (batches, instances)
+}
+
+fn waterwaves_batch_field_extent_divisor() -> u32 {
+    let requested = std::env::var(WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR_ENV).ok();
+    parse_waterwaves_batch_field_extent_divisor(requested.as_deref())
+}
+
+fn parse_waterwaves_batch_field_extent_divisor(value: Option<&str>) -> u32 {
+    value
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| matches!(value, 1 | 2 | 4))
+        .unwrap_or(DEFAULT_WATERWAVES_BATCH_FIELD_EXTENT_DIVISOR)
 }
 
 fn effect_atlas_grid(layer_count: u32) -> [u32; 2] {
@@ -297,4 +311,19 @@ fn physical_slot_has_unbatched_targets(
                     && candidate.target_name == allocation.target_name
             })
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waterwaves_field_divisor_defaults_to_four_and_accepts_bounded_diagnostics() {
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(None), 4);
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(Some("1")), 1);
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(Some(" 2 ")), 2);
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(Some("4")), 4);
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(Some("0")), 4);
+        assert_eq!(parse_waterwaves_batch_field_extent_divisor(Some("8")), 4);
+    }
 }

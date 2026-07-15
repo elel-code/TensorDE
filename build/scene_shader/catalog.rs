@@ -32,6 +32,7 @@ pub(crate) enum SceneShaderFamily {
     MeshImageRippleFlowComposite,
     MeshFinalEffect,
     MeshPuppetWaterWavesComposite,
+    MeshWaterWavesDirect,
     MeshUtilityComposite,
     EffectWaterWavesUvField,
     EffectImageRippleSource,
@@ -234,6 +235,18 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshPuppetWaterWavesComposite,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-direct",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/utilitycomposite",
         family: SceneShaderFamily::MeshUtilityComposite,
     },
@@ -385,6 +398,7 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         | SceneShaderFamily::MeshPuppetEffectComposite
         | SceneShaderFamily::MeshImageWaterWavesComposite
         | SceneShaderFamily::MeshPuppetWaterWavesComposite => "StandardMaterial",
+        SceneShaderFamily::MeshWaterWavesDirect => "WaterWavesDirect",
         SceneShaderFamily::MeshImageFoliageRippleComposite
         | SceneShaderFamily::MeshImageFoliageRippleScreenComposite => "FoliageRippleComposite",
         SceneShaderFamily::MeshImageRippleFlowComposite => "RippleFlowComposite",
@@ -506,6 +520,10 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         SceneShaderFamily::MeshPuppetWaterWavesComposite => {
             super::puppet_waterwaves_composite_sources()
         }
+        SceneShaderFamily::MeshWaterWavesDirect => super::waterwaves_direct_sources(
+            spec.key == "we/puppet-waterwaves-direct",
+            spec.key == "we/image-waterwaves-multiply-direct",
+        ),
         SceneShaderFamily::MeshUtilityComposite => (
             scene_mesh_vertex_source(),
             super::passthrough_fragment_source(),

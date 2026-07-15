@@ -440,13 +440,16 @@ impl WeIrBuilder {
                 &mut effect_passes,
             )?;
         }
-        let waterwaves_uv_field_material_index =
-            waterwaves_displacement::create_waterwaves_uv_field_material(
+        let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
+        let waterwaves_displacement =
+            waterwaves_displacement::create_waterwaves_displacement_materials(
                 self,
                 effects_in_authored_texture_space,
+                base_material_handle as usize,
+                final_scene_blend,
+                object_is_puppet,
                 &effect_passes,
             );
-        let final_scene_blend = scene_blend_from_color_blend_mode(color_blend_mode);
         let foliage_ripple = foliage_ripple::create(
             self,
             base_material_handle,
@@ -497,7 +500,8 @@ impl WeIrBuilder {
             final_scene_blend,
             effects_in_authored_texture_space,
             puppet_skinning_after_effects: object_is_puppet && effects_in_authored_texture_space,
-            waterwaves_uv_field_material_index,
+            waterwaves_uv_field_material_index: waterwaves_displacement.uv_field,
+            waterwaves_direct_material_index: waterwaves_displacement.direct,
             foliage_ripple_material: foliage_ripple,
             ripple_flow_material_indices: ripple_flow_materials,
             final_effect_material: final_effect,

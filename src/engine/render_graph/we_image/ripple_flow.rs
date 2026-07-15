@@ -178,6 +178,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: Some(WeRippleFlowMaterialIndices {
                 ripple_source: 7,
@@ -224,6 +225,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: Some(WeRippleFlowMaterialIndices {
                 ripple_source: 7,

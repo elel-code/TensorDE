@@ -21,7 +21,8 @@ pub(super) fn is_compatible_displacement_chain(contract: &WeImageGraphContract) 
         && contract.framebuffer_snapshot.is_none()
         && contract.base_material_index.is_some()
         && contract.base_texture_slots.iter().all(|slot| *slot == 0)
-        && contract.waterwaves_uv_field_material_index.is_some()
+        && (contract.waterwaves_uv_field_material_index.is_some()
+            || contract.waterwaves_direct_material_index.is_some())
         && are_compatible_effect_passes(&contract.effect_passes)
 }
 
@@ -68,6 +69,10 @@ fn is_graph_resource(source: &str) -> bool {
 }
 
 pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeImageGraphContract) {
+    if let Some(material_index) = contract.waterwaves_direct_material_index {
+        append_direct_composite(graph, contract, material_index);
+        return;
+    }
     let pass_id = graph.passes.len().min(u32::MAX as usize) as u32;
     graph.passes.push(RenderPassNode {
         id: pass_id,
@@ -123,6 +128,42 @@ pub(super) fn append_displacement_chain(graph: &mut RenderGraph, contract: &WeIm
     });
 }
 
+fn append_direct_composite(
+    graph: &mut RenderGraph,
+    contract: &WeImageGraphContract,
+    material_index: usize,
+) {
+    let shader = direct_shader(contract);
+    graph.passes.push(RenderPassNode {
+        id: graph.passes.len().min(u32::MAX as usize) as u32,
+        role: RenderPassRole::SceneComposite,
+        object_index: Some(contract.object_index),
+        material_index: Some(material_index),
+        pass_index: 0,
+        shader: Some(shader.to_owned()),
+        target: RenderTargetRole::SceneColor,
+        target_name: None,
+        target_extent: None,
+        target_format: None,
+        bindings: Vec::new(),
+        state: PassState {
+            pipeline_blend: super::final_pipeline_blend(contract),
+            scene_blend: contract.final_scene_blend,
+            ..PassState::default()
+        },
+    });
+}
+
+fn direct_shader(contract: &WeImageGraphContract) -> &'static str {
+    if contract.puppet_skinning_after_effects {
+        "we/puppet-waterwaves-direct"
+    } else if contract.final_scene_blend == SceneBlendMode::Multiply {
+        "we/image-waterwaves-multiply-direct"
+    } else {
+        "we/image-waterwaves-direct"
+    }
+}
+
 fn composite_shader(contract: &WeImageGraphContract) -> &'static str {
     if contract.puppet_skinning_after_effects {
         PUPPET_COMPOSITE_SHADER
@@ -154,6 +195,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
             waterwaves_uv_field_material_index: Some(9),
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -192,6 +234,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: true,
             waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -221,6 +264,7 @@ mod tests {
             effects_in_authored_texture_space: true,
             puppet_skinning_after_effects: false,
             waterwaves_uv_field_material_index: Some(9),
+            waterwaves_direct_material_index: None,
             foliage_ripple_material: None,
             ripple_flow_material_indices: None,
             final_effect_material: None,
@@ -232,6 +276,40 @@ mod tests {
             graph.passes[1].shader.as_deref(),
             Some(IMAGE_MULTIPLY_COMPOSITE_SHADER)
         );
+    }
+
+    #[test]
+    fn typed_direct_chain_has_one_mesh_composite_and_no_temporary_target() {
+        let contract = WeImageGraphContract {
+            object_index: 7,
+            base_material_index: Some(3),
+            base_shader: Some("genericimage4".to_owned()),
+            base_material_blending: Some("translucent".to_owned()),
+            base_texture_slots: vec![0],
+            base_pass_constants: Vec::new(),
+            framebuffer_snapshot: None,
+            final_scene_blend: SceneBlendMode::Alpha,
+            effects_in_authored_texture_space: true,
+            puppet_skinning_after_effects: true,
+            waterwaves_uv_field_material_index: None,
+            waterwaves_direct_material_index: Some(12),
+            foliage_ripple_material: None,
+            ripple_flow_material_indices: None,
+            final_effect_material: None,
+            effect_passes: vec![effect(4, false), effect(5, true)],
+        };
+
+        let graph = super::super::we_image_graph(&contract);
+
+        assert!(graph.target_specs.is_empty());
+        assert_eq!(graph.passes.len(), 1);
+        assert_eq!(graph.passes[0].material_index, Some(12));
+        assert_eq!(
+            graph.passes[0].shader.as_deref(),
+            Some("we/puppet-waterwaves-direct")
+        );
+        assert_eq!(graph.passes[0].target, RenderTargetRole::SceneColor);
+        assert!(graph.passes[0].bindings.is_empty());
     }
 
     fn effect(material_index: usize, masked: bool) -> WeEffectPassContract {

@@ -146,6 +146,12 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::WaterWaves => {
             waterwaves_values(&parameters, storage, shader_key, scene_time_seconds)
         }
+        BuiltinSceneParameterLayout::WaterWavesDirect => waterwaves_direct_values(
+            &parameters,
+            storage,
+            draw,
+            scene_time_seconds,
+        ),
         BuiltinSceneParameterLayout::WaterWavesUvField => {
             waterwaves_uv_field_values(&parameters, storage, scene_time_seconds)
         }
@@ -719,17 +725,57 @@ fn waterwaves_uv_field_values(
     storage: &SceneStorage,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    waterwaves_displacement_values(parameters, storage, scene_time_seconds, 0, 4)
+}
+
+fn waterwaves_direct_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = waterwaves_displacement_values(
+        parameters,
+        storage,
+        scene_time_seconds,
+        4,
+        8,
+    );
+    let (resolved_color, resolved_alpha) = if draw.apply_resolved_visual {
+        (draw.resolved_color, draw.resolved_alpha)
+    } else {
+        (
+            crate::engine::scene::SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 1.0,
+            },
+            1.0,
+        )
+    };
+    let standard = standard_material_values(parameters, resolved_color, resolved_alpha);
+    values[..4].copy_from_slice(&standard[..4]);
+    values
+}
+
+fn waterwaves_displacement_values(
+    parameters: &MaterialParameters<'_>,
+    storage: &SceneStorage,
+    scene_time_seconds: f32,
+    chain_base: usize,
+    stage_start: usize,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     const MAX_STAGES: usize = 7;
     const STAGE_FLOATS: usize = 16;
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
-    values[0] = parameters
+    values[chain_base] = parameters
         .scalar(&["waterwaves.stage_count"], 0.0)
         .clamp(0.0, MAX_STAGES as f32);
-    values[1] = scene_time_seconds;
+    values[chain_base + 1] = scene_time_seconds;
     for stage in 0..MAX_STAGES {
         let speed = waterwaves_stage_scalar(parameters, stage, "speed", 5.0);
         let scale = waterwaves_stage_scalar(parameters, stage, "scale", 200.0);
-        let base = 4 + stage * STAGE_FLOATS;
+        let base = stage_start + stage * STAGE_FLOATS;
         values[base] = speed;
         values[base + 1] = scale;
         values[base + 2] = waterwaves_stage_scalar(parameters, stage, "strength", 0.1);

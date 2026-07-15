@@ -305,6 +305,8 @@ pub(super) fn with_scene_present(
             options.capture_frame_step,
             options.capture_frame_downscale,
             options.capture_frame_region,
+            options.capture_frame_reference.clone(),
+            options.capture_frame_time_step_seconds,
         ) {
             Ok(capture) => Some(capture),
             Err(err) => {
@@ -385,7 +387,6 @@ pub(super) fn with_scene_present(
         .ok()
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
-
     while Instant::now() < deadline {
         system_audio_monitor.publish_latest();
         let frame_slot = frames_presented as usize % frame_contexts.len();
@@ -408,8 +409,11 @@ pub(super) fn with_scene_present(
         if let Some(timing) = gpu_timing.as_mut() {
             timing.collect_completed(device)?;
         }
-        let scene_time_seconds =
-            fixed_scene_time_seconds.unwrap_or_else(|| started_at.elapsed().as_secs_f32());
+        let scene_time_seconds = options
+            .capture_frame_time_step_seconds
+            .map(|step| frames_presented as f32 * step)
+            .or(fixed_scene_time_seconds)
+            .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
         let frame_state_update_started = Instant::now();
         let frame_resources = &scene_resources.frame_resources[frame_slot];
         let frame_update = write_scene_frame_buffers(
@@ -552,7 +556,7 @@ pub(super) fn with_scene_present(
         queue_present_total_micros = queue_present_total_micros
             .saturating_add(elapsed_micros_u64(queue_present_started));
         if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
-            capture.mark_submitted(frame_number);
+            capture.mark_submitted(frame_number, scene_time_seconds);
         }
         let present_completed_at = Instant::now();
         if let Some(last_present_completed_at) = last_present_completed_at {

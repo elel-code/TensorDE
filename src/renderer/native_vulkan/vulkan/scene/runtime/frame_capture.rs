@@ -15,9 +15,15 @@ use crate::renderer::native_vulkan::{
 
 use super::color_subresource_range;
 
-const SCENE_FRAME_CAPTURE_BYTES_PER_PIXEL: u64 = 4;
+mod temporal_analysis;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub use temporal_analysis::NativeVulkanSceneFrameTemporalAnalysisSnapshot;
+use temporal_analysis::analyze_scene_frame_sequence;
+
+const SCENE_FRAME_CAPTURE_BYTES_PER_PIXEL: u64 = 4;
+const SCENE_FRAME_CAPTURE_MAX_RETAINED_BYTES: u64 = 1024 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct NativeVulkanSceneFrameCaptureSnapshot {
     pub path: PathBuf,
     pub source_width: u32,
@@ -35,8 +41,12 @@ pub struct NativeVulkanSceneFrameCaptureSnapshot {
     pub frame_count: u64,
     pub frame_step: u64,
     pub downscale: u32,
+    pub first_scene_time_seconds: f32,
+    pub last_scene_time_seconds: f32,
+    pub deterministic_scene_time_step_seconds: Option<f32>,
     pub rgba_bytes: u64,
     pub png_bytes: u64,
+    pub temporal_analysis: Option<NativeVulkanSceneFrameTemporalAnalysisSnapshot>,
 }
 
 pub(super) struct SceneFrameCapture {
@@ -49,17 +59,20 @@ pub(super) struct SceneFrameCapture {
     target_frame_count: u64,
     target_frame_step: u64,
     downscale: u32,
+    reference_path: Option<PathBuf>,
+    deterministic_scene_time_step_seconds: Option<f32>,
     output_extent: vk::Extent2D,
     byte_count: u64,
     output_byte_count: u64,
     readback_buffer: NativeVulkanVulkanaliaBuffer,
     captured_frames: Vec<SceneFrameCapturePixels>,
-    pending_frame_number: Option<u64>,
+    pending_frame: Option<(u64, f32)>,
     snapshot: Option<NativeVulkanSceneFrameCaptureSnapshot>,
 }
 
 struct SceneFrameCapturePixels {
     frame_number: u64,
+    scene_time_seconds: f32,
     rgba: Vec<u8>,
 }
 
@@ -75,6 +88,8 @@ impl SceneFrameCapture {
         target_frame_step: u64,
         downscale: u32,
         region: Option<(u32, u32, u32, u32)>,
+        reference_path: Option<PathBuf>,
+        deterministic_scene_time_step_seconds: Option<f32>,
     ) -> Result<Self, String> {
         if target_frame_number == 0 {
             return Err("scene frame capture number must be at least 1".to_owned());
@@ -88,6 +103,25 @@ impl SceneFrameCapture {
         if downscale == 0 {
             return Err("scene frame capture downscale must be at least 1".to_owned());
         }
+        if reference_path.is_some() && target_frame_count < 3 {
+            return Err(
+                "scene temporal reference analysis requires at least three captured frames"
+                    .to_owned(),
+            );
+        }
+        if reference_path.is_some() && deterministic_scene_time_step_seconds.is_none() {
+            return Err(
+                "scene temporal reference analysis requires a deterministic capture time step"
+                    .to_owned(),
+            );
+        }
+        if deterministic_scene_time_step_seconds
+            .is_some_and(|step| !step.is_finite() || step <= 0.0)
+        {
+            return Err(
+                "scene deterministic capture time step must be finite and positive".to_owned(),
+            );
+        }
         scene_frame_capture_channel_order(source_format)?;
         let (image_offset, capture_extent) = scene_frame_capture_region(extent, region)?;
         let source_extent = extent;
@@ -95,6 +129,15 @@ impl SceneFrameCapture {
         let byte_count = scene_frame_capture_byte_count(extent)?;
         let output_extent = scene_frame_capture_output_extent(extent, downscale);
         let output_byte_count = scene_frame_capture_byte_count(output_extent)?;
+        let retained_bytes = output_byte_count
+            .checked_mul(target_frame_count)
+            .ok_or_else(|| "scene frame capture retained byte count overflows".to_owned())?;
+        if retained_bytes > SCENE_FRAME_CAPTURE_MAX_RETAINED_BYTES {
+            return Err(format!(
+                "scene frame capture would retain {retained_bytes} bytes, exceeding the {} byte limit; use --capture-frame-region or --capture-frame-downscale",
+                SCENE_FRAME_CAPTURE_MAX_RETAINED_BYTES
+            ));
+        }
         let readback_buffer = native_vulkan_vulkanalia_create_buffer(
             device,
             memory_properties,
@@ -114,6 +157,8 @@ impl SceneFrameCapture {
             target_frame_count,
             target_frame_step,
             downscale,
+            reference_path,
+            deterministic_scene_time_step_seconds,
             output_extent,
             byte_count,
             output_byte_count,
@@ -121,7 +166,7 @@ impl SceneFrameCapture {
             captured_frames: Vec::with_capacity(
                 target_frame_count.min(usize::MAX as u64) as usize,
             ),
-            pending_frame_number: None,
+            pending_frame: None,
             snapshot: None,
         })
     }
@@ -132,7 +177,7 @@ impl SceneFrameCapture {
 
     pub(super) fn should_capture(&self, frame_number: u64) -> bool {
         self.is_pending()
-            && self.pending_frame_number.is_none()
+            && self.pending_frame.is_none()
             && frame_number
                 == self
                     .target_frame_number
@@ -142,8 +187,8 @@ impl SceneFrameCapture {
                     )
     }
 
-    pub(super) fn mark_submitted(&mut self, frame_number: u64) {
-        self.pending_frame_number = Some(frame_number);
+    pub(super) fn mark_submitted(&mut self, frame_number: u64, scene_time_seconds: f32) {
+        self.pending_frame = Some((frame_number, scene_time_seconds));
     }
 
     pub(super) fn record_swapchain_copy(
@@ -243,7 +288,7 @@ impl SceneFrameCapture {
         &mut self,
         device: &Device,
     ) -> Result<(), String> {
-        let Some(frame_number) = self.pending_frame_number else {
+        let Some((frame_number, scene_time_seconds)) = self.pending_frame else {
             return Ok(());
         };
         let pixels = native_vulkan_vulkanalia_read_host_buffer(
@@ -259,8 +304,12 @@ impl SceneFrameCapture {
             self.downscale,
         );
         self.captured_frames
-            .push(SceneFrameCapturePixels { frame_number, rgba });
-        self.pending_frame_number = None;
+            .push(SceneFrameCapturePixels {
+                frame_number,
+                scene_time_seconds,
+                rgba,
+            });
+        self.pending_frame = None;
         Ok(())
     }
 
@@ -268,16 +317,36 @@ impl SceneFrameCapture {
         if self.snapshot.is_some() {
             return Ok(());
         }
-        let captured_frames = std::mem::take(&mut self.captured_frames);
-        let first_frame = captured_frames.first().ok_or_else(|| {
+        if self.captured_frames.len() as u64 != self.target_frame_count {
+            return Err(format!(
+                "scene frame capture requested {} frames but completed {}; increase --duration or reduce --capture-frame-count",
+                self.target_frame_count,
+                self.captured_frames.len()
+            ));
+        }
+        let first_frame = self.captured_frames.first().ok_or_else(|| {
             "scene frame capture has no completed GPU readback to encode".to_owned()
         })?;
         let frame_number = first_frame.frame_number;
-        let last_frame_number = captured_frames
+        let first_scene_time_seconds = first_frame.scene_time_seconds;
+        let last_frame_number = self
+            .captured_frames
             .last()
             .map_or(frame_number, |frame| frame.frame_number);
-        let frame_count = captured_frames.len() as u64;
+        let last_scene_time_seconds = self
+            .captured_frames
+            .last()
+            .map_or(first_scene_time_seconds, |frame| frame.scene_time_seconds);
+        let frame_count = self.captured_frames.len() as u64;
         let multiple_frames = self.target_frame_count > 1;
+        let temporal_analysis = analyze_scene_frame_sequence(
+            &self.captured_frames,
+            self.output_extent.width,
+            self.output_extent.height,
+            self.reference_path.as_deref(),
+            multiple_frames,
+        )?;
+        let captured_frames = std::mem::take(&mut self.captured_frames);
         let mut png_bytes = 0u64;
         for captured_frame in captured_frames {
             let path = scene_frame_capture_output_path(
@@ -309,8 +378,12 @@ impl SceneFrameCapture {
             frame_count,
             frame_step: self.target_frame_step,
             downscale: self.downscale,
+            first_scene_time_seconds,
+            last_scene_time_seconds,
+            deterministic_scene_time_step_seconds: self.deterministic_scene_time_step_seconds,
             rgba_bytes: self.output_byte_count.saturating_mul(frame_count),
             png_bytes,
+            temporal_analysis,
         });
         Ok(())
     }

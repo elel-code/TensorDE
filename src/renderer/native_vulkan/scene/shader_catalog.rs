@@ -28,6 +28,7 @@ pub enum BuiltinSceneParameterLayout {
     RippleFlowComposite,
     Shake,
     WaterWaves,
+    WaterWavesDirect,
     WaterWavesUvField,
     WaterRipple,
     WaterFlow,
@@ -50,6 +51,7 @@ impl BuiltinSceneParameterLayout {
                 | Self::TechCircle
                 | Self::WaterFlow
                 | Self::WaterWaves
+                | Self::WaterWavesDirect
                 | Self::WaterWavesUvField
         )
     }
@@ -179,6 +181,10 @@ mod tests {
             (
                 "workshop/2123274886/effects/tech_circle__SLOTS_1__SECTOR_SEGMENTS_1",
                 BuiltinSceneParameterLayout::TechCircle,
+            ),
+            (
+                "we/puppet-waterwaves-direct",
+                BuiltinSceneParameterLayout::WaterWavesDirect,
             ),
         ] {
             let shader = native_vulkan_scene_shader_for_key(key).expect("object-local shader");

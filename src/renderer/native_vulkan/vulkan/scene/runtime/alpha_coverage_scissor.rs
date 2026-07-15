@@ -9,10 +9,17 @@ use super::draw_recording::SceneGpuScissor;
 use super::draw_uniform::{object_uv_to_screen_affine, object_uv_to_screen_linear};
 use super::material_uniform::material_parameter_values;
 
-const WATERWAVES_FIELD_SHADER: &str = "we/waterwaves-uv-field";
+const WATERWAVES_DISPLACEMENT_SHADERS: &[&str] = &[
+    "we/waterwaves-uv-field",
+    "we/image-waterwaves-direct",
+    "we/image-waterwaves-multiply-direct",
+    "we/puppet-waterwaves-direct",
+];
 const SPARSE_COMPOSITE_SHADERS: &[&str] = &[
     "we/image-waterwaves-composite",
     "we/image-waterwaves-multiply-composite",
+    "we/image-waterwaves-direct",
+    "we/image-waterwaves-multiply-direct",
 ];
 const MAX_WATERWAVES_STAGES: usize = 7;
 
@@ -137,7 +144,11 @@ fn graph_waterwaves_displacement_cells(
             .render_passes
             .get(pass.pass_record_index as usize)
             .and_then(|record| storage.string(record.shader_key))
-            .is_some_and(|shader| shader.eq_ignore_ascii_case(WATERWAVES_FIELD_SHADER))
+            .is_some_and(|shader| {
+                WATERWAVES_DISPLACEMENT_SHADERS
+                    .iter()
+                    .any(|candidate| shader.eq_ignore_ascii_case(candidate))
+            })
     }) else {
         return [SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE; 2];
     };

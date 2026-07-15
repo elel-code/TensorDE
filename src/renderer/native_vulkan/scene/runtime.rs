@@ -31,6 +31,8 @@ pub struct NativeVulkanSceneRunOptions {
     pub capture_frame_step: u64,
     pub capture_frame_downscale: u32,
     pub capture_frame_region: Option<(u32, u32, u32, u32)>,
+    pub capture_frame_reference: Option<PathBuf>,
+    pub capture_frame_time_step_seconds: Option<f32>,
     pub capture_scene_graph: Option<u32>,
     pub clear_color_override: Option<NativeVulkanClearColor>,
     pub surface_extent: Option<(u32, u32)>,
@@ -46,6 +48,8 @@ impl Default for NativeVulkanSceneRunOptions {
             capture_frame_step: 1,
             capture_frame_downscale: 1,
             capture_frame_region: None,
+            capture_frame_reference: None,
+            capture_frame_time_step_seconds: None,
             capture_scene_graph: None,
             clear_color_override: None,
             surface_extent: None,
@@ -127,6 +131,38 @@ pub fn run_scene_with_options(
             "scene frame capture region requires frame capture".to_owned(),
         ));
     }
+    if scene_options.capture_frame.is_none() && scene_options.capture_frame_reference.is_some() {
+        return Err(NativeVulkanError::Scene(
+            "scene temporal reference requires frame capture".to_owned(),
+        ));
+    }
+    if scene_options.capture_frame_reference.is_some() && scene_options.capture_frame_count < 3 {
+        return Err(NativeVulkanError::Scene(
+            "scene temporal reference requires at least three captured frames".to_owned(),
+        ));
+    }
+    if scene_options.capture_frame_reference.is_some()
+        && scene_options.capture_frame_time_step_seconds.is_none()
+    {
+        return Err(NativeVulkanError::Scene(
+            "scene temporal reference requires a deterministic capture time step".to_owned(),
+        ));
+    }
+    if scene_options.capture_frame.is_none()
+        && scene_options.capture_frame_time_step_seconds.is_some()
+    {
+        return Err(NativeVulkanError::Scene(
+            "scene deterministic capture time step requires frame capture".to_owned(),
+        ));
+    }
+    if scene_options
+        .capture_frame_time_step_seconds
+        .is_some_and(|step| !step.is_finite() || step <= 0.0)
+    {
+        return Err(NativeVulkanError::Scene(
+            "scene deterministic capture time step must be finite and positive".to_owned(),
+        ));
+    }
     if scene_options.capture_frame.is_none() && scene_options.capture_scene_graph.is_some() {
         return Err(NativeVulkanError::Scene(
             "scene graph isolation requires frame capture".to_owned(),
@@ -165,6 +201,8 @@ pub fn run_scene_with_options(
             capture_frame_step: scene_options.capture_frame_step,
             capture_frame_downscale: scene_options.capture_frame_downscale,
             capture_frame_region: scene_options.capture_frame_region,
+            capture_frame_reference: scene_options.capture_frame_reference,
+            capture_frame_time_step_seconds: scene_options.capture_frame_time_step_seconds,
             capture_scene_graph,
             surface_extent: scene_options.surface_extent,
             gpu_timing: scene_options.gpu_timing,

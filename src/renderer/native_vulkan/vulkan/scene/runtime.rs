@@ -91,7 +91,9 @@ use draw_recording::{
     scene_color_draw_ranges,
 };
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
-pub use frame_capture::NativeVulkanSceneFrameCaptureSnapshot;
+pub use frame_capture::{
+    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
+};
 use frame_capture::SceneFrameCapture;
 use frame_context::{
     create_scene_present_frame_contexts, destroy_scene_present_frame_contexts,
@@ -142,6 +144,8 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub capture_frame_step: u64,
     pub capture_frame_downscale: u32,
     pub capture_frame_region: Option<(u32, u32, u32, u32)>,
+    pub capture_frame_reference: Option<PathBuf>,
+    pub capture_frame_time_step_seconds: Option<f32>,
     pub capture_scene_graph: Option<u32>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
