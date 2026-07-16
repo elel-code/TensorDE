@@ -4,6 +4,7 @@ pub(crate) fn waterwaves_direct_sources(
     puppet_skinning: bool,
     premultiply_output: bool,
     stage_count: Option<usize>,
+    static_black_output: bool,
 ) -> (String, String) {
     let vertex = if puppet_skinning {
         super::puppet_effect_composite_vertex()
@@ -12,11 +13,15 @@ pub(crate) fn waterwaves_direct_sources(
     };
     (
         vertex,
-        waterwaves_direct_fragment(premultiply_output, stage_count),
+        waterwaves_direct_fragment(premultiply_output, stage_count, static_black_output),
     )
 }
 
-fn waterwaves_direct_fragment(premultiply_output: bool, stage_count: Option<usize>) -> String {
+fn waterwaves_direct_fragment(
+    premultiply_output: bool,
+    stage_count: Option<usize>,
+    static_black_output: bool,
+) -> String {
     let premultiply = premultiply_output
         .then_some("    color.rgb *= color.a;\n")
         .unwrap_or_default();
@@ -40,7 +45,11 @@ fn waterwaves_direct_fragment(premultiply_output: bool, stage_count: Option<usiz
                 .collect()
         },
     );
-    let source_filter = if stage_count == Some(2) {
+    let source_filter = if static_black_output {
+        // Authored black shadows only consume source alpha. Retain the source
+        // texture's implicit mip and anisotropy contract while avoiding RGB work.
+        "    float source_alpha = texture(g_Texture0, source_uv).a;\n".to_owned()
+    } else if stage_count == Some(2) {
         // The 0.17 texel two-stage reconstruction passes the authored temporal
         // gate with the native sample; retain implicit mip and anisotropy state.
         "    vec4 source_color = texture(g_Texture0, source_uv);\n".to_owned()
@@ -54,6 +63,13 @@ fn waterwaves_direct_fragment(premultiply_output: bool, stage_count: Option<usiz
         + texture(g_Texture0, source_uv + vec2(filter_offset.x, filter_offset.y))) * 0.25;
 "#
         .to_owned()
+    };
+    let color_reconstruction = if static_black_output {
+        r#"    vec4 color = vec4(0.0, 0.0, 0.0,
+        source_alpha * u_Effect.g_ResolvedColorAlpha.a);
+"#
+    } else {
+        "    vec4 color = source_color * u_Effect.g_ResolvedColorAlpha;\n"
     };
     let shaped_sine_declaration = r#"float shapedSine(float phase, float exponent) {
     float wave = sin(phase);
@@ -126,10 +142,9 @@ void main() {
     float authored_filter_radius = 0.17 * sqrt(max(float(stage_count - 1), 0.0));
 "#,
         &source_filter,
-        r#"
-    vec4 color = source_color * u_Effect.g_ResolvedColorAlpha;
-    color.a *= v_VertexAlpha;
-"#,
+        "\n",
+        color_reconstruction,
+        "    color.a *= v_VertexAlpha;\n",
         premultiply,
         r#"    o_Color = color;
 }
@@ -143,4 +158,8 @@ pub(crate) fn stage_count_from_shader_key(key: &str) -> Option<usize> {
         .find_map(|part| part.strip_prefix("STAGES_"))
         .and_then(|count| count.parse::<usize>().ok())
         .filter(|count| (2..=7).contains(count))
+}
+
+pub(crate) fn static_black_output_from_shader_key(key: &str) -> bool {
+    key.split("__").any(|part| part == "STATIC_BLACK_1")
 }

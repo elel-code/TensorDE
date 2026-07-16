@@ -38,6 +38,7 @@ pub(super) fn create_waterwaves_displacement_materials(
     base_material_index: usize,
     final_scene_blend: SceneBlendMode,
     object_is_puppet: bool,
+    static_black_output: bool,
     effects: &[WeEffectPassContract],
 ) -> WaterWavesDisplacementMaterials {
     if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
@@ -59,7 +60,13 @@ pub(super) fn create_waterwaves_displacement_materials(
                 IMAGE_DIRECT_SHADER
             }
         });
-    let material = create_aggregated_material(builder, base_material_index, effects, direct_shader);
+    let material = create_aggregated_material(
+        builder,
+        base_material_index,
+        effects,
+        direct_shader,
+        static_black_output,
+    );
     if direct_shader.is_some() {
         WaterWavesDisplacementMaterials {
             direct: material.map(|(material_index, shader)| WeWaterWavesDirectMaterial {
@@ -81,6 +88,7 @@ fn create_aggregated_material(
     base_material_index: usize,
     effects: &[WeEffectPassContract],
     direct_shader: Option<&str>,
+    static_black_output: bool,
 ) -> Option<(usize, String)> {
     let mut stages = Vec::with_capacity(effects.len());
     let mut template = None;
@@ -179,7 +187,7 @@ fn create_aggregated_material(
     pass.material = handle;
     pass.shader_key = direct_shader.map_or_else(
         || WATERWAVES_UV_FIELD_SHADER.to_owned(),
-        |shader| direct_shader_key(shader, &stages),
+        |shader| direct_shader_key(shader, &stages, static_black_output),
     );
     pass.target.clear();
     pass.texture_start = texture_start;
@@ -203,8 +211,17 @@ fn create_aggregated_material(
     Some((handle as usize, shader))
 }
 
-fn direct_shader_key(shader: &str, stages: &[WaterWavesStageMaterial]) -> String {
-    format!("{shader}__STAGES_{}", stages.len())
+fn direct_shader_key(
+    shader: &str,
+    stages: &[WaterWavesStageMaterial],
+    static_black_output: bool,
+) -> String {
+    let static_black = if static_black_output {
+        "__STATIC_BLACK_1"
+    } else {
+        ""
+    };
+    format!("{shader}__STAGES_{}{static_black}", stages.len())
 }
 
 fn combo_enabled(effect: &WeEffectPassContract, name: &str) -> bool {
@@ -235,8 +252,24 @@ mod tests {
     #[test]
     fn direct_shader_key_records_the_typed_stage_count() {
         assert_eq!(
-            direct_shader_key(IMAGE_DIRECT_SHADER, &[stage(&[], false), stage(&[], false)]),
+            direct_shader_key(
+                IMAGE_DIRECT_SHADER,
+                &[stage(&[], false), stage(&[], false)],
+                false,
+            ),
             "we/image-waterwaves-direct__STAGES_2",
+        );
+    }
+
+    #[test]
+    fn direct_shader_key_records_static_black_output_contract() {
+        assert_eq!(
+            direct_shader_key(
+                PUPPET_DIRECT_SHADER,
+                &[stage(&[], false), stage(&[], false)],
+                true,
+            ),
+            "we/puppet-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
         );
     }
 

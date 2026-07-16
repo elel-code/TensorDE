@@ -630,6 +630,11 @@ impl WeIrBuilder {
             });
             None
         } else if let Some(material_handle) = material {
+            let static_black_output = value
+                .get("color")
+                .filter(|color| color.is_string())
+                .and_then(|color| parse_vec3(Some(color)))
+                .is_some_and(|color| color == SceneVec3::default());
             Some(self.add_render_graph_for_object(
                 handle,
                 material_handle,
@@ -637,6 +642,7 @@ impl WeIrBuilder {
                 color_blend_mode,
                 utility_layer,
                 kind == SceneAbiObjectKind::Puppet,
+                static_black_output,
             )?)
         } else {
             None

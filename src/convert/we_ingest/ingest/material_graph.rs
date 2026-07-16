@@ -407,6 +407,7 @@ impl WeIrBuilder {
         color_blend_mode: i32,
         utility_layer: Option<WeIrUtilityLayerKind>,
         object_is_puppet: bool,
+        static_black_output: bool,
     ) -> Result<u32, WeIngestError> {
         let graph_index = self.render_graphs.len() as u32;
         let base_material_handle = material;
@@ -448,6 +449,7 @@ impl WeIrBuilder {
                 base_material_handle as usize,
                 final_scene_blend,
                 object_is_puppet,
+                static_black_output,
                 &effect_passes,
             );
         let foliage_ripple = foliage_ripple::create(

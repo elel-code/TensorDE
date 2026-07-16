@@ -263,6 +263,30 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_3__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_4__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_5__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_6__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_7__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/image-waterwaves-multiply-direct",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -291,6 +315,30 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_2__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_3__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_4__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_5__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_6__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_7__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/puppet-waterwaves-direct",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -316,6 +364,30 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "we/puppet-waterwaves-direct__STAGES_7",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_3__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_4__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_5__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_6__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_7__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
@@ -596,6 +668,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             spec.key.starts_with("we/puppet-waterwaves-direct"),
             spec.key.starts_with("we/image-waterwaves-multiply-direct"),
             super::waterwaves_direct::stage_count_from_shader_key(spec.key),
+            super::waterwaves_direct::static_black_output_from_shader_key(spec.key),
         ),
         SceneShaderFamily::MeshUtilityComposite => (
             scene_mesh_vertex_source(),
