@@ -256,7 +256,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.audio_spectrum_model,
-            "decoded-s16le-goertzel-spectrum32-average"
+            "decoded-s16le-we-log-goertzel-spectrum32-average"
         );
         assert_eq!(
             snapshot.audio_output_lifecycle_model,

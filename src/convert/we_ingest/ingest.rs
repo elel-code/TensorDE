@@ -11,6 +11,7 @@
 
 mod animation_layer;
 mod asset_source;
+mod audio_binding;
 mod builtin_effect_texture;
 mod effect_target;
 mod final_effect;
@@ -253,6 +254,7 @@ struct WeIrBuilder {
     object_transform_tracks: Vec<WeIrObjectTransformTrack>,
     object_transform_channels: Vec<WeIrObjectTransformChannel>,
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
+    audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -310,6 +312,7 @@ impl WeIrBuilder {
             object_transform_tracks: Vec::new(),
             object_transform_channels: Vec::new(),
             object_transform_keyframes: Vec::new(),
+            audio_band_material_bindings: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -360,6 +363,7 @@ impl WeIrBuilder {
             object_transform_tracks: self.object_transform_tracks,
             object_transform_channels: self.object_transform_channels,
             object_transform_keyframes: self.object_transform_keyframes,
+            audio_band_material_bindings: self.audio_band_material_bindings,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
@@ -581,6 +585,11 @@ impl WeIrBuilder {
         }
 
         let color_blend_mode = value_i32(value.get("colorBlendMode")).unwrap_or(0);
+        audio_binding::ingest_audio_material_bindings(
+            handle,
+            value,
+            &mut self.audio_band_material_bindings,
+        );
         let retained_text_effect_instances;
         let retained_text_requires_dependency_composite;
         let render_effect_instances = if kind == SceneAbiObjectKind::Text {

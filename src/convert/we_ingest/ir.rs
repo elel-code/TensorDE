@@ -16,8 +16,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::render_graph::RenderGraph;
 use crate::engine::scene::abi::{
-    SceneCullMode, SceneDepthTest, SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend,
-    SceneResourceKind, SceneTextureFormat, SceneVec3,
+    SceneAudioBandMaterialTarget, SceneCullMode, SceneDepthTest,
+    SceneObjectKind as SceneAbiObjectKind, ScenePipelineBlend, SceneResourceKind,
+    SceneTextureFormat, SceneVec3,
 };
 
 mod particle;
@@ -37,6 +38,7 @@ pub struct WeSceneIr {
     pub object_transform_tracks: Vec<WeIrObjectTransformTrack>,
     pub object_transform_channels: Vec<WeIrObjectTransformChannel>,
     pub object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
+    pub audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
     pub puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     pub puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     pub puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -189,6 +191,18 @@ pub struct WeIrObjectEffect {
     pub effect: u32,
     pub instance_id: u32,
     pub visible: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct WeIrAudioBandMaterialBinding {
+    pub object: u32,
+    pub target: SceneAudioBandMaterialTarget,
+    pub spectrum_resolution: u32,
+    pub band_index: u32,
+    pub smoothing: f32,
+    pub minimum_multiplier: f32,
+    pub maximum_multiplier: f32,
+    pub initial_value: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

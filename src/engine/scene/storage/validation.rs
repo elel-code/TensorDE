@@ -55,6 +55,47 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             document.render_graphs.len(),
         )?;
     }
+    for binding in &document.audio_band_material_bindings {
+        validate_range(
+            "audio_band_material_binding.object",
+            binding.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        if !matches!(binding.spectrum_resolution, 16 | 32 | 64)
+            || binding.band_index >= binding.spectrum_resolution
+        {
+            return Err(SceneStorageError::InvalidAudioBandMaterialBinding {
+                object: binding.object,
+                reason: "resolution or band index",
+            });
+        }
+        if ![
+            binding.smoothing,
+            binding.minimum_multiplier,
+            binding.maximum_multiplier,
+            binding.initial_value,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
+            || binding.smoothing < 0.0
+        {
+            return Err(SceneStorageError::InvalidAudioBandMaterialBinding {
+                object: binding.object,
+                reason: "non-finite scalar or negative smoothing",
+            });
+        }
+    }
+    if document
+        .audio_band_material_bindings
+        .windows(2)
+        .any(|pair| pair[0].object.0 > pair[1].object.0)
+    {
+        return Err(SceneStorageError::InvalidAudioBandMaterialBinding {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            reason: "records are not grouped in object order",
+        });
+    }
     for effect in &document.object_effects {
         validate_range(
             "object_effect.object",

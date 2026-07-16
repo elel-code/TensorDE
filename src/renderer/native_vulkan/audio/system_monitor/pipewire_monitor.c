@@ -36,6 +36,23 @@ static uint32_t gilder_monitor_quantize(double value) {
     return (uint32_t)(value * (double)UINT16_MAX + 0.5);
 }
 
+static double gilder_monitor_we_spectrum_response(
+    double goertzel_power,
+    int band
+) {
+    if (!isfinite(goertzel_power) || goertzel_power <= 0.0)
+        return 0.0;
+    /* WE-compatible global spectrum semantics operate on unnormalized FFT power,
+     * followed by logarithmic compression and a high-frequency compensation curve.
+     * The factor four reverses the Hann window's 0.5 coherent gain. */
+    double level = 0.35 * log10(goertzel_power * 4.0);
+    double position = (double)band / (double)(GILDER_MONITOR_BANDS - 1);
+    double weighted = level * (2.0 - exp(0.5 - position));
+    if (!isfinite(weighted) || weighted <= 0.0)
+        return 0.0;
+    return weighted >= 1.0 ? 1.0 : weighted;
+}
+
 static double gilder_monitor_mono_sample(const int16_t *samples, int frame) {
     int base = frame * GILDER_MONITOR_CHANNELS;
     return ((double)samples[base] + (double)samples[base + 1]) / 65536.0;
@@ -70,8 +87,9 @@ static void gilder_monitor_analyze(
             q1 = q0;
         }
         double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
-        double magnitude = power > 0.0 ? sqrt(power) * 4.0 / (double)frame_count : 0.0;
-        bands[band] = gilder_monitor_quantize(magnitude);
+        bands[band] = gilder_monitor_quantize(
+            gilder_monitor_we_spectrum_response(power, band)
+        );
     }
     for (int word = 0; word < GILDER_MONITOR_PACKED_WORDS; ++word) {
         uint32_t measured = bands[word * 2] | (bands[word * 2 + 1] << 16);

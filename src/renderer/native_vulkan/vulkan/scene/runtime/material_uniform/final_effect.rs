@@ -7,6 +7,7 @@ pub(super) fn final_effect_program_values(
     shader_key: &str,
     scene_time_seconds: f32,
     spectrum: Option<&[f32; 32]>,
+    audio_material_values: &[ResolvedAudioBandMaterialValue],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     match shader_key.to_ascii_lowercase().as_str() {
         "we/image-waterwaves-final" => {
@@ -35,9 +36,16 @@ pub(super) fn final_effect_program_values(
             )
         }
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_values(parameters, draw),
-        "we/tech-circle-final" => {
-            final_tech_circle_values(parameters, draw, scene_time_seconds)
-        }
+        "we/tech-circle-final" => final_tech_circle_values(
+            parameters,
+            draw,
+            scene_time_seconds,
+            audio_material_value(
+                audio_material_values,
+                draw,
+                SceneAudioBandMaterialTarget::TechCircleSectorWidth,
+            ),
+        ),
         "we/audio-bars-final" => {
             final_audio_bars_values(parameters, storage, draw, spectrum)
         }
@@ -143,6 +151,7 @@ fn final_tech_circle_values(
     parameters: &MaterialParameters<'_>,
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
+    sector_width_override: Option<f32>,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
@@ -162,7 +171,9 @@ fn final_tech_circle_values(
     values[13] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_count"], 2.0);
     values[14] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_width"], 0.25);
     values[15] = parameters.scalar(&["tech.ui_editor_properties_5_sector_1_offset"], 0.0);
-    values[16] = parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3);
+    values[16] = sector_width_override.unwrap_or_else(|| {
+        parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3)
+    });
     values[17] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_count"], 5.0);
     values[18] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_width"], 0.75);
     values

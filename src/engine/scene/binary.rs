@@ -20,11 +20,13 @@ mod document;
 mod mesh_clipping;
 mod particle;
 mod scene_chunks;
+mod script_binding;
 mod texture;
 mod timeline;
 
 use particle::{decode_particles, encode_particles};
 use scene_chunks::*;
+use script_binding::{decode_audio_band_material_bindings, encode_audio_band_material_bindings};
 
 pub use document::SceneBinaryDocument;
 #[cfg(test)]
@@ -234,12 +236,15 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "shader contracts",
         shader_contracts.len(),
     )?;
-    for &(kind, name) in &[
-        (CHUNK_AUDIO, "audio"),
-        (CHUNK_SCRIPT_BINDING, "script binding"),
-    ] {
-        ensure_chunk_count(&chunks, kind, name, 0)?;
-    }
+    let audio_band_material_bindings =
+        decode_audio_band_material_bindings(chunk_payload(&chunks, CHUNK_SCRIPT_BINDING)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_SCRIPT_BINDING,
+        "script binding",
+        audio_band_material_bindings.len(),
+    )?;
+    ensure_chunk_count(&chunks, CHUNK_AUDIO, "audio", 0)?;
 
     Ok(SceneBinaryDocument {
         feature_flags,
@@ -287,6 +292,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         image_targets,
         shader_contracts,
         shader_constant_names,
+        audio_band_material_bindings,
     })
 }
 
@@ -469,7 +475,14 @@ fn encode_chunks(
             data: encode_particles(&document.particles)?,
         },
         empty_count_chunk(CHUNK_AUDIO),
-        empty_count_chunk(CHUNK_SCRIPT_BINDING),
+        SceneEncodedChunk {
+            kind: CHUNK_SCRIPT_BINDING,
+            item_count: checked_u32(
+                document.audio_band_material_bindings.len(),
+                "audio band material binding count",
+            )?,
+            data: encode_audio_band_material_bindings(&document.audio_band_material_bindings)?,
+        },
         SceneEncodedChunk {
             kind: CHUNK_RENDER_GRAPH,
             item_count: checked_u32(document.render_graphs.len(), "render graph count")?,

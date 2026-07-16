@@ -22,9 +22,11 @@ use final_effect::{
 use final_effect::final_audio_bars_values;
 
 use crate::engine::scene::{
-    INVALID_MATERIAL_ID, SceneMaterialConstantRecord, SceneMaterialHandle, SceneMaterialPassRecord,
-    SceneRenderingDeviceMeshDraw, SceneStorage, SceneTextureRecord,
+    INVALID_MATERIAL_ID, SceneAudioBandMaterialTarget, SceneMaterialConstantRecord,
+    SceneMaterialHandle, SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage,
+    SceneTextureRecord,
 };
+use crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue;
 use crate::renderer::native_vulkan::native_vulkan_scene_backend_plan;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -55,10 +57,32 @@ fn pack_scene_material_uniforms_with_spectrum(
     scene_time_seconds: f32,
     spectrum: Option<&[f32; 32]>,
 ) -> Vec<u8> {
+    pack_scene_material_uniforms_with_frame_inputs(
+        storage,
+        draws,
+        scene_time_seconds,
+        spectrum,
+        &[],
+    )
+}
+
+pub(super) fn pack_scene_material_uniforms_with_frame_inputs(
+    storage: &SceneStorage,
+    draws: &[SceneRenderingDeviceMeshDraw],
+    scene_time_seconds: f32,
+    spectrum: Option<&[f32; 32]>,
+    audio_material_values: &[ResolvedAudioBandMaterialValue],
+) -> Vec<u8> {
     let mut payload =
         Vec::with_capacity(draws.len() * SCENE_MATERIAL_UNIFORM_FLOATS * size_of::<f32>());
     for draw in draws {
-        for value in material_uniform_values(storage, draw, scene_time_seconds, spectrum) {
+        for value in material_uniform_values(
+            storage,
+            draw,
+            scene_time_seconds,
+            spectrum,
+            audio_material_values,
+        ) {
             payload.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -70,6 +94,7 @@ fn material_uniform_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
     spectrum: Option<&[f32; 32]>,
+    audio_material_values: &[ResolvedAudioBandMaterialValue],
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let Some(pass) = first_material_pass(storage, draw.material) else {
         return [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
@@ -120,9 +145,15 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
-        BuiltinSceneParameterLayout::TechCircle => {
-            tech_circle_values(&parameters, scene_time_seconds)
-        }
+        BuiltinSceneParameterLayout::TechCircle => tech_circle_values(
+            &parameters,
+            scene_time_seconds,
+            audio_material_value(
+                audio_material_values,
+                draw,
+                SceneAudioBandMaterialTarget::TechCircleSectorWidth,
+            ),
+        ),
         BuiltinSceneParameterLayout::FoliageSway => {
             foliage_sway_values(&parameters, storage, draw, scene_time_seconds)
         }
@@ -136,6 +167,7 @@ fn material_uniform_values(
             shader_key,
             scene_time_seconds,
             spectrum,
+            audio_material_values,
         ),
         BuiltinSceneParameterLayout::FinalWaterRipple => {
             final_waterripple_values(&parameters, storage, draw, scene_time_seconds)
@@ -249,7 +281,7 @@ fn audio_bars_values(
     values
 }
 
-fn scene_audio_spectrum32() -> Option<[f32; 32]> {
+pub(super) fn scene_audio_spectrum32() -> Option<[f32; 32]> {
     use crate::renderer::native_vulkan::audio::clock::native_vulkan_audio_spectrum32_packed;
 
     if let Some(spectrum) = diagnostic_scene_audio_spectrum32().as_ref() {
@@ -366,6 +398,7 @@ fn skew_values(parameters: &MaterialParameters<'_>) -> [f32; SCENE_MATERIAL_UNIF
 fn tech_circle_values(
     parameters: &MaterialParameters<'_>,
     scene_time_seconds: f32,
+    sector_width_override: Option<f32>,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
@@ -384,10 +417,22 @@ fn tech_circle_values(
     values[9] = parameters.scalar(&["ui_editor_properties_4_ring_2_segment_count"], 2.0);
     values[10] = parameters.scalar(&["ui_editor_properties_4_ring_2_segment_width"], 0.25);
     values[11] = parameters.scalar(&["ui_editor_properties_5_sector_1_offset"], 0.0);
-    values[12] = parameters.scalar(&["ui_editor_properties_5_sector_1_width"], 0.3);
+    values[12] = sector_width_override
+        .unwrap_or_else(|| parameters.scalar(&["ui_editor_properties_5_sector_1_width"], 0.3));
     values[13] = parameters.scalar(&["ui_editor_properties_5_sector_segment_count"], 5.0);
     values[14] = parameters.scalar(&["ui_editor_properties_5_sector_segment_width"], 0.75);
     values
+}
+
+fn audio_material_value(
+    values: &[ResolvedAudioBandMaterialValue],
+    draw: &SceneRenderingDeviceMeshDraw,
+    target: SceneAudioBandMaterialTarget,
+) -> Option<f32> {
+    values
+        .iter()
+        .find(|value| value.object == draw.object && value.target == target)
+        .map(|value| value.value)
 }
 
 fn caustics_values(
@@ -530,7 +575,8 @@ pub(super) fn material_parameter_layout(
 }
 
 pub(super) fn scene_uses_audio_spectrum(storage: &SceneStorage) -> bool {
-    native_vulkan_scene_backend_plan(storage)
+    !storage.audio_band_material_bindings().is_empty()
+        || native_vulkan_scene_backend_plan(storage)
         .rendering_device_graph
         .mesh_draws
         .iter()

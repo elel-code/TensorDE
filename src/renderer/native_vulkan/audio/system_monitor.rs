@@ -108,7 +108,7 @@ pub(in crate::renderer::native_vulkan) fn system_audio_monitor_spectrum_status(
 ) -> Option<(&'static str, bool)> {
     match SYSTEM_AUDIO_MONITOR_STATE.load(Ordering::Acquire) {
         MONITOR_STARTING => Some(("pipewire-system-output-monitor-starting", false)),
-        MONITOR_READY => Some(("pipewire-system-output-monitor-goertzel32-mono", true)),
+        MONITOR_READY => Some(("pipewire-system-output-monitor-we-log-goertzel32-mono", true)),
         MONITOR_UNAVAILABLE => Some(("zero-spectrum-pipewire-monitor-unavailable", false)),
         MONITOR_DISABLED => Some(("zero-spectrum-pipewire-monitor-disabled", false)),
         _ => None,
@@ -135,7 +135,7 @@ mod tests {
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_READY, Ordering::Release);
         assert_eq!(
             system_audio_monitor_spectrum_status(),
-            Some(("pipewire-system-output-monitor-goertzel32-mono", true))
+            Some(("pipewire-system-output-monitor-we-log-goertzel32-mono", true))
         );
         SYSTEM_AUDIO_MONITOR_STATE.store(MONITOR_NOT_REQUESTED, Ordering::Release);
     }

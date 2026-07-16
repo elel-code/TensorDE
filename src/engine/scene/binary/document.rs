@@ -49,6 +49,7 @@ pub struct SceneBinaryDocument {
     pub image_targets: Vec<SceneImageTargetRecord>,
     pub shader_contracts: Vec<SceneShaderContractRecord>,
     pub shader_constant_names: Vec<SceneStringId>,
+    pub audio_band_material_bindings: Vec<SceneAudioBandMaterialBindingRecord>,
 }
 
 impl Default for SceneBinaryDocument {
@@ -99,6 +100,7 @@ impl Default for SceneBinaryDocument {
             image_targets: Vec::new(),
             shader_contracts: Vec::new(),
             shader_constant_names: Vec::new(),
+            audio_band_material_bindings: Vec::new(),
         }
     }
 }

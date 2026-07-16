@@ -1,5 +1,6 @@
 //! Retained semantic-frame resolution with ECS-style dynamic dependency propagation.
 
+use super::audio_binding::RetainedAudioBandMaterialBindings;
 use super::{
     ResolveVisitState, ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
     ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld, SceneSemanticWorldError,
@@ -20,6 +21,7 @@ pub struct SemanticFrameResolver {
     puppet_topologies: Vec<RetainedPuppetTopology>,
     incremental_enabled: bool,
     retained_puppet_enabled: bool,
+    audio_band_material_bindings: RetainedAudioBandMaterialBindings,
 }
 
 #[derive(Debug)]
@@ -40,10 +42,12 @@ struct RetainedPuppetBone {
 
 impl SemanticFrameResolver {
     pub fn from_world(world: &SceneSemanticWorld<'_>) -> Result<Self, SceneSemanticWorldError> {
-        let frame = world.resolve_frame_at(0.0)?;
+        let mut frame = world.resolve_frame_at(0.0)?;
         let dynamic_entities = dynamic_entity_closure(world);
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
+        let audio_band_material_bindings = RetainedAudioBandMaterialBindings::from_world(world);
+        audio_band_material_bindings.initialize_frame(world, &mut frame.audio_band_material_values);
         Ok(Self {
             frame,
             dynamic_entities,
@@ -59,6 +63,7 @@ impl SemanticFrameResolver {
                 "GILDER_NATIVE_VULKAN_DISABLE_RETAINED_PUPPET_RESOLVE",
             )
             .is_none(),
+            audio_band_material_bindings,
         })
     }
 
@@ -67,8 +72,25 @@ impl SemanticFrameResolver {
         world: &SceneSemanticWorld<'_>,
         scene_time_seconds: f32,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.resolve_frame_with_audio_at(world, scene_time_seconds, &[0.0; 32])
+    }
+
+    pub fn resolve_frame_with_audio_at(
+        &mut self,
+        world: &SceneSemanticWorld<'_>,
+        scene_time_seconds: f32,
+        spectrum32: &[f32; 32],
+    ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
         if !self.incremental_enabled {
             self.frame = world.resolve_frame_at(scene_time_seconds)?;
+            self.audio_band_material_bindings
+                .initialize_frame(world, &mut self.frame.audio_band_material_values);
+            self.audio_band_material_bindings.update_frame(
+                world,
+                &mut self.frame.audio_band_material_values,
+                scene_time_seconds,
+                spectrum32,
+            );
             return Ok(&self.frame);
         }
 
@@ -118,6 +140,12 @@ impl SemanticFrameResolver {
             self.frame.puppet_bone_palettes = palettes;
             self.frame.puppet_bone_matrices = matrices;
         }
+        self.audio_band_material_bindings.update_frame(
+            world,
+            &mut self.frame.audio_band_material_values,
+            scene_time_seconds,
+            spectrum32,
+        );
         Ok(&self.frame)
     }
 

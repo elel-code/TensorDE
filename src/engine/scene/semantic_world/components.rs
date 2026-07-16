@@ -39,6 +39,12 @@ pub struct MaterialBindingComponent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioBandMaterialBindingComponent {
+    pub binding_start: u32,
+    pub binding_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MeshBindingComponent {
     pub binding_start: u32,
     pub binding_count: u32,

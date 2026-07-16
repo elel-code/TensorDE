@@ -7,6 +7,7 @@
 //! - `reverse-engineered/docs/exe/model-and-animation.md`
 //! - `references/godot/servers/rendering/storage/*`
 
+mod audio_binding;
 pub mod components;
 pub mod effect;
 pub mod entity;
@@ -19,9 +20,9 @@ pub mod timeline;
 pub mod transform_animation;
 
 pub use components::{
-    MaterialBindingComponent, MeshBindingComponent, ParentComponent, ParticleEmitterComponent,
-    PuppetBindingComponent, SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent,
-    VisibilityComponent, VisualComponent,
+    AudioBandMaterialBindingComponent, MaterialBindingComponent, MeshBindingComponent,
+    ParentComponent, ParticleEmitterComponent, PuppetBindingComponent, SemanticMeshBinding,
+    SemanticRenderPlanInputs, TransformComponent, VisibilityComponent, VisualComponent,
 };
 pub use effect::{
     ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
@@ -29,8 +30,8 @@ pub use effect::{
 pub use entity::{SemanticEntity, SemanticEntityRecord};
 pub use errors::SceneSemanticWorldError;
 pub use resolved_frame::{
-    ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
-    ResolvedPuppetBonePalette, ResolvedSemanticFrame,
+    ResolvedAttachmentLink, ResolvedAudioBandMaterialValue, ResolvedObjectState,
+    ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame,
 };
 pub use semantic_resolution::SemanticFrameResolver;
 pub use transform_animation::TransformAnimationComponent;
@@ -60,6 +61,7 @@ pub struct SceneSemanticWorld<'a> {
     visibility: Vec<Option<VisibilityComponent>>,
     visuals: Vec<Option<VisualComponent>>,
     material_bindings: Vec<Option<MaterialBindingComponent>>,
+    audio_band_material_bindings: Vec<Option<AudioBandMaterialBindingComponent>>,
     mesh_components: Vec<Option<MeshBindingComponent>>,
     object_effect_components: Vec<Option<ObjectEffectBindingComponent>>,
     puppet_components: Vec<Option<PuppetBindingComponent>>,
@@ -98,6 +100,7 @@ impl<'a> SceneSemanticWorld<'a> {
             visibility: Vec::with_capacity(object_count),
             visuals: Vec::with_capacity(object_count),
             material_bindings: Vec::with_capacity(object_count),
+            audio_band_material_bindings: Vec::with_capacity(object_count),
             mesh_components: Vec::with_capacity(object_count),
             object_effect_components: Vec::with_capacity(object_count),
             puppet_components: Vec::with_capacity(object_count),
@@ -189,6 +192,22 @@ impl<'a> SceneSemanticWorld<'a> {
 
     pub fn material_binding(&self, object: SceneObjectHandle) -> Option<&MaterialBindingComponent> {
         self.component_for_object(object, &self.material_bindings)
+    }
+
+    pub fn audio_band_material_bindings(
+        &self,
+        object: SceneObjectHandle,
+    ) -> &[SceneAudioBandMaterialBindingRecord] {
+        let Some(component) = self.component_for_object(object, &self.audio_band_material_bindings)
+        else {
+            return &[];
+        };
+        let start = component.binding_start as usize;
+        let end = start + component.binding_count as usize;
+        self.storage
+            .audio_band_material_bindings()
+            .get(start..end)
+            .unwrap_or(&[])
     }
 
     pub fn mesh_component(&self, object: SceneObjectHandle) -> Option<&MeshBindingComponent> {
@@ -347,6 +366,19 @@ impl<'a> SceneSemanticWorld<'a> {
         self.visuals.push(Some(visual_from_object(object)));
         self.material_bindings
             .push(material_binding_from_object(object));
+        let audio_bindings = self.storage.audio_band_material_bindings();
+        let audio_start = audio_bindings
+            .iter()
+            .position(|binding| binding.object == object.id);
+        let audio_count = audio_bindings
+            .iter()
+            .filter(|binding| binding.object == object.id)
+            .count();
+        self.audio_band_material_bindings
+            .push(audio_start.map(|start| AudioBandMaterialBindingComponent {
+                binding_start: start as u32,
+                binding_count: audio_count as u32,
+            }));
         self.mesh_components.push(None);
         self.object_effect_components
             .push(object_effect_binding_from_object(object));

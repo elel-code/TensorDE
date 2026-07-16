@@ -672,7 +672,7 @@ impl NativeVulkanAudioClockRuntime {
             audio_signal_level_micros: self.audio_signal_level_micros,
             audio_signal_model: "decoded-s16le-frame-rms",
             audio_spectrum32_packed: self.audio_spectrum32_packed,
-            audio_spectrum_model: "decoded-s16le-goertzel-spectrum32-average",
+            audio_spectrum_model: "decoded-s16le-we-log-goertzel-spectrum32-average",
             audio_sample_rate_hz: self.audio_sample_rate_hz,
             audio_channel_count: self.audio_channel_count,
             capacity: self.queue.capacity.min(u32::MAX as usize) as u32,

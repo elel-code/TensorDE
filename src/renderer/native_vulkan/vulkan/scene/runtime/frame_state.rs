@@ -21,7 +21,9 @@ use crate::renderer::native_vulkan::{
 use super::composite_scissor::update_scene_composite_scissors;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
-use super::material_uniform::pack_scene_material_uniforms;
+use super::material_uniform::{
+    pack_scene_material_uniforms_with_frame_inputs, scene_audio_spectrum32,
+};
 use super::scene_color_clear::{
     SceneGpuSceneColorClear, resolve_scene_color_attachment_clear,
 };
@@ -335,8 +337,9 @@ pub(super) fn write_scene_frame_buffers(
     output_extent: [u32; 2],
 ) -> Result<SceneFrameBufferUpdate, String> {
     let semantic_started = cpu_timing_enabled.then(Instant::now);
+    let audio_spectrum = scene_audio_spectrum32().unwrap_or([0.0; 32]);
     let semantic_frame = semantic_resolver
-        .resolve_frame_at(semantic_world, scene_time_seconds)
+        .resolve_frame_with_audio_at(semantic_world, scene_time_seconds, &audio_spectrum)
         .map_err(|err| {
             format!(
                 "resolve scene semantic frame at {scene_time_seconds:.6}s for Vulkan buffer update: {err}"
@@ -362,8 +365,13 @@ pub(super) fn write_scene_frame_buffers(
         let material_buffer = material_buffer.ok_or_else(|| {
             "scene has dynamic effect uniforms but no material uniform buffer".to_owned()
         })?;
-        let material_payload =
-            pack_scene_material_uniforms(storage, &graph.mesh_draws, scene_time_seconds);
+        let material_payload = pack_scene_material_uniforms_with_frame_inputs(
+            storage,
+            &graph.mesh_draws,
+            scene_time_seconds,
+            Some(&audio_spectrum),
+            &semantic_frame.audio_band_material_values,
+        );
         write_exact_frame_payload(device, material_buffer, &material_payload)?;
         true
     } else {
@@ -629,6 +637,7 @@ mod tests {
                 matrix,
                 alpha: 0.25,
             }],
+            audio_band_material_values: Vec::new(),
             visible_object_count: 0,
             visible_mesh_binding_count: 0,
             visible_effect_instance_count: 0,

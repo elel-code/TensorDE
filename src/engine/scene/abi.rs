@@ -15,9 +15,8 @@ use serde::{Deserialize, Serialize};
 mod binary_contract;
 mod particle_contract;
 mod render_contract;
-pub use binary_contract::*;
-pub use particle_contract::*;
-pub use render_contract::*;
+mod script_contract;
+pub use {binary_contract::*, particle_contract::*, render_contract::*, script_contract::*};
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
 pub const SCENE_FEATURE_RENDER_GRAPH: u64 = 1 << 1;

@@ -1499,6 +1499,17 @@ static double gilder_audio_output_mono_sample(
     return ((double)sum / (double)channels) / 32768.0;
 }
 
+static double gilder_audio_output_we_spectrum_response(double power, int band) {
+    if (!isfinite(power) || power <= 0.0)
+        return 0.0;
+    double level = 0.35 * log10(power * 4.0);
+    double position = (double)band / (double)(GILDER_AUDIO_SPECTRUM_BANDS - 1);
+    double weighted = level * (2.0 - exp(0.5 - position));
+    if (!isfinite(weighted) || weighted <= 0.0)
+        return 0.0;
+    return weighted >= 1.0 ? 1.0 : weighted;
+}
+
 static void gilder_audio_output_spectrum32_packed(
     const uint8_t *data,
     int byte_count,
@@ -1536,8 +1547,9 @@ static void gilder_audio_output_spectrum32_packed(
         double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
         if (power < 0.0)
             power = 0.0;
-        double magnitude = sqrt(power) * 4.0 / (double)frame_count;
-        uint32_t quantized = gilder_audio_output_quantize_u16(magnitude);
+        uint32_t quantized = gilder_audio_output_quantize_u16(
+            gilder_audio_output_we_spectrum_response(power, band)
+        );
         int word = band / 2;
         if ((band & 1) == 0)
             spectrum32_packed[word] |= quantized;

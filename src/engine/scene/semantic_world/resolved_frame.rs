@@ -20,6 +20,7 @@ pub struct ResolvedSemanticFrame {
     pub attachment_links: Vec<ResolvedAttachmentLink>,
     pub puppet_bone_palettes: Vec<ResolvedPuppetBonePalette>,
     pub puppet_bone_matrices: Vec<ResolvedPuppetBoneMatrix>,
+    pub audio_band_material_values: Vec<ResolvedAudioBandMaterialValue>,
     pub visible_object_count: usize,
     pub visible_mesh_binding_count: usize,
     pub visible_effect_instance_count: usize,
@@ -77,6 +78,7 @@ impl ResolvedSemanticFrame {
             attachment_links,
             puppet_bone_palettes,
             puppet_bone_matrices,
+            audio_band_material_values: Vec::new(),
             visible_object_count,
             visible_mesh_binding_count,
             visible_effect_instance_count,
@@ -92,6 +94,24 @@ impl ResolvedSemanticFrame {
             .get(object.0 as usize)
             .filter(|state| state.object == object)
     }
+
+    pub fn audio_material_value(
+        &self,
+        object: SceneObjectHandle,
+        target: SceneAudioBandMaterialTarget,
+    ) -> Option<f32> {
+        self.audio_band_material_values
+            .iter()
+            .find(|value| value.object == object && value.target == target)
+            .map(|value| value.value)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ResolvedAudioBandMaterialValue {
+    pub object: SceneObjectHandle,
+    pub target: SceneAudioBandMaterialTarget,
+    pub value: f32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
