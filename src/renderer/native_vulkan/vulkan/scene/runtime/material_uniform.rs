@@ -11,8 +11,17 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
+mod color_effect;
 mod final_effect;
+mod oscilloscope;
 mod particle;
+mod shader_key;
+mod value_writer;
+mod weather_effect;
+
+use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
+use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
+use value_writer::set_vector;
 
 use final_effect::{
     final_effect_program_values, final_waterripple_values, final_waterwaves_values,
@@ -110,6 +119,10 @@ fn material_uniform_values(
             particle::particle_values(storage, draw, scene_time_seconds)
         }
         BuiltinSceneParameterLayout::AudioBars => audio_bars_values(&parameters, spectrum),
+        BuiltinSceneParameterLayout::Blend => blend_values(&parameters, storage, shader_key),
+        BuiltinSceneParameterLayout::BlendGradient => {
+            blend_gradient_values(&parameters, storage, shader_key)
+        }
         BuiltinSceneParameterLayout::StandardMaterial => {
             if draw.apply_resolved_visual
                 && draw.primitive
@@ -139,12 +152,28 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::ColorKey => colorkey_values(&parameters, shader_key),
         BuiltinSceneParameterLayout::Iris => iris_fragment_values(&parameters, shader_key),
+        BuiltinSceneParameterLayout::Lightning => {
+            weather_effect::lightning_values(&parameters, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::Lut => lut_values(&parameters),
+        BuiltinSceneParameterLayout::Oscilloscope => {
+            oscilloscope::oscilloscope_values(&parameters, spectrum)
+        }
         BuiltinSceneParameterLayout::Opacity => opacity_values(&parameters),
+        BuiltinSceneParameterLayout::Raindrop => {
+            weather_effect::raindrop_values(&parameters, storage, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::RoundedMask => {
             rounded_mask_values(&parameters, draw.resolved_color, draw.resolved_alpha)
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
+        BuiltinSceneParameterLayout::Shimmer => {
+            shimmer_values(&parameters, scene_time_seconds)
+        }
+        BuiltinSceneParameterLayout::Swing => {
+            weather_effect::swing_values(&parameters, storage, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::TechCircle => tech_circle_values(
             &parameters,
             scene_time_seconds,
@@ -595,6 +624,7 @@ fn material_uses_audio_spectrum(
     };
     native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
         shader.parameter_layout == BuiltinSceneParameterLayout::AudioBars
+            || shader.parameter_layout == BuiltinSceneParameterLayout::Oscilloscope
             || (shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
                 && shader_key.eq_ignore_ascii_case("we/audio-bars-final"))
     })
@@ -911,35 +941,6 @@ fn waterripple_values(
     values[11] = ratio;
     values[12..16].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 1));
     values
-}
-
-fn set_vector(values: &mut [f32], start: usize, parameter: &[f32], count: usize) {
-    for (lane, value) in parameter.iter().take(count).enumerate() {
-        if let Some(destination) = values.get_mut(start + lane) {
-            *destination = *value;
-        }
-    }
-}
-
-fn shader_combo_enabled(shader_key: &str, name: &str) -> bool {
-    let prefix = format!("{}_", name.to_ascii_uppercase());
-    shader_key.split("__").any(|part| {
-        part.to_ascii_uppercase()
-            .strip_prefix(&prefix)
-            .and_then(|value| value.parse::<i64>().ok())
-            .is_some_and(|value| value != 0)
-    })
-}
-
-fn shader_texture_slot_enabled(shader_key: &str, slot: u32) -> bool {
-    shader_key
-        .split("__")
-        .find_map(|part| {
-            part.strip_prefix("SLOTS_")
-                .or_else(|| part.strip_prefix("slots_"))
-                .and_then(|mask| u32::from_str_radix(mask, 16).ok())
-        })
-        .is_some_and(|mask| slot < 32 && mask & (1 << slot) != 0)
 }
 
 fn bool_float(value: bool) -> f32 {

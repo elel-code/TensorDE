@@ -127,6 +127,25 @@ impl SceneFrameTopology {
         scene_time_seconds: f32,
     ) -> Result<&SceneRenderingDeviceGraphPlan, String> {
         validate_dynamic_counts(&self.graph, semantic_frame, scene_time_seconds)?;
+        let hidden_render_texture_objects = self
+            .graph
+            .pass_nodes
+            .iter()
+            .filter(|pass| {
+                pass.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
+                    && storage.string(pass.target_name).is_some_and(|name| {
+                        name.starts_with("_rt_imageLayerComposite_")
+                    })
+            })
+            .flat_map(|pass| {
+                self.graph
+                    .mesh_draws
+                    .iter()
+                    .skip(pass.mesh_draw_start as usize)
+                    .take(pass.mesh_draw_count as usize)
+                    .map(|draw| draw.object)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         for draw in &mut self.graph.mesh_draws {
             if draw.object.0 == crate::engine::scene::INVALID_OBJECT_ID {
                 continue;
@@ -137,7 +156,7 @@ impl SceneFrameTopology {
                     draw.object.0
                 )
             })?;
-            if !object.resolved_visible {
+            if !object.resolved_visible && !hidden_render_texture_objects.contains(&draw.object) {
                 return Err(format!(
                     "scene draw object {} became hidden at {scene_time_seconds:.6}s; live draw topology mutation is not supported",
                     draw.object.0

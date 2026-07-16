@@ -16,10 +16,12 @@ mod builtin_effect_texture;
 mod effect_target;
 mod final_effect;
 mod foliage_ripple;
+mod image_layer_composite;
 mod image_plane;
 mod json_value;
 mod material_graph;
 mod material_instance;
+mod media_state;
 mod particle;
 mod pipeline_state;
 mod puppet_clipping;
@@ -350,6 +352,7 @@ impl WeIrBuilder {
     }
 
     fn finish(mut self) -> Result<WeSceneIr, WeIngestError> {
+        self.materialize_image_layer_composite_targets();
         self.build_shader_contracts();
         Ok(WeSceneIr {
             project_root: self.project_root,
@@ -657,6 +660,18 @@ impl WeIrBuilder {
             &mut self.unsupported,
         );
 
+        let media_controlled_group_hidden = kind == SceneAbiObjectKind::Unsupported
+            && media_state::group_starts_hidden_without_media_session(value);
+        if media_controlled_group_hidden {
+            self.unsupported.push(WeIrUnsupported {
+                object: Some(handle),
+                pass_index: None,
+                feature: "media-playback-controlled-group-awaits-session-state".to_owned(),
+                expected_subsystem: "scene media-session semantic binding".to_owned(),
+                containment: "media-dependent-group-hidden-while-no-session-is-connected"
+                    .to_owned(),
+            });
+        }
         self.objects.push(WeIrObject {
             handle,
             we_id,
@@ -679,7 +694,8 @@ impl WeIrBuilder {
                 .filter(|alpha| alpha.is_finite())
                 .unwrap_or(1.0)
                 .clamp(0.0, 1.0),
-            visible: bound_bool(value.get("visible")).unwrap_or(true),
+            visible: bound_bool(value.get("visible")).unwrap_or(true)
+                && !media_controlled_group_hidden,
             color_blend_mode,
             sort_order: value_i32(value.get("sortorder")).unwrap_or(index as i32),
             utility_layer,

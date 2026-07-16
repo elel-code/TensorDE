@@ -10,13 +10,21 @@
 pub enum BuiltinSceneParameterLayout {
     None,
     AudioBars,
+    Blend,
+    BlendGradient,
     Particle,
     StandardMaterial,
     Iris,
+    Lightning,
+    Lut,
+    Oscilloscope,
     Opacity,
+    Raindrop,
     RoundedMask,
     Scroll,
     Skew,
+    Shimmer,
+    Swing,
     TechCircle,
     Caustics,
     CloudMotion,
@@ -44,6 +52,9 @@ impl BuiltinSceneParameterLayout {
         matches!(
             self,
             Self::AudioBars
+                | Self::Blend
+                | Self::BlendGradient
+                | Self::Oscilloscope
                 | Self::FinalEffectProgram
                 | Self::Iris
                 | Self::Particle
@@ -62,7 +73,11 @@ impl BuiltinSceneParameterLayout {
         matches!(
             self,
             Self::AudioBars
+                | Self::Blend
+                | Self::BlendGradient
                 | Self::Iris
+                | Self::Lightning
+                | Self::Oscilloscope
                 | Self::Particle
                 | Self::Caustics
                 | Self::CloudMotion
@@ -74,6 +89,9 @@ impl BuiltinSceneParameterLayout {
                 | Self::RippleFlowComposite
                 | Self::Shake
                 | Self::Scroll
+                | Self::Raindrop
+                | Self::Shimmer
+                | Self::Swing
                 | Self::TechCircle
                 | Self::WaterFlow
                 | Self::WaterWaves

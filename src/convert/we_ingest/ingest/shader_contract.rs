@@ -254,19 +254,29 @@ fn effect_shader_slot_mask(key: &str) -> Option<u32> {
 fn effect_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
     [
         "effects/caustics",
+        "effects/111",
+        "effects/blend",
         "effects/cloudmotion",
         "effects/iris",
         "effects/opacity",
         "effects/scroll",
         "effects/shake",
+        "effects/shimmer",
+        "effects/swing",
+        "effects/foliagesway",
         "effects/skew",
         "effects/waterwaves",
         "effects/waterflow",
         "effects/waterripple",
         "workshop/2790231929/effects/foliagesway",
+        "workshop/2962751255/effects/blend",
+        "workshop/2962751255/effects/blendgradient",
         "workshop/2123274886/effects/tech_circle",
         "workshop/3082978660/effects/simple_audio_bars",
         "workshop/3083593512/effects/rounded_mask",
+        "workshop/3165346237/effects/lut_loader",
+        "workshop/3706822104/effects/raindrop_on_glass",
+        "workshop/2799421411/effects/audio_responsive_oscilloscope",
     ]
     .iter()
     .any(|shader| {

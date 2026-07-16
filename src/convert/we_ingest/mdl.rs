@@ -155,7 +155,10 @@ pub enum MdlParseError {
     InvalidMagic(String),
     InvalidVersion(String),
     UnexpectedEof(&'static str),
-    InvalidUtf8Path,
+    InvalidUtf8String {
+        field: &'static str,
+        offset: usize,
+    },
     UnsupportedVertexStride {
         layout_mask: u32,
         vertex_bytes: u32,
@@ -178,7 +181,9 @@ impl fmt::Display for MdlParseError {
             Self::UnexpectedEof(field) => {
                 write!(f, "unexpected end of WE MDL while reading {field}")
             }
-            Self::InvalidUtf8Path => f.write_str("WE MDL material path is not valid UTF-8"),
+            Self::InvalidUtf8String { field, offset } => {
+                write!(f, "WE MDL {field} at byte {offset} is not valid UTF-8")
+            }
             Self::UnsupportedVertexStride {
                 layout_mask,
                 vertex_bytes,
@@ -355,10 +360,21 @@ fn parse_mdla_animations_from(
     )?;
     let clip_count = decoder.u32("mdla_clip_count")?;
     let clip_capacity = decoder.checked_count(clip_count, 26, "mdla_clip_records")?;
+    let expected_bone_count = bones.len().min(u32::MAX as usize) as u32;
     let mut clips = Vec::with_capacity(clip_capacity);
     for clip_index in 0..clip_count {
         if clip_index != 0 {
             decoder.skip_zero_padding(section_end);
+            if !plausible_mdla_clip_header(bytes, decoder.offset, section_end, expected_bone_count)
+                && let Some(next_header) = find_next_mdla_clip_header(
+                    bytes,
+                    decoder.offset,
+                    section_end,
+                    expected_bone_count,
+                )
+            {
+                decoder.offset = next_header;
+            }
         }
         let clip_id = decoder.u32("mdla_clip_id")?;
         let flags = decoder.u32("mdla_flags")?;
@@ -402,13 +418,19 @@ fn parse_mdla_animations_from(
                 opacity_samples: Vec::new(),
             });
         }
-        if let Some((end, opacity_tracks)) = parse_mdla_opacity_tracks(
-            bytes,
-            decoder.offset,
-            section_end,
-            bone_count,
-            frame_count.saturating_add(1),
-        ) {
+        let remaining_clip_count = clip_count.saturating_sub(clip_index + 1);
+        let next_clip_already_follows = remaining_clip_count != 0
+            && plausible_mdla_clip_header(bytes, decoder.offset, section_end, bone_count);
+        if !next_clip_already_follows
+            && let Some((end, opacity_tracks)) = parse_mdla_opacity_tracks(
+                bytes,
+                decoder.offset,
+                section_end,
+                bone_count,
+                frame_count.saturating_add(1),
+                remaining_clip_count,
+            )
+        {
             decoder.offset = end;
             for (track, (opacity_flags, opacity_samples)) in tracks.iter_mut().zip(opacity_tracks) {
                 track.opacity_flags = opacity_flags;
@@ -435,6 +457,7 @@ fn parse_mdla_opacity_tracks(
     section_end: usize,
     bone_count: u32,
     sample_count: u32,
+    remaining_clip_count: u32,
 ) -> Option<(usize, Vec<(u32, Vec<f32>)>)> {
     let track_bytes = usize::try_from(sample_count).ok()?.checked_mul(4)?;
     let block_bytes = track_bytes.checked_add(8)?;
@@ -465,11 +488,75 @@ fn parse_mdla_opacity_tracks(
             }
             tracks.push((flags, samples));
         }
-        if valid {
+        let lands_on_next_clip = remaining_clip_count == 0
+            || plausible_mdla_clip_header(bytes, end, section_end, bone_count);
+        if valid && lands_on_next_clip {
             return Some((end, tracks));
         }
     }
     None
+}
+
+fn plausible_mdla_clip_header(
+    bytes: &[u8],
+    mut offset: usize,
+    section_end: usize,
+    expected_bone_count: u32,
+) -> bool {
+    let section_end = section_end.min(bytes.len());
+    while offset < section_end && bytes[offset] == 0 {
+        offset += 1;
+    }
+    let Some(header) = bytes.get(offset..section_end) else {
+        return false;
+    };
+    if header.len() < 8 || u32_at(header, 0) == 0 {
+        return false;
+    }
+    let mut cursor = 8usize;
+    for string_index in 0..2 {
+        let Some(length) = header[cursor..].iter().position(|byte| *byte == 0) else {
+            return false;
+        };
+        let value = &header[cursor..cursor + length];
+        if std::str::from_utf8(value).is_err()
+            || (string_index == 1
+                && (value.is_empty()
+                    || !value.iter().all(|byte| {
+                        byte.is_ascii_alphanumeric() || *byte == b'-' || *byte == b'_'
+                    })))
+        {
+            return false;
+        }
+        cursor += length + 1;
+    }
+    let Some(scalars) = header.get(cursor..cursor + 16) else {
+        return false;
+    };
+    let fps = f32::from_le_bytes(scalars[..4].try_into().expect("fps slice"));
+    let track_count = u32_at(scalars, 12);
+    fps.is_finite() && fps > 0.0 && fps <= 1_000.0 && track_count == expected_bone_count
+}
+
+fn find_next_mdla_clip_header(
+    bytes: &[u8],
+    offset: usize,
+    section_end: usize,
+    expected_bone_count: u32,
+) -> Option<usize> {
+    const MAX_INTER_CLIP_METADATA_BYTES: usize = 64 * 1024;
+    let scan_end = offset
+        .saturating_add(MAX_INTER_CLIP_METADATA_BYTES)
+        .min(section_end)
+        .min(bytes.len());
+    (offset..scan_end).find_map(|candidate| {
+        plausible_mdla_clip_header(bytes, candidate, section_end, expected_bone_count).then(|| {
+            bytes[candidate..scan_end]
+                .iter()
+                .position(|byte| *byte != 0)
+                .map_or(candidate, |padding| candidate + padding)
+        })
+    })
 }
 
 fn mdl_section_end(
@@ -800,7 +887,10 @@ impl<'a> MdlDecoder<'a> {
             .position(|byte| *byte == 0)
             .ok_or(MdlParseError::UnexpectedEof(field))?;
         let value =
-            std::str::from_utf8(&tail[..len]).map_err(|_| MdlParseError::InvalidUtf8Path)?;
+            std::str::from_utf8(&tail[..len]).map_err(|_| MdlParseError::InvalidUtf8String {
+                field,
+                offset: start,
+            })?;
         self.offset = start + len + 1;
         Ok(value.replace('\\', "/"))
     }

@@ -22,6 +22,41 @@ fn waterwaves_direct_fragment(
     stage_count: Option<usize>,
     static_black_output: bool,
 ) -> String {
+    let mask_stage_count = stage_count.unwrap_or(7).min(7);
+    let mask_sampler_declarations = (0..mask_stage_count)
+        .map(|stage| {
+            let slot = stage + 1;
+            let binding = if slot == 3 { 35 } else { slot };
+            format!(
+                "layout(set = 0, binding = {binding}) uniform sampler2D g_Texture{slot};\n"
+            )
+        })
+        .collect::<String>();
+    let stage_mask_body = if mask_stage_count == 0 {
+        "    return 1.0;\n".to_owned()
+    } else if stage_count.is_some() {
+        (0..mask_stage_count)
+            .map(|stage| {
+                let slot = stage + 1;
+                if stage + 1 == mask_stage_count {
+                    format!("    return texture(g_Texture{slot}, uv).r;\n")
+                } else {
+                    format!("    if (stage == {stage}) return texture(g_Texture{slot}, uv).r;\n")
+                }
+            })
+            .collect::<String>()
+    } else {
+        (0..7)
+            .map(|stage| {
+                let slot = stage + 1;
+                if stage == 6 {
+                    format!("    return texture(g_Texture{slot}, uv).r;\n")
+                } else {
+                    format!("    if (stage == {stage}) return texture(g_Texture{slot}, uv).r;\n")
+                }
+            })
+            .collect::<String>()
+    };
     let premultiply = premultiply_output
         .then_some("    color.rgb *= color.a;\n")
         .unwrap_or_default();
@@ -84,13 +119,9 @@ layout(location = 0) in vec2 v_TexCoord;
 layout(location = 1) in float v_VertexAlpha;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
-layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
-layout(set = 0, binding = 2) uniform sampler2D g_Texture2;
-layout(set = 0, binding = 4) uniform sampler2D g_Texture4;
-layout(set = 0, binding = 5) uniform sampler2D g_Texture5;
-layout(set = 0, binding = 6) uniform sampler2D g_Texture6;
-layout(set = 0, binding = 7) uniform sampler2D g_Texture7;
-layout(set = 0, binding = 35) uniform sampler2D g_Texture3;
+"#,
+        &mask_sampler_declarations,
+        r#"
 layout(set = 0, binding = 3) uniform WaterWavesDirectUniform {
     vec4 g_ResolvedColorAlpha;
     vec4 g_Chain;
@@ -100,14 +131,9 @@ layout(set = 0, binding = 3) uniform WaterWavesDirectUniform {
         shaped_sine_declaration,
         r#"
 float stageMask(int stage, vec2 uv) {
-    if (stage == 0) return texture(g_Texture1, uv).r;
-    if (stage == 1) return texture(g_Texture2, uv).r;
-    if (stage == 2) return texture(g_Texture3, uv).r;
-    if (stage == 3) return texture(g_Texture4, uv).r;
-    if (stage == 4) return texture(g_Texture5, uv).r;
-    if (stage == 5) return texture(g_Texture6, uv).r;
-    return texture(g_Texture7, uv).r;
-}
+"#,
+        &stage_mask_body,
+        r#"}
 vec2 stageOffset(int stage, vec2 uv) {
     int base = stage * 4;
     vec4 phase_scale_strength2_mask = u_Effect.g_Stage[base];

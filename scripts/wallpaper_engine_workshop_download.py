@@ -50,7 +50,10 @@ def main() -> int:
     summary = summary_dir / "summary.txt"
     commands = summary_dir / "commands.txt"
 
-    download_root = Path(args.download_root)
+    # SteamCMD resolves a relative force_install_dir against its own executable
+    # directory, not necessarily the caller's cwd. Keep the workshop cache rooted
+    # in the repository regardless of where the SteamCMD wrapper changes directory.
+    download_root = Path(args.download_root).expanduser().resolve()
     content_dir = download_root / "steamapps/workshop/content" / str(args.appid)
     steam_user = "" if args.anonymous else args.steam_user
     steamcmd_args = [steamcmd, "+force_install_dir", str(download_root)]

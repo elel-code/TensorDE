@@ -1,3 +1,5 @@
+#[path = "scene_shader/blend.rs"]
+mod blend;
 #[path = "scene_shader/catalog.rs"]
 mod catalog;
 #[path = "scene_shader/core_material.rs"]
@@ -6,8 +8,20 @@ mod core_material;
 mod effect_program;
 #[path = "scene_shader/final_effect.rs"]
 mod final_effect;
+#[path = "scene_shader/lightning.rs"]
+mod lightning;
+#[path = "scene_shader/lut.rs"]
+mod lut;
+#[path = "scene_shader/oscilloscope.rs"]
+mod oscilloscope;
 #[path = "scene_shader/particle.rs"]
 mod particle;
+#[path = "scene_shader/raindrop.rs"]
+mod raindrop;
+#[path = "scene_shader/shimmer.rs"]
+mod shimmer;
+#[path = "scene_shader/swing.rs"]
+mod swing;
 #[path = "scene_shader/waterwaves_direct.rs"]
 mod waterwaves_direct;
 

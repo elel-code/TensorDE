@@ -225,6 +225,9 @@ pub(super) fn with_scene_present(
             return Err(err);
         }
     };
+    if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some() {
+        eprintln!("gilder-scene-startup: resources-created");
+    }
     end_one_time_commands(device, setup_command_buffer, "scene setup")?;
     if let Err(err) = submit_and_wait_setup_commands(
         device,
@@ -242,6 +245,9 @@ pub(super) fn with_scene_present(
             present_device.device.destroy_device(None);
         }
         return Err(err);
+    }
+    if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some() {
+        eprintln!("gilder-scene-startup: setup-submitted");
     }
     release_scene_upload_staging(device, &mut scene_resources);
     let released_resource_payload_bytes = options.storage.release_parsed_resource_payload();
@@ -349,6 +355,9 @@ pub(super) fn with_scene_present(
         &scene_resources.graph_execution_order,
         &effect_timing_commands,
     )?;
+    if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some() {
+        eprintln!("gilder-scene-startup: frame-loop-ready");
+    }
     let started_at = Instant::now();
     let deadline = started_at + options.duration;
     let frame_interval = options
@@ -401,6 +410,11 @@ pub(super) fn with_scene_present(
                 .reset_fences(&[frame_context.fence])
                 .map_err(|err| format!("vkResetFences(vulkanalia scene present): {err:?}"))?;
         }
+        if frames_presented == 0
+            && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
+        {
+            eprintln!("gilder-scene-startup: first-frame-fence-ready");
+        }
         if let Some(capture) = frame_capture.as_mut() {
             capture.read_completed_frame(device)?;
         }
@@ -433,6 +447,11 @@ pub(super) fn with_scene_present(
             scene_time_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
+        if frames_presented == 0
+            && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
+        {
+            eprintln!("gilder-scene-startup: first-frame-state-ready");
+        }
         scene_resources.scene_color_attachment_clear = frame_update.scene_color_attachment_clear;
         scene_color_attachment_clear_frame_count = scene_color_attachment_clear_frame_count
             .saturating_add(u64::from(
@@ -498,6 +517,11 @@ pub(super) fn with_scene_present(
             swapchain_images[image_index],
             swapchain_plan.format.format,
         )?;
+        if frames_presented == 0
+            && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
+        {
+            eprintln!("gilder-scene-startup: first-frame-descriptors-ready");
+        }
         sampled_descriptor_update_count = sampled_descriptor_update_count
             .saturating_add(sampled_descriptor_updates as u64);
         sampled_descriptor_update_total_micros = sampled_descriptor_update_total_micros
@@ -526,6 +550,11 @@ pub(super) fn with_scene_present(
             pending_frame_capture,
             gpu_timing.as_ref(),
         )?;
+        if frames_presented == 0
+            && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
+        {
+            eprintln!("gilder-scene-startup: first-frame-recorded");
+        }
         command_recording_total_micros = command_recording_total_micros
             .saturating_add(elapsed_micros_u64(command_recording_started));
         image_layouts[image_index] = vk::ImageLayout::PRESENT_SRC_KHR;
@@ -537,6 +566,11 @@ pub(super) fn with_scene_present(
             render_finished,
             frame_context.fence,
         )?;
+        if frames_presented == 0
+            && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
+        {
+            eprintln!("gilder-scene-startup: first-frame-submitted");
+        }
         if let Some(timing) = gpu_timing.as_mut() {
             timing.mark_submitted();
         }

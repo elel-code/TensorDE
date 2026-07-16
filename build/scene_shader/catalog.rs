@@ -43,6 +43,22 @@ pub(crate) enum SceneShaderFamily {
 
 const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     SceneShaderSpec {
+        key: "effects/111__SLOTS_1__BLENDMODE_7",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/111__SLOTS_1__BLENDMODE_31",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blend__SLOTS_3__BLENDMODE_0",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/blend__SLOTS_3__BLENDMODE_0__TRANSFORMREPEAT_2__TRANSFORMUV_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "effects/caustics__SLOTS_21__BLENDMODE_6",
         family: SceneShaderFamily::Effect,
     },
@@ -100,6 +116,26 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "effects/shake__SLOTS_3",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/shimmer__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/shimmer__SLOTS_3",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/shimmer__SLOTS_9",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/shimmer__SLOTS_b",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/swing__SLOTS_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
@@ -463,6 +499,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "effects/foliagesway__SLOTS_5",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "effects/foliagesway__SLOTS_7",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "workshop/2790231929/effects/waterripple__SLOTS_5",
         family: SceneShaderFamily::Effect,
     },
@@ -475,11 +519,43 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
+        key: "workshop/3082978660/effects/Simple_Audio_Bars__SLOTS_1__ANTIALIAS_0__SHAPE_7",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
         key: "workshop/3083593512/effects/rounded_mask__SLOTS_1__SOFT_1",
         family: SceneShaderFamily::Effect,
     },
     SceneShaderSpec {
         key: "workshop/3083593512/effects/rounded_mask__SLOTS_1__B_SQUARE_0__C_ALPHA_ONLY_0__SOFT_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/3165346237/effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/3706822104/effects/raindrop_on_glass__SLOTS_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2799421411/effects/audio_responsive_oscilloscope__SLOTS_1__RESOLUTION_16",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2962751255/effects/blend__SLOTS_3__BLENDMODE_0__WRITEALPHA_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2962751255/effects/blend__SLOTS_3__BLENDMODE_0__TRANSFORMREPEAT_2__WRITEALPHA_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2962751255/effects/blendgradient__SLOTS_3__WRITEALPHA_1",
+        family: SceneShaderFamily::Effect,
+    },
+    SceneShaderSpec {
+        key: "workshop/2962751255/effects/blendgradient__SLOTS_7__WRITEALPHA_1",
         family: SceneShaderFamily::Effect,
     },
 ];
@@ -551,6 +627,12 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         SceneShaderFamily::EffectWaterWavesUvField => "WaterWavesUvField",
         SceneShaderFamily::EffectImageRippleSource => "WaterRipple",
         SceneShaderFamily::Effect => match effect_shader_name_for_key(spec.key) {
+            "effects/111" => "Lightning",
+            "effects/blend" | "workshop/2962751255/effects/blend" => "Blend",
+            "workshop/2962751255/effects/blendgradient" => "BlendGradient",
+            "workshop/3165346237/effects/lut_loader" => "Lut",
+            "workshop/3706822104/effects/raindrop_on_glass" => "Raindrop",
+            "workshop/2799421411/effects/audio_responsive_oscilloscope" => "Oscilloscope",
             "effects/caustics" => "Caustics",
             "effects/cloudmotion" => "CloudMotion",
             "effects/colorkey" => "ColorKey",
@@ -560,6 +642,9 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
             "effects/skew" => "Skew",
             "workshop/3083593512/effects/rounded_mask" => "RoundedMask",
             "effects/shake" => "Shake",
+            "effects/shimmer" => "Shimmer",
+            "effects/swing" => "Swing",
+            "effects/foliagesway" => "FoliageSway",
             "workshop/2790231929/effects/foliagesway" => "FoliageSway",
             "workshop/2123274886/effects/tech_circle" => "TechCircle",
             "workshop/3082978660/effects/Simple_Audio_Bars" => "AudioBars",

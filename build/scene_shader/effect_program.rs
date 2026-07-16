@@ -1,4 +1,11 @@
 use super::super::*;
+use super::blend::{blend_fragment_source, blend_gradient_fragment_source};
+use super::lightning::lightning_fragment_source;
+use super::lut::lut_fragment_source;
+use super::oscilloscope::oscilloscope_fragment_source;
+use super::raindrop::raindrop_fragment_source;
+use super::shimmer::shimmer_fragment_source;
+use super::swing::swing_fragment_source;
 
 pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u32) -> String {
     if key.contains("__GILDER_FRAMEBUFFER_OVERLAY_1") {
@@ -6,6 +13,15 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     }
     if shader == "effects/iris" {
         return iris_effect_vertex_source(texture_slot_mask);
+    }
+    if shader == "effects/blend"
+        || shader.ends_with("/effects/blend")
+        || shader.ends_with("/effects/blendgradient")
+    {
+        return waterwaves_effect_vertex_source();
+    }
+    if shader.ends_with("/effects/audio_responsive_oscilloscope") {
+        return waterwaves_effect_vertex_source();
     }
     if shader == "effects/waterwaves" || shader == "effects/waterflow" {
         return waterwaves_effect_vertex_source();
@@ -140,8 +156,32 @@ pub(crate) fn effect_fragment_source(key: &str, shader: &str, texture_slot_mask:
     if shader == "effects/colorkey" {
         return colorkey_effect_fragment_source(texture_slot_mask);
     }
-    if shader == "workshop/2790231929/effects/foliagesway" {
+    if shader.ends_with("/effects/lut_loader") {
+        return lut_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/111" {
+        return lightning_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/swing" {
+        return swing_fragment_source(texture_slot_mask);
+    }
+    if shader.ends_with("/effects/raindrop_on_glass") {
+        return raindrop_fragment_source(texture_slot_mask);
+    }
+    if shader.ends_with("/effects/audio_responsive_oscilloscope") {
+        return oscilloscope_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/blend" || shader.ends_with("/effects/blend") {
+        return blend_fragment_source(key, texture_slot_mask);
+    }
+    if shader.ends_with("/effects/blendgradient") {
+        return blend_gradient_fragment_source(key, texture_slot_mask);
+    }
+    if shader == "effects/foliagesway" || shader == "workshop/2790231929/effects/foliagesway" {
         return foliage_sway_fragment_source(texture_slot_mask);
+    }
+    if shader == "effects/shimmer" {
+        return shimmer_fragment_source(key, texture_slot_mask);
     }
     if shader == "effects/waterwaves" {
         return waterwaves_fragment_source(texture_slot_mask);

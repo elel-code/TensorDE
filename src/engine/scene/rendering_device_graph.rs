@@ -13,7 +13,13 @@ use super::semantic_world::{ResolvedObjectState, ResolvedSemanticFrame};
 use super::server::RendererSceneRenderPlan;
 use super::storage::SceneStorage;
 
+mod draw_support;
 mod effect_batch;
+
+use draw_support::{
+    material_sampled_bindings, pass_draw_material, render_texture_producer_graphs,
+    rows_from_column_major, sampled_binding, skinning_palette_count, skinning_palette_start,
+};
 
 pub use effect_batch::{
     SceneRenderingDeviceEffectBatch, SceneRenderingDeviceEffectBatchFamily,
@@ -79,12 +85,18 @@ impl SceneRenderingDeviceGraphPlan {
                 alpha: matrix.alpha,
             })
             .collect::<Vec<_>>();
+        let render_texture_producers = render_texture_producer_graphs(storage);
 
         for (graph_index, graph) in storage.render_graphs().iter().enumerate() {
             for (local_pass_index, pass) in storage.render_graph_passes(graph).iter().enumerate() {
                 let pass_node_index = pass_nodes.len() as u32;
                 let mesh_draw_start = mesh_draws.len() as u32;
-                let pass_object_state = visible_pass_object(semantic_frame, pass);
+                let pass_object_state = visible_pass_object(
+                    semantic_frame,
+                    pass,
+                    render_texture_producers.contains(&(graph_index as u32))
+                        && pass.target != SceneRenderTargetKind::SceneColor,
+                );
                 if let (true, Some(pass_object_state)) =
                     (pass_draws_object_mesh(storage, pass), pass_object_state)
                 {
@@ -147,6 +159,7 @@ impl SceneRenderingDeviceGraphPlan {
                 sampled_bindings.extend(storage.render_pass_bindings(pass).iter().filter_map(
                     |binding| {
                         sampled_binding(
+                            storage,
                             graph_index as u32,
                             pass_node_index,
                             mesh_draw_start,
@@ -427,10 +440,11 @@ fn pass_mesh_index_range(
 fn visible_pass_object<'frame>(
     semantic_frame: &'frame ResolvedSemanticFrame,
     pass: &SceneRenderPassRecord,
+    allow_hidden_render_texture: bool,
 ) -> Option<&'frame ResolvedObjectState> {
     semantic_frame
         .object(pass.object)
-        .filter(|object| object.resolved_visible)
+        .filter(|object| object.resolved_visible || allow_hidden_render_texture)
 }
 
 fn pass_utility_primitive(
@@ -649,105 +663,6 @@ fn identity_clip_transform() -> [[f32; 4]; 4] {
     ]
 }
 
-fn rows_from_column_major(matrix: [f32; 16]) -> [[f32; 4]; 4] {
-    [
-        [matrix[0], matrix[4], matrix[8], matrix[12]],
-        [matrix[1], matrix[5], matrix[9], matrix[13]],
-        [matrix[2], matrix[6], matrix[10], matrix[14]],
-        [matrix[3], matrix[7], matrix[11], matrix[15]],
-    ]
-}
-
-fn skinning_palette_start(
-    palettes: &[SceneRenderingDevicePuppetBonePalette],
-    object: SceneObjectHandle,
-) -> u32 {
-    palettes
-        .iter()
-        .find(|palette| palette.object == object && palette.resolved_visible)
-        .map(|palette| palette.bone_matrix_start)
-        .unwrap_or(INVALID_OBJECT_ID)
-}
-
-fn skinning_palette_count(
-    palettes: &[SceneRenderingDevicePuppetBonePalette],
-    object: SceneObjectHandle,
-) -> u32 {
-    palettes
-        .iter()
-        .find(|palette| palette.object == object && palette.resolved_visible)
-        .map(|palette| palette.bone_matrix_count)
-        .unwrap_or(0)
-}
-
-fn pass_draw_material(
-    pass: &SceneRenderPassRecord,
-    mesh_material: SceneMaterialHandle,
-) -> SceneMaterialHandle {
-    if pass.material.0 == INVALID_MATERIAL_ID {
-        mesh_material
-    } else {
-        pass.material
-    }
-}
-
-fn material_sampled_bindings(
-    storage: &SceneStorage,
-    draws: &[SceneRenderingDeviceMeshDraw],
-) -> Vec<SceneRenderingDeviceMaterialSampledBinding> {
-    let mut bindings = Vec::new();
-    for (draw_index, draw) in draws.iter().enumerate() {
-        let Some(material) = storage.material(draw.material) else {
-            continue;
-        };
-        let Some(pass) = storage.material_passes(material).first() else {
-            continue;
-        };
-        bindings.extend(
-            storage
-                .material_pass_textures(pass)
-                .iter()
-                .filter(|texture| storage.texture(texture.resource).is_some())
-                .map(|texture| SceneRenderingDeviceMaterialSampledBinding {
-                    draw_index: draw_index as u32,
-                    slot: texture.slot,
-                    resource: texture.resource,
-                }),
-        );
-    }
-    bindings
-}
-
-fn sampled_binding(
-    graph_index: u32,
-    pass_node_index: u32,
-    mesh_draw_start: u32,
-    mesh_draw_count: u32,
-    binding: &SceneRenderBindingRecord,
-) -> Option<SceneRenderingDeviceSampledBinding> {
-    matches!(
-        binding.kind,
-        SceneRenderBindingKind::SourceTexture
-            | SceneRenderBindingKind::TextureSlot
-            | SceneRenderBindingKind::AlphaTextureSlot
-            | SceneRenderBindingKind::PreviousGraphTarget
-            | SceneRenderBindingKind::GraphTarget
-            | SceneRenderBindingKind::NamedFboBind
-            | SceneRenderBindingKind::EffectTarget
-            | SceneRenderBindingKind::VideoFrame
-    )
-    .then_some(SceneRenderingDeviceSampledBinding {
-        pass_node_index,
-        graph_index,
-        mesh_draw_start,
-        mesh_draw_count,
-        kind: binding.kind,
-        slot: binding.slot,
-        target: binding.target,
-        target_name: binding.name,
-    })
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TargetAllocationState {
     graph_index: u32,
@@ -875,12 +790,28 @@ fn target_allocation_compatibility(
     storage: &SceneStorage,
     state: TargetAllocationState,
 ) -> TargetAllocationCompatibility {
-    let authored_extent = matches!(
+    let image_layer_composite = state.target == SceneRenderTargetKind::FirstClassEffectTarget
+        && storage.string(state.target_name).is_some_and(|name| {
+            name.starts_with("_rt_imageLayerComposite_")
+        });
+    let authored_texture_space = matches!(
         state.target,
         SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
-    )
-    .then(|| puppet_effect_graph_extent(storage, state.graph_index))
-    .flatten()
+    ) || image_layer_composite;
+    let authored_extent = if image_layer_composite {
+        storage
+            .render_graphs()
+            .get(state.graph_index as usize)
+            .map(|graph| authored_source_extent(storage, graph.object))
+            .filter(|[width, height]| {
+                width.is_finite() && height.is_finite() && *width >= 1.0 && *height >= 1.0
+            })
+            .map(|[width, height]| [width.round() as u32, height.round() as u32])
+    } else {
+        authored_texture_space
+            .then(|| puppet_effect_graph_extent(storage, state.graph_index))
+            .flatten()
+    }
     .unwrap_or([0, 0]);
     storage
         .document()

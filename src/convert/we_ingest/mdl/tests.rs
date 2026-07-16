@@ -214,6 +214,74 @@ fn parses_mdla_animation_transform_tracks() {
 }
 
 #[test]
+fn parses_mdla_clips_separated_by_authored_frame_metadata() {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"MDLV0023\0");
+    push_u32(&mut bytes, 0x0180_0009);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    bytes.extend_from_slice(b"MDLS0004");
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    bytes.extend_from_slice(b"body-bone\0");
+    bytes.extend_from_slice(&0_i32.to_le_bytes());
+    push_u32(&mut bytes, u32::MAX);
+    push_u32(&mut bytes, 64);
+    for index in 0..16 {
+        push_f32(
+            &mut bytes,
+            f32::from(index == 0 || index == 5 || index == 10 || index == 15),
+        );
+    }
+    bytes.extend_from_slice(b"{}\0");
+    bytes.extend_from_slice(b"MDLA0006");
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 2);
+
+    push_u32(&mut bytes, 400);
+    push_u32(&mut bytes, 0);
+    bytes.extend_from_slice(b"animation 1\0loop\0");
+    push_f32(&mut bytes, 30.0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 36);
+    push_transform_sample(
+        &mut bytes,
+        [1.0, 2.0, 3.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+    );
+    push_u32(&mut bytes, 1);
+    push_f32(&mut bytes, 2.0);
+    bytes.extend_from_slice(b"{\"frame\":60,\"name\":\"z60\"}\0");
+
+    push_u32(&mut bytes, 454);
+    push_u32(&mut bytes, 0);
+    bytes.extend_from_slice(b"animation 2\0loop\0");
+    push_f32(&mut bytes, 30.0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 1);
+    push_u32(&mut bytes, 0);
+    push_u32(&mut bytes, 36);
+    push_transform_sample(
+        &mut bytes,
+        [4.0, 5.0, 6.0],
+        [0.0, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+    );
+
+    let model = parse_mdl_model(&bytes).expect("MDLA clips with frame metadata");
+
+    assert_eq!(model.animations.len(), 2);
+    assert_eq!(model.animations[0].clip_id, 400);
+    assert_eq!(model.animations[1].clip_id, 454);
+    assert_eq!(model.animations[1].tracks[0].samples[0].translation.x, 4.0);
+}
+
+#[test]
 fn malformed_present_mdla_section_is_not_silently_discarded() {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"MDLV0023\0");

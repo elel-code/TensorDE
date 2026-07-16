@@ -357,6 +357,10 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
         let shader = native_vulkan_scene_shader_for_key(shader_key)
             .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
+        let pipeline_debug = std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some();
+        if pipeline_debug {
+            eprintln!("gilder-scene-pipeline-create: begin shader={shader_key:?}");
+        }
         match create_scene_pipeline(
             device,
             key.target_format,
@@ -370,7 +374,12 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             key.advanced_blend_overlap,
             key.samples,
         ) {
-            Ok(pipeline) => entries.push(ScenePipelineEntry { key, pipeline }),
+            Ok(pipeline) => {
+                if pipeline_debug {
+                    eprintln!("gilder-scene-pipeline-create: complete shader={shader_key:?}");
+                }
+                entries.push(ScenePipelineEntry { key, pipeline });
+            }
             Err(err) => {
                 destroy_scene_pipelines(device, ScenePipelineResources { entries });
                 return Err(err);

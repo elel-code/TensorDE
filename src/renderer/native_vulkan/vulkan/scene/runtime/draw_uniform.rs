@@ -43,7 +43,11 @@ pub(super) fn pack_scene_draw_uniforms(
             BuiltinSceneParameterLayout::AudioBars | BuiltinSceneParameterLayout::TechCircle => {
                 identity_uv_affine_rows()
             }
-            BuiltinSceneParameterLayout::Scroll | BuiltinSceneParameterLayout::Skew => {
+            BuiltinSceneParameterLayout::Blend
+            | BuiltinSceneParameterLayout::BlendGradient
+            | BuiltinSceneParameterLayout::Oscilloscope
+            | BuiltinSceneParameterLayout::Scroll
+            | BuiltinSceneParameterLayout::Skew => {
                 object_local_effect_draw_values(storage, draw, output_extent)
             }
             BuiltinSceneParameterLayout::Caustics
