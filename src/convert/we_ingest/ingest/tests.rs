@@ -75,6 +75,83 @@ fn ingests_minimal_loose_scene_project() {
 }
 
 #[test]
+fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
+    let root = std::env::temp_dir().join(format!("gilder-we-particle-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("particles")).expect("particles");
+    fs::create_dir_all(root.join("materials/particle")).expect("materials");
+    fs::write(
+        root.join("project.json"),
+        r#"{"type":"scene","file":"scene.json","title":"Leaves"}"#,
+    )
+    .expect("project");
+    fs::write(
+        root.join("scene.json"),
+        r#"{"general":{"orthogonalprojection":{"width":3840,"height":2160}},"objects":[{"id":199,"name":"leaf","particle":"particles/leaf.json","origin":"-1075 -370 0","scale":"3.27 3.27 3.27"}]}"#,
+    )
+    .expect("scene");
+    fs::write(
+        root.join("particles/leaf.json"),
+        r#"{
+            "children":[],
+            "controlpoint":[{"id":0,"angles":null}],
+            "emitter":[{"id":9,"name":"sphererandom","origin":"350 750 0","directions":"1 1 1","distancemin":0,"distancemax":750,"rate":5}],
+            "initializer":[
+                {"id":2,"name":"lifetimerandom","min":8,"max":10},
+                {"id":3,"name":"sizerandom","min":70,"max":75},
+                {"id":4,"name":"velocityrandom","min":"-100 -100 0","max":"-50 -15 0"},
+                {"id":5,"name":"colorrandom","min":"255 255 255"},
+                {"id":6,"name":"rotationrandom"},
+                {"id":7,"name":"turbulentvelocityrandom","offset":3,"scale":0.5,"speedmin":35,"speedmax":100},
+                {"id":8,"name":"angularvelocityrandom","min":"0 0 -1","max":"0 0 1"}
+            ],
+            "material":"materials/particle/leaf.json",
+            "maxcount":11,
+            "operator":[{"id":10,"name":"movement"},{"id":11,"name":"alphafade","fadeintime":0.1,"fadeouttime":0.9},{"id":12,"name":"angularmovement"}],
+            "renderer":[{"id":1,"name":"sprite"}],
+            "sequencemultiplier":3,
+            "starttime":3
+        }"#,
+    )
+    .expect("particle");
+    fs::write(
+        root.join("materials/particle/leaf.json"),
+        r#"{"passes":[{"shader":"genericparticle","blending":"translucent","textures":[null]}]}"#,
+    )
+    .expect("material");
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("particle IR");
+    assert_eq!(ir.objects[0].kind, SceneAbiObjectKind::ParticleEmitter);
+    assert_eq!(ir.particles.len(), 1);
+    let profile = ir.particles[0]
+        .falling_leaves_profile()
+        .expect("falling leaves specialization");
+    assert_eq!(profile.rate, 5.0);
+    assert_eq!(profile.lifetime_min, 8.0);
+    assert_eq!(profile.size_max, 75.0);
+    assert_eq!(
+        ir.render_graphs[0].passes[0].role,
+        crate::engine::render_graph::RenderPassRole::Particle
+    );
+
+    let document =
+        crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower particle IR");
+    assert_eq!(document.particles.len(), 1);
+    assert_eq!(
+        document.particles[0].simulation,
+        crate::engine::scene::SceneParticleSimulationKind::FallingLeaves
+    );
+    assert_eq!(document.particles[0].max_count, 11);
+    assert_eq!(document.particles[0].color_min.x, 1.0);
+    let mut bytes = Vec::new();
+    crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
+    let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
+    assert_eq!(decoded.particles, document.particles);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn ingests_json_puppet_descriptor_into_mdl_ir_records() {
     let root =
         std::env::temp_dir().join(format!("gilder-we-mdl-ingest-test-{}", std::process::id()));

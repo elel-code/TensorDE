@@ -634,6 +634,16 @@ fn create_scene_pipeline_with_modules(
             0,
         )?,
     ];
+    if descriptor_layout.material_uniform_enabled {
+        vertex_mappings.push(
+            native_vulkan_vulkanalia_descriptor_heap_resource_relative_uniform_buffer_binding_mapping(
+                descriptor_heap_plan,
+                3,
+                0,
+                1,
+            )?,
+        );
+    }
     let skinning_descriptor_index = 1 + usize::from(descriptor_layout.material_uniform_enabled);
     if descriptor_layout.skinning_storage_enabled {
         vertex_mappings.push(

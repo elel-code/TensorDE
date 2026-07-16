@@ -19,6 +19,7 @@ use crate::engine::scene::*;
 
 use super::ir::*;
 
+mod particle;
 mod string_interner;
 
 use string_interner::StringInterner;
@@ -468,6 +469,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
             local_matrix: attachment.local_matrix,
         })
         .collect();
+    let particles = particle::lower_particles(ir);
 
     let effects = ir
         .effects
@@ -566,6 +568,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         puppets,
         puppet_bones,
         puppet_attachments,
+        particles,
         effects,
         effect_passes,
         effect_bindings,

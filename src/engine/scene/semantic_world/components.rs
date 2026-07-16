@@ -82,6 +82,13 @@ pub struct PuppetBindingComponent {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ParticleEmitterComponent {
+    pub particle_index: u32,
+    pub simulation: SceneParticleSimulationKind,
+    pub max_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SemanticRenderPlanInputs {
     pub object_count: usize,
     pub visible_object_count: usize,
@@ -147,5 +154,16 @@ pub fn puppet_binding_from_record(
         bone_count: puppet.bone_count,
         attachment_start: puppet.attachment_start,
         attachment_count: puppet.attachment_count,
+    }
+}
+
+pub fn particle_emitter_from_record(
+    particle_index: u32,
+    particle: &SceneParticleSystemRecord,
+) -> ParticleEmitterComponent {
+    ParticleEmitterComponent {
+        particle_index,
+        simulation: particle.simulation,
+        max_count: particle.max_count,
     }
 }

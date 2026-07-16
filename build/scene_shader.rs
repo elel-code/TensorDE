@@ -6,6 +6,8 @@ mod core_material;
 mod effect_program;
 #[path = "scene_shader/final_effect.rs"]
 mod final_effect;
+#[path = "scene_shader/particle.rs"]
+mod particle;
 #[path = "scene_shader/waterwaves_direct.rs"]
 mod waterwaves_direct;
 
@@ -17,6 +19,7 @@ pub(crate) use effect_program::{effect_fragment_source, effect_vertex_source};
 pub(super) use final_effect::{
     FINAL_EFFECT_SHADER_SPECS, final_effect_parameter_layout, final_effect_sources,
 };
+pub(super) use particle::generic_particle_vertex_source;
 pub(super) use waterwaves_direct::waterwaves_direct_sources;
 
 pub(super) fn generic_image_fragment_source() -> String {

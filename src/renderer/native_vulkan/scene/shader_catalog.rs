@@ -10,6 +10,7 @@
 pub enum BuiltinSceneParameterLayout {
     None,
     AudioBars,
+    Particle,
     StandardMaterial,
     Iris,
     Opacity,
@@ -45,6 +46,7 @@ impl BuiltinSceneParameterLayout {
             Self::AudioBars
                 | Self::FinalEffectProgram
                 | Self::Iris
+                | Self::Particle
                 | Self::RoundedMask
                 | Self::Scroll
                 | Self::Skew
@@ -61,6 +63,7 @@ impl BuiltinSceneParameterLayout {
             self,
             Self::AudioBars
                 | Self::Iris
+                | Self::Particle
                 | Self::Caustics
                 | Self::CloudMotion
                 | Self::FoliageSway

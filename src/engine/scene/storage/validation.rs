@@ -435,6 +435,36 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             validate_string(document, "puppet_attachment.name", attachment.name)?;
         }
     }
+    for particle in &document.particles {
+        validate_range(
+            "particle.object",
+            particle.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        validate_resource(document, "particle.resource", particle.resource)?;
+        validate_optional_material(document, "particle.material", particle.material)?;
+        if particle.simulation == SceneParticleSimulationKind::FallingLeaves
+            && (particle.max_count == 0
+                || !particle.rate.is_finite()
+                || particle.rate <= 0.0
+                || !particle.lifetime_min.is_finite()
+                || !particle.lifetime_max.is_finite()
+                || particle.lifetime_min <= 0.0
+                || particle.lifetime_max < particle.lifetime_min
+                || !particle.size_min.is_finite()
+                || !particle.size_max.is_finite()
+                || particle.size_min <= 0.0
+                || particle.size_max < particle.size_min)
+        {
+            return Err(SceneStorageError::InvalidRange {
+                field: "particle.falling_leaves_profile",
+                start: particle.max_count,
+                count: 1,
+                len: document.particles.len(),
+            });
+        }
+    }
     for effect in &document.effects {
         validate_optional_resource(document, "effect.resource", effect.resource)?;
         validate_string(document, "effect.replacement_key", effect.replacement_key)?;

@@ -19,9 +19,9 @@ pub mod timeline;
 pub mod transform_animation;
 
 pub use components::{
-    MaterialBindingComponent, MeshBindingComponent, ParentComponent, PuppetBindingComponent,
-    SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent, VisibilityComponent,
-    VisualComponent,
+    MaterialBindingComponent, MeshBindingComponent, ParentComponent, ParticleEmitterComponent,
+    PuppetBindingComponent, SemanticMeshBinding, SemanticRenderPlanInputs, TransformComponent,
+    VisibilityComponent, VisualComponent,
 };
 pub use effect::{
     ObjectEffectBindingComponent, ResolvedObjectEffectState, SemanticObjectEffectBinding,
@@ -36,8 +36,8 @@ pub use semantic_resolution::SemanticFrameResolver;
 pub use transform_animation::TransformAnimationComponent;
 
 use components::{
-    material_binding_from_object, parent_from_object, puppet_binding_from_record,
-    transform_from_object, visibility_from_object, visual_from_object,
+    material_binding_from_object, parent_from_object, particle_emitter_from_record,
+    puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,
 };
 use effect::object_effect_binding_from_object;
 use indexes::SemanticIndexTable;
@@ -63,6 +63,7 @@ pub struct SceneSemanticWorld<'a> {
     mesh_components: Vec<Option<MeshBindingComponent>>,
     object_effect_components: Vec<Option<ObjectEffectBindingComponent>>,
     puppet_components: Vec<Option<PuppetBindingComponent>>,
+    particle_components: Vec<Option<ParticleEmitterComponent>>,
     mesh_bindings: Vec<SemanticMeshBinding>,
     object_effect_bindings: Vec<SemanticObjectEffectBinding>,
 }
@@ -100,6 +101,7 @@ impl<'a> SceneSemanticWorld<'a> {
             mesh_components: Vec::with_capacity(object_count),
             object_effect_components: Vec::with_capacity(object_count),
             puppet_components: Vec::with_capacity(object_count),
+            particle_components: Vec::with_capacity(object_count),
             mesh_bindings: Vec::with_capacity(storage.meshes().len()),
             object_effect_bindings: storage
                 .object_effects()
@@ -119,6 +121,14 @@ impl<'a> SceneSemanticWorld<'a> {
         }
         for (puppet_index, puppet) in storage.puppets().iter().enumerate() {
             world.push_puppet_binding(puppet_index, puppet)?;
+        }
+        for (particle_index, particle) in storage.particles().iter().enumerate() {
+            if let Some(entity) = world.index.entity_for_object(particle.object) {
+                world.particle_components[entity.index()] = Some(particle_emitter_from_record(
+                    particle_index as u32,
+                    particle,
+                ));
+            }
         }
 
         Ok(world)
@@ -215,6 +225,10 @@ impl<'a> SceneSemanticWorld<'a> {
 
     pub fn puppet_binding(&self, object: SceneObjectHandle) -> Option<&PuppetBindingComponent> {
         self.component_for_object(object, &self.puppet_components)
+    }
+
+    pub fn particle_emitter(&self, object: SceneObjectHandle) -> Option<&ParticleEmitterComponent> {
+        self.component_for_object(object, &self.particle_components)
     }
 
     pub fn puppet_bones(&self, object: SceneObjectHandle) -> Option<&'a [ScenePuppetBoneRecord]> {
@@ -337,6 +351,7 @@ impl<'a> SceneSemanticWorld<'a> {
         self.object_effect_components
             .push(object_effect_binding_from_object(object));
         self.puppet_components.push(None);
+        self.particle_components.push(None);
         Ok(())
     }
 

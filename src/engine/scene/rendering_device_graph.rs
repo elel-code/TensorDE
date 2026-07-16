@@ -127,6 +127,7 @@ impl SceneRenderingDeviceGraphPlan {
                                 vertex_count: mesh.vertex_count,
                                 index_start,
                                 index_count,
+                                instance_count: 1,
                             });
                         }
                     }
@@ -346,6 +347,7 @@ pub struct SceneRenderingDeviceMeshDraw {
     pub vertex_count: u32,
     pub index_start: u32,
     pub index_count: u32,
+    pub instance_count: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,6 +356,7 @@ pub enum SceneRenderingDeviceDrawPrimitive {
     ObjectMesh,
     FullscreenTriangle,
     ObjectUvSupportQuad,
+    ParticleBillboard,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -435,6 +438,18 @@ fn pass_utility_primitive(
     pass: &SceneRenderPassRecord,
     pass_object_state: Option<&ResolvedObjectState>,
 ) -> Option<SceneRenderingDeviceDrawPrimitive> {
+    if pass.role == SceneRenderPassKind::Particle {
+        if pass_object_state.is_none() {
+            return None;
+        }
+        return storage
+            .particle_for_object(pass.object)
+            .filter(|particle| {
+                particle.simulation == SceneParticleSimulationKind::FallingLeaves
+                    && particle.max_count != 0
+            })
+            .map(|_| SceneRenderingDeviceDrawPrimitive::ParticleBillboard);
+    }
     if !matches!(
         pass.role,
         SceneRenderPassKind::BaseMaterial
@@ -490,7 +505,8 @@ fn utility_primitive_draw(
     primitive: SceneRenderingDeviceDrawPrimitive,
 ) -> SceneRenderingDeviceMeshDraw {
     let vertex_count = match primitive {
-        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => 6,
+        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+        | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => 6,
         SceneRenderingDeviceDrawPrimitive::ObjectMesh
         | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
     };
@@ -524,6 +540,13 @@ fn utility_primitive_draw(
         vertex_count,
         index_start: 0,
         index_count: vertex_count,
+        instance_count: if primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
+            storage
+                .particle_for_object(pass.object)
+                .map_or(0, |particle| particle.max_count)
+        } else {
+            1
+        },
     }
 }
 

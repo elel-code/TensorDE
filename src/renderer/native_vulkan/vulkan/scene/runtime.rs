@@ -531,6 +531,7 @@ fn scene_descriptor_plan_inputs(
             index_count: draw.index_count,
             vertex_offset: draw.vertex_start as i32,
             vertex_count: draw.vertex_count,
+            instance_count: draw.instance_count,
             resource_descriptor_base: base,
             sampler_descriptor_base: index * layout.sampled_slots.len(),
             skinning_byte_offset,

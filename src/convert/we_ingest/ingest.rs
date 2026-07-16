@@ -19,6 +19,7 @@ mod image_plane;
 mod json_value;
 mod material_graph;
 mod material_instance;
+mod particle;
 mod pipeline_state;
 mod puppet_clipping;
 mod puppet_material;
@@ -272,6 +273,7 @@ struct WeIrBuilder {
     puppets: Vec<WeIrPuppet>,
     puppet_bones: Vec<WeIrPuppetBone>,
     puppet_attachments: Vec<WeIrPuppetAttachment>,
+    particles: Vec<WeIrParticleSystem>,
     effects: Vec<WeIrEffect>,
     effect_by_path: BTreeMap<String, u32>,
     effect_passes: Vec<WeIrEffectPass>,
@@ -328,6 +330,7 @@ impl WeIrBuilder {
             puppets: Vec::new(),
             puppet_bones: Vec::new(),
             puppet_attachments: Vec::new(),
+            particles: Vec::new(),
             effects: Vec::new(),
             effect_by_path: BTreeMap::new(),
             effect_passes: Vec::new(),
@@ -375,6 +378,7 @@ impl WeIrBuilder {
             puppets: self.puppets,
             puppet_bones: self.puppet_bones,
             puppet_attachments: self.puppet_attachments,
+            particles: self.particles,
             effects: self.effects,
             effect_passes: self.effect_passes,
             effect_bindings: self.effect_bindings,
@@ -451,13 +455,20 @@ impl WeIrBuilder {
         let image_path = bound_string(value.get("image"))
             .or_else(|| bound_string(value.get("model")))
             .unwrap_or_default();
+        let particle_path = bound_string(value.get("particle")).unwrap_or_default();
         let text_value = text_layer_value(value);
         let utility_layer = utility_layer_kind(&image_path);
         let mut resource = None;
         let mut material = None;
         let mut kind = SceneAbiObjectKind::Unsupported;
 
-        if let Some(text) = text_value.as_deref() {
+        if !particle_path.is_empty() {
+            kind = SceneAbiObjectKind::ParticleEmitter;
+            let (particle_resource, particle_material) =
+                self.add_particle_system(handle, &particle_path, value)?;
+            resource = Some(particle_resource);
+            material = Some(particle_material);
+        } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
             match ingest_text_layer(self, handle, value, text)? {
                 Some((font_resource, text_material)) => {
@@ -597,7 +608,10 @@ impl WeIrBuilder {
             retained_text_requires_dependency_composite = false;
             effect_instances.as_slice()
         };
-        let render_graph = if retained_text_requires_dependency_composite {
+        let render_graph = if kind == SceneAbiObjectKind::ParticleEmitter {
+            material
+                .map(|material| self.add_particle_render_graph(handle, material, color_blend_mode))
+        } else if retained_text_requires_dependency_composite {
             self.unsupported.push(WeIrUnsupported {
                 object: Some(handle),
                 pass_index: None,

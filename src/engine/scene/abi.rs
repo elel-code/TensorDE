@@ -13,9 +13,10 @@
 use serde::{Deserialize, Serialize};
 
 mod binary_contract;
+mod particle_contract;
 mod render_contract;
-
 pub use binary_contract::*;
+pub use particle_contract::*;
 pub use render_contract::*;
 
 pub const SCENE_FEATURE_DESCRIPTOR_HEAP: u64 = 1 << 0;
@@ -137,6 +138,7 @@ pub enum SceneResourceKind {
     Script,
     Raw,
     BuiltinShader,
+    ParticleDefinition,
 }
 
 impl SceneResourceKind {
@@ -155,6 +157,7 @@ impl SceneResourceKind {
             Self::Script => 11,
             Self::Raw => 12,
             Self::BuiltinShader => 13,
+            Self::ParticleDefinition => 14,
         }
     }
 
@@ -173,6 +176,7 @@ impl SceneResourceKind {
             11 => Some(Self::Script),
             12 => Some(Self::Raw),
             13 => Some(Self::BuiltinShader),
+            14 => Some(Self::ParticleDefinition),
             _ => None,
         }
     }

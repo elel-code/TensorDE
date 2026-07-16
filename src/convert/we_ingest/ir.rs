@@ -20,6 +20,10 @@ use crate::engine::scene::abi::{
     SceneResourceKind, SceneTextureFormat, SceneVec3,
 };
 
+mod particle;
+
+pub use particle::*;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WeSceneIr {
     pub project_root: PathBuf,
@@ -51,6 +55,7 @@ pub struct WeSceneIr {
     pub puppets: Vec<WeIrPuppet>,
     pub puppet_bones: Vec<WeIrPuppetBone>,
     pub puppet_attachments: Vec<WeIrPuppetAttachment>,
+    pub particles: Vec<WeIrParticleSystem>,
     pub effects: Vec<WeIrEffect>,
     pub effect_passes: Vec<WeIrEffectPass>,
     pub effect_bindings: Vec<WeIrEffectBinding>,

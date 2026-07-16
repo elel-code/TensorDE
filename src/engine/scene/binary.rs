@@ -18,10 +18,12 @@ use super::abi::*;
 
 mod document;
 mod mesh_clipping;
+mod particle;
 mod scene_chunks;
 mod texture;
 mod timeline;
 
+use particle::{decode_particles, encode_particles};
 use scene_chunks::*;
 
 pub use document::SceneBinaryDocument;
@@ -186,6 +188,8 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let (puppets, puppet_bones, puppet_attachments) =
         decode_puppets(chunk_payload(&chunks, CHUNK_PUPPET)?)?;
     ensure_chunk_count(&chunks, CHUNK_PUPPET, "puppet", puppets.len())?;
+    let particles = decode_particles(chunk_payload(&chunks, CHUNK_PARTICLE)?)?;
+    ensure_chunk_count(&chunks, CHUNK_PARTICLE, "particle", particles.len())?;
     let (effects, effect_passes, effect_bindings, effect_combos, effect_fbos) =
         decode_effects(chunk_payload(&chunks, CHUNK_EFFECT)?)?;
     ensure_chunk_count(&chunks, CHUNK_EFFECT, "effects", effects.len())?;
@@ -231,7 +235,6 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts.len(),
     )?;
     for &(kind, name) in &[
-        (CHUNK_PARTICLE, "particle"),
         (CHUNK_AUDIO, "audio"),
         (CHUNK_SCRIPT_BINDING, "script binding"),
     ] {
@@ -271,6 +274,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         puppets,
         puppet_bones,
         puppet_attachments,
+        particles,
         effects,
         effect_passes,
         effect_bindings,
@@ -459,7 +463,11 @@ fn encode_chunks(
                 &document.puppet_attachments,
             )?,
         },
-        empty_count_chunk(CHUNK_PARTICLE),
+        SceneEncodedChunk {
+            kind: CHUNK_PARTICLE,
+            item_count: checked_u32(document.particles.len(), "particle count")?,
+            data: encode_particles(&document.particles)?,
+        },
         empty_count_chunk(CHUNK_AUDIO),
         empty_count_chunk(CHUNK_SCRIPT_BINDING),
         SceneEncodedChunk {

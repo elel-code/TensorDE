@@ -256,6 +256,20 @@ impl SceneStorage {
         &self.document.puppets
     }
 
+    pub fn particles(&self) -> &[SceneParticleSystemRecord] {
+        &self.document.particles
+    }
+
+    pub fn particle_for_object(
+        &self,
+        object: SceneObjectHandle,
+    ) -> Option<&SceneParticleSystemRecord> {
+        self.document
+            .particles
+            .iter()
+            .find(|particle| particle.object == object)
+    }
+
     pub fn puppet_attachments(&self, puppet: &ScenePuppetRecord) -> &[ScenePuppetAttachmentRecord] {
         let start = puppet.attachment_start as usize;
         let end = start.saturating_add(puppet.attachment_count as usize);

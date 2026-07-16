@@ -91,6 +91,7 @@ mod tests {
                 vertex_count: 3,
                 index_start: 0,
                 index_count: 3,
+                instance_count: 1,
             }],
             target_allocations: Vec::new(),
             effect_batches: Vec::new(),

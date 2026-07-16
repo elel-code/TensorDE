@@ -803,6 +803,7 @@ mod tests {
             vertex_count: 4,
             index_start: 0,
             index_count: 6,
+            instance_count: 1,
         }
     }
 

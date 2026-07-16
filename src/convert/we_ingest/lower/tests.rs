@@ -123,6 +123,7 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
         puppet_animation_tracks: Vec::new(),
         puppet_animation_transform_samples: Vec::new(),
         puppet_animation_opacity_samples: Vec::new(),
+        particles: Vec::new(),
         materials: Vec::new(),
         material_passes: Vec::new(),
         material_textures: Vec::new(),

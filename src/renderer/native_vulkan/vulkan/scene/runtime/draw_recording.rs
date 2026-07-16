@@ -43,6 +43,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub index_count: u32,
     pub vertex_offset: i32,
     pub vertex_count: u32,
+    pub instance_count: u32,
     pub resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,
@@ -212,8 +213,9 @@ unsafe fn record_bound_scene_draw(
             );
         },
         SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
-        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => unsafe {
-            device.cmd_draw(command_buffer, draw.vertex_count, 1, 0, 0);
+        | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
+        | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => unsafe {
+            device.cmd_draw(command_buffer, draw.vertex_count, draw.instance_count, 0, 0);
         },
     }
 }

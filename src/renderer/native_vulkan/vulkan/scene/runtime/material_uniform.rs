@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 mod final_effect;
+mod particle;
 
 use final_effect::{
     final_effect_program_values, final_waterripple_values, final_waterwaves_values,
@@ -80,6 +81,9 @@ fn material_uniform_values(
     let parameters = MaterialParameters { storage, pass };
     let mut values = match layout {
         BuiltinSceneParameterLayout::None => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
+        BuiltinSceneParameterLayout::Particle => {
+            particle::particle_values(storage, draw, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::AudioBars => audio_bars_values(&parameters, spectrum),
         BuiltinSceneParameterLayout::StandardMaterial => {
             if draw.apply_resolved_visual

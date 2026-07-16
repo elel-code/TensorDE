@@ -464,12 +464,12 @@ fn scene_shader_parameter_layout(spec: SceneShaderSpec) -> &'static str {
         | SceneShaderFamily::MeshColorPuppetSkinning
         | SceneShaderFamily::MeshText
         | SceneShaderFamily::MeshTextPuppetSkinning
-        | SceneShaderFamily::MeshGenericParticle
         | SceneShaderFamily::MeshObjectComposite
         | SceneShaderFamily::MeshImageEffectComposite
         | SceneShaderFamily::MeshPuppetEffectComposite
         | SceneShaderFamily::MeshImageWaterWavesComposite
         | SceneShaderFamily::MeshPuppetWaterWavesComposite => "StandardMaterial",
+        SceneShaderFamily::MeshGenericParticle => "Particle",
         SceneShaderFamily::MeshWaterWavesDirect => "WaterWavesDirect",
         SceneShaderFamily::MeshImageFoliageRippleComposite
         | SceneShaderFamily::MeshImageFoliageRippleScreenComposite => "FoliageRippleComposite",
@@ -527,7 +527,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
             super::text_fragment_source(),
         ),
         SceneShaderFamily::MeshGenericParticle => (
-            scene_mesh_vertex_source(),
+            super::generic_particle_vertex_source(),
             super::generic_particle_fragment_source(),
         ),
         SceneShaderFamily::MeshGenericImage4ClippingTarget => (

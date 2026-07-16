@@ -498,5 +498,6 @@
             vertex_count: 3,
             index_start: 0,
             index_count: 3,
+            instance_count: 1,
         }
     }
