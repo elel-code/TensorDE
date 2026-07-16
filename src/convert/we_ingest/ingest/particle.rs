@@ -42,7 +42,8 @@ impl WeIrBuilder {
             renderers: parse_renderers(&definition),
             children: parse_children(&definition),
         };
-        if system.falling_leaves_profile().is_none() {
+        if system.falling_leaves_profile().is_none() && system.ambient_sparkles_profile().is_none()
+        {
             self.unsupported.push(WeIrUnsupported {
                 object: Some(object),
                 pass_index: None,
@@ -258,8 +259,10 @@ fn parse_operators(definition: &Value) -> Vec<WeIrParticleOperator> {
                 "angularmovement" => WeIrParticleOperator::AngularMovement { id },
                 "oscillatealpha" => WeIrParticleOperator::OscillateAlpha {
                     id,
-                    frequency_min: value_f32(value.get("frequencymin")).unwrap_or(0.0),
-                    frequency_max: value_f32(value.get("frequencymax")).unwrap_or(0.0),
+                    frequency_min: value_f32(value.get("frequencymin")).unwrap_or(1.0),
+                    frequency_max: value_f32(value.get("frequencymax")).unwrap_or(10.0),
+                    phase_min: value_f32(value.get("phasemin")).unwrap_or(0.0),
+                    phase_max: value_f32(value.get("phasemax")).unwrap_or(std::f32::consts::TAU),
                     scale_min: value_f32(value.get("scalemin")).unwrap_or(0.0),
                     scale_max: value_f32(value.get("scalemax")).unwrap_or(1.0),
                 },

@@ -12,7 +12,8 @@
 use serde::Serialize;
 
 use crate::engine::scene::{
-    RendererSceneRenderPlan, RenderingServer, SceneRenderingDeviceGraphPlan, SceneStorage,
+    RendererSceneRenderPlan, RenderingServer, SceneParticleSystemRecord,
+    SceneRenderingDeviceGraphPlan, SceneStorage,
 };
 use crate::renderer::native_vulkan::present::render_item::NativeVulkanRenderItem;
 
@@ -38,6 +39,7 @@ pub struct NativeVulkanSceneBackendPlan {
     pub render_graph_executor: NativeVulkanSceneRenderGraphExecutorPlan,
     pub descriptor_heap: NativeVulkanSceneDescriptorHeapPlan,
     pub mesh_upload: NativeVulkanSceneMeshUploadPlan,
+    pub particle_systems: Vec<SceneParticleSystemRecord>,
     pub present_mode: &'static str,
     pub legacy_binding_forbidden: bool,
 }
@@ -122,6 +124,7 @@ pub fn native_vulkan_scene_backend_plan_at(
             device_address_required: renderer_scene_render.mesh_count > 0
                 || utility_vertex_count != 0,
         },
+        particle_systems: storage.particles().to_vec(),
         present_mode: "fifo-latest-ready",
         legacy_binding_forbidden: true,
     }

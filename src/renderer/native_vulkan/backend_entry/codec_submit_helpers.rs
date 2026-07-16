@@ -219,7 +219,7 @@ pub(super) struct NativeVulkanAv1ReferenceHistory {
 
 #[cfg(feature = "native-vulkan-video")]
 impl From<NativeVulkanAv1ActiveDpbReference> for NativeVulkanAv1ReferenceHistory {
-    pub(super) fn from(reference: NativeVulkanAv1ActiveDpbReference) -> Self {
+    fn from(reference: NativeVulkanAv1ActiveDpbReference) -> Self {
         Self {
             frame_width: reference.frame_width,
             frame_height: reference.frame_height,
@@ -244,9 +244,9 @@ pub(super) struct NativeVulkanAv1FrameHeaderReferenceContext {
 #[cfg(feature = "native-vulkan-video")]
 #[derive(Debug, Clone, Copy)]
 pub(super) struct NativeVulkanAv1PreparedReferenceContext {
-    reference_name_order_hints: [u8; 8],
-    reference_name_dpb_slot_indices: [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
-    reference_context: NativeVulkanAv1FrameHeaderReferenceContext,
+    pub(super) reference_name_order_hints: [u8; 8],
+    pub(super) reference_name_dpb_slot_indices: [i32; vk::MAX_VIDEO_AV1_REFERENCES_PER_FRAME_KHR],
+    pub(super) reference_context: NativeVulkanAv1FrameHeaderReferenceContext,
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -462,12 +462,12 @@ pub(super) fn native_vulkan_av1_reference_info_from_decode_info(
 
 #[cfg(feature = "native-vulkan-video")]
 pub(super) struct NativeVulkanAv1TemporalUnitExtract {
-    payload: NativeVulkanEncodedAccessUnitPayload,
-    pts_ns: Option<u64>,
-    duration_ns: Option<u64>,
-    pts_ms: Option<u64>,
-    duration_ms: Option<u64>,
-    stats: NativeVulkanAv1ObuStats,
+    pub(super) payload: NativeVulkanEncodedAccessUnitPayload,
+    pub(super) pts_ns: Option<u64>,
+    pub(super) duration_ns: Option<u64>,
+    pub(super) pts_ms: Option<u64>,
+    pub(super) duration_ms: Option<u64>,
+    pub(super) stats: NativeVulkanAv1ObuStats,
 }
 
 #[cfg(feature = "native-vulkan-video")]
@@ -487,7 +487,7 @@ pub(super) type NativeVulkanAv1StreamingPacketQueue =
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH264AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H264;
 
-    pub(super) fn from_ffmpeg_packet(
+    fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Self, NativeVulkanError> {
@@ -517,11 +517,11 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     const CODEC_LABEL: &'static str = "H.265";
     const PARAMETER_SETS_LABEL: &'static str = "VPS/SPS/PPS";
 
-    pub(super) fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_parse_h265_parameter_sets(bytes)
     }
 
-    pub(super) fn snapshot(
+    fn snapshot(
         index: u32,
         access_unit: &Self,
         parameter_sets: &Self::ParameterSets,
@@ -529,23 +529,23 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
         native_vulkan_h265_access_unit_snapshot(index, access_unit, parameter_sets)
     }
 
-    pub(super) fn bytes(&self) -> &[u8] {
+    fn bytes(&self) -> &[u8] {
         self.payload.bytes()
     }
 
-    pub(super) fn pts_ms(&self) -> Option<u64> {
+    fn pts_ms(&self) -> Option<u64> {
         self.pts_ms
     }
 
-    pub(super) fn duration_ms(&self) -> Option<u64> {
+    fn duration_ms(&self) -> Option<u64> {
         self.duration_ms
     }
 
-    pub(super) fn has_parameter_sets(&self) -> bool {
+    fn has_parameter_sets(&self) -> bool {
         self.stats.parameter_sets_present()
     }
 
-    pub(super) fn is_random_access(&self) -> bool {
+    fn is_random_access(&self) -> bool {
         self.stats.idr_count > 0
     }
 }
@@ -554,7 +554,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
 impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanH265AccessUnitExtract {
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::H265;
 
-    pub(super) fn from_ffmpeg_packet(
+    fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Self, NativeVulkanError> {
@@ -584,13 +584,13 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
     const CODEC_LABEL: &'static str = "AV1";
     const PARAMETER_SETS_LABEL: &'static str = "sequence header";
 
-    pub(super) fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
+    fn parse_parameter_sets(bytes: &[u8]) -> Result<Self::ParameterSets, String> {
         native_vulkan_av1_obu_stats(bytes)?
             .sequence_header
             .ok_or_else(|| "AV1 temporal unit has no sequence header".to_owned())
     }
 
-    pub(super) fn snapshot(
+    fn snapshot(
         index: u32,
         access_unit: &Self,
         parameter_sets: &Self::ParameterSets,
@@ -598,23 +598,23 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
         native_vulkan_av1_temporal_unit_snapshot(index, access_unit, Some(parameter_sets))
     }
 
-    pub(super) fn bytes(&self) -> &[u8] {
+    fn bytes(&self) -> &[u8] {
         self.payload.bytes()
     }
 
-    pub(super) fn pts_ms(&self) -> Option<u64> {
+    fn pts_ms(&self) -> Option<u64> {
         self.pts_ms
     }
 
-    pub(super) fn duration_ms(&self) -> Option<u64> {
+    fn duration_ms(&self) -> Option<u64> {
         self.duration_ms
     }
 
-    pub(super) fn has_parameter_sets(&self) -> bool {
+    fn has_parameter_sets(&self) -> bool {
         self.stats.sequence_header_present()
     }
 
-    pub(super) fn is_random_access(&self) -> bool {
+    fn is_random_access(&self) -> bool {
         self.stats
             .first_frame_submit
             .as_ref()
@@ -623,7 +623,7 @@ impl NativeVulkanStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtract {
             })
     }
 
-    pub(super) fn is_random_access_with_parameter_sets(&self, parameter_sets: &Self::ParameterSets) -> bool {
+    fn is_random_access_with_parameter_sets(&self, parameter_sets: &Self::ParameterSets) -> bool {
         self.stats
             .first_frame_submit
             .clone()
@@ -645,7 +645,7 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
     const FFMPEG_CODEC: NativeVulkanFfmpegCodec = NativeVulkanFfmpegCodec::Av1;
     const FFMPEG_PACKET_SPLITS_ACCESS_UNITS: bool = true;
 
-    pub(super) fn from_ffmpeg_packet(
+    fn from_ffmpeg_packet(
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Self, NativeVulkanError> {
@@ -667,7 +667,7 @@ impl NativeVulkanFfmpegStreamingAccessUnit for NativeVulkanAv1TemporalUnitExtrac
         })
     }
 
-    pub(super) fn from_ffmpeg_packet_many(
+    fn from_ffmpeg_packet_many(
         payload: NativeVulkanFfmpegPacketPayload,
         metadata: NativeVulkanFfmpegPacketMetadata,
     ) -> Result<Vec<Self>, NativeVulkanError> {

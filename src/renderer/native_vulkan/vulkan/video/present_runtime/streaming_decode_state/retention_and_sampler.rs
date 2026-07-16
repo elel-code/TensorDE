@@ -91,7 +91,7 @@ impl<'a> NativeVulkanFfmpegPresentedFrameSetRetentionQueue<'a> {
 
 #[cfg(feature = "native-vulkan-video")]
 impl Drop for NativeVulkanFfmpegPresentedFrameSetRetentionQueue<'_> {
-    pub(super) fn drop(&mut self) {
+    fn drop(&mut self) {
         if !self.frames.is_empty() {
             let _ = unsafe { self.device.device_wait_idle() };
         }
@@ -253,7 +253,7 @@ impl<'a> NativeVulkanFfmpegPresentSamplerCache<'a> {
 
 #[cfg(feature = "native-vulkan-video")]
 impl Drop for NativeVulkanFfmpegPresentSamplerCache<'_> {
-    pub(super) fn drop(&mut self) {
+    fn drop(&mut self) {
         for entry in self.entries.drain(..) {
             native_vulkan_vulkanalia_destroy_decoded_image_present_sampler_resources(
                 self.device,
@@ -304,7 +304,7 @@ impl NativeVulkanVulkanaliaMultiVideoDecodeSourceSlot {
 }
 
 #[cfg(feature = "native-vulkan-video")]
-pub(super) fn destroy_multi_video_decode_source_slot(
+fn destroy_multi_video_decode_source_slot(
     device: &Device,
     slot: NativeVulkanVulkanaliaMultiVideoDecodeSourceSlot,
 ) {
@@ -420,7 +420,7 @@ fn native_vulkan_vulkanalia_prepare_streaming_decode_requests(
 }
 
 #[cfg(feature = "native-vulkan-video")]
-pub(super) fn native_vulkan_vulkanalia_streaming_decode_requests_for_source(
+fn native_vulkan_vulkanalia_streaming_decode_requests_for_source(
     source: &NativeVulkanVulkanaliaStreamingVideoPresentDecodeSourceOptions,
     session: NativeVulkanVulkanaliaVideoPresentSessionProbeOptions,
 ) -> NativeVulkanVulkanaliaStreamingDecodeRequests {
@@ -470,7 +470,7 @@ pub(super) fn native_vulkan_vulkanalia_streaming_decode_requests_for_source(
 
 #[cfg(feature = "native-vulkan-video")]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn create_multi_video_decode_source_slot(
+fn create_multi_video_decode_source_slot(
     instance: &Instance,
     context: &NativeVulkanVulkanaliaVideoPresentDeviceContext,
     selection: &super::video_present_device::NativeVulkanVulkanaliaVideoPresentPhysicalDeviceSelection,

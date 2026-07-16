@@ -16,6 +16,10 @@ use scene_shader::{
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=build/scene_shader.rs");
+    println!("cargo:rerun-if-changed=build/scene_shader");
+    println!("cargo:rerun-if-changed=build/native_video.rs");
+    println!("cargo:rerun-if-changed=build/system_audio_monitor.rs");
     println!("cargo:rerun-if-changed=src/renderer/native_vulkan/video/demux_ffmpeg_shim.c");
     println!(
         "cargo:rerun-if-changed=src/renderer/native_vulkan/audio/system_monitor/pipewire_monitor.c"

@@ -444,6 +444,7 @@ mod tests {
                 index_buffer_bytes: 0,
                 device_address_required: false,
             },
+            particle_systems: Vec::new(),
             present_mode: "fifo-latest-ready",
             legacy_binding_forbidden: true,
         }

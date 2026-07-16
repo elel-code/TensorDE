@@ -291,13 +291,21 @@
     #[test]
     fn typed_multiply_variant_uses_standard_premultiplied_multiply_blend() {
         let storage = SceneStorage::from_document(SceneBinaryDocument {
-            strings: vec!["we/image-waterwaves-multiply-composite".to_owned()],
+            strings: vec![
+                "we/image-waterwaves-multiply-composite".to_owned(),
+                "we/image-waterwaves-multiply-direct__STAGES_2".to_owned(),
+            ],
             ..SceneBinaryDocument::default()
         })
         .expect("storage");
         let mut pass = render_pass(0, SceneStringId(0), ScenePipelineBlend::Translucent);
         pass.scene_blend = SceneCompositeBlend::Multiply;
 
+        assert_eq!(
+            scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
+            SceneGpuBlend::MultiplyPremultiplied
+        );
+        pass.shader_key = SceneStringId(1);
         assert_eq!(
             scene_gpu_blend(&storage, &pass, SceneRenderTargetKind::SceneColor),
             SceneGpuBlend::MultiplyPremultiplied

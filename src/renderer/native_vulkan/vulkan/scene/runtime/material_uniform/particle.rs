@@ -44,7 +44,86 @@ pub(super) fn particle_values(
     values[57] = particle.rotation_max;
     write_vec3(&mut values, 60, particle.color_min);
     write_vec3(&mut values, 64, particle.color_max);
+    values[68] = particle.simulation.to_u32() as f32;
+    values[69] = particle.oscillation_frequency_min;
+    values[70] = particle.oscillation_frequency_max;
+    values[71] = particle.oscillation_scale_min;
+    values[72] = particle.oscillation_scale_max;
+    values[73] = particle_texture_decode_mode(storage, draw);
+    values[74] = particle.oscillation_phase_min;
+    values[75] = particle.oscillation_phase_max;
+    values[76..80].copy_from_slice(&particle_billboard_inverse(storage, draw));
+    values[80] = particle_texture_aspect(storage, draw);
     values
+}
+
+fn particle_texture_decode_mode(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> f32 {
+    particle_texture(storage, draw)
+        .is_some_and(|texture| texture.source_runtime_format == 8)
+        .then_some(1.0)
+        .unwrap_or(0.0)
+}
+
+fn particle_texture<'storage>(
+    storage: &'storage SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> Option<&'storage crate::engine::scene::SceneTextureRecord> {
+    let material = storage.material(draw.material)?;
+    storage
+        .material_passes(material)
+        .iter()
+        .flat_map(|pass| storage.material_pass_textures(pass))
+        .find(|binding| binding.slot == 0)
+        .and_then(|binding| storage.texture(binding.resource))
+}
+
+fn particle_texture_aspect(storage: &SceneStorage, draw: &SceneRenderingDeviceMeshDraw) -> f32 {
+    particle_texture(storage, draw).map_or(1.0, |texture| {
+        texture.height.max(1) as f32 / texture.width.max(1) as f32
+    })
+}
+
+fn particle_billboard_inverse(
+    storage: &SceneStorage,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; 4] {
+    let width = storage.project().logical_width.max(1) as f32;
+    let height = storage.project().logical_height.max(1) as f32;
+    let linear = [
+        draw.clip_transform[0][0] * width * 0.5,
+        draw.clip_transform[0][1] * width * 0.5,
+        -draw.clip_transform[1][0] * height * 0.5,
+        -draw.clip_transform[1][1] * height * 0.5,
+    ];
+    inverse_linear_2d(linear).unwrap_or([1.0, 0.0, 0.0, 1.0])
+}
+
+fn inverse_linear_2d([m00, m01, m10, m11]: [f32; 4]) -> Option<[f32; 4]> {
+    let determinant = m00 * m11 - m01 * m10;
+    if !determinant.is_finite() || determinant.abs() <= 1.0e-6 {
+        return None;
+    }
+    let inverse = 1.0 / determinant;
+    Some([
+        m11 * inverse,
+        -m01 * inverse,
+        -m10 * inverse,
+        m00 * inverse,
+    ])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inverse_linear_2d;
+
+    #[test]
+    fn billboard_inverse_cancels_object_rotation_and_scale() {
+        let inverse = inverse_linear_2d([0.0, -3.0, 2.0, 0.0]).expect("invertible");
+        assert_eq!(inverse, [0.0, 0.5, -1.0 / 3.0, 0.0]);
+    }
 }
 
 fn write_vec3(values: &mut [f32], start: usize, value: crate::engine::scene::SceneVec3) {

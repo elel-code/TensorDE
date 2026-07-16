@@ -261,13 +261,43 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             })
             .collect::<Vec<_>>()
             .join(",");
+        let material_constants = material_pass
+            .and_then(|material_pass| {
+                let start = material_pass.constant_start as usize;
+                let end = start.saturating_add(material_pass.constant_count as usize);
+                storage.document().material_constants.get(start..end)
+            })
+            .unwrap_or_default()
+            .iter()
+            .map(|constant| {
+                format!(
+                    "{}={}",
+                    storage.string(constant.name).unwrap_or("<missing>"),
+                    storage.string(constant.value_json).unwrap_or("<missing>"),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        let draw_objects = graph.mesh_draws[draw_start..draw_end]
+            .iter()
+            .map(|draw| {
+                let name = storage
+                    .objects()
+                    .get(draw.object.0 as usize)
+                    .and_then(|object| storage.string(object.name))
+                    .unwrap_or("<unnamed>");
+                format!("{}:{name}", draw.object.0)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
         eprintln!(
-            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}]",
+            "gilder-scene-pipeline: graph={} pass={} record={} draws={}..{} objects=[{}] target={:?}:{:?} shader={:?} pipeline_blend={:?} scene_blend={:?} resolved_blend={} target_format={:?} samples={:?} pipeline_index={} material_textures=[{}] material_constants=[{}]",
             pass.graph_index,
             pass.pass_id,
             pass.pass_record_index,
             draw_start,
             draw_end,
+            draw_objects,
             pass.target,
             pass.target_name,
             storage
@@ -281,6 +311,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
                 .rasterization_samples(),
             pipeline_index,
             material_textures,
+            material_constants,
         );
     }
     Ok(())
@@ -474,12 +505,15 @@ fn scene_gpu_blend(
 }
 
 fn multiply_shader_is_premultiplied(shader: &str) -> bool {
+    let shader = shader.to_ascii_lowercase();
     matches!(
-        shader.to_ascii_lowercase().as_str(),
+        shader.as_str(),
         "we/genericimage4-multiply-composite"
             | "we/image-waterwaves-multiply-composite"
             | "we/image-ripple-flow-multiply-composite"
-    )
+    ) || shader
+        .strip_prefix("we/image-waterwaves-multiply-direct")
+        .is_some_and(|suffix| suffix.is_empty() || suffix.starts_with("__stages_"))
 }
 
 fn advanced_source_is_premultiplied(pass: &SceneRenderPassRecord) -> bool {

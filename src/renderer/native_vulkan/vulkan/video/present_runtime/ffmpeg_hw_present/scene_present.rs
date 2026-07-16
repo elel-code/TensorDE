@@ -701,7 +701,7 @@ pub(super) fn native_vulkan_ffmpeg_time_base_timestamp_ns(
 }
 
 #[cfg(feature = "native-vulkan-video")]
-pub(super) fn native_vulkan_ffmpeg_multi_source_frame_timing(
+fn native_vulkan_ffmpeg_multi_source_frame_timing(
     descriptor_sources: &[NativeVulkanFfmpegDecodedGpuFrameDescriptorSource],
     time_bases: &[(i32, i32)],
 ) -> NativeVulkanVulkanaliaMultiSourceFrameTiming {

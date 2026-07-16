@@ -188,7 +188,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let (puppets, puppet_bones, puppet_attachments) =
         decode_puppets(chunk_payload(&chunks, CHUNK_PUPPET)?)?;
     ensure_chunk_count(&chunks, CHUNK_PUPPET, "puppet", puppets.len())?;
-    let particles = decode_particles(chunk_payload(&chunks, CHUNK_PARTICLE)?)?;
+    let particles = decode_particles(chunk_payload(&chunks, CHUNK_PARTICLE)?, version)?;
     ensure_chunk_count(&chunks, CHUNK_PARTICLE, "particle", particles.len())?;
     let (effects, effect_passes, effect_bindings, effect_combos, effect_fbos) =
         decode_effects(chunk_payload(&chunks, CHUNK_EFFECT)?)?;

@@ -9,6 +9,7 @@ use super::{SceneMaterialHandle, SceneObjectHandle, SceneResourceId, SceneVec3};
 pub enum SceneParticleSimulationKind {
     Unsupported,
     FallingLeaves,
+    AmbientSparkles,
 }
 
 impl SceneParticleSimulationKind {
@@ -16,6 +17,7 @@ impl SceneParticleSimulationKind {
         match self {
             Self::Unsupported => 0,
             Self::FallingLeaves => 1,
+            Self::AmbientSparkles => 2,
         }
     }
 
@@ -23,6 +25,7 @@ impl SceneParticleSimulationKind {
         match value {
             0 => Some(Self::Unsupported),
             1 => Some(Self::FallingLeaves),
+            2 => Some(Self::AmbientSparkles),
             _ => None,
         }
     }
@@ -62,6 +65,12 @@ pub struct SceneParticleSystemRecord {
     pub gravity: SceneVec3,
     pub fade_in_time: f32,
     pub fade_out_time: f32,
+    pub oscillation_frequency_min: f32,
+    pub oscillation_frequency_max: f32,
+    pub oscillation_phase_min: f32,
+    pub oscillation_phase_max: f32,
+    pub oscillation_scale_min: f32,
+    pub oscillation_scale_max: f32,
 }
 
 impl SceneParticleSystemRecord {
@@ -151,6 +160,12 @@ impl SceneParticleSystemRecord {
             },
             fade_in_time: 0.0,
             fade_out_time: 1.0,
+            oscillation_frequency_min: 0.0,
+            oscillation_frequency_max: 0.0,
+            oscillation_phase_min: 0.0,
+            oscillation_phase_max: std::f32::consts::TAU,
+            oscillation_scale_min: 1.0,
+            oscillation_scale_max: 1.0,
         }
     }
 }

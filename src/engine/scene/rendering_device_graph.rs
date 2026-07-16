@@ -445,8 +445,11 @@ fn pass_utility_primitive(
         return storage
             .particle_for_object(pass.object)
             .filter(|particle| {
-                particle.simulation == SceneParticleSimulationKind::FallingLeaves
-                    && particle.max_count != 0
+                matches!(
+                    particle.simulation,
+                    SceneParticleSimulationKind::FallingLeaves
+                        | SceneParticleSimulationKind::AmbientSparkles
+                ) && particle.max_count != 0
             })
             .map(|_| SceneRenderingDeviceDrawPrimitive::ParticleBillboard);
     }
@@ -543,11 +546,18 @@ fn utility_primitive_draw(
         instance_count: if primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
             storage
                 .particle_for_object(pass.object)
-                .map_or(0, |particle| particle.max_count)
+                .map_or(0, procedural_particle_instance_capacity)
         } else {
             1
         },
     }
+}
+
+fn procedural_particle_instance_capacity(particle: &SceneParticleSystemRecord) -> u32 {
+    let emitted_during_longest_lifetime = (particle.rate * particle.lifetime_max)
+        .ceil()
+        .clamp(0.0, u32::MAX as f32) as u32;
+    particle.max_count.min(emitted_during_longest_lifetime)
 }
 
 fn pass_applies_resolved_visual(pass: &SceneRenderPassRecord) -> bool {

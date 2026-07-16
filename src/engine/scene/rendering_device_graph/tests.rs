@@ -1,4 +1,23 @@
 use super::*;
+
+#[test]
+fn procedural_particle_capacity_omits_permanently_inactive_slots() {
+    let mut particle = SceneParticleSystemRecord::unsupported(
+        SceneObjectHandle(0),
+        SceneResourceId(0),
+        SceneMaterialHandle(0),
+        0,
+        3000,
+        1.0,
+        0.0,
+    );
+    particle.rate = 200.0;
+    particle.lifetime_max = 8.0;
+
+    assert_eq!(procedural_particle_instance_capacity(&particle), 1600);
+    particle.max_count = 500;
+    assert_eq!(procedural_particle_instance_capacity(&particle), 500);
+}
 use crate::engine::scene::{RenderingServer, SceneStorage};
 use crate::engine::scene::{
     SceneBinaryDocument, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,

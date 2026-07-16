@@ -152,6 +152,75 @@ fn ingests_falling_leaves_as_typed_particle_ir_and_part_record() {
 }
 
 #[test]
+fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
+    let root = std::env::temp_dir().join(format!("gilder-we-sparkles-test-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("particles")).expect("particles");
+    fs::create_dir_all(root.join("materials/particle")).expect("materials");
+    fs::write(
+        root.join("project.json"),
+        r#"{"type":"scene","file":"scene.json","title":"Sparkles"}"#,
+    )
+    .expect("project");
+    fs::write(
+        root.join("scene.json"),
+        r#"{"general":{"orthogonalprojection":{"width":3840,"height":2160}},"objects":[{"id":927,"name":"stars","particle":"particles/stars.json","origin":"1920 1080 0"}]}"#,
+    )
+    .expect("scene");
+    fs::write(
+        root.join("particles/stars.json"),
+        r#"{
+            "children":[],
+            "emitter":[{"id":5,"name":"boxrandom","directions":"2 2 0","distancemax":"1000 500 0","rate":200}],
+            "initializer":[
+                {"id":2,"name":"lifetimerandom","min":4,"max":8},
+                {"id":3,"name":"sizerandom","min":5,"max":10},
+                {"id":4,"name":"colorrandom","min":"255 255 255"}
+            ],
+            "material":"materials/particle/halo.json",
+            "maxcount":3000,
+            "operator":[
+                {"id":6,"name":"alphafade","fadeintime":0.1,"fadeouttime":0.9},
+                {"id":7,"name":"oscillatealpha","frequencymax":14,"scalemin":0.2},
+                {"id":8,"name":"movement","gravity":"0 -2 0"}
+            ],
+            "renderer":[{"id":1,"name":"sprite"}]
+        }"#,
+    )
+    .expect("particle");
+    fs::write(
+        root.join("materials/particle/halo.json"),
+        r#"{"passes":[{"shader":"genericparticle","blending":"translucent","textures":[null]}]}"#,
+    )
+    .expect("material");
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("sparkles IR");
+    let profile = ir.particles[0]
+        .ambient_sparkles_profile()
+        .expect("ambient sparkles specialization");
+    assert_eq!(profile.rate, 200.0);
+    assert_eq!(profile.oscillation_frequency_min, 1.0);
+    assert_eq!(profile.oscillation_frequency_max, 14.0);
+    assert_eq!(profile.oscillation_phase_min, 0.0);
+    assert_eq!(profile.oscillation_phase_max, std::f32::consts::TAU);
+    assert_eq!(profile.oscillation_scale_min, 0.2);
+    assert_eq!(profile.oscillation_scale_max, 1.0);
+
+    let document =
+        crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower sparkles");
+    assert_eq!(
+        document.particles[0].simulation,
+        crate::engine::scene::SceneParticleSimulationKind::AmbientSparkles
+    );
+    let mut bytes = Vec::new();
+    crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
+    let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
+    assert_eq!(decoded.particles, document.particles);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn ingests_json_puppet_descriptor_into_mdl_ir_records() {
     let root =
         std::env::temp_dir().join(format!("gilder-we-mdl-ingest-test-{}", std::process::id()));

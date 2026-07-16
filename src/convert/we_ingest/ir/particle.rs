@@ -131,6 +131,8 @@ pub enum WeIrParticleOperator {
         id: u32,
         frequency_min: f32,
         frequency_max: f32,
+        phase_min: f32,
+        phase_max: f32,
         scale_min: f32,
         scale_max: f32,
     },
@@ -206,6 +208,30 @@ pub struct WeIrFallingLeavesProfile {
     pub fade_out_time: f32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeIrAmbientSparklesProfile {
+    pub rate: f32,
+    pub emitter_origin: SceneVec3,
+    pub emitter_directions: SceneVec3,
+    pub distance_min: SceneVec3,
+    pub distance_max: SceneVec3,
+    pub lifetime_min: f32,
+    pub lifetime_max: f32,
+    pub size_min: f32,
+    pub size_max: f32,
+    pub color_min: SceneVec3,
+    pub color_max: SceneVec3,
+    pub gravity: SceneVec3,
+    pub fade_in_time: f32,
+    pub fade_out_time: f32,
+    pub oscillation_frequency_min: f32,
+    pub oscillation_frequency_max: f32,
+    pub oscillation_phase_min: f32,
+    pub oscillation_phase_max: f32,
+    pub oscillation_scale_min: f32,
+    pub oscillation_scale_max: f32,
+}
+
 impl WeIrParticleSystem {
     pub fn falling_leaves_profile(&self) -> Option<WeIrFallingLeavesProfile> {
         if !self.children.is_empty()
@@ -214,6 +240,31 @@ impl WeIrParticleSystem {
                 [WeIrParticleRenderer::Sprite { .. }]
             )
             || self.emitters.len() != 1
+        {
+            return None;
+        }
+        if self.initializers.len() != 7
+            || self.operators.len() != 3
+            || !self.initializers.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleInitializer::LifetimeRandom { .. }
+                        | WeIrParticleInitializer::SizeRandom { .. }
+                        | WeIrParticleInitializer::VelocityRandom { .. }
+                        | WeIrParticleInitializer::ColorRandom { .. }
+                        | WeIrParticleInitializer::RotationRandom { .. }
+                        | WeIrParticleInitializer::TurbulentVelocityRandom { .. }
+                        | WeIrParticleInitializer::AngularVelocityRandom { .. }
+                )
+            })
+            || !self.operators.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleOperator::Movement { .. }
+                        | WeIrParticleOperator::AlphaFade { .. }
+                        | WeIrParticleOperator::AngularMovement { .. }
+                )
+            })
         {
             return None;
         }
@@ -310,6 +361,116 @@ impl WeIrParticleSystem {
             gravity,
             fade_in_time: fade.0,
             fade_out_time: fade.1,
+        })
+    }
+
+    pub fn ambient_sparkles_profile(&self) -> Option<WeIrAmbientSparklesProfile> {
+        if !self.children.is_empty()
+            || !matches!(
+                self.renderers.as_slice(),
+                [WeIrParticleRenderer::Sprite { .. }]
+            )
+            || self.initializers.len() != 3
+            || self.operators.len() != 3
+            || !self.initializers.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleInitializer::LifetimeRandom { .. }
+                        | WeIrParticleInitializer::SizeRandom { .. }
+                        | WeIrParticleInitializer::ColorRandom { .. }
+                )
+            })
+            || !self.operators.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleOperator::Movement { .. }
+                        | WeIrParticleOperator::AlphaFade { .. }
+                        | WeIrParticleOperator::OscillateAlpha { .. }
+                )
+            })
+        {
+            return None;
+        }
+        let [
+            WeIrParticleEmitter::BoxRandom {
+                rate,
+                origin,
+                directions,
+                distance_min,
+                distance_max,
+                ..
+            },
+        ] = self.emitters.as_slice()
+        else {
+            return None;
+        };
+        if *rate <= 0.0 {
+            return None;
+        }
+        let lifetime = find_scalar_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::LifetimeRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let size = find_scalar_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::SizeRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let color = find_vec3_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::ColorRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let gravity = self.operators.iter().find_map(|item| match item {
+            WeIrParticleOperator::Movement { gravity, .. } => Some(*gravity),
+            _ => None,
+        })?;
+        let fade = self.operators.iter().find_map(|item| match item {
+            WeIrParticleOperator::AlphaFade {
+                fade_in_time,
+                fade_out_time,
+                ..
+            } => Some((*fade_in_time, *fade_out_time)),
+            _ => None,
+        })?;
+        let oscillation = self.operators.iter().find_map(|item| match item {
+            WeIrParticleOperator::OscillateAlpha {
+                frequency_min,
+                frequency_max,
+                phase_min,
+                phase_max,
+                scale_min,
+                scale_max,
+                ..
+            } => Some((
+                *frequency_min,
+                *frequency_max,
+                *phase_min,
+                *phase_max,
+                *scale_min,
+                *scale_max,
+            )),
+            _ => None,
+        })?;
+        Some(WeIrAmbientSparklesProfile {
+            rate: *rate,
+            emitter_origin: *origin,
+            emitter_directions: *directions,
+            distance_min: *distance_min,
+            distance_max: *distance_max,
+            lifetime_min: lifetime.0,
+            lifetime_max: lifetime.1,
+            size_min: size.0,
+            size_max: size.1,
+            color_min: color.0,
+            color_max: color.1,
+            gravity,
+            fade_in_time: fade.0,
+            fade_out_time: fade.1,
+            oscillation_frequency_min: oscillation.0,
+            oscillation_frequency_max: oscillation.1,
+            oscillation_phase_min: oscillation.2,
+            oscillation_phase_max: oscillation.3,
+            oscillation_scale_min: oscillation.4,
+            oscillation_scale_max: oscillation.5,
         })
     }
 }

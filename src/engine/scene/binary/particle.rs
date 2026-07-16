@@ -40,12 +40,19 @@ pub(super) fn encode_particles(
         put_vec3(&mut out, record.gravity);
         put_f32(&mut out, record.fade_in_time);
         put_f32(&mut out, record.fade_out_time);
+        put_f32(&mut out, record.oscillation_frequency_min);
+        put_f32(&mut out, record.oscillation_frequency_max);
+        put_f32(&mut out, record.oscillation_phase_min);
+        put_f32(&mut out, record.oscillation_phase_max);
+        put_f32(&mut out, record.oscillation_scale_min);
+        put_f32(&mut out, record.oscillation_scale_max);
     }
     Ok(out)
 }
 
 pub(super) fn decode_particles(
     data: &[u8],
+    scene_binary_version: u32,
 ) -> Result<Vec<SceneParticleSystemRecord>, SceneBinaryError> {
     let mut decoder = Decoder::new(data);
     let count = decoder.u32()? as usize;
@@ -58,7 +65,7 @@ pub(super) fn decode_particles(
         let simulation = SceneParticleSimulationKind::from_u32(simulation_raw).ok_or(
             SceneBinaryError::InvalidChunkValue("particle simulation kind", simulation_raw),
         )?;
-        particles.push(SceneParticleSystemRecord {
+        let mut record = SceneParticleSystemRecord {
             object,
             resource,
             material,
@@ -91,7 +98,24 @@ pub(super) fn decode_particles(
             gravity: decoder.vec3()?,
             fade_in_time: decoder.f32()?,
             fade_out_time: decoder.f32()?,
-        });
+            oscillation_frequency_min: 0.0,
+            oscillation_frequency_max: 0.0,
+            oscillation_phase_min: 0.0,
+            oscillation_phase_max: std::f32::consts::TAU,
+            oscillation_scale_min: 1.0,
+            oscillation_scale_max: 1.0,
+        };
+        if scene_binary_version >= 11 {
+            record.oscillation_frequency_min = decoder.f32()?;
+            record.oscillation_frequency_max = decoder.f32()?;
+            if scene_binary_version >= 12 {
+                record.oscillation_phase_min = decoder.f32()?;
+                record.oscillation_phase_max = decoder.f32()?;
+            }
+            record.oscillation_scale_min = decoder.f32()?;
+            record.oscillation_scale_max = decoder.f32()?;
+        }
+        particles.push(record);
     }
     Ok(particles)
 }
