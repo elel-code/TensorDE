@@ -19,12 +19,14 @@ use super::abi::*;
 mod document;
 mod mesh_clipping;
 mod particle;
+mod pointer_binding;
 mod scene_chunks;
 mod script_binding;
 mod texture;
 mod timeline;
 
 use particle::{decode_particles, encode_particles};
+use pointer_binding::{decode_pointer_bindings, encode_pointer_bindings};
 use scene_chunks::*;
 use script_binding::{decode_audio_band_material_bindings, encode_audio_band_material_bindings};
 
@@ -190,7 +192,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
     let (puppets, puppet_bones, puppet_attachments) =
         decode_puppets(chunk_payload(&chunks, CHUNK_PUPPET)?)?;
     ensure_chunk_count(&chunks, CHUNK_PUPPET, "puppet", puppets.len())?;
-    let particles = decode_particles(chunk_payload(&chunks, CHUNK_PARTICLE)?, version)?;
+    let particles = decode_particles(chunk_payload(&chunks, CHUNK_PARTICLE)?)?;
     ensure_chunk_count(&chunks, CHUNK_PARTICLE, "particle", particles.len())?;
     let (effects, effect_passes, effect_bindings, effect_combos, effect_fbos) =
         decode_effects(chunk_payload(&chunks, CHUNK_EFFECT)?)?;
@@ -245,6 +247,14 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         audio_band_material_bindings.len(),
     )?;
     ensure_chunk_count(&chunks, CHUNK_AUDIO, "audio", 0)?;
+    let (camera_parallax, object_parallax_depths) =
+        decode_pointer_bindings(chunk_payload(&chunks, CHUNK_POINTER_BINDING)?)?;
+    ensure_chunk_count(
+        &chunks,
+        CHUNK_POINTER_BINDING,
+        "pointer parallax bindings",
+        object_parallax_depths.len(),
+    )?;
 
     Ok(SceneBinaryDocument {
         feature_flags,
@@ -293,6 +303,8 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts,
         shader_constant_names,
         audio_band_material_bindings,
+        camera_parallax,
+        object_parallax_depths,
     })
 }
 
@@ -482,6 +494,17 @@ fn encode_chunks(
                 "audio band material binding count",
             )?,
             data: encode_audio_band_material_bindings(&document.audio_band_material_bindings)?,
+        },
+        SceneEncodedChunk {
+            kind: CHUNK_POINTER_BINDING,
+            item_count: checked_u32(
+                document.object_parallax_depths.len(),
+                "object parallax depth count",
+            )?,
+            data: encode_pointer_bindings(
+                document.camera_parallax,
+                &document.object_parallax_depths,
+            )?,
         },
         SceneEncodedChunk {
             kind: CHUNK_RENDER_GRAPH,

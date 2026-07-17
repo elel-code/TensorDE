@@ -383,6 +383,53 @@ fn retained_audio_binding_applies_uniform_object_scale_before_transform_propagat
     );
 }
 
+#[test]
+fn pointer_parallax_changes_render_matrix_without_polluting_authored_world_matrix() {
+    let mut document = semantic_document();
+    document.project.logical_width = 100;
+    document.project.logical_height = 100;
+    document.camera_parallax = SceneCameraParallaxRecord {
+        enabled: true,
+        amount: 0.5,
+        delay: 1.0,
+        mouse_influence: 1.0,
+    };
+    document.object_parallax_depths = vec![SceneObjectParallaxDepthRecord {
+        object: SceneObjectHandle(0),
+        depth: [-0.1, 0.0],
+    }];
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let world = SceneSemanticWorld::from_storage(&storage).expect("semantic world");
+    let mut resolver = SemanticFrameResolver::from_world(&world).expect("resolver");
+    let mut events = crate::engine::scene::SceneFrameEvents {
+        pointer: crate::engine::scene::ScenePointerState {
+            source: crate::engine::scene::ScenePointerSource::Replay,
+            position: [100.0, 50.0],
+            surface_size: [100, 100],
+            inside: true,
+            ..crate::engine::scene::ScenePointerState::default()
+        },
+        ..crate::engine::scene::SceneFrameEvents::default()
+    };
+
+    resolver
+        .resolve_frame_with_events_at(&world, 0.0, &events)
+        .expect("first pointer frame");
+    let frame = resolver
+        .resolve_frame_with_events_at(&world, 1.0, &events)
+        .expect("settled pointer frame");
+    let object = frame.object(SceneObjectHandle(0)).expect("image");
+    assert_close(object.world_matrix[12], 10.0);
+    assert_close(object.render_world_matrix[12], 20.0);
+
+    events.pointer.inside = false;
+    let frame = resolver
+        .resolve_frame_with_events_at(&world, 2.0, &events)
+        .expect("pointer leave frame");
+    let object = frame.object(SceneObjectHandle(0)).expect("image");
+    assert_close(object.render_world_matrix[12], object.world_matrix[12]);
+}
+
 fn semantic_document() -> SceneBinaryDocument {
     let strings = vec!["root-bone".to_owned(), "weapon".to_owned()];
     SceneBinaryDocument {

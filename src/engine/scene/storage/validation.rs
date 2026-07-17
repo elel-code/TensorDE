@@ -2,6 +2,7 @@ use super::*;
 
 pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
     validate_project(document)?;
+    validate_pointer_parallax(document)?;
     for resource in &document.resources {
         validate_string(document, "resource.path", resource.path)?;
         validate_string(document, "resource.source", resource.source)?;
@@ -649,6 +650,45 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
     }
     for name in &document.shader_constant_names {
         validate_string(document, "shader_contract.constant_name", *name)?;
+    }
+    Ok(())
+}
+
+fn validate_pointer_parallax(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {
+    let camera = document.camera_parallax;
+    if ![camera.amount, camera.delay, camera.mouse_influence]
+        .into_iter()
+        .all(f32::is_finite)
+        || camera.delay < 0.0
+    {
+        return Err(SceneStorageError::InvalidPointerParallaxBinding {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            reason: "non-finite scalar or negative delay",
+        });
+    }
+    for binding in &document.object_parallax_depths {
+        validate_range(
+            "object_parallax_depth.object",
+            binding.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        if !binding.depth.into_iter().all(f32::is_finite) {
+            return Err(SceneStorageError::InvalidPointerParallaxBinding {
+                object: binding.object,
+                reason: "non-finite depth",
+            });
+        }
+    }
+    if document
+        .object_parallax_depths
+        .windows(2)
+        .any(|pair| pair[0].object.0 >= pair[1].object.0)
+    {
+        return Err(SceneStorageError::InvalidPointerParallaxBinding {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            reason: "records are not strictly ordered by object",
+        });
     }
     Ok(())
 }

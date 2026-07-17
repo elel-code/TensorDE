@@ -159,7 +159,8 @@ impl SceneFrameTopology {
                 ));
             }
             draw.resolved_object_index = object.object_index;
-            draw.clip_transform = scene_clip_transform(storage.project(), object.world_matrix);
+            draw.clip_transform =
+                scene_clip_transform(storage.project(), object.render_world_matrix);
             draw.resolved_color = object.resolved_color;
             draw.resolved_alpha = object.resolved_alpha;
         }

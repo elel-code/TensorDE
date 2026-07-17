@@ -1,6 +1,17 @@
 use super::*;
 
 #[test]
+fn scene_binary_rejects_every_pre_v16_artifact() {
+    let mut bytes = Vec::new();
+    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v16");
+    bytes[8..12].copy_from_slice(&15_u32.to_le_bytes());
+    assert!(matches!(
+        read_scene_binary_bytes(&bytes),
+        Err(SceneBinaryError::UnsupportedVersion(15))
+    ));
+}
+
+#[test]
 fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
     let mut document = SceneBinaryDocument {
         strings: vec![
@@ -153,6 +164,18 @@ fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
         effect_count: 0,
         render_graph: u32::MAX,
     });
+    document.camera_parallax = SceneCameraParallaxRecord {
+        enabled: true,
+        amount: 0.5,
+        delay: 0.1,
+        mouse_influence: 0.5,
+    };
+    document
+        .object_parallax_depths
+        .push(SceneObjectParallaxDepthRecord {
+            object: SceneObjectHandle(0),
+            depth: [-0.1, 0.0],
+        });
     document.meshes.push(SceneMeshRecord {
         object: SceneObjectHandle(0),
         material: SceneMaterialHandle(INVALID_MATERIAL_ID),
@@ -306,6 +329,8 @@ fn scene_binary_round_trip_keeps_chunked_payloads_and_handles() {
     assert_eq!(decoded.object_transform_keyframes[0].value, 24.32251);
     assert_eq!(decoded.objects[0].color.x, 0.1);
     assert_eq!(decoded.objects[0].alpha, 0.4);
+    assert_eq!(decoded.camera_parallax.amount, 0.5);
+    assert_eq!(decoded.object_parallax_depths[0].depth, [-0.1, 0.0]);
     assert_eq!(decoded.puppet_animation_clips[0].clip_id, 475);
     assert_eq!(decoded.puppet_animation_clips[0].track_count, 1);
     assert_eq!(decoded.puppet_animation_tracks[0].bone_index, 41);

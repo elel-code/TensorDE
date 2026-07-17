@@ -78,12 +78,13 @@ impl SemanticFrameResolver {
         events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
         self.event_system
-            .update_frame(world, &mut self.frame, scene_time_seconds, events);
+            .begin_frame(world, &mut self.frame, scene_time_seconds, events);
         if !self.incremental_enabled {
             let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
             self.frame =
                 world.resolve_frame_with_audio_values_at(scene_time_seconds, &audio_values)?;
             self.frame.audio_band_material_values = audio_values;
+            self.event_system.finish_frame(world, &mut self.frame);
             return Ok(&self.frame);
         }
 
@@ -134,6 +135,7 @@ impl SemanticFrameResolver {
             self.frame.puppet_bone_palettes = palettes;
             self.frame.puppet_bone_matrices = matrices;
         }
+        self.event_system.finish_frame(world, &mut self.frame);
         Ok(&self.frame)
     }
 

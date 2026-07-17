@@ -117,7 +117,7 @@ impl SceneRenderingDeviceGraphPlan {
                                 resolved_object_index,
                                 clip_transform: scene_clip_transform(
                                     storage.project(),
-                                    pass_object_state.world_matrix,
+                                    pass_object_state.render_world_matrix,
                                 ),
                                 authored_source_extent: authored_source_extent(
                                     storage,
@@ -544,7 +544,7 @@ fn utility_primitive_draw(
             .map(|object| object.object_index)
             .unwrap_or(INVALID_OBJECT_ID),
         clip_transform: pass_object_state.map_or_else(identity_clip_transform, |object| {
-            scene_clip_transform(storage.project(), object.world_matrix)
+            scene_clip_transform(storage.project(), object.render_world_matrix)
         }),
         authored_source_extent: authored_source_extent(storage, pass.object),
         skinning_palette_start: INVALID_OBJECT_ID,

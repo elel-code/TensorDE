@@ -31,7 +31,7 @@ fn ingests_minimal_loose_scene_project() {
     .expect("project");
     fs::write(
             root.join("scene.json"),
-            r#"{"general":{"orthogonalprojection":{"width":1920,"height":1080}},"objects":[{"id":7,"name":"layer","image":"models/layer.json","origin":"1 2 0","animationlayers":[{"animation":475,"index":2,"additive":true,"autosort":true}]}]}"#,
+            r#"{"general":{"orthogonalprojection":{"width":1920,"height":1080},"cameraparallax":true,"cameraparallaxamount":0.5,"cameraparallaxdelay":0.1,"cameraparallaxmouseinfluence":0.5},"objects":[{"id":7,"name":"layer","image":"models/layer.json","origin":"1 2 0","parallaxDepth":"-0.2 -0.1","animationlayers":[{"animation":475,"index":2,"additive":true,"autosort":true}]}]}"#,
         )
         .expect("scene");
     fs::write(
@@ -48,7 +48,10 @@ fn ingests_minimal_loose_scene_project() {
     let ir = ingest_wallpaper_engine_project(&root).expect("ir");
     assert_eq!(ir.project.title, "Demo");
     assert_eq!(ir.scene.logical_width, 1920);
+    assert!(ir.scene.camera_parallax_enabled);
+    assert_eq!(ir.scene.camera_parallax_amount, 0.5);
     assert_eq!(ir.objects.len(), 1);
+    assert_eq!(ir.objects[0].parallax_depth, [-0.2, -0.1]);
     assert_eq!(ir.object_animation_layers.len(), 1);
     assert_eq!(ir.object_animation_layers[0].animation_id, 475);
     assert_eq!(ir.object_animation_layers[0].layer_index, 2);

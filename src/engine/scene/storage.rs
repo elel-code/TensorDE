@@ -121,6 +121,14 @@ impl SceneStorage {
         &self.document.objects
     }
 
+    pub fn camera_parallax(&self) -> SceneCameraParallaxRecord {
+        self.document.camera_parallax
+    }
+
+    pub fn object_parallax_depths(&self) -> &[SceneObjectParallaxDepthRecord] {
+        &self.document.object_parallax_depths
+    }
+
     pub fn object_animation_layers(&self) -> &[SceneObjectAnimationLayerRecord] {
         &self.document.object_animation_layers
     }
@@ -481,6 +489,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidPointerParallaxBinding {
+        object: SceneObjectHandle,
+        reason: &'static str,
+    },
 }
 
 impl fmt::Display for SceneStorageError {
@@ -566,6 +578,11 @@ impl fmt::Display for SceneStorageError {
             Self::InvalidAudioBandMaterialBinding { object, reason } => write!(
                 f,
                 "scene audio band material binding for object {} is invalid: {reason}",
+                object.0
+            ),
+            Self::InvalidPointerParallaxBinding { object, reason } => write!(
+                f,
+                "scene pointer parallax binding for object {} is invalid: {reason}",
                 object.0
             ),
         }

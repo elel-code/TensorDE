@@ -238,6 +238,13 @@ fn parse_scene_root_ir(scene: &Value) -> WeSceneRootIr {
             y: 1.0,
             z: 0.0,
         }),
+        camera_parallax_enabled: bound_bool(general.get("cameraparallax")).unwrap_or(false),
+        camera_parallax_amount: finite_f32(general.get("cameraparallaxamount"), 1.0),
+        camera_parallax_delay: finite_f32(general.get("cameraparallaxdelay"), 0.0),
+        camera_parallax_mouse_influence: finite_f32(
+            general.get("cameraparallaxmouseinfluence"),
+            1.0,
+        ),
     }
 }
 
@@ -698,6 +705,10 @@ impl WeIrBuilder {
                 && !media_controlled_group_hidden,
             color_blend_mode,
             sort_order: value_i32(value.get("sortorder")).unwrap_or(index as i32),
+            parallax_depth: parse_vec3(value.get("parallaxDepth"))
+                .filter(|depth| depth.x.is_finite() && depth.y.is_finite())
+                .map(|depth| [depth.x, depth.y])
+                .unwrap_or([0.0; 2]),
             utility_layer,
             render_graph,
         });
@@ -926,6 +937,12 @@ impl WeIrBuilder {
             track_count: self.puppet_animation_tracks.len() as u32 - track_start,
         });
     }
+}
+
+fn finite_f32(value: Option<&Value>, fallback: f32) -> f32 {
+    value_f32(value)
+        .filter(|value| value.is_finite())
+        .unwrap_or(fallback)
 }
 
 #[cfg(test)]

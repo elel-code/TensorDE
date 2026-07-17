@@ -104,6 +104,10 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
                 y: 1.0,
                 z: 0.0,
             },
+            camera_parallax_enabled: true,
+            camera_parallax_amount: 0.5,
+            camera_parallax_delay: 0.1,
+            camera_parallax_mouse_influence: 0.5,
         },
         resources: vec![WeIrResource {
             handle: 0,
@@ -219,4 +223,13 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
     assert_eq!(binary.mesh_vertices.len(), 4);
     assert_eq!(binary.mesh_indices, [0, 1, 2, 0, 2, 3]);
     assert_eq!(binary.meshes[0].width, 64.0);
+    assert_eq!(
+        binary.camera_parallax,
+        SceneCameraParallaxRecord {
+            enabled: true,
+            amount: 0.5,
+            delay: 0.1,
+            mouse_influence: 0.5,
+        }
+    );
 }

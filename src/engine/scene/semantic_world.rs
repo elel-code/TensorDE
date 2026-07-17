@@ -6,7 +6,6 @@
 //! - `reverse-engineered/docs/exe/scene-and-object.md`
 //! - `reverse-engineered/docs/exe/model-and-animation.md`
 //! - `references/godot/servers/rendering/storage/*`
-
 mod audio_binding;
 pub mod components;
 pub mod effect;
@@ -15,6 +14,7 @@ mod errors;
 mod event_system;
 pub mod indexes;
 pub mod matrix;
+mod pointer_parallax;
 pub mod resolved_frame;
 mod semantic_resolution;
 pub mod timeline;
@@ -604,6 +604,7 @@ impl<'a> SceneSemanticWorld<'a> {
             attachment: object.attachment,
             local_matrix,
             world_matrix: parent_state.world_matrix,
+            render_world_matrix: parent_state.world_matrix,
             self_visible: visibility.visible,
             resolved_visible: visibility.visible && parent_state.inherited_visible,
             self_color: visual.color,

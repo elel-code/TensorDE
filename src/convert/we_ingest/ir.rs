@@ -89,6 +89,10 @@ pub struct WeSceneRootIr {
     pub camera_eye: SceneVec3,
     pub camera_center: SceneVec3,
     pub camera_up: SceneVec3,
+    pub camera_parallax_enabled: bool,
+    pub camera_parallax_amount: f32,
+    pub camera_parallax_delay: f32,
+    pub camera_parallax_mouse_influence: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -164,6 +168,7 @@ pub struct WeIrObject {
     pub visible: bool,
     pub color_blend_mode: i32,
     pub sort_order: i32,
+    pub parallax_depth: [f32; 2],
     pub utility_layer: Option<WeIrUtilityLayerKind>,
     pub render_graph: Option<u32>,
 }
