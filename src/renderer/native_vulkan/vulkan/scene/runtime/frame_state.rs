@@ -24,9 +24,7 @@ use super::draw_uniform::pack_scene_draw_uniforms;
 use super::material_uniform::{
     pack_scene_material_uniforms_with_frame_inputs, scene_audio_spectrum32,
 };
-use super::scene_color_clear::{
-    SceneGpuSceneColorClear, resolve_scene_color_attachment_clear,
-};
+use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(super) struct SceneFrameBufferUpdate {
@@ -133,9 +131,9 @@ impl SceneFrameTopology {
             .iter()
             .filter(|pass| {
                 pass.target == crate::engine::scene::SceneRenderTargetKind::FirstClassEffectTarget
-                    && storage.string(pass.target_name).is_some_and(|name| {
-                        name.starts_with("_rt_imageLayerComposite_")
-                    })
+                    && storage
+                        .string(pass.target_name)
+                        .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"))
             })
             .flat_map(|pass| {
                 self.graph
@@ -367,6 +365,7 @@ pub(super) fn write_scene_frame_buffers(
     let semantic_resolve_micros = elapsed_optional_micros(semantic_started);
     let graph_started = cpu_timing_enabled.then(Instant::now);
     let graph = topology.update_dynamic_graph(storage, &semantic_frame, scene_time_seconds)?;
+    update_particle_instance_counts(storage, graph, scene_time_seconds, draw_commands);
     let graph_update_micros = elapsed_optional_micros(graph_started);
 
     let transform_started = cpu_timing_enabled.then(Instant::now);
@@ -433,6 +432,44 @@ pub(super) fn write_scene_frame_buffers(
             draw_policy_update_micros,
         },
     })
+}
+
+fn update_particle_instance_counts(
+    storage: &SceneStorage,
+    graph: &SceneRenderingDeviceGraphPlan,
+    scene_time_seconds: f32,
+    draw_commands: &mut [SceneGpuDrawCommand],
+) {
+    for (draw, command) in graph.mesh_draws.iter().zip(draw_commands.iter_mut()) {
+        if draw.primitive != SceneRenderingDeviceDrawPrimitive::ParticleBillboard {
+            continue;
+        }
+        let Some(particle) = storage.particle_for_object(draw.object) else {
+            command.instance_count = 0;
+            continue;
+        };
+        command.instance_count = active_particle_instance_count(particle, scene_time_seconds);
+    }
+}
+
+fn active_particle_instance_count(
+    particle: &crate::engine::scene::SceneParticleSystemRecord,
+    scene_time_seconds: f32,
+) -> u32 {
+    if particle.rate <= 0.0
+        || !scene_time_seconds.is_finite()
+        || scene_time_seconds < particle.start_time
+    {
+        return 0;
+    }
+    let capacity = particle.max_count.min(
+        (particle.rate * particle.lifetime_max)
+            .ceil()
+            .clamp(0.0, u32::MAX as f32) as u32,
+    );
+    let elapsed = (scene_time_seconds - particle.start_time).max(0.0);
+    let spawned = elapsed.mul_add(particle.rate, 0.0).floor() as u32;
+    capacity.min(spawned.saturating_add(1))
 }
 
 fn elapsed_optional_micros(started: Option<Instant>) -> u64 {
@@ -539,8 +576,31 @@ mod tests {
         ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette,
     };
     use crate::engine::scene::{
-        SceneRenderingDevicePuppetBoneMatrix, SceneRenderingDevicePuppetBonePalette,
+        SceneMaterialHandle, SceneRenderingDevicePuppetBoneMatrix,
+        SceneRenderingDevicePuppetBonePalette, SceneResourceId,
     };
+
+    #[test]
+    fn particle_instance_count_tracks_spawned_prefix_without_renumbering() {
+        let mut particle = crate::engine::scene::SceneParticleSystemRecord::unsupported(
+            SceneObjectHandle(0),
+            SceneResourceId(0),
+            SceneMaterialHandle(0),
+            0,
+            100,
+            1.0,
+            0.0,
+        );
+        particle.rate = 4.0;
+        particle.lifetime_max = 100.0;
+        particle.start_time = 2.0;
+
+        assert_eq!(active_particle_instance_count(&particle, 1.0), 0);
+        assert_eq!(active_particle_instance_count(&particle, 2.0), 1);
+        assert_eq!(active_particle_instance_count(&particle, 2.24), 1);
+        assert_eq!(active_particle_instance_count(&particle, 2.25), 2);
+        assert_eq!(active_particle_instance_count(&particle, 100.0), 100);
+    }
 
     #[test]
     fn skinning_payload_prefixes_identity_and_packs_alpha_in_std430_entry() {

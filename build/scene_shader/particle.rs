@@ -82,11 +82,12 @@ vec2 billboard_uv(int vertex) {
 void main() {
     float instance = float(gl_InstanceIndex);
     float base_seed = g_Particle.g_SizeFadeSeed.w + instance * 131.0;
-    vec3 initial_random = hash31(base_seed);
-    float initial_lifetime = mix(
-        g_Particle.g_SequenceLifetimeSize.y,
-        g_Particle.g_SequenceLifetimeSize.z,
-        initial_random.x);
+    float lifetime_min = g_Particle.g_SequenceLifetimeSize.y;
+    float lifetime_max = g_Particle.g_SequenceLifetimeSize.z;
+    float initial_lifetime = lifetime_min;
+    if (lifetime_min != lifetime_max) {
+        initial_lifetime = mix(lifetime_min, lifetime_max, hash11(base_seed + 1.0));
+    }
     float spawn_offset = instance / max(g_Particle.g_TimeStartRateCount.z, 0.0001);
     float elapsed = g_Particle.g_TimeStartRateCount.x
         - g_Particle.g_TimeStartRateCount.y - spawn_offset;
@@ -106,15 +107,10 @@ void main() {
     float cycle = floor(max(elapsed, 0.0) / max(schedule_period, 0.0001));
     float age = mod(max(elapsed, 0.0), max(schedule_period, 0.0001));
     float seed = base_seed + cycle * 977.0;
-    vec3 random0 = hash31(seed);
-    vec3 random1 = hash31(seed + 101.0);
-    vec3 random2 = hash31(seed + 211.0);
-    float lifetime = capacity_saturated
-        ? initial_lifetime
-        : mix(
-            g_Particle.g_SequenceLifetimeSize.y,
-            g_Particle.g_SequenceLifetimeSize.z,
-            random0.x);
+    float lifetime = initial_lifetime;
+    if (!capacity_saturated && lifetime_min != lifetime_max) {
+        lifetime = mix(lifetime_min, lifetime_max, hash11(seed + 1.0));
+    }
     float alive = elapsed >= 0.0
         && instance < active_slots
         && (capacity_saturated || age < lifetime) ? 1.0 : 0.0;
@@ -146,6 +142,14 @@ void main() {
     vec3 floral_position_phase_random = random3_u32(ambient_seed ^ 0xb0986e43u);
     vec3 floral_position_scale_random = random3_u32(ambient_seed ^ 0xc0472ad1u);
     float floral_size_random = random_u32(ambient_seed ^ 0xd086c72fu);
+    vec3 random0 = vec3(0.0);
+    vec3 random1 = vec3(0.0);
+    vec3 random2 = vec3(0.0);
+    if (simulation <= 1.5) {
+        random0 = hash31(seed);
+        random1 = hash31(seed + 101.0);
+        random2 = hash31(seed + 211.0);
+    }
     vec3 position;
     if (simulation > 1.5) {
         vec3 box_distance = mix(
