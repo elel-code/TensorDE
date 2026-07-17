@@ -727,6 +727,8 @@ mod tests {
                 alpha: 0.25,
             }],
             audio_band_material_values: Vec::new(),
+            media_clock: None,
+            video_frame: None,
             visible_object_count: 0,
             visible_mesh_binding_count: 0,
             visible_effect_instance_count: 0,

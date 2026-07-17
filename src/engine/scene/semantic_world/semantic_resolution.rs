@@ -81,9 +81,13 @@ impl SemanticFrameResolver {
             .begin_frame(world, &mut self.frame, scene_time_seconds, events);
         if !self.incremental_enabled {
             let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
+            let media_clock = self.frame.media_clock;
+            let video_frame = self.frame.video_frame;
             self.frame =
                 world.resolve_frame_with_audio_values_at(scene_time_seconds, &audio_values)?;
             self.frame.audio_band_material_values = audio_values;
+            self.frame.media_clock = media_clock;
+            self.frame.video_frame = video_frame;
             self.event_system.finish_frame(world, &mut self.frame);
             return Ok(&self.frame);
         }

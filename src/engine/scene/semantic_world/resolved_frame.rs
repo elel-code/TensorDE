@@ -7,6 +7,7 @@
 //! - `reverse-engineered/docs/exe/model-and-animation.md`
 
 use super::super::abi::*;
+use super::super::event::{SceneMediaClockState, SceneVideoState};
 use super::components::MeshBindingComponent;
 use super::effect::ResolvedObjectEffectState;
 use super::entity::SemanticEntity;
@@ -21,6 +22,8 @@ pub struct ResolvedSemanticFrame {
     pub puppet_bone_palettes: Vec<ResolvedPuppetBonePalette>,
     pub puppet_bone_matrices: Vec<ResolvedPuppetBoneMatrix>,
     pub audio_band_material_values: Vec<ResolvedAudioBandMaterialValue>,
+    pub media_clock: Option<SceneMediaClockState>,
+    pub video_frame: Option<SceneVideoState>,
     pub visible_object_count: usize,
     pub visible_mesh_binding_count: usize,
     pub visible_effect_instance_count: usize,
@@ -79,6 +82,8 @@ impl ResolvedSemanticFrame {
             puppet_bone_palettes,
             puppet_bone_matrices,
             audio_band_material_values: Vec::new(),
+            media_clock: None,
+            video_frame: None,
             visible_object_count,
             visible_mesh_binding_count,
             visible_effect_instance_count,
