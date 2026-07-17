@@ -181,6 +181,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scene_surface_width = None::<u32>;
     let mut scene_surface_height = None::<u32>;
     let mut scene_gpu_timing = false;
+    let mut scene_pointer_replay_normalized = None::<[f64; 2]>;
     let mut fit = FitMode::Cover;
     let mut _fit_set = false;
     let mut background = None::<String>;
@@ -365,6 +366,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             "--capture-scene-graph" => {
                 capture_scene_graph = Some(parse_capture_scene_graph(args.next())?);
+            }
+            "--scene-pointer-position" => {
+                scene_pointer_replay_normalized = Some(parse_scene_pointer_position(args.next())?);
             }
             "--surface-width" => {
                 scene_surface_width = Some(
@@ -744,6 +748,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 source,
                 NativeVulkanSceneRunOptions {
                     pointer_events: true,
+                    pointer_replay_normalized: scene_pointer_replay_normalized,
                     capture_frame,
                     capture_frame_number,
                     capture_frame_count,

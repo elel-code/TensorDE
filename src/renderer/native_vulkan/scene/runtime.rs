@@ -25,6 +25,7 @@ use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanSceneRunOptions {
     pub pointer_events: bool,
+    pub pointer_replay_normalized: Option<[f64; 2]>,
     pub capture_frame: Option<PathBuf>,
     pub capture_frame_number: u64,
     pub capture_frame_count: u64,
@@ -43,6 +44,7 @@ impl Default for NativeVulkanSceneRunOptions {
     fn default() -> Self {
         Self {
             pointer_events: true,
+            pointer_replay_normalized: None,
             capture_frame: None,
             capture_frame_number: 1,
             capture_frame_count: 1,
@@ -102,6 +104,7 @@ pub fn run_scene_with_options(
     source: PathBuf,
     scene_options: NativeVulkanSceneRunOptions,
 ) -> Result<NativeVulkanSceneRuntimeSnapshot, NativeVulkanError> {
+    validate_pointer_replay_position(scene_options.pointer_replay_normalized)?;
     if scene_options.capture_frame.is_some() && duration.is_zero() {
         return Err(NativeVulkanError::Scene(
             "scene frame capture requires a non-zero runtime duration".to_owned(),
@@ -209,6 +212,7 @@ pub fn run_scene_with_options(
             capture_scene_graph,
             surface_extent: scene_options.surface_extent,
             gpu_timing: scene_options.gpu_timing,
+            pointer_replay_normalized: scene_options.pointer_replay_normalized,
         })
         .map_err(NativeVulkanError::Scene)?;
     let frame_capture = present.frame_capture.clone();
@@ -246,6 +250,19 @@ pub fn run_scene_with_options(
         backend_plan,
         present,
     })
+}
+
+fn validate_pointer_replay_position(position: Option<[f64; 2]>) -> Result<(), NativeVulkanError> {
+    if position.is_some_and(|position| {
+        position
+            .iter()
+            .any(|coordinate| !coordinate.is_finite() || !(0.0..=1.0).contains(coordinate))
+    }) {
+        return Err(NativeVulkanError::Scene(
+            "scene pointer replay position must be finite and normalized to [0,1]".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_scene_runtime_plan(
@@ -308,6 +325,16 @@ mod tests {
         let err = validate_scene_runtime_plan(&plan).unwrap_err();
 
         assert!(err.to_string().contains("missing built-in shader catalog"));
+    }
+
+    #[test]
+    fn pointer_replay_position_is_finite_and_surface_normalized() {
+        assert!(validate_pointer_replay_position(None).is_ok());
+        assert!(validate_pointer_replay_position(Some([0.0, 1.0])).is_ok());
+        assert!(validate_pointer_replay_position(Some([-0.1, 0.5])).is_err());
+        assert!(validate_pointer_replay_position(Some([0.5, 1.1])).is_err());
+        assert!(validate_pointer_replay_position(Some([f64::NAN, 0.5])).is_err());
+        assert!(validate_pointer_replay_position(Some([f64::INFINITY, 0.5])).is_err());
     }
 
     fn empty_backend_plan() -> NativeVulkanSceneBackendPlan {

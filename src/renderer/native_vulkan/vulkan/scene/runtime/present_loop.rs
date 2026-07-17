@@ -8,7 +8,8 @@ pub(super) fn with_scene_present(
     vulkan: &NativeVulkanVulkanaliaInstance,
     mut options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
-    let mut event_sources = SceneRuntimeEventSources::new(&options.storage);
+    let mut event_sources =
+        SceneRuntimeEventSources::new(&options.storage, options.pointer_replay_normalized);
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia scene present): {err:?}"))?;
     let mut present_queue_family_count = 0usize;
@@ -438,7 +439,7 @@ pub(super) fn with_scene_present(
             .or(fixed_scene_time_seconds)
             .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
         let sample_time_ns = started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        let frame_events = event_sources.capture_frame(sample_time_ns);
+        let frame_events = event_sources.capture_frame(sample_time_ns, host.logical_size());
         scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
         let frame_resources = &scene_resources.frame_resources[frame_slot];

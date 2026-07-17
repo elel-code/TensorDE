@@ -31,4 +31,8 @@ impl NativeWaylandEventSource {
             queue.publish(event);
         }
     }
+
+    pub(super) fn discard_pending(&mut self) {
+        self.pending.clear();
+    }
 }

@@ -151,6 +151,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanVulkanaliaScenePresent
     pub capture_scene_graph: Option<u32>,
     pub surface_extent: Option<(u32, u32)>,
     pub gpu_timing: bool,
+    pub pointer_replay_normalized: Option<[f64; 2]>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]

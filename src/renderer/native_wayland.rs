@@ -519,6 +519,10 @@ impl NativeWaylandHost {
         self.state.event_source.publish_to(queue);
     }
 
+    pub(crate) fn discard_scene_events(&mut self) {
+        self.state.event_source.discard_pending();
+    }
+
     pub fn request_frame_callback(&mut self) -> Result<(), NativeWaylandError> {
         let qh = self.event_queue.handle();
         self.state.request_frame_callback(&qh);

@@ -141,6 +141,29 @@ fn parse_capture_scene_graph(value: Option<String>) -> Result<u32, &'static str>
 }
 
 #[cfg(feature = "native-vulkan-renderer")]
+fn parse_scene_pointer_position(value: Option<String>) -> Result<[f64; 2], &'static str> {
+    const ERROR: &str = "--scene-pointer-position requires finite normalized X,Y in [0,1]";
+    let value = value.ok_or(ERROR)?;
+    let values = value
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| ERROR)?;
+    match values.as_slice() {
+        [x, y]
+            if x.is_finite()
+                && y.is_finite()
+                && (0.0..=1.0).contains(x)
+                && (0.0..=1.0).contains(y) =>
+        {
+            Ok([*x, *y])
+        }
+        _ => Err(ERROR),
+    }
+}
+
+#[cfg(feature = "native-vulkan-renderer")]
 fn parse_scene_surface_extent(
     width: Option<u32>,
     height: Option<u32>,
@@ -248,6 +271,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --capture-frame-reference PATH compares the captured sequence with matching deterministic reference PNGs in-process.\n\
 --capture-frame-time-step SECONDS advances scene time deterministically for every submitted capture run frame.\n\
 --capture-scene-graph N isolates one RenderingDevice graph in a captured frame; it is rejected without --capture-frame.\n\
+--scene-pointer-position X,Y replays a normalized wallpaper-surface pointer position for deterministic scene diagnostics.\n\
 --surface-width/--surface-height override the automatic authored-scene extent (falling back to the Wayland buffer extent) and must be provided together.\n\
 --gpu-timing enables top-of-pipe to bottom-of-pipe Vulkan timestamp queries for --run-scene diagnostics.\n\
 --vulkan-device SELECTOR strictly selects index:N, name:TEXT, uuid:HEX, or pci:DOMAIN:BUS:DEVICE.FUNCTION for every Vulkan route.\n\
@@ -256,7 +280,7 @@ Print native Vulkan spike capabilities and backend contract.\n\
 --run-vulkanalia-ready-prefix-video runs the legacy Vulkanalia Vulkan Video compatibility route and prints runtime JSON.\n\
 Options: [--output-name NAME] [--layer background|bottom|top|overlay] [--parent-mapping-buffer|--no-parent-mapping-buffer] [--fractional-scale-rounding ceil|nearest|floor] [--wait-roundtrips N]\n\
          [--duration SECONDS] [--target-fps FPS|--no-fps-limit] [--color #rrggbb|r,g,b] [--capture-frame PATH] [--capture-frame-number N] [--capture-frame-count N] [--capture-frame-step N] [--capture-frame-downscale N] [--capture-frame-region X,Y,WIDTH,HEIGHT] [--capture-frame-reference PATH] [--capture-frame-time-step SECONDS] [--capture-scene-graph N]\n\
-         [--surface-width PX --surface-height PX] [--gpu-timing]\n\
+         [--scene-pointer-position X,Y] [--surface-width PX --surface-height PX] [--gpu-timing]\n\
          [--vulkan-device SELECTOR] [--vulkan-device-preference discrete|integrated|enumeration]\n\
          [--source PATH] [--poster PATH] [--fit cover|contain|stretch|tile|center] [--background #rrggbb]\n\
          [--loop|--no-loop] [--muted|--unmuted] [--audio-output plan|clock-only|auto] [--audio-clock-probe]\n\
@@ -356,6 +380,24 @@ mod tests {
             parse_capture_scene_graph(Some("graph".to_owned())),
             Err("--capture-scene-graph requires a graph index")
         );
+    }
+
+    #[test]
+    fn scene_pointer_position_accepts_finite_normalized_surface_coordinates() {
+        assert_eq!(
+            parse_scene_pointer_position(Some("0, 0.5".to_owned())),
+            Ok([0.0, 0.5])
+        );
+        assert_eq!(
+            parse_scene_pointer_position(Some("1,1".to_owned())),
+            Ok([1.0, 1.0])
+        );
+        assert!(parse_scene_pointer_position(None).is_err());
+        assert!(parse_scene_pointer_position(Some("0.5".to_owned())).is_err());
+        assert!(parse_scene_pointer_position(Some("-0.1,0.5".to_owned())).is_err());
+        assert!(parse_scene_pointer_position(Some("0.5,1.1".to_owned())).is_err());
+        assert!(parse_scene_pointer_position(Some("NaN,0.5".to_owned())).is_err());
+        assert!(parse_scene_pointer_position(Some("inf,0.5".to_owned())).is_err());
     }
 
     #[test]
