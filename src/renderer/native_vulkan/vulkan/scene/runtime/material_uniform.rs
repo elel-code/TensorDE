@@ -43,7 +43,7 @@ use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
 
-pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 512;
+pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 768;
 const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
     SCENE_MATERIAL_UNIFORM_BYTES as usize / size_of::<f32>();
 
@@ -777,7 +777,7 @@ fn waterwaves_displacement_values(
     chain_base: usize,
     stage_start: usize,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    const MAX_STAGES: usize = 7;
+    const MAX_STAGES: usize = 9;
     const STAGE_FLOATS: usize = 16;
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[chain_base] = parameters

@@ -144,7 +144,7 @@ pub(super) fn aggregate_waterwaves_effect_runs(
 }
 
 fn compatible_run_count(effects: &[WeEffectPassContract], cursor: usize) -> Option<usize> {
-    let max_count = effects.len().saturating_sub(cursor).min(7);
+    let max_count = effects.len().saturating_sub(cursor).min(9);
     (2..=max_count).rev().find(|count| {
         we_effect_passes_form_waterwaves_displacement_chain(&effects[cursor..cursor + count])
     })
@@ -360,6 +360,14 @@ mod tests {
         assert_eq!(compatible_run_count(&effects, 1), Some(3));
         assert_eq!(compatible_run_count(&effects, 2), Some(2));
         assert_eq!(compatible_run_count(&effects, 3), None);
+    }
+
+    #[test]
+    fn compatible_run_count_keeps_nine_stage_chain_in_one_program() {
+        let effects = (0..9)
+            .map(|_| effect_pass("effects/waterwaves__SLOTS_1"))
+            .collect::<Vec<_>>();
+        assert_eq!(compatible_run_count(&effects, 0), Some(9));
     }
 
     fn effect_pass(shader: &str) -> WeEffectPassContract {

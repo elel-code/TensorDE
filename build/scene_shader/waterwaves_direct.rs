@@ -44,7 +44,7 @@ fn waterwaves_direct_fragment(
     stage_count: Option<usize>,
     static_black_output: bool,
 ) -> String {
-    let mask_stage_count = stage_count.unwrap_or(7).min(7);
+    let mask_stage_count = stage_count.unwrap_or(9).min(9);
     let mask_sampler_declarations = (0..mask_stage_count)
         .map(|stage| {
             let slot = stage + 1;
@@ -68,10 +68,10 @@ fn waterwaves_direct_fragment(
             })
             .collect::<String>()
     } else {
-        (0..7)
+        (0..9)
             .map(|stage| {
                 let slot = stage + 1;
-                if stage == 6 {
+                if stage == 8 {
                     format!("    return texture(g_Texture{slot}, uv).r;\n")
                 } else {
                     format!("    if (stage == {stage}) return texture(g_Texture{slot}, uv).r;\n")
@@ -83,12 +83,12 @@ fn waterwaves_direct_fragment(
         .then_some("    color.rgb *= color.a;\n")
         .unwrap_or_default();
     let stage_count_declaration = stage_count.map_or_else(
-        || "    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 7);\n".to_owned(),
+        || "    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 9);\n".to_owned(),
         |count| format!("    int stage_count = {count};\n"),
     );
     let stage_evaluation = stage_count.map_or_else(
         || {
-            "    for (int stage = 6; stage >= 0; --stage) {\n\
+            "    for (int stage = 8; stage >= 0; --stage) {\n\
                  if (stage < stage_count) {\n\
                      source_uv += stageOffset(stage, source_uv);\n\
                  }\n\
@@ -147,7 +147,7 @@ layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 layout(set = 0, binding = 3) uniform WaterWavesDirectUniform {
     vec4 g_ResolvedColorAlpha;
     vec4 g_Chain;
-    vec4 g_Stage[28];
+    vec4 g_Stage[36];
 } u_Effect;
 "#,
         shaped_sine_declaration,
@@ -187,7 +187,8 @@ void main() {
         &stage_count_declaration,
         &stage_evaluation,
         r#"
-    float authored_filter_radius = 0.17 * sqrt(max(float(stage_count - 1), 0.0));
+    float authored_filter_radius = 0.17
+        * sqrt(max(float(min(stage_count, 7) - 1), 0.0));
 "#,
         &source_filter,
         "\n",
@@ -205,7 +206,7 @@ pub(crate) fn stage_count_from_shader_key(key: &str) -> Option<usize> {
     key.split("__")
         .find_map(|part| part.strip_prefix("STAGES_"))
         .and_then(|count| count.parse::<usize>().ok())
-        .filter(|count| (2..=7).contains(count))
+        .filter(|count| (2..=9).contains(count))
 }
 
 pub(crate) fn static_black_output_from_shader_key(key: &str) -> bool {

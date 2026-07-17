@@ -299,6 +299,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_8",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_9",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/image-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -320,6 +328,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "we/image-waterwaves-direct__STAGES_7__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_8__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-direct__STAGES_9__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
@@ -351,6 +367,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_8",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_9",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/image-waterwaves-multiply-direct__STAGES_2__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -372,6 +396,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "we/image-waterwaves-multiply-direct__STAGES_7__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_8__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/image-waterwaves-multiply-direct__STAGES_9__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
@@ -403,6 +435,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_8",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_9",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/puppet-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -427,6 +467,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_8__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/puppet-waterwaves-direct__STAGES_9__STATIC_BLACK_1",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/effect-waterwaves-direct__STAGES_2",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
@@ -448,6 +496,14 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
     },
     SceneShaderSpec {
         key: "we/effect-waterwaves-direct__STAGES_7",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_8",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_9",
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {

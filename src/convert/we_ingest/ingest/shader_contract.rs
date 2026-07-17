@@ -159,7 +159,7 @@ pub(super) fn declared_texture_slot_mask(
         mask |= slot_mask;
     }
     if key == "we/waterwaves-uv-field" || is_waterwaves_direct_shader(&key) {
-        mask |= 0xfe;
+        mask |= 0x3fe;
     }
     if is_foliage_ripple_shader(&key) {
         mask |= 0x0b;

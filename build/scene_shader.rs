@@ -487,7 +487,7 @@ pub(super) fn image_ripple_flow_multiply_composite_sources() -> (String, String)
 }
 
 fn image_ripple_flow_composite_sources_with_premultiply(premultiply: bool) -> (String, String) {
-    let vertex = super::scene_mesh_vertex_source();
+    let vertex = image_ripple_flow_composite_vertex_source();
     let premultiply = premultiply
         .then_some("    color.rgb *= color.a;\n")
         .unwrap_or("");
@@ -495,6 +495,9 @@ fn image_ripple_flow_composite_sources_with_premultiply(premultiply: bool) -> (S
         r#"#version 450
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 1) in float v_VertexAlpha;
+layout(location = 2) flat in vec4 v_Cycles;
+layout(location = 3) flat in vec2 v_BlendWeight;
+layout(location = 4) in vec2 v_FlowTexCoord;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_RippleTexture;
 layout(set = 0, binding = 1) uniform sampler2D g_FlowTexture;
@@ -514,23 +517,14 @@ void main() {
         o_Color = vec4(0.0);
         return;
     }
-    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
-        * u_Effect.g_TimeSpeedFeatherStrength.y;
-    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75)) - 0.5;
-    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
-    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
-    vec2 blend_weight = smoothstep(smooth_range.x, smooth_range.y,
-        2.0 * abs(vec2(cycles.x, cycles.z)));
-    vec2 flow_uv = v_TexCoord
-        * u_Effect.g_FlowResolution.zw / u_Effect.g_FlowResolution.xy;
-    vec2 flow = (texture(g_FlowTexture, flow_uv).rg - vec2(0.498)) * 2.0;
+    vec2 flow = (texture(g_FlowTexture, v_FlowTexCoord).rg - vec2(0.498)) * 2.0;
     float strength = u_Effect.g_TimeSpeedFeatherStrength.w * 0.1;
-    vec4 offset0 = flow.xyxy * strength * cycles.xxyy;
-    vec4 offset1 = flow.xyxy * strength * cycles.zzww;
+    vec4 offset0 = flow.xyxy * strength * v_Cycles.xxyy;
+    vec4 offset1 = flow.xyxy * strength * v_Cycles.zzww;
     vec4 first = mix(sourceAtUv(v_TexCoord + offset0.xy),
-        sourceAtUv(v_TexCoord + offset0.zw), blend_weight.x);
+        sourceAtUv(v_TexCoord + offset0.zw), v_BlendWeight.x);
     vec4 second = mix(sourceAtUv(v_TexCoord + offset1.xy),
-        sourceAtUv(v_TexCoord + offset1.zw), blend_weight.y);
+        sourceAtUv(v_TexCoord + offset1.zw), v_BlendWeight.y);
     float phase = texture(g_PhaseTexture,
         v_TexCoord * u_Effect.g_PhaseScale.x).r;
     vec4 flowed = mix(first, second, smoothstep(0.2, 0.8, phase));
@@ -545,6 +539,49 @@ void main() {
     ]
     .concat();
     (vertex, fragment)
+}
+
+fn image_ripple_flow_composite_vertex_source() -> String {
+    r#"#version 450
+layout(location = 0) in vec2 a_Position;
+layout(location = 1) in vec2 a_TexCoord;
+layout(location = 2) in float a_Opacity;
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out float v_VertexAlpha;
+layout(location = 2) flat out vec4 v_Cycles;
+layout(location = 3) flat out vec2 v_BlendWeight;
+layout(location = 4) out vec2 v_FlowTexCoord;
+layout(set = 0, binding = 2) uniform SceneDrawTransform {
+    vec4 g_ModelViewProjectionMatrix[4];
+} g_Draw;
+layout(set = 0, binding = 3) uniform RippleFlowCompositeMaterial {
+    vec4 g_ResolvedColorAlpha;
+    vec4 g_TimeSpeedFeatherStrength;
+    vec4 g_PhaseScale;
+    vec4 g_FlowResolution;
+} u_Effect;
+void main() {
+    v_TexCoord = a_TexCoord;
+    v_VertexAlpha = a_Opacity;
+    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
+        * u_Effect.g_TimeSpeedFeatherStrength.y;
+    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75));
+    vec2 blend_phase = 2.0 * abs(vec2(cycles.x, cycles.z) - vec2(0.5));
+    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
+    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
+    v_Cycles = cycles - vec4(0.5);
+    v_BlendWeight = smoothstep(smooth_range.x, smooth_range.y, blend_phase);
+    v_FlowTexCoord = a_TexCoord
+        * u_Effect.g_FlowResolution.zw / u_Effect.g_FlowResolution.xy;
+    vec4 local_position = vec4(a_Position.xy, 0.0, 1.0);
+    gl_Position = vec4(
+        dot(g_Draw.g_ModelViewProjectionMatrix[0], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[1], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[2], local_position),
+        dot(g_Draw.g_ModelViewProjectionMatrix[3], local_position));
+}
+"#
+    .to_owned()
 }
 
 pub(super) fn puppet_waterwaves_composite_sources() -> (String, String) {
@@ -677,12 +714,14 @@ layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
 layout(set = 0, binding = 2) uniform sampler2D g_Texture2;
 layout(set = 0, binding = 3) uniform WaterWavesUvFieldUniform {
     vec4 g_Chain;
-    vec4 g_Stage[28];
+    vec4 g_Stage[36];
 } u_Effect;
 layout(set = 0, binding = 4) uniform sampler2D g_Texture4;
 layout(set = 0, binding = 5) uniform sampler2D g_Texture5;
 layout(set = 0, binding = 6) uniform sampler2D g_Texture6;
 layout(set = 0, binding = 7) uniform sampler2D g_Texture7;
+layout(set = 0, binding = 8) uniform sampler2D g_Texture8;
+layout(set = 0, binding = 9) uniform sampler2D g_Texture9;
 layout(set = 0, binding = 35) uniform sampler2D g_Texture3;
 float shapedSine(float phase, float exponent) {
     float wave = sin(phase);
@@ -697,7 +736,9 @@ float stageMask(int stage, vec2 uv) {
     if (stage == 3) return texture(g_Texture4, uv).r;
     if (stage == 4) return texture(g_Texture5, uv).r;
     if (stage == 5) return texture(g_Texture6, uv).r;
-    return texture(g_Texture7, uv).r;
+    if (stage == 6) return texture(g_Texture7, uv).r;
+    if (stage == 7) return texture(g_Texture8, uv).r;
+    return texture(g_Texture9, uv).r;
 }
 vec2 stageOffset(int stage, vec2 motion_uv) {
     int base = stage * 4;
@@ -728,9 +769,9 @@ vec2 stageOffset(int stage, vec2 motion_uv) {
         dot(v_ObjectUvToScreenUv.zw, object_uv_offset));
 }
 void main() {
-    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 7);
+    int stage_count = clamp(int(u_Effect.g_Chain.x + 0.5), 0, 9);
     vec2 source_uv = v_TexCoord;
-    for (int stage = 6; stage >= 0; --stage) {
+    for (int stage = 8; stage >= 0; --stage) {
         if (stage < stage_count) {
             source_uv += stageOffset(stage, source_uv);
         }

@@ -14,7 +14,7 @@ const PUPPET_COMPOSITE_SHADER: &str = "we/puppet-waterwaves-composite";
 const UV_TARGET_FORMAT: &str = "rg16f";
 const UV_TARGET_NAME: &str = "_gilder_waterwaves_uv_field";
 const UV_TARGET_DIVISOR_MILLI: u32 = 4_000;
-const MAX_WATERWAVES_STAGES: usize = 7;
+const MAX_WATERWAVES_STAGES: usize = 9;
 
 pub(super) fn is_compatible_displacement_chain(contract: &WeImageGraphContract) -> bool {
     contract.effects_in_authored_texture_space
