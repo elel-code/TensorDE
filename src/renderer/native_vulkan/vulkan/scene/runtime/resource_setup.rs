@@ -969,6 +969,11 @@ pub(super) fn write_scene_sampled_descriptors(
                         fallback_sampler_info,
                     )
                 }
+                SceneSampledImageSource::VideoFrame { media_instance } => {
+                    return Err(format!(
+                        "scene video media instance {media_instance} has no external frame resource for descriptor resolution"
+                    ));
+                }
             };
             native_vulkan_vulkanalia_write_descriptor_heap_resource_image_sampler(
                 device,

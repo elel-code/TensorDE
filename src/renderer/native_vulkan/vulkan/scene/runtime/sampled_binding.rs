@@ -22,6 +22,9 @@ pub(in crate::renderer::native_vulkan) enum SceneSampledImageSource {
         physical_slot: u32,
         batch_atlas_tile: u32,
     },
+    VideoFrame {
+        media_instance: u32,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,6 +36,7 @@ pub(in crate::renderer::native_vulkan) struct SceneSampledImageBindingPlan {
     pub scene_texture_descriptor_count: usize,
     pub scene_color_snapshot_descriptor_count: usize,
     pub effect_target_descriptor_count: usize,
+    pub video_frame_descriptor_count: usize,
 }
 
 impl SceneSampledImageBindingPlan {
@@ -165,6 +169,10 @@ fn scene_sampled_image_binding_plan_for_references(
         .iter()
         .filter(|source| matches!(source, SceneSampledImageSource::SceneColorSnapshot))
         .count();
+    let video_frame_descriptor_count = sources
+        .iter()
+        .filter(|source| matches!(source, SceneSampledImageSource::VideoFrame { .. }))
+        .count();
     Ok(SceneSampledImageBindingPlan {
         sampled_slot_count: sampled_slots.len(),
         initial_reference_physical_slots,
@@ -172,10 +180,12 @@ fn scene_sampled_image_binding_plan_for_references(
             .len()
             .saturating_sub(effect_target_descriptor_count)
             .saturating_sub(scene_texture_descriptor_count)
-            .saturating_sub(scene_color_snapshot_descriptor_count),
+            .saturating_sub(scene_color_snapshot_descriptor_count)
+            .saturating_sub(video_frame_descriptor_count),
         scene_texture_descriptor_count,
         scene_color_snapshot_descriptor_count,
         effect_target_descriptor_count,
+        video_frame_descriptor_count,
         sources,
     })
 }
@@ -227,6 +237,10 @@ fn lower_pass_sampled_bindings(
     sources: &mut [SceneSampledImageSource],
 ) -> Result<(), String> {
     for binding in bindings {
+        if binding.kind == crate::engine::scene::SceneRenderBindingKind::VideoFrame {
+            lower_video_frame_binding(draw_start, draw_count, binding, sampled_slots, sources)?;
+            continue;
+        }
         let Some((graph_index, target, target_name)) = binding.logical_target() else {
             continue;
         };
@@ -272,6 +286,43 @@ fn lower_pass_sampled_bindings(
                     }
                 };
         }
+    }
+    Ok(())
+}
+
+fn lower_video_frame_binding(
+    draw_start: u32,
+    draw_count: u32,
+    binding: &SceneRenderingDeviceSampledBinding,
+    sampled_slots: &[u32],
+    sources: &mut [SceneSampledImageSource],
+) -> Result<(), String> {
+    let sampled_index = sampled_slots
+        .iter()
+        .position(|slot| *slot == binding.slot)
+        .ok_or_else(|| {
+            format!(
+                "scene video frame media instance {} is absent from drawable shader contracts",
+                binding.slot
+            )
+        })?;
+    for draw_index in draw_start..draw_start.saturating_add(draw_count) {
+        let source_index = draw_index as usize * sampled_slots.len() + sampled_index;
+        let source = sources.get_mut(source_index).ok_or_else(|| {
+            format!(
+                "scene video frame binding references missing draw {draw_index} media instance {}",
+                binding.slot
+            )
+        })?;
+        if !matches!(source, SceneSampledImageSource::FallbackWhite) {
+            return Err(format!(
+                "scene draw {draw_index} has duplicate binding for video media instance {}",
+                binding.slot
+            ));
+        }
+        *source = SceneSampledImageSource::VideoFrame {
+            media_instance: binding.slot,
+        };
     }
     Ok(())
 }
@@ -546,6 +597,40 @@ mod tests {
                 physical_slot: 0,
                 batch_atlas_tile: 0,
             })
+        );
+    }
+
+    #[test]
+    fn sampled_binding_plan_preserves_external_video_media_instance() {
+        let graph = SceneRenderingDeviceGraphPlan {
+            pass_nodes: vec![pass_node(
+                0,
+                SceneRenderPassKind::VideoSample,
+                SceneStringId::NONE,
+                0,
+                1,
+            )],
+            sampled_bindings: vec![SceneRenderingDeviceSampledBinding {
+                pass_node_index: 0,
+                graph_index: 0,
+                mesh_draw_start: 0,
+                mesh_draw_count: 1,
+                kind: SceneRenderBindingKind::VideoFrame,
+                slot: 3,
+                target: SceneRenderTargetKind::VideoExternalImage,
+                target_name: SceneStringId::NONE,
+            }],
+            mesh_draws: vec![draw()],
+            ..empty_graph_plan()
+        };
+
+        let plan = scene_sampled_image_binding_plan(&graph, &[3]).expect("video frame plan");
+
+        assert_eq!(plan.fallback_descriptor_count, 0);
+        assert_eq!(plan.video_frame_descriptor_count, 1);
+        assert_eq!(
+            plan.source(0, 0),
+            Some(SceneSampledImageSource::VideoFrame { media_instance: 3 })
         );
     }
 
