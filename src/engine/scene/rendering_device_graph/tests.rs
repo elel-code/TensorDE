@@ -18,6 +18,39 @@ fn procedural_particle_capacity_omits_permanently_inactive_slots() {
     particle.max_count = 500;
     assert_eq!(procedural_particle_instance_capacity(&particle), 500);
 }
+
+#[test]
+fn particle_gpu_plan_selects_profiles_and_stable_indices() {
+    let mut analytic = SceneParticleSystemRecord::unsupported(
+        SceneObjectHandle(4),
+        SceneResourceId(0),
+        SceneMaterialHandle(0),
+        0,
+        300,
+        1.0,
+        0.0,
+    );
+    analytic.simulation = SceneParticleSimulationKind::FallingLeaves;
+    analytic.rate = 20.0;
+    analytic.lifetime_max = 5.0;
+    let retained = SceneParticleSystemRecord::unsupported(
+        SceneObjectHandle(9),
+        SceneResourceId(0),
+        SceneMaterialHandle(0),
+        0,
+        12,
+        1.0,
+        0.0,
+    );
+
+    let plans = particle_gpu_emitter_plans(&[analytic, retained]);
+    assert_eq!(plans.len(), 2);
+    assert_eq!(plans[0].profile, SceneParticleGpuProfile::AnalyticBillboard);
+    assert_eq!(plans[0].capacity, 100);
+    assert_eq!(plans[0].state_index, 0);
+    assert_eq!(plans[1].profile, SceneParticleGpuProfile::RetainedState);
+    assert_eq!(plans[1].state_index, 1);
+}
 use crate::engine::scene::{RenderingServer, SceneStorage};
 use crate::engine::scene::{
     SceneBinaryDocument, SceneMaterialHandle, SceneMaterialRecord, SceneMeshRecord,

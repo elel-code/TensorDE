@@ -81,6 +81,9 @@ pub(super) fn scene_sampled_sampler_info() -> vk::SamplerCreateInfo {
 }
 
 pub(super) fn destroy_scene_gpu_resources(device: &Device, resources: SceneGpuResources) {
+    if let Some(particle_resources) = resources.particle_resources {
+        super::particle_resources::destroy_scene_particle_gpu_resources(device, particle_resources);
+    }
     destroy_scene_pipelines(device, resources.pipelines);
     super::scene_color_msaa::destroy_scene_color_msaa_targets(
         device,
@@ -125,10 +128,10 @@ pub(super) fn destroy_recorded_image_upload(
     native_vulkan_vulkanalia_destroy_image(device, upload.image);
 }
 
-pub(super) fn release_scene_upload_staging(
-    device: &Device,
-    resources: &mut SceneGpuResources,
-) {
+pub(super) fn release_scene_upload_staging(device: &Device, resources: &mut SceneGpuResources) {
+    if let Some(particle_resources) = resources.particle_resources.as_mut() {
+        super::particle_resources::release_scene_particle_staging(device, particle_resources);
+    }
     if let Some(upload) = &mut resources.white_upload
         && let Some(staging) = upload.staging.take()
     {

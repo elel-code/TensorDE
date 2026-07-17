@@ -115,9 +115,10 @@ pub(super) fn update_scene_composite_scissors(
             let end = start.saturating_add(pass.mesh_draw_count as usize);
             let draws = graph.mesh_draws.get(start..end).unwrap_or(&[]);
             if has_object_composite {
-                for draw in draws.iter().filter(|draw| {
-                    draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh
-                }) {
+                for draw in draws
+                    .iter()
+                    .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ObjectMesh)
+                {
                     let Some(draw_bounds) =
                         object_mesh_pixel_bounds(storage, graph, draw, output_extent)
                     else {
@@ -145,65 +146,62 @@ pub(super) fn update_scene_composite_scissors(
                 continue;
             };
             if shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite") {
-                    let scissors = draws
-                        .iter()
-                        .map(|draw| {
-                            flat_rounded_mask_pixel_bounds(storage, draw, output_extent)
-                                .and_then(|bounds| bounds.scissor(output_extent))
-                        })
-                        .collect::<Vec<_>>();
-                    if std::env::var("GILDER_NATIVE_VULKAN_SCENE_SCISSOR_DEBUG")
-                        .ok()
-                        .is_some_and(|requested| {
-                            requested == "all" || requested == graph_index.to_string()
-                        })
-                        && !SCISSOR_DIAGNOSTIC_EMITTED
-                            .swap(true, std::sync::atomic::Ordering::Relaxed)
-                    {
-                        eprintln!(
-                            "gilder-flat-rounded-mask-scissor: graph={graph_index} scissors={scissors:?}"
-                        );
-                    }
-                    for (command, scissor) in commands
-                        .get_mut(start..end)
-                        .unwrap_or(&mut [])
-                        .iter_mut()
-                        .zip(scissors)
-                    {
-                        command.scissor = scissor;
-                    }
+                let scissors = draws
+                    .iter()
+                    .map(|draw| {
+                        flat_rounded_mask_pixel_bounds(storage, draw, output_extent)
+                            .and_then(|bounds| bounds.scissor(output_extent))
+                    })
+                    .collect::<Vec<_>>();
+                if std::env::var("GILDER_NATIVE_VULKAN_SCENE_SCISSOR_DEBUG")
+                    .ok()
+                    .is_some_and(|requested| {
+                        requested == "all" || requested == graph_index.to_string()
+                    })
+                    && !SCISSOR_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "gilder-flat-rounded-mask-scissor: graph={graph_index} scissors={scissors:?}"
+                    );
+                }
+                for (command, scissor) in commands
+                    .get_mut(start..end)
+                    .unwrap_or(&mut [])
+                    .iter_mut()
+                    .zip(scissors)
+                {
+                    command.scissor = scissor;
+                }
             } else if shader.eq_ignore_ascii_case("we/objectcomposite") {
-                    let scissor = coverage_is_bounded
-                        .then(|| bounds.and_then(|bounds| bounds.scissor(output_extent)))
-                        .flatten();
-                    if std::env::var("GILDER_NATIVE_VULKAN_SCENE_SCISSOR_DEBUG")
-                        .ok()
-                        .is_some_and(|requested| {
-                            requested == "all" || requested == graph_index.to_string()
-                        })
-                        && !SCISSOR_DIAGNOSTIC_EMITTED
-                            .swap(true, std::sync::atomic::Ordering::Relaxed)
-                    {
-                        eprintln!(
-                            "gilder-scene-composite-scissor: graph={graph_index} bounded={coverage_is_bounded} bounds={bounds:?} scissor={scissor:?}"
-                        );
+                let scissor = coverage_is_bounded
+                    .then(|| bounds.and_then(|bounds| bounds.scissor(output_extent)))
+                    .flatten();
+                if std::env::var("GILDER_NATIVE_VULKAN_SCENE_SCISSOR_DEBUG")
+                    .ok()
+                    .is_some_and(|requested| {
+                        requested == "all" || requested == graph_index.to_string()
+                    })
+                    && !SCISSOR_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    eprintln!(
+                        "gilder-scene-composite-scissor: graph={graph_index} bounded={coverage_is_bounded} bounds={bounds:?} scissor={scissor:?}"
+                    );
+                }
+                if let Some(scissor) = scissor {
+                    for command in commands.get_mut(start..end).unwrap_or(&mut []) {
+                        command.scissor = Some(scissor);
                     }
-                    if let Some(scissor) = scissor {
-                        for command in commands.get_mut(start..end).unwrap_or(&mut []) {
-                            command.scissor = Some(scissor);
-                        }
-                    }
+                }
             } else if shader.eq_ignore_ascii_case("effects/waterwaves") {
-                    for draw in draws {
-                        let Some([x, y]) = waterwaves_pixel_margin(storage, draw, output_extent)
-                        else {
-                            coverage_is_bounded = false;
-                            continue;
-                        };
-                        if let Some(bounds) = &mut bounds {
-                            bounds.expand(x, y);
-                        }
+                for draw in draws {
+                    let Some([x, y]) = waterwaves_pixel_margin(storage, draw, output_extent) else {
+                        coverage_is_bounded = false;
+                        continue;
+                    };
+                    if let Some(bounds) = &mut bounds {
+                        bounds.expand(x, y);
                     }
+                }
             } else if !shader.eq_ignore_ascii_case("minimalalpha")
                 && !shader.eq_ignore_ascii_case("passthrough")
                 && !shader.eq_ignore_ascii_case("effects/opacity")
@@ -305,11 +303,7 @@ pub(super) fn object_mesh_covers_output(
             (clip[1] / clip[3] * 0.5 + 0.5) * output_extent[1] as f32,
         ];
     }
-    rectangle_mesh_covers_pixel_centers(
-        points,
-        storage.mesh_indices(mesh),
-        output_extent,
-    )
+    rectangle_mesh_covers_pixel_centers(points, storage.mesh_indices(mesh), output_extent)
 }
 
 fn rectangle_mesh_covers_pixel_centers(
@@ -320,12 +314,18 @@ fn rectangle_mesh_covers_pixel_centers(
     if indices.len() != 6 || output_extent.contains(&0) {
         return false;
     }
-    let min_x = points.iter().map(|point| point[0]).fold(f32::INFINITY, f32::min);
+    let min_x = points
+        .iter()
+        .map(|point| point[0])
+        .fold(f32::INFINITY, f32::min);
     let max_x = points
         .iter()
         .map(|point| point[0])
         .fold(f32::NEG_INFINITY, f32::max);
-    let min_y = points.iter().map(|point| point[1]).fold(f32::INFINITY, f32::min);
+    let min_y = points
+        .iter()
+        .map(|point| point[1])
+        .fold(f32::INFINITY, f32::min);
     let max_y = points
         .iter()
         .map(|point| point[1])
@@ -375,10 +375,7 @@ fn rectangle_mesh_covers_pixel_centers(
         triangle.sort_unstable();
     }
     triangles.sort_unstable();
-    matches!(
-        triangles,
-        [[0, 1, 2], [1, 2, 3]] | [[0, 1, 3], [0, 2, 3]]
-    )
+    matches!(triangles, [[0, 1, 2], [1, 2, 3]] | [[0, 1, 3], [0, 2, 3]])
 }
 
 pub(super) fn object_mesh_pixel_extent(
@@ -546,7 +543,12 @@ mod tests {
     #[test]
     fn complete_axis_aligned_quad_covers_output_pixel_centers() {
         assert!(rectangle_mesh_covers_pixel_centers(
-            [[-10.0, -10.0], [110.0, -10.0], [-10.0, 110.0], [110.0, 110.0]],
+            [
+                [-10.0, -10.0],
+                [110.0, -10.0],
+                [-10.0, 110.0],
+                [110.0, 110.0]
+            ],
             &[0, 1, 3, 0, 3, 2],
             [100, 100],
         ));

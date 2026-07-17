@@ -44,6 +44,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub vertex_offset: i32,
     pub vertex_count: u32,
     pub instance_count: u32,
+    pub instance_capacity: u32,
     pub resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,

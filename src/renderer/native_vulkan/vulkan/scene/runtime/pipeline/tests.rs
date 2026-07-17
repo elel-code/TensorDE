@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::engine::scene::{
     SceneBinaryDocument, SceneRenderPassKind, SceneRenderPassRecord, SceneRenderTargetKind,
@@ -401,6 +400,7 @@ fn graph_with_passes(
         material_sampled_bindings: Vec::new(),
         puppet_bone_palettes: Vec::new(),
         puppet_bone_matrices: Vec::new(),
+        particle_gpu_emitters: Vec::new(),
         resolved_object_count: 0,
         resolved_visible_object_count: 0,
         resolved_attachment_link_count: 0,

@@ -37,58 +37,57 @@ pub(super) fn pack_scene_draw_uniforms(
             projected_object_uv_draw_values(storage, draw, output_extent)
         } else {
             match layout {
-            BuiltinSceneParameterLayout::Iris => {
-                iris_draw_values(storage, draw.material, scene_time_seconds)
-            }
-            BuiltinSceneParameterLayout::WaterWaves
-            | BuiltinSceneParameterLayout::WaterWavesUvField => {
-                waterwaves_draw_values(storage, draw, output_extent)
-            }
-            BuiltinSceneParameterLayout::AudioBars | BuiltinSceneParameterLayout::TechCircle => {
-                identity_uv_affine_rows()
-            }
-            BuiltinSceneParameterLayout::Blend
-            | BuiltinSceneParameterLayout::BlendGradient
-            | BuiltinSceneParameterLayout::Oscilloscope
-            | BuiltinSceneParameterLayout::Scroll
-            | BuiltinSceneParameterLayout::Skew => {
-                object_local_effect_draw_values(storage, draw, output_extent)
-            }
-            BuiltinSceneParameterLayout::Caustics
-                if material_shader_key(storage, draw.material).is_some_and(|key| {
-                    key.to_ascii_lowercase()
-                        .contains("__gilder_framebuffer_overlay_1")
-                }) =>
-            {
-                projected_object_uv_draw_values(storage, draw, output_extent)
-            }
-            BuiltinSceneParameterLayout::FinalEffectProgram
-                if material_shader_key(storage, draw.material)
-                    .is_some_and(|key| key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")) =>
-            {
-                rounded_mask_support_quad_draw_values(storage, draw, output_extent)
-            }
-            BuiltinSceneParameterLayout::FinalEffectProgram
-                if material_shader_key(storage, draw.material)
-                    .is_some_and(|key| {
+                BuiltinSceneParameterLayout::Iris => {
+                    iris_draw_values(storage, draw.material, scene_time_seconds)
+                }
+                BuiltinSceneParameterLayout::WaterWaves
+                | BuiltinSceneParameterLayout::WaterWavesUvField => {
+                    waterwaves_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::AudioBars
+                | BuiltinSceneParameterLayout::TechCircle => identity_uv_affine_rows(),
+                BuiltinSceneParameterLayout::Blend
+                | BuiltinSceneParameterLayout::BlendGradient
+                | BuiltinSceneParameterLayout::Oscilloscope
+                | BuiltinSceneParameterLayout::Scroll
+                | BuiltinSceneParameterLayout::Skew => {
+                    object_local_effect_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::Caustics
+                    if material_shader_key(storage, draw.material).is_some_and(|key| {
+                        key.to_ascii_lowercase()
+                            .contains("__gilder_framebuffer_overlay_1")
+                    }) =>
+                {
+                    projected_object_uv_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::FinalEffectProgram
+                    if material_shader_key(storage, draw.material).is_some_and(|key| {
+                        key.eq_ignore_ascii_case("we/flat-rounded-opacity-final")
+                    }) =>
+                {
+                    rounded_mask_support_quad_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::FinalEffectProgram
+                    if material_shader_key(storage, draw.material).is_some_and(|key| {
                         key.eq_ignore_ascii_case("we/framebuffer-water-final")
                             || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
                     }) =>
-            {
-                projected_object_uv_draw_values(storage, draw, output_extent)
-            }
-            BuiltinSceneParameterLayout::RoundedMask => {
-                if draw.primitive
+                {
+                    projected_object_uv_draw_values(storage, draw, output_extent)
+                }
+                BuiltinSceneParameterLayout::RoundedMask => {
+                    if draw.primitive
                     == crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
                 {
                     rounded_mask_support_quad_draw_values(storage, draw, output_extent)
                 } else {
                     rounded_mask_draw_values(storage, draw, output_extent)
                 }
-            }
-            BuiltinSceneParameterLayout::WaterFlow => {
-                object_local_effect_draw_values(storage, draw, output_extent)
-            }
+                }
+                BuiltinSceneParameterLayout::WaterFlow => {
+                    object_local_effect_draw_values(storage, draw, output_extent)
+                }
                 _ => matrix_draw_values(scene_cover_clip_transform(
                     storage.project(),
                     output_extent,
@@ -112,10 +111,7 @@ pub(super) fn pack_scene_draw_uniforms(
     payload
 }
 
-fn material_shader_key(
-    storage: &SceneStorage,
-    material: SceneMaterialHandle,
-) -> Option<&str> {
+fn material_shader_key(storage: &SceneStorage, material: SceneMaterialHandle) -> Option<&str> {
     storage
         .material(material)
         .and_then(|material| storage.material_passes(material).first())
@@ -307,9 +303,9 @@ fn object_effects_use_authored_texture_space(
     };
     storage.render_graph_passes(graph).iter().any(|pass| {
         storage.string(pass.shader_key).is_some_and(|shader| {
-                    shader.eq_ignore_ascii_case("we/image-effect-source")
-                        || shader.eq_ignore_ascii_case("we/puppet-effect-source")
-                        || shader.eq_ignore_ascii_case("we/waterwaves-uv-field")
+            shader.eq_ignore_ascii_case("we/image-effect-source")
+                || shader.eq_ignore_ascii_case("we/puppet-effect-source")
+                || shader.eq_ignore_ascii_case("we/waterwaves-uv-field")
         })
     })
 }
@@ -537,14 +533,7 @@ mod tests {
 
         let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [3840, 2160]);
 
-        for (lane, expected) in [
-            (0, 1.0),
-            (1, 0.0),
-            (2, 0.0),
-            (4, 0.0),
-            (5, 1.0),
-            (6, 0.0),
-        ] {
+        for (lane, expected) in [(0, 1.0), (1, 0.0), (2, 0.0), (4, 0.0), (5, 1.0), (6, 0.0)] {
             assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
         }
     }

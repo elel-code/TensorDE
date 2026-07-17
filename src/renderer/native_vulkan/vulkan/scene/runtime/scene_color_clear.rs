@@ -1,9 +1,8 @@
 //! Typed replacement of a proven opaque full-output flat draw with an attachment clear.
 
 use crate::engine::scene::{
-    SceneCompositeBlend, SceneCullMode, SceneDepthTest, ScenePipelineBlend,
-    SceneRenderTargetKind, SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan,
-    SceneStorage,
+    SceneCompositeBlend, SceneCullMode, SceneDepthTest, ScenePipelineBlend, SceneRenderTargetKind,
+    SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceGraphPlan, SceneStorage,
 };
 use crate::renderer::native_vulkan::NativeVulkanClearColor;
 use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
@@ -52,8 +51,7 @@ pub(super) fn resolve_scene_color_attachment_clear(
         Err(reason) => {
             if *CLEAR_DIAGNOSTIC_ENABLED.get_or_init(|| {
                 std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_COLOR_CLEAR_DEBUG").is_some()
-            })
-                && !CLEAR_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
+            }) && !CLEAR_DIAGNOSTIC_EMITTED.swap(true, std::sync::atomic::Ordering::Relaxed)
             {
                 eprintln!("gilder-scene-color-attachment-clear: rejected={reason}");
             }
@@ -72,7 +70,9 @@ fn resolve_scene_color_attachment_clear_contract(
     if !enabled {
         return Err("disabled");
     }
-    let graph_index = *graph_execution_order.first().ok_or("empty-execution-order")?;
+    let graph_index = *graph_execution_order
+        .first()
+        .ok_or("empty-execution-order")?;
     let mut passes = graph
         .pass_nodes
         .iter()

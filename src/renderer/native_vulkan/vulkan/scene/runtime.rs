@@ -71,15 +71,16 @@ mod gpu_timing;
 mod graph_execution;
 mod material_uniform;
 mod mesh_payload;
+mod particle_resources;
 mod pipeline;
+mod present_loop;
 mod resource_residency;
+mod resource_setup;
 mod sampled_binding;
 mod scene_color_clear;
 mod scene_color_msaa;
 mod scene_texture;
 mod scene_viewport;
-mod present_loop;
-mod resource_setup;
 
 use present_loop::with_scene_present;
 use resource_setup::*;
@@ -91,18 +92,16 @@ use draw_recording::{
     scene_color_draw_ranges,
 };
 use draw_uniform::{SCENE_DRAW_UNIFORM_BYTES, pack_scene_draw_uniforms};
+use frame_capture::SceneFrameCapture;
 pub use frame_capture::{
     NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanSceneFrameTemporalAnalysisSnapshot,
 };
-use frame_capture::SceneFrameCapture;
 use frame_context::{
     create_scene_present_frame_contexts, destroy_scene_present_frame_contexts,
     scene_frame_slot_count,
 };
 use frame_state::{SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers};
-use fullscreen_primitive::{
-    graph_uses_fullscreen_utility_primitive,
-};
+use fullscreen_primitive::graph_uses_fullscreen_utility_primitive;
 use gpu_resource_lifecycle::{
     color_subresource_range, create_white_texture_upload, destroy_recorded_image_upload,
     destroy_scene_gpu_frame_resources, destroy_scene_gpu_resources, identity_component_mapping,
@@ -111,17 +110,16 @@ use gpu_resource_lifecycle::{
 };
 pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
-pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use material_uniform::{
     SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
     scene_audio_spectrum_status, scene_audio_spectrum_summary, scene_uses_audio_spectrum,
 };
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
-    ScenePipelineResources, create_scene_pipelines,
-    emit_scene_pipeline_diagnostics_if_requested, scene_pipeline_descriptor_layout,
-    scene_pipeline_indices_for_draws,
+    ScenePipelineResources, create_scene_pipelines, emit_scene_pipeline_diagnostics_if_requested,
+    scene_pipeline_descriptor_layout, scene_pipeline_indices_for_draws,
 };
+pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use sampled_binding::{
     SceneSampledImageBindingPlan, SceneSampledImageSource, scene_sampled_image_binding_cycle,
 };
@@ -244,6 +242,13 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub alpha_coverage_scissor_pixels: u64,
     pub scene_pipeline_count: usize,
     pub mesh_draw_count: usize,
+    pub particle_instance_capacity: u64,
+    pub particle_instance_submitted: u64,
+    pub particle_gpu_emitter_count: u32,
+    pub particle_gpu_total_capacity: u64,
+    pub particle_gpu_state_bytes: u64,
+    pub particle_gpu_indirect_bytes: u64,
+    pub particle_gpu_device_local: bool,
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
@@ -281,6 +286,7 @@ struct SceneGpuResources {
     scene_color_msaa_enabled: bool,
     multisampled_render_to_single_sampled_enabled: bool,
     scene_color_msaa_targets: Vec<NativeVulkanVulkanaliaImage>,
+    particle_resources: Option<particle_resources::SceneParticleGpuResources>,
 }
 
 struct SceneGpuFrameResources {
@@ -532,6 +538,7 @@ fn scene_descriptor_plan_inputs(
             vertex_offset: draw.vertex_start as i32,
             vertex_count: draw.vertex_count,
             instance_count: draw.instance_count,
+            instance_capacity: draw.instance_count,
             resource_descriptor_base: base,
             sampler_descriptor_base: index * layout.sampled_slots.len(),
             skinning_byte_offset,

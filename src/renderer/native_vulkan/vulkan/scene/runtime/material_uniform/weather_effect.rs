@@ -52,8 +52,18 @@ pub(super) fn raindrop_values(
     values[6] = parameters.scalar(&["Vignette Strength"], 0.9);
     values[8..12].copy_from_slice(&material_texture_resolution(storage, parameters.pass, 0));
     values[12..16].copy_from_slice(&[0.1, 0.11, 0.12, 1.0]);
-    set_vector(&mut values, 12, &parameters.values(&["Drop Shadow Color"]), 3);
+    set_vector(
+        &mut values,
+        12,
+        &parameters.values(&["Drop Shadow Color"]),
+        3,
+    );
     values[16..20].copy_from_slice(&[0.04, 0.05, 0.06, 1.0]);
-    set_vector(&mut values, 16, &parameters.values(&["Drop Highlight Color"]), 3);
+    set_vector(
+        &mut values,
+        16,
+        &parameters.values(&["Drop Highlight Color"]),
+        3,
+    );
     values
 }

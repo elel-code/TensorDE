@@ -1,4 +1,5 @@
 use super::*;
+use crate::engine::scene::SceneRenderingDeviceDrawPrimitive;
 
 pub(super) fn with_scene_present(
     instance: &Instance,
@@ -66,9 +67,7 @@ pub(super) fn with_scene_present(
         instance,
         selection.physical_device,
         surface,
-        options
-            .surface_extent
-            .unwrap_or(automatic_surface_extent),
+        options.surface_extent.unwrap_or(automatic_surface_extent),
         vulkanalia_surface_capabilities2_enabled(vulkan),
         &present_device.feature_selection,
     ) {
@@ -203,9 +202,7 @@ pub(super) fn with_scene_present(
         present_device
             .feature_selection
             .blend_operation_advanced_coherent_operations,
-        present_device
-            .feature_selection
-            .scene_color_4x_msaa_enabled,
+        present_device.feature_selection.scene_color_4x_msaa_enabled,
         present_device
             .feature_selection
             .multisampled_render_to_single_sampled_enabled,
@@ -461,8 +458,8 @@ pub(super) fn with_scene_present(
             .saturating_add(elapsed_micros_u64(frame_state_update_started));
         semantic_resolve_total_micros = semantic_resolve_total_micros
             .saturating_add(frame_update.cpu_timing.semantic_resolve_micros);
-        graph_update_total_micros = graph_update_total_micros
-            .saturating_add(frame_update.cpu_timing.graph_update_micros);
+        graph_update_total_micros =
+            graph_update_total_micros.saturating_add(frame_update.cpu_timing.graph_update_micros);
         transform_update_total_micros = transform_update_total_micros
             .saturating_add(frame_update.cpu_timing.transform_update_micros);
         material_update_total_micros = material_update_total_micros
@@ -522,8 +519,8 @@ pub(super) fn with_scene_present(
         {
             eprintln!("gilder-scene-startup: first-frame-descriptors-ready");
         }
-        sampled_descriptor_update_count = sampled_descriptor_update_count
-            .saturating_add(sampled_descriptor_updates as u64);
+        sampled_descriptor_update_count =
+            sampled_descriptor_update_count.saturating_add(sampled_descriptor_updates as u64);
         sampled_descriptor_update_total_micros = sampled_descriptor_update_total_micros
             .saturating_add(elapsed_micros_u64(sampled_descriptor_update_started));
         let render_finished = *render_finished.get(image_index).ok_or_else(|| {
@@ -587,8 +584,8 @@ pub(super) fn with_scene_present(
                 .queue_present_khr(present_device.queue, &present_info)
                 .map_err(|err| format!("vkQueuePresentKHR(vulkanalia scene present): {err:?}"))?;
         }
-        queue_present_total_micros = queue_present_total_micros
-            .saturating_add(elapsed_micros_u64(queue_present_started));
+        queue_present_total_micros =
+            queue_present_total_micros.saturating_add(elapsed_micros_u64(queue_present_started));
         if let Some(capture) = capture_this_frame.then(|| frame_capture.as_mut()).flatten() {
             capture.mark_submitted(frame_number, scene_time_seconds);
         }
@@ -655,7 +652,8 @@ pub(super) fn with_scene_present(
         .filter_map(|frame| frame.skinning_buffer.as_ref())
         .map(|buffer| buffer.snapshot.requested_bytes)
         .sum();
-    let resource_residency = resource_residency::scene_resource_residency_snapshot(&scene_resources);
+    let resource_residency =
+        resource_residency::scene_resource_residency_snapshot(&scene_resources);
     let sampled_fallback_texture_count = usize::from(scene_resources.white_upload.is_some());
     let sampled_fallback_descriptor_count = scene_resources
         .sampled_binding_cycle
@@ -693,9 +691,8 @@ pub(super) fn with_scene_present(
         .iter()
         .filter(|target| target.plan.batch_field_count > 1)
         .count();
-    let effect_batch_instance_count = effect_target::effect_batch_instance_count(
-        &scene_resources.effect_target_commands,
-    );
+    let effect_batch_instance_count =
+        effect_target::effect_batch_instance_count(&scene_resources.effect_target_commands);
     let effect_batch_field_count = scene_resources
         .effect_targets
         .iter()
@@ -716,9 +713,8 @@ pub(super) fn with_scene_present(
         .effect_target_command_plan
         .fullscreen_triangle_draw_count;
     let scene_color_mesh_draw_count = draw_range_count(&scene_resources.scene_color_draw_ranges);
-    let scene_color_attachment_clear_draw_count = usize::from(
-        scene_resources.scene_color_attachment_clear.is_some(),
-    );
+    let scene_color_attachment_clear_draw_count =
+        usize::from(scene_resources.scene_color_attachment_clear.is_some());
     let scene_color_recorded_mesh_draw_count =
         scene_color_mesh_draw_count.saturating_sub(scene_color_attachment_clear_draw_count);
     let scene_pipeline_count = scene_resources.pipelines.entries.len();
@@ -728,6 +724,43 @@ pub(super) fn with_scene_present(
     let scene_color_msaa_memory_bytes =
         scene_color_msaa::scene_color_msaa_memory_bytes(&scene_resources.scene_color_msaa_targets);
     let mesh_draw_count = scene_resources.draw_commands.len();
+    let particle_instance_capacity = scene_resources
+        .draw_commands
+        .iter()
+        .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard)
+        .map(|draw| u64::from(draw.instance_capacity))
+        .sum();
+    let particle_instance_submitted = scene_resources
+        .draw_commands
+        .iter()
+        .filter(|draw| draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard)
+        .map(|draw| u64::from(draw.instance_count))
+        .sum();
+    let (
+        particle_gpu_emitter_count,
+        particle_gpu_total_capacity,
+        particle_gpu_state_bytes,
+        particle_gpu_indirect_bytes,
+        particle_gpu_device_local,
+    ) = scene_resources
+        .particle_resources
+        .as_ref()
+        .map_or((0, 0, 0, 0, false), |resources| {
+            let state = &resources.state_upload.target.snapshot;
+            let indirect = &resources.indirect_upload.target.snapshot;
+            (
+                resources.emitter_count,
+                resources.total_capacity,
+                state.requested_bytes,
+                indirect.requested_bytes,
+                state
+                    .selected_memory_property_flags
+                    .contains(&"device-local")
+                    && indirect
+                        .selected_memory_property_flags
+                        .contains(&"device-local"),
+            )
+        });
     let alpha_coverage_scissor_draw_count = scene_resources
         .draw_commands
         .iter()
@@ -801,8 +834,7 @@ pub(super) fn with_scene_present(
 
     system_audio_monitor.publish_latest();
     let (audio_spectrum_model, audio_spectrum_ready) = scene_audio_spectrum_status();
-    let (audio_spectrum_peak, audio_spectrum_active_band_count) =
-        scene_audio_spectrum_summary();
+    let (audio_spectrum_peak, audio_spectrum_active_band_count) = scene_audio_spectrum_summary();
     Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-mesh-dynamic-rendering-present",
@@ -857,13 +889,8 @@ pub(super) fn with_scene_present(
         uses_synchronization2: true,
         uses_submit2: true,
         uses_dynamic_rendering: true,
-        scene_color_rasterization_samples: if scene_color_msaa_enabled {
-            "4x"
-        } else {
-            "1x"
-        },
-        uses_multisampled_render_to_single_sampled:
-            multisampled_render_to_single_sampled_enabled,
+        scene_color_rasterization_samples: if scene_color_msaa_enabled { "4x" } else { "1x" },
+        uses_multisampled_render_to_single_sampled: multisampled_render_to_single_sampled_enabled,
         uses_explicit_scene_color_msaa_resolve: scene_color_msaa_enabled
             && !multisampled_render_to_single_sampled_enabled,
         scene_color_msaa_memory_bytes,
@@ -934,6 +961,13 @@ pub(super) fn with_scene_present(
         alpha_coverage_scissor_pixels,
         scene_pipeline_count,
         mesh_draw_count,
+        particle_instance_capacity,
+        particle_instance_submitted,
+        particle_gpu_emitter_count,
+        particle_gpu_total_capacity,
+        particle_gpu_state_bytes,
+        particle_gpu_indirect_bytes,
+        particle_gpu_device_local,
         mesh_draw_recorded,
         command_order,
         present_backend: "vulkanalia-scene-present-runtime",

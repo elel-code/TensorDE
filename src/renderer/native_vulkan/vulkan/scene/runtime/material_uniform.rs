@@ -11,8 +11,8 @@ use std::sync::OnceLock;
 
 use serde_json::Value;
 
-mod color_effect;
 mod audio_usage;
+mod color_effect;
 mod final_effect;
 mod oscilloscope;
 mod particle;
@@ -20,26 +20,26 @@ mod shader_key;
 mod value_writer;
 mod weather_effect;
 
-use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
-pub(super) use audio_usage::scene_uses_audio_spectrum;
 #[cfg(test)]
 use audio_usage::material_uses_audio_spectrum;
+pub(super) use audio_usage::scene_uses_audio_spectrum;
+use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
 use value_writer::set_vector;
 
+#[cfg(test)]
+use final_effect::final_audio_bars_values;
 use final_effect::{
     final_effect_program_values, final_waterripple_values, final_waterwaves_values,
     material_texture_resolution, object_source_texture_resolution, ripple_flow_composite_values,
 };
-#[cfg(test)]
-use final_effect::final_audio_bars_values;
 
+use crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue;
 use crate::engine::scene::{
     INVALID_MATERIAL_ID, SceneAudioBandMaterialTarget, SceneMaterialConstantRecord,
     SceneMaterialHandle, SceneMaterialPassRecord, SceneRenderingDeviceMeshDraw, SceneStorage,
     SceneTextureRecord,
 };
-use crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
@@ -174,9 +174,7 @@ fn material_uniform_values(
         }
         BuiltinSceneParameterLayout::Scroll => scroll_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Skew => skew_values(&parameters),
-        BuiltinSceneParameterLayout::Shimmer => {
-            shimmer_values(&parameters, scene_time_seconds)
-        }
+        BuiltinSceneParameterLayout::Shimmer => shimmer_values(&parameters, scene_time_seconds),
         BuiltinSceneParameterLayout::Swing => {
             weather_effect::swing_values(&parameters, storage, scene_time_seconds)
         }
@@ -217,12 +215,9 @@ fn material_uniform_values(
         BuiltinSceneParameterLayout::WaterWaves => {
             waterwaves_values(&parameters, storage, shader_key, scene_time_seconds)
         }
-        BuiltinSceneParameterLayout::WaterWavesDirect => waterwaves_direct_values(
-            &parameters,
-            storage,
-            draw,
-            scene_time_seconds,
-        ),
+        BuiltinSceneParameterLayout::WaterWavesDirect => {
+            waterwaves_direct_values(&parameters, storage, draw, scene_time_seconds)
+        }
         BuiltinSceneParameterLayout::WaterWavesUvField => {
             waterwaves_uv_field_values(&parameters, storage, scene_time_seconds)
         }
@@ -829,13 +824,7 @@ fn waterwaves_direct_values(
     draw: &SceneRenderingDeviceMeshDraw,
     scene_time_seconds: f32,
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
-    let mut values = waterwaves_displacement_values(
-        parameters,
-        storage,
-        scene_time_seconds,
-        4,
-        8,
-    );
+    let mut values = waterwaves_displacement_values(parameters, storage, scene_time_seconds, 4, 8);
     let (resolved_color, resolved_alpha) = if draw.apply_resolved_visual {
         (draw.resolved_color, draw.resolved_alpha)
     } else {
@@ -874,8 +863,7 @@ fn waterwaves_displacement_values(
         let direction_angle = waterwaves_stage_scalar(parameters, stage, "direction", 0.0);
         let speed2 = waterwaves_stage_scalar(parameters, stage, "speed2", speed);
         let scale2 = waterwaves_stage_scalar(parameters, stage, "scale2", scale);
-        let direction2_angle =
-            waterwaves_stage_scalar(parameters, stage, "direction2", 0.0);
+        let direction2_angle = waterwaves_stage_scalar(parameters, stage, "direction2", 0.0);
         let offset2 = waterwaves_stage_scalar(parameters, stage, "offset2", 0.0);
         let dual_waves = waterwaves_stage_scalar(parameters, stage, "dualwaves", 0.0) > 0.5;
         let direction = [-direction_angle.sin(), direction_angle.cos()];

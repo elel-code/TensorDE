@@ -223,7 +223,8 @@ impl SceneGpuTiming {
             ));
         }
         for (command_position, stats) in self.effect_command_stats.iter_mut().enumerate() {
-            let start_query = effect_command_start_query(self.graph_indices.len(), command_position);
+            let start_query =
+                effect_command_start_query(self.graph_indices.len(), command_position);
             stats.observe(query_duration_micros(
                 &bytes,
                 start_query,
@@ -432,8 +433,8 @@ impl SceneGpuTiming {
                 .zip(self.graphs.iter().copied())
                 .zip(self.graph_effect_targets.iter().copied())
                 .zip(self.graph_scene_colors.iter().copied())
-                .map(
-                    |(((graph_index, stats), effect_target), scene_color)| NativeVulkanSceneGraphGpuTimingSnapshot {
+                .map(|(((graph_index, stats), effect_target), scene_color)| {
+                    NativeVulkanSceneGraphGpuTimingSnapshot {
                         graph_index,
                         sample_count: stats.sample_count,
                         total_micros: stats.total_micros,
@@ -442,23 +443,25 @@ impl SceneGpuTiming {
                         max_micros: stats.max_micros,
                         effect_target_average_micros: effect_target.average_micros(),
                         scene_color_average_micros: scene_color.average_micros(),
-                    },
-                )
+                    }
+                })
                 .collect(),
             effect_command_measurement_scope: "effect-target-command",
             effect_commands: self
                 .effect_commands
                 .iter()
                 .zip(self.effect_command_stats.iter().copied())
-                .map(|(command, stats)| NativeVulkanSceneEffectCommandGpuTimingSnapshot {
-                    graph_index: command.graph_index,
-                    graph_command_index: command.graph_command_index,
-                    command_kind: command.command_kind,
-                    sample_count: stats.sample_count,
-                    average_micros: stats.average_micros(),
-                    min_micros: stats.min_micros,
-                    max_micros: stats.max_micros,
-                })
+                .map(
+                    |(command, stats)| NativeVulkanSceneEffectCommandGpuTimingSnapshot {
+                        graph_index: command.graph_index,
+                        graph_command_index: command.graph_command_index,
+                        command_kind: command.command_kind,
+                        sample_count: stats.sample_count,
+                        average_micros: stats.average_micros(),
+                        min_micros: stats.min_micros,
+                        max_micros: stats.max_micros,
+                    },
+                )
                 .collect(),
         }
     }

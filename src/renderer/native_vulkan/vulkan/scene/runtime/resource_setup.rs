@@ -72,19 +72,16 @@ pub(super) fn create_scene_gpu_resources(
     let draw_count = backend_plan.rendering_device_graph.mesh_draws.len();
     let include_fullscreen_utility =
         graph_uses_fullscreen_utility_primitive(&backend_plan.rendering_device_graph);
-    let alpha_coverage_scissors = if std::env::var_os(
-        "GILDER_NATIVE_VULKAN_SCENE_FULL_ALPHA_COVERAGE_TARGET",
-    )
-    .is_some()
-    {
-        vec![Vec::new(); draw_count]
-    } else {
-        scene_alpha_coverage_scissors(
-            storage,
-            &backend_plan.rendering_device_graph,
-            [extent.width, extent.height],
-        )
-    };
+    let alpha_coverage_scissors =
+        if std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_FULL_ALPHA_COVERAGE_TARGET").is_some() {
+            vec![Vec::new(); draw_count]
+        } else {
+            scene_alpha_coverage_scissors(
+                storage,
+                &backend_plan.rendering_device_graph,
+                [extent.width, extent.height],
+            )
+        };
     let vertex_payload = pack_scene_vertices(storage, include_fullscreen_utility);
     let index_payload = pack_scene_indices(storage, include_fullscreen_utility);
     let transform_payload = pack_scene_draw_uniforms(
@@ -100,14 +97,11 @@ pub(super) fn create_scene_gpu_resources(
             0.0,
         )
     });
-    let dynamic_effect_uniforms =
-        backend_plan
-            .rendering_device_graph
-            .mesh_draws
-            .iter()
-            .any(|draw| {
-                draw_parameter_layout(storage, draw).uses_dynamic_material_input()
-            });
+    let dynamic_effect_uniforms = backend_plan
+        .rendering_device_graph
+        .mesh_draws
+        .iter()
+        .any(|draw| draw_parameter_layout(storage, draw).uses_dynamic_material_input());
     let skinning_payload = descriptor_layout
         .skinning_storage_enabled
         .then(|| pack_scene_skinning_palette(&backend_plan.rendering_device_graph));
@@ -441,6 +435,39 @@ pub(super) fn create_scene_gpu_resources(
         }
     };
 
+    let particle_resources = match particle_resources::create_scene_particle_gpu_resources(
+        device,
+        memory_properties,
+        setup_command_buffer,
+        storage,
+        &backend_plan.rendering_device_graph,
+    ) {
+        Ok(resources) => resources,
+        Err(err) => {
+            pipeline::destroy_scene_pipelines(device, pipeline_resources);
+            scene_color_msaa::destroy_scene_color_msaa_targets(device, scene_color_msaa_targets);
+            scene_texture::destroy_scene_texture_images(device, scene_textures);
+            effect_target::destroy_scene_effect_target_images(device, effect_targets);
+            native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+                device,
+                descriptor_heap,
+            );
+            if let Some(upload) = white_upload {
+                destroy_recorded_image_upload(device, upload);
+            }
+            if let Some(buffer) = material_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            if let Some(buffer) = skinning_buffer {
+                native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+            }
+            native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
+            native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+            return Err(err);
+        }
+    };
+
     let mut frame_resources = vec![SceneGpuFrameResources {
         transform_buffer,
         material_buffer,
@@ -466,6 +493,9 @@ pub(super) fn create_scene_gpu_resources(
         ) {
             Ok(resources) => frame_resources.push(resources),
             Err(err) => {
+                if let Some(resources) = particle_resources {
+                    particle_resources::destroy_scene_particle_gpu_resources(device, resources);
+                }
                 pipeline::destroy_scene_pipelines(device, pipeline_resources);
                 scene_color_msaa::destroy_scene_color_msaa_targets(
                     device,
@@ -519,6 +549,7 @@ pub(super) fn create_scene_gpu_resources(
         scene_color_msaa_enabled,
         multisampled_render_to_single_sampled_enabled,
         scene_color_msaa_targets,
+        particle_resources,
     })
 }
 
@@ -842,7 +873,10 @@ pub(super) fn write_scene_sampled_descriptors(
                         "scene color snapshot descriptor is unavailable before image acquire"
                             .to_owned()
                     })?;
-                    (scene_color_image_view_info(image, format), fallback_sampler_info)
+                    (
+                        scene_color_image_view_info(image, format),
+                        fallback_sampler_info,
+                    )
                 }
                 SceneSampledImageSource::EffectTarget {
                     physical_slot,

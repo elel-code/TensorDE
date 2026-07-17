@@ -134,7 +134,6 @@ mod tests {
         let inverse = inverse_linear_2d([0.0, -3.0, 2.0, 0.0]).expect("invertible");
         assert_eq!(inverse, [0.0, 0.5, -1.0 / 3.0, 0.0]);
     }
-
 }
 
 fn write_vec3(values: &mut [f32], start: usize, value: crate::engine::scene::SceneVec3) {

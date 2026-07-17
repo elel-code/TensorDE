@@ -365,6 +365,7 @@ mod tests {
                     }],
                     puppet_bone_palettes: Vec::new(),
                     puppet_bone_matrices: Vec::new(),
+                    particle_gpu_emitters: Vec::new(),
                     resolved_object_count: 1,
                     resolved_visible_object_count: 1,
                     resolved_attachment_link_count: 0,

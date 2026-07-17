@@ -49,12 +49,8 @@ pub(super) fn scene_alpha_coverage_scissors(
         if !matches_shader_or_stage_variant(shader, SPARSE_COMPOSITE_SHADERS) {
             continue;
         }
-        let displacement = graph_waterwaves_displacement_cells(
-            storage,
-            graph,
-            pass.graph_index,
-            output_extent,
-        );
+        let displacement =
+            graph_waterwaves_displacement_cells(storage, graph, pass.graph_index, output_extent);
         let start = pass.mesh_draw_start as usize;
         let end = start.saturating_add(pass.mesh_draw_count as usize);
         for (draw_index, draw) in graph
@@ -150,28 +146,22 @@ fn graph_waterwaves_displacement_cells(
     let Some(field_draw) = graph.mesh_draws.get(field_pass.mesh_draw_start as usize) else {
         return [SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE; 2];
     };
-    let stage_count = material_parameter_values(
-        storage,
-        field_draw.material,
-        &["waterwaves.stage_count"],
-    )
-    .first()
-    .copied()
-    .unwrap_or(0.0)
-    .round()
-    .clamp(0.0, MAX_WATERWAVES_STAGES as f32) as usize;
+    let stage_count =
+        material_parameter_values(storage, field_draw.material, &["waterwaves.stage_count"])
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+            .round()
+            .clamp(0.0, MAX_WATERWAVES_STAGES as f32) as usize;
     let amplitude = (0..stage_count)
         .map(|stage| {
             let name = format!("waterwaves.{stage}.strength");
-            let strength = material_parameter_values(
-                storage,
-                field_draw.material,
-                &[name.as_str()],
-            )
-            .first()
-            .copied()
-            .unwrap_or(0.1)
-            .abs();
+            let strength =
+                material_parameter_values(storage, field_draw.material, &[name.as_str()])
+                    .first()
+                    .copied()
+                    .unwrap_or(0.1)
+                    .abs();
             strength * strength
         })
         .sum::<f32>();
@@ -259,9 +249,7 @@ fn coverage_scissors(
     scissors
 }
 
-fn coverage_rectangles(
-    mut rows: [u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE],
-) -> Vec<[usize; 4]> {
+fn coverage_rectangles(mut rows: [u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE]) -> Vec<[usize; 4]> {
     let mut rectangles = Vec::new();
     for row in 0..SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE {
         let mut column = 0usize;
@@ -284,9 +272,7 @@ fn coverage_rectangles(
                 ((1u32 << width) - 1) << column_start
             };
             let mut row_end = row + 1;
-            while row_end < SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE
-                && rows[row_end] & mask == mask
-            {
+            while row_end < SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE && rows[row_end] & mask == mask {
                 row_end += 1;
             }
             for covered_row in &mut rows[row..row_end] {
@@ -333,11 +319,7 @@ mod tests {
         let mut rows = [0u32; SCENE_TEXTURE_ALPHA_COVERAGE_GRID_SIZE];
         rows[4] = 0b1110;
 
-        let scissors = coverage_scissors(
-            rows,
-            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
-            [320, 160],
-        );
+        let scissors = coverage_scissors(rows, [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], [320, 160]);
 
         assert_eq!(scissors.len(), 1);
         assert_eq!(scissors[0].offset, [10, 20]);

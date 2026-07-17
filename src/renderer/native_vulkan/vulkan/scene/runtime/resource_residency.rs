@@ -2,10 +2,10 @@
 
 use serde::Serialize;
 
+use crate::renderer::native_vulkan::vulkan::descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapBufferSnapshot;
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaBufferSnapshot, NativeVulkanVulkanaliaImageSnapshot,
 };
-use crate::renderer::native_vulkan::vulkan::descriptor_heap::NativeVulkanVulkanaliaDescriptorHeapBufferSnapshot;
 
 use super::SceneGpuResources;
 
@@ -99,32 +99,16 @@ pub(super) fn scene_resource_residency_snapshot(
             &frame.descriptor_heap.snapshot.resource_heap,
         );
         if let Some(heap) = &frame.descriptor_heap.snapshot.sampler_heap {
-            add_descriptor_heap_class(
-                &mut buffer_memory_classes,
-                "descriptor-sampler-heap",
-                heap,
-            );
+            add_descriptor_heap_class(&mut buffer_memory_classes, "descriptor-sampler-heap", heap);
         }
     }
 
     NativeVulkanSceneResourceResidencySnapshot {
         all_images_device_local: image_memory_classes.iter().all(is_device_local),
-        image_device_local_bytes: memory_bytes_with_flag(
-            &image_memory_classes,
-            "device-local",
-        ),
-        image_host_visible_bytes: memory_bytes_with_flag(
-            &image_memory_classes,
-            "host-visible",
-        ),
-        buffer_device_local_bytes: memory_bytes_with_flag(
-            &buffer_memory_classes,
-            "device-local",
-        ),
-        buffer_host_visible_bytes: memory_bytes_with_flag(
-            &buffer_memory_classes,
-            "host-visible",
-        ),
+        image_device_local_bytes: memory_bytes_with_flag(&image_memory_classes, "device-local"),
+        image_host_visible_bytes: memory_bytes_with_flag(&image_memory_classes, "host-visible"),
+        buffer_device_local_bytes: memory_bytes_with_flag(&buffer_memory_classes, "device-local"),
+        buffer_host_visible_bytes: memory_bytes_with_flag(&buffer_memory_classes, "host-visible"),
         image_memory_classes,
         buffer_memory_classes,
     }

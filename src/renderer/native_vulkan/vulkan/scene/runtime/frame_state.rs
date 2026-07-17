@@ -759,6 +759,7 @@ mod tests {
                 resolved_visible: true,
             }],
             puppet_bone_matrices: vec![bone],
+            particle_gpu_emitters: Vec::new(),
             resolved_object_count: 1,
             resolved_visible_object_count: 1,
             resolved_attachment_link_count: 0,

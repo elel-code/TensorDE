@@ -163,9 +163,7 @@ impl SceneFrameCapture {
             byte_count,
             output_byte_count,
             readback_buffer,
-            captured_frames: Vec::with_capacity(
-                target_frame_count.min(usize::MAX as u64) as usize,
-            ),
+            captured_frames: Vec::with_capacity(target_frame_count.min(usize::MAX as u64) as usize),
             pending_frame: None,
             snapshot: None,
         })
@@ -179,12 +177,9 @@ impl SceneFrameCapture {
         self.is_pending()
             && self.pending_frame.is_none()
             && frame_number
-                == self
-                    .target_frame_number
-                    .saturating_add(
-                        (self.captured_frames.len() as u64)
-                            .saturating_mul(self.target_frame_step),
-                    )
+                == self.target_frame_number.saturating_add(
+                    (self.captured_frames.len() as u64).saturating_mul(self.target_frame_step),
+                )
     }
 
     pub(super) fn mark_submitted(&mut self, frame_number: u64, scene_time_seconds: f32) {
@@ -284,10 +279,7 @@ impl SceneFrameCapture {
         }
     }
 
-    pub(super) fn read_completed_frame(
-        &mut self,
-        device: &Device,
-    ) -> Result<(), String> {
+    pub(super) fn read_completed_frame(&mut self, device: &Device) -> Result<(), String> {
         let Some((frame_number, scene_time_seconds)) = self.pending_frame else {
             return Ok(());
         };
@@ -303,12 +295,11 @@ impl SceneFrameCapture {
             self.output_extent,
             self.downscale,
         );
-        self.captured_frames
-            .push(SceneFrameCapturePixels {
-                frame_number,
-                scene_time_seconds,
-                rgba,
-            });
+        self.captured_frames.push(SceneFrameCapturePixels {
+            frame_number,
+            scene_time_seconds,
+            rgba,
+        });
         self.pending_frame = None;
         Ok(())
     }
@@ -401,23 +392,14 @@ fn scene_frame_capture_region(
     source_extent: vk::Extent2D,
     region: Option<(u32, u32, u32, u32)>,
 ) -> Result<(vk::Offset3D, vk::Extent2D), String> {
-    let (x, y, width, height) = region.unwrap_or((
-        0,
-        0,
-        source_extent.width,
-        source_extent.height,
-    ));
+    let (x, y, width, height) = region.unwrap_or((0, 0, source_extent.width, source_extent.height));
     let end_x = x
         .checked_add(width)
         .ok_or_else(|| "scene frame capture region x range overflows".to_owned())?;
     let end_y = y
         .checked_add(height)
         .ok_or_else(|| "scene frame capture region y range overflows".to_owned())?;
-    if width == 0
-        || height == 0
-        || end_x > source_extent.width
-        || end_y > source_extent.height
-    {
+    if width == 0 || height == 0 || end_x > source_extent.width || end_y > source_extent.height {
         return Err(format!(
             "scene frame capture region {x},{y},{width},{height} exceeds {}x{} swapchain",
             source_extent.width, source_extent.height

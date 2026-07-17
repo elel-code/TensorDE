@@ -14,7 +14,9 @@ use crate::engine::scene::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) enum SceneSampledImageSource {
     FallbackWhite,
-    SceneTexture { resource: SceneResourceId },
+    SceneTexture {
+        resource: SceneResourceId,
+    },
     SceneColorSnapshot,
     EffectTarget {
         physical_slot: u32,
@@ -258,21 +260,17 @@ fn lower_pass_sampled_bindings(
                     binding.slot
                 ));
             }
-            *source = if target_is_direct_scene_color_snapshot(
-                graph,
-                graph_index,
-                target,
-                target_name,
-            ) {
-                SceneSampledImageSource::SceneColorSnapshot
-            } else {
-                SceneSampledImageSource::EffectTarget {
-                    physical_slot,
-                    batch_atlas_tile: graph
-                        .effect_batch_atlas_tile(graph_index, target, target_name)
-                        .unwrap_or(0),
-                }
-            };
+            *source =
+                if target_is_direct_scene_color_snapshot(graph, graph_index, target, target_name) {
+                    SceneSampledImageSource::SceneColorSnapshot
+                } else {
+                    SceneSampledImageSource::EffectTarget {
+                        physical_slot,
+                        batch_atlas_tile: graph
+                            .effect_batch_atlas_tile(graph_index, target, target_name)
+                            .unwrap_or(0),
+                    }
+                };
         }
     }
     Ok(())
@@ -287,16 +285,20 @@ pub(in crate::renderer::native_vulkan) fn target_is_direct_scene_color_snapshot(
     if target != SceneRenderTargetKind::FirstClassEffectTarget {
         return false;
     }
-    graph.pass_nodes.iter().enumerate().any(|(pass_index, pass)| {
-        pass.graph_index == graph_index
-            && pass.role == SceneRenderPassKind::CopyTarget
-            && pass.target == target
-            && pass.target_name == target_name
-            && graph.sampled_bindings.iter().any(|binding| {
-                binding.pass_node_index == pass_index as u32
-                    && binding.target == SceneRenderTargetKind::SceneColor
-            })
-    })
+    graph
+        .pass_nodes
+        .iter()
+        .enumerate()
+        .any(|(pass_index, pass)| {
+            pass.graph_index == graph_index
+                && pass.role == SceneRenderPassKind::CopyTarget
+                && pass.target == target
+                && pass.target_name == target_name
+                && graph.sampled_bindings.iter().any(|binding| {
+                    binding.pass_node_index == pass_index as u32
+                        && binding.target == SceneRenderTargetKind::SceneColor
+                })
+        })
 }
 
 fn apply_swap_reference(
@@ -664,6 +666,7 @@ mod tests {
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),
+            particle_gpu_emitters: Vec::new(),
             resolved_object_count: 0,
             resolved_visible_object_count: 0,
             resolved_attachment_link_count: 0,

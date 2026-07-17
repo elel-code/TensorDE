@@ -167,11 +167,10 @@ pub(super) fn record_scene_graphs_to_swapchain(
                 &scene.effect_target_commands,
                 *graph_index,
             );
-            let direct_scene_color_snapshot =
-                effect_target::graph_uses_direct_scene_color_snapshot(
-                    &scene.effect_target_commands,
-                    *graph_index,
-                );
+            let direct_scene_color_snapshot = effect_target::graph_uses_direct_scene_color_snapshot(
+                &scene.effect_target_commands,
+                *graph_index,
+            );
             if scene_color_resolve_dirty
                 && (graph_copies_scene_color || direct_scene_color_snapshot)
             {
@@ -201,12 +200,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
             };
             let mut record_effect_command_timing = |source_position, starting| {
                 if let Some(timing) = gpu_timing {
-                    timing.record_effect_command(
-                        device,
-                        command_buffer,
-                        source_position,
-                        starting,
-                    );
+                    timing.record_effect_command(device, command_buffer, source_position, starting);
                 }
             };
             effect_target::record_scene_effect_target_graph_passes(
@@ -303,13 +297,7 @@ pub(super) fn record_scene_graphs_to_swapchain(
         scene_color_resolve_dirty = true;
     }
     if scene_color_resolve_dirty {
-        resolve_explicit_scene_color_msaa(
-            device,
-            command_buffer,
-            swapchain_image,
-            extent,
-            scene,
-        );
+        resolve_explicit_scene_color_msaa(device, command_buffer, swapchain_image, extent, scene);
     }
     Ok(())
 }
@@ -417,12 +405,7 @@ fn record_interleaved_target_graph(
         };
         let mut record_effect_command_timing = |source_position, starting| {
             if let Some(timing) = gpu_timing {
-                timing.record_effect_command(
-                    device,
-                    command_buffer,
-                    source_position,
-                    starting,
-                );
+                timing.record_effect_command(device, command_buffer, source_position, starting);
             }
         };
         effect_target::record_scene_effect_target_pass(
@@ -467,13 +450,9 @@ fn begin_scene_color_rendering(
             float32: [clear_color.r, clear_color.g, clear_color.b, clear_color.a],
         },
     };
-    let explicit_msaa_target = scene
-        .scene_color_msaa_targets
-        .get(scene.active_frame_slot);
+    let explicit_msaa_target = scene.scene_color_msaa_targets.get(scene.active_frame_slot);
     let color_attachment = vk::RenderingAttachmentInfo::builder()
-        .image_view(
-            explicit_msaa_target.map_or(swapchain_view, |target| target.view),
-        )
+        .image_view(explicit_msaa_target.map_or(swapchain_view, |target| target.view))
         .image_layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL)
         .load_op(if initialized {
             vk::AttachmentLoadOp::LOAD
@@ -514,10 +493,7 @@ fn resolve_explicit_scene_color_msaa(
     extent: vk::Extent2D,
     scene: &SceneGpuResources,
 ) {
-    let Some(source) = scene
-        .scene_color_msaa_targets
-        .get(scene.active_frame_slot)
-    else {
+    let Some(source) = scene.scene_color_msaa_targets.get(scene.active_frame_slot) else {
         return;
     };
     let to_transfer = [
@@ -628,10 +604,7 @@ fn transition_scene_color_msaa_to_attachment(
     command_buffer: vk::CommandBuffer,
     scene: &SceneGpuResources,
 ) {
-    let Some(target) = scene
-        .scene_color_msaa_targets
-        .get(scene.active_frame_slot)
-    else {
+    let Some(target) = scene.scene_color_msaa_targets.get(scene.active_frame_slot) else {
         return;
     };
     let barrier = vk::ImageMemoryBarrier2::builder()
@@ -862,6 +835,7 @@ mod tests {
             mesh_draws: Vec::new(),
             puppet_bone_palettes: Vec::new(),
             puppet_bone_matrices: Vec::new(),
+            particle_gpu_emitters: Vec::new(),
             resolved_object_count: 0,
             resolved_visible_object_count: 0,
             resolved_attachment_link_count: 0,

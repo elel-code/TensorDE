@@ -37,6 +37,7 @@ pub struct SceneRenderingDeviceGraphPlan {
     pub mesh_draws: Vec<SceneRenderingDeviceMeshDraw>,
     pub puppet_bone_palettes: Vec<SceneRenderingDevicePuppetBonePalette>,
     pub puppet_bone_matrices: Vec<SceneRenderingDevicePuppetBoneMatrix>,
+    pub particle_gpu_emitters: Vec<SceneParticleGpuEmitterPlan>,
     pub resolved_object_count: usize,
     pub resolved_visible_object_count: usize,
     pub resolved_attachment_link_count: usize,
@@ -63,6 +64,7 @@ impl SceneRenderingDeviceGraphPlan {
         let mut pass_nodes = Vec::new();
         let mut sampled_bindings = Vec::new();
         let mut mesh_draws = Vec::new();
+        let particle_gpu_emitters = particle_gpu_emitter_plans(storage.particles());
         let puppet_bone_palettes = semantic_frame
             .puppet_bone_palettes
             .iter()
@@ -210,6 +212,7 @@ impl SceneRenderingDeviceGraphPlan {
             mesh_draws,
             puppet_bone_palettes,
             puppet_bone_matrices,
+            particle_gpu_emitters,
             resolved_object_count: semantic_frame.objects.len(),
             resolved_visible_object_count: semantic_frame.visible_object_count,
             resolved_attachment_link_count: semantic_frame.attachment_links.len(),
@@ -579,6 +582,31 @@ fn procedural_particle_instance_capacity(particle: &SceneParticleSystemRecord) -
         .ceil()
         .clamp(0.0, u32::MAX as f32) as u32;
     particle.max_count.min(emitted_during_longest_lifetime)
+}
+
+fn particle_gpu_emitter_plans(
+    particles: &[SceneParticleSystemRecord],
+) -> Vec<SceneParticleGpuEmitterPlan> {
+    particles
+        .iter()
+        .enumerate()
+        .filter(|(_, particle)| particle.max_count != 0)
+        .map(|(particle_index, particle)| SceneParticleGpuEmitterPlan {
+            object: particle.object,
+            particle_index: particle_index as u32,
+            profile: match particle.simulation {
+                SceneParticleSimulationKind::FallingLeaves
+                | SceneParticleSimulationKind::AmbientSparkles
+                | SceneParticleSimulationKind::FloralOscillation => {
+                    SceneParticleGpuProfile::AnalyticBillboard
+                }
+                SceneParticleSimulationKind::Unsupported => SceneParticleGpuProfile::RetainedState,
+            },
+            state_index: particle_index as u32,
+            capacity: procedural_particle_instance_capacity(particle),
+            indirect_draw_index: particle_index as u32,
+        })
+        .collect()
 }
 
 fn pass_applies_resolved_visual(pass: &SceneRenderPassRecord) -> bool {

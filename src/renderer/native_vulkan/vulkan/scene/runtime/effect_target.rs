@@ -15,8 +15,7 @@ use crate::engine::scene::{
     SceneRenderingDeviceTargetAllocation, SceneStorage, SceneStringId,
 };
 use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaImage,
-    native_vulkan_vulkanalia_create_color_attachment_sampled_image,
+    NativeVulkanVulkanaliaImage, native_vulkan_vulkanalia_create_color_attachment_sampled_image,
     native_vulkan_vulkanalia_destroy_image,
 };
 
@@ -206,28 +205,29 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_command_plan(
     commands: &[SceneEffectTargetCommand],
     graph: &SceneRenderingDeviceGraphPlan,
 ) -> SceneEffectTargetCommandPlan {
-    let mut plan = commands
-        .iter()
-        .fold(SceneEffectTargetCommandPlan::default(), |mut plan, pass| {
-            match pass.kind {
-                SceneEffectTargetCommandKind::DynamicRender => {
-                    if pass.batch_atlas_tile.is_none() {
-                        plan.dynamic_rendering_pass_count += 1;
-                        plan.mesh_draw_count += pass.mesh_draw_count as usize;
-                        plan.fullscreen_triangle_draw_count +=
-                            fullscreen_triangle_draws_in_range(graph, pass);
-                        plan.discard_load_count += usize::from(pass.fully_overwrites_target);
+    let mut plan =
+        commands
+            .iter()
+            .fold(SceneEffectTargetCommandPlan::default(), |mut plan, pass| {
+                match pass.kind {
+                    SceneEffectTargetCommandKind::DynamicRender => {
+                        if pass.batch_atlas_tile.is_none() {
+                            plan.dynamic_rendering_pass_count += 1;
+                            plan.mesh_draw_count += pass.mesh_draw_count as usize;
+                            plan.fullscreen_triangle_draw_count +=
+                                fullscreen_triangle_draws_in_range(graph, pass);
+                            plan.discard_load_count += usize::from(pass.fully_overwrites_target);
+                        }
+                    }
+                    SceneEffectTargetCommandKind::Copy => {
+                        plan.copy_command_count += usize::from(!pass.direct_scene_color_snapshot);
+                    }
+                    SceneEffectTargetCommandKind::SwapReferences => {
+                        plan.swap_reference_command_count += 1;
                     }
                 }
-                SceneEffectTargetCommandKind::Copy => {
-                    plan.copy_command_count += usize::from(!pass.direct_scene_color_snapshot);
-                }
-                SceneEffectTargetCommandKind::SwapReferences => {
-                    plan.swap_reference_command_count += 1;
-                }
-            }
-            plan
-        });
+                plan
+            });
     plan.dynamic_rendering_pass_count = plan
         .dynamic_rendering_pass_count
         .saturating_add(graph.effect_batches.len());
@@ -277,18 +277,17 @@ pub(in crate::renderer::native_vulkan) fn scene_effect_target_commands(
         .iter()
         .filter_map(|pass| {
             let target = LogicalEffectTargetKey::from_pass_target(pass)?;
-            let batch_atlas_tile = graph.effect_batch_atlas_tile(
-                pass.graph_index,
-                pass.target,
-                pass.target_name,
-            );
-            let batch_physical_slot = batch_atlas_tile.and_then(|_| {
-                graph.target_allocations.iter().find(|allocation| {
-                    allocation.graph_index == pass.graph_index
-                        && allocation.target == pass.target
-                        && allocation.target_name == pass.target_name
+            let batch_atlas_tile =
+                graph.effect_batch_atlas_tile(pass.graph_index, pass.target, pass.target_name);
+            let batch_physical_slot = batch_atlas_tile
+                .and_then(|_| {
+                    graph.target_allocations.iter().find(|allocation| {
+                        allocation.graph_index == pass.graph_index
+                            && allocation.target == pass.target
+                            && allocation.target_name == pass.target_name
+                    })
                 })
-            }).map(|allocation| allocation.physical_slot);
+                .map(|allocation| allocation.physical_slot);
             match pass.role {
                 SceneRenderPassKind::CopyTarget => {
                     let source = command_source_key(storage, pass);
@@ -384,11 +383,9 @@ pub(in crate::renderer::native_vulkan) fn graph_requires_effect_target_execution
     commands: &[SceneEffectTargetCommand],
     graph_index: u32,
 ) -> bool {
-    commands
-        .iter()
-        .any(|command| {
-            command.target.graph_index == graph_index && command.batch_atlas_tile.is_none()
-        })
+    commands.iter().any(|command| {
+        command.target.graph_index == graph_index && command.batch_atlas_tile.is_none()
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn graph_uses_direct_scene_color_snapshot(
@@ -599,7 +596,8 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_batches(
         super::draw_recording::record_scene_draw_extent(device, command_buffer, extent);
         let mut draw_result = Ok(());
         for command in batch_commands {
-            if let Err(err) = record_draws(command.mesh_draw_start, command.mesh_draw_count, extent) {
+            if let Err(err) = record_draws(command.mesh_draw_start, command.mesh_draw_count, extent)
+            {
                 draw_result = Err(err);
                 break;
             }
@@ -665,13 +663,9 @@ pub(in crate::renderer::native_vulkan) fn record_scene_effect_target_graph_passe
         })
         .map(|reference| reference.key)
         .collect::<Vec<_>>();
-    for (command_position, command) in commands
-        .iter()
-        .enumerate()
-        .filter(|command| {
-            command.1.target.graph_index == graph_index && command.1.batch_atlas_tile.is_none()
-        })
-    {
+    for (command_position, command) in commands.iter().enumerate().filter(|command| {
+        command.1.target.graph_index == graph_index && command.1.batch_atlas_tile.is_none()
+    }) {
         record_command_timing(command_position, true);
         match command.kind {
             SceneEffectTargetCommandKind::Copy => {

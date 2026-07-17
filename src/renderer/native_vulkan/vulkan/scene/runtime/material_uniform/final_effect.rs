@@ -26,14 +26,8 @@ pub(super) fn final_effect_program_values(
         "we/puppet-opacity-final" | "we/puppet-opacity-clipping-final" => {
             final_puppet_opacity_values(parameters, storage, draw)
         }
-        "we/puppet-iris-waterripple-final"
-        | "we/puppet-iris-waterripple-clipping-final" => {
-            final_puppet_iris_waterripple_values(
-                parameters,
-                storage,
-                draw,
-                scene_time_seconds,
-            )
+        "we/puppet-iris-waterripple-final" | "we/puppet-iris-waterripple-clipping-final" => {
+            final_puppet_iris_waterripple_values(parameters, storage, draw, scene_time_seconds)
         }
         "we/flat-rounded-opacity-final" => final_flat_rounded_opacity_values(parameters, draw),
         "we/tech-circle-final" => final_tech_circle_values(
@@ -46,9 +40,7 @@ pub(super) fn final_effect_program_values(
                 SceneAudioBandMaterialTarget::TechCircleSectorWidth,
             ),
         ),
-        "we/audio-bars-final" => {
-            final_audio_bars_values(parameters, storage, draw, spectrum)
-        }
+        "we/audio-bars-final" => final_audio_bars_values(parameters, storage, draw, spectrum),
         "we/framebuffer-water-final" | "we/framebuffer-water-post-final" => {
             final_framebuffer_water_values(parameters, storage, draw, scene_time_seconds)
         }
@@ -101,10 +93,7 @@ fn final_framebuffer_water_values(
     values[7] = parameters.scalar(&["caustics.ui_editor_properties_brightness"], 1.0);
     values[8] = parameters.scalar(&["caustics.ui_editor_properties_glow"], 0.5);
     values[9] = parameters.scalar(&["caustics.ui_editor_properties_distortion"], 1.0);
-    values[10] = parameters.scalar(
-        &["caustics.ui_editor_properties_chromatic_aberration"],
-        0.0,
-    );
+    values[10] = parameters.scalar(&["caustics.ui_editor_properties_chromatic_aberration"], 0.0);
     values[11] = parameters.scalar(&["caustics.ui_editor_properties_blur"], 0.0);
     values[12..15].copy_from_slice(&[1.0; 3]);
     set_vector(
@@ -113,10 +102,7 @@ fn final_framebuffer_water_values(
         &parameters.values(&["caustics.ui_editor_properties_color_start"]),
         3,
     );
-    values[15] = parameters.scalar(
-        &["caustics.ui_editor_properties_time_offset"],
-        0.0,
-    );
+    values[15] = parameters.scalar(&["caustics.ui_editor_properties_time_offset"], 0.0);
     values[16..19].copy_from_slice(&[1.0; 3]);
     set_vector(
         &mut values,
@@ -138,12 +124,7 @@ fn final_framebuffer_water_values(
     values[32..34].copy_from_slice(&[0.0, 1.0]);
     values[34..36].copy_from_slice(&[1.0, 1.0]);
     set_vector(&mut values, 32, &parameters.values(&["shake.bounds"]), 2);
-    set_vector(
-        &mut values,
-        34,
-        &parameters.values(&["shake.friction"]),
-        2,
-    );
+    set_vector(&mut values, 34, &parameters.values(&["shake.friction"]), 2);
     values
 }
 
@@ -171,9 +152,8 @@ fn final_tech_circle_values(
     values[13] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_count"], 2.0);
     values[14] = parameters.scalar(&["tech.ui_editor_properties_4_ring_2_segment_width"], 0.25);
     values[15] = parameters.scalar(&["tech.ui_editor_properties_5_sector_1_offset"], 0.0);
-    values[16] = sector_width_override.unwrap_or_else(|| {
-        parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3)
-    });
+    values[16] = sector_width_override
+        .unwrap_or_else(|| parameters.scalar(&["tech.ui_editor_properties_5_sector_1_width"], 0.3));
     values[17] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_count"], 5.0);
     values[18] = parameters.scalar(&["tech.ui_editor_properties_5_sector_segment_width"], 0.75);
     values
@@ -271,12 +251,7 @@ fn final_colorkey_scroll_values(
     values[14] = parameters.scalar(&["colorkey.tolerance"], 0.1);
     values[15] = parameters.scalar(&["colorkey.invert"], 0.0);
     values[16..19].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(
-        &mut values,
-        16,
-        &parameters.values(&["colorkey.color"]),
-        3,
-    );
+    set_vector(&mut values, 16, &parameters.values(&["colorkey.color"]), 3);
     values[19] = parameters.scalar(&["colorkey.flatten"], 0.0);
     values
 }
@@ -340,20 +315,10 @@ fn final_flat_rounded_opacity_values(
 ) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
     let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     values[0..3].copy_from_slice(&[1.0, 1.0, 1.0]);
-    set_vector(
-        &mut values,
-        0,
-        &parameters.values(&["rounded.Color"]),
-        3,
-    );
+    set_vector(&mut values, 0, &parameters.values(&["rounded.Color"]), 3);
     values[3] = parameters.scalar(&["rounded.Radius"], 0.5);
     values[4..6].copy_from_slice(&[1.0, 1.0]);
-    set_vector(
-        &mut values,
-        4,
-        &parameters.values(&["rounded.Size"]),
-        2,
-    );
+    set_vector(&mut values, 4, &parameters.values(&["rounded.Size"]), 2);
     values[6] = parameters.scalar(&["rounded.Softness"], 0.5);
     values[7] = parameters.scalar(&["rounded.ui_editor_properties_opacity"], 1.0);
     values[8] = parameters.scalar(&["rounded.Border width", "rounded.BorderWidth"], 0.025);

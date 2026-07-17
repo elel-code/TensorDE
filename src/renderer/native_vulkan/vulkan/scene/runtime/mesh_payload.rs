@@ -16,8 +16,7 @@ pub(super) fn pack_scene_vertices(
         .mesh_vertices
         .len()
         .saturating_add(usize::from(include_fullscreen_utility) * 3);
-    let mut payload =
-        Vec::with_capacity(vertex_count * SCENE_MESH_VERTEX_STRIDE_BYTES as usize);
+    let mut payload = Vec::with_capacity(vertex_count * SCENE_MESH_VERTEX_STRIDE_BYTES as usize);
     for vertex in &storage.document().mesh_vertices {
         append_vertex(&mut payload, vertex);
     }

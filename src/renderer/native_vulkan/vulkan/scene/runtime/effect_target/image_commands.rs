@@ -384,7 +384,10 @@ pub(super) fn effect_target_kind_is_recordable(target: SceneRenderTargetKind) ->
     )
 }
 
-pub(super) fn target_format(format: &str, swapchain_format: vk::Format) -> Result<vk::Format, String> {
+pub(super) fn target_format(
+    format: &str,
+    swapchain_format: vk::Format,
+) -> Result<vk::Format, String> {
     match format {
         "r8" | "r8_unorm" => Ok(vk::Format::R8_UNORM),
         "r16f" | "r16_float" => Ok(vk::Format::R16_SFLOAT),

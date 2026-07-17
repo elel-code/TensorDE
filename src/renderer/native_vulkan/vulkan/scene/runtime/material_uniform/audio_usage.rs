@@ -1,9 +1,7 @@
 //! Audio-spectrum demand detection for retained scene draw pipelines.
 
 use super::first_material_pass;
-use crate::engine::scene::{
-    SceneMaterialHandle, SceneRenderingDeviceMeshDraw, SceneStorage,
-};
+use crate::engine::scene::{SceneMaterialHandle, SceneRenderingDeviceMeshDraw, SceneStorage};
 use crate::renderer::native_vulkan::native_vulkan_scene_backend_plan;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
@@ -20,10 +18,7 @@ pub(in crate::renderer::native_vulkan::vulkan::scene::runtime) fn scene_uses_aud
             .any(|draw| draw_uses_audio_spectrum(storage, draw))
 }
 
-fn draw_uses_audio_spectrum(
-    storage: &SceneStorage,
-    draw: &SceneRenderingDeviceMeshDraw,
-) -> bool {
+fn draw_uses_audio_spectrum(storage: &SceneStorage, draw: &SceneRenderingDeviceMeshDraw) -> bool {
     storage
         .string(draw.shader_key)
         .is_some_and(shader_uses_audio_spectrum)

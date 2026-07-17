@@ -172,7 +172,15 @@ fn reference_analysis(
 > {
     let references = frames
         .iter()
-        .map(|frame| load_reference_frame(reference_path, frame.frame_number, multiple_frames, width, height))
+        .map(|frame| {
+            load_reference_frame(
+                reference_path,
+                frame.frame_number,
+                multiple_frames,
+                width,
+                height,
+            )
+        })
         .collect::<Result<Vec<_>, String>>()?;
     let pixel_count = width as usize * height as usize;
     let mut squared_error = 0u128;
@@ -215,8 +223,10 @@ fn reference_analysis(
         let mut columns = vec![0u64; width as usize];
         for pixel in 0..pixel_count {
             let offset = pixel * 4;
-            let candidate_motion = rgb_abs_difference(candidate_previous, candidate_current, offset);
-            let reference_motion = rgb_abs_difference(reference_previous, reference_current, offset);
+            let candidate_motion =
+                rgb_abs_difference(candidate_previous, candidate_current, offset);
+            let reference_motion =
+                rgb_abs_difference(reference_previous, reference_current, offset);
             let residual = rgb_temporal_residual(
                 candidate_previous,
                 candidate_current,
@@ -234,8 +244,7 @@ fn reference_analysis(
                 && x + 1 < width
                 && y + 1 < height
                 && (luma_gradient(reference_previous, width, x, y) >= REFERENCE_EDGE_THRESHOLD
-                    || luma_gradient(reference_current, width, x, y)
-                        >= REFERENCE_EDGE_THRESHOLD);
+                    || luma_gradient(reference_current, width, x, y) >= REFERENCE_EDGE_THRESHOLD);
             if edge {
                 edge_temporal_residual += u64::from(residual);
                 edge_temporal_samples += 1;
@@ -264,10 +273,7 @@ fn reference_analysis(
         frame_rmse_rgb: rmse,
         edge_sharpness_ratio: sharpness,
         temporal_residual_mean_abs_rgb: ratio(temporal_residual, temporal_samples),
-        edge_temporal_residual_mean_abs_rgb: ratio(
-            edge_temporal_residual,
-            edge_temporal_samples,
-        ),
+        edge_temporal_residual_mean_abs_rgb: ratio(edge_temporal_residual, edge_temporal_samples),
         edge_spark_pixel_ratio: ratio(edge_sparks, edge_temporal_samples),
         edge_pixel_ratio: ratio(edge_pixels, pixel_count as u64 * frames.len() as u64),
     };
@@ -373,9 +379,7 @@ fn column_centroid(columns: &[u64], height: u32) -> f64 {
     }
 }
 
-fn strongest_monotonic_window(
-    positions: &[f64],
-) -> NativeVulkanSceneFrameHorizontalMotionSnapshot {
+fn strongest_monotonic_window(positions: &[f64]) -> NativeVulkanSceneFrameHorizontalMotionSnapshot {
     if positions.len() < 3 {
         return NativeVulkanSceneFrameHorizontalMotionSnapshot {
             strongest_window_pair_count: positions.len() as u64,
@@ -417,7 +421,10 @@ fn strongest_monotonic_window(
             r_squared,
         };
         let score = travel.abs() * r_squared;
-        if best.as_ref().is_none_or(|(best_score, _)| score > *best_score) {
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, _)| score > *best_score)
+        {
             best = Some((score, snapshot));
         }
     }

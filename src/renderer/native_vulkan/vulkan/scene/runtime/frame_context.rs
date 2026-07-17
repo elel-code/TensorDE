@@ -52,9 +52,7 @@ pub(super) fn create_scene_present_frame_contexts(
                     device.destroy_semaphore(image_available, None);
                 }
                 destroy_scene_present_frame_contexts(device, contexts);
-                return Err(format!(
-                    "vkCreateFence(scene frame slot {slot}): {err:?}"
-                ));
+                return Err(format!("vkCreateFence(scene frame slot {slot}): {err:?}"));
             }
         };
         contexts.push(ScenePresentFrameContext {
