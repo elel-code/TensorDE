@@ -275,6 +275,7 @@ struct SceneGpuResources {
     graph_execution_order: Vec<u32>,
     capture_scene_graph: Option<u32>,
     descriptor_heap_plan: NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
+    particle_global_descriptor_base: Option<usize>,
     pipelines: ScenePipelineResources,
     draw_commands: Vec<SceneGpuDrawCommand>,
     sampled_slots: Vec<u32>,

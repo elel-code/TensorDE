@@ -8,9 +8,10 @@ use crate::engine::scene::{
     SceneStorage,
 };
 use crate::renderer::native_vulkan::{
-    NativeVulkanVulkanaliaRecordedBufferUpload,
+    NativeVulkanVulkanaliaRecordedBufferUpload, VulkanaliaDescriptorHeapResourceResources,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_destroy_buffer,
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer,
 };
 
 pub(super) struct SceneParticleGpuResources {
@@ -100,6 +101,28 @@ pub(super) fn destroy_scene_particle_gpu_resources(
 ) {
     destroy_recorded_buffer_upload(device, resources.indirect_upload);
     destroy_recorded_buffer_upload(device, resources.state_upload);
+}
+
+pub(super) fn write_scene_particle_descriptors(
+    device: &Device,
+    descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,
+    descriptor_base: usize,
+    resources: &SceneParticleGpuResources,
+) -> Result<(), String> {
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
+        device,
+        descriptor_heap,
+        descriptor_base,
+        resources.state_upload.target.device_address,
+        resources.state_upload.target.snapshot.requested_bytes,
+    )?;
+    native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer(
+        device,
+        descriptor_heap,
+        descriptor_base.saturating_add(1),
+        resources.indirect_upload.target.device_address,
+        resources.indirect_upload.target.snapshot.requested_bytes,
+    )
 }
 
 pub(super) fn release_scene_particle_staging(

@@ -624,6 +624,24 @@ pub(crate) fn build_scene_shader_catalog() {
     generated.push_str(&entries);
     generated.push_str("];\n");
 
+    let compute_path = compile_scene_shader_stage(
+        &shader_dir,
+        "particle_compute",
+        "comp",
+        &super::particle_compute_source(),
+    );
+    let compute_path = compute_path
+        .to_str()
+        .expect("particle compute shader path must be UTF-8");
+    generated.push_str("\n#[derive(Debug, Clone, Copy)]\n");
+    generated.push_str("pub struct BuiltinParticleComputeShader {\n");
+    generated.push_str("    pub spirv: &'static [u32],\n");
+    generated.push_str("}\n\n");
+    generated.push_str(&format!(
+        "pub static BUILTIN_PARTICLE_COMPUTE_SHADER: BuiltinParticleComputeShader = BuiltinParticleComputeShader {{ spirv: vulkanalia::include_shader_code!({:?}) }};\n",
+        compute_path
+    ));
+
     fs::write(out_dir.join("gilder_scene_shader_catalog.rs"), generated)
         .expect("write built-in scene shader catalog");
 }

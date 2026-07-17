@@ -16,6 +16,8 @@ mod lut;
 mod oscilloscope;
 #[path = "scene_shader/particle.rs"]
 mod particle;
+#[path = "scene_shader/particle_compute.rs"]
+mod particle_compute;
 #[path = "scene_shader/raindrop.rs"]
 mod raindrop;
 #[path = "scene_shader/shimmer.rs"]
@@ -34,6 +36,7 @@ pub(super) use final_effect::{
     FINAL_EFFECT_SHADER_SPECS, final_effect_parameter_layout, final_effect_sources,
 };
 pub(super) use particle::generic_particle_vertex_source;
+pub(super) use particle_compute::particle_compute_source;
 pub(super) use waterwaves_direct::waterwaves_direct_sources;
 
 pub(super) fn generic_image_fragment_source() -> String {

@@ -107,6 +107,10 @@ pub fn native_vulkan_scene_shader_catalog() -> &'static [BuiltinSceneShader] {
     BUILTIN_SCENE_SHADERS
 }
 
+pub fn native_vulkan_particle_compute_shader() -> &'static BuiltinParticleComputeShader {
+    &BUILTIN_PARTICLE_COMPUTE_SHADER
+}
+
 pub fn native_vulkan_scene_shader_for_key(key: &str) -> Option<&'static BuiltinSceneShader> {
     let key = key.trim();
     if key.is_empty() {

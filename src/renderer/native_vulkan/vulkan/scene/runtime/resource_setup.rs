@@ -211,12 +211,23 @@ pub(super) fn create_scene_gpu_resources(
         }
     };
 
-    let (resource_descriptors, draw_commands) = scene_descriptor_plan_inputs(
+    let (mut resource_descriptors, draw_commands) = scene_descriptor_plan_inputs(
         &backend_plan.rendering_device_graph.mesh_draws,
         &descriptor_layout,
         &pipeline_indices,
         &alpha_coverage_scissors,
     );
+    let particle_global_descriptor_base = resource_descriptors.len();
+    if !backend_plan
+        .rendering_device_graph
+        .particle_gpu_emitters
+        .is_empty()
+    {
+        resource_descriptors.extend([
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+        ]);
+    }
     let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
         NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
             resource_descriptors,
@@ -467,6 +478,49 @@ pub(super) fn create_scene_gpu_resources(
             return Err(err);
         }
     };
+    let particle_descriptor_result = if let (Some(resources), Some(descriptor_base)) = (
+        particle_resources.as_ref(),
+        (!backend_plan
+            .rendering_device_graph
+            .particle_gpu_emitters
+            .is_empty())
+        .then_some(particle_global_descriptor_base),
+    ) {
+        particle_resources::write_scene_particle_descriptors(
+            device,
+            &mut descriptor_heap,
+            descriptor_base,
+            resources,
+        )
+    } else {
+        Ok(())
+    };
+    if let Err(err) = particle_descriptor_result {
+        if let Some(resources) = particle_resources {
+            particle_resources::destroy_scene_particle_gpu_resources(device, resources);
+        }
+        pipeline::destroy_scene_pipelines(device, pipeline_resources);
+        scene_color_msaa::destroy_scene_color_msaa_targets(device, scene_color_msaa_targets);
+        scene_texture::destroy_scene_texture_images(device, scene_textures);
+        effect_target::destroy_scene_effect_target_images(device, effect_targets);
+        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+            device,
+            descriptor_heap,
+        );
+        if let Some(upload) = white_upload {
+            destroy_recorded_image_upload(device, upload);
+        }
+        if let Some(buffer) = material_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        if let Some(buffer) = skinning_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+        native_vulkan_vulkanalia_destroy_buffer(device, index_buffer);
+        native_vulkan_vulkanalia_destroy_buffer(device, vertex_buffer);
+        return Err(err);
+    }
 
     let mut frame_resources = vec![SceneGpuFrameResources {
         transform_buffer,
@@ -535,6 +589,11 @@ pub(super) fn create_scene_gpu_resources(
         graph_execution_order,
         capture_scene_graph,
         descriptor_heap_plan,
+        particle_global_descriptor_base: (!backend_plan
+            .rendering_device_graph
+            .particle_gpu_emitters
+            .is_empty())
+        .then_some(particle_global_descriptor_base),
         pipelines: pipeline_resources,
         draw_commands,
         sampled_slots: descriptor_layout.sampled_slots,
