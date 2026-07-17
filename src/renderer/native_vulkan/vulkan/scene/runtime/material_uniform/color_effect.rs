@@ -54,10 +54,12 @@ pub(super) fn shimmer_values(
     values[6] = parameters.scalar(&["ui_editor_properties_brightness", "amount"], 1.0);
     values[7] = parameters.scalar(&["ui_editor_properties_offset", "offset"], 0.0);
     values[8] = parameters.scalar(&["ui_editor_properties_timescale", "timeoffsetscale"], 0.05);
-    values[12..16].copy_from_slice(&[1.0, 1.0, 1.0, 1.0]);
+    // The native shader packs `u_timeoffsetScale` followed by `u_color.rgb` in one vec4.
+    // Keep this aligned with ShimmerUniform::g_TimeOffsetColor in the generated shader.
+    values[9..12].copy_from_slice(&[1.0, 1.0, 1.0]);
     set_vector(
         &mut values,
-        12,
+        9,
         &parameters.values(&["ui_editor_properties_color", "color"]),
         3,
     );

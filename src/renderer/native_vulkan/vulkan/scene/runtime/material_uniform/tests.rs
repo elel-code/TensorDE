@@ -150,6 +150,26 @@ fn waterwaves_uniform_uses_named_lanes_and_scene_time() {
 }
 
 #[test]
+fn shimmer_uniform_packs_time_offset_then_effect_color_in_the_same_vec4() {
+    let storage = storage_with_constants(
+        "effects/shimmer__SLOTS_9",
+        &[
+            ("ui_editor_properties_timescale", "0.125"),
+            ("ui_editor_properties_color", "[0.25,0.5,0.75]"),
+            ("ui_editor_properties_brightness", "2.0"),
+        ],
+    );
+    let payload =
+        pack_scene_material_uniforms(&storage, &[draw_with_material(SceneMaterialHandle(0))], 3.0);
+
+    assert_eq!(f32_from_payload(&payload, 8 * 4), 0.125);
+    assert_eq!(f32_from_payload(&payload, 9 * 4), 0.25);
+    assert_eq!(f32_from_payload(&payload, 10 * 4), 0.5);
+    assert_eq!(f32_from_payload(&payload, 11 * 4), 0.75);
+    assert_eq!(f32_from_payload(&payload, 6 * 4), 2.0);
+}
+
+#[test]
 fn waterwaves_uv_field_batch_metadata_does_not_overwrite_stage_parameters() {
     let storage = storage_with_constants(
         "we/waterwaves-uv-field",
