@@ -452,7 +452,7 @@ fn update_particle_instance_counts(
     }
 }
 
-fn active_particle_instance_count(
+pub(super) fn active_particle_instance_count(
     particle: &crate::engine::scene::SceneParticleSystemRecord,
     scene_time_seconds: f32,
 ) -> u32 {
@@ -470,6 +470,17 @@ fn active_particle_instance_count(
     let elapsed = (scene_time_seconds - particle.start_time).max(0.0);
     let spawned = elapsed.mul_add(particle.rate, 0.0).floor() as u32;
     capacity.min(spawned.saturating_add(1))
+}
+
+pub(super) fn active_particle_instance_total(
+    storage: &SceneStorage,
+    scene_time_seconds: f32,
+) -> u64 {
+    storage
+        .particles()
+        .iter()
+        .map(|particle| u64::from(active_particle_instance_count(particle, scene_time_seconds)))
+        .sum()
 }
 
 fn elapsed_optional_micros(started: Option<Instant>) -> u64 {

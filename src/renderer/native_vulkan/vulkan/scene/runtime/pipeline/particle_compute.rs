@@ -48,14 +48,16 @@ fn create_particle_compute_pipeline(
             native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
                 descriptor_heap_plan,
                 0,
-                0,
                 descriptor_base,
+                descriptor_base,
+                false,
             )?,
             native_vulkan_vulkanalia_descriptor_heap_resource_relative_storage_buffer_binding_mapping(
                 descriptor_heap_plan,
                 1,
-                0,
+                descriptor_base,
                 descriptor_base.saturating_add(1),
+                true,
             )?,
         ];
         let mut mapping_info =

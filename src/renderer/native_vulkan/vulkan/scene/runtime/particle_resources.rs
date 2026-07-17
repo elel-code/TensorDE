@@ -8,10 +8,12 @@ use crate::engine::scene::{
     SceneStorage,
 };
 use crate::renderer::native_vulkan::{
+    NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
     NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaRecordedBufferUpload, VulkanaliaDescriptorHeapResourceResources,
+    native_vulkan_vulkanalia_create_buffer,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
-    native_vulkan_vulkanalia_destroy_buffer,
+    native_vulkan_vulkanalia_destroy_buffer, native_vulkan_vulkanalia_read_host_buffer,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer,
 };
 
@@ -33,6 +35,7 @@ pub(super) fn append_global_descriptor_plan(
 pub(super) struct SceneParticleGpuResources {
     pub state_upload: NativeVulkanVulkanaliaRecordedBufferUpload,
     pub indirect_upload: NativeVulkanVulkanaliaRecordedBufferUpload,
+    pub indirect_readback: NativeVulkanVulkanaliaBuffer,
     pub emitter_count: u32,
     pub total_capacity: u64,
 }
@@ -90,6 +93,7 @@ pub(super) fn create_scene_particle_gpu_resources(
             indirect_payload.len() as u64,
             vk::BufferUsageFlags::STORAGE_BUFFER
                 | vk::BufferUsageFlags::INDIRECT_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_SRC
                 | vk::BufferUsageFlags::SHADER_DEVICE_ADDRESS,
             indirect_payload,
         ) {
@@ -99,9 +103,26 @@ pub(super) fn create_scene_particle_gpu_resources(
                 return Err(err);
             }
         };
+    let indirect_readback = match native_vulkan_vulkanalia_create_buffer(
+        device,
+        memory_properties,
+        "scene-particle-indirect-readback-buffer",
+        indirect_payload.len() as u64,
+        vk::BufferUsageFlags::TRANSFER_DST,
+        NativeVulkanVulkanaliaBufferMemoryPreference::HostUpload,
+        None,
+    ) {
+        Ok(buffer) => buffer,
+        Err(err) => {
+            destroy_recorded_buffer_upload(device, indirect_upload);
+            destroy_recorded_buffer_upload(device, state_upload);
+            return Err(err);
+        }
+    };
     Ok(Some(SceneParticleGpuResources {
         state_upload,
         indirect_upload,
+        indirect_readback,
         emitter_count: states.len() as u32,
         total_capacity: graph
             .particle_gpu_emitters
@@ -115,8 +136,53 @@ pub(super) fn destroy_scene_particle_gpu_resources(
     device: &Device,
     resources: SceneParticleGpuResources,
 ) {
+    native_vulkan_vulkanalia_destroy_buffer(device, resources.indirect_readback);
     destroy_recorded_buffer_upload(device, resources.indirect_upload);
     destroy_recorded_buffer_upload(device, resources.state_upload);
+}
+
+pub(super) fn read_scene_particle_indirect_commands(
+    device: &Device,
+    resources: &SceneParticleGpuResources,
+) -> Result<Vec<SceneParticleIndirectDraw>, String> {
+    let bytes = native_vulkan_vulkanalia_read_host_buffer(
+        device,
+        &resources.indirect_readback,
+        resources.indirect_readback.snapshot.requested_bytes,
+    )?;
+    bytes
+        .chunks_exact(16)
+        .map(|command| {
+            let field = |offset| {
+                u32::from_ne_bytes(command[offset..offset + 4].try_into().expect("u32 field"))
+            };
+            Ok(SceneParticleIndirectDraw {
+                vertex_count: field(0),
+                instance_count: field(4),
+                first_vertex: field(8),
+                first_instance: field(12),
+            })
+        })
+        .collect()
+}
+
+pub(super) fn validate_scene_particle_indirect_readback(
+    device: &Device,
+    resources: &SceneParticleGpuResources,
+    expected_instance_total: u64,
+) -> Result<(bool, u64), String> {
+    let commands = read_scene_particle_indirect_commands(device, resources)?;
+    let instance_total = commands
+        .iter()
+        .map(|command| u64::from(command.instance_count))
+        .sum();
+    let shape_valid = commands.iter().all(|command| {
+        command.vertex_count == 4 && command.first_vertex == 0 && command.first_instance == 0
+    });
+    Ok((
+        shape_valid && instance_total == expected_instance_total,
+        instance_total,
+    ))
 }
 
 pub(super) fn write_scene_particle_descriptors(

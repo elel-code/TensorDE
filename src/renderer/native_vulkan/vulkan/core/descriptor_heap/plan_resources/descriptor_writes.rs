@@ -440,12 +440,26 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     binding: u32,
     base_resource_descriptor_index: usize,
     resource_descriptor_index: usize,
+    read_write: bool,
 ) -> Result<NativeVulkanDescriptorHeapShaderBindingMapping, String> {
-    validate_mixed_plan_descriptor_kind(
-        plan,
-        base_resource_descriptor_index,
-        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer,
-    )?;
+    let base_kind = plan
+        .resource_descriptor_kinds
+        .get(base_resource_descriptor_index)
+        .copied()
+        .ok_or_else(|| {
+            format!(
+                "descriptor heap storage slice base {base_resource_descriptor_index} is missing"
+            )
+        })?;
+    if !matches!(
+        base_kind,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::UniformBuffer
+            | NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer
+    ) {
+        return Err(format!(
+            "descriptor heap storage slice base {base_resource_descriptor_index} has incompatible kind {base_kind:?}"
+        ));
+    }
     validate_mixed_plan_descriptor_kind(
         plan,
         resource_descriptor_index,
@@ -489,7 +503,11 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_vulkanalia_descriptor_he
     Ok(
         native_vulkan_vulkanalia_descriptor_heap_shader_binding_mapping(
             binding,
-            vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER,
+            if read_write {
+                vk::SpirvResourceTypeFlagsEXT::READ_WRITE_STORAGE_BUFFER
+            } else {
+                vk::SpirvResourceTypeFlagsEXT::READ_ONLY_STORAGE_BUFFER
+            },
             vk::DescriptorMappingSourceDataEXT {
                 constant_offset: source,
             },

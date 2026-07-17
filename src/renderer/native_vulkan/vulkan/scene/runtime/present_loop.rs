@@ -1,5 +1,4 @@
 use super::*;
-use crate::engine::scene::SceneRenderingDeviceDrawPrimitive;
 
 pub(super) fn with_scene_present(
     instance: &Instance,
@@ -388,6 +387,9 @@ pub(super) fn with_scene_present(
     let mut composite_scissor_covered_pixels = 0u64;
     let mut composite_scissor_avoided_pixels = 0u64;
     let mut scene_color_attachment_clear_frame_count = 0u64;
+    let mut particle_indirect_readback_valid = false;
+    let mut particle_indirect_readback_instance_total = 0u64;
+    let mut particle_indirect_expected_total = 0u64;
     let mut image_layouts = vec![vk::ImageLayout::UNDEFINED; swapchain_images.len()];
     let fixed_scene_time_seconds = std::env::var("GILDER_NATIVE_VULKAN_SCENE_FIXED_TIME")
         .ok()
@@ -414,6 +416,18 @@ pub(super) fn with_scene_present(
         }
         if let Some(capture) = frame_capture.as_mut() {
             capture.read_completed_frame(device)?;
+        }
+        if frames_presented != 0
+            && let Some(resources) = scene_resources.particle_resources.as_ref()
+        {
+            (
+                particle_indirect_readback_valid,
+                particle_indirect_readback_instance_total,
+            ) = super::particle_resources::validate_scene_particle_indirect_readback(
+                device,
+                resources,
+                particle_indirect_expected_total,
+            )?;
         }
         fence_wait_total_micros =
             fence_wait_total_micros.saturating_add(elapsed_micros_u64(fence_wait_started));
@@ -445,6 +459,10 @@ pub(super) fn with_scene_present(
             scene_time_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
+        particle_indirect_expected_total = super::frame_state::active_particle_instance_total(
+            &options.storage,
+            scene_time_seconds,
+        );
         if frames_presented == 0
             && std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some()
         {
@@ -972,6 +990,8 @@ pub(super) fn with_scene_present(
         particle_gpu_device_local,
         particle_compute_pipeline_created,
         particle_compute_dispatch_enabled: particle_compute_pipeline_created,
+        particle_indirect_readback_valid,
+        particle_indirect_readback_instance_total,
         mesh_draw_recorded,
         command_order,
         present_backend: "vulkanalia-scene-present-runtime",

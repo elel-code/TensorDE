@@ -218,21 +218,17 @@ unsafe fn record_bound_scene_draw(
         SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
         | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
         | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => unsafe {
-            if let (SceneRenderingDeviceDrawPrimitive::ParticleBillboard, Some(index)) =
-                (draw.primitive, draw.particle_indirect_index)
-            {
+            if let Some(index) = draw.particle_indirect_index {
                 let resources = scene
                     .particle_resources
                     .as_ref()
-                    .expect("particle draw requires particle GPU resources");
+                    .expect("particle indirect draw requires GPU resources");
                 device.cmd_draw_indirect(
                     command_buffer,
                     resources.indirect_upload.target.buffer,
-                    u64::from(index)
-                        * std::mem::size_of::<crate::engine::scene::SceneParticleIndirectDraw>()
-                            as u64,
+                    u64::from(index) * 16,
                     1,
-                    std::mem::size_of::<crate::engine::scene::SceneParticleIndirectDraw>() as u32,
+                    16,
                 );
             } else {
                 device.cmd_draw(command_buffer, draw.vertex_count, draw.instance_count, 0, 0);

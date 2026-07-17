@@ -716,6 +716,7 @@ fn create_scene_pipeline_with_modules(
                 4,
                 0,
                 skinning_descriptor_index,
+                false,
             )?,
         );
     }

@@ -22,7 +22,9 @@ pub(super) fn record_particle_compute_dispatch(
     let resource_bind =
         native_vulkan_vulkanalia_descriptor_heap_mixed_resource_bind_info_for_descriptor(
             &frame.descriptor_heap,
-            0,
+            scene
+                .particle_global_descriptor_base
+                .ok_or_else(|| "particle compute descriptor base is missing".to_owned())?,
         )?;
     let group_count = resources.emitter_count.saturating_add(63) / 64;
     if group_count == 0 {
@@ -59,8 +61,10 @@ pub(super) fn record_particle_compute_dispatch(
         let barrier = vk::BufferMemoryBarrier2::builder()
             .src_stage_mask(vk::PipelineStageFlags2::COMPUTE_SHADER)
             .src_access_mask(vk::AccessFlags2::SHADER_STORAGE_WRITE)
-            .dst_stage_mask(vk::PipelineStageFlags2::DRAW_INDIRECT)
-            .dst_access_mask(vk::AccessFlags2::INDIRECT_COMMAND_READ)
+            .dst_stage_mask(vk::PipelineStageFlags2::COPY | vk::PipelineStageFlags2::DRAW_INDIRECT)
+            .dst_access_mask(
+                vk::AccessFlags2::TRANSFER_READ | vk::AccessFlags2::INDIRECT_COMMAND_READ,
+            )
             .buffer(resources.indirect_upload.target.buffer)
             .offset(0)
             .size(vk::WHOLE_SIZE)
@@ -69,6 +73,28 @@ pub(super) fn record_particle_compute_dispatch(
             .buffer_memory_barriers(std::slice::from_ref(&barrier))
             .build();
         device.cmd_pipeline_barrier2(command_buffer, &dependency);
+        let copy = vk::BufferCopy::builder()
+            .size(resources.indirect_upload.target.snapshot.requested_bytes)
+            .build();
+        device.cmd_copy_buffer(
+            command_buffer,
+            resources.indirect_upload.target.buffer,
+            resources.indirect_readback.buffer,
+            &[copy],
+        );
+        let host_barrier = vk::BufferMemoryBarrier2::builder()
+            .src_stage_mask(vk::PipelineStageFlags2::COPY)
+            .src_access_mask(vk::AccessFlags2::TRANSFER_WRITE)
+            .dst_stage_mask(vk::PipelineStageFlags2::HOST)
+            .dst_access_mask(vk::AccessFlags2::HOST_READ)
+            .buffer(resources.indirect_readback.buffer)
+            .offset(0)
+            .size(vk::WHOLE_SIZE)
+            .build();
+        let host_dependency = vk::DependencyInfo::builder()
+            .buffer_memory_barriers(std::slice::from_ref(&host_barrier))
+            .build();
+        device.cmd_pipeline_barrier2(command_buffer, &host_dependency);
     }
     Ok(true)
 }

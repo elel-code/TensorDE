@@ -255,6 +255,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub particle_gpu_device_local: bool,
     pub particle_compute_pipeline_created: bool,
     pub particle_compute_dispatch_enabled: bool,
+    pub particle_indirect_readback_valid: bool,
+    pub particle_indirect_readback_instance_total: u64,
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
