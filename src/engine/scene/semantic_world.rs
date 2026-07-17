@@ -12,6 +12,7 @@ pub mod components;
 pub mod effect;
 pub mod entity;
 mod errors;
+mod event_system;
 pub mod indexes;
 pub mod matrix;
 pub mod resolved_frame;
@@ -41,6 +42,7 @@ use components::{
     puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,
 };
 use effect::object_effect_binding_from_object;
+use event_system::RetainedSceneEventSystem;
 use indexes::SemanticIndexTable;
 use matrix::{identity_matrix, inverse_affine_matrix, multiply_matrix, transform_matrix};
 use resolved_frame::{INVALID_RESOLVED_INDEX, ResolvedObjectMeshRange};

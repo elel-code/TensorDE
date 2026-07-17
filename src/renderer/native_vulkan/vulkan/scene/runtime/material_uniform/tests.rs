@@ -405,20 +405,6 @@ fn fused_final_audio_program_requests_the_system_spectrum_adapter() {
 }
 
 #[test]
-fn scene_audio_spectrum_diagnostic_override_is_bounded_and_explicit() {
-    assert_eq!(parse_scene_audio_spectrum32("flat:0.75"), Some([0.75; 32]));
-    assert!(parse_scene_audio_spectrum32("flat:1.1").is_none());
-    let bands = (0..32)
-        .map(|band| (band as f32 / 31.0).to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    let parsed = parse_scene_audio_spectrum32(&bands).expect("32 bands");
-    assert_eq!(parsed[0], 0.0);
-    assert_eq!(parsed[31], 1.0);
-    assert!(parse_scene_audio_spectrum32("0,1").is_none());
-}
-
-#[test]
 fn waterflow_uniform_packs_motion_and_logical_flow_extent() {
     let storage = storage_with_padded_mask("effects/waterflow__SLOTS_7", 128, 64, 100, 50);
     let mut document = storage.document().clone();

@@ -8,7 +8,7 @@ use vulkanalia::prelude::v1_4::*;
 use crate::engine::scene::rendering_device_graph::scene_clip_transform;
 use crate::engine::scene::semantic_world::{ResolvedSemanticFrame, SemanticFrameResolver};
 use crate::engine::scene::{
-    SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
+    SceneFrameEvents, SceneMaterialHandle, SceneObjectHandle, SceneRenderingDeviceDrawPrimitive,
     SceneRenderingDeviceGraphPlan, SceneRenderingDeviceMaterialSampledBinding,
     SceneRenderingDeviceMeshDraw, SceneRenderingDevicePassNode, SceneRenderingDeviceSampledBinding,
     SceneRenderingDeviceTargetAllocation, SceneSemanticWorld, SceneStorage,
@@ -21,9 +21,7 @@ use crate::renderer::native_vulkan::{
 use super::composite_scissor::update_scene_composite_scissors;
 use super::draw_recording::SceneGpuDrawCommand;
 use super::draw_uniform::pack_scene_draw_uniforms;
-use super::material_uniform::{
-    pack_scene_material_uniforms_with_frame_inputs, scene_audio_spectrum32,
-};
+use super::material_uniform::pack_scene_material_uniforms_with_frame_inputs;
 use super::scene_color_clear::{SceneGpuSceneColorClear, resolve_scene_color_attachment_clear};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -350,13 +348,13 @@ pub(super) fn write_scene_frame_buffers(
     cpu_timing_enabled: bool,
     graph_execution_order: &[u32],
     scene_color_attachment_clear_enabled: bool,
+    events: &SceneFrameEvents,
     scene_time_seconds: f32,
     output_extent: [u32; 2],
 ) -> Result<SceneFrameBufferUpdate, String> {
     let semantic_started = cpu_timing_enabled.then(Instant::now);
-    let audio_spectrum = scene_audio_spectrum32().unwrap_or([0.0; 32]);
     let semantic_frame = semantic_resolver
-        .resolve_frame_with_audio_at(semantic_world, scene_time_seconds, &audio_spectrum)
+        .resolve_frame_with_events_at(semantic_world, scene_time_seconds, events)
         .map_err(|err| {
             format!(
                 "resolve scene semantic frame at {scene_time_seconds:.6}s for Vulkan buffer update: {err}"
@@ -387,7 +385,7 @@ pub(super) fn write_scene_frame_buffers(
             storage,
             &graph.mesh_draws,
             scene_time_seconds,
-            Some(&audio_spectrum),
+            events.audio_spectrum(),
             &semantic_frame.audio_band_material_values,
         );
         write_exact_frame_payload(device, material_buffer, &material_payload)?;

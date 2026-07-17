@@ -24,6 +24,7 @@ use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NativeVulkanSceneRunOptions {
+    pub pointer_events: bool,
     pub capture_frame: Option<PathBuf>,
     pub capture_frame_number: u64,
     pub capture_frame_count: u64,
@@ -41,6 +42,7 @@ pub struct NativeVulkanSceneRunOptions {
 impl Default for NativeVulkanSceneRunOptions {
     fn default() -> Self {
         Self {
+            pointer_events: true,
             capture_frame: None,
             capture_frame_number: 1,
             capture_frame_count: 1,
@@ -185,10 +187,12 @@ pub fn run_scene_with_options(
         .clear_color_override
         .unwrap_or_else(|| scene_clear_color(&storage));
     let capture_scene_graph = scene_options.capture_scene_graph;
+    let mut host = options.host;
+    host.input_passthrough = !scene_options.pointer_events;
 
     let present =
         run_native_vulkan_vulkanalia_scene_present(NativeVulkanVulkanaliaScenePresentOptions {
-            host: options.host,
+            host,
             wait_configure_roundtrips: options.wait_configure_roundtrips,
             duration,
             target_max_fps: options.target_max_fps,

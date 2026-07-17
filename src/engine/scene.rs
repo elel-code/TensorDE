@@ -9,6 +9,7 @@
 
 pub mod abi;
 pub mod binary;
+pub mod event;
 pub mod rendering_device_graph;
 pub mod semantic_world;
 pub mod server;
@@ -18,6 +19,12 @@ pub use abi::*;
 pub use binary::{
     SceneBinaryDocument, SceneBinaryError, read_scene_binary, read_scene_binary_bytes,
     write_scene_binary,
+};
+pub use event::{
+    SceneAudioSource, SceneAudioState, SceneEvent, SceneEventQueue, SceneEventSequence,
+    SceneFrameEvents, SceneMediaClockState, SceneMediaGeneration, SceneMediaPlaybackState,
+    SceneMediaSessionId, ScenePointerEvent, ScenePointerEventKind, ScenePointerSource,
+    ScenePointerState, SceneSequencedEvent, SceneVideoState,
 };
 pub use rendering_device_graph::{
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceEffectBatch,

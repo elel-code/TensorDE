@@ -331,10 +331,13 @@ impl SeatHandler for NativeWaylandState {
     fn new_capability(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: wl_seat::WlSeat,
-        _: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+        }
     }
 
     fn remove_capability(
@@ -342,11 +345,40 @@ impl SeatHandler for NativeWaylandState {
         _: &Connection,
         _: &QueueHandle<Self>,
         _: wl_seat::WlSeat,
-        _: Capability,
+        capability: Capability,
     ) {
+        if capability == Capability::Pointer {
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
+        }
     }
 
     fn remove_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
+}
+
+impl PointerHandler for NativeWaylandState {
+    fn pointer_frame(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        let Some(layer) = self.layer.as_ref() else {
+            return;
+        };
+        let surface = layer.wl_surface();
+        let surface_id = u64::from(surface.id().protocol_id());
+        let surface_size = self
+            .logical_size
+            .map(|(width, height)| [width, height])
+            .unwrap_or([0; 2]);
+        for event in events.iter().filter(|event| &event.surface == surface) {
+            self.event_source
+                .push_pointer_event(surface_id, surface_size, event);
+        }
+    }
 }
 
 impl LayerShellHandler for NativeWaylandState {
@@ -376,6 +408,7 @@ delegate_output!(NativeWaylandState);
 delegate_shm!(NativeWaylandState);
 delegate_dmabuf!(NativeWaylandState);
 delegate_seat!(NativeWaylandState);
+delegate_pointer!(NativeWaylandState);
 delegate_layer!(NativeWaylandState);
 delegate_registry!(NativeWaylandState);
 

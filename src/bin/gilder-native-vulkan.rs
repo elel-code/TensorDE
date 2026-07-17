@@ -743,6 +743,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 duration,
                 source,
                 NativeVulkanSceneRunOptions {
+                    pointer_events: true,
                     capture_frame,
                     capture_frame_number,
                     capture_frame_count,

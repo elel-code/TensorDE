@@ -238,7 +238,11 @@ fn resolve_frame_samples_puppet_animation_for_skinning_and_attachment() {
     assert_eq!(resolver.dynamic_entity_count(), 1);
     assert_eq!(
         resolver
-            .resolve_frame_at(&world, 1.0 / 60.0)
+            .resolve_frame_with_events_at(
+                &world,
+                1.0 / 60.0,
+                &crate::engine::scene::SceneFrameEvents::default(),
+            )
             .expect("incrementally resolved animated frame"),
         &frame
     );
@@ -351,8 +355,17 @@ fn retained_audio_binding_applies_uniform_object_scale_before_transform_propagat
     let mut resolver = SemanticFrameResolver::from_world(&world).expect("semantic resolver");
 
     assert_eq!(resolver.dynamic_entity_count(), 1);
+    let events = crate::engine::scene::SceneFrameEvents {
+        audio: crate::engine::scene::SceneAudioState {
+            source: crate::engine::scene::SceneAudioSource::Replay,
+            spectrum32: [1.0; 32],
+            ready: true,
+            ..crate::engine::scene::SceneAudioState::default()
+        },
+        ..crate::engine::scene::SceneFrameEvents::default()
+    };
     let frame = resolver
-        .resolve_frame_with_audio_at(&world, 1.0, &[1.0; 32])
+        .resolve_frame_with_events_at(&world, 1.0, &events)
         .expect("audio-scaled frame");
     let object = frame.object(SceneObjectHandle(0)).expect("scaled object");
 

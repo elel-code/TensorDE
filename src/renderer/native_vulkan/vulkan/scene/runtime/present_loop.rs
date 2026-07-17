@@ -4,12 +4,11 @@ pub(super) fn with_scene_present(
     instance: &Instance,
     surface: vk::SurfaceKHR,
     handles: NativeWaylandSurfaceHandles,
+    host: &mut NativeWaylandHost,
     vulkan: &NativeVulkanVulkanaliaInstance,
     mut options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
-    let mut system_audio_monitor = NativeVulkanSystemAudioMonitor::start_if_needed(
-        scene_uses_audio_spectrum(&options.storage),
-    );
+    let mut event_sources = SceneRuntimeEventSources::new(&options.storage);
     let physical_devices = unsafe { instance.enumerate_physical_devices() }
         .map_err(|err| format!("vkEnumeratePhysicalDevices(vulkanalia scene present): {err:?}"))?;
     let mut present_queue_family_count = 0usize;
@@ -56,7 +55,6 @@ pub(super) fn with_scene_present(
             selection.physical_device_name
         ));
     }
-
     let project = options.storage.project();
     let automatic_surface_extent = scene_viewport::automatic_scene_surface_extent(
         (project.logical_width, project.logical_height),
@@ -108,7 +106,6 @@ pub(super) fn with_scene_present(
         options.gpu_timing,
         std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_ALLOW_MULTISLOT_CAPTURE").is_some(),
     );
-
     let command_pool_info = vk::CommandPoolCreateInfo::builder()
         .flags(
             vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER
@@ -149,7 +146,6 @@ pub(super) fn with_scene_present(
         .last()
         .ok_or_else(|| "scene present did not allocate setup command buffer".to_owned())?;
     let present_command_buffers = &command_buffers[..frame_slot_count];
-
     let mut swapchain_views = Vec::with_capacity(swapchain_images.len());
     for image in &swapchain_images {
         let view_info = vk::ImageViewCreateInfo::builder()
@@ -396,7 +392,9 @@ pub(super) fn with_scene_present(
         .and_then(|value| value.parse::<f32>().ok())
         .filter(|value| value.is_finite() && *value >= 0.0);
     while Instant::now() < deadline {
-        system_audio_monitor.publish_latest();
+        if !event_sources.pump_platform(host)? {
+            break;
+        }
         let frame_slot = frames_presented as usize % frame_contexts.len();
         let frame_context = frame_contexts[frame_slot];
         scene_resources.active_frame_slot = frame_slot;
@@ -439,6 +437,8 @@ pub(super) fn with_scene_present(
             .map(|step| frames_presented as f32 * step)
             .or(fixed_scene_time_seconds)
             .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
+        let sample_time_ns = started_at.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
+        let frame_events = event_sources.capture_frame(sample_time_ns);
         scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
         let frame_resources = &scene_resources.frame_resources[frame_slot];
@@ -456,6 +456,7 @@ pub(super) fn with_scene_present(
             options.gpu_timing,
             &scene_resources.graph_execution_order,
             scene_resources.scene_color_attachment_clear_enabled,
+            frame_events,
             scene_time_seconds,
             [swapchain_plan.extent.width, swapchain_plan.extent.height],
         )?;
@@ -852,9 +853,7 @@ pub(super) fn with_scene_present(
         );
     }
 
-    system_audio_monitor.publish_latest();
-    let (audio_spectrum_model, audio_spectrum_ready) = scene_audio_spectrum_status();
-    let (audio_spectrum_peak, audio_spectrum_active_band_count) = scene_audio_spectrum_summary();
+    let audio_summary = event_sources.audio_summary(frames_presented != 0);
     Ok(NativeVulkanVulkanaliaScenePresentSnapshot {
         binding: "vulkanalia",
         route: "scene-mesh-dynamic-rendering-present",
@@ -937,10 +936,10 @@ pub(super) fn with_scene_present(
         index_buffer_bytes,
         transform_uniform_bytes,
         material_uniform_bytes,
-        audio_spectrum_model,
-        audio_spectrum_ready,
-        audio_spectrum_peak,
-        audio_spectrum_active_band_count,
+        audio_spectrum_model: audio_summary.model,
+        audio_spectrum_ready: audio_summary.ready,
+        audio_spectrum_peak: audio_summary.peak,
+        audio_spectrum_active_band_count: audio_summary.active_band_count,
         skinning_storage_bytes,
         resource_residency,
         scene_texture_image_count,

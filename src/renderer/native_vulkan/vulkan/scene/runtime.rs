@@ -22,7 +22,6 @@ use crate::engine::scene::{
     RenderingServer, SceneParticleGpuEmitterPlan, SceneRenderingDeviceDrawPrimitive,
     SceneRenderingDeviceMeshDraw, SceneStorage,
 };
-use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_vulkan::{
     NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanClearColor,
     NativeVulkanVulkanaliaBuffer, NativeVulkanVulkanaliaBufferMemoryPreference,
@@ -67,6 +66,7 @@ mod effect_target;
 mod flat_rounded_mask_coverage;
 mod frame_capture;
 mod frame_context;
+mod frame_events;
 mod frame_state;
 mod fullscreen_primitive;
 mod gpu_resource_lifecycle;
@@ -104,6 +104,7 @@ use frame_context::{
     create_scene_present_frame_contexts, destroy_scene_present_frame_contexts,
     scene_frame_slot_count,
 };
+use frame_events::SceneRuntimeEventSources;
 use frame_state::{SceneFrameTopology, pack_scene_skinning_palette, write_scene_frame_buffers};
 use fullscreen_primitive::graph_uses_fullscreen_utility_primitive;
 use gpu_resource_lifecycle::{
@@ -116,7 +117,6 @@ pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
 use material_uniform::{
     SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
-    scene_audio_spectrum_status, scene_audio_spectrum_summary, scene_uses_audio_spectrum,
 };
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};
 use pipeline::{
@@ -327,7 +327,7 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_pre
     let vulkan = native_vulkan_vulkanalia_create_instance_with_required_extensions(
         &requested_instance_extensions,
     )?;
-    let result = run_scene_present_inner(&vulkan, handles, options);
+    let result = run_scene_present_inner(&vulkan, handles, &mut host, options);
     native_vulkan_vulkanalia_destroy_instance(vulkan);
     result
 }
@@ -335,11 +335,12 @@ pub(in crate::renderer::native_vulkan) fn run_native_vulkan_vulkanalia_scene_pre
 fn run_scene_present_inner(
     vulkan: &NativeVulkanVulkanaliaInstance,
     handles: NativeWaylandSurfaceHandles,
+    host: &mut NativeWaylandHost,
     options: NativeVulkanVulkanaliaScenePresentOptions,
 ) -> Result<NativeVulkanVulkanaliaScenePresentSnapshot, String> {
     let instance = &vulkan.instance;
     let surface = create_vulkanalia_wayland_surface(instance, handles)?;
-    let result = with_scene_present(instance, surface, handles, vulkan, options);
+    let result = with_scene_present(instance, surface, handles, host, vulkan, options);
     unsafe {
         instance.destroy_surface_khr(surface, None);
     }

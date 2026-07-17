@@ -1,12 +1,13 @@
 //! Retained semantic-frame resolution with ECS-style dynamic dependency propagation.
 
-use super::audio_binding::RetainedAudioBandMaterialBindings;
 use super::{
     ResolveVisitState, ResolvedAttachmentLink, ResolvedObjectState, ResolvedPuppetBoneMatrix,
-    ResolvedPuppetBonePalette, ResolvedSemanticFrame, SceneSemanticWorld, SceneSemanticWorldError,
-    identity_matrix, inverse_affine_matrix, multiply_matrix, sampled_puppet_bone_local_state,
+    ResolvedPuppetBonePalette, ResolvedSemanticFrame, RetainedSceneEventSystem, SceneSemanticWorld,
+    SceneSemanticWorldError, identity_matrix, inverse_affine_matrix, multiply_matrix,
+    sampled_puppet_bone_local_state,
 };
 use crate::engine::scene::abi::{ScenePuppetAttachmentRecord, ScenePuppetBoneRecord};
+use crate::engine::scene::event::SceneFrameEvents;
 use crate::engine::scene::semantic_world::resolved_frame::INVALID_RESOLVED_INDEX;
 use crate::engine::scene::semantic_world::timeline::SampledPuppetBoneLocalState;
 
@@ -21,7 +22,7 @@ pub struct SemanticFrameResolver {
     puppet_topologies: Vec<RetainedPuppetTopology>,
     incremental_enabled: bool,
     retained_puppet_enabled: bool,
-    audio_band_material_bindings: RetainedAudioBandMaterialBindings,
+    event_system: RetainedSceneEventSystem,
 }
 
 #[derive(Debug)]
@@ -46,8 +47,8 @@ impl SemanticFrameResolver {
         let dynamic_entities = dynamic_entity_closure(world);
         let puppet_topologies = retained_puppet_topologies(world)?;
         let entity_count = world.entities.len();
-        let audio_band_material_bindings = RetainedAudioBandMaterialBindings::from_world(world);
-        audio_band_material_bindings.initialize_frame(world, &mut frame.audio_band_material_values);
+        let event_system = RetainedSceneEventSystem::from_world(world);
+        event_system.initialize_frame(world, &mut frame);
         let initial_audio_values = std::mem::take(&mut frame.audio_band_material_values);
         frame = world.resolve_frame_with_audio_values_at(0.0, &initial_audio_values)?;
         frame.audio_band_material_values = initial_audio_values;
@@ -66,30 +67,18 @@ impl SemanticFrameResolver {
                 "GILDER_NATIVE_VULKAN_DISABLE_RETAINED_PUPPET_RESOLVE",
             )
             .is_none(),
-            audio_band_material_bindings,
+            event_system,
         })
     }
 
-    pub fn resolve_frame_at(
+    pub fn resolve_frame_with_events_at(
         &mut self,
         world: &SceneSemanticWorld<'_>,
         scene_time_seconds: f32,
+        events: &SceneFrameEvents,
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
-        self.resolve_frame_with_audio_at(world, scene_time_seconds, &[0.0; 32])
-    }
-
-    pub fn resolve_frame_with_audio_at(
-        &mut self,
-        world: &SceneSemanticWorld<'_>,
-        scene_time_seconds: f32,
-        spectrum32: &[f32; 32],
-    ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
-        self.audio_band_material_bindings.update_frame(
-            world,
-            &mut self.frame.audio_band_material_values,
-            scene_time_seconds,
-            spectrum32,
-        );
+        self.event_system
+            .update_frame(world, &mut self.frame, scene_time_seconds, events);
         if !self.incremental_enabled {
             let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
             self.frame =

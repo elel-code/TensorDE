@@ -9,13 +9,16 @@
 use serde::Serialize;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_dmabuf, delegate_layer, delegate_output, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_dmabuf, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     dmabuf::{DmabufFeedback, DmabufHandler, DmabufState},
     output::{OutputHandler, OutputInfo, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
-    seat::{Capability, SeatHandler, SeatState},
+    seat::{
+        Capability, SeatHandler, SeatState,
+        pointer::{PointerEvent, PointerHandler},
+    },
     shell::{
         WaylandSurface,
         wlr_layer::{
@@ -35,8 +38,13 @@ use wayland_client::{
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
     backend::WaylandError,
     globals::registry_queue_init,
-    protocol::{wl_buffer, wl_output, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_buffer, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+
+use crate::engine::scene::SceneEventQueue;
+
+mod event_source;
+use event_source::NativeWaylandEventSource;
 use wayland_protocols::wp::{
     fractional_scale::v1::client::{
         wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1,
@@ -376,6 +384,7 @@ impl NativeWaylandHost {
         let mut state = NativeWaylandState {
             registry_state: RegistryState::new(&globals),
             seat_state: SeatState::new(&globals, &qh),
+            pointer: None,
             output_state: OutputState::new(&globals, &qh),
             dmabuf_state: DmabufState::new(&globals, &qh),
             shm,
@@ -402,6 +411,7 @@ impl NativeWaylandHost {
             parent_mapping_buffer: None,
             frame_callback: NativeWaylandFrameCallbackState::default(),
             dmabuf_runtime: NativeDmabufRuntimeState::default(),
+            event_source: NativeWaylandEventSource::default(),
         };
 
         event_queue
@@ -503,6 +513,10 @@ impl NativeWaylandHost {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn publish_scene_events(&mut self, queue: &mut SceneEventQueue) {
+        self.state.event_source.publish_to(queue);
     }
 
     pub fn request_frame_callback(&mut self) -> Result<(), NativeWaylandError> {
@@ -697,6 +711,7 @@ fn native_output_labels(outputs: &[NativeWaylandOutputSnapshot]) -> String {
 struct NativeWaylandState {
     registry_state: RegistryState,
     seat_state: SeatState,
+    pointer: Option<wl_pointer::WlPointer>,
     output_state: OutputState,
     dmabuf_state: DmabufState,
     shm: Shm,
@@ -717,6 +732,7 @@ struct NativeWaylandState {
     parent_mapping_buffer: Option<NativeWaylandParentMappingBuffer>,
     frame_callback: NativeWaylandFrameCallbackState,
     dmabuf_runtime: NativeDmabufRuntimeState,
+    event_source: NativeWaylandEventSource,
 }
 
 impl NativeWaylandState {

@@ -7,7 +7,6 @@
 //! - `reverse-engineered/docs/exe/global-uniforms.md`
 
 use std::mem::size_of;
-use std::sync::OnceLock;
 
 use serde_json::Value;
 
@@ -47,19 +46,17 @@ use crate::renderer::native_vulkan::scene::{
 pub(super) const SCENE_MATERIAL_UNIFORM_BYTES: u64 = 512;
 const SCENE_MATERIAL_UNIFORM_FLOATS: usize =
     SCENE_MATERIAL_UNIFORM_BYTES as usize / size_of::<f32>();
-static SCENE_AUDIO_SPECTRUM32_DIAGNOSTIC: OnceLock<Option<[f32; 32]>> = OnceLock::new();
 
 pub(super) fn pack_scene_material_uniforms(
     storage: &SceneStorage,
     draws: &[SceneRenderingDeviceMeshDraw],
     scene_time_seconds: f32,
 ) -> Vec<u8> {
-    let spectrum = scene_audio_spectrum32();
     pack_scene_material_uniforms_with_spectrum(
         storage,
         draws,
         scene_time_seconds,
-        spectrum.as_ref(),
+        None,
     )
 }
 
@@ -309,75 +306,6 @@ fn audio_bars_values(
         values[48..80].copy_from_slice(spectrum);
     }
     values
-}
-
-pub(super) fn scene_audio_spectrum32() -> Option<[f32; 32]> {
-    use crate::renderer::native_vulkan::audio::clock::native_vulkan_audio_spectrum32_packed;
-
-    if let Some(spectrum) = diagnostic_scene_audio_spectrum32().as_ref() {
-        return Some(*spectrum);
-    }
-    native_vulkan_audio_spectrum32_packed().map(|packed| {
-        std::array::from_fn(|band| {
-            let shift = (band & 1) * 16;
-            ((packed[band / 2] >> shift) & 0xffff) as f32 / 65535.0
-        })
-    })
-}
-
-fn diagnostic_scene_audio_spectrum32() -> Option<[f32; 32]> {
-    *SCENE_AUDIO_SPECTRUM32_DIAGNOSTIC.get_or_init(|| {
-        std::env::var("GILDER_SCENE_AUDIO_SPECTRUM32")
-            .ok()
-            .and_then(|value| parse_scene_audio_spectrum32(&value))
-    })
-}
-
-pub(super) fn scene_audio_spectrum_status() -> (&'static str, bool) {
-    use crate::renderer::native_vulkan::audio::clock::native_vulkan_audio_spectrum32_packed;
-    use crate::renderer::native_vulkan::audio::system_monitor::system_audio_monitor_spectrum_status;
-
-    if diagnostic_scene_audio_spectrum32().is_some() {
-        ("diagnostic-spectrum32-override", true)
-    } else if let Some(status) = system_audio_monitor_spectrum_status() {
-        status
-    } else if native_vulkan_audio_spectrum32_packed().is_some() {
-        ("decoded-audio-goertzel32-mono-duplicated-stereo", true)
-    } else {
-        ("zero-spectrum-no-publisher", false)
-    }
-}
-
-pub(super) fn scene_audio_spectrum_summary() -> (f32, u32) {
-    let spectrum = scene_audio_spectrum32().unwrap_or([0.0; 32]);
-    let peak = spectrum.iter().copied().fold(0.0f32, f32::max);
-    let active_bands = spectrum
-        .iter()
-        .filter(|value| **value > 1.0 / 65535.0)
-        .count()
-        .min(u32::MAX as usize) as u32;
-    (peak, active_bands)
-}
-
-fn parse_scene_audio_spectrum32(value: &str) -> Option<[f32; 32]> {
-    if let Some(value) = value.trim().strip_prefix("flat:") {
-        let value = value.parse::<f32>().ok()?;
-        return (value.is_finite() && (0.0..=1.0).contains(&value)).then_some([value; 32]);
-    }
-    let values = value
-        .split([',', ' '])
-        .filter(|value| !value.is_empty())
-        .map(str::parse::<f32>)
-        .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    if values.len() != 32
-        || values
-            .iter()
-            .any(|value| !value.is_finite() || !(0.0..=1.0).contains(value))
-    {
-        return None;
-    }
-    values.try_into().ok()
 }
 
 fn rounded_mask_values(
