@@ -58,6 +58,8 @@ pub(super) fn retained_text_effect_is_supported(builder: &WeIrBuilder, effect: u
         .is_some_and(|resource| {
             resource.path == "effects/colorkey/effect.json"
                 || resource.path == "effects/scroll/effect.json"
+                || resource.path == "effects/blend/effect.json"
+                || resource.path == "effects/shimmer/effect.json"
         })
 }
 

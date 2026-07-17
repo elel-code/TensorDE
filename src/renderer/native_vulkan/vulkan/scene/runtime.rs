@@ -113,7 +113,7 @@ pub use gpu_timing::NativeVulkanSceneGpuTimingSnapshot;
 use gpu_timing::SceneGpuTiming;
 pub use resource_residency::NativeVulkanSceneResourceResidencySnapshot;
 use material_uniform::{
-    SCENE_MATERIAL_UNIFORM_BYTES, material_parameter_layout, pack_scene_material_uniforms,
+    SCENE_MATERIAL_UNIFORM_BYTES, draw_parameter_layout, pack_scene_material_uniforms,
     scene_audio_spectrum_status, scene_audio_spectrum_summary, scene_uses_audio_spectrum,
 };
 use mesh_payload::{pack_scene_indices, pack_scene_vertices};

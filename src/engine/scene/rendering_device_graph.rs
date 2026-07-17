@@ -110,6 +110,7 @@ impl SceneRenderingDeviceGraphPlan {
                             };
                             mesh_draws.push(SceneRenderingDeviceMeshDraw {
                                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                                shader_key: pass.shader_key,
                                 mesh_index: mesh_index as u32,
                                 resolved_object_index,
                                 clip_transform: scene_clip_transform(
@@ -341,6 +342,9 @@ impl SceneRenderingDeviceSampledBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SceneRenderingDeviceMeshDraw {
     pub primitive: SceneRenderingDeviceDrawPrimitive,
+    /// Shader selected by the actual render pass. Synthetic composites can differ from
+    /// the authored material's first pass.
+    pub shader_key: SceneStringId,
     pub mesh_index: u32,
     pub resolved_object_index: u32,
     pub clip_transform: [[f32; 4]; 4],
@@ -463,6 +467,7 @@ fn pass_utility_primitive(
                     particle.simulation,
                     SceneParticleSimulationKind::FallingLeaves
                         | SceneParticleSimulationKind::AmbientSparkles
+                        | SceneParticleSimulationKind::FloralOscillation
                 ) && particle.max_count != 0
             })
             .map(|_| SceneRenderingDeviceDrawPrimitive::ParticleBillboard);
@@ -503,6 +508,7 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
     (key.starts_with("effects/")
         || key.starts_with("workshop/")
         || key == "we/image-ripple-source"
+        || key.starts_with("we/effect-waterwaves-direct")
         || key.starts_with("we/waterwaves-uv-")
         || key == "minimalalpha"
         || key.starts_with("minimalalpha__")
@@ -522,13 +528,14 @@ fn utility_primitive_draw(
     primitive: SceneRenderingDeviceDrawPrimitive,
 ) -> SceneRenderingDeviceMeshDraw {
     let vertex_count = match primitive {
-        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
-        | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => 6,
+        SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad => 6,
+        SceneRenderingDeviceDrawPrimitive::ParticleBillboard => 4,
         SceneRenderingDeviceDrawPrimitive::ObjectMesh
         | SceneRenderingDeviceDrawPrimitive::FullscreenTriangle => 3,
     };
     SceneRenderingDeviceMeshDraw {
         primitive,
+        shader_key: pass.shader_key,
         mesh_index: INVALID_OBJECT_ID,
         resolved_object_index: pass_object_state
             .map(|object| object.object_index)
@@ -791,9 +798,9 @@ fn target_allocation_compatibility(
     state: TargetAllocationState,
 ) -> TargetAllocationCompatibility {
     let image_layer_composite = state.target == SceneRenderTargetKind::FirstClassEffectTarget
-        && storage.string(state.target_name).is_some_and(|name| {
-            name.starts_with("_rt_imageLayerComposite_")
-        });
+        && storage
+            .string(state.target_name)
+            .is_some_and(|name| name.starts_with("_rt_imageLayerComposite_"));
     let authored_texture_space = matches!(
         state.target,
         SceneRenderTargetKind::ImageLocalMain | SceneRenderTargetKind::ImageLocalSub
@@ -807,10 +814,10 @@ fn target_allocation_compatibility(
                 width.is_finite() && height.is_finite() && *width >= 1.0 && *height >= 1.0
             })
             .map(|[width, height]| [width.round() as u32, height.round() as u32])
+    } else if authored_texture_space {
+        authored_graph_extent(storage, state.graph_index)
     } else {
-        authored_texture_space
-            .then(|| puppet_effect_graph_extent(storage, state.graph_index))
-            .flatten()
+        None
     }
     .unwrap_or([0, 0]);
     storage
@@ -836,18 +843,8 @@ fn target_allocation_compatibility(
         })
 }
 
-fn puppet_effect_graph_extent(storage: &SceneStorage, graph_index: u32) -> Option<[u32; 2]> {
+fn authored_graph_extent(storage: &SceneStorage, graph_index: u32) -> Option<[u32; 2]> {
     let graph = storage.render_graphs().get(graph_index as usize)?;
-    let uses_authored_texture_space = storage.render_graph_passes(graph).iter().any(|pass| {
-        storage.string(pass.shader_key).is_some_and(|shader| {
-            shader.eq_ignore_ascii_case("we/image-effect-source")
-                || shader.eq_ignore_ascii_case("we/puppet-effect-source")
-                || shader.eq_ignore_ascii_case("we/image-ripple-source")
-        })
-    });
-    if !uses_authored_texture_space {
-        return None;
-    }
     let [width, height] = authored_source_extent(storage, graph.object);
     (width.is_finite() && height.is_finite() && width >= 1.0 && height >= 1.0)
         .then_some([width.round() as u32, height.round() as u32])

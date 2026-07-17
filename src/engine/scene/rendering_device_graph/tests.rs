@@ -523,6 +523,14 @@ fn direct_flat_rounded_mask_uses_object_uv_support_quad() {
 }
 
 #[test]
+fn aggregated_waterwaves_effect_run_uses_fullscreen_triangle() {
+    assert_eq!(
+        shader_utility_primitive("we/effect-waterwaves-direct__STAGES_6"),
+        Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle)
+    );
+}
+
+#[test]
 fn object_effect_utility_retains_semantic_transform_and_authored_source_extent() {
     let mut project = SceneBinaryDocument::default().project;
     project.logical_width = 200;
@@ -690,6 +698,71 @@ fn textureless_solid_layer_uses_authored_mesh_extent_for_local_effects() {
     let storage = SceneStorage::from_document(document).expect("storage");
 
     assert_eq!(authored_source_extent(&storage, object), [550.0, 3300.0]);
+}
+
+#[test]
+fn textureless_composite_layer_allocates_image_local_targets_at_authored_extent() {
+    let object = SceneObjectHandle(0);
+    let document = SceneBinaryDocument {
+        objects: vec![SceneObjectRecord {
+            id: object,
+            we_id: 1212,
+            name: SceneStringId::NONE,
+            kind: SceneObjectKind::Image,
+            resource: SceneResourceId::NONE,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            parent_we_id: INVALID_OBJECT_ID,
+            attachment: SceneStringId::NONE,
+            origin: SceneVec3::default(),
+            angles: SceneVec3::default(),
+            scale: SceneVec3::ONE,
+            color: SceneVec3::ONE,
+            alpha: 1.0,
+            visible: true,
+            color_blend_mode: 0,
+            sort_order: 0,
+            effect_start: 0,
+            effect_count: 0,
+            render_graph: 0,
+        }],
+        meshes: vec![SceneMeshRecord {
+            object,
+            material: SceneMaterialHandle(INVALID_MATERIAL_ID),
+            vertex_start: 0,
+            vertex_count: 0,
+            index_start: 0,
+            index_count: 0,
+            width: 1760.0,
+            height: 500.0,
+            bounds_min: SceneVec3::default(),
+            bounds_max: SceneVec3::default(),
+        }],
+        render_graphs: vec![SceneRenderGraphRecord {
+            object,
+            pass_start: 0,
+            pass_count: 0,
+            unsupported_start: 0,
+            unsupported_count: 0,
+        }],
+        ..SceneBinaryDocument::default()
+    };
+    let storage = SceneStorage::from_document(document).expect("storage");
+    let compatibility = target_allocation_compatibility(
+        &storage,
+        TargetAllocationState {
+            graph_index: 0,
+            target: SceneRenderTargetKind::ImageLocalMain,
+            target_name: SceneStringId::NONE,
+            first_write_pass_id: 0,
+            last_use_pass_id: 0,
+            first_write_order: 0,
+            last_use_order: 0,
+        },
+    );
+
+    assert_eq!(compatibility.authored_width, 1760);
+    assert_eq!(compatibility.authored_height, 500);
+    assert!(compatibility.authored_texture_space);
 }
 
 #[test]

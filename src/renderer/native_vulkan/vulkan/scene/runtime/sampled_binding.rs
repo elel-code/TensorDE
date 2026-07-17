@@ -623,6 +623,7 @@ mod tests {
     fn draw() -> crate::engine::scene::SceneRenderingDeviceMeshDraw {
         crate::engine::scene::SceneRenderingDeviceMeshDraw {
             primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+            shader_key: crate::engine::scene::SceneStringId::NONE,
             mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
             resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
             clip_transform: [[0.0; 4]; 4],

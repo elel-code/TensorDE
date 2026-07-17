@@ -10,6 +10,7 @@ pub enum SceneParticleSimulationKind {
     Unsupported,
     FallingLeaves,
     AmbientSparkles,
+    FloralOscillation,
 }
 
 impl SceneParticleSimulationKind {
@@ -18,6 +19,7 @@ impl SceneParticleSimulationKind {
             Self::Unsupported => 0,
             Self::FallingLeaves => 1,
             Self::AmbientSparkles => 2,
+            Self::FloralOscillation => 3,
         }
     }
 
@@ -26,6 +28,7 @@ impl SceneParticleSimulationKind {
             0 => Some(Self::Unsupported),
             1 => Some(Self::FallingLeaves),
             2 => Some(Self::AmbientSparkles),
+            3 => Some(Self::FloralOscillation),
             _ => None,
         }
     }
@@ -71,6 +74,19 @@ pub struct SceneParticleSystemRecord {
     pub oscillation_phase_max: f32,
     pub oscillation_scale_min: f32,
     pub oscillation_scale_max: f32,
+    pub position_oscillation_frequency_min: f32,
+    pub position_oscillation_frequency_max: f32,
+    pub position_oscillation_phase_min: f32,
+    pub position_oscillation_phase_max: f32,
+    pub position_oscillation_scale_min: f32,
+    pub position_oscillation_scale_max: f32,
+    pub position_oscillation_mask: SceneVec3,
+    pub size_oscillation_frequency_min: f32,
+    pub size_oscillation_frequency_max: f32,
+    pub size_oscillation_phase_min: f32,
+    pub size_oscillation_phase_max: f32,
+    pub size_oscillation_scale_min: f32,
+    pub size_oscillation_scale_max: f32,
 }
 
 impl SceneParticleSystemRecord {
@@ -166,6 +182,23 @@ impl SceneParticleSystemRecord {
             oscillation_phase_max: std::f32::consts::TAU,
             oscillation_scale_min: 1.0,
             oscillation_scale_max: 1.0,
+            position_oscillation_frequency_min: 0.0,
+            position_oscillation_frequency_max: 0.0,
+            position_oscillation_phase_min: 0.0,
+            position_oscillation_phase_max: std::f32::consts::TAU,
+            position_oscillation_scale_min: 0.0,
+            position_oscillation_scale_max: 0.0,
+            position_oscillation_mask: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            size_oscillation_frequency_min: 0.0,
+            size_oscillation_frequency_max: 0.0,
+            size_oscillation_phase_min: 0.0,
+            size_oscillation_phase_max: std::f32::consts::TAU,
+            size_oscillation_scale_min: 1.0,
+            size_oscillation_scale_max: 1.0,
         }
     }
 }

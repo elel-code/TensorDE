@@ -42,7 +42,9 @@ impl WeIrBuilder {
             renderers: parse_renderers(&definition),
             children: parse_children(&definition),
         };
-        if system.falling_leaves_profile().is_none() && system.ambient_sparkles_profile().is_none()
+        if system.falling_leaves_profile().is_none()
+            && system.ambient_sparkles_profile().is_none()
+            && system.floral_oscillation_profile().is_none()
         {
             self.unsupported.push(WeIrUnsupported {
                 object: Some(object),
@@ -265,6 +267,29 @@ fn parse_operators(definition: &Value) -> Vec<WeIrParticleOperator> {
                     phase_max: value_f32(value.get("phasemax")).unwrap_or(std::f32::consts::TAU),
                     scale_min: value_f32(value.get("scalemin")).unwrap_or(0.0),
                     scale_max: value_f32(value.get("scalemax")).unwrap_or(1.0),
+                },
+                "oscillateposition" => WeIrParticleOperator::OscillatePosition {
+                    id,
+                    frequency_min: value_f32(value.get("frequencymin")).unwrap_or(0.0),
+                    frequency_max: value_f32(value.get("frequencymax")).unwrap_or(5.0),
+                    phase_min: value_f32(value.get("phasemin")).unwrap_or(0.0),
+                    phase_max: value_f32(value.get("phasemax")).unwrap_or(std::f32::consts::TAU),
+                    scale_min: value_f32(value.get("scalemin")).unwrap_or(0.0),
+                    scale_max: value_f32(value.get("scalemax")).unwrap_or(10.0),
+                    mask: particle_vec3(value.get("mask")).unwrap_or(SceneVec3 {
+                        x: 1.0,
+                        y: 1.0,
+                        z: 0.0,
+                    }),
+                },
+                "oscillatesize" => WeIrParticleOperator::OscillateSize {
+                    id,
+                    frequency_min: value_f32(value.get("frequencymin")).unwrap_or(0.0),
+                    frequency_max: value_f32(value.get("frequencymax")).unwrap_or(10.0),
+                    phase_min: value_f32(value.get("phasemin")).unwrap_or(0.0),
+                    phase_max: value_f32(value.get("phasemax")).unwrap_or(std::f32::consts::TAU),
+                    scale_min: value_f32(value.get("scalemin")).unwrap_or(0.8),
+                    scale_max: value_f32(value.get("scalemax")).unwrap_or(1.2),
                 },
                 "maintaindistancetocontrolpoint" => {
                     WeIrParticleOperator::MaintainDistanceToControlPoint {

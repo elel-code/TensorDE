@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::WeIrAudioBandMaterialBinding;
-use super::json_value::{bound_bool, bound_string, value_f32, value_u32};
+use super::json_value::{bound_bool, bound_string, parse_vec3, value_f32, value_u32};
 use crate::engine::scene::SceneAudioBandMaterialTarget;
 
 const TECH_CIRCLE_SECTOR_WIDTH: &str = "ui_editor_properties_5_sector_1_width";
@@ -13,6 +13,17 @@ pub(super) fn ingest_audio_material_bindings(
     object_json: &Value,
     output: &mut Vec<WeIrAudioBandMaterialBinding>,
 ) {
+    if let Some(scale) = object_json.get("scale")
+        && let Some(initial_value) = parse_vec3(Some(scale)).map(|value| value.x)
+        && let Some(binding) = parse_audio_scale_binding(
+            object,
+            scale,
+            SceneAudioBandMaterialTarget::ObjectUniformScale,
+            initial_value,
+        )
+    {
+        output.push(binding);
+    }
     for effect in object_json
         .get("effects")
         .and_then(Value::as_array)
@@ -38,14 +49,27 @@ pub(super) fn ingest_audio_material_bindings(
             let Some(binding) = constants.get(TECH_CIRCLE_SECTOR_WIDTH) else {
                 continue;
             };
-            if let Some(binding) = parse_audio_scale_binding(object, binding) {
+            let Some(initial_value) = value_f32(Some(binding)) else {
+                continue;
+            };
+            if let Some(binding) = parse_audio_scale_binding(
+                object,
+                binding,
+                SceneAudioBandMaterialTarget::TechCircleSectorWidth,
+                initial_value,
+            ) {
                 output.push(binding);
             }
         }
     }
 }
 
-fn parse_audio_scale_binding(object: u32, binding: &Value) -> Option<WeIrAudioBandMaterialBinding> {
+fn parse_audio_scale_binding(
+    object: u32,
+    binding: &Value,
+    target: SceneAudioBandMaterialTarget,
+    initial_value: f32,
+) -> Option<WeIrAudioBandMaterialBinding> {
     let script = binding.get("script")?.as_str()?;
     let resolution = [16, 32, 64]
         .into_iter()
@@ -64,7 +88,6 @@ fn parse_audio_scale_binding(object: u32, binding: &Value) -> Option<WeIrAudioBa
     let smoothing = value_f32(properties.get("smoothing"))?;
     let minimum_multiplier = value_f32(properties.get("minvalue"))?;
     let maximum_multiplier = value_f32(properties.get("maxvalue"))?;
-    let initial_value = value_f32(Some(binding))?;
     if ![
         smoothing,
         minimum_multiplier,
@@ -79,7 +102,7 @@ fn parse_audio_scale_binding(object: u32, binding: &Value) -> Option<WeIrAudioBa
     }
     Some(WeIrAudioBandMaterialBinding {
         object,
-        target: SceneAudioBandMaterialTarget::TechCircleSectorWidth,
+        target,
         spectrum_resolution: resolution,
         band_index,
         smoothing,
@@ -113,5 +136,28 @@ mod tests {
         assert_eq!(bindings[0].object, 7);
         assert_eq!(bindings[0].spectrum_resolution, 16);
         assert_eq!(bindings[0].initial_value, 0.3);
+    }
+
+    #[test]
+    fn lowers_object_uniform_scale_audio_script_to_typed_binding() {
+        let object = serde_json::json!({
+            "scale": {
+                "script": "const audioBuffer = engine.registerAudioBuffers(engine.AUDIO_RESOLUTION_16); audioBuffer.average[scriptProperties.frequency]; smoothValue += 1; initialValue * 1;",
+                "scriptproperties": {"frequency": 0, "smoothing": 5, "minvalue": 1, "maxvalue": 1.005},
+                "value": "1 1 1"
+            }
+        });
+        let mut bindings = Vec::new();
+
+        ingest_audio_material_bindings(16, &object, &mut bindings);
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].object, 16);
+        assert_eq!(
+            bindings[0].target,
+            SceneAudioBandMaterialTarget::ObjectUniformScale
+        );
+        assert_eq!(bindings[0].initial_value, 1.0);
+        assert_eq!(bindings[0].maximum_multiplier, 1.005);
     }
 }

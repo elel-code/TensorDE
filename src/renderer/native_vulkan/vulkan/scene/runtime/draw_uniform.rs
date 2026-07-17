@@ -17,7 +17,7 @@ use crate::renderer::native_vulkan::scene::{
 };
 
 use super::flat_rounded_mask_coverage::{FlatRoundedMaskUvBounds, flat_rounded_mask_uv_bounds};
-use super::material_uniform::{material_parameter_layout, material_parameter_values};
+use super::material_uniform::{draw_parameter_layout, material_parameter_values};
 use super::scene_viewport::scene_cover_clip_transform;
 
 pub(super) const SCENE_DRAW_UNIFORM_BYTES: u64 = 64;
@@ -31,8 +31,12 @@ pub(super) fn pack_scene_draw_uniforms(
 ) -> Vec<u8> {
     let mut payload = Vec::with_capacity(draws.len() * SCENE_DRAW_UNIFORM_BYTES as usize);
     for draw in draws {
-        let layout = material_parameter_layout(storage, draw.material);
-        let mut values = match layout {
+        let layout = draw_parameter_layout(storage, draw);
+        let actual_shader = storage.string(draw.shader_key).unwrap_or_default();
+        let mut values = if actual_shader.eq_ignore_ascii_case("we/objectcomposite") {
+            projected_object_uv_draw_values(storage, draw, output_extent)
+        } else {
+            match layout {
             BuiltinSceneParameterLayout::Iris => {
                 iris_draw_values(storage, draw.material, scene_time_seconds)
             }
@@ -85,11 +89,12 @@ pub(super) fn pack_scene_draw_uniforms(
             BuiltinSceneParameterLayout::WaterFlow => {
                 object_local_effect_draw_values(storage, draw, output_extent)
             }
-            _ => matrix_draw_values(scene_cover_clip_transform(
-                storage.project(),
-                output_extent,
-                draw.clip_transform,
-            )),
+                _ => matrix_draw_values(scene_cover_clip_transform(
+                    storage.project(),
+                    output_extent,
+                    draw.clip_transform,
+                )),
+            }
         };
         if layout == BuiltinSceneParameterLayout::WaterWavesUvField {
             values[3] = if draw.effect_batch_atlas_tile == INVALID_OBJECT_ID {
@@ -545,6 +550,31 @@ mod tests {
     }
 
     #[test]
+    fn object_composite_maps_screen_uv_back_to_object_uv() {
+        let mut document = audio_bars_storage().document().clone();
+        document.strings.push("we/objectcomposite".to_owned());
+        let shader_key = crate::engine::scene::SceneStringId((document.strings.len() - 1) as u32);
+        let storage = SceneStorage::from_document(document).expect("object composite storage");
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.shader_key = shader_key;
+        draw.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+        draw.authored_source_extent = [20.0, 40.0];
+        draw.clip_transform = [
+            [0.1, 0.0, 0.0, 0.0],
+            [0.0, -0.05, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let expected = projected_object_uv_draw_values(&storage, &draw, [100, 100]);
+
+        let payload = pack_scene_draw_uniforms(&storage, &[draw], 0.0, [100, 100]);
+
+        for (lane, expected) in expected.into_iter().enumerate() {
+            assert_close(payload_f32(&payload, lane * size_of::<f32>()), expected);
+        }
+    }
+
+    #[test]
     fn waterwaves_keeps_phase_in_object_uv_when_only_translation_differs() {
         let storage = waterwaves_storage();
         let mut shadow = draw_with_material(SceneMaterialHandle(0));
@@ -786,6 +816,7 @@ mod tests {
     fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {
         SceneRenderingDeviceMeshDraw {
             primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            shader_key: crate::engine::scene::SceneStringId::NONE,
             mesh_index: 0,
             resolved_object_index: 0,
             clip_transform: [[0.0; 4]; 4],

@@ -31,6 +31,10 @@ layout(set = 0, binding = 3) uniform ParticleMaterial {
     vec4 g_OscillationScale;
     vec4 g_BillboardInverse;
     vec4 g_BillboardTexture;
+    vec4 g_PositionOscillationFrequencyPhase;
+    vec4 g_PositionOscillationScaleMask;
+    vec4 g_SizeOscillationFrequencyPhase;
+    vec4 g_SizeOscillationScaleMaskZ;
 } g_Particle;
 
 float hash11(float value) {
@@ -62,16 +66,16 @@ vec3 random3_u32(uint state) {
 }
 
 vec2 billboard_corner(int vertex) {
-    const vec2 corners[6] = vec2[](
-        vec2(-1.0, -1.0), vec2(1.0, -1.0), vec2(1.0, 1.0),
-        vec2(-1.0, -1.0), vec2(1.0, 1.0), vec2(-1.0, 1.0));
+    const vec2 corners[4] = vec2[](
+        vec2(-1.0, -1.0), vec2(1.0, -1.0),
+        vec2(-1.0, 1.0), vec2(1.0, 1.0));
     return corners[vertex];
 }
 
 vec2 billboard_uv(int vertex) {
-    const vec2 uvs[6] = vec2[](
-        vec2(0.0, 1.0), vec2(1.0, 1.0), vec2(1.0, 0.0),
-        vec2(0.0, 1.0), vec2(1.0, 0.0), vec2(0.0, 0.0));
+    const vec2 uvs[4] = vec2[](
+        vec2(0.0, 1.0), vec2(1.0, 1.0),
+        vec2(0.0, 0.0), vec2(1.0, 0.0));
     return uvs[vertex];
 }
 
@@ -115,6 +119,15 @@ void main() {
         && instance < active_slots
         && (capacity_saturated || age < lifetime) ? 1.0 : 0.0;
 
+    if (alive < 0.5) {
+        v_TexCoord = vec2(0.0);
+        v_VertexAlpha = 0.0;
+        v_ParticleColor = vec3(0.0);
+        v_TextureDecodeMode = 0.0;
+        gl_Position = vec4(2.0, 2.0, 0.0, 1.0);
+        return;
+    }
+
     float simulation = g_Particle.g_SimulationOscillation.x;
     // Each WE particle module advances its own stable random selection. Keep the
     // ambient-particle fields independent so position cannot bias size, color, or
@@ -129,6 +142,10 @@ void main() {
     vec3 ambient_shape_random = random3_u32(ambient_seed ^ 0x701a29f9u);
     vec3 ambient_color_random = random3_u32(ambient_seed ^ 0x809b4a7au);
     float ambient_oscillation_random = random_u32(ambient_seed ^ 0x907c6b0bu);
+    vec3 floral_position_frequency_random = random3_u32(ambient_seed ^ 0xa0f71c29u);
+    vec3 floral_position_phase_random = random3_u32(ambient_seed ^ 0xb0986e43u);
+    vec3 floral_position_scale_random = random3_u32(ambient_seed ^ 0xc0472ad1u);
+    float floral_size_random = random_u32(ambient_seed ^ 0xd086c72fu);
     vec3 position;
     if (simulation > 1.5) {
         vec3 box_distance = mix(
@@ -170,10 +187,43 @@ void main() {
     position.xy += turbulent_direction * turbulent_speed
         * g_Particle.g_Turbulence.y * age * 0.2;
 
+    if (simulation > 2.5) {
+        vec2 frequency = mix(
+            vec2(g_Particle.g_PositionOscillationFrequencyPhase.x),
+            vec2(g_Particle.g_PositionOscillationFrequencyPhase.y),
+            floral_position_frequency_random.xy);
+        vec2 phase = mix(
+            vec2(g_Particle.g_PositionOscillationFrequencyPhase.z),
+            vec2(g_Particle.g_PositionOscillationFrequencyPhase.w),
+            floral_position_phase_random.xy);
+        vec2 amplitude = mix(
+            vec2(g_Particle.g_PositionOscillationScaleMask.x),
+            vec2(g_Particle.g_PositionOscillationScaleMask.y),
+            floral_position_scale_random.xy);
+        vec2 displacement = amplitude
+            * (cos(frequency * age + phase) - cos(phase));
+        position.xy += displacement * g_Particle.g_PositionOscillationScaleMask.zw;
+    }
+
     float size = mix(
         g_Particle.g_SequenceLifetimeSize.w,
         g_Particle.g_SizeFadeSeed.x,
         simulation > 1.5 ? ambient_shape_random.x : random2.y);
+    if (simulation > 2.5) {
+        float frequency = mix(
+            g_Particle.g_SizeOscillationFrequencyPhase.x,
+            g_Particle.g_SizeOscillationFrequencyPhase.y,
+            floral_size_random);
+        float phase = mix(
+            g_Particle.g_SizeOscillationFrequencyPhase.z,
+            g_Particle.g_SizeOscillationFrequencyPhase.w,
+            floral_size_random);
+        float pulse = 0.5 + 0.5 * sin(frequency * (age + phase));
+        float scale_delta = g_Particle.g_SizeOscillationScaleMaskZ.y
+            - g_Particle.g_SizeOscillationScaleMaskZ.x;
+        size *= g_Particle.g_SizeOscillationScaleMaskZ.x
+            + floral_size_random * scale_delta * pulse;
+    }
     float rotation = mix(
         g_Particle.g_RotationColorMix.x,
         g_Particle.g_RotationColorMix.y,
@@ -203,7 +253,7 @@ void main() {
     float fade_out_width = max(1.0 - g_Particle.g_SizeFadeSeed.z, 0.0001);
     float fade_out = clamp((1.0 - lifetime_fraction) / fade_out_width, 0.0, 1.0);
     float opacity_oscillation = 1.0;
-    if (simulation > 1.5) {
+    if (simulation > 1.5 && simulation < 2.5) {
         float oscillator_random = ambient_oscillation_random;
         float frequency = mix(
             g_Particle.g_SimulationOscillation.y,

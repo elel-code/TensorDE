@@ -48,6 +48,9 @@ impl SemanticFrameResolver {
         let entity_count = world.entities.len();
         let audio_band_material_bindings = RetainedAudioBandMaterialBindings::from_world(world);
         audio_band_material_bindings.initialize_frame(world, &mut frame.audio_band_material_values);
+        let initial_audio_values = std::mem::take(&mut frame.audio_band_material_values);
+        frame = world.resolve_frame_with_audio_values_at(0.0, &initial_audio_values)?;
+        frame.audio_band_material_values = initial_audio_values;
         Ok(Self {
             frame,
             dynamic_entities,
@@ -81,16 +84,17 @@ impl SemanticFrameResolver {
         scene_time_seconds: f32,
         spectrum32: &[f32; 32],
     ) -> Result<&ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.audio_band_material_bindings.update_frame(
+            world,
+            &mut self.frame.audio_band_material_values,
+            scene_time_seconds,
+            spectrum32,
+        );
         if !self.incremental_enabled {
-            self.frame = world.resolve_frame_at(scene_time_seconds)?;
-            self.audio_band_material_bindings
-                .initialize_frame(world, &mut self.frame.audio_band_material_values);
-            self.audio_band_material_bindings.update_frame(
-                world,
-                &mut self.frame.audio_band_material_values,
-                scene_time_seconds,
-                spectrum32,
-            );
+            let audio_values = std::mem::take(&mut self.frame.audio_band_material_values);
+            self.frame =
+                world.resolve_frame_with_audio_values_at(scene_time_seconds, &audio_values)?;
+            self.frame.audio_band_material_values = audio_values;
             return Ok(&self.frame);
         }
 
@@ -118,6 +122,7 @@ impl SemanticFrameResolver {
                 &mut self.states,
                 &mut self.attachment_scratch,
                 &mut retained_puppets,
+                &self.frame.audio_band_material_values,
                 scene_time_seconds,
             )?;
         }
@@ -140,12 +145,6 @@ impl SemanticFrameResolver {
             self.frame.puppet_bone_palettes = palettes;
             self.frame.puppet_bone_matrices = matrices;
         }
-        self.audio_band_material_bindings.update_frame(
-            world,
-            &mut self.frame.audio_band_material_values,
-            scene_time_seconds,
-            spectrum32,
-        );
         Ok(&self.frame)
     }
 
@@ -327,6 +326,16 @@ fn dynamic_entity_closure(world: &SceneSemanticWorld<'_>) -> Vec<usize> {
         .iter()
         .map(Option::is_some)
         .collect::<Vec<_>>();
+
+    for binding in world.storage.audio_band_material_bindings() {
+        if binding.target != crate::engine::scene::SceneAudioBandMaterialTarget::ObjectUniformScale
+        {
+            continue;
+        }
+        if let Some(entity) = world.index.entity_for_object(binding.object) {
+            dynamic[entity.index()] = true;
+        }
+    }
 
     // Attachment anchors may be driven by puppet animation. Treat every attachment as dynamic;
     // unresolved/non-puppet attachments are rare and this keeps future puppet binding changes safe.

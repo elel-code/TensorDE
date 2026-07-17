@@ -17,6 +17,7 @@ const WATERWAVES_UV_FIELD_ENV: &str = "GILDER_CONVERT_WATERWAVES_UV_FIELD";
 const IMAGE_DIRECT_SHADER: &str = "we/image-waterwaves-direct";
 const IMAGE_MULTIPLY_DIRECT_SHADER: &str = "we/image-waterwaves-multiply-direct";
 const PUPPET_DIRECT_SHADER: &str = "we/puppet-waterwaves-direct";
+const EFFECT_RUN_DIRECT_SHADER: &str = "we/effect-waterwaves-direct";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct WaterWavesDisplacementMaterials {
@@ -66,6 +67,7 @@ pub(super) fn create_waterwaves_displacement_materials(
         effects,
         direct_shader,
         static_black_output,
+        true,
     );
     if direct_shader.is_some() {
         WaterWavesDisplacementMaterials {
@@ -83,12 +85,78 @@ pub(super) fn create_waterwaves_displacement_materials(
     }
 }
 
+pub(super) fn aggregate_waterwaves_effect_runs(
+    builder: &mut WeIrBuilder,
+    effects: &[WeEffectPassContract],
+) -> Vec<WeEffectPassContract> {
+    if std::env::var_os(DISABLE_WATERWAVES_AGGREGATION_ENV).is_some()
+        || std::env::var_os(LEGACY_DISABLE_WATERWAVES_UV_FIELD_ENV).is_some()
+    {
+        return effects.to_vec();
+    }
+    let mut aggregated = Vec::with_capacity(effects.len());
+    let mut cursor = 0;
+    while cursor < effects.len() {
+        let run_count = compatible_run_count(effects, cursor);
+        let Some(run_count) = run_count else {
+            aggregated.push(effects[cursor].clone());
+            cursor += 1;
+            continue;
+        };
+        let run = &effects[cursor..cursor + run_count];
+        let Some(source_material_index) = run[0].material_index else {
+            aggregated.push(effects[cursor].clone());
+            cursor += 1;
+            continue;
+        };
+        let Some((material_index, shader)) = create_aggregated_material(
+            builder,
+            source_material_index,
+            run,
+            Some(EFFECT_RUN_DIRECT_SHADER),
+            false,
+            false,
+        ) else {
+            aggregated.push(effects[cursor].clone());
+            cursor += 1;
+            continue;
+        };
+        let mut effect = run[0].clone();
+        effect.material_index = Some(material_index);
+        effect.effect_file = "gilder/typed/waterwaves-effect-run".to_owned();
+        effect.shader = Some(shader);
+        effect.source = None;
+        effect.target = None;
+        effect.command = None;
+        effect.pass_constants.clear();
+        effect.combos.clear();
+        effect.binds.clear();
+        effect.binds.insert(0, "previous".to_owned());
+        for (stage, stage_effect) in run.iter().enumerate() {
+            if let Some(mask) = stage_effect.binds.get(&1) {
+                effect.binds.insert(stage as u32 + 1, mask.clone());
+            }
+        }
+        aggregated.push(effect);
+        cursor += run_count;
+    }
+    aggregated
+}
+
+fn compatible_run_count(effects: &[WeEffectPassContract], cursor: usize) -> Option<usize> {
+    let max_count = effects.len().saturating_sub(cursor).min(7);
+    (2..=max_count).rev().find(|count| {
+        we_effect_passes_form_waterwaves_displacement_chain(&effects[cursor..cursor + count])
+    })
+}
+
 fn create_aggregated_material(
     builder: &mut WeIrBuilder,
     base_material_index: usize,
     effects: &[WeEffectPassContract],
     direct_shader: Option<&str>,
     static_black_output: bool,
+    include_source_material: bool,
 ) -> Option<(usize, String)> {
     let mut stages = Vec::with_capacity(effects.len());
     let mut template = None;
@@ -115,7 +183,8 @@ fn create_aggregated_material(
                     .saturating_add(base_pass.constant_count) as usize,
         )?
         .to_vec();
-    let mut resource = direct_shader.map(|_| base_material.resource);
+    let mut resource =
+        (direct_shader.is_some() && include_source_material).then_some(base_material.resource);
     for effect in effects {
         let material = builder.materials.get(effect.material_index?)?;
         let pass = builder
@@ -149,7 +218,7 @@ fn create_aggregated_material(
     let handle = builder.materials.len() as u32;
     let texture_start = builder.material_textures.len() as u32;
     let constant_start = builder.material_constants.len() as u32;
-    if direct_shader.is_some() {
+    if direct_shader.is_some() && include_source_material {
         builder.material_textures.extend(
             base_textures
                 .into_iter()
@@ -247,6 +316,8 @@ fn stage_parameter_name(stage: usize, name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -271,6 +342,44 @@ mod tests {
             ),
             "we/puppet-waterwaves-direct__STAGES_2__STATIC_BLACK_1",
         );
+    }
+
+    #[test]
+    fn compatible_run_count_finds_waterwaves_inside_a_mixed_effect_chain() {
+        let mut foliage = effect_pass("effects/foliagesway");
+        foliage.binds.insert(0, "previous".to_owned());
+        let effects = vec![
+            foliage,
+            effect_pass("effects/waterwaves__SLOTS_1"),
+            effect_pass("effects/waterwaves__SLOTS_3"),
+            effect_pass("effects/waterwaves__SLOTS_1"),
+            effect_pass("effects/blend__SLOTS_3__BLENDMODE_0"),
+        ];
+
+        assert_eq!(compatible_run_count(&effects, 0), None);
+        assert_eq!(compatible_run_count(&effects, 1), Some(3));
+        assert_eq!(compatible_run_count(&effects, 2), Some(2));
+        assert_eq!(compatible_run_count(&effects, 3), None);
+    }
+
+    fn effect_pass(shader: &str) -> WeEffectPassContract {
+        WeEffectPassContract {
+            object_index: 0,
+            material_index: Some(0),
+            effect_file: "effects/waterwaves/effect.json".to_owned(),
+            pass_index: 0,
+            command: None,
+            shader: Some(shader.to_owned()),
+            source: None,
+            target: None,
+            binds: BTreeMap::from([(0, "previous".to_owned())]),
+            pass_constants: Vec::new(),
+            material_blending: Some("normal".to_owned()),
+            depthtest: None,
+            depthwrite: None,
+            cullmode: None,
+            combos: BTreeMap::new(),
+        }
     }
 
     fn stage(constants: &[(&str, &str)], dual_waves: bool) -> WaterWavesStageMaterial {

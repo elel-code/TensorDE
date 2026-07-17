@@ -472,6 +472,16 @@ impl WeIrBuilder {
             effects_in_authored_texture_space,
             object_is_puppet,
         );
+        let uses_whole_graph_effect_path = waterwaves_displacement.uv_field.is_some()
+            || waterwaves_displacement.direct.is_some()
+            || foliage_ripple.is_some()
+            || ripple_flow_materials.is_some()
+            || final_effect.is_some();
+        let effect_passes = if uses_whole_graph_effect_path {
+            effect_passes
+        } else {
+            waterwaves_displacement::aggregate_waterwaves_effect_runs(self, &effect_passes)
+        };
         let mut graph_contract = WeImageGraphContract {
             object_index: object as usize,
             base_material_index: Some(base_material_handle as usize),

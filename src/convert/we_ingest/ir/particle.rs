@@ -136,6 +136,25 @@ pub enum WeIrParticleOperator {
         scale_min: f32,
         scale_max: f32,
     },
+    OscillatePosition {
+        id: u32,
+        frequency_min: f32,
+        frequency_max: f32,
+        phase_min: f32,
+        phase_max: f32,
+        scale_min: f32,
+        scale_max: f32,
+        mask: SceneVec3,
+    },
+    OscillateSize {
+        id: u32,
+        frequency_min: f32,
+        frequency_max: f32,
+        phase_min: f32,
+        phase_max: f32,
+        scale_min: f32,
+        scale_max: f32,
+    },
     MaintainDistanceToControlPoint {
         id: u32,
         control_point: u32,
@@ -230,6 +249,34 @@ pub struct WeIrAmbientSparklesProfile {
     pub oscillation_phase_max: f32,
     pub oscillation_scale_min: f32,
     pub oscillation_scale_max: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WeIrFloralOscillationProfile {
+    pub rate: f32,
+    pub emitter_origin: SceneVec3,
+    pub emitter_directions: SceneVec3,
+    pub distance_min: SceneVec3,
+    pub distance_max: SceneVec3,
+    pub lifetime_min: f32,
+    pub lifetime_max: f32,
+    pub size_min: f32,
+    pub size_max: f32,
+    pub rotation_min: f32,
+    pub rotation_max: f32,
+    pub position_frequency_min: f32,
+    pub position_frequency_max: f32,
+    pub position_phase_min: f32,
+    pub position_phase_max: f32,
+    pub position_scale_min: f32,
+    pub position_scale_max: f32,
+    pub position_mask: SceneVec3,
+    pub size_frequency_min: f32,
+    pub size_frequency_max: f32,
+    pub size_phase_min: f32,
+    pub size_phase_max: f32,
+    pub size_scale_min: f32,
+    pub size_scale_max: f32,
 }
 
 impl WeIrParticleSystem {
@@ -471,6 +518,128 @@ impl WeIrParticleSystem {
             oscillation_phase_max: oscillation.3,
             oscillation_scale_min: oscillation.4,
             oscillation_scale_max: oscillation.5,
+        })
+    }
+
+    pub fn floral_oscillation_profile(&self) -> Option<WeIrFloralOscillationProfile> {
+        if !self.children.is_empty()
+            || !matches!(
+                self.renderers.as_slice(),
+                [WeIrParticleRenderer::Sprite { .. }]
+            )
+            || self.initializers.len() != 3
+            || self.operators.len() != 2
+            || !self.initializers.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleInitializer::LifetimeRandom { .. }
+                        | WeIrParticleInitializer::SizeRandom { .. }
+                        | WeIrParticleInitializer::RotationRandom { .. }
+                )
+            })
+            || !self.operators.iter().all(|item| {
+                matches!(
+                    item,
+                    WeIrParticleOperator::OscillatePosition { .. }
+                        | WeIrParticleOperator::OscillateSize { .. }
+                )
+            })
+        {
+            return None;
+        }
+        let [
+            WeIrParticleEmitter::BoxRandom {
+                rate,
+                origin,
+                directions,
+                distance_min,
+                distance_max,
+                ..
+            },
+        ] = self.emitters.as_slice()
+        else {
+            return None;
+        };
+        if *rate <= 0.0 {
+            return None;
+        }
+        let lifetime = find_scalar_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::LifetimeRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let size = find_scalar_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::SizeRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let rotation = find_scalar_range(&self.initializers, |item| match item {
+            WeIrParticleInitializer::RotationRandom { min, max, .. } => Some((*min, *max)),
+            _ => None,
+        })?;
+        let position = self.operators.iter().find_map(|item| match item {
+            WeIrParticleOperator::OscillatePosition {
+                frequency_min,
+                frequency_max,
+                phase_min,
+                phase_max,
+                scale_min,
+                scale_max,
+                mask,
+                ..
+            } => Some((
+                *frequency_min,
+                *frequency_max,
+                *phase_min,
+                *phase_max,
+                *scale_min,
+                *scale_max,
+                *mask,
+            )),
+            _ => None,
+        })?;
+        let size_oscillation = self.operators.iter().find_map(|item| match item {
+            WeIrParticleOperator::OscillateSize {
+                frequency_min,
+                frequency_max,
+                phase_min,
+                phase_max,
+                scale_min,
+                scale_max,
+                ..
+            } => Some((
+                *frequency_min,
+                *frequency_max,
+                *phase_min,
+                *phase_max,
+                *scale_min,
+                *scale_max,
+            )),
+            _ => None,
+        })?;
+        Some(WeIrFloralOscillationProfile {
+            rate: *rate,
+            emitter_origin: *origin,
+            emitter_directions: *directions,
+            distance_min: *distance_min,
+            distance_max: *distance_max,
+            lifetime_min: lifetime.0,
+            lifetime_max: lifetime.1,
+            size_min: size.0,
+            size_max: size.1,
+            rotation_min: rotation.0,
+            rotation_max: rotation.1,
+            position_frequency_min: position.0,
+            position_frequency_max: position.1,
+            position_phase_min: position.2,
+            position_phase_max: position.3,
+            position_scale_min: position.4,
+            position_scale_max: position.5,
+            position_mask: position.6,
+            size_frequency_min: size_oscillation.0,
+            size_frequency_max: size_oscillation.1,
+            size_phase_min: size_oscillation.2,
+            size_phase_max: size_oscillation.3,
+            size_scale_min: size_oscillation.4,
+            size_scale_max: size_oscillation.5,
         })
     }
 }

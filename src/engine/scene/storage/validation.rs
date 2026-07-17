@@ -489,6 +489,7 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             particle.simulation,
             SceneParticleSimulationKind::FallingLeaves
                 | SceneParticleSimulationKind::AmbientSparkles
+                | SceneParticleSimulationKind::FloralOscillation
         ) && (particle.max_count == 0
             || !particle.rate.is_finite()
             || particle.rate <= 0.0
@@ -523,6 +524,43 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         {
             return Err(SceneStorageError::InvalidRange {
                 field: "particle.ambient_sparkles_oscillation",
+                start: particle.max_count,
+                count: 1,
+                len: document.particles.len(),
+            });
+        }
+        if particle.simulation == SceneParticleSimulationKind::FloralOscillation
+            && (!valid_oscillation_range(
+                particle.position_oscillation_frequency_min,
+                particle.position_oscillation_frequency_max,
+                0.0,
+            ) || !valid_oscillation_range(
+                particle.position_oscillation_phase_min,
+                particle.position_oscillation_phase_max,
+                f32::NEG_INFINITY,
+            ) || !valid_oscillation_range(
+                particle.position_oscillation_scale_min,
+                particle.position_oscillation_scale_max,
+                0.0,
+            ) || !valid_vec3(particle.position_oscillation_mask)
+                || !valid_oscillation_range(
+                    particle.size_oscillation_frequency_min,
+                    particle.size_oscillation_frequency_max,
+                    0.0,
+                )
+                || !valid_oscillation_range(
+                    particle.size_oscillation_phase_min,
+                    particle.size_oscillation_phase_max,
+                    f32::NEG_INFINITY,
+                )
+                || !valid_oscillation_range(
+                    particle.size_oscillation_scale_min,
+                    particle.size_oscillation_scale_max,
+                    0.0,
+                ))
+        {
+            return Err(SceneStorageError::InvalidRange {
+                field: "particle.floral_oscillation",
                 start: particle.max_count,
                 count: 1,
                 len: document.particles.len(),
@@ -613,6 +651,14 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
         validate_string(document, "shader_contract.constant_name", *name)?;
     }
     Ok(())
+}
+
+fn valid_oscillation_range(min: f32, max: f32, lower_bound: f32) -> bool {
+    min.is_finite() && max.is_finite() && min >= lower_bound && max >= min
+}
+
+fn valid_vec3(value: SceneVec3) -> bool {
+    value.x.is_finite() && value.y.is_finite() && value.z.is_finite()
 }
 
 pub(super) fn validate_project(document: &SceneBinaryDocument) -> Result<(), SceneStorageError> {

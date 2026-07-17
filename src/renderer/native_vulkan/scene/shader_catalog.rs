@@ -207,6 +207,10 @@ mod tests {
                 "we/puppet-waterwaves-direct__STAGES_7",
                 BuiltinSceneParameterLayout::WaterWavesDirect,
             ),
+            (
+                "we/effect-waterwaves-direct__STAGES_6",
+                BuiltinSceneParameterLayout::WaterWavesDirect,
+            ),
         ] {
             let shader = native_vulkan_scene_shader_for_key(key).expect("object-local shader");
             assert_eq!(shader.parameter_layout, layout);

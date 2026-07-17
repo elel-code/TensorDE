@@ -12,6 +12,7 @@ use std::sync::OnceLock;
 use serde_json::Value;
 
 mod color_effect;
+mod audio_usage;
 mod final_effect;
 mod oscilloscope;
 mod particle;
@@ -20,6 +21,9 @@ mod value_writer;
 mod weather_effect;
 
 use color_effect::{blend_gradient_values, blend_values, lut_values, shimmer_values};
+pub(super) use audio_usage::scene_uses_audio_spectrum;
+#[cfg(test)]
+use audio_usage::material_uses_audio_spectrum;
 use shader_key::{shader_combo_enabled, shader_combo_value, shader_texture_slot_enabled};
 use value_writer::set_vector;
 
@@ -36,7 +40,6 @@ use crate::engine::scene::{
     SceneTextureRecord,
 };
 use crate::engine::scene::semantic_world::ResolvedAudioBandMaterialValue;
-use crate::renderer::native_vulkan::native_vulkan_scene_backend_plan;
 use crate::renderer::native_vulkan::scene::{
     BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
 };
@@ -108,7 +111,10 @@ fn material_uniform_values(
     let Some(pass) = first_material_pass(storage, draw.material) else {
         return [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
     };
-    let shader_key = storage.string(pass.shader_key).unwrap_or_default();
+    let shader_key = storage
+        .string(draw.shader_key)
+        .or_else(|| storage.string(pass.shader_key))
+        .unwrap_or_default();
     let layout = native_vulkan_scene_shader_for_key(shader_key)
         .map(|shader| shader.parameter_layout)
         .unwrap_or(BuiltinSceneParameterLayout::None);
@@ -603,31 +609,15 @@ pub(super) fn material_parameter_layout(
         .unwrap_or(BuiltinSceneParameterLayout::None)
 }
 
-pub(super) fn scene_uses_audio_spectrum(storage: &SceneStorage) -> bool {
-    !storage.audio_band_material_bindings().is_empty()
-        || native_vulkan_scene_backend_plan(storage)
-        .rendering_device_graph
-        .mesh_draws
-        .iter()
-        .any(|draw| material_uses_audio_spectrum(storage, draw.material))
-}
-
-fn material_uses_audio_spectrum(
+pub(super) fn draw_parameter_layout(
     storage: &SceneStorage,
-    material: SceneMaterialHandle,
-) -> bool {
-    let Some(pass) = first_material_pass(storage, material) else {
-        return false;
-    };
-    let Some(shader_key) = storage.string(pass.shader_key) else {
-        return false;
-    };
-    native_vulkan_scene_shader_for_key(shader_key).is_some_and(|shader| {
-        shader.parameter_layout == BuiltinSceneParameterLayout::AudioBars
-            || shader.parameter_layout == BuiltinSceneParameterLayout::Oscilloscope
-            || (shader.parameter_layout == BuiltinSceneParameterLayout::FinalEffectProgram
-                && shader_key.eq_ignore_ascii_case("we/audio-bars-final"))
-    })
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> BuiltinSceneParameterLayout {
+    storage
+        .string(draw.shader_key)
+        .and_then(native_vulkan_scene_shader_for_key)
+        .map(|shader| shader.parameter_layout)
+        .unwrap_or_else(|| material_parameter_layout(storage, draw.material))
 }
 
 struct MaterialParameters<'a> {

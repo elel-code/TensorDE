@@ -2,11 +2,14 @@
 
 pub(crate) fn waterwaves_direct_sources(
     puppet_skinning: bool,
+    fullscreen_effect: bool,
     premultiply_output: bool,
     stage_count: Option<usize>,
     static_black_output: bool,
 ) -> (String, String) {
-    let vertex = if puppet_skinning {
+    let vertex = if fullscreen_effect {
+        waterwaves_effect_run_vertex()
+    } else if puppet_skinning {
         super::puppet_effect_composite_vertex()
     } else {
         super::super::scene_mesh_vertex_source()
@@ -15,6 +18,25 @@ pub(crate) fn waterwaves_direct_sources(
         vertex,
         waterwaves_direct_fragment(premultiply_output, stage_count, static_black_output),
     )
+}
+
+fn waterwaves_effect_run_vertex() -> String {
+    r#"#version 450
+layout(location = 0) out vec2 v_TexCoord;
+layout(location = 1) out float v_VertexAlpha;
+void main() {
+    vec2 positions[3] = vec2[](
+        vec2(-1.0, -1.0),
+        vec2(3.0, -1.0),
+        vec2(-1.0, 3.0)
+    );
+    vec2 position = positions[gl_VertexIndex];
+    v_TexCoord = position * 0.5 + 0.5;
+    v_VertexAlpha = 1.0;
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#
+    .to_owned()
 }
 
 fn waterwaves_direct_fragment(

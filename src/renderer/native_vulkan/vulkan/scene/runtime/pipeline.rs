@@ -13,7 +13,9 @@ use crate::engine::scene::{
     SceneCompositeBlend, ScenePipelineBlend, SceneRenderPassKind, SceneRenderPassRecord,
     SceneRenderTargetKind, SceneRenderingDeviceGraphPlan, SceneStorage, SceneStringId,
 };
-use crate::renderer::native_vulkan::scene::native_vulkan_scene_shader_for_key;
+use crate::renderer::native_vulkan::scene::{
+    BuiltinSceneParameterLayout, native_vulkan_scene_shader_for_key,
+};
 use crate::renderer::native_vulkan::{
     NativeVulkanVulkanaliaDescriptorHeapResourcePlanSnapshot,
     native_vulkan_vulkanalia_descriptor_heap_resource_relative_combined_image_sampler_binding_mapping,
@@ -307,8 +309,7 @@ pub(in crate::renderer::native_vulkan) fn emit_scene_pipeline_diagnostics_if_req
             pass_record.scene_blend,
             blend.label(),
             target_format,
-            pass_pipeline_samples(pass.target, scene_color_msaa_enabled)
-                .rasterization_samples(),
+            pass_pipeline_samples(pass.target, scene_color_msaa_enabled).rasterization_samples(),
             pipeline_index,
             material_textures,
             material_constants,
@@ -357,7 +358,8 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             .ok_or_else(|| "scene drawable pass has no shader key".to_owned())?;
         let shader = native_vulkan_scene_shader_for_key(shader_key)
             .ok_or_else(|| format!("scene shader {shader_key:?} is not in the built-in catalog"))?;
-        let pipeline_debug = std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some();
+        let pipeline_debug =
+            std::env::var_os("GILDER_NATIVE_VULKAN_SCENE_PIPELINE_DEBUG").is_some();
         if pipeline_debug {
             eprintln!("gilder-scene-pipeline-create: begin shader={shader_key:?}");
         }
@@ -373,6 +375,11 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
             key.advanced_source_premultiplied,
             key.advanced_blend_overlap,
             key.samples,
+            if shader.parameter_layout == BuiltinSceneParameterLayout::Particle {
+                vk::PrimitiveTopology::TRIANGLE_STRIP
+            } else {
+                vk::PrimitiveTopology::TRIANGLE_LIST
+            },
         ) {
             Ok(pipeline) => {
                 if pipeline_debug {
@@ -540,9 +547,9 @@ fn advanced_blend_overlap(
     pass: &SceneRenderPassRecord,
 ) -> vk::BlendOverlapEXT {
     if pass.scene_blend == SceneCompositeBlend::HslColor
-        && storage.string(pass.shader_key).is_some_and(|shader| {
-            shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite")
-        })
+        && storage
+            .string(pass.shader_key)
+            .is_some_and(|shader| shader.eq_ignore_ascii_case("we/flat-rounded-mask-composite"))
     {
         vk::BlendOverlapEXT::DISJOINT
     } else {
@@ -626,6 +633,7 @@ fn create_scene_pipeline(
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
+    topology: vk::PrimitiveTopology,
 ) -> Result<vk::Pipeline, String> {
     if extent.width == 0 || extent.height == 0 {
         return Err("scene pipeline requires non-zero extent".to_owned());
@@ -644,6 +652,7 @@ fn create_scene_pipeline(
             advanced_source_premultiplied,
             advanced_blend_overlap,
             samples,
+            topology,
         );
         unsafe {
             device.destroy_shader_module(fragment_module, None);
@@ -667,6 +676,7 @@ fn create_scene_pipeline_with_modules(
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
+    topology: vk::PrimitiveTopology,
 ) -> Result<vk::Pipeline, String> {
     let shader_entry = b"main\0";
     let mut vertex_mappings = vec![
@@ -751,6 +761,7 @@ fn create_scene_pipeline_with_modules(
         advanced_source_premultiplied,
         advanced_blend_overlap,
         samples,
+        topology,
     )
 }
 
@@ -769,6 +780,7 @@ fn create_graphics_pipeline(
     advanced_source_premultiplied: bool,
     advanced_blend_overlap: vk::BlendOverlapEXT,
     samples: ScenePipelineSamples,
+    topology: vk::PrimitiveTopology,
 ) -> Result<vk::Pipeline, String> {
     let binding = vk::VertexInputBindingDescription::builder()
         .binding(0)
@@ -813,7 +825,7 @@ fn create_graphics_pipeline(
         .vertex_attribute_descriptions(&attributes)
         .build();
     let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::builder()
-        .topology(vk::PrimitiveTopology::TRIANGLE_LIST)
+        .topology(topology)
         .build();
     let viewport_state = vk::PipelineViewportStateCreateInfo::builder()
         .viewport_count(1)

@@ -427,6 +427,30 @@ const BUILTIN_SCENE_SHADER_SPECS: &[SceneShaderSpec] = &[
         family: SceneShaderFamily::MeshWaterWavesDirect,
     },
     SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_2",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_3",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_4",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_5",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_6",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
+        key: "we/effect-waterwaves-direct__STAGES_7",
+        family: SceneShaderFamily::MeshWaterWavesDirect,
+    },
+    SceneShaderSpec {
         key: "we/utilitycomposite",
         family: SceneShaderFamily::MeshUtilityComposite,
     },
@@ -751,6 +775,7 @@ fn scene_shader_sources(spec: SceneShaderSpec) -> (String, String) {
         }
         SceneShaderFamily::MeshWaterWavesDirect => super::waterwaves_direct_sources(
             spec.key.starts_with("we/puppet-waterwaves-direct"),
+            spec.key.starts_with("we/effect-waterwaves-direct"),
             spec.key.starts_with("we/image-waterwaves-multiply-direct"),
             super::waterwaves_direct::stage_count_from_shader_key(spec.key),
             super::waterwaves_direct::static_black_output_from_shader_key(spec.key),

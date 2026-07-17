@@ -46,6 +46,19 @@ pub(super) fn encode_particles(
         put_f32(&mut out, record.oscillation_phase_max);
         put_f32(&mut out, record.oscillation_scale_min);
         put_f32(&mut out, record.oscillation_scale_max);
+        put_f32(&mut out, record.position_oscillation_frequency_min);
+        put_f32(&mut out, record.position_oscillation_frequency_max);
+        put_f32(&mut out, record.position_oscillation_phase_min);
+        put_f32(&mut out, record.position_oscillation_phase_max);
+        put_f32(&mut out, record.position_oscillation_scale_min);
+        put_f32(&mut out, record.position_oscillation_scale_max);
+        put_vec3(&mut out, record.position_oscillation_mask);
+        put_f32(&mut out, record.size_oscillation_frequency_min);
+        put_f32(&mut out, record.size_oscillation_frequency_max);
+        put_f32(&mut out, record.size_oscillation_phase_min);
+        put_f32(&mut out, record.size_oscillation_phase_max);
+        put_f32(&mut out, record.size_oscillation_scale_min);
+        put_f32(&mut out, record.size_oscillation_scale_max);
     }
     Ok(out)
 }
@@ -104,6 +117,23 @@ pub(super) fn decode_particles(
             oscillation_phase_max: std::f32::consts::TAU,
             oscillation_scale_min: 1.0,
             oscillation_scale_max: 1.0,
+            position_oscillation_frequency_min: 0.0,
+            position_oscillation_frequency_max: 0.0,
+            position_oscillation_phase_min: 0.0,
+            position_oscillation_phase_max: std::f32::consts::TAU,
+            position_oscillation_scale_min: 0.0,
+            position_oscillation_scale_max: 0.0,
+            position_oscillation_mask: SceneVec3 {
+                x: 1.0,
+                y: 1.0,
+                z: 0.0,
+            },
+            size_oscillation_frequency_min: 0.0,
+            size_oscillation_frequency_max: 0.0,
+            size_oscillation_phase_min: 0.0,
+            size_oscillation_phase_max: std::f32::consts::TAU,
+            size_oscillation_scale_min: 1.0,
+            size_oscillation_scale_max: 1.0,
         };
         if scene_binary_version >= 11 {
             record.oscillation_frequency_min = decoder.f32()?;
@@ -114,6 +144,21 @@ pub(super) fn decode_particles(
             }
             record.oscillation_scale_min = decoder.f32()?;
             record.oscillation_scale_max = decoder.f32()?;
+        }
+        if scene_binary_version >= 14 {
+            record.position_oscillation_frequency_min = decoder.f32()?;
+            record.position_oscillation_frequency_max = decoder.f32()?;
+            record.position_oscillation_phase_min = decoder.f32()?;
+            record.position_oscillation_phase_max = decoder.f32()?;
+            record.position_oscillation_scale_min = decoder.f32()?;
+            record.position_oscillation_scale_max = decoder.f32()?;
+            record.position_oscillation_mask = decoder.vec3()?;
+            record.size_oscillation_frequency_min = decoder.f32()?;
+            record.size_oscillation_frequency_max = decoder.f32()?;
+            record.size_oscillation_phase_min = decoder.f32()?;
+            record.size_oscillation_phase_max = decoder.f32()?;
+            record.size_oscillation_scale_min = decoder.f32()?;
+            record.size_oscillation_scale_max = decoder.f32()?;
         }
         particles.push(record);
     }

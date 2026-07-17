@@ -106,7 +106,7 @@ pub(super) fn create_scene_gpu_resources(
             .mesh_draws
             .iter()
             .any(|draw| {
-                material_parameter_layout(storage, draw.material).uses_dynamic_material_input()
+                draw_parameter_layout(storage, draw).uses_dynamic_material_input()
             });
     let skinning_payload = descriptor_layout
         .skinning_storage_enabled

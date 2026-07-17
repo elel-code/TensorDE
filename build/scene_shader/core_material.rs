@@ -50,9 +50,15 @@ layout(set = 0, binding = 3) uniform ParticleMaterial {
     vec4 g_Unused1;
 } g_Material;
 void main() {
+    if (v_VertexAlpha <= 0.0) {
+        discard;
+    }
     vec4 texel = texture(g_Texture0, v_TexCoord);
     if (v_TextureDecodeMode > 0.5) {
         texel = vec4(texel.rrr, texel.g);
+    }
+    if (texel.a <= 0.0) {
+        discard;
     }
     vec4 color = texel * g_Material.g_Color4;
     color.rgb *= v_ParticleColor;

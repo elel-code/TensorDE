@@ -339,6 +339,7 @@ mod tests {
                     material_sampled_bindings: Vec::new(),
                     mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                         primitive: crate::engine::scene::SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                        shader_key: crate::engine::scene::SceneStringId::NONE,
                         mesh_index: 0,
                         resolved_object_index: 0,
                         clip_transform: identity_clip_transform(),

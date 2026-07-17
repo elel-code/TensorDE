@@ -338,6 +338,7 @@ fn is_waterwaves_direct_shader(key: &str) -> bool {
         "we/image-waterwaves-direct",
         "we/image-waterwaves-multiply-direct",
         "we/puppet-waterwaves-direct",
+        "we/effect-waterwaves-direct",
     ]
     .iter()
     .any(|base| {

@@ -191,13 +191,11 @@ fn append_sine_script_track(
     tracks: &mut Vec<WeIrObjectTransformTrack>,
     channels: &mut Vec<WeIrObjectTransformChannel>,
 ) -> bool {
-    let Some(properties) = binding.get("scriptproperties").and_then(Value::as_object) else {
-        return false;
-    };
     let normalized: String = script
         .chars()
         .filter(|character| !character.is_whitespace())
         .collect();
+    let properties = binding.get("scriptproperties").and_then(Value::as_object);
     let mut parsed = Vec::new();
     for (component, component_name, prefix) in [(0, "x", "x"), (1, "y", "y"), (2, "z", "z")] {
         let offset_name = format!("{prefix}a");
@@ -206,19 +204,25 @@ fn append_sine_script_track(
         let expression = format!(
             "value.{component_name}=scriptProperties.{offset_name}+(Math.sin(engine.runtime*scriptProperties.{frequency_name})*scriptProperties.{amplitude_name});"
         );
-        if !normalized.contains(&expression) {
-            continue;
+        if normalized.contains(&expression) {
+            let Some(properties) = properties else {
+                return false;
+            };
+            let Some(offset) = bound_f32(properties.get(&offset_name)) else {
+                return false;
+            };
+            let Some(frequency) = bound_f32(properties.get(&frequency_name)) else {
+                return false;
+            };
+            let Some(amplitude) = bound_f32(properties.get(&amplitude_name)) else {
+                return false;
+            };
+            parsed.push((component, offset, frequency, amplitude));
+        } else if let Some((offset, frequency, amplitude)) =
+            literal_sine_channel(&normalized, component_name)
+        {
+            parsed.push((component, offset, frequency, amplitude));
         }
-        let Some(offset) = bound_f32(properties.get(&offset_name)) else {
-            return false;
-        };
-        let Some(frequency) = bound_f32(properties.get(&frequency_name)) else {
-            return false;
-        };
-        let Some(amplitude) = bound_f32(properties.get(&amplitude_name)) else {
-            return false;
-        };
-        parsed.push((component, offset, frequency, amplitude));
     }
     if parsed.is_empty() {
         return false;
@@ -251,6 +255,23 @@ fn append_sine_script_track(
         });
     }
     true
+}
+
+fn literal_sine_channel(script: &str, component: &str) -> Option<(f32, f32, f32)> {
+    let assignment = format!("value.{component}=");
+    let expression = script.split_once(&assignment)?.1;
+    let (offset, oscillator) = expression.split_once("+(Math.sin(engine.runtime*")?;
+    let (frequency, amplitude) = oscillator.split_once(")*")?;
+    let amplitude = amplitude.split_once(");")?.0;
+    let values = [offset, frequency, amplitude]
+        .map(str::parse::<f32>)
+        .map(|value| value.ok())
+        .into_iter()
+        .collect::<Option<Vec<_>>>()?;
+    values
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some((values[0], values[1], values[2]))
 }
 
 fn finite_f32(value: Option<&Value>) -> Option<f32> {
@@ -366,5 +387,36 @@ mod tests {
             "angle-script-evaluation-unit-unverified:angles"
         );
         assert_eq!(unsupported[0].containment, "static-bound-value-kept");
+    }
+
+    #[test]
+    fn lowers_literal_sine_origin_script_to_typed_track() {
+        let object = serde_json::json!({
+            "origin": {
+                "value": "0 -860 0",
+                "script": "export function update(value) { value.y = -860 + (Math.sin(engine.runtime * 0.2) * 20); return value; }"
+            }
+        });
+        let mut tracks = Vec::new();
+        let mut channels = Vec::new();
+        let mut keyframes = Vec::new();
+        let mut unsupported = Vec::new();
+
+        ingest_object_transform_tracks(
+            16,
+            &object,
+            &mut tracks,
+            &mut channels,
+            &mut keyframes,
+            &mut unsupported,
+        );
+
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].component, 1);
+        assert_eq!(channels[0].offset, -860.0);
+        assert_eq!(channels[0].frequency, 0.2);
+        assert_eq!(channels[0].amplitude, 20.0);
+        assert!(unsupported.is_empty());
     }
 }

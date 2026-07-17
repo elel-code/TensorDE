@@ -54,6 +54,21 @@ pub(super) fn particle_values(
     values[75] = particle.oscillation_phase_max;
     values[76..80].copy_from_slice(&particle_billboard_inverse(storage, draw));
     values[80] = particle_texture_aspect(storage, draw);
+    values[84] = particle.position_oscillation_frequency_min;
+    values[85] = particle.position_oscillation_frequency_max;
+    values[86] = particle.position_oscillation_phase_min;
+    values[87] = particle.position_oscillation_phase_max;
+    values[88] = particle.position_oscillation_scale_min;
+    values[89] = particle.position_oscillation_scale_max;
+    values[90] = particle.position_oscillation_mask.x;
+    values[91] = particle.position_oscillation_mask.y;
+    values[92] = particle.size_oscillation_frequency_min;
+    values[93] = particle.size_oscillation_frequency_max;
+    values[94] = particle.size_oscillation_phase_min;
+    values[95] = particle.size_oscillation_phase_max;
+    values[96] = particle.size_oscillation_scale_min;
+    values[97] = particle.size_oscillation_scale_max;
+    values[98] = particle.position_oscillation_mask.z;
     values
 }
 
@@ -107,12 +122,7 @@ fn inverse_linear_2d([m00, m01, m10, m11]: [f32; 4]) -> Option<[f32; 4]> {
         return None;
     }
     let inverse = 1.0 / determinant;
-    Some([
-        m11 * inverse,
-        -m01 * inverse,
-        -m10 * inverse,
-        m00 * inverse,
-    ])
+    Some([m11 * inverse, -m01 * inverse, -m10 * inverse, m00 * inverse])
 }
 
 #[cfg(test)]
@@ -124,6 +134,7 @@ mod tests {
         let inverse = inverse_linear_2d([0.0, -3.0, 2.0, 0.0]).expect("invertible");
         assert_eq!(inverse, [0.0, 0.5, -1.0 / 3.0, 0.0]);
     }
+
 }
 
 fn write_vec3(values: &mut [f32], start: usize, value: crate::engine::scene::SceneVec3) {

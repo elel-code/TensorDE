@@ -8,18 +8,21 @@ use super::SceneObjectHandle;
 #[serde(rename_all = "kebab-case")]
 pub enum SceneAudioBandMaterialTarget {
     TechCircleSectorWidth,
+    ObjectUniformScale,
 }
 
 impl SceneAudioBandMaterialTarget {
     pub const fn to_u32(self) -> u32 {
         match self {
             Self::TechCircleSectorWidth => 1,
+            Self::ObjectUniformScale => 2,
         }
     }
 
     pub const fn from_u32(value: u32) -> Option<Self> {
         match value {
             1 => Some(Self::TechCircleSectorWidth),
+            2 => Some(Self::ObjectUniformScale),
             _ => None,
         }
     }

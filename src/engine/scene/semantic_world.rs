@@ -79,6 +79,20 @@ struct ResolvedParentState {
     world_matrix: [f32; 16],
 }
 
+fn object_uniform_scale(
+    values: &[ResolvedAudioBandMaterialValue],
+    object: SceneObjectHandle,
+) -> Option<f32> {
+    values
+        .iter()
+        .find(|value| {
+            value.object == object
+                && value.target == SceneAudioBandMaterialTarget::ObjectUniformScale
+        })
+        .map(|value| value.value)
+        .filter(|value| value.is_finite())
+}
+
 fn multiply_color(left: SceneVec3, right: SceneVec3) -> SceneVec3 {
     SceneVec3 {
         x: left.x * right.x,
@@ -290,6 +304,14 @@ impl<'a> SceneSemanticWorld<'a> {
         &self,
         scene_time_seconds: f32,
     ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
+        self.resolve_frame_with_audio_values_at(scene_time_seconds, &[])
+    }
+
+    fn resolve_frame_with_audio_values_at(
+        &self,
+        scene_time_seconds: f32,
+        audio_values: &[ResolvedAudioBandMaterialValue],
+    ) -> Result<ResolvedSemanticFrame, SceneSemanticWorldError> {
         let mut states = vec![None; self.entities.len()];
         let mut visits = vec![ResolveVisitState::Unvisited; self.entities.len()];
         let mut attachment_links = Vec::new();
@@ -302,6 +324,7 @@ impl<'a> SceneSemanticWorld<'a> {
                 &mut states,
                 &mut attachment_links,
                 &mut retained_puppets,
+                audio_values,
                 scene_time_seconds,
             )?;
         }
@@ -484,6 +507,7 @@ impl<'a> SceneSemanticWorld<'a> {
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
+        audio_values: &[ResolvedAudioBandMaterialValue],
         scene_time_seconds: f32,
     ) -> Result<ResolvedObjectState, SceneSemanticWorldError> {
         match visits[entity_index] {
@@ -530,7 +554,7 @@ impl<'a> SceneSemanticWorld<'a> {
             .ok_or(SceneSemanticWorldError::MissingVisual {
                 object: entity_record.object,
             })?;
-        let sampled_transform = sampled_object_transform(
+        let mut sampled_transform = sampled_object_transform(
             self.storage,
             transform,
             self.transform_animations
@@ -538,6 +562,13 @@ impl<'a> SceneSemanticWorld<'a> {
                 .and_then(Option::as_ref),
             scene_time_seconds,
         );
+        if let Some(scale) = object_uniform_scale(audio_values, object.id) {
+            sampled_transform.scale = SceneVec3 {
+                x: scale,
+                y: scale,
+                z: scale,
+            };
+        }
         let local_matrix = transform_matrix(&sampled_transform);
         let mesh_range = self
             .mesh_components
@@ -559,6 +590,7 @@ impl<'a> SceneSemanticWorld<'a> {
             states,
             attachment_links,
             retained_puppets,
+            audio_values,
             scene_time_seconds,
         )?;
         let state = ResolvedObjectState {
@@ -594,6 +626,7 @@ impl<'a> SceneSemanticWorld<'a> {
         states: &mut [Option<ResolvedObjectState>],
         attachment_links: &mut Vec<ResolvedAttachmentLink>,
         retained_puppets: &mut Option<&mut [RetainedPuppetTopology]>,
+        audio_values: &[ResolvedAudioBandMaterialValue],
         scene_time_seconds: f32,
     ) -> Result<ResolvedParentState, SceneSemanticWorldError> {
         if object.parent_we_id == INVALID_OBJECT_ID {
@@ -628,6 +661,7 @@ impl<'a> SceneSemanticWorld<'a> {
             states,
             attachment_links,
             retained_puppets,
+            audio_values,
             scene_time_seconds,
         )?;
         let mut parent_anchor = parent_state.world_matrix;

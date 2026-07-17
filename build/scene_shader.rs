@@ -74,10 +74,19 @@ void main() {
 pub(super) fn object_composite_sources() -> (String, String) {
     let vertex = r#"#version 450
 layout(location = 0) out vec2 v_TexCoord;
+layout(set = 0, binding = 2) uniform ObjectCompositeDrawUniform {
+    vec4 g_ScreenUvToObjectUvRow0;
+    vec4 g_ScreenUvToObjectUvRow1;
+    vec4 g_ObjectUvToScreenUvRow0;
+    vec4 g_ObjectUvToScreenUvRow1;
+} u_Draw;
 void main() {
     vec2 positions[3] = vec2[](vec2(-1.0, -1.0), vec2(3.0, -1.0), vec2(-1.0, 3.0));
     vec2 position = positions[gl_VertexIndex];
-    v_TexCoord = position * 0.5 + 0.5;
+    vec2 screen_uv = position * 0.5 + 0.5;
+    v_TexCoord = vec2(
+        dot(u_Draw.g_ScreenUvToObjectUvRow0.xyz, vec3(screen_uv, 1.0)),
+        dot(u_Draw.g_ScreenUvToObjectUvRow1.xyz, vec3(screen_uv, 1.0)));
     gl_Position = vec4(position, 0.0, 1.0);
 }
 "#;

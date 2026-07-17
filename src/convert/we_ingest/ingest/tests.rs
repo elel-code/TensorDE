@@ -221,6 +221,85 @@ fn ingests_ambient_sparkles_as_typed_particle_ir_and_part_record() {
 }
 
 #[test]
+fn ingests_floral_oscillation_as_typed_particle_ir_and_part_record() {
+    let root = std::env::temp_dir().join(format!(
+        "gilder-we-floral-particle-test-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("particles")).expect("particles");
+    fs::create_dir_all(root.join("materials/particle")).expect("materials");
+    fs::write(
+        root.join("project.json"),
+        r#"{"type":"scene","file":"scene.json","title":"Floral"}"#,
+    )
+    .expect("project");
+    fs::write(
+        root.join("scene.json"),
+        r#"{"general":{"orthogonalprojection":{"width":3840,"height":2160}},"objects":[{"id":711,"name":"flowers","particle":"particles/flowers.json","origin":"1920 1080 0"}]}"#,
+    )
+    .expect("scene");
+    fs::write(
+        root.join("particles/flowers.json"),
+        r#"{
+            "emitter":[{"id":5,"name":"boxrandom","distancemax":"1800 750 0","rate":150}],
+            "initializer":[
+                {"id":2,"name":"sizerandom","min":150,"max":400},
+                {"id":3,"name":"rotationrandom"},
+                {"id":4,"name":"lifetimerandom","min":1000000,"max":1000000}
+            ],
+            "material":"materials/particle/flowers.json",
+            "maxcount":500,
+            "operator":[
+                {"id":6,"name":"oscillateposition","frequencymax":1,"scalemin":1,"scalemax":2},
+                {"id":7,"name":"oscillatesize","frequencymax":1,"phasemax":1,"scalemin":1,"scalemax":1.05}
+            ],
+            "renderer":[{"id":1,"name":"sprite"}]
+        }"#,
+    )
+    .expect("particle");
+    fs::write(
+        root.join("materials/particle/flowers.json"),
+        r#"{"passes":[{"shader":"genericparticle","blending":"translucent","textures":[null]}]}"#,
+    )
+    .expect("material");
+
+    let ir = ingest_wallpaper_engine_project(&root).expect("floral IR");
+    let profile = ir.particles[0]
+        .floral_oscillation_profile()
+        .expect("floral oscillation specialization");
+    assert_eq!(profile.rate, 150.0);
+    assert_eq!(profile.position_frequency_min, 0.0);
+    assert_eq!(profile.position_frequency_max, 1.0);
+    assert_eq!(profile.position_scale_min, 1.0);
+    assert_eq!(profile.position_scale_max, 2.0);
+    assert_eq!(
+        profile.position_mask,
+        SceneVec3 {
+            x: 1.0,
+            y: 1.0,
+            z: 0.0
+        }
+    );
+    assert_eq!(profile.size_phase_max, 1.0);
+    assert_eq!(profile.size_scale_max, 1.05);
+
+    let document =
+        crate::convert::we_ingest::lower::lower_ir_to_scene_binary(&ir).expect("lower floral");
+    assert_eq!(
+        document.particles[0].simulation,
+        crate::engine::scene::SceneParticleSimulationKind::FloralOscillation
+    );
+    assert_eq!(document.particles[0].position_oscillation_mask.x, 1.0);
+    let mut bytes = Vec::new();
+    crate::engine::scene::write_scene_binary(&document, &mut bytes).expect("write PART");
+    let decoded = crate::engine::scene::read_scene_binary_bytes(&bytes).expect("read PART");
+    assert_eq!(decoded.particles, document.particles);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn ingests_json_puppet_descriptor_into_mdl_ir_records() {
     let root =
         std::env::temp_dir().join(format!("gilder-we-mdl-ingest-test-{}", std::process::id()));

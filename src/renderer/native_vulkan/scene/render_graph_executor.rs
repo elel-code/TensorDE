@@ -227,6 +227,7 @@ mod tests {
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+                shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: 0,
                 resolved_object_index: 0,
                 clip_transform: identity_clip_transform(),
@@ -366,6 +367,7 @@ mod tests {
             material_sampled_bindings: Vec::new(),
             mesh_draws: vec![SceneRenderingDeviceMeshDraw {
                 primitive: SceneRenderingDeviceDrawPrimitive::FullscreenTriangle,
+                shader_key: crate::engine::scene::SceneStringId::NONE,
                 mesh_index: crate::engine::scene::INVALID_OBJECT_ID,
                 resolved_object_index: crate::engine::scene::INVALID_OBJECT_ID,
                 clip_transform: identity_clip_transform(),

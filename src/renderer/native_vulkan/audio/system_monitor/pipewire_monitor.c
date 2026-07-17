@@ -21,6 +21,8 @@
 typedef struct GilderSystemAudioMonitor {
     struct pw_thread_loop *loop;
     struct pw_stream *stream;
+    double goertzel_coefficients[GILDER_MONITOR_BANDS];
+    double response_weights[GILDER_MONITOR_BANDS];
     atomic_int stream_state;
     atomic_int startup_error;
     atomic_uint_fast64_t process_callbacks;
@@ -38,7 +40,7 @@ static uint32_t gilder_monitor_quantize(double value) {
 
 static double gilder_monitor_we_spectrum_response(
     double goertzel_power,
-    int band
+    double response_weight
 ) {
     if (!isfinite(goertzel_power) || goertzel_power <= 0.0)
         return 0.0;
@@ -46,8 +48,7 @@ static double gilder_monitor_we_spectrum_response(
      * followed by logarithmic compression and a high-frequency compensation curve.
      * The factor four reverses the Hann window's 0.5 coherent gain. */
     double level = 0.35 * log10(goertzel_power * 4.0);
-    double position = (double)band / (double)(GILDER_MONITOR_BANDS - 1);
-    double weighted = level * (2.0 - exp(0.5 - position));
+    double weighted = level * response_weight;
     if (!isfinite(weighted) || weighted <= 0.0)
         return 0.0;
     return weighted >= 1.0 ? 1.0 : weighted;
@@ -65,30 +66,37 @@ static void gilder_monitor_analyze(
 ) {
     if (frame_count < 4)
         return;
+    double q1[GILDER_MONITOR_BANDS] = {0.0};
+    double q2[GILDER_MONITOR_BANDS] = {0.0};
+    double phase_cos = 1.0;
+    double phase_sin = 0.0;
+    double phase_step = 2.0 * GILDER_MONITOR_PI / (double)(frame_count - 1);
+    double phase_step_cos = cos(phase_step);
+    double phase_step_sin = sin(phase_step);
+    for (int frame = 0; frame < frame_count; ++frame) {
+        double windowed_sample = gilder_monitor_mono_sample(samples, frame)
+            * (0.5 - 0.5 * phase_cos);
+        for (int band = 0; band < GILDER_MONITOR_BANDS; ++band) {
+            double q0 = monitor->goertzel_coefficients[band] * q1[band]
+                - q2[band] + windowed_sample;
+            q2[band] = q1[band];
+            q1[band] = q0;
+        }
+        double next_phase_cos = phase_cos * phase_step_cos
+            - phase_sin * phase_step_sin;
+        phase_sin = phase_sin * phase_step_cos
+            + phase_cos * phase_step_sin;
+        phase_cos = next_phase_cos;
+    }
     uint32_t bands[GILDER_MONITOR_BANDS];
     for (int band = 0; band < GILDER_MONITOR_BANDS; ++band) {
-        double position = (double)band / (double)(GILDER_MONITOR_BANDS - 1);
-        double frequency = GILDER_MONITOR_MIN_FREQUENCY * pow(
-            GILDER_MONITOR_MAX_FREQUENCY / GILDER_MONITOR_MIN_FREQUENCY,
-            position
-        );
-        double omega = 2.0 * GILDER_MONITOR_PI * frequency / GILDER_MONITOR_RATE;
-        double coeff = 2.0 * cos(omega);
-        double q0 = 0.0;
-        double q1 = 0.0;
-        double q2 = 0.0;
-        for (int frame = 0; frame < frame_count; ++frame) {
-            double window = 0.5 - 0.5 * cos(
-                2.0 * GILDER_MONITOR_PI * (double)frame / (double)(frame_count - 1)
-            );
-            q0 = coeff * q1 - q2
-                + gilder_monitor_mono_sample(samples, frame) * window;
-            q2 = q1;
-            q1 = q0;
-        }
-        double power = q1 * q1 + q2 * q2 - coeff * q1 * q2;
+        double power = q1[band] * q1[band] + q2[band] * q2[band]
+            - monitor->goertzel_coefficients[band] * q1[band] * q2[band];
         bands[band] = gilder_monitor_quantize(
-            gilder_monitor_we_spectrum_response(power, band)
+            gilder_monitor_we_spectrum_response(
+                power,
+                monitor->response_weights[band]
+            )
         );
     }
     for (int word = 0; word < GILDER_MONITOR_PACKED_WORDS; ++word) {
@@ -157,6 +165,16 @@ GilderSystemAudioMonitor *gilder_system_audio_monitor_alloc(void) {
     GilderSystemAudioMonitor *monitor = calloc(1, sizeof(*monitor));
     if (!monitor)
         return NULL;
+    for (int band = 0; band < GILDER_MONITOR_BANDS; ++band) {
+        double position = (double)band / (double)(GILDER_MONITOR_BANDS - 1);
+        double frequency = GILDER_MONITOR_MIN_FREQUENCY * pow(
+            GILDER_MONITOR_MAX_FREQUENCY / GILDER_MONITOR_MIN_FREQUENCY,
+            position
+        );
+        double omega = 2.0 * GILDER_MONITOR_PI * frequency / GILDER_MONITOR_RATE;
+        monitor->goertzel_coefficients[band] = 2.0 * cos(omega);
+        monitor->response_weights[band] = 2.0 - exp(0.5 - position);
+    }
     pw_init(NULL, NULL);
     const struct spa_dict_item loop_items[] = {
         { SPA_KEY_THREAD_STACK_SIZE, GILDER_MONITOR_THREAD_STACK_SIZE },

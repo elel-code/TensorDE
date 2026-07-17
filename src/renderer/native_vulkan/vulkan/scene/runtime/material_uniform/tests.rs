@@ -53,6 +53,26 @@
     }
 
     #[test]
+    fn synthetic_composite_uses_actual_pass_shader_uniform_layout() {
+        let mut document = storage_with_constants("composelayer", &[])
+            .document()
+            .clone();
+        document.strings.push("we/objectcomposite".to_owned());
+        let composite_shader = SceneStringId((document.strings.len() - 1) as u32);
+        let storage = SceneStorage::from_document(document).expect("composite storage");
+        let mut draw = draw_with_material(SceneMaterialHandle(0));
+        draw.shader_key = composite_shader;
+        draw.primitive = SceneRenderingDeviceDrawPrimitive::FullscreenTriangle;
+        draw.apply_resolved_visual = true;
+
+        let payload = pack_scene_material_uniforms(&storage, &[draw], 0.0);
+
+        for lane in 0..4 {
+            assert_eq!(f32_from_payload(&payload, lane * 4), 1.0);
+        }
+    }
+
+    #[test]
     fn offscreen_object_source_defers_resolved_visual_to_object_composite() {
         let storage = storage_with_constants("genericimage4", &[("tint", "[0.8,0.6,0.4,0.5]")]);
         let mut draw = draw_with_material(SceneMaterialHandle(0));
@@ -582,6 +602,7 @@
     fn draw_with_material(material: SceneMaterialHandle) -> SceneRenderingDeviceMeshDraw {
         SceneRenderingDeviceMeshDraw {
             primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            shader_key: SceneStringId::NONE,
             mesh_index: 0,
             resolved_object_index: 0,
             clip_transform: [[0.0; 4]; 4],

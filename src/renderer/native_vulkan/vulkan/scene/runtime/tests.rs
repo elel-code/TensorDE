@@ -20,6 +20,7 @@
     fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
         let draw = SceneRenderingDeviceMeshDraw {
             primitive: SceneRenderingDeviceDrawPrimitive::ObjectMesh,
+            shader_key: crate::engine::scene::SceneStringId::NONE,
             mesh_index: 0,
             resolved_object_index: 0,
             clip_transform: [[0.0; 4]; 4],
