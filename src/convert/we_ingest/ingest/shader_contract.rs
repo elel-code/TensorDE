@@ -187,6 +187,9 @@ pub(super) fn declared_texture_slot_mask(
         "we/framebuffer-water-final" => mask |= 0x3f,
         "we/framebuffer-water-post-final" => mask |= 0x03,
         "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => mask |= 0x03,
+        "we/framebuffer-lightning-screen-final" | "we/framebuffer-lightning-add-final" => {
+            mask |= 0x01
+        }
         _ => {}
     }
     mask
@@ -237,6 +240,8 @@ fn mesh_shader_uses_slot_zero(key: &str) -> bool {
         || key == "we/framebuffer-water-post-final"
         || key == "we/framebuffer-lut16-final"
         || key == "we/framebuffer-lut64-final"
+        || key == "we/framebuffer-lightning-screen-final"
+        || key == "we/framebuffer-lightning-add-final"
         || key == "we/puppet-effect-source"
         || key == "we/puppet-effect-composite"
         || key == "we/puppet-waterwaves-composite"
@@ -312,6 +317,8 @@ fn mesh_shader_needs_draw_and_material_uniforms(key: &str) -> bool {
         || key == "we/framebuffer-water-post-final"
         || key == "we/framebuffer-lut16-final"
         || key == "we/framebuffer-lut64-final"
+        || key == "we/framebuffer-lightning-screen-final"
+        || key == "we/framebuffer-lightning-add-final"
         || key == "color"
         || key.starts_with("color__")
         || key == "we/color"

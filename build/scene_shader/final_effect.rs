@@ -1,5 +1,7 @@
 use super::flat_rounded_mask_support_vertex_source;
 
+#[path = "final_effect/lightning.rs"]
+mod framebuffer_lightning;
 #[path = "final_effect/lut.rs"]
 mod framebuffer_lut;
 
@@ -72,6 +74,14 @@ pub(crate) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         key: "we/framebuffer-lut64-final",
         family: super::super::SceneShaderFamily::MeshFinalEffect,
     },
+    super::super::SceneShaderSpec {
+        key: "we/framebuffer-lightning-screen-final",
+        family: super::super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::super::SceneShaderSpec {
+        key: "we/framebuffer-lightning-add-final",
+        family: super::super::SceneShaderFamily::MeshFinalEffect,
+    },
 ];
 
 pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
@@ -92,7 +102,9 @@ pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
         | "we/framebuffer-water-final"
         | "we/framebuffer-water-post-final"
         | "we/framebuffer-lut16-final"
-        | "we/framebuffer-lut64-final" => "FinalEffectProgram",
+        | "we/framebuffer-lut64-final"
+        | "we/framebuffer-lightning-screen-final"
+        | "we/framebuffer-lightning-add-final" => "FinalEffectProgram",
         _ => "None",
     }
 }
@@ -120,6 +132,12 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         "we/framebuffer-water-post-final" => final_framebuffer_water_post_fragment_source(),
         "we/framebuffer-lut16-final" => framebuffer_lut::framebuffer_lut_fragment_source(16),
         "we/framebuffer-lut64-final" => framebuffer_lut::framebuffer_lut_fragment_source(64),
+        "we/framebuffer-lightning-screen-final" => {
+            framebuffer_lightning::framebuffer_lightning_fragment_source(7)
+        }
+        "we/framebuffer-lightning-add-final" => {
+            framebuffer_lightning::framebuffer_lightning_fragment_source(31)
+        }
         _ => panic!("unknown final effect shader {key:?}"),
     };
     let vertex = match key {
@@ -136,6 +154,9 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         }
         "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => {
             framebuffer_lut::framebuffer_lut_vertex_source()
+        }
+        "we/framebuffer-lightning-screen-final" | "we/framebuffer-lightning-add-final" => {
+            framebuffer_lightning::framebuffer_lightning_vertex_source()
         }
         _ => super::super::scene_mesh_vertex_source(),
     };

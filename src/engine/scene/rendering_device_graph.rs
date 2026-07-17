@@ -417,6 +417,8 @@ fn pass_draws_object_mesh(storage: &SceneStorage, pass: &SceneRenderPassRecord) 
                         || key.eq_ignore_ascii_case("we/framebuffer-water-post-final")
                         || key.eq_ignore_ascii_case("we/framebuffer-lut16-final")
                         || key.eq_ignore_ascii_case("we/framebuffer-lut64-final")
+                        || key.eq_ignore_ascii_case("we/framebuffer-lightning-screen-final")
+                        || key.eq_ignore_ascii_case("we/framebuffer-lightning-add-final")
                 })))
 }
 
@@ -510,6 +512,8 @@ fn shader_utility_primitive(shader_key: &str) -> Option<SceneRenderingDeviceDraw
             | "we/framebuffer-water-post-final"
             | "we/framebuffer-lut16-final"
             | "we/framebuffer-lut64-final"
+            | "we/framebuffer-lightning-screen-final"
+            | "we/framebuffer-lightning-add-final"
     ) {
         return Some(SceneRenderingDeviceDrawPrimitive::FullscreenTriangle);
     }

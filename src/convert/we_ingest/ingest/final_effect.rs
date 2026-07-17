@@ -27,6 +27,8 @@ pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
 pub(super) const FRAMEBUFFER_WATER_POST_FINAL_SHADER: &str = "we/framebuffer-water-post-final";
 const FRAMEBUFFER_LUT16_FINAL_SHADER: &str = "we/framebuffer-lut16-final";
 const FRAMEBUFFER_LUT64_FINAL_SHADER: &str = "we/framebuffer-lut64-final";
+const FRAMEBUFFER_LIGHTNING_SCREEN_FINAL_SHADER: &str = "we/framebuffer-lightning-screen-final";
+const FRAMEBUFFER_LIGHTNING_ADD_FINAL_SHADER: &str = "we/framebuffer-lightning-add-final";
 const FRAMEBUFFER_CAUSTICS_PREPASS_SHADER: &str =
     "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1";
 const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
@@ -47,6 +49,7 @@ enum FinalEffectKind {
     AudioBars,
     FramebufferWater,
     FramebufferLut,
+    FramebufferLightning,
 }
 
 #[derive(Debug, Clone)]
@@ -99,7 +102,9 @@ pub(super) fn create(
         shader: shader.to_owned(),
         samples_framebuffer_snapshot: matches!(
             kind,
-            FinalEffectKind::FramebufferWater | FinalEffectKind::FramebufferLut
+            FinalEffectKind::FramebufferWater
+                | FinalEffectKind::FramebufferLut
+                | FinalEffectKind::FramebufferLightning
         ),
         framebuffer_prepass,
     })
@@ -334,6 +339,14 @@ fn final_effect_program(
                 _ => return None,
             }
         }
+        FinalEffectKind::FramebufferLightning => {
+            append_effect_constants(&mut constants, "lightning", &inputs[0]);
+            match combo_value(&effects[0], "BLENDMODE", 9) {
+                7 => FRAMEBUFFER_LIGHTNING_SCREEN_FINAL_SHADER,
+                31 => FRAMEBUFFER_LIGHTNING_ADD_FINAL_SHADER,
+                _ => return None,
+            }
+        }
     };
     Some((shader, textures, constants))
 }
@@ -380,6 +393,13 @@ fn final_effect_kind(
         && lut_loader_is_supported(&effects[0])
     {
         return Some(FinalEffectKind::FramebufferLut);
+    }
+    if is_composelayer_shader(base_shader)
+        && effect_names.as_slice() == ["111"]
+        && previous_only(&effects[0], &[0])
+        && matches!(combo_value(&effects[0], "BLENDMODE", 9), 7 | 31)
+    {
+        return Some(FinalEffectKind::FramebufferLightning);
     }
     if !effects_in_authored_texture_space || !is_generic_image_shader(base_shader) {
         return None;
@@ -802,6 +822,13 @@ mod tests {
         assert_eq!(
             final_effect_kind("we/composelayer", &[lut], false, false),
             Some(FinalEffectKind::FramebufferLut)
+        );
+
+        let mut lightning = effect("effects/111__SLOTS_1__BLENDMODE_7", &[0]);
+        lightning.combos.insert("BLENDMODE".to_owned(), 7);
+        assert_eq!(
+            final_effect_kind("we/composelayer", &[lightning], false, false),
+            Some(FinalEffectKind::FramebufferLightning)
         );
     }
 

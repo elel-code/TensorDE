@@ -47,8 +47,29 @@ pub(super) fn final_effect_program_values(
         "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => {
             final_framebuffer_lut_values(parameters, draw)
         }
+        "we/framebuffer-lightning-screen-final" | "we/framebuffer-lightning-add-final" => {
+            final_framebuffer_lightning_values(parameters, draw, scene_time_seconds)
+        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
+}
+
+fn final_framebuffer_lightning_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+    scene_time_seconds: f32,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = scene_time_seconds;
+    values[5] = parameters.scalar(&["lightning.speed"], 0.3);
+    values[6] = parameters.scalar(&["lightning.erratic"], 1.0);
+    values[7] = parameters.scalar(&["lightning.amount"], 1.0);
+    values[8] = parameters.scalar(&["lightning.power"], 1.0);
+    values[9] = parameters.scalar(&["lightning.brightness"], 1.0);
+    values[12..16].copy_from_slice(&[0.7, 0.8, 1.0, 1.0]);
+    set_vector(&mut values, 12, &parameters.values(&["lightning.color"]), 3);
+    values
 }
 
 fn final_framebuffer_lut_values(
