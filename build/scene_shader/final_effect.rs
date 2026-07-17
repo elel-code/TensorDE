@@ -1,5 +1,8 @@
 use super::flat_rounded_mask_support_vertex_source;
 
+#[path = "final_effect/lut.rs"]
+mod framebuffer_lut;
+
 pub(crate) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
     super::SceneShaderSpec {
         key: "we/image-waterwaves-final",
@@ -61,6 +64,14 @@ pub(crate) const FINAL_EFFECT_SHADER_SPECS: &[super::SceneShaderSpec] = &[
         key: "we/framebuffer-water-post-final",
         family: super::super::SceneShaderFamily::MeshFinalEffect,
     },
+    super::super::SceneShaderSpec {
+        key: "we/framebuffer-lut16-final",
+        family: super::super::SceneShaderFamily::MeshFinalEffect,
+    },
+    super::super::SceneShaderSpec {
+        key: "we/framebuffer-lut64-final",
+        family: super::super::SceneShaderFamily::MeshFinalEffect,
+    },
 ];
 
 pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
@@ -79,7 +90,9 @@ pub(crate) fn final_effect_parameter_layout(key: &str) -> &'static str {
         | "we/tech-circle-final"
         | "we/audio-bars-final"
         | "we/framebuffer-water-final"
-        | "we/framebuffer-water-post-final" => "FinalEffectProgram",
+        | "we/framebuffer-water-post-final"
+        | "we/framebuffer-lut16-final"
+        | "we/framebuffer-lut64-final" => "FinalEffectProgram",
         _ => "None",
     }
 }
@@ -105,6 +118,8 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         "we/audio-bars-final" => final_audio_bars_fragment_source(),
         "we/framebuffer-water-final" => final_framebuffer_water_fragment_source(),
         "we/framebuffer-water-post-final" => final_framebuffer_water_post_fragment_source(),
+        "we/framebuffer-lut16-final" => framebuffer_lut::framebuffer_lut_fragment_source(16),
+        "we/framebuffer-lut64-final" => framebuffer_lut::framebuffer_lut_fragment_source(64),
         _ => panic!("unknown final effect shader {key:?}"),
     };
     let vertex = match key {
@@ -118,6 +133,9 @@ pub(crate) fn final_effect_sources(key: &str) -> (String, String) {
         "we/audio-bars-final" => final_audio_bars_vertex_source(),
         "we/framebuffer-water-final" | "we/framebuffer-water-post-final" => {
             framebuffer_water_vertex_source()
+        }
+        "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => {
+            framebuffer_lut::framebuffer_lut_vertex_source()
         }
         _ => super::super::scene_mesh_vertex_source(),
     };

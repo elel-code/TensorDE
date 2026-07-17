@@ -44,8 +44,24 @@ pub(super) fn final_effect_program_values(
         "we/framebuffer-water-final" | "we/framebuffer-water-post-final" => {
             final_framebuffer_water_values(parameters, storage, draw, scene_time_seconds)
         }
+        "we/framebuffer-lut16-final" | "we/framebuffer-lut64-final" => {
+            final_framebuffer_lut_values(parameters, draw)
+        }
         _ => [0.0; SCENE_MATERIAL_UNIFORM_FLOATS],
     }
+}
+
+fn final_framebuffer_lut_values(
+    parameters: &MaterialParameters<'_>,
+    draw: &SceneRenderingDeviceMeshDraw,
+) -> [f32; SCENE_MATERIAL_UNIFORM_FLOATS] {
+    let mut values = [0.0; SCENE_MATERIAL_UNIFORM_FLOATS];
+    values[0..4].copy_from_slice(&final_effect_color(parameters, draw));
+    values[4] = parameters.scalar(&["lut.multiply1", "lut.multiply"], 1.0);
+    values[5] = parameters.scalar(&["lut.tc", "lut.translucentcompensation"], 0.0);
+    values[6] = parameters.scalar(&["lut.clamp"], 1.0);
+    values[7] = parameters.scalar(&["lut.flip_y"], 0.0);
+    values
 }
 
 fn final_cloudmotion_values(

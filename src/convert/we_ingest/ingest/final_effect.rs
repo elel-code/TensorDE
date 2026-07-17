@@ -25,6 +25,8 @@ pub(super) const FLAT_ROUNDED_OPACITY_FINAL_SHADER: &str = "we/flat-rounded-opac
 pub(super) const TECH_CIRCLE_FINAL_SHADER: &str = "we/tech-circle-final";
 pub(super) const AUDIO_BARS_FINAL_SHADER: &str = "we/audio-bars-final";
 pub(super) const FRAMEBUFFER_WATER_POST_FINAL_SHADER: &str = "we/framebuffer-water-post-final";
+const FRAMEBUFFER_LUT16_FINAL_SHADER: &str = "we/framebuffer-lut16-final";
+const FRAMEBUFFER_LUT64_FINAL_SHADER: &str = "we/framebuffer-lut64-final";
 const FRAMEBUFFER_CAUSTICS_PREPASS_SHADER: &str =
     "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1";
 const FRAMEBUFFER_CAUSTICS_CHROMATIC_ZERO_PREPASS_SHADER: &str = "effects/caustics__SLOTS_3d__BLENDMODE_6__GILDER_FRAMEBUFFER_OVERLAY_1__GILDER_CHROMATIC_ZERO_1";
@@ -44,6 +46,7 @@ enum FinalEffectKind {
     TechCircle,
     AudioBars,
     FramebufferWater,
+    FramebufferLut,
 }
 
 #[derive(Debug, Clone)]
@@ -94,7 +97,10 @@ pub(super) fn create(
     Some(WeFinalEffectMaterial {
         material_index,
         shader: shader.to_owned(),
-        samples_framebuffer_snapshot: kind == FinalEffectKind::FramebufferWater,
+        samples_framebuffer_snapshot: matches!(
+            kind,
+            FinalEffectKind::FramebufferWater | FinalEffectKind::FramebufferLut
+        ),
         framebuffer_prepass,
     })
 }
@@ -311,6 +317,23 @@ fn final_effect_program(
             textures.push(remap_texture(texture_at_slot(&inputs[3], 1)?, 1));
             FRAMEBUFFER_WATER_POST_FINAL_SHADER
         }
+        FinalEffectKind::FramebufferLut => {
+            append_effect_constants(&mut constants, "lut", &inputs[0]);
+            textures.push(remap_texture(texture_at_slot(&inputs[0], 1)?, 1));
+            constants.push(synthetic_constant(
+                "lut.clamp",
+                combo_value(&effects[0], "CLAMP", 1) != 0,
+            ));
+            constants.push(synthetic_constant(
+                "lut.flip_y",
+                combo_value(&effects[0], "LUT_FLIP_Y", 0) != 0,
+            ));
+            match combo_value(&effects[0], "QUAD_SIZE", 16) {
+                16 => FRAMEBUFFER_LUT16_FINAL_SHADER,
+                64 => FRAMEBUFFER_LUT64_FINAL_SHADER,
+                _ => return None,
+            }
+        }
     };
     Some((shader, textures, constants))
 }
@@ -351,6 +374,12 @@ fn final_effect_kind(
         && framebuffer_water_chain_is_supported(effects)
     {
         return Some(FinalEffectKind::FramebufferWater);
+    }
+    if is_composelayer_shader(base_shader)
+        && effect_names.as_slice() == ["lut_loader"]
+        && lut_loader_is_supported(&effects[0])
+    {
+        return Some(FinalEffectKind::FramebufferLut);
     }
     if !effects_in_authored_texture_space || !is_generic_image_shader(base_shader) {
         return None;
@@ -406,6 +435,15 @@ fn previous_only(effect: &WeEffectPassContract, slots: &[u32]) -> bool {
             .material_blending
             .as_deref()
             .is_none_or(|blend| blend.eq_ignore_ascii_case("normal"))
+}
+
+fn lut_loader_is_supported(effect: &WeEffectPassContract) -> bool {
+    previous_only(effect, &[0, 1])
+        && effect.binds.contains_key(&1)
+        && matches!(combo_value(effect, "QUAD_SIZE", 16), 16 | 64)
+        && matches!(combo_value(effect, "CLAMP", 1), 0 | 1)
+        && matches!(combo_value(effect, "LUT_FLIP_Y", 0), 0 | 1)
+        && combo_value(effect, "BLENDMODE", 0) == 0
 }
 
 fn waterwaves_is_supported(effect: &WeEffectPassContract) -> bool {
@@ -753,6 +791,17 @@ mod tests {
                 false,
             ),
             Some(FinalEffectKind::AudioBars)
+        );
+
+        let mut lut = effect(
+            "workshop/3165346237/effects/lut_loader__SLOTS_3__CLAMP_0__QUAD_SIZE_64",
+            &[0, 1],
+        );
+        lut.combos.insert("CLAMP".to_owned(), 0);
+        lut.combos.insert("QUAD_SIZE".to_owned(), 64);
+        assert_eq!(
+            final_effect_kind("we/composelayer", &[lut], false, false),
+            Some(FinalEffectKind::FramebufferLut)
         );
     }
 
