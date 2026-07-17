@@ -4,7 +4,7 @@
 //! text mutation will replace this retained fallback with a dirty atlas update, without adding a
 //! text-specific branch to the Vulkan command path.
 
-use ab_glyph::{Font, FontArc, PxScale, ScaleFont, point};
+use ab_glyph::{Font, FontArc, FontRef, PxScale, ScaleFont, point};
 use serde_json::Value;
 
 use crate::engine::scene::SceneVec3;
@@ -26,6 +26,7 @@ use super::{WeIngestError, WeIrBuilder, bound_bool, bound_string, parse_vec3, va
 // 300 DPI on both axes (`0x1401ad1c9..0x1401ad1f2`). This is independent of scene resolution.
 const WALLPAPER_ENGINE_FONT_DPI: f32 = 300.0;
 const TYPOGRAPHIC_POINTS_PER_INCH: f32 = 72.0;
+const EMBEDDED_CJK_FALLBACK_FONT: &str = "fonts/SourceHanSans-Heavy.otf";
 
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct WeTextLayerRaster {
@@ -84,7 +85,8 @@ pub(super) fn ingest_text_layer(
     text: &str,
 ) -> Result<Option<(u32, u32)>, WeIngestError> {
     let font_path = text_layer_font_path(value);
-    let Some(font_resource) = builder.add_optional_resource(&font_path, SceneResourceKind::Font)?
+    let Some(mut font_resource) =
+        builder.add_optional_resource(&font_path, SceneResourceKind::Font)?
     else {
         builder.unsupported.push(WeIrUnsupported {
             object: Some(object),
@@ -95,7 +97,15 @@ pub(super) fn ingest_text_layer(
         });
         return Ok(None);
     };
-    let font_bytes = builder.resources[font_resource as usize].payload.clone();
+    let mut font_bytes = builder.resources[font_resource as usize].payload.clone();
+    if font_is_missing_visible_text_glyphs(&font_bytes, text)
+        && let Some(fallback_resource) =
+            builder.add_optional_resource(EMBEDDED_CJK_FALLBACK_FONT, SceneResourceKind::Font)?
+        && font_covers_visible_text(&builder.resources[fallback_resource as usize].payload, text)
+    {
+        font_resource = fallback_resource;
+        font_bytes = builder.resources[font_resource as usize].payload.clone();
+    }
     let raster = match rasterize_text_layer(value, text, font_bytes) {
         Ok(raster) => raster,
         Err(message) => {
@@ -280,9 +290,16 @@ pub(super) fn rasterize_text_layer(
     // The native layout path adds `[parameters+0x10]` directly to the 26.6 glyph advance after
     // converting that advance to pixels (`0x1401b1166..0x1401b119a`). It is not a point-size or
     // scene-resolution-relative value.
-    let spacing = parse_vec3(object.get("spacing")).map_or(0.0, |spacing| spacing.x);
+    let spacing = parse_vec3(object.get("spacing")).unwrap_or_default();
     let scale = PxScale::from(point_size);
-    let glyphs = layout_glyphs(&font, text, scale, spacing);
+    let glyphs = layout_glyphs(
+        &font,
+        text,
+        scale,
+        spacing.x,
+        spacing.y,
+        bound_string(object.get("horizontalalign")).as_deref(),
+    );
     let outline_enabled = bound_bool(object.get("outline")).unwrap_or(false);
     let outline_radius = outline_enabled
         .then(|| value_f32(object.get("outlinethickness")).unwrap_or(1.0))
@@ -306,9 +323,10 @@ pub(super) fn rasterize_text_layer(
         };
     let mut glyph_alpha = vec![0u8; width as usize * height as usize];
     for glyph in glyphs {
-        let positioned = glyph
-            .id
-            .with_scale_and_position(scale, point(origin.x + glyph.position.x, origin.y));
+        let positioned = glyph.id.with_scale_and_position(
+            scale,
+            point(origin.x + glyph.position.x, origin.y + glyph.position.y),
+        );
         let Some(outlined) = font.outline_glyph(positioned) else {
             continue;
         };
@@ -372,9 +390,7 @@ fn glyph_ink_bounds(
     let mut maximum_x = f32::NEG_INFINITY;
     let mut maximum_y = f32::NEG_INFINITY;
     for glyph in glyphs {
-        let positioned = glyph
-            .id
-            .with_scale_and_position(scale, point(glyph.position.x, 0.0));
+        let positioned = glyph.id.with_scale_and_position(scale, glyph.position);
         let Some(outlined) = font.outline_glyph(positioned) else {
             continue;
         };
@@ -403,21 +419,72 @@ fn retained_text_padding(value: Option<&Value>) -> (f32, f32) {
     (padding, padding)
 }
 
-fn layout_glyphs(font: &FontArc, text: &str, scale: PxScale, spacing: f32) -> Vec<ab_glyph::Glyph> {
+fn layout_glyphs(
+    font: &FontArc,
+    text: &str,
+    scale: PxScale,
+    spacing_x: f32,
+    spacing_y: f32,
+    horizontal_alignment: Option<&str>,
+) -> Vec<ab_glyph::Glyph> {
     let scaled = font.as_scaled(scale);
-    let mut cursor_x = 0.0;
-    let mut previous = None;
     let mut glyphs = Vec::with_capacity(text.chars().count());
-    for character in text.chars() {
-        let id = font.glyph_id(character);
-        if let Some(previous) = previous {
-            cursor_x += scaled.kern(previous, id);
+    let mut lines = Vec::new();
+    let line_advance = scaled.height() + scaled.line_gap() + spacing_y;
+    for (line_index, line) in text.split('\n').enumerate() {
+        let line = line.strip_suffix('\r').unwrap_or(line);
+        let glyph_start = glyphs.len();
+        let mut cursor_x = 0.0;
+        let mut previous = None;
+        for character in line.chars() {
+            let id = font.glyph_id(character);
+            if let Some(previous) = previous {
+                cursor_x += scaled.kern(previous, id);
+            }
+            glyphs.push(
+                id.with_scale_and_position(
+                    scale,
+                    point(cursor_x, line_index as f32 * line_advance),
+                ),
+            );
+            cursor_x += scaled.h_advance(id) + spacing_x;
+            previous = Some(id);
         }
-        glyphs.push(id.with_scale_and_position(scale, point(cursor_x, 0.0)));
-        cursor_x += scaled.h_advance(id) + spacing;
-        previous = Some(id);
+        lines.push((glyph_start, glyphs.len(), cursor_x));
+    }
+    let maximum_line_width = lines
+        .iter()
+        .map(|(_, _, width)| *width)
+        .fold(0.0_f32, f32::max);
+    for (start, end, width) in lines {
+        let offset_x = match horizontal_alignment {
+            Some("left") => 0.0,
+            Some("right") => maximum_line_width - width,
+            _ => (maximum_line_width - width) * 0.5,
+        };
+        for glyph in &mut glyphs[start..end] {
+            glyph.position.x += offset_x;
+        }
     }
     glyphs
+}
+
+fn font_is_missing_visible_text_glyphs(font_bytes: &[u8], text: &str) -> bool {
+    let Ok(font) = FontRef::try_from_slice(font_bytes) else {
+        return false;
+    };
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .any(|character| font.glyph_id(character).0 == 0)
+}
+
+fn font_covers_visible_text(font_bytes: &[u8], text: &str) -> bool {
+    let Ok(font) = FontRef::try_from_slice(font_bytes) else {
+        return false;
+    };
+    text.chars()
+        .filter(|character| !character.is_whitespace())
+        .all(|character| font.glyph_id(character).0 != 0)
 }
 
 fn dilate_alpha(source: &[u8], width: u32, height: u32, radius: i32) -> Vec<u8> {
