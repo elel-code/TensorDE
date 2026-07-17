@@ -306,7 +306,10 @@ mod tests {
         assert_eq!(plan.effect_target_storage.physical_target_count, 1);
         assert_eq!(plan.effect_target_storage.aliased_target_count, 1);
         assert_eq!(plan.effect_target_storage.named_fbo_count, 1);
-        assert_eq!(plan.effect_target_storage.first_class_effect_target_count, 1);
+        assert_eq!(
+            plan.effect_target_storage.first_class_effect_target_count,
+            1
+        );
         assert!(plan.effect_target_storage.dynamic_rendering_image_required);
     }
 

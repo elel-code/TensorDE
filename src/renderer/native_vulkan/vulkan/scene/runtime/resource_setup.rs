@@ -1,5 +1,4 @@
 use super::*;
-
 pub(super) fn create_scene_gpu_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -213,21 +212,18 @@ pub(super) fn create_scene_gpu_resources(
 
     let (mut resource_descriptors, draw_commands) = scene_descriptor_plan_inputs(
         &backend_plan.rendering_device_graph.mesh_draws,
+        &backend_plan.rendering_device_graph.particle_gpu_emitters,
         &descriptor_layout,
         &pipeline_indices,
         &alpha_coverage_scissors,
     );
-    let particle_global_descriptor_base = resource_descriptors.len();
-    if !backend_plan
-        .rendering_device_graph
-        .particle_gpu_emitters
-        .is_empty()
-    {
-        resource_descriptors.extend([
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
-            NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
-        ]);
-    }
+    let particle_global_descriptor_base = particle_resources::append_global_descriptor_plan(
+        &mut resource_descriptors,
+        !backend_plan
+            .rendering_device_graph
+            .particle_gpu_emitters
+            .is_empty(),
+    );
     let descriptor_heap_plan = native_vulkan_vulkanalia_descriptor_heap_resource_plan(
         NativeVulkanVulkanaliaDescriptorHeapResourcePlanInput {
             resource_descriptors,
@@ -478,14 +474,9 @@ pub(super) fn create_scene_gpu_resources(
             return Err(err);
         }
     };
-    let particle_descriptor_result = if let (Some(resources), Some(descriptor_base)) = (
-        particle_resources.as_ref(),
-        (!backend_plan
-            .rendering_device_graph
-            .particle_gpu_emitters
-            .is_empty())
-        .then_some(particle_global_descriptor_base),
-    ) {
+    let particle_descriptor_result = if let (Some(resources), Some(descriptor_base)) =
+        (particle_resources.as_ref(), particle_global_descriptor_base)
+    {
         particle_resources::write_scene_particle_descriptors(
             device,
             &mut descriptor_heap,
@@ -544,6 +535,8 @@ pub(super) fn create_scene_gpu_resources(
             sampled_binding_plan,
             initial_scene_color_image,
             target_format,
+            particle_resources.as_ref(),
+            particle_global_descriptor_base,
         ) {
             Ok(resources) => frame_resources.push(resources),
             Err(err) => {
@@ -589,11 +582,7 @@ pub(super) fn create_scene_gpu_resources(
         graph_execution_order,
         capture_scene_graph,
         descriptor_heap_plan,
-        particle_global_descriptor_base: (!backend_plan
-            .rendering_device_graph
-            .particle_gpu_emitters
-            .is_empty())
-        .then_some(particle_global_descriptor_base),
+        particle_global_descriptor_base,
         pipelines: pipeline_resources,
         draw_commands,
         sampled_slots: descriptor_layout.sampled_slots,
@@ -609,10 +598,10 @@ pub(super) fn create_scene_gpu_resources(
         multisampled_render_to_single_sampled_enabled,
         scene_color_msaa_targets,
         particle_resources,
+        particle_scene_time_seconds: 0.0,
     })
 }
 
-#[allow(clippy::too_many_arguments)]
 fn create_additional_scene_frame_resources(
     device: &Device,
     memory_properties: &vk::PhysicalDeviceMemoryProperties,
@@ -627,6 +616,8 @@ fn create_additional_scene_frame_resources(
     sampled_binding_plan: &SceneSampledImageBindingPlan,
     initial_scene_color_image: vk::Image,
     target_format: vk::Format,
+    particle_resources: Option<&particle_resources::SceneParticleGpuResources>,
+    particle_global_descriptor_base: Option<usize>,
 ) -> Result<SceneGpuFrameResources, String> {
     let transform_buffer = native_vulkan_vulkanalia_create_buffer(
         device,
@@ -707,6 +698,28 @@ fn create_additional_scene_frame_resources(
         sampled_binding_plan,
         Some((initial_scene_color_image, target_format)),
     ) {
+        native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
+            device,
+            descriptor_heap,
+        );
+        if let Some(buffer) = material_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        if let Some(buffer) = skinning_buffer {
+            native_vulkan_vulkanalia_destroy_buffer(device, buffer);
+        }
+        native_vulkan_vulkanalia_destroy_buffer(device, transform_buffer);
+        return Err(err);
+    }
+    if let (Some(resources), Some(descriptor_base)) =
+        (particle_resources, particle_global_descriptor_base)
+        && let Err(err) = particle_resources::write_scene_particle_descriptors(
+            device,
+            &mut descriptor_heap,
+            descriptor_base,
+            resources,
+        )
+    {
         native_vulkan_vulkanalia_destroy_descriptor_heap_resource_resources(
             device,
             descriptor_heap,
@@ -840,7 +853,6 @@ pub(super) fn write_scene_frame_sampled_descriptors(
         .saturating_mul(sampled_binding_plan.sampled_slot_count))
 }
 
-#[allow(clippy::too_many_arguments)]
 fn write_scene_color_snapshot_descriptors(
     device: &Device,
     descriptor_heap: &mut VulkanaliaDescriptorHeapResourceResources,

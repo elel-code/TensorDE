@@ -26,6 +26,13 @@ use crate::renderer::native_vulkan::{
 
 use super::effect_target::SceneEffectTargetImagePlan;
 
+mod particle_compute;
+mod samples;
+mod shader_module;
+
+use samples::ScenePipelineSamples;
+use shader_module::create_shader_module;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::renderer::native_vulkan) struct ScenePipelineDescriptorLayout {
     pub sampled_slots: Vec<u32>,
@@ -35,6 +42,7 @@ pub(in crate::renderer::native_vulkan) struct ScenePipelineDescriptorLayout {
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineResources {
     pub entries: Vec<ScenePipelineEntry>,
+    pub particle_compute: Option<vk::Pipeline>,
 }
 
 pub(in crate::renderer::native_vulkan) struct ScenePipelineEntry {
@@ -50,21 +58,6 @@ struct ScenePipelineKey {
     advanced_blend_overlap: vk::BlendOverlapEXT,
     target_format: vk::Format,
     samples: ScenePipelineSamples,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ScenePipelineSamples {
-    Single,
-    SceneColor4x,
-}
-
-impl ScenePipelineSamples {
-    const fn rasterization_samples(self) -> vk::SampleCountFlags {
-        match self {
-            Self::Single => vk::SampleCountFlags::_1,
-            Self::SceneColor4x => vk::SampleCountFlags::_4,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,18 +381,36 @@ pub(in crate::renderer::native_vulkan) fn create_scene_pipelines(
                 entries.push(ScenePipelineEntry { key, pipeline });
             }
             Err(err) => {
-                destroy_scene_pipelines(device, ScenePipelineResources { entries });
+                destroy_scene_pipelines(
+                    device,
+                    ScenePipelineResources {
+                        entries,
+                        particle_compute: None,
+                    },
+                );
                 return Err(err);
             }
         }
     }
-    Ok(ScenePipelineResources { entries })
+    let particle_compute = particle_compute::create_optional_particle_compute_pipeline(
+        device,
+        graph,
+        descriptor_heap_plan,
+    )?;
+    Ok(ScenePipelineResources {
+        entries,
+        particle_compute,
+    })
 }
 
 pub(in crate::renderer::native_vulkan) fn destroy_scene_pipelines(
     device: &Device,
     resources: ScenePipelineResources,
 ) {
+    particle_compute::destroy_optional_particle_compute_pipeline(
+        device,
+        resources.particle_compute,
+    );
     unsafe {
         for entry in resources.entries {
             device.destroy_pipeline(entry.pipeline, None);
@@ -885,21 +896,6 @@ fn create_graphics_pipeline(
     }
     .map_err(|err| format!("vkCreateGraphicsPipelines(vulkanalia scene): {err:?}"))?;
     Ok(pipelines[0])
-}
-
-fn create_shader_module(
-    device: &Device,
-    code: &[u32],
-    label: &'static str,
-) -> Result<vk::ShaderModule, String> {
-    if code.first().copied() != Some(0x0723_0203) {
-        return Err(format!("scene {label} shader is not valid SPIR-V bytecode"));
-    }
-    let create_info = vk::ShaderModuleCreateInfo::builder()
-        .code(code)
-        .code_size(std::mem::size_of_val(code));
-    unsafe { device.create_shader_module(&create_info, None) }
-        .map_err(|err| format!("vkCreateShaderModule(vulkanalia {label}): {err:?}"))
 }
 
 fn scene_color_blend_attachment(blend: SceneGpuBlend) -> vk::PipelineColorBlendAttachmentState {

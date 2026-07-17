@@ -50,7 +50,7 @@ fn descriptor_plan_adds_skinning_storage_buffer_after_uniforms() {
     };
 
     let (descriptors, commands) =
-        scene_descriptor_plan_inputs(&[draw], &layout, &[2], &[Vec::new()]);
+        scene_descriptor_plan_inputs(&[draw], &[], &layout, &[2], &[Vec::new()]);
 
     assert_eq!(
         descriptors,

@@ -8,11 +8,27 @@ use crate::engine::scene::{
     SceneStorage,
 };
 use crate::renderer::native_vulkan::{
+    NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind,
     NativeVulkanVulkanaliaRecordedBufferUpload, VulkanaliaDescriptorHeapResourceResources,
     native_vulkan_vulkanalia_create_device_local_buffer_with_recorded_staging_upload,
     native_vulkan_vulkanalia_destroy_buffer,
     native_vulkan_vulkanalia_write_descriptor_heap_resource_storage_buffer,
 };
+
+pub(super) fn append_global_descriptor_plan(
+    descriptors: &mut Vec<NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind>,
+    enabled: bool,
+) -> Option<usize> {
+    if !enabled {
+        return None;
+    }
+    let base = descriptors.len();
+    descriptors.extend([
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+        NativeVulkanVulkanaliaDescriptorHeapResourceDescriptorKind::StorageBuffer,
+    ]);
+    Some(base)
+}
 
 pub(super) struct SceneParticleGpuResources {
     pub state_upload: NativeVulkanVulkanaliaRecordedBufferUpload,

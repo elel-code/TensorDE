@@ -18,7 +18,10 @@ use vulkanalia::vk::{
     self, HasBuilder, KhrSurfaceExtensionInstanceCommands, KhrSwapchainExtensionDeviceCommands,
 };
 
-use crate::engine::scene::{RenderingServer, SceneRenderingDeviceMeshDraw, SceneStorage};
+use crate::engine::scene::{
+    RenderingServer, SceneParticleGpuEmitterPlan, SceneRenderingDeviceDrawPrimitive,
+    SceneRenderingDeviceMeshDraw, SceneStorage,
+};
 use crate::renderer::native_vulkan::audio::system_monitor::NativeVulkanSystemAudioMonitor;
 use crate::renderer::native_vulkan::{
     NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanClearColor,
@@ -71,6 +74,7 @@ mod gpu_timing;
 mod graph_execution;
 mod material_uniform;
 mod mesh_payload;
+mod particle_compute_dispatch;
 mod particle_resources;
 mod pipeline;
 mod present_loop;
@@ -249,6 +253,8 @@ pub struct NativeVulkanVulkanaliaScenePresentSnapshot {
     pub particle_gpu_state_bytes: u64,
     pub particle_gpu_indirect_bytes: u64,
     pub particle_gpu_device_local: bool,
+    pub particle_compute_pipeline_created: bool,
+    pub particle_compute_dispatch_enabled: bool,
     pub mesh_draw_recorded: bool,
     pub command_order: Vec<&'static str>,
     pub present_backend: &'static str,
@@ -288,6 +294,7 @@ struct SceneGpuResources {
     multisampled_render_to_single_sampled_enabled: bool,
     scene_color_msaa_targets: Vec<NativeVulkanVulkanaliaImage>,
     particle_resources: Option<particle_resources::SceneParticleGpuResources>,
+    particle_scene_time_seconds: f32,
 }
 
 struct SceneGpuFrameResources {
@@ -498,6 +505,7 @@ fn end_one_time_commands(
 
 fn scene_descriptor_plan_inputs(
     draws: &[SceneRenderingDeviceMeshDraw],
+    particle_emitters: &[SceneParticleGpuEmitterPlan],
     layout: &pipeline::ScenePipelineDescriptorLayout,
     pipeline_indices: &[u32],
     alpha_coverage_scissors: &[Vec<SceneGpuScissor>],
@@ -540,6 +548,13 @@ fn scene_descriptor_plan_inputs(
             vertex_count: draw.vertex_count,
             instance_count: draw.instance_count,
             instance_capacity: draw.instance_count,
+            particle_indirect_index: particle_emitters
+                .iter()
+                .find(|emitter| {
+                    draw.primitive == SceneRenderingDeviceDrawPrimitive::ParticleBillboard
+                        && emitter.object == draw.object
+                })
+                .map(|emitter| emitter.indirect_draw_index),
             resource_descriptor_base: base,
             sampler_descriptor_base: index * layout.sampled_slots.len(),
             skinning_byte_offset,

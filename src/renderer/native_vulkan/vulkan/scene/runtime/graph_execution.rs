@@ -59,6 +59,11 @@ pub(super) fn record_scene_graphs_to_swapchain(
     reference_phase: usize,
     gpu_timing: Option<&SceneGpuTiming>,
 ) -> Result<(), String> {
+    super::particle_compute_dispatch::record_particle_compute_dispatch(
+        device,
+        command_buffer,
+        scene,
+    )?;
     transition_swapchain_to_attachment(device, command_buffer, swapchain_image, old_layout);
     transition_scene_color_msaa_to_attachment(device, command_buffer, scene);
     let reference_slots = &scene

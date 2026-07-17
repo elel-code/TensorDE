@@ -30,16 +30,15 @@ pub use render_graph_executor::{
     NativeVulkanSceneRenderGraphExecutorPlan, native_vulkan_scene_render_graph_executor_plan,
 };
 pub use resource_storage::{
-    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES,
-    NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,
-    NativeVulkanSceneResourceStoragePlan, NativeVulkanSceneShaderHeapSlice,
-    native_vulkan_scene_resource_storage_plan,
+    NATIVE_VULKAN_SCENE_PUPPET_BONE_PALETTE_ENTRY_BYTES, NativeVulkanSceneHeapStoragePlan,
+    NativeVulkanSceneMeshBufferPlan, NativeVulkanSceneResourceStoragePlan,
+    NativeVulkanSceneShaderHeapSlice, native_vulkan_scene_resource_storage_plan,
 };
 pub use runtime::{
     NativeVulkanSceneRunOptions, NativeVulkanSceneRuntimeSnapshot, run_scene,
     run_scene_with_options,
 };
 pub use shader_catalog::{
-    BuiltinSceneParameterLayout, BuiltinSceneShader, native_vulkan_scene_shader_catalog,
-    native_vulkan_scene_shader_for_key,
+    BuiltinSceneParameterLayout, BuiltinSceneShader, native_vulkan_particle_compute_shader,
+    native_vulkan_scene_shader_catalog, native_vulkan_scene_shader_for_key,
 };

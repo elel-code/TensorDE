@@ -16,9 +16,8 @@ use serde::Serialize;
 use crate::engine::scene::SceneStorage;
 use crate::renderer::native_vulkan::{
     NativeVulkanClearColor, NativeVulkanError, NativeVulkanOptions,
-    NativeVulkanSceneFrameCaptureSnapshot,
-    NativeVulkanVulkanaliaScenePresentOptions, NativeVulkanVulkanaliaScenePresentSnapshot,
-    run_native_vulkan_vulkanalia_scene_present,
+    NativeVulkanSceneFrameCaptureSnapshot, NativeVulkanVulkanaliaScenePresentOptions,
+    NativeVulkanVulkanaliaScenePresentSnapshot, run_native_vulkan_vulkanalia_scene_present,
 };
 
 use super::{NativeVulkanSceneBackendPlan, native_vulkan_scene_backend_plan};
@@ -282,13 +281,13 @@ fn scene_clear_color(storage: &SceneStorage) -> NativeVulkanClearColor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::resource_storage::{
+        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneSkinningBufferPlan,
+    };
     use super::*;
     use crate::engine::scene::{RendererSceneRenderPlan, SceneRenderingDeviceGraphPlan};
     use crate::renderer::native_vulkan::scene::{
         NativeVulkanSceneDescriptorHeapPlan, NativeVulkanSceneMeshUploadPlan,
-    };
-    use super::super::resource_storage::{
-        NativeVulkanSceneEffectTargetStoragePlan, NativeVulkanSceneSkinningBufferPlan,
     };
     use crate::renderer::native_vulkan::scene::{
         NativeVulkanSceneHeapStoragePlan, NativeVulkanSceneMeshBufferPlan,

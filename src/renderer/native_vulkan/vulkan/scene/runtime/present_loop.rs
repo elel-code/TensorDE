@@ -425,6 +425,7 @@ pub(super) fn with_scene_present(
             .map(|step| frames_presented as f32 * step)
             .or(fixed_scene_time_seconds)
             .unwrap_or_else(|| started_at.elapsed().as_secs_f32());
+        scene_resources.particle_scene_time_seconds = scene_time_seconds;
         let frame_state_update_started = Instant::now();
         let frame_resources = &scene_resources.frame_resources[frame_slot];
         let frame_update = write_scene_frame_buffers(
@@ -724,6 +725,7 @@ pub(super) fn with_scene_present(
     let scene_color_msaa_memory_bytes =
         scene_color_msaa::scene_color_msaa_memory_bytes(&scene_resources.scene_color_msaa_targets);
     let mesh_draw_count = scene_resources.draw_commands.len();
+    let particle_compute_pipeline_created = scene_resources.pipelines.particle_compute.is_some();
     let particle_instance_capacity = scene_resources
         .draw_commands
         .iter()
@@ -968,6 +970,8 @@ pub(super) fn with_scene_present(
         particle_gpu_state_bytes,
         particle_gpu_indirect_bytes,
         particle_gpu_device_local,
+        particle_compute_pipeline_created,
+        particle_compute_dispatch_enabled: particle_compute_pipeline_created,
         mesh_draw_recorded,
         command_order,
         present_backend: "vulkanalia-scene-present-runtime",

@@ -45,6 +45,7 @@ pub(in crate::renderer::native_vulkan) struct SceneGpuDrawCommand {
     pub vertex_count: u32,
     pub instance_count: u32,
     pub instance_capacity: u32,
+    pub particle_indirect_index: Option<u32>,
     pub resource_descriptor_base: usize,
     pub sampler_descriptor_base: usize,
     pub skinning_byte_offset: u64,
@@ -180,7 +181,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
             let scissor = scene_vk_scissor(draw.scissor, extent);
             unsafe {
                 device.cmd_set_scissor(command_buffer, 0, &[scissor]);
-                record_bound_scene_draw(device, command_buffer, draw);
+                record_bound_scene_draw(device, command_buffer, scene, draw);
             }
             continue;
         }
@@ -190,7 +191,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
             };
             unsafe {
                 device.cmd_set_scissor(command_buffer, 0, &[scissor]);
-                record_bound_scene_draw(device, command_buffer, draw);
+                record_bound_scene_draw(device, command_buffer, scene, draw);
             }
         }
     }
@@ -200,6 +201,7 @@ pub(in crate::renderer::native_vulkan) fn record_scene_mesh_draws(
 unsafe fn record_bound_scene_draw(
     device: &Device,
     command_buffer: vk::CommandBuffer,
+    scene: &SceneGpuResources,
     draw: &SceneGpuDrawCommand,
 ) {
     match draw.primitive {
@@ -216,7 +218,25 @@ unsafe fn record_bound_scene_draw(
         SceneRenderingDeviceDrawPrimitive::FullscreenTriangle
         | SceneRenderingDeviceDrawPrimitive::ObjectUvSupportQuad
         | SceneRenderingDeviceDrawPrimitive::ParticleBillboard => unsafe {
-            device.cmd_draw(command_buffer, draw.vertex_count, draw.instance_count, 0, 0);
+            if let (SceneRenderingDeviceDrawPrimitive::ParticleBillboard, Some(index)) =
+                (draw.primitive, draw.particle_indirect_index)
+            {
+                let resources = scene
+                    .particle_resources
+                    .as_ref()
+                    .expect("particle draw requires particle GPU resources");
+                device.cmd_draw_indirect(
+                    command_buffer,
+                    resources.indirect_upload.target.buffer,
+                    u64::from(index)
+                        * std::mem::size_of::<crate::engine::scene::SceneParticleIndirectDraw>()
+                            as u64,
+                    1,
+                    std::mem::size_of::<crate::engine::scene::SceneParticleIndirectDraw>() as u32,
+                );
+            } else {
+                device.cmd_draw(command_buffer, draw.vertex_count, draw.instance_count, 0, 0);
+            }
         },
     }
 }
