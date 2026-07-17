@@ -1,6 +1,6 @@
 use super::super::*;
 use super::blend::{blend_fragment_source, blend_gradient_fragment_source};
-use super::lightning::lightning_fragment_source;
+use super::lightning::{lightning_fragment_source, lightning_vertex_source};
 use super::lut::lut_fragment_source;
 use super::oscilloscope::oscilloscope_fragment_source;
 use super::raindrop::raindrop_fragment_source;
@@ -13,6 +13,9 @@ pub(crate) fn effect_vertex_source(key: &str, shader: &str, texture_slot_mask: u
     }
     if shader == "effects/iris" {
         return iris_effect_vertex_source(texture_slot_mask);
+    }
+    if shader == "effects/111" {
+        return lightning_vertex_source();
     }
     if shader == "effects/blend"
         || shader.ends_with("/effects/blend")
