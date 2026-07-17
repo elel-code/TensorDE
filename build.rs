@@ -786,6 +786,9 @@ fn waterflow_fragment_source() -> String {
 layout(location = 0) in vec2 v_TexCoord;
 layout(location = 1) in vec2 v_ObjectTexCoord;
 layout(location = 2) flat in vec4 v_ObjectUvToScreenUv;
+layout(location = 3) flat in vec4 v_Cycles;
+layout(location = 4) flat in vec2 v_BlendWeight;
+layout(location = 5) in vec2 v_FlowTexCoord;
 layout(location = 0) out vec4 o_Color;
 layout(set = 0, binding = 0) uniform sampler2D g_Texture0;
 layout(set = 0, binding = 1) uniform sampler2D g_Texture1;
@@ -810,23 +813,14 @@ void main() {
         o_Color = vec4(0.0);
         return;
     }
-    float time_phase = u_Effect.g_TimeSpeedFeatherStrength.x
-        * u_Effect.g_TimeSpeedFeatherStrength.y;
-    vec4 cycles = fract(time_phase + vec4(0.0, 0.5, 0.25, 0.75)) - 0.5;
-    float feather = u_Effect.g_TimeSpeedFeatherStrength.z;
-    vec2 smooth_range = vec2(0.5 - feather, 0.5 + feather);
-    vec2 blend_weight = smoothstep(smooth_range.x, smooth_range.y,
-        2.0 * abs(vec2(cycles.x, cycles.z)));
-    vec2 flow_uv = v_ObjectTexCoord
-        * u_Effect.g_Texture1Resolution.zw / u_Effect.g_Texture1Resolution.xy;
-    vec2 flow = (texture(g_Texture1, flow_uv).rg - vec2(0.498)) * 2.0;
+    vec2 flow = (texture(g_Texture1, v_FlowTexCoord).rg - vec2(0.498)) * 2.0;
     float strength = u_Effect.g_TimeSpeedFeatherStrength.w * 0.1;
-    vec4 offset0 = flow.xyxy * strength * cycles.xxyy;
-    vec4 offset1 = flow.xyxy * strength * cycles.zzww;
+    vec4 offset0 = flow.xyxy * strength * v_Cycles.xxyy;
+    vec4 offset1 = flow.xyxy * strength * v_Cycles.zzww;
     vec4 first = mix(sourceAtObjectUv(v_ObjectTexCoord + offset0.xy),
-        sourceAtObjectUv(v_ObjectTexCoord + offset0.zw), blend_weight.x);
+        sourceAtObjectUv(v_ObjectTexCoord + offset0.zw), v_BlendWeight.x);
     vec4 second = mix(sourceAtObjectUv(v_ObjectTexCoord + offset1.xy),
-        sourceAtObjectUv(v_ObjectTexCoord + offset1.zw), blend_weight.y);
+        sourceAtObjectUv(v_ObjectTexCoord + offset1.zw), v_BlendWeight.y);
     float phase = texture(g_Texture2,
         v_ObjectTexCoord * u_Effect.g_PhaseScale.x).r;
     vec4 flowed = mix(first, second, smoothstep(0.2, 0.8, phase));
