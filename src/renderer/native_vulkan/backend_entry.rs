@@ -123,6 +123,9 @@ use video::demux_ffmpeg;
 use video::ffmpeg_hw;
 
 #[cfg(feature = "native-vulkan-video")]
+pub use video::event_source::NativeVulkanMediaEventRuntimeSnapshot;
+
+#[cfg(feature = "native-vulkan-video")]
 use video::codec_reference;
 
 use audio::policy as audio_policy;

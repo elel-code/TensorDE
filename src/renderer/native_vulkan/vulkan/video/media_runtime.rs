@@ -8,6 +8,7 @@ use crate::renderer::native_vulkan::{
         NativeVulkanAudioClockRuntimeSnapshot, native_vulkan_probe_ffmpeg_audio_clock,
         native_vulkan_unattached_audio_clock_snapshot,
     },
+    audio::event_source::NativeVulkanAudioEventChannel,
     audio::policy::NativeVulkanAudioOutputMode,
     video::direct::native_vulkan_audio_runtime_packet_budget,
 };
@@ -29,11 +30,13 @@ pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanFfmpegVideoAud
 pub(in crate::renderer::native_vulkan::vulkan) struct NativeVulkanFfmpegVideoAudioClockPreparation {
     pub clock: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub worker: Option<NativeVulkanFfmpegAudioOutputWorker>,
+    pub event_channel: NativeVulkanAudioEventChannel,
 }
 
 pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_ffmpeg_prepare_audio_clock_for_video_present(
     options: NativeVulkanFfmpegVideoAudioClockPrepareOptions,
 ) -> Result<NativeVulkanFfmpegVideoAudioClockPreparation, String> {
+    let event_channel = NativeVulkanAudioEventChannel::default();
     if options.audio_clock_probe_requested {
         let mut probe_options =
             NativeVulkanAudioClockProbeOptions::clock_only(options.source.clone());
@@ -49,10 +52,12 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_ffmpeg_prepare_a
             audio_playback_duration,
             options.playback_frame_count,
         );
+        probe_options.event_channel = Some(event_channel.clone());
 
         if options.audio_output_mode == NativeVulkanAudioOutputMode::Auto {
             let mut clock_probe_options = probe_options.clone();
             clock_probe_options.output_mode = NativeVulkanAudioOutputMode::ClockOnly;
+            clock_probe_options.event_channel = None;
             clock_probe_options.packets_to_probe = NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS as u32;
             clock_probe_options.target_playback_clock_ns = None;
             let clock = native_vulkan_probe_ffmpeg_audio_clock(clock_probe_options)
@@ -68,6 +73,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_ffmpeg_prepare_a
             return Ok(NativeVulkanFfmpegVideoAudioClockPreparation {
                 clock: Some(clock),
                 worker: Some(worker),
+                event_channel,
             });
         }
 
@@ -76,6 +82,7 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_ffmpeg_prepare_a
         return Ok(NativeVulkanFfmpegVideoAudioClockPreparation {
             clock: Some(clock),
             worker: None,
+            event_channel,
         });
     }
 
@@ -85,12 +92,14 @@ pub(in crate::renderer::native_vulkan::vulkan) fn native_vulkan_ffmpeg_prepare_a
                 options.audio_output_mode,
             )),
             worker: None,
+            event_channel,
         });
     }
 
     Ok(NativeVulkanFfmpegVideoAudioClockPreparation {
         clock: None,
         worker: None,
+        event_channel,
     })
 }
 

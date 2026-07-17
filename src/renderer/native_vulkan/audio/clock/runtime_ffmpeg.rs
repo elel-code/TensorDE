@@ -19,6 +19,7 @@ use std::sync::{Arc, Once};
 use serde::Serialize;
 
 use super::super::NativeVulkanError;
+use super::event_source::NativeVulkanAudioEventChannel;
 use super::policy::NativeVulkanAudioOutputMode;
 
 pub(in crate::renderer::native_vulkan) const NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS: usize = 3;
@@ -77,7 +78,7 @@ pub(super) fn native_vulkan_audio_clear_spectrum32() {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockProbeOptions {
     pub(in crate::renderer::native_vulkan) source: PathBuf,
     pub(in crate::renderer::native_vulkan) output_mode: NativeVulkanAudioOutputMode,
@@ -85,6 +86,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockProbeOptions
     pub(in crate::renderer::native_vulkan) packets_to_probe: u32,
     pub(in crate::renderer::native_vulkan) loop_on_eos: bool,
     pub(in crate::renderer::native_vulkan) target_playback_clock_ns: Option<u64>,
+    pub(in crate::renderer::native_vulkan) event_channel: Option<NativeVulkanAudioEventChannel>,
 }
 
 impl NativeVulkanAudioClockProbeOptions {
@@ -96,6 +98,7 @@ impl NativeVulkanAudioClockProbeOptions {
             packets_to_probe: NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS as u32,
             loop_on_eos: false,
             target_playback_clock_ns: None,
+            event_channel: None,
         }
     }
 }
@@ -394,6 +397,7 @@ pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioClockRuntime {
     current_serial_start_serial: Option<u32>,
     current_serial_start_packet_index: Option<u32>,
     packets_head: Vec<NativeVulkanAudioClockPacketSnapshot>,
+    event_channel: Option<NativeVulkanAudioEventChannel>,
 }
 
 impl NativeVulkanAudioClockRuntime {
@@ -440,7 +444,16 @@ impl NativeVulkanAudioClockRuntime {
             current_serial_start_serial: None,
             current_serial_start_packet_index: None,
             packets_head: Vec::new(),
+            event_channel: None,
         }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn with_event_channel(
+        mut self,
+        event_channel: Option<NativeVulkanAudioEventChannel>,
+    ) -> Self {
+        self.event_channel = event_channel;
+        self
     }
 
     pub(in crate::renderer::native_vulkan) fn with_source(mut self, source: PathBuf) -> Self {
@@ -491,8 +504,15 @@ impl NativeVulkanAudioClockRuntime {
         let has_output_pcm = packet.output_bytes > 0 && packet.output_samples > 0;
         if has_output_pcm {
             self.audio_spectrum32_packed = packet.audio_spectrum32_packed;
+            if let Some(event_channel) = &self.event_channel {
+                event_channel.publish_packed(
+                    u64::from(packet.serial),
+                    packet.pts_ns.unwrap_or_default(),
+                    packet.audio_spectrum32_packed,
+                );
+            }
             #[cfg(not(test))]
-            {
+            if self.event_channel.is_none() {
                 native_vulkan_audio_publish_signal_level(packet.audio_signal_level_micros);
                 native_vulkan_audio_publish_spectrum32_packed(packet.audio_spectrum32_packed);
             }
@@ -748,7 +768,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_probe_ffmpeg_audio_clock
 ) -> Result<NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanError> {
     let mut runtime =
         NativeVulkanAudioClockRuntime::new(options.output_mode, options.queue_capacity)
-            .with_source(options.source.clone());
+            .with_source(options.source.clone())
+            .with_event_channel(options.event_channel.clone());
     runtime.set_playback_target_clock_ns(options.target_playback_clock_ns);
     let mut reader =
         match NativeVulkanFfmpegAudioClockReader::open(&options.source, options.output_mode) {
@@ -790,7 +811,8 @@ pub(in crate::renderer::native_vulkan) fn native_vulkan_probe_ffmpeg_audio_clock
 ) -> Result<NativeVulkanAudioClockRuntimeSnapshot, NativeVulkanError> {
     let mut runtime =
         NativeVulkanAudioClockRuntime::new(options.output_mode, options.queue_capacity)
-            .with_source(options.source);
+            .with_source(options.source)
+            .with_event_channel(options.event_channel);
     runtime.set_playback_target_clock_ns(options.target_playback_clock_ns);
     runtime.set_audio_stream_error(
         "native-vulkan-video feature is required for FFmpeg audio clock probing".to_owned(),

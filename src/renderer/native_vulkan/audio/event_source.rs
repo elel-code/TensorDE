@@ -1,6 +1,6 @@
 //! Adapter from process audio publishers to one typed scene-event snapshot.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::engine::scene::{SceneAudioSource, SceneAudioState};
 
@@ -9,11 +9,66 @@ use super::system_monitor::system_audio_monitor_spectrum_status;
 
 static DIAGNOSTIC_SPECTRUM32: OnceLock<Option<[f32; 32]>> = OnceLock::new();
 
+#[derive(Debug, Clone, Copy)]
+struct NativeVulkanAudioEventChannelSample {
+    generation: u64,
+    sample_time_ns: u64,
+    spectrum32: [f32; 32],
+}
+
+#[derive(Debug, Clone, Default)]
+pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioEventChannel {
+    latest: Arc<Mutex<Option<NativeVulkanAudioEventChannelSample>>>,
+}
+
+impl NativeVulkanAudioEventChannel {
+    pub(in crate::renderer::native_vulkan) fn publish_packed(
+        &self,
+        generation: u64,
+        sample_time_ns: u64,
+        spectrum32_packed: [u32; 16],
+    ) {
+        if let Ok(mut latest) = self.latest.lock() {
+            *latest = Some(NativeVulkanAudioEventChannelSample {
+                generation,
+                sample_time_ns,
+                spectrum32: unpack_spectrum32(spectrum32_packed),
+            });
+        }
+    }
+
+    pub(in crate::renderer::native_vulkan) fn capture(
+        &self,
+        generation: u64,
+        fallback_sample_time_ns: u64,
+    ) -> SceneAudioState {
+        let sample = self
+            .latest
+            .lock()
+            .ok()
+            .and_then(|latest| *latest)
+            .filter(|sample| sample.generation == generation);
+        SceneAudioState {
+            source: SceneAudioSource::MediaSession,
+            media_generation: crate::engine::scene::SceneMediaGeneration(generation),
+            sample_time_ns: sample
+                .map(|sample| sample.sample_time_ns)
+                .unwrap_or(fallback_sample_time_ns),
+            spectrum32: sample.map(|sample| sample.spectrum32).unwrap_or([0.0; 32]),
+            ready: sample.is_some(),
+            ..SceneAudioState::default()
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub(in crate::renderer::native_vulkan) struct NativeVulkanAudioEventSource;
 
 impl NativeVulkanAudioEventSource {
-    pub(in crate::renderer::native_vulkan) fn capture(&self, sample_time_ns: u64) -> SceneAudioState {
+    pub(in crate::renderer::native_vulkan) fn capture(
+        &self,
+        sample_time_ns: u64,
+    ) -> SceneAudioState {
         if let Some(spectrum32) = diagnostic_spectrum32() {
             return SceneAudioState {
                 source: SceneAudioSource::Diagnostic,
@@ -53,7 +108,9 @@ impl NativeVulkanAudioEventSource {
     }
 }
 
-pub(in crate::renderer::native_vulkan) fn audio_state_summary(state: &SceneAudioState) -> (f32, u32) {
+pub(in crate::renderer::native_vulkan) fn audio_state_summary(
+    state: &SceneAudioState,
+) -> (f32, u32) {
     let peak = state.spectrum32.iter().copied().fold(0.0f32, f32::max);
     let active_bands = state
         .spectrum32
@@ -116,5 +173,21 @@ mod tests {
         assert_eq!(parsed[0], 0.0);
         assert_eq!(parsed[31], 1.0);
         assert!(parse_spectrum32("0,1").is_none());
+    }
+
+    #[test]
+    fn media_channel_rejects_spectrum_from_another_generation() {
+        let channel = NativeVulkanAudioEventChannel::default();
+        channel.publish_packed(2, 10, [0x8000_4000; 16]);
+
+        let current = channel.capture(2, 20);
+        assert!(current.ready);
+        assert_eq!(current.sample_time_ns, 10);
+        assert!(current.spectrum32[0] > 0.24);
+
+        let stale = channel.capture(3, 30);
+        assert!(!stale.ready);
+        assert_eq!(stale.sample_time_ns, 30);
+        assert_eq!(stale.spectrum32, [0.0; 32]);
     }
 }

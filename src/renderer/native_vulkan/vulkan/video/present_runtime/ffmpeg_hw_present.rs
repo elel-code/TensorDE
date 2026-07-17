@@ -281,6 +281,7 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
     )?;
     let mut audio_clock = audio_clock_preparation.clock;
     let audio_output_worker = audio_clock_preparation.worker;
+    let media_audio_events = audio_clock_preparation.event_channel;
     let audio_master_clock_enabled = audio_clock
         .as_ref()
         .is_some_and(|clock| clock.video_master_clock_ready);
@@ -383,6 +384,7 @@ pub fn run_native_vulkan_ffmpeg_vulkan_hw_video_present(
                             device_snapshot,
                             swapchain_plan.present_id2_enabled,
                             swapchain_plan.present_wait2_enabled,
+                            media_audio_events.clone(),
                             options,
                         )
                     })();
@@ -441,6 +443,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
     device_snapshot: super::video_present_device::NativeVulkanVulkanaliaVideoPresentDeviceProbeSnapshot,
     present_id2_enabled: bool,
     present_wait2_enabled: bool,
+    media_audio_events: NativeVulkanAudioEventChannel,
     options: NativeVulkanFfmpegVulkanHwVideoPresentOptions,
 ) -> Result<NativeVulkanFfmpegVulkanHwVideoPresentSnapshot, String> {
     let memory_properties =
@@ -492,6 +495,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
         options.target_max_fps,
         options.audio_master_clock,
     );
+    let mut media_event_runtime = NativeVulkanMediaEventRuntime::new(media_audio_events);
 
     let threaded_decode =
         selection.video_queue_family_index != selection.present_queue_family_index;
@@ -533,12 +537,15 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                                     });
                                 match decoded {
                                     Ok(decoded_frame) => {
+                                        let media_generation =
+                                            u64::from(worker_decoder.loop_count());
                                         if release_frame_after_render_fence {
                                             let (release_sender, release_receiver) =
                                                 mpsc::sync_channel::<()>(0);
                                             if sender
                                                 .send(Ok(NativeVulkanFfmpegDecodedGpuFrameHandoff::new(
                                                     decoded_frame,
+                                                    media_generation,
                                                     Some(release_sender),
                                                 )))
                                                 .is_err()
@@ -551,6 +558,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                                         } else if sender
                                             .send(Ok(NativeVulkanFfmpegDecodedGpuFrameHandoff::new(
                                                 decoded_frame,
+                                                media_generation,
                                                 None,
                                             )))
                                             .is_err()
@@ -607,8 +615,10 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                             let decoded_frame = decoder.decode_next_frame(true)?.ok_or_else(|| {
                                 "FFmpeg Vulkan HW decoder reached EOF before producing a presentable AVVkFrame".to_owned()
                             })?;
+                            let media_generation = u64::from(decoder.loop_count());
                             Ok(NativeVulkanFfmpegDecodedGpuFrameHandoff::new(
                                 decoded_frame,
+                                media_generation,
                                 None,
                             ))
                         })
@@ -723,6 +733,24 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
                         options.clear_color,
                         None,
                     )?;
+                    let presentation_time_ns = source_frame_pts_ns.unwrap_or_else(|| {
+                        source_frame_duration_ns
+                            .unwrap_or_default()
+                            .saturating_mul(u64::from(present_frame_index))
+                    });
+                    let frame_identity = u64::from(present_frame_index).saturating_add(1);
+                    media_event_runtime.publish_presented_frame(NativeVulkanVideoEventSample {
+                        generation: decoded_frame_handoff.media_generation,
+                        frame_serial: frame_identity,
+                        frame_identity,
+                        presentation_time_ns,
+                        frame_duration_ns: source_frame_duration_ns,
+                        media_duration_ns: None,
+                        playback: SceneMediaPlaybackState::Playing,
+                        rate_milli: 1_000,
+                        loop_index: decoded_frame_handoff.media_generation,
+                        ready: draw.presented,
+                    });
                     let present_frame_slot = draw.present_frame_slot;
                     sequence_builder.push(draw);
                     Ok(present_frame_slot)
@@ -859,6 +887,7 @@ fn run_native_vulkan_ffmpeg_vulkan_hw_video_present_on_device(
         audio_clock: None,
         audio_master_clock_enabled: false,
         audio_master_clock_start_ns: None,
+        media_events: media_event_runtime.snapshot(),
         decoded_image_present_sequence_requested: true,
         decoded_image_present_sequence: sequence.clone(),
         decoded_image_present_sequence_error: sequence_error.clone(),

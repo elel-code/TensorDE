@@ -16,12 +16,20 @@ use vulkanalia::vk::{
 };
 
 #[cfg(feature = "native-vulkan-video")]
+use crate::engine::scene::SceneMediaPlaybackState;
+
+#[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video::codec_reference::{
     NativeVulkanAv1DecodeReferencePlanner, NativeVulkanAv1StreamingBootstrap,
     NativeVulkanH264DecodeReferencePlanner, NativeVulkanH264StreamingBootstrap,
     NativeVulkanH265DecodeReferencePlanner, NativeVulkanH265StreamingBootstrap,
     native_vulkan_av1_align_streaming_bootstrap, native_vulkan_h264_align_streaming_bootstrap,
     native_vulkan_h265_align_streaming_bootstrap,
+};
+#[cfg(feature = "native-vulkan-video")]
+use crate::renderer::native_vulkan::video::event_source::{
+    NativeVulkanMediaEventRuntime, NativeVulkanMediaEventRuntimeSnapshot,
+    NativeVulkanVideoEventSample,
 };
 #[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::video::extract::{
@@ -51,7 +59,8 @@ use crate::renderer::native_vulkan::{
 };
 #[cfg(feature = "native-vulkan-video")]
 use crate::renderer::native_vulkan::{
-    audio::clock::NativeVulkanAudioClockRuntimeSnapshot, audio::policy::NativeVulkanAudioOutputMode,
+    audio::clock::NativeVulkanAudioClockRuntimeSnapshot,
+    audio::event_source::NativeVulkanAudioEventChannel, audio::policy::NativeVulkanAudioOutputMode,
 };
 
 use super::instance::{
@@ -476,6 +485,7 @@ pub struct NativeVulkanFfmpegVulkanHwVideoPresentSnapshot {
     pub audio_clock: Option<NativeVulkanAudioClockRuntimeSnapshot>,
     pub audio_master_clock_enabled: bool,
     pub audio_master_clock_start_ns: Option<u64>,
+    pub media_events: NativeVulkanMediaEventRuntimeSnapshot,
     pub decoded_image_present_sequence_requested: bool,
     pub decoded_image_present_sequence:
         Option<NativeVulkanVulkanaliaDecodedImagePresentSequenceSnapshot>,
@@ -700,6 +710,7 @@ struct NativeVulkanFfmpegPresentedFrameSetRetention {
 #[cfg(feature = "native-vulkan-video")]
 struct NativeVulkanFfmpegDecodedGpuFrameHandoff {
     decoded_frame: NativeVulkanFfmpegDecodedGpuFrame,
+    media_generation: u64,
     release_ack: Option<mpsc::SyncSender<()>>,
 }
 
@@ -707,10 +718,12 @@ struct NativeVulkanFfmpegDecodedGpuFrameHandoff {
 impl NativeVulkanFfmpegDecodedGpuFrameHandoff {
     fn new(
         decoded_frame: NativeVulkanFfmpegDecodedGpuFrame,
+        media_generation: u64,
         release_ack: Option<mpsc::SyncSender<()>>,
     ) -> Self {
         Self {
             decoded_frame,
+            media_generation,
             release_ack,
         }
     }

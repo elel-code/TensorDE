@@ -191,10 +191,12 @@ mod tests {
 
     #[test]
     fn audio_runtime_snapshot_reports_pipewire_output_boundary() {
+        let event_channel = NativeVulkanAudioEventChannel::default();
         let mut runtime = NativeVulkanAudioClockRuntime::new(
             NativeVulkanAudioOutputMode::Auto,
             NATIVE_VULKAN_AUDIO_CLOCK_QUEUE_PACKETS,
-        );
+        )
+        .with_event_channel(Some(event_channel.clone()));
         runtime.set_audio_stream(2);
         runtime.push_and_advance(
             0,
@@ -266,6 +268,10 @@ mod tests {
             snapshot.audio_output_latency_policy,
             "bounded-pipewire-write-wait-with-zero-buffer-timeout-error-gate"
         );
+        let audio_event = event_channel.capture(0, 0);
+        assert!(audio_event.ready);
+        assert_eq!(audio_event.sample_time_ns, 42_000_000);
+        assert!(audio_event.spectrum32[0] > 0.0);
     }
 
     #[test]
