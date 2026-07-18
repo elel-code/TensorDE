@@ -1,8 +1,8 @@
 //! Immutable event snapshot shared by all semantic and rendering consumers.
 
 use super::{
-    SceneAudioState, SceneEvent, SceneEventSequence, SceneMediaClockState, ScenePointerState,
-    SceneVideoState,
+    SceneAudioState, SceneEvent, SceneEventSequence, SceneLocalTime, SceneMediaClockState,
+    ScenePointerState, SceneVideoState,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -19,6 +19,7 @@ pub struct SceneFrameEvents {
     pub audio: SceneAudioState,
     pub media: Option<SceneMediaClockState>,
     pub video: Option<SceneVideoState>,
+    pub local_time: Option<SceneLocalTime>,
     pub ordered: Vec<SceneSequencedEvent>,
 }
 

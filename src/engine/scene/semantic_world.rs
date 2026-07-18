@@ -17,9 +17,9 @@ pub mod matrix;
 mod pointer_parallax;
 pub mod resolved_frame;
 mod semantic_resolution;
+mod text_provider;
 pub mod timeline;
 pub mod transform_animation;
-
 pub use components::{
     AudioBandMaterialBindingComponent, MaterialBindingComponent, MeshBindingComponent,
     ParentComponent, ParticleEmitterComponent, PuppetBindingComponent, SemanticMeshBinding,
@@ -33,10 +33,10 @@ pub use errors::SceneSemanticWorldError;
 pub use resolved_frame::{
     ResolvedAttachmentLink, ResolvedAudioBandMaterialValue, ResolvedObjectState,
     ResolvedPuppetBoneMatrix, ResolvedPuppetBonePalette, ResolvedSemanticFrame,
+    ResolvedTextProviderValue,
 };
 pub use semantic_resolution::SemanticFrameResolver;
 pub use transform_animation::TransformAnimationComponent;
-
 use components::{
     material_binding_from_object, parent_from_object, particle_emitter_from_record,
     puppet_binding_from_record, transform_from_object, visibility_from_object, visual_from_object,

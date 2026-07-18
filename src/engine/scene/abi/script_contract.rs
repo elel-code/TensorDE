@@ -3,6 +3,52 @@
 use serde::{Deserialize, Serialize};
 
 use super::SceneObjectHandle;
+use super::SceneStringId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SceneTextProviderKind {
+    ChineseLunarCalendar,
+    ChineseWeekday,
+    ChineseSolarTerm,
+    ChineseMonthDay,
+    ChineseYear,
+    ChineseClock,
+}
+
+impl SceneTextProviderKind {
+    pub const fn to_u32(self) -> u32 {
+        match self {
+            Self::ChineseLunarCalendar => 1,
+            Self::ChineseWeekday => 2,
+            Self::ChineseSolarTerm => 3,
+            Self::ChineseMonthDay => 4,
+            Self::ChineseYear => 5,
+            Self::ChineseClock => 6,
+        }
+    }
+
+    pub const fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            1 => Some(Self::ChineseLunarCalendar),
+            2 => Some(Self::ChineseWeekday),
+            3 => Some(Self::ChineseSolarTerm),
+            4 => Some(Self::ChineseMonthDay),
+            5 => Some(Self::ChineseYear),
+            6 => Some(Self::ChineseClock),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SceneTextProviderRecord {
+    pub object: SceneObjectHandle,
+    pub kind: SceneTextProviderKind,
+    pub initial_text: SceneStringId,
+    pub source_data: SceneStringId,
+    pub update_interval_seconds: u32,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

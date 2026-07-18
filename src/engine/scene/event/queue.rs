@@ -72,6 +72,7 @@ impl SceneEventQueue {
             audio: self.audio,
             media: self.media,
             video: self.video,
+            local_time: None,
             ordered: std::mem::take(&mut self.ordered),
         }
     }

@@ -1,13 +1,13 @@
 use super::*;
 
 #[test]
-fn scene_binary_rejects_every_pre_v16_artifact() {
+fn scene_binary_rejects_every_pre_v17_artifact() {
     let mut bytes = Vec::new();
-    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v16");
-    bytes[8..12].copy_from_slice(&15_u32.to_le_bytes());
+    write_scene_binary(&SceneBinaryDocument::default(), &mut bytes).expect("write v17");
+    bytes[8..12].copy_from_slice(&16_u32.to_le_bytes());
     assert!(matches!(
         read_scene_binary_bytes(&bytes),
-        Err(SceneBinaryError::UnsupportedVersion(15))
+        Err(SceneBinaryError::UnsupportedVersion(16))
     ));
 }
 

@@ -4,13 +4,14 @@ use crate::engine::scene::event::SceneFrameEvents;
 
 use super::{
     ResolvedSemanticFrame, SceneSemanticWorld, audio_binding::RetainedAudioBandMaterialBindings,
-    pointer_parallax::RetainedPointerParallaxSystem,
+    pointer_parallax::RetainedPointerParallaxSystem, text_provider::RetainedTextProviders,
 };
 
 #[derive(Debug)]
 pub(super) struct RetainedSceneEventSystem {
     audio_bindings: RetainedAudioBandMaterialBindings,
     pointer_parallax: RetainedPointerParallaxSystem,
+    text_providers: RetainedTextProviders,
 }
 
 impl RetainedSceneEventSystem {
@@ -18,6 +19,7 @@ impl RetainedSceneEventSystem {
         Self {
             audio_bindings: RetainedAudioBandMaterialBindings::from_world(world),
             pointer_parallax: RetainedPointerParallaxSystem::from_world(world),
+            text_providers: RetainedTextProviders::from_storage(world.storage()),
         }
     }
 
@@ -28,6 +30,8 @@ impl RetainedSceneEventSystem {
     ) {
         self.audio_bindings
             .initialize_frame(world, &mut frame.audio_band_material_values);
+        self.text_providers
+            .initialize(&mut frame.text_provider_values);
     }
 
     pub(super) fn begin_frame(
@@ -48,6 +52,8 @@ impl RetainedSceneEventSystem {
         );
         self.pointer_parallax
             .begin_frame(world, scene_time_seconds, events);
+        self.text_providers
+            .update(events.local_time, &mut frame.text_provider_values);
     }
 
     pub(super) fn finish_frame(

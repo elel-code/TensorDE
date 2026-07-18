@@ -5,6 +5,7 @@
 
 pub mod audio;
 pub mod frame;
+pub mod local_time;
 pub mod media;
 pub mod pointer;
 pub mod queue;
@@ -12,6 +13,7 @@ pub mod video;
 
 pub use audio::{SceneAudioSource, SceneAudioState};
 pub use frame::{SceneFrameEvents, SceneSequencedEvent};
+pub use local_time::SceneLocalTime;
 pub use media::{
     SceneMediaClockState, SceneMediaGeneration, SceneMediaPlaybackState, SceneMediaSessionId,
 };

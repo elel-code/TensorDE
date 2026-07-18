@@ -32,6 +32,7 @@ mod shader_combo;
 mod shader_contract;
 mod text_font_binding;
 mod text_layer;
+mod text_provider;
 mod texture_resolver;
 mod transform_animation;
 mod utility_layer;
@@ -87,6 +88,7 @@ use text_layer::{
     ingest_text_layer, retained_text_effect_is_supported,
     retained_text_effect_requires_dependency_composite, text_layer_value,
 };
+use text_provider::text_provider;
 use texture_resolver::texture_candidates;
 use transform_animation::ingest_object_transform_tracks;
 use utility_layer::{FULL_FRAMEBUFFER_TARGET, is_runtime_render_target, utility_layer_kind};
@@ -267,6 +269,7 @@ struct WeIrBuilder {
     object_transform_channels: Vec<WeIrObjectTransformChannel>,
     object_transform_keyframes: Vec<WeIrObjectTransformKeyframe>,
     audio_band_material_bindings: Vec<WeIrAudioBandMaterialBinding>,
+    text_providers: Vec<WeIrTextProvider>,
     puppet_animation_clips: Vec<WeIrPuppetAnimationClip>,
     puppet_animation_tracks: Vec<WeIrPuppetAnimationTrack>,
     puppet_animation_transform_samples: Vec<WeIrPuppetAnimationTransformSample>,
@@ -327,6 +330,7 @@ impl WeIrBuilder {
             object_transform_channels: Vec::new(),
             object_transform_keyframes: Vec::new(),
             audio_band_material_bindings: Vec::new(),
+            text_providers: Vec::new(),
             puppet_animation_clips: Vec::new(),
             puppet_animation_tracks: Vec::new(),
             puppet_animation_transform_samples: Vec::new(),
@@ -380,6 +384,7 @@ impl WeIrBuilder {
             object_transform_channels: self.object_transform_channels,
             object_transform_keyframes: self.object_transform_keyframes,
             audio_band_material_bindings: self.audio_band_material_bindings,
+            text_providers: self.text_providers,
             puppet_animation_clips: self.puppet_animation_clips,
             puppet_animation_tracks: self.puppet_animation_tracks,
             puppet_animation_transform_samples: self.puppet_animation_transform_samples,
@@ -490,6 +495,9 @@ impl WeIrBuilder {
             material = Some(particle_material);
         } else if let Some(text) = text_value.as_deref() {
             kind = SceneAbiObjectKind::Text;
+            if let Some(provider) = text_provider(handle, value, text) {
+                self.text_providers.push(provider);
+            }
             let selected_font = self.text_font_overrides.get(&name).cloned();
             match ingest_text_layer(self, handle, value, text, selected_font.as_deref())? {
                 Some((font_resource, text_material)) => {

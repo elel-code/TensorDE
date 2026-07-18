@@ -97,6 +97,36 @@ pub(super) fn validate_document(document: &SceneBinaryDocument) -> Result<(), Sc
             reason: "records are not grouped in object order",
         });
     }
+    for provider in &document.text_providers {
+        validate_range(
+            "text_provider.object",
+            provider.object.0,
+            1,
+            document.objects.len(),
+        )?;
+        validate_string(
+            document,
+            "text_provider.initial_text",
+            provider.initial_text,
+        )?;
+        validate_string(document, "text_provider.source_data", provider.source_data)?;
+        if provider.update_interval_seconds == 0 {
+            return Err(SceneStorageError::InvalidTextProvider {
+                object: provider.object,
+                reason: "zero update interval",
+            });
+        }
+    }
+    if document
+        .text_providers
+        .windows(2)
+        .any(|pair| pair[0].object.0 >= pair[1].object.0)
+    {
+        return Err(SceneStorageError::InvalidTextProvider {
+            object: SceneObjectHandle(INVALID_OBJECT_ID),
+            reason: "records are not strictly ordered by object",
+        });
+    }
     for effect in &document.object_effects {
         validate_range(
             "object_effect.object",

@@ -1,8 +1,8 @@
 //! Per-frame publication of platform and media providers into one event snapshot.
 
 use crate::engine::scene::{
-    SceneEvent, SceneEventQueue, SceneFrameEvents, ScenePointerEvent, ScenePointerEventKind,
-    ScenePointerSource, SceneStorage,
+    SceneEvent, SceneEventQueue, SceneFrameEvents, SceneLocalTime, ScenePointerEvent,
+    ScenePointerEventKind, ScenePointerSource, SceneStorage,
 };
 use crate::renderer::native_vulkan::audio::event_source::{
     NativeVulkanAudioEventSource, audio_state_summary,
@@ -68,6 +68,7 @@ impl SceneRuntimeEventSources {
         self.queue
             .publish(SceneEvent::Audio(self.audio.capture(sample_time_ns)));
         self.frame = self.queue.finish_frame();
+        self.frame.local_time = Some(SceneLocalTime::now());
         &self.frame
     }
 

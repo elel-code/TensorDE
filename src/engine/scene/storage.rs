@@ -272,6 +272,10 @@ impl SceneStorage {
         &self.document.audio_band_material_bindings
     }
 
+    pub fn text_providers(&self) -> &[SceneTextProviderRecord] {
+        &self.document.text_providers
+    }
+
     pub fn particle_for_object(
         &self,
         object: SceneObjectHandle,
@@ -489,6 +493,10 @@ pub enum SceneStorageError {
         object: SceneObjectHandle,
         reason: &'static str,
     },
+    InvalidTextProvider {
+        object: SceneObjectHandle,
+        reason: &'static str,
+    },
     InvalidPointerParallaxBinding {
         object: SceneObjectHandle,
         reason: &'static str,
@@ -578,6 +586,11 @@ impl fmt::Display for SceneStorageError {
             Self::InvalidAudioBandMaterialBinding { object, reason } => write!(
                 f,
                 "scene audio band material binding for object {} is invalid: {reason}",
+                object.0
+            ),
+            Self::InvalidTextProvider { object, reason } => write!(
+                f,
+                "scene text provider for object {} is invalid: {reason}",
                 object.0
             ),
             Self::InvalidPointerParallaxBinding { object, reason } => write!(

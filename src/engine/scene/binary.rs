@@ -28,7 +28,7 @@ mod timeline;
 use particle::{decode_particles, encode_particles};
 use pointer_binding::{decode_pointer_bindings, encode_pointer_bindings};
 use scene_chunks::*;
-use script_binding::{decode_audio_band_material_bindings, encode_audio_band_material_bindings};
+use script_binding::{decode_script_bindings, encode_script_bindings};
 
 pub use document::SceneBinaryDocument;
 #[cfg(test)]
@@ -238,13 +238,13 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         "shader contracts",
         shader_contracts.len(),
     )?;
-    let audio_band_material_bindings =
-        decode_audio_band_material_bindings(chunk_payload(&chunks, CHUNK_SCRIPT_BINDING)?)?;
+    let (audio_band_material_bindings, text_providers) =
+        decode_script_bindings(chunk_payload(&chunks, CHUNK_SCRIPT_BINDING)?)?;
     ensure_chunk_count(
         &chunks,
         CHUNK_SCRIPT_BINDING,
         "script binding",
-        audio_band_material_bindings.len(),
+        audio_band_material_bindings.len() + text_providers.len(),
     )?;
     ensure_chunk_count(&chunks, CHUNK_AUDIO, "audio", 0)?;
     let (camera_parallax, object_parallax_depths) =
@@ -303,6 +303,7 @@ pub fn read_scene_binary_bytes(data: &[u8]) -> Result<SceneBinaryDocument, Scene
         shader_contracts,
         shader_constant_names,
         audio_band_material_bindings,
+        text_providers,
         camera_parallax,
         object_parallax_depths,
     })
@@ -490,10 +491,16 @@ fn encode_chunks(
         SceneEncodedChunk {
             kind: CHUNK_SCRIPT_BINDING,
             item_count: checked_u32(
-                document.audio_band_material_bindings.len(),
-                "audio band material binding count",
+                document
+                    .audio_band_material_bindings
+                    .len()
+                    .saturating_add(document.text_providers.len()),
+                "script binding count",
             )?,
-            data: encode_audio_band_material_bindings(&document.audio_band_material_bindings)?,
+            data: encode_script_bindings(
+                &document.audio_band_material_bindings,
+                &document.text_providers,
+            )?,
         },
         SceneEncodedChunk {
             kind: CHUNK_POINTER_BINDING,

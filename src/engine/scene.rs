@@ -22,9 +22,9 @@ pub use binary::{
 };
 pub use event::{
     SceneAudioSource, SceneAudioState, SceneEvent, SceneEventQueue, SceneEventSequence,
-    SceneFrameEvents, SceneMediaClockState, SceneMediaGeneration, SceneMediaPlaybackState,
-    SceneMediaSessionId, ScenePointerEvent, ScenePointerEventKind, ScenePointerSource,
-    ScenePointerState, SceneSequencedEvent, SceneVideoState,
+    SceneFrameEvents, SceneLocalTime, SceneMediaClockState, SceneMediaGeneration,
+    SceneMediaPlaybackState, SceneMediaSessionId, ScenePointerEvent, ScenePointerEventKind,
+    ScenePointerSource, ScenePointerState, SceneSequencedEvent, SceneVideoState,
 };
 pub use rendering_device_graph::{
     SceneRenderingDeviceDrawPrimitive, SceneRenderingDeviceEffectBatch,

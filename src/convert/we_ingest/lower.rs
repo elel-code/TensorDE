@@ -18,7 +18,6 @@ use crate::engine::render_graph::{
 use crate::engine::scene::*;
 
 use super::ir::*;
-
 mod event_binding;
 mod particle;
 mod string_interner;
@@ -534,7 +533,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
     let (render_graphs, render_passes, render_bindings, unsupported) =
         lower_render_graphs(ir, &mut strings)?;
     let (shader_contracts, shader_constant_names) = lower_shader_contracts(ir, &mut strings);
-    let event_bindings = event_binding::lower_event_bindings(ir);
+    let event_bindings = event_binding::lower_event_bindings(ir, &mut strings);
     Ok(SceneBinaryDocument {
         feature_flags: SCENE_DEFAULT_FEATURE_FLAGS,
         strings: strings.finish(),
@@ -582,6 +581,7 @@ pub fn lower_ir_to_scene_binary(ir: &WeSceneIr) -> Result<SceneBinaryDocument, W
         shader_contracts,
         shader_constant_names,
         audio_band_material_bindings: event_bindings.audio,
+        text_providers: event_bindings.text,
         camera_parallax: event_bindings.camera_parallax,
         object_parallax_depths: event_bindings.object_parallax_depths,
     })

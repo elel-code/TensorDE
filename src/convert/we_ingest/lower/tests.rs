@@ -124,6 +124,7 @@ fn lower_ir_uses_payload_chunk_and_string_handles() {
         object_transform_channels: Vec::new(),
         object_transform_keyframes: Vec::new(),
         audio_band_material_bindings: Vec::new(),
+        text_providers: Vec::new(),
         puppet_animation_clips: Vec::new(),
         puppet_animation_tracks: Vec::new(),
         puppet_animation_transform_samples: Vec::new(),
